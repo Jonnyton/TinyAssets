@@ -24,11 +24,17 @@ Target architecture:
 `docs/design-notes/2026-04-18-full-platform-architecture.md`.
 
 Work ordering: pick the task that unblocks the largest currently-broken
-uptime surface. Treat any surface outage as equal severity — tiered
-severity invites starvation. When multiple uptime surfaces are broken,
-break ties by largest shared dependency impact, then shortest path to
+uptime surface. **No uptime surface outranks another by severity label** — a
+`P2`-tagged outage is not allowed to sit behind a `P1` one, because tiered
+ordering is what starves the quiet surfaces. When multiple uptime surfaces are
+broken, break ties by largest shared dependency impact, then shortest path to
 verified recovery. Any uptime-track feature ships with the §14
 concurrency/load-test proof or it is not done.
+
+Severity prefixes (`P0`/`P1`/`P2`) on `STATUS.md` Concern rows stay — they are
+triage labels describing blast radius, not work order. Both statements are
+needed: § *Truth And Freshness* specifies the prefix format, so a rule banning
+severity tiers outright would contradict it.
 
 Subordinated work (bug sprints, rename phases, unrelated design notes)
 continues but never blocks uptime work.
@@ -109,23 +115,18 @@ If it's about what's happening right now → STATUS.md.
 
 ### Where new conventions live (provider-agnostic by default)
 
-This project is multi-provider: the user steers Codex, Cursor, Aider, Claude Code, and Cowork sessions against the same repo. **`AGENTS.md` is the cross-provider standard** — every major coding agent reads it as canonical project context.
+**Rule:** a project-level convention (anything a teammate in any provider would
+need — preview loops, ship rituals, file layouts, naming, gates) goes in
+`AGENTS.md` first. Provider-specific files hold only harness behavior, harness
+quirks, and harness bootstrapping.
 
-**Rule:** when adding a project-level convention (anything a teammate in any provider would need to know — preview loops, ship rituals, file layouts, naming, gates), it goes in `AGENTS.md` first. Provider-specific files (`CLAUDE.md`, `.cursor/rules/*`, `.codex/*`, agent memory) exist only for genuinely provider-specific rules — harness behavior, harness quirks, harness-specific bootstrapping. Those files should reduce to *pointers at `AGENTS.md`* plus a thin layer of harness-specific notes.
+**Self-check before saving any rule:** *"Would a Codex or Cursor session need to
+know this?"* Yes → `AGENTS.md`. "No, this is purely how my harness works" → the
+provider-specific file. In doubt, default to `AGENTS.md`; broader visibility is
+the safer error.
 
-**Self-check before saving any rule:** *"Would a Codex session or a Cursor session need to know this?"* If yes → `AGENTS.md`. If "no, this is purely about how my harness works" → the provider-specific file. When in doubt, default to `AGENTS.md` — broader visibility is the safer error.
-
-| Convention type                                | Lives in                                            |
-|------------------------------------------------|-----------------------------------------------------|
-| Cross-provider (any agent needs it)            | `AGENTS.md`                                         |
-| Claude Code harness behavior                   | `CLAUDE.md` (which `@AGENTS.md` imports)            |
-| Cursor-specific                                | `.cursor/rules/*.mdc` or `.cursorrules`             |
-| Cowork-quirk (e.g., FUSE truncation)           | Cowork agent memory + pointer in a project doc      |
-| Codex-specific                                 | `AGENTS.md` (Codex's canonical file already)        |
-
-**This rule is itself self-correcting.** If a future session adds a project-level convention to `CLAUDE.md` or memory without also putting it in `AGENTS.md`, that session has drifted. Catch the drift on review and pull the convention up to `AGENTS.md`. Provider-specific files should de-duplicate by replacing the duplicated content with a pointer.
-
-**Auto-heal hook (apply the `auto-iterate` skill when fixing recurring behavioral failures).** Run `python scripts/check_cross_provider_drift.py` from any provider. It scans `CLAUDE.md`, `.cursorrules`, `.cursor/rules/*`, `.codex/*` for substantive sections that don't appear in `AGENTS.md`. Exits 2 with a fix prescription on drift (move to `AGENTS.md`, or tag `[harness-specific]` / `[Claude Code only]` / `[Cursor only]` / etc. on the heading). In Claude Code it fires automatically as a `PostToolUse` hook on Write/Edit of any watched provider-specific file (see `.claude/hooks/cross_provider_drift_guard.py`). Cowork / Codex / Cursor sessions should run the script manually after editing one of those files. Each drift recurrence ratchets the prevention layer, same auto-iterate pattern as the FUSE-truncation guard (`WebSite/HOOKS_FUSE_QUIRKS.md`).
+Placement table, the self-correcting property, and the `check_cross_provider_drift.py`
+auto-heal hook → **[`docs/reference/convention-placement.md`](docs/reference/convention-placement.md)**.
 
 ### Truth And Freshness
 
@@ -163,8 +164,10 @@ scoped reader at `python scripts/docview.py`.
 ### Project Skills
 
 - Project engineering skills live canonically in `.agents/skills/` and are mirrored into `.claude/skills/` for Claude Code's harness discovery.
-- Codex and project-visible agents read from `.agents/skills/` directly — there is no separate Codex mirror.
+- Codex and project-visible agents read from `.agents/skills/` directly — there is no separate Codex mirror. A `.codex/skills/` directory is drift, not a mirror; delete it rather than syncing it (one such directory accumulated 12 stale skills before anyone noticed).
 - Claude Code reads from `.claude/skills/`.
+- **The skill set is identical for every provider. There is no per-provider skill roster.** Removing a skill for one provider removes it for all: delete the canonical directory and re-sync. Never disable a skill via a provider-local setting (`skillOverrides` in `.claude/settings.local.json`, a Codex/Cursor equivalent) — that silently gives one provider a different roster, which is the exact drift this project forbids. Same rule for harness config that shapes shared behavior: sync it or don't do it.
+- When a skill is deleted, sweep its inbound references in the same change: the `using-agent-skills` router tree and Quick Reference table, sibling-skill cross-links, `AGENTS.md`, and `PLAN.md`. A pointer to a deleted skill is a broken instruction, not a harmless leftover.
 - When the right workflow skill is not obvious, start with `using-agent-skills` and then read the matching skill.
 - After editing shared skills, run `powershell -ExecutionPolicy Bypass -File scripts/sync-skills.ps1` to refresh the Claude Code mirror.
 - When the user points at an outside project, repo, paper, benchmark, article, or codebase and asks what TinyAssets should learn or integrate, use `external-research-implications`. That process must canonicalize the source, research current context, compare module-by-module against TinyAssets, write durable implications, and self-update the skill when the process itself improves.
@@ -175,8 +178,11 @@ scoped reader at `python scripts/docview.py`.
 The project skills bake in a complete, self-enforcing development methodology
 (merged from obra/superpowers, DietrichGebert/ponytail, and Fission-AI/OpenSpec
 into the native skills). The governing discipline lives in `using-agent-skills`:
-**if there is even a ~1% chance a skill applies, invoke it before responding or
-acting** — including before clarifying questions; user instructions in
+**invoke a skill when it would change what you do next** — i.e. the task matches
+its trigger and you would otherwise work from memory, or the next step is hard to
+reverse (push, merge, deploy, schema or public-surface change) and a skill governs
+that gate. Skip it for trivially reversible work you already know the answer to,
+and say so in one line when the call is close. User instructions in
 `AGENTS.md` / `CLAUDE.md` always override a skill where they conflict. Core dev
 loop: `idea-refine` (design-approval gate) -> `planning-and-task-breakdown` ->
 `test-driven-development` / `debugging-and-error-recovery` ->
@@ -184,7 +190,7 @@ loop: `idea-refine` (design-approval gate) -> `planning-and-task-breakdown` ->
 `git-workflow-and-versioning` -> `shipping-and-launch`;
 `subagent-driven-development` runs it via fresh per-task subagents.
 `code-simplification` carries the write-the-least-code ladder. All skills mirror
-into `.claude/skills/` and `.codex/skills/`.
+from `.agents/skills/` into `.claude/skills/` only — see § *Project Skills*.
 
 ### Spec-driven development — OpenSpec is the standard [all providers]
 
@@ -198,10 +204,13 @@ Host directive 2026-07-19: this project is spec-driven from here on.
 - **Every substantive change starts as an OpenSpec change.** Behavior changes,
   MCP/API surface, storage shapes, new capabilities, security posture — all get
   a change with its `applyRequires` artifacts done before implementation.
-  `opsx:propose` fronts the core dev loop; `idea-refine` and
-  `spec-driven-development` remain the dependency-free fallback only where the
-  CLI is unavailable. Trivial mechanical work (typos, comment/doc formatting,
-  test-only fixes that change no behavior) needs no change.
+  `opsx:propose` fronts the core dev loop. Where the CLI is unavailable, the
+  dependency-free fallback is `idea-refine` for the design gate plus a
+  hand-written change directory matching the OpenSpec layout
+  (`proposal.md`, `design.md`, delta specs, `tasks.md`) so the work can be
+  adopted by `openspec` once the CLI is back. Trivial mechanical work (typos,
+  comment/doc formatting, test-only fixes that change no behavior) needs no
+  change.
 - **Touch it → spec it (backfill obligation).** Capabilities that predate
   OpenSpec get their main spec backfilled by the
   `spec-out-existing-platform` baseline; anything still unspecced gets its
@@ -258,7 +267,7 @@ FUSE quirks, and website-specific auto-iteration.
 - **Broadcast sparingly.** Token cost scales with team size. Use direct messages for targeted coordination, broadcast only for team-wide state changes.
 - **Claim before working.** When self-claiming from the task list, claim first to prevent collisions. File locking handles races but claiming communicates intent.
 - **Shutdown is graceful.** Teammates can reject shutdown if mid-task. Lead shuts down all teammates before running cleanup. Never force-kill without checking.
-- **Despawn discipline.** Floater swaps use Escape-then-`shutdown_request` (Protocol A in `LAUNCH_PROMPT.md`). Verifier and dev despawns wait for in-flight tool calls — no Escape unless the teammate is genuinely idle. Hung teammates require filesystem cleanup of `~/.claude/teams/<team>/`; no force-kill verb exists. Spawn the replacement only AFTER `shutdown_approved` lands — never overlap, since the 3+1 floater roster is sized to the rate-limit budget. See `docs/audits/2026-04-25-despawn-chain-protocol.md`.
+- **Despawn discipline.** Floater swaps use Escape-then-`shutdown_request` (Protocol A, defined in the despawn audit below). Verifier and dev despawns wait for in-flight tool calls — no Escape unless the teammate is genuinely idle. Hung teammates require filesystem cleanup of `~/.claude/teams/<team>/`; no force-kill verb exists. Spawn the replacement only AFTER `shutdown_approved` lands — never overlap, since the 3+1 floater roster is sized to the rate-limit budget. See `docs/audits/2026-04-25-despawn-chain-protocol.md`.
 
 ### Quality Gates
 
@@ -291,190 +300,38 @@ The project uses two coordination layers that serve different purposes:
 
 ## Parallel Dispatch
 
-**Multi-provider concurrent execution is the default operating mode.**
-Multiple providers (Claude Code, Codex, Cursor, Cowork, future) work on
-this project at the same time. The host does not announce when a new
-provider is started; coordination flows through STATUS.md, not through
-chat. Treat any session-start as "the team is already running; what's
-safe to claim?"
+**Multi-provider concurrent execution is the default operating mode.** Claude
+Code, Codex, Cursor, and Cowork work on this repo at the same time. The host does
+not announce a new provider; coordination flows through `STATUS.md`, not chat.
+Treat every session-start as "the team is already running — what's safe to claim?"
 
-The complete coordination contract is: **STATUS.md Work table is the
-authoritative claim surface.** No external locks. No runtime signaling.
-A provider with a fresh checkout, no chat history, and no announcement
-should be able to start working productively in under a minute.
+**The contract: the `STATUS.md` Work table is the authoritative claim surface.**
+No external locks, no runtime signaling. A provider with a fresh checkout, no chat
+history, and no announcement should be productive in under a minute.
 
-### Provider session-start ritual
+**Session-start checklist** (every provider, every session, in order):
 
-Every provider, every session, in this order:
+0. `python scripts/session_sync_gate.py` — warns if the checkout is off `main` or behind.
+1. Read `STATUS.md` — Concerns + Work table + Next.
+2. `python scripts/worktree_status.py` — dirty checkouts, stale/orphaned lanes.
+3. `python scripts/claim_check.py --provider <yourname>` — the CLAIMABLE list is what's safe now.
+4. `python scripts/provider_context_feed.py --provider <yourname> --phase claim` — prior context from every provider family, not just yours.
+5. **Claim by editing `STATUS.md`**: set the row's Status to `claimed:<yourname>`. The edit IS the claim.
+6. Scan cross-implications before building — matching files, primitives, or user surfaces in other rows.
+7. Work in a worktree or branch; don't write outside your row's Files write-set.
+8. On land, set Status → `done` and delete the row in the same commit.
 
-0. **Run `python scripts/session_sync_gate.py`.** Fetches with `--prune` and
-   warns if the primary checkout is off `main` or behind origin/main — the
-   "1,209 behind / stale refs" trap. Advisory; never mutates the tree. Claude
-   Code fires it automatically via the `SessionStart` hook.
-1. **Read STATUS.md.** Concerns + Work table + Next.
-2. **Run `python scripts/worktree_status.py`.** This shows dirty current
-   checkouts, worktrees that need `_PURPOSE.md`, orphaned or missing paths,
-   lanes that need PR/STATUS promotion, and parked draft lanes. Do not switch
-   a dirty checkout to `main`; start a clean main-based worktree for new
-   live-ready work.
-3. **Run `python scripts/claim_check.py --provider <yourname>`.**
-   Output classifies every Work row into CLAIMABLE / BLOCKED / IN-FLIGHT
-   / HOST-OWNED / STALE-CLAIM. The CLAIMABLE list is what's safe to
-   start on right now; BLOCKED tells you why something isn't; IN-FLIGHT
-   shows files off-limits.
-4. **Run `python scripts/provider_context_feed.py --provider <yourname> --phase claim`.**
-   This scans provider memories/configs, shared ideas, recent research
-   artifacts, worktree handoffs, and provider automation notes. It is a
-   context feed, not a backlog writer. Relevant candidates must be promoted
-   into a current STATUS/worktree/PR lane before they become build authority.
-   Claim phase deliberately includes durable memory/brain notes authored by
-   other AI families, not only your own provider. Search the feed for the
-   issue/request slug and related domain terms before assuming no prior
-   Claude/Codex/Cursor/Cowork context exists.
-5. **Claim by editing STATUS.md.** Change the chosen row's Status cell
-   to `claimed:<yourname>`. Use a session-specific provider name when
-   more than one session from the same tool may be active (for example
-   `codex-gpt5-desktop`, `codex-cli-2`, `cursor-gpt55`). Commit that
-   edit on your branch (or directly to main if you're operating without
-   a worktree). The edit IS the claim — no other notification required.
-6. **Scan cross-implications before building.** Before implementation,
-   compare your claimed task against active `STATUS.md` rows,
-   `ideas/PIPELINE.md` Active Promotions, and recent research/design
-   artifacts for matching domain terms, files, primitives, or user surfaces.
-   If a research-derived finding may affect your design, read its artifact
-   before coding and either add a `Depends` edge / note to your row or record
-   why it does not apply. Do not bypass an opposite-provider review gate just
-   because your task is named differently.
-7. **Work in a worktree or branch.** `git worktree add ../wf-<task>` or
-   feature branch. Do not write outside your row's Files write-set
-   without first updating STATUS.md to reflect the new write-set. A branch is
-   isolation, not memory; make sure the lane has `_PURPOSE.md`,
-   `.agents/worktrees.md`, STATUS row, or draft PR metadata before leaving it.
-8. **On land**, change Status -> `done` and delete the row in the same
-   commit. The commit is the audit trail.
+Non-negotiables that must not wait on a doc read:
 
-### Provider-context feed checkpoints
+- **Claim before working.** `claimed:*` / `in-flight` means that row's Files are off-limits to others.
+- **Never switch a dirty checkout to `main`.** Start a clean main-based worktree for live-ready work.
+- **A branch is isolation, not memory.** Every lane needs `_PURPOSE.md`, a `STATUS.md` row, or a draft-PR body saying why it exists and what blocks it.
+- **Review-blocked work gets a lane but does not advance.** Implementation, push, and live rollout stay blocked until the opposite-provider review returns `approve` / `adapt`.
 
-`provider_context_feed.py` is a lifecycle gate, not a session-start-only
-ritual. Run it whenever a provider is about to narrow or advance durable work:
-
-- `--phase claim` before claiming or adding a STATUS row.
-- `--phase plan` before writing a plan, design note, exec plan, or
-  `_PURPOSE.md`.
-- `--phase build` before implementation starts and again before broadening a
-  Files cell.
-- `--phase review` before reviewing another provider's work.
-- `--phase foldback` before pushing, opening/updating a PR, merging, or
-  retiring a STATUS row.
-- `--phase memory-write` after writing provider memory, idea-feed entries,
-  research artifacts, reflections, or `_PURPOSE.md` so related candidates can
-  be folded into the current lane immediately.
-
-If a harness supports automatic hooks or automations, wire those checkpoints
-there too, but the shared contract remains the script + STATUS/worktree/PR
-promotion. The scanner may produce noisy candidates; the agent must read the
-relevant ones and then either promote them into the lane or explicitly note why
-they do not apply. `ideas/INBOX.md` remains a loose idea feed at the bottom of
-lanes, never design truth or permission to build.
-The phase filters are coarse triage, not proof that unrelated context is
-absent. Bare CLI use should start with the default limit for a broad sweep,
-use `--limit 10` for compact hook-like triage, and use `--limit 200` when
-auditing whether a category is absent.
-
-### Work-table row schema
-
-Every row must have:
-
-- **Files** — specific files or directories this task will write.
-  This is the collision boundary. Be concrete: `tinyassets/api/wiki.py, tinyassets/storage/__init__.py`
-  not `backend`. Read-only dependencies go in Depends, not Files. Use
-  comma or semicolon between atoms.
-- **Depends** — which tasks must merge first. Include both task
-  dependencies (`#18, #23`) and file-read dependencies. If your task
-  needs to read `api.py` after another task rewrites it, that is a
-  dependency.
-- **Status** — one of: `pending`, `claimed:<provider>`, `in-flight`,
-  `dev-ready`, `host-action`, `host-decision`, `host-review`,
-  `monitoring`, `done`. Provider is the tool/session name: `codex`,
-  `claude-code`, `cursor`, `cowork`, or a more specific label such as
-  `codex-gpt5-desktop` / `cursor-gpt55` when generic names would be
-  ambiguous. `claimed:*` and `in-flight` mean the row's Files are
-  off-limits to others until status flips.
-
-### Stale-claim reaping
-
-A claim is stale if its Files have seen no commits in 24h and the row
-has no fresh active-date heartbeat. `claim_check.py` flags these as
-STALE-CLAIM CANDIDATES. Any provider may reap a stale claim by editing
-the row Status to `reaped:<yourname>:no-activity-24h`, then re-claiming
-as their own (`claimed:<yourname>`). No daemon, no permission needed;
-the convention is the policy. If a provider is actively building or
-testing before a commit lands, add `ACTIVE YYYY-MM-DD` to the Work row
-task text or status note. That heartbeat keeps the claim live for the
-date shown and prevents uncommitted active work from being reaped just
-because it has not landed yet.
-
-### Pre-claim collision guard
-
-Before adding a new row or broadening a Files cell, run
-`python scripts/claim_check.py --provider <yourname> --check-files "path/a.py, docs/foo.md"`.
-It warns if your prospective claim's Files overlap any in-flight row's
-Files. Substring match either direction. If overlap fires, EITHER add a
-Depends edge (the overlap is real coordination) OR refine your row's
-Files to be narrower (the overlap was a hint, not a real write).
-
-### GitHub-Aligned Worktree Discipline
-
-GitHub is the integration model: a worktree is the local checkout for one
-branch, the branch folds back through a PR, and `STATUS.md` is the claim surface
-— not a replacement for GitHub history. **A branch is not durable memory** (it
-remembers commits, not why it exists, whether it is live-safe, what blocks it,
-or who owns it); the durable layer is `_PURPOSE.md`, `.agents/worktrees.md`,
-`STATUS.md`, idea files, and draft-PR bodies.
-
-**Full procedure → [`docs/reference/worktree-discipline.md`](docs/reference/worktree-discipline.md)**
-(the `_PURPOSE.md` template, numbered creation steps, `worktree_status.py`
-diagnostic states, and the branch-lifecycle automation layers). Read it before
-creating, taking over, or sweeping a worktree. Invariants you must honor without
-opening it:
-
-- **Four lane states**, exactly one per branch/worktree: **Active** (actionable
-  now; STATUS row + worktree + branch + `_PURPOSE.md`), **Parked draft** (pushed
-  branch + draft PR recording ship/abandon conditions + review gates),
-  **Idea/reference only** (no build authority; lives in `ideas/*.md` or a
-  `_PURPOSE.md` "Idea feed refs" section; promote to `STATUS.md` + check
-  `PLAN.md` before building), **Abandoned/swept** (removed or logged in
-  `.agents/worktrees.md` with a reason; extract useful ideas first).
-- **Dirty-main safety.** A non-main branch is isolated from the live deploy
-  chain until merged; merging to `main` is production-impacting. Never switch a
-  dirty checkout to `main` — start a clean main-based worktree for live-ready
-  work.
-- **Lifecycle via tooling, not by hand.** Use `python scripts/wt.py new|done|list`
-  (creates off `origin/main` + scaffolds `_PURPOSE.md`; `done` refuses an
-  unmerged branch) instead of raw `git worktree add`/`remove`, so teardown stops
-  being optional. Run `python scripts/worktree_status.py` at session start to
-  surface stale / orphaned / dirty / incomplete lanes.
-- **Memory refs are required for inherited work.** When continuing or reviewing
-  another provider's work, `_PURPOSE.md` / `.agents/worktrees.md` / the STATUS
-  row / PR body must reference the prior provider's memory/artifact paths; read
-  them before coding. If none are listed, search `.claude/agent-memory/`,
-  `.agents/activity.log`, and recent audits by task slug before assuming absence.
-- **Review-blocked work still gets a lane.** Create the review row claimable and
-  the implementation row `pending` with `Depends` naming the review artifact +
-  required verdict; the branch may exist, but runtime implementation, push, live
-  rollout, and acceptance-test advancement stay blocked until review returns
-  `approve` / `adapt`.
-- **Legacy docs/ideas/memories are context, not build queues.** Promote into a
-  current `STATUS.md`/`PLAN.md` lane (re-check PLAN modules, add the Work row,
-  run `claim_check.py --check-files`) before building from them.
-
-### Staying unblocked
-
-If `claim_check.py` shows zero CLAIMABLE rows, look for cross-cutting
-work that doesn't appear in the Work table: docs hygiene, skill audits,
-test surface, design-note classifications, audit follow-ups. Add a new
-Work row for the task you pick up rather than working off-table — that
-keeps the next provider's `claim_check.py` accurate.
+Full procedure — the ritual in detail, provider-context feed checkpoints, the
+Work-table row schema, stale-claim reaping, the pre-claim collision guard,
+worktree lane states, and what to do when nothing is claimable →
+**[`docs/reference/parallel-dispatch.md`](docs/reference/parallel-dispatch.md)**.
 
 ---
 
@@ -538,34 +395,12 @@ honor these):
 
 ## Project Files
 
-| File | Audience | Purpose |
-|------|----------|---------|
-| `AGENTS.md` | Any AI, any tool | How to work, team norms, hard rules. |
-| `STATUS.md` | Any AI, any tool | Live state: task board, concerns, watch, archive. |
-| `PLAN.md` | Any AI, any tool | Architecture, principles, design decisions. |
-| `README.md` | Any human or AI | Fast project orientation. |
-| `INDEX.md` | Any human or AI | Repo map and Obsidian hub. |
-| `CODEX.md` | Codex | Thin routing layer. |
-| `notes.json` | Daemon + sessions | Per-universe unified notes (user, editor, structural, system). |
-| `scripts/docview.py` | Any AI, any tool | Scoped reader for large Markdown/text/JSON artifacts that should not be read raw. |
-| `scripts/capture_idea.py` | Any AI, any tool | Fast append helper for the idea inbox. |
-| `scripts/claim_check.py` | Any AI, any tool | Multi-provider session-start helper. Classifies STATUS.md Work rows as CLAIMABLE / BLOCKED / IN-FLIGHT / HOST-OWNED / STALE. Run with `--provider <yourname>` before claiming work. |
-| `scripts/worktree_status.py` | Any AI, any tool | Worktree cold-start helper. Shows dirty current checkouts, missing or incomplete `_PURPOSE.md`, orphaned/missing paths, active lanes, parked drafts, and PR/STATUS promotion gaps. |
-| `scripts/provider_context_feed.py` | Any AI, any tool | Lifecycle checkpoint feed for provider memories/configs, ideas, research artifacts, automation notes, and worktree handoffs. Run at claim/plan/build/review/foldback/memory-write checkpoints. |
-| `scripts/sync-skills.ps1` | Repo maintenance | Re-sync `.agents/skills/` into `.claude/skills/`. |
-| `CLAUDE.md` | Claude Code only | Thin routing layer. |
-| `CLAUDE_LEAD_OPS.md` | Claude Code lead | Situational: user-sim loops, dev team management, token efficiency. Not auto-loaded. |
-| `LAUNCH_PROMPT.md` | Claude Code lead | Team spawn, session protocol, lead norms. |
-| `.claude/agents/*.md` | Claude Code only | Individual agent definitions. |
-| `.claude/agent-memory/<name>/` | Claude Code teammate `<name>` only (write); any AI (read) | Per-teammate persistent memory. **Owned by the named teammate; other agents and other providers must NOT write here.** Read-only access is fine when context is needed. If a non-owner has a useful observation for another teammate, route it via SendMessage / activity log / a docs note, not by writing into the memory directory. |
-| `.agents/skills/*/SKILL.md` | Codex + project agents (canonical source) | Canonical skill definitions. Edit here first. |
-| `.claude/skills/*/SKILL.md` | Claude Code only | Mirror of `.agents/skills/` refreshed by `scripts/sync-skills.ps1`. |
-| `.agents/activity.log` | Any AI, any tool | Short cross-session activity feed for coordination. |
-| `ideas/*.md` | Any AI, any tool | Idea capture, triage, and shipped traceability. |
-| `knowledge/*.md` | Any human or AI | Human-readable compiled knowledge companion to `knowledge.db`. |
-| `docs/exec-plans/*.md` | Any AI, any tool | Multi-step execution plans and landing history. |
-| `docs/conventions.md` | Any AI, any tool | Stable documentation and linking patterns. |
-| `docs/reference/environment-variables.md` | Any AI, any tool | Canonical env-var catalog (pointer-loaded per ADR-002; AGENTS.md keeps the invariants + pointer). |
-| `docs/reference/worktree-discipline.md` | Any AI, any tool | Canonical worktree/branch lane procedure (pointer-loaded per ADR-002; AGENTS.md keeps the invariants + pointer). |
-| `docs/decisions/INDEX.md` | Any AI, any tool | ADR directory surface. |
-| `docs/specs/INDEX.md` | Any AI, any tool | Feature/change spec directory surface. |
+Full repo map → **[`docs/reference/project-files.md`](docs/reference/project-files.md)**
+(pointer-loaded per ADR-002). The three living files are described in
+§ *Three Living Files* above; the one rule that is not derivable from the tree:
+
+- `.claude/agent-memory/<name>/` is **owned by the named teammate**. Other agents
+  and other providers must NOT write there. Reading is fine. Route an observation
+  for another teammate via SendMessage, `.agents/activity.log`, or a docs note.
+- When you delete or rename a tracked file, update its row in the reference table
+  in the same change.

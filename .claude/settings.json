@@ -31,6 +31,12 @@
             "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/latest_model_guard.py\"",
             "shell": "powershell",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/openspec_first_dispatch_guard.py\"",
+            "shell": "powershell",
+            "timeout": 10
           }
         ]
       },
@@ -53,6 +59,17 @@
             "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/fuse_pre_write_reject.py\"",
             "shell": "powershell",
             "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__codex__codex|mcp__codex__codex-reply",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/openspec_first_dispatch_guard.py\"",
+            "shell": "powershell",
+            "timeout": 10
           }
         ]
       }

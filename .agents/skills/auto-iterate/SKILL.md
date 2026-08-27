@@ -64,8 +64,8 @@ text), name the violated convention in plain language, and give two paths —
 
 When a teammate underperforms, roles overlap, or the launch prompt needs tuning.
 Definitions evolve through use. **Don't enumerate the roster here** — read it fresh
-each time from `.claude/agents/*.md` (skip `retired/`); `LAUNCH_PROMPT.md` is the
-source of truth and wins on conflict. Research current best practices first (pin
+each time from `.claude/agents/*.md`; `CLAUDE_LEAD_OPS.md` is the source of truth for
+lead/team norms and wins on conflict. Research current best practices first (pin
 the Claude Code agent-teams + sub-agents docs — norms shift release-to-release;
 don't write from memory).
 
@@ -81,9 +81,9 @@ plan-approval gates, tool allowlists (don't assume per-teammate `permissionMode`
 is enforced), task sizing, and `message` vs `broadcast` are used deliberately.
 
 **How to iterate:** good behavior → record what worked in `.agents/activity.log`,
-don't change it; poor behavior → fix *that agent's* prompt (or `LAUNCH_PROMPT.md`
+don't change it; poor behavior → fix *that agent's* prompt (or `CLAUDE_LEAD_OPS.md`
 for a team norm); general fixes → AGENTS.md or this rubric; team-shape changes →
-`LAUNCH_PROMPT.md` only. After 2 unanswered messages, respawn with a sharper
+`CLAUDE_LEAD_OPS.md` only. After 2 unanswered messages, respawn with a sharper
 prompt. After editing skills, run `scripts/sync-skills.ps1`.
 
 ## Cross-references

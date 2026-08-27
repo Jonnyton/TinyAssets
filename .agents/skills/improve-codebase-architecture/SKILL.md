@@ -42,7 +42,7 @@ Get a fast, usable map before detail work:
 If you only needed orientation, stop here with a compact map (mission, main
 modules, inbound callers, outbound deps, invariants) and route to the next skill:
 `debugging-and-error-recovery` for failures, `test-driven-development` for
-behavior work, `api-and-interface-design` for contracts, `domain-model` for
+behavior work, `domain-model` for
 concept/terminology problems, or continue below for seam problems. Don't call a
 module "spaghetti" until you can name the missing seam.
 

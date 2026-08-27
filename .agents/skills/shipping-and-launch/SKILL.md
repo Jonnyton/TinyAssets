@@ -50,8 +50,7 @@ secrets only in the deploy platform/vault. Automate dependency updates
   (CSP/HSTS); rate limiting on auth; CORS scoped, not wildcard. (See
   `security-and-hardening`.)
 - **Performance:** Core Web Vitals "Good"; no N+1 in critical paths; images
-  optimized; bundle within budget; DB indexes; caching configured. (See
-  `performance-optimization`.)
+  optimized; bundle within budget; DB indexes; caching configured.
 - **Accessibility:** keyboard nav; screen-reader structure; WCAG AA contrast
   (4.5:1); focus management for modals; descriptive field-associated errors; no
   axe/Lighthouse a11y warnings.

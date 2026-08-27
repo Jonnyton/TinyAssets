@@ -19,7 +19,25 @@ The human host is watching the browser tab. Your job is to look like a naive, cu
 
 The verification target is a rendered chatbot conversation using the live installed connector. Claude.ai, ChatGPT Developer Mode, and future chatbot clients are all acceptable when the tester can see the connector in the browser, type a normal user prompt, and observe the chatbot's rendered answer or tool-use result. Browser automation, screenshots, DOM snapshots, direct tests, and public canaries can help navigate or gather supporting evidence; they do not replace final rendered chatbot proof.
 
-## CRITICAL — cross-client MCP alignment is a project prerequisite (mandatory pre-ship check)
+## Invariants
+
+Eleven rules govern every run. Each links to its full section; read the ones
+your route touches before you start, and treat a violation as a stop, not a
+style note.
+
+1. [Cross-client MCP alignment is a project prerequisite (mandatory pre-ship check)](#cross-client-mcp-alignment-is-a-project-prerequisite-mandatory-pre-ship-check)
+2. [Always test in Claude.ai Incognito chat (forever rule)](#always-test-in-claudeai-incognito-chat-forever-rule)
+3. [Incognito chat is NOT an unauthenticated identity](#incognito-chat-is-not-an-unauthenticated-identity)
+4. [TAB HYGIENE (forever rule, every step)](#tab-hygiene-forever-rule-every-step)
+5. [Watch for the connector's per-tool approval dialog](#watch-for-the-connectors-per-tool-approval-dialog)
+6. [Test domains must be complex-output workflows](#test-domains-must-be-complex-output-workflows)
+7. [Anchor every chat in the connector](#anchor-every-chat-in-the-connector)
+8. [Never sit idle while the daemon is cooking](#never-sit-idle-while-the-daemon-is-cooking)
+9. [Report every tool-use-limit-per-turn hit](#report-every-tool-use-limit-per-turn-hit)
+10. [When Claude.ai presents selectable options](#when-claudeai-presents-selectable-options)
+11. [Prompt hygiene](#prompt-hygiene)
+
+## Cross-client MCP alignment is a project prerequisite (mandatory pre-ship check)
 
 Every MCP tool the substrate exposes is consumed by both ChatGPT (OpenAI Apps SDK) and Claude (Anthropic MCP). Both clients must accept any shape we ship — divergent client tolerance is a substrate bug, not a client bug.
 
@@ -76,7 +94,7 @@ Codex is mechanically good at browser operation, but must not massage the chatbo
 - Do not coach the bot around a UX failure; log the failure.
 - Before every prompt, ask: "Would a normal chatbot user type this without knowing TinyAssets internals?" If no, rewrite it.
 
-## CRITICAL — always test in Claude.ai Incognito chat (forever rule)
+## Always test in Claude.ai Incognito chat (forever rule)
 
 **Every ui-test mission runs in Claude.ai's Incognito chat** (the toggle in the top-right of the
 Claude.ai UI). Turn it on BEFORE the first prompt, every session. This is Claude.ai's own
@@ -101,7 +119,7 @@ proof.
 shape for a full-flow run: add it during the mission and observe the real install + approval +
 sign-in behavior a new user hits. Do not pre-wire the connector and then claim the flow works.
 
-### CRITICAL — incognito chat is NOT an unauthenticated identity
+### Incognito chat is NOT an unauthenticated identity
 
 **Claude.ai's Incognito chat only stops chat persistence. It does NOT clear browser cookies and does
 NOT give you a fresh identity.** The browser profile keeps its AuthKit/WorkOS/session cookies, so
@@ -170,7 +188,7 @@ just started a broken binary. Do not re-pin a build number.
 
 Full reference: `references/preflight-and-setup.md`. Not applicable to the Codex in-app browser route.
 
-## CRITICAL — TAB HYGIENE (forever rule, every step)
+## TAB HYGIENE (forever rule, every step)
 
 **One visible chatbot tab, always. Not just at start — forever.** The host watches a single visible chatbot tab. If a second tab exists at ANY moment, the host cannot see what you are doing. Host should never be the one to notice a second tab. Neither should lead. Only you.
 
@@ -183,7 +201,7 @@ Full reference: `references/preflight-and-setup.md`. Not applicable to the Codex
 
 This rule supersedes convenience. A stalled mission is better than a mission the host cannot watch.
 
-## CRITICAL — watch for the connector's per-tool approval dialog
+## Watch for the connector's per-tool approval dialog
 
 The TinyAssets MCP connector pops a per-tool approval dialog the FIRST time Claude.ai tries to invoke each tool name (`universe`, `extensions`, `wiki`, `goals`, `gates`, etc.). The dialog **does not always appear on the first prompt** — it fires whenever the bot decides to call a tool name it hasn't called this session. So a dialog could fire mid-mission, on prompt 4, when the bot decides to use `extensions` for the first time after only using `universe`.
 
@@ -245,13 +263,13 @@ Rarely. Only:
 
 Pulses, routine results, and questions go in the log only.
 
-## CRITICAL — test domains must be complex-output workflows
+## Test domains must be complex-output workflows
 
 TinyAssets is for multi-step, stateful, memory-heavy, evaluation-bound work producing substantive output — a paper, a book, a screenplay, a meta-analysis, an investigative series. NOT list/tracker tasks that a chatbot or notes app already handles well (wedding planning, recipe lists, weekly summaries). Those don't stress anything the architecture was built for.
 
 Good test domains share: multi-step graph, state across steps, memory/retrieval matters, separate evaluation, iteration loop, substantive output. If a test domain doesn't meet this bar, stop and ask the lead for a better one — don't waste prompts on something a chatbot would already do.
 
-## CRITICAL — Anchor every chat in the connector
+## Anchor every chat in the connector
 
 If your opening prompt doesn't pull the chatbot into the TinyAssets connector context, the bot will answer as a general assistant and never touch our MCP. That tests the base chatbot, not TinyAssets — worthless.
 
@@ -268,7 +286,7 @@ If after two explicit nudges the bot still won't invoke the connector, log `BOT-
 
 **Stay in-topic once anchored.** Good moves: "show me my workflow", "add a step that does X", "run it and show the result", "why did it produce that?". Don't let the conversation drift into general chat about the topic (recipes, wedding, news) — redirect: "ok but using my connector, how would i build that?"
 
-## CRITICAL — never sit idle while the daemon is cooking
+## Never sit idle while the daemon is cooking
 
 A real user does not wait for a run to finish before asking anything else. They iterate in parallel. user-sim must do the same.
 
@@ -292,7 +310,7 @@ A real user does not wait for a run to finish before asking anything else. They 
 
 Related bugs this protocol surfaces: slow-daemon UX (#60), missing-progress events (#60), timeouts (#61) — all more visible when user-sim is actively probing rather than idling.
 
-## CRITICAL — report every tool-use-limit-per-turn hit
+## Report every tool-use-limit-per-turn hit
 
 When Claude.ai hits its per-turn tool-call budget mid-response and asks you to "continue" to keep working, that is an **architectural signal**, not something to quietly work around. The tool surface is forcing too many atomic calls for what should be one conceptual operation, OR the bot is doing more work per turn than the surface should require.
 
@@ -313,7 +331,7 @@ When Claude.ai hits its per-turn tool-call budget mid-response and asks you to "
 
 The lead uses these to decide: refactor tools to be more composite, add a coded automation (e.g. "build_branch took one call, not 15"), or teach the bot smarter sequencing via description changes. Your job is to report, not fix.
 
-## CRITICAL — when Claude.ai presents selectable options
+## When Claude.ai presents selectable options
 
 Sometimes the bot responds with a **set of buttons to click** (e.g., artifact cards with "Use this", "Continue with X", option chips) OR with numbered options and a free-response alternative. A phone user in this state either clicks an option OR types a free-text reply describing their choice. Your driver (`claude_chat.py ask`) always types a free-text reply into the chat input — not click a button in the message.
 
@@ -372,7 +390,7 @@ alone.
 
 If the persona-voice freeform reply somehow doesn't land (rare — the fix handles the common path): `ask "i'll reply in text — treat my next message as my choice."` primes the bot to parse free-text as option selection. Keep as a last-resort unstick; default behavior is "just type the real answer."
 
-## CRITICAL — prompt hygiene
+## Prompt hygiene
 
 Your prompt is a single coherent message. Don't concatenate a half-written draft with a revised one — Claude.ai parses the whole thing as one input and the bot gets confused. Real symptom from 2026-04-14: a prompt sent as `"yeah do X. while we wait — also do Y, looks like that message cut off. can you try Y again? just do Y..."` because user-sim revised mid-thought without clearing the buffer.
 

@@ -41,7 +41,6 @@ REQUIRED_ARTIFACTS = (
 WATCHED_FILES = (
     "CLAUDE.md",
     "CLAUDE_LEAD_OPS.md",
-    "LAUNCH_PROMPT.md",
     ".cursorrules",
 )
 

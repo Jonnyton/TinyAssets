@@ -7,36 +7,38 @@ Everything about how to work lives in `AGENTS.md`. This file is only for things 
 
 ### Merging and deploying [Claude Code only — harness constraint]
 
-**Background-job sessions cannot merge to `main` or deploy.** The background-job harness injects a
-fixed instruction — "Never push to main/master, force-push, or merge" — into that session type. It is
-NOT in this repo, NOT in `.claude/settings.json`, NOT a documented Claude Code setting, and NOT
-something the host configured. Verified 2026-07-21: `permissions.allow` already contains `Bash(*)`,
-so permissions were never the blocker; the constraint is behavioural and cannot be lifted from inside
-a background job.
+**Background-job sessions cannot merge to `main` or deploy.** That session type gets a fixed
+injected instruction ("Never push to main/master, force-push, or merge"). It is not in this repo,
+not a setting, and cannot be lifted from inside a background job — `permissions.allow` already
+contains `Bash(*)`, so permissions were never the blocker. Such a session can do everything up to
+the merge (commit, push branches, resolve conflicts, open/update PRs) and then stalls.
 
-Consequence: a background session can do everything up to the merge — commit, push branches, resolve
-conflicts, open and update PRs, verify integrations — and then stalls. The host experienced this as
-the agent repeatedly refusing a merge they had never intended to forbid.
-
-**How to actually get merges done:**
-
-- **Run merge/deploy work in an interactive (foreground) session.** That session type carries no such
-  instruction, and `Bash(*)` is already allowed, so `gh pr merge` runs without a prompt. This is the
-  simplest fix and the one to reach for.
-- **Or use GitHub-side auto-merge**, which works regardless of session type: branch protection with
-  required status checks plus `gh pr merge --auto`. The PR merges itself when CI goes green. As of
-  2026-07-21 `main` is NOT protected, so this needs setting up before it can be relied on.
-- Do NOT try to work around the constraint from inside a background job. Say plainly that the session
+- **Check which session type you are in before claiming you cannot merge.** The restriction is
+  background-job-only. An interactive session repeating "this session cannot merge to main" is
+  misapplying the rule and stalling the host for nothing.
+- **Run merge/deploy work in an interactive (foreground) session** — no such instruction, and
+  `gh pr merge` runs without a prompt. Simplest fix; reach for it first.
+- **Or use GitHub-side auto-merge**, which works regardless of session type: `gh pr merge --auto`
+  plus branch protection. `main` is protected, but a required check is the only real gate
+  (`enforce_admins` off, no review required) — read the live state with
+  `gh api repos/Jonnyton/TinyAssets/branches/main/protection` rather than trusting a snapshot here,
+  and see the draft-PR caveat in memory.
+- Do NOT work around the constraint from inside a background job. Say plainly that the session
   cannot merge, and hand over the exact command sequence.
 
-**If auto-merge is wired, add a diff-scope guard.** Green checks alone are not sufficient: PR #1491
+**If auto-merge is wired, add a diff-scope guard.** Green checks are not sufficient: PR #1491
 presented as a two-file auth fix but its diff-vs-main carried seven workflow files plus
-`deploy-prod.yml` and `Dockerfile`, because the branch sat on an unmerged 217-commit lineage. Checks
-passed on the parts CI looked at; only inspecting the diff scope caught it.
+`deploy-prod.yml` and `Dockerfile`, because the branch sat on an unmerged 217-commit lineage. CI
+passed on the parts it looked at; only inspecting diff scope caught it.
 
 ### Session Start
 
-Follow `LAUNCH_PROMPT.md`. It has the full startup sequence and team roster.
+`LAUNCH_PROMPT.md` was retired 2026-08-07. Its content now lives in three places:
+
+- **Startup sequence** — `AGENTS.md` § *Provider session-start ritual* (steps 0–8, cross-provider).
+- **Team roster** — read `.claude/agents/*.md` fresh; do not enumerate it in prose.
+- **Lead norms / team management** — `CLAUDE_LEAD_OPS.md`; despawn protocols in
+  `docs/audits/2026-04-25-despawn-chain-protocol.md`.
 
 ### Agent Teams [Claude Code only]
 
@@ -90,47 +92,15 @@ self-only for trivial mechanical edits and pure lookups. The
 obligation stands whether or not the hook fires; treat a missing nudge as
 silence, not permission to skip.
 
-**How to dispatch — offload to Codex's budget, don't spend Claude's.** Routing a
-review to Codex is what saves Claude tokens / rate-limit: Codex does the reasoning
-on its OWN quota (verified: a `codex exec` run bills Codex, not Claude) and you
-only read back a short verdict. Three mechanisms, ranked:
-- **Background `codex exec` (default — async + offload).** Launch
-  `python scripts/codex_review.py --out <file> --prompt "<ask>"` (add
-  `--diff-base origin/main` for a diff review) via a **background** Bash call
-  (`run_in_background: true`). Keep working; the harness re-invokes you when Codex
-  exits; read `<file>` for the verdict. Zero extra Claude context, and you don't
-  block. Token-cheapest and non-blocking — prefer this whenever you have other
-  work to do meanwhile.
-- **Inline `mcp__codex__codex`** — same offload to Codex, but it *blocks your
-  turn* until Codex returns. Use only for a quick gate where you'd wait anyway and
-  have nothing else to do (parallelism can't help when the review is the whole
-  task).
-- **Never a Claude "liaison" teammate.** A teammate is another Claude context
-  (opus, per `latest_model_guard.py`) that burns Claude tokens to relay — it
-  defeats the offload. If you catch yourself proposing one, stop and use the
-  background `codex exec` path instead.
-
-Discipline:
-- Reviews must be substantive — Codex re-checks sources + actual code, never
-  rubber-stamps. Host may delegate cross-family checker keys
-  (`feedback_host_can_delegate_cross_family_keys`), but the substance review
-  still happens.
-- Default `sandbox: read-only` + `approval-policy: never` for reviews / second
-  opinions. Grant `workspace-write` only when you deliberately want Codex to
-  make changes, and keep it in its own worktree/branch (no destructive git ops).
-- Calling Codex is an *additional* independent path — it does NOT bypass
-  host/navigator gates or the live user-sim proof, and the result is logged like
-  any other review (STATUS row / design note / activity log).
-- Cost is real but secondary: a Codex session is a real agent run, so batch a
-  meaningful review scope into one dispatch rather than many tiny ones — but do
-  not let cost talk you out of a qualifying dispatch. Independence is the goal;
-  the spend is the price of it.
+**How to dispatch, and the review discipline that governs it:** the `peer-agents` skill
+(§ *Dispatch routes, ranked* and § *Discipline*). Headline: offload to Codex's own quota
+via a **background** `codex exec`; never burn a Claude teammate as a relay.
 
 ### Skills [Claude Code only]
 
-Project workflow skills live in `.claude/skills/`. When the right skill is not obvious, read `.claude/skills/using-agent-skills/SKILL.md` first, then open the matching skill.
-
-Key skills: `/steer`, `/status`, `/premise`, `/progress`, `/team-iterate`, `/idea-refine`. Full list in `.claude/skills/`.
+Project workflow skills live in `.claude/skills/` (mirror of the canonical `.agents/skills/`).
+When the right skill is not obvious, read `.claude/skills/using-agent-skills/SKILL.md` first,
+then open the matching skill.
 
 ### Agent Memory [Claude Code only]
 
@@ -147,54 +117,19 @@ Continuous Live Shipping, Token Efficiency, User-Sim Lifecycle.
 
 Cross-provider — see `AGENTS.md` § *Site preview / ship loop*. Full reference at `WebSite/PREVIEW.md`.
 
-### FUSE truncation rule (Cowork sessions) — STOP-THE-LINE on recurrence
+### FUSE write & commit rules (Cowork sessions) — STOP-THE-LINE on recurrence
 
-Cowork sessions mount this folder over FUSE, where the `Edit` and `Write`
-tools silently truncate overwrites of existing files (chopping them
-mid-line at the end of the buffer). The `Read` tool's cached view shows
-the full file but on disk the tail is missing.
+Two hard prohibitions, both Cowork-only (FUSE mount). Native checkouts are unaffected.
 
-**Cowork rule (mandatory): for any file that already exists under this
-repo, do NOT use `Edit` or `Write`.** Use one of:
+1. **For any file that already exists under this repo, do NOT use `Edit` or `Write`.**
+   They silently truncate the tail on FUSE while `Read` still shows the full file. Use a
+   quoted bash heredoc or `scripts/fuse_safe_write.py`, then verify with `wc -l` + `tail -5`.
+2. **NEVER `cp .git/index $GIT_INDEX_FILE`** when committing via git plumbing. The local
+   index can be many commits behind origin; building a tree from it regresses every file
+   that landed since. Use `scripts/fuse_safe_commit.py --base-ref origin/main --max-files N`.
 
-```bash
-# Option A — bash heredoc (good for inline content)
-cat > "/full/path/to/file" << 'FILE_EOF'
-... full file content ...
-FILE_EOF
-
-# Option B — fuse_safe_write.py (atomic temp+rename + size verify)
-python3 scripts/fuse_safe_write.py --path /full/path/to/file --content-from /tmp/source.txt
-```
-
-Quote the heredoc delimiter so shell variable / backtick expansion stays
-off. If your content contains the literal string `FILE_EOF`, pick a
-different delimiter (e.g. `OUTER_EOF`).
-
-**After every write, verify**: `wc -l <path>` plus `tail -5 <path>` to
-confirm the file ends as expected. Do not move on until verified.
-
-**Hook coverage (Claude Code only):**
-- `.claude/hooks/fuse_pre_write_reject.py` runs in PreToolUse for both
-  `Write` and `Edit`. Rejects calls on existing FUSE-mount paths before
-  they execute, with a heredoc/fuse_safe_write recipe.
-- `.claude/hooks/fuse_write_truncation_guard.py` runs in PostToolUse for
-  both `Write` and `Edit` as a backstop — compares on-disk size to sent
-  content (Write) or verifies `new_string` substring presence (Edit),
-  exits 2 with recovery instructions on truncation.
-
-Cowork doesn't fire `.claude/settings.json` hooks, so Cowork sessions
-follow the rule manually.
-
-**Auto-iterate (host directive 2026-04-29 + reiterated 2026-05-02):**
-every truncation incident is a stop-the-line event that must trigger a
-stronger preventive measure through skill + hooks. The documented
-escalation ladder lives in `WebSite/HOOKS_FUSE_QUIRKS.md`. Current rung
-(after 2026-05-02 status.py recurrence): PreToolUse REJECT hook +
-`scripts/fuse_safe_write.py` Cowork wrapper + this section made
-mandatory-not-advisory. If recurrence happens again, the next rung is a
-SessionStart-printed banner that prints the rule before the first user
-prompt is processed.
+Recipes, hook coverage, the escalation ladder, and the 720-file regression incident:
+**`docs/reference/fuse-write-discipline.md`**.
 
 **Provider-context feed hook (Claude Code only):**
 `.claude/hooks/provider_context_feed_hook.py` runs on `SessionStart` and
@@ -208,7 +143,7 @@ Cross-provider rules remain in `AGENTS.md`.
 
 Standing behavior, not on-demand:
 
-- After every significant learning (bug pattern, team behavior issue, user feedback, architecture decision), immediately update the relevant file: `LAUNCH_PROMPT.md`, `.claude/agents/*.md`, `AGENTS.md`, this file, memory, or skills.
+- After every significant learning (bug pattern, team behavior issue, user feedback, architecture decision), immediately update the relevant file: `.claude/agents/*.md`, `CLAUDE_LEAD_OPS.md`, `AGENTS.md`, this file, memory, or skills.
 - Each session should leave these files better than it found them.
 - Guardrail: files get REFINED not BLOATED. Every line earns its place.
 

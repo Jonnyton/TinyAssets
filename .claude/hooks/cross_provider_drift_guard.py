@@ -21,7 +21,6 @@ RELEVANT_FILES = {
     "AGENTS.md",
     "CLAUDE.md",
     "CLAUDE_LEAD_OPS.md",
-    "LAUNCH_PROMPT.md",
     ".cursorrules",
 }
 

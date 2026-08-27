@@ -54,7 +54,7 @@ triggering:
   (agents may follow the summary instead of reading the skill). Start with "Use
   when…", describe the problem/symptoms, cover keywords a user would say, third
   person. Don't mention a technology unless the skill is specific to it.
-- **Descriptive, specific names** (`conditional-edge-testing`, not `testing`).
+- **Descriptive, specific names** (`browser-testing-with-devtools`, not `testing`).
 - **Token efficiency.** SKILL.md is loaded often — keep it lean. Reference
   `--help` instead of documenting every flag; reference other skills instead of
   repeating their workflow; prefer minimal examples. Heavy material → `references/`

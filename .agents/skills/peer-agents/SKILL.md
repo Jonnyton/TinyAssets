@@ -48,6 +48,40 @@ Useful flags: `--timeout SEC` (default 1800), `--effort minimal|low|medium|high|
 - **claude**: strong at nuanced code review, design critique, long-document analysis. Read-only by default; write mode works but codex is usually the better coding workhorse on this host.
 - **codex**: strong autonomous coding loops (edit → run tests → iterate) in `--write` mode inside a worktree. `--effort low` for small tasks.
 
+## Dispatch routes, ranked [Claude Code]
+
+Claude Code additionally has Codex wired in as an MCP tool. All three routes offload the
+reasoning to Codex's own quota — a `codex exec` run bills Codex, not Claude — so you only
+pay to read back a short verdict. Ranked:
+
+1. **Background `codex exec` (default — async + offload).** Launch
+   `python scripts/codex_review.py --out <file> --prompt "<ask>"` (add
+   `--diff-base origin/main` for a diff review) via a **background** Bash call
+   (`run_in_background: true`). Keep working; the harness re-invokes you when Codex exits;
+   read `<file>` for the verdict. Zero extra Claude context, and you don't block.
+   Token-cheapest — prefer it whenever you have other work to do meanwhile.
+2. **Inline `mcp__codex__codex`** (continue a thread with `mcp__codex__codex-reply`) — same
+   offload, but it *blocks your turn* until Codex returns. Use only for a quick gate where
+   you'd wait anyway and have nothing else to do.
+3. **Never a Claude "liaison" teammate.** A teammate is another Claude context (opus, per
+   `latest_model_guard.py`) burning Claude tokens to relay — it defeats the offload
+   entirely. If you catch yourself proposing one, use route 1 instead.
+
+## Discipline
+
+- Reviews must be substantive — the peer re-checks sources + actual code, never
+  rubber-stamps. The host may delegate cross-family checker keys
+  (`feedback_host_can_delegate_cross_family_keys`), but the substance review still happens.
+- Default `sandbox: read-only` + `approval-policy: never` for reviews / second opinions.
+  Grant `workspace-write` only when you deliberately want the peer to make changes, and
+  keep it in its own worktree/branch (no destructive git ops).
+- A peer dispatch is an *additional* independent path — it does NOT bypass host/navigator
+  gates or the live user-sim proof, and the result is logged like any other review
+  (STATUS row / design note / activity log).
+- Cost is real but secondary: a peer session is a real agent run, so batch a meaningful
+  review scope into one dispatch rather than many tiny ones — but don't let cost talk you
+  out of a qualifying dispatch. Independence is the goal; the spend is the price of it.
+
 ## Notes
 
 - API keys are stripped from the peer's environment (subscription auth only), matching the daemon's provider policy in `workflow/providers/`.
