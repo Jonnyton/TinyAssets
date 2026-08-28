@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-import contextlib
 import logging
 import math
 import os
@@ -935,9 +934,16 @@ class ProviderRouter:
                         # spent and charging the binding would exhaust a budget that
                         # still has capacity — the same reasoning the
                         # ProviderUnavailableError branch below applies.
-                        with contextlib.suppress(Exception):
+                        try:
                             release_served_provider_budget(
                                 universe_dir.parent, budget_reservation,
+                            )
+                        except Exception:
+                            # Logged, not suppressed silently: a failed release leaves a
+                            # binding charged for a turn that never ran, and swallowing
+                            # it is how that becomes an unexplained "budget exhausted".
+                            logger.exception(
+                                "failed to release reservation after admission refusal"
                             )
                     raise
                 except BaseException as exc:
@@ -1024,6 +1030,13 @@ class ProviderRouter:
                         cost_microunits=resp.cost_microunits,
                     )
                 self._quota.record_success(provider_name)
+            except _ProviderBusy:
+                # Nothing launched: not a provider failure, so no cooldown and no
+                # "exhausted" verdict about a provider that was never asked. Codex
+                # reproduced the alternative — `provider_calls=0`, cooldown 29s,
+                # AllProvidersExhaustedError — where the inner re-raise was swallowed by
+                # this outer classifier.
+                raise
             except ProviderAuthorityHeldError:
                 raise
             except (ProviderRateLimitedError, ProviderOverloadedError) as exc:
@@ -1111,6 +1124,13 @@ class ProviderRouter:
                     detail=str(exc)[:200],
                 ))
                 continue
+            except _ProviderBusy:
+                # Nothing launched: not a provider failure, so no cooldown and no
+                # "exhausted" verdict about a provider that was never asked. Codex
+                # reproduced the alternative — `provider_calls=0`, cooldown 29s,
+                # AllProvidersExhaustedError — where the inner re-raise was swallowed by
+                # this outer classifier.
+                raise
             except Exception as exc:
                 self._quota.cooldown(provider_name, COOLDOWN_OTHER)
                 logger.exception("Unexpected error from %s", provider_name)
@@ -1392,10 +1412,9 @@ class ProviderRouter:
             )
             tried += 1
             try:
-                # Bound concurrent provider SUBPROCESSES (~77 MB PSS each, measured).
-                # The anyio threadpool admits 40 sync handlers; without this, 40
-                # simultaneous turns meant 40 subprocesses and an OOM that kills the
-                # host (and the tunnel with it), not just the request.
+                # Bound concurrent provider SUBPROCESSES (~77 MB PSS each,
+                # measured). ASYNC form — a blocking acquire stalls the event loop, and
+                # this method gathers admission-taking tasks onto one loop.
                 async with _provider_slot():
                     resp = await provider.complete(
                         prompt, system, cfg, universe_dir=universe_dir,
@@ -1439,6 +1458,13 @@ class ProviderRouter:
                     "Policy provider %s protocol error, cooldown %ds",
                     provider_name, COOLDOWN_OTHER,
                 )
+            except _ProviderBusy:
+                # Nothing launched: not a provider failure, so no cooldown and no
+                # "exhausted" verdict about a provider that was never asked. Codex
+                # reproduced the alternative — `provider_calls=0`, cooldown 29s,
+                # AllProvidersExhaustedError — where the inner re-raise was swallowed by
+                # this outer classifier.
+                raise
             except ProviderUnavailableError:
                 self._quota.cooldown(provider_name, COOLDOWN_UNAVAILABLE)
                 logger.warning(
@@ -1733,10 +1759,9 @@ class ProviderRouter:
             name: str, provider: BaseProvider,
         ) -> ProviderResponse | None:
             try:
-                # Bound concurrent provider SUBPROCESSES (~77 MB PSS each, measured).
-                # The anyio threadpool admits 40 sync handlers; without this, 40
-                # simultaneous turns meant 40 subprocesses and an OOM that kills the
-                # host (and the tunnel with it), not just the request.
+                # Bound concurrent provider SUBPROCESSES (~77 MB PSS each,
+                # measured). ASYNC form — a blocking acquire stalls the event loop, and
+                # this method gathers admission-taking tasks onto one loop.
                 async with _provider_slot():
                     resp = await provider.complete(
                         prompt, system, cfg, universe_dir=universe_dir,

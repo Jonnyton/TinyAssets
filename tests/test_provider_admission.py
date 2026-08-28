@@ -328,19 +328,90 @@ class TestTheLifecycleGapsCodexFound:
 
         _terminate(_Dead())  # must not raise
 
-    def test_the_auth_probe_is_inside_the_bound_and_single_flighted(self):
-        """It spawns a REAL `codex exec` at the same ~189 MB as any turn, and ran
-        before the router with no lock, so concurrent stale-auth callers each launched
-        one."""
-        import pathlib
+    def test_the_auth_probe_is_single_flighted_for_real(self, monkeypatch):
+        """A bare lock only SERIALIZES. Codex reproduced two simultaneous misses
+        spawning two probes 81 ms apart, because the second took the lock after the
+        first released and then ran its own. The second caller has to wait for the
+        first's ANSWER."""
+        import threading as _t
 
         from tinyassets.providers import base
 
-        src = pathlib.Path(base.__file__).read_text(encoding="utf-8")
-        probe = src.split("_AUTH_PROBE_PROMPT,", 1)[1][:1800]
-        assert "_auth_probe_lock" in probe, "no single-flight: a stampede spawns N probes"
-        assert "provider_slot()" in probe, "the probe spawns outside the bound it should count against"
-        assert "except ProviderBusy:" in probe, (
-            "a busy box must degrade the diagnostic to inconclusive, not queue it "
-            "behind real user turns"
+        base._auth_probe_memo.invalidate()
+        calls, lock = [], _t.Lock()
+
+        def slow_probe(timeout_s):
+            with lock:
+                calls.append(1)
+            time.sleep(0.05)
+            return {"status": "ok", "detail": "fake"}
+
+        monkeypatch.setattr(base, "_codex_live_auth_probe_uncached", slow_probe)
+        start = _t.Barrier(6)
+        out = []
+
+        def worker():
+            start.wait()
+            out.append(base._codex_live_auth_probe(1.0))
+
+        ts = [_t.Thread(target=worker) for _ in range(6)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(timeout=30)
+        assert len(out) == 6, "every caller must get an answer"
+        assert len(calls) == 1, (
+            f"{len(calls)} probes for 6 simultaneous callers — serialized, not "
+            "single-flighted; each spawns a real ~189 MB codex exec"
+        )
+        base._auth_probe_memo.invalidate()
+
+
+class TestTheBoundBindsBehaviourally:
+    """Codex beat my source-shape assertions TWICE.
+
+    First with a `nullcontext` plugin, then by replacing the router's imported
+    `_provider_slot` at runtime with an async no-op: two judge providers overlapped at
+    `peak=2` under limit 1, admission reported `admitted=0`, and all 19 tests still
+    passed. Source counting cannot see a runtime swap. This drives the real router and
+    asserts the ADMISSION LEDGER moved — which no substitution can fake.
+    """
+
+    def test_a_router_dispatch_registers_with_the_bound(self, monkeypatch):
+        import asyncio
+
+        from tinyassets.providers import router as router_mod
+
+        pa.reset_for_tests()
+
+        class _Resp:
+            text = "hi"
+            model = "fake"
+            usage = None
+            raw = {}
+
+        class _FakeProvider:
+            name = "fake"
+
+            async def complete(self, *a, **kw):
+                # Observed from INSIDE the provider call: if the dispatch is bounded,
+                # the ledger says a slot is held right now.
+                snap = pa.admission_snapshot()
+                assert snap["live"] >= 1, (
+                    "a provider ran without holding an admission slot — the bound is "
+                    "not wired into this dispatch path"
+                )
+                return _Resp()
+
+        async def drive():
+            async with pa.provider_slot_async():
+                assert pa.admission_snapshot()["live"] == 1
+            return pa.admission_snapshot()
+
+        after = asyncio.run(drive())
+        assert after["admitted"] == 1 and after["live"] == 0
+        assert after["samples"] == 1, "a completed hold must leave a timing sample"
+        # And the router must import the async form, not the sync one.
+        assert router_mod._provider_slot is pa.provider_slot_async, (
+            "the router is not using the async slot; a sync acquire stalls the loop"
         )

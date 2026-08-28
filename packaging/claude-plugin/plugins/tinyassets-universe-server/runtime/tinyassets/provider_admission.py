@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import threading
 import time
@@ -70,8 +71,6 @@ def _positive_int(var: str, default: int) -> int:
 
 
 def _positive_float(var: str, default: float) -> float:
-    import math
-
     raw = (os.environ.get(var) or "").strip()
     if not raw:
         return default
@@ -173,10 +172,18 @@ def admission_snapshot() -> dict:
         "sample_unit": "provider attempt, not user turn",
     }
     if d:
+        def _q(p: float) -> float:
+            # One indexing rule for every quantile. Mixing `len//2` for the median with
+            # `int(len*p)-1` for the rest made p90 come out BELOW p50 on small samples
+            # (two samples gave p50=0.03, p90=0.01) — a monotonicity violation that
+            # reads as a measurement bug in whatever consumes it.
+            idx = min(len(d) - 1, max(0, math.ceil(p * len(d)) - 1))
+            return round(d[idx], 2)
+
         out["attempt_seconds"] = {
-            "p50": round(d[len(d) // 2], 2),
-            "p90": round(d[max(0, int(len(d) * 0.90) - 1)], 2),
-            "p99": round(d[max(0, int(len(d) * 0.99) - 1)], 2),
+            "p50": _q(0.50),
+            "p90": _q(0.90),
+            "p99": _q(0.99),
             "mean": round(sum(d) / len(d), 2),
             "max": round(d[-1], 2),
         }
@@ -222,11 +229,22 @@ async def provider_slot_async():
     the ones already holding slots — keep running and can release. A blocking acquire
     here turned the bound into a self-inflicted deadlock at any limit.
     """
-    ok, limit = await asyncio.to_thread(
-        _try_acquire, _positive_float(_WAIT_VAR, _DEFAULT_WAIT_S)
-    )
-    if not ok:
-        raise _refuse(limit)
+    # Poll with a NON-blocking attempt and yield between tries, rather than handing the
+    # blocking acquire to `asyncio.to_thread`. Cancelling a `to_thread` await cancels
+    # only the await: the orphaned worker goes on to acquire a slot nobody will ever
+    # release. Codex reproduced exactly that — `waiter_body_entered=False, admitted=2,
+    # live=1` — a permanent leak I introduced while fixing the loop-blocking bug.
+    #
+    # A 50 ms poll costs nothing next to a provider call measured in seconds, and it is
+    # cancellation-safe by construction: nothing is in flight to abandon.
+    deadline = time.monotonic() + _positive_float(_WAIT_VAR, _DEFAULT_WAIT_S)
+    while True:
+        ok, limit = _try_acquire(0.0)
+        if ok:
+            break
+        if time.monotonic() >= deadline:
+            raise _refuse(limit)
+        await asyncio.sleep(0.05)
     started = time.monotonic()
     try:
         yield

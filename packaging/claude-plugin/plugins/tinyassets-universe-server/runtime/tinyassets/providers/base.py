@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from tinyassets.ttl_memo import TTLMemo as _TTLMemo
+
 if TYPE_CHECKING:
     from tinyassets.auth.middleware import ProviderRequestCarrier
     from tinyassets.config import UniverseConfig
@@ -843,7 +845,44 @@ def _codex_last_refresh_age_s(codex_home: Path, now: float | None = None) -> flo
         return None
 
 
+
+#: Real single-flight, not just serialization. A bare lock only serializes: Codex
+#: reproduced two simultaneous cache misses spawning two probes 81 ms apart, because the
+#: second acquired the lock after the first released and then ran its own. The second
+#: caller must wait for the first's ANSWER — correct here, because the result describes
+#: the machine's credentials, not the caller.
+#:
+#: `TTLMemo` already is single-flight plus a short TTL, and is tested against exactly
+#: this stampede, so this reuses it rather than hand-rolling the primitive twice.
+_auth_probe_memo = _TTLMemo(max_entries=4)
+_AUTH_PROBE_TTL_S = 30.0
+
+
 def _codex_live_auth_probe(timeout_s: float) -> dict[str, str]:
+    """Single-flighted, admission-bounded wrapper around the real probe.
+
+    The probe spawns a REAL `codex exec`, so it costs the same ~189 MB as any provider
+    turn — and it used to run outside the admission bound entirely, before the router.
+    Both fixed here: one probe at a time, and it counts against the limit like anything
+    else that spawns.
+
+    On a busy box this degrades to "inconclusive" rather than queueing. The probe is a
+    diagnostic, and making a diagnostic wait behind real user turns is the wrong trade.
+    """
+    from tinyassets.provider_admission import ProviderBusy, provider_slot
+
+    def _run() -> dict[str, str]:
+        try:
+            with provider_slot():
+                return _codex_live_auth_probe_uncached(timeout_s)
+        except ProviderBusy:
+            return {"status": "inconclusive",
+                    "detail": "provider slots busy; auth probe deferred"}
+
+    return _auth_probe_memo.get("codex", _run, ttl=_AUTH_PROBE_TTL_S)
+
+
+def _codex_live_auth_probe_uncached(timeout_s: float) -> dict[str, str]:
     """One tiny real ``codex exec`` call; the only check that catches a
     dead refresh token (``codex login status`` reads the file locally and
     reported "Logged in" for the very token that 401'd — live 2026-07-14).

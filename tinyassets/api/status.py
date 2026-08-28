@@ -1495,10 +1495,10 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
         "request_identity": request_identity,
         "session_boundary": session_boundary,
         "storage_utilization": storage_utilization,
-        # Capacity in USERS is slots / turn_duration, and turn duration was recorded
-        # nowhere (run_events timestamps are bookkeeping, microseconds apart). This
-        # surfaces both, plus whether the bound is actually binding — so the next
-        # capacity claim can be measured off the live surface instead of projected.
+        # Provider ATTEMPT latencies and whether the bound is actually binding. Not
+        # user-turn duration: a fallback chain or judge ensemble contributes several
+        # attempts per turn, which is why the payload labels its own `sample_unit`
+        # rather than letting a reader assume otherwise.
         "provider_admission": _provider_admission_snapshot(),
         "per_provider_cooldown_remaining": per_provider_cooldown_remaining,
         "sandbox_status": sandbox_status,
