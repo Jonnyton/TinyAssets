@@ -652,6 +652,69 @@ _mcp_read_graph = _register_structured_tool(
 )
 
 
+#: Two ways a universe may legitimately come into being, and no third:
+#:   * SIGNUP -- an authenticated subject with no home yet gets exactly one, free.
+#:   * SUBSCRIPTION -- a paying subject may have more than one.
+#:
+#: Before this, any authenticated caller could mint unlimited universes, and a
+#: universe could exist whose only grant was a synthetic non-WorkOS actor -- so
+#: "whose is this?" had no answer, and that question is what every multi-tenant
+#: guarantee is built on (founder rule, 2026-08-28).
+#:
+#: Enforced HERE, on the public surface, rather than in `_action_create_universe`:
+#: that is a shared primitive which fixtures, migrations and internal seeding call
+#: with no authenticated subject. Gating it there refused 23 legitimate internal
+#: callers, which is the signal that the rule is about PEOPLE and belongs where a
+#: person asks.
+def _universe_birth_refusal() -> dict | None:
+    """None when this caller may birth a universe, else the refusal body.
+
+    Fail-closed throughout: if we cannot tell who is asking, or whether they already
+    have one, we do not create. An unowned universe is precisely what this prevents.
+    """
+    from tinyassets.api.permissions import current_request_actor_id
+
+    actor = (current_request_actor_id() or "").strip()
+    if not actor or actor == "anonymous":
+        return {
+            "error": "a universe belongs to a person — sign in before creating one.",
+            "failure_class": "universe_requires_authenticated_subject",
+            "actionable_by": "chatbot",
+        }
+
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.daemon_server import get_founder_home
+
+    try:
+        home = get_founder_home(_base_path(), actor)
+    except Exception:  # noqa: BLE001 -- fail closed
+        return {
+            "error": "could not check whether you already have a universe.",
+            "failure_class": "universe_binding_unreadable",
+            "actionable_by": "host",
+        }
+    if not home:
+        return None  # signup: the first one is free
+
+    try:
+        from tinyassets.api.helpers import _universe_dir
+        from tinyassets.storage.subscription_state import TIER_PAID, get_tier
+
+        if get_tier(_universe_dir(home)) == TIER_PAID:
+            return None
+    except Exception:  # noqa: BLE001 -- fail closed
+        pass
+    return {
+        "error": (
+            "You already have a universe. Additional universes are part of the paid "
+            "plan — subscribe and this works straight away."
+        ),
+        "failure_class": "additional_universe_requires_subscription",
+        "actionable_by": "chatbot",
+        "existing_universe_id": home,
+    }
+
+
 def write_graph(
     target: str,
     operation: str = "",
@@ -853,6 +916,11 @@ def write_graph(
         # newborn is curious about); the embodied greeting behavior lives in
         # the instructions ("then speak AS it").
         import json as _json
+
+        # WHO may be born, before anything is reserved or written.
+        _refused = _universe_birth_refusal()
+        if _refused is not None:
+            return _json.dumps(_refused)
 
         raw = _universe_impl(
             action="create_universe",

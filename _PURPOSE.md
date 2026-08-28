@@ -1,16 +1,16 @@
 # Worktree purpose
 
-Purpose: session-credential-source
+Purpose: universe-create-gate
 Provider: claude-code
-Branch: claude/session-credential-source
+Branch: claude/universe-create-gate
 Base ref: origin/main
-Issue/PR: corrects #2624, which did NOT close the fixation Codex re-found
-PLAN refs: auth / onboarding
-Ship condition: handle reuse is licensed by the credential source; the bearer handle
-  is never a filename
+Issue/PR: founder rule 2026-08-28 — no universe may exist unbound to a WorkOS user
+PLAN refs: authority / billing
+Ship condition: signup gets one universe free; additional ones require a paid tier;
+  anonymous and unreadable-state both fail closed
 Abandon condition: n/a
-Pickup hints: the #1 multi-user blocker is NOT this — it is in-process source
-  execution (graph_compiler exec with os.environ reachable)
-Memory refs: silent-failure-dispatch-and-tests
-Related implications: docs/concerns/2026-08-23-byo-llm-refresh-token-store.md
+Pickup hints: gated at the PUBLIC surface, not in _action_create_universe — that
+  primitive has 23 legitimate internal callers with no authenticated subject
+Memory refs: every-user-is-founder-of-own-universe
+Related implications: gives the paid tier its first concrete capability
 Idea feed refs: (none)
