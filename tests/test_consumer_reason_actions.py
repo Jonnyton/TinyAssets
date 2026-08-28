@@ -60,15 +60,40 @@ def test_served_deposit_guidance_matches_the_shipped_form():
     """Cold desktop test 2026-08-25: the universe told the founder to paste the four
     OAuth keys 'one per line' (the form has had four labelled boxes since #2536) and
     named an older button label it had learned. Served guidance is the UI copy the
-    agent relays, so it must match the shipped form exactly."""
+    agent relays, so it must match the shipped form.
+
+    Rewritten 2026-08-27 to pin the INVARIANT rather than a snapshot. The original
+    hardcoded a control that has since been cut, so it failed the moment the UI
+    moved — which is the opposite of what a drift test is for. It now compares
+    the two files against each other: whatever the form ships, the guidance must
+    agree, and a control that is gone must not be named.
+    """
     from pathlib import Path
 
     source = Path(__file__).resolve().parents[1] / "tinyassets" / "engine_mcp_server.py"
     text = source.read_text(encoding="utf-8")
+    app_path = source.parent / "onboarding" / "app.html"
+    app = app_path.read_text(encoding="utf-8")
+
+    # The original defect: four labelled boxes described as one field.
     assert "one per line" not in text
-    assert "FOUR\n    LABELLED BOXES" in text or "FOUR LABELLED BOXES" in text
-    assert "that is the button's CURRENT label" in text
-    app = source.parent / "onboarding" / "app.html"
+
+    # As long as the four-box OAuth form ships, the guidance about it must too —
+    # a hand deposit is still reachable, so the copy is still load-bearing.
+    if "http-oauth1a-api-key" in app:
+        assert "FOUR\n    LABELLED BOXES" in text or "FOUR LABELLED BOXES" in text
+
+    # Never name a control the app does not have. The nav button was cut on
+    # 2026-08-27; asking is the primary route now.
     label = "Connect / add API connection"
-    assert label in app.read_text(encoding="utf-8")
-    assert label in text
+    if label in app:
+        assert label in text, "the app has the button; the guidance must name it"
+    else:
+        assert label not in text, (
+            "the guidance names a button the app no longer has - that is the "
+            "exact drift this test exists to catch"
+        )
+
+    # And the agent must be told to ask rather than to send the user hunting.
+    assert "ASK THEM FOR IT" in text
+    assert "never send" in text or "never send them" in text
