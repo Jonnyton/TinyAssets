@@ -439,6 +439,62 @@ describe('proxyToTunnel — failure translation', () => {
         assert.equal(res.status, 400);
     });
 
+    it('JSON 5xx passes through with body and status intact', async () => {
+        // The reason a refusal exists must survive the layer reporting it. This is
+        // the 2026-08-28 case: the origin answered 503
+        // {"error":"billing_unavailable","detail":"no key"} and the user was shown
+        // "tunnel origin returned 5xx" instead.
+        nextUpstreamResponse = new Response(
+            JSON.stringify({ error: 'billing_unavailable', detail: 'no key' }),
+            { status: 503, headers: { 'Content-Type': 'application/json' } },
+        );
+        const req = new Request('https://tinyassets.io/mcp/app/billing/checkout', {
+            method: 'POST',
+        });
+        const res = await proxyToTunnel(req);
+        assert.equal(res.status, 503, 'the origin status must survive');
+        const body = await res.json();
+        assert.equal(body.error, 'billing_unavailable');
+        assert.equal(body.detail, 'no key');
+        assert.equal(res.headers.get('X-TA-Origin-Status'), '503');
+    });
+
+    it('JSON 5xx with a charset parameter still passes through', async () => {
+        nextUpstreamResponse = new Response(JSON.stringify({ detail: 'boom' }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        });
+        const res = await proxyToTunnel(
+            new Request('https://tinyassets.io/mcp', { method: 'GET' }),
+        );
+        assert.equal(res.status, 500);
+        assert.equal((await res.json()).detail, 'boom');
+    });
+
+    it('HTML 5xx is still translated — that is the tunnel, not the app', async () => {
+        // A sick tunnel, a dead origin, and the apex fallthrough all emit HTML.
+        // Keeping this translated is the whole point of the block.
+        nextUpstreamResponse = new Response('<html>502 Bad Gateway</html>', {
+            status: 502,
+            headers: { 'Content-Type': 'text/html' },
+        });
+        const res = await proxyToTunnel(
+            new Request('https://tinyassets.io/mcp', { method: 'GET' }),
+        );
+        assert.equal(res.status, 502);
+        const body = await res.json();
+        assert.equal(body.error, 'bad_gateway');
+        assert.equal(body.upstream_status, 502);
+    });
+
+    it('a 2xx is not marked with X-TA-Origin-Status', async () => {
+        nextUpstreamResponse = new Response('ok', { status: 200 });
+        const res = await proxyToTunnel(
+            new Request('https://tinyassets.io/mcp', { method: 'GET' }),
+        );
+        assert.equal(res.headers.get('X-TA-Origin-Status'), null);
+    });
+
     it('network error on upstream fetch → 502', async () => {
         nextUpstreamError = new TypeError('failed to connect');
         const req = new Request('https://tinyassets.io/mcp', { method: 'GET' });

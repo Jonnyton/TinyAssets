@@ -162,24 +162,44 @@ async function proxyToTunnel(request, env) {
         );
     }
 
-    // 5xx from the tunnel — surface as explicit 502 so the caller can
-    // distinguish "tunnel origin sick" from "Worker code broken" or
-    // "apex fallthrough to GoDaddy 404."
+    // 5xx from the tunnel. The point of translating it is to let a caller
+    // distinguish "tunnel origin sick" from "Worker code broken" from "apex
+    // fallthrough to GoDaddy 404" — a real distinction that cost us the
+    // 2026-04-19 P0 outage, and worth keeping.
+    //
+    // But translating EVERY 5xx overshot the goal: it replaced the body too, so
+    // an origin that deliberately answered `{"error": "billing_unavailable",
+    // "detail": "..."}` reached the browser as "tunnel origin returned 5xx". The
+    // user was handed an infrastructure diagnosis for an application decision, and
+    // whoever read the logs was told the tunnel was sick when it was not. The
+    // reason for the failure was destroyed by the layer reporting it.
+    //
+    // The discriminator: a sick tunnel, a dead origin, or an apex fallthrough emits
+    // an HTML error page. Our application emits JSON. So a JSON 5xx is the origin
+    // ANSWERING and is passed through untouched, with the original status intact
+    // and `X-TA-Origin-Status` marking it as origin-authored so the distinction the
+    // translation exists for survives at the edge. A non-JSON 5xx is still
+    // translated, because that is the case that actually means "not our app".
     if (upstreamResponse.status >= 500 && upstreamResponse.status < 600) {
-        return new Response(
-            JSON.stringify({
-                error: 'bad_gateway',
-                detail: 'tunnel origin returned 5xx',
-                upstream_status: upstreamResponse.status,
-            }),
-            {
-                status: 502,
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Cache-Control': 'no-store',
+        const contentType = (
+            upstreamResponse.headers.get('content-type') || ''
+        ).toLowerCase();
+        if (!contentType.includes('application/json')) {
+            return new Response(
+                JSON.stringify({
+                    error: 'bad_gateway',
+                    detail: 'tunnel origin returned 5xx',
+                    upstream_status: upstreamResponse.status,
+                }),
+                {
+                    status: 502,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Cache-Control': 'no-store',
+                    },
                 },
-            },
-        );
+            );
+        }
     }
 
     // Streaming pass-through. Do NOT call .text() / .json() / .arrayBuffer()
@@ -189,6 +209,12 @@ async function proxyToTunnel(request, env) {
         if (!FORBIDDEN_RESPONSE_HEADERS.has(name.toLowerCase())) {
             responseHeaders.set(name, value);
         }
+    }
+    // A 5xx reaching here is one the origin authored. Mark it, so "the app said
+    // 500" stays distinguishable from "the tunnel is sick" without having to
+    // overwrite what the app said.
+    if (upstreamResponse.status >= 500 && upstreamResponse.status < 600) {
+        responseHeaders.set('X-TA-Origin-Status', String(upstreamResponse.status));
     }
 
     return new Response(upstreamResponse.body, {
