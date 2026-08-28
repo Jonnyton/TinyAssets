@@ -812,12 +812,13 @@ def converse(
     turn into its governed soul. Persistence never breaks the reply — a failure is
     logged and the founder still gets their answer. Returns the reply text.
 
-    ``tier`` is the bound interlocutor tier of the party being answered. ``None``
-    is NOT a founder default: it resolves the caller's real tier from
-    authenticated request state (see the note below — the old founder default was
-    fail-open and was removed). The production caller, the founder-gated
-    `converse` MCP handle, still resolves and passes the tier explicitly, so the
-    live path does not depend on that fallback either.
+    ``tier`` is a CEILING on the interlocutor tier of the party being answered,
+    never an assertion of it. The real tier is resolved from authenticated
+    request state on every call and the caller's value can only narrow it, so
+    neither an omitted tier nor a generous one can disclose more than the caller
+    has earned. The production caller, the founder-gated `converse` MCP handle,
+    resolves the same tier and passes it, which is now a no-op rather than the
+    thing being trusted.
     """
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
@@ -830,8 +831,16 @@ def converse(
     # reproduced a T1 visitor calling this directly and pulling `founder.md` into
     # the prompt. Resolve the real tier instead; "no caller does that today" does
     # not license a default that discloses.
-    bound_tier = (
-        interlocutor.resolve_interlocutor_tier(uid).tier if tier is None else tier
+    #
+    # And a SUPPLIED tier is a ceiling, not an assertion. Codex reproduced the
+    # escalation (REJECT 2026-08-28): an actor holding only `write` resolved
+    # correctly to T1, then called this sink with `tier=T2` and received founder
+    # grounding. The resolver was never wrong — this sink treated its own
+    # parameter as configuration. So resolve unconditionally and let the caller
+    # only narrow. A trusted caller that already resolved passes the same value
+    # and nothing changes; an untrusted one gains nothing by asking for more.
+    bound_tier = interlocutor.clamp_tier(
+        tier, resolved=interlocutor.resolve_interlocutor_tier(uid).tier
     )
     from tinyassets.auth.middleware import (
         mint_provider_request_carrier,

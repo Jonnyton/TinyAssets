@@ -645,3 +645,135 @@ class TestWriteGrantIsNotFounder:
             "the permissive helper accepts write OR admin, which is the conflation "
             "this exists to undo"
         )
+
+
+class TestTheSinkResolvesItsOwnAuthority:
+    """Codex REJECT 2026-08-28, finding 1, reproduced before it was fixed.
+
+    The resolver was correct and the public MCP caller bound it correctly. The
+    defect was one layer in: `universe_intelligence.converse` accepted a caller's
+    `tier` and skipped resolution entirely when one was given, so an actor holding
+    only `write` resolved to T1 and then asked for T2 by argument. Every assertion
+    in `TestWriteGrantIsNotFounder` stayed green through that route, which is what
+    makes these separate tests rather than more of the same.
+    """
+
+    def test_a_supplied_tier_cannot_raise_the_resolved_one(self, base):
+        from tinyassets.api import interlocutor
+
+        _make_universe(base, "u-own", level="private")
+        grant_universe_access(
+            base, universe_id="u-own", actor_id="owner-1", permission="admin"
+        )
+        grant_universe_access(
+            base, universe_id="u-own", actor_id="helper-1", permission="write"
+        )
+        _authenticate("helper-1")
+        resolved = interlocutor.resolve_interlocutor_tier("u-own").tier
+        assert resolved == interlocutor.T1
+        assert (
+            interlocutor.clamp_tier(interlocutor.T2, resolved=resolved)
+            == interlocutor.T1
+        ), "asking for founder tier must not grant it"
+
+    def test_a_supplied_tier_may_still_narrow(self):
+        from tinyassets.api import interlocutor
+
+        assert (
+            interlocutor.clamp_tier(interlocutor.T0, resolved=interlocutor.T2)
+            == interlocutor.T0
+        ), "handing authority DOWN is legitimate and must keep working"
+
+    def test_no_opinion_yields_the_resolved_tier(self):
+        from tinyassets.api import interlocutor
+
+        assert (
+            interlocutor.clamp_tier(None, resolved=interlocutor.T2) == interlocutor.T2
+        )
+
+    def test_an_unrecognized_tier_narrows_rather_than_widens(self):
+        """Ranking an unknown string below T0 is what makes nonsense safe."""
+        from tinyassets.api import interlocutor
+
+        assert (
+            interlocutor.clamp_tier("T9-superuser", resolved=interlocutor.T1)
+            == "T9-superuser"
+        )
+
+    def test_a_write_collaborator_asking_for_t2_does_not_get_founder_grounding(
+        self, base, monkeypatch
+    ):
+        """Codex's reproduction, verbatim, as a test.
+
+        This is the one that matters: not "does the helper return the right
+        string" but "does the founder's dossier reach the prompt". It captures
+        the assembled system prompt the way the 2026-07-25 finding-2 test does,
+        because that is the only place the disclosure is observable.
+        """
+        udir = _make_universe(base, "u-own", level="private")
+        grant_universe_access(
+            base, universe_id="u-own", actor_id="owner-1", permission="admin"
+        )
+        grant_universe_access(
+            base, universe_id="u-own", actor_id="helper-1", permission="write"
+        )
+        _authenticate("helper-1")
+        monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-own")
+        monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
+
+        seen: list[str] = []
+
+        def _fake_provider(prompt, system="", **_kw):
+            seen.append(system)
+            return "{}" if "strict JSON" in system else "hello"
+
+        monkeypatch.setattr(ui, "call_provider", _fake_provider)
+        ui.converse("u-own", "hi", tier=il.T2)  # asking for authority they lack
+
+        assert seen, "provider was never called"
+        assert FOUNDER_FACT not in seen[0], (
+            "a write-grant collaborator asked for founder tier by argument and got "
+            "the founder's private grounding"
+        )
+
+    def test_the_sink_calls_the_clamp_and_not_the_raw_argument(self):
+        """Source-shape, and deliberately narrow: the escalation was possible
+        because `tier` reached `bound_tier` unfiltered, so that exact assignment
+        is what must not come back."""
+        import pathlib as _p
+
+        from tinyassets import universe_intelligence as ui
+
+        src = _p.Path(ui.__file__).read_text(encoding="utf-8")
+        body = src.split("def converse(")[1].split("\ndef ")[0]
+        assert "clamp_tier(" in body
+        assert "if tier is None else tier" not in body, (
+            "that is the bypass itself: a supplied tier skipping resolution"
+        )
+
+
+class TestConverseSurvivesAnUnreadableAcl:
+    """Codex REJECT 2026-08-28, finding 3. The tier binding was wrapped in an
+    honest error envelope; the ACL read one line ABOVE it was not, so a store
+    failure escaped the public handle as a raw OSError."""
+
+    def test_a_store_failure_is_a_refusal_not_an_exception(self, base, monkeypatch):
+        import json as _json
+
+        from tinyassets import universe_server as us
+
+        _make_universe(base, "u-own", level="private")
+        grant_universe_access(
+            base, universe_id="u-own", actor_id="owner-1", permission="admin"
+        )
+        _authenticate("owner-1")
+
+        def _boom(*_a, **_kw):
+            raise OSError("acl store unavailable")
+
+        monkeypatch.setattr(
+            "tinyassets.daemon_server.universe_access_permission", _boom
+        )
+        out = _json.loads(us.converse("u-own", "hello"))
+        assert "error" in out, "an unreadable ACL must refuse, not raise"
+        assert out.get("auth_scope_required") is True

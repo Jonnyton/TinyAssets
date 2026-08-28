@@ -44,7 +44,7 @@ layer withholds (``TestTightenOnly`` forces the layer closed and asserts every
 tier stays closed). ``T2``'s only exemption is from the *declaration* rule in
 item 2: a founder may talk to their own universe before the boot backfill has
 declared it. That exemption cannot leak, because ``T2`` is defined by exactly the
-``write``/``admin`` ``universe_acl`` row that makes ``visibility._reader_has_grant``
+``admin`` ``universe_acl`` row that makes ``visibility._reader_has_grant``
 true — asserted by
 ``TestDisclosureIntersection::test_founder_tier_implies_visibility_permits``, which
 also guards against the new ceiling accidentally locking the founder out of their
@@ -67,7 +67,8 @@ from tinyassets.api import visibility
 T0 = "T0"
 #: A durable host/OAuth subject that is not this universe's founder.
 T1 = "T1"
-#: A verified founder of this universe (write/admin grant).
+#: A verified founder of this universe — an ``admin`` grant. A ``write``
+#: grant is a collaborator and binds to T1 (Codex REJECT 2026-08-28).
 T2 = "T2"
 
 #: Every recognized tier, weakest first. An unrecognized tier fails loudly.
@@ -133,6 +134,33 @@ def _holds_admin_grant(universe_id: str, actor_id: str) -> bool:
         ) == "admin"
     except Exception:  # noqa: BLE001 -- fail closed, same as universe_owner_actor
         return False
+
+
+#: Rank a tier for comparison. An unrecognized value ranks below ``T0``, so an
+#: unknown string can only ever narrow.
+def _rank(tier: str) -> int:
+    try:
+        return TIERS.index(tier)
+    except ValueError:
+        return -1
+
+
+def clamp_tier(requested: str | None, *, resolved: str) -> str:
+    """Return the WEAKER of a caller's requested tier and the resolved one.
+
+    A tier is authority, so a caller may hand one down but never hand itself one
+    up. Codex reproduced the escalation this closes (REJECT 2026-08-28): an actor
+    holding only ``write`` resolved correctly to ``T1`` and then received founder
+    grounding by calling the conversation sink with ``tier=T2`` directly. The
+    resolver was right; the sink treated its own parameter as configuration.
+
+    ``None`` means "no opinion" and yields the resolved tier. An unrecognized
+    string ranks below ``T0`` and therefore narrows to itself — a caller passing
+    nonsense gets less, never more.
+    """
+    if requested is None:
+        return resolved
+    return requested if _rank(requested) < _rank(resolved) else resolved
 
 
 def resolve_interlocutor_tier(universe_id: str) -> Interlocutor:

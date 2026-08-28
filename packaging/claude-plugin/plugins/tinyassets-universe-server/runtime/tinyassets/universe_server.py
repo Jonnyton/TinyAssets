@@ -1735,7 +1735,19 @@ def converse(message: str = "", graph_id: str = "") -> str:
             "error": "Your home universe could not be created or loaded.",
             "auth_scope_required": True,
         })
-    if not universe_access_allows(uid, write=True):
+    # This reads the ACL store, so it needs the same honest envelope the tier
+    # binding below already has. Codex found the ordering defect (REJECT
+    # 2026-08-28): a store failure here escaped `converse` as a raw OSError,
+    # because the try/except started one call too late. Fail closed — an ACL we
+    # cannot read is not an ACL that permits.
+    try:
+        permitted = universe_access_allows(uid, write=True)
+    except Exception:
+        logger.warning(
+            "converse: universe access check failed for %r", uid, exc_info=True
+        )
+        permitted = False
+    if not permitted:
         return json.dumps({
             "error": "Only this universe's founder can talk with it.",
             "auth_scope_required": True,
