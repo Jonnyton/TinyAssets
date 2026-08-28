@@ -1,12 +1,14 @@
-# Purpose
+# Worktree purpose
 
-Make the outbound credential broker's startup failure name its cause.
-
-The founder's `Hello World` post to X has failed since 2026-08-25 behind the
-fixed string `outbound proxy failed to start`, with no cause reachable by the
-founder, the universe, or the host. This branch does not fix the outage — it
-makes the next run say why.
-
-- PR: #2596
-- Concern: `docs/concerns/2026-08-27-outbound-proxy-start-failure.md`
-- Cross-family review: Codex ADAPT, acted on in `7315bd46`
+Purpose: metering-tiers-billing
+Provider: claude-code
+Branch: claude/metering-tiers-billing
+Base ref: origin/main
+Issue/PR: TODO — link the issue, PR, or openspec/changes/ dir
+PLAN refs: TODO — relevant PLAN.md module(s)
+Ship condition: TODO — what must be true to merge
+Abandon condition: TODO — when to sweep this lane
+Pickup hints: TODO — where to resume
+Memory refs: TODO — prior-provider memory/artifact paths
+Related implications: TODO — linked concerns / research artifacts
+Idea feed refs: (none yet)
