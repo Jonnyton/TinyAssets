@@ -110,6 +110,7 @@
           <span id="universe-name" class="universe-name">Your universe</span>
         </div>
         <nav class="chat-actions">
+          <button id="btn-plan" class="btn btn--link" hidden>Plan</button>
           <button id="btn-connect" class="btn btn--link">Connect / add API connection</button>
           <button id="btn-signout" class="btn btn--link">Sign out</button>
         </nav>
@@ -735,6 +736,7 @@
     }
     engineConnected = true;
     showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus();
+    loadPlan();
   }
   // Proactively establish the MCP session the moment chat opens, so the user's FIRST
   // message runs on an already-warm session instead of racing the inline ensureInit +
@@ -1012,6 +1014,79 @@
   }
 
   function wire(){
+    // ---- plan / subscription -------------------------------------------
+    // The tier itself is server-side; this only reflects it and starts the two
+    // transitions. Cancellation deliberately does NOT flip the label locally —
+    // the webhook is the single authority on entitlement, so the UI re-reads
+    // rather than guessing, and cannot disagree with Stripe.
+    let PLAN = null;
+
+    async function billingFetch(path, method){
+      // Same bearer discipline as every other authenticated call in this app:
+      // refresh first, because the token rotates about every five minutes.
+      await ensureFreshToken();
+      const headers = {};
+      const tk = token(); if(tk) headers["Authorization"] = "Bearer " + tk;
+      return fetch(path, {method, headers, credentials:"same-origin"});
+    }
+
+    async function loadPlan(){
+      try{
+        const r = await billingFetch("/mcp/app/billing/status", "GET");
+        if(!r || !r.ok) return;
+        PLAN = await r.json();
+        renderPlan();
+      }catch(_e){ /* the plan chip is never load-bearing for chat */ }
+    }
+
+    function renderPlan(){
+      const b = $("btn-plan");
+      if(!b || !PLAN) return;
+      b.hidden = false;
+      const used = (PLAN.used && PLAN.used.effects) || 0;
+      const cap  = (PLAN.limits && PLAN.limits.effects) || 0;
+      b.textContent = PLAN.tier === "paid"
+        ? ("Paid \u00b7 " + used + "/" + cap + " effects")
+        : ("Free \u00b7 " + used + "/" + cap + " effects \u00b7 Upgrade");
+      b.title = PLAN.billing_enabled
+        ? "Manage your plan"
+        : "Billing is not configured on this deployment";
+    }
+
+    async function startSubscribe(){
+      const r = await billingFetch("/mcp/app/billing/checkout", "POST");
+      const out = r ? await r.json() : null;
+      if(out && out.url){ location.href = out.url; return; }
+      appendMessage("system", out && out.detail ? ("Billing unavailable: " + out.detail)
+                            : "Billing is not available right now.");
+    }
+
+    async function startCancel(){
+      const r = await billingFetch("/mcp/app/billing/cancel", "POST");
+      const out = r ? await r.json() : null;
+      if(out && out.cancelled){
+        appendMessage("system", "Your subscription will end at the close of the current period. "
+            + "You keep the paid tier until then.");
+      }else if(out && out.reason === "no_active_subscription"){
+        appendMessage("system", "No active subscription to cancel.");
+      }else{
+        appendMessage("system", out && out.detail ? ("Could not cancel: " + out.detail)
+                              : "Could not cancel right now.");
+      }
+      loadPlan();
+    }
+
+    function onPlanClick(){
+      if(!PLAN) return;
+      if(PLAN.tier === "paid"){
+        if(confirm("Cancel your subscription? You keep the paid tier until the "
+                   + "end of the current period.")) startCancel();
+      }else{
+        startSubscribe();
+      }
+    }
+
+    $("btn-plan").addEventListener("click", onPlanClick);
     $("btn-openai-connect").addEventListener("click",connectOpenAI);
     $("btn-openai-code").addEventListener("click",async()=>{ await cancelOpenAIFlow(); showOpenAISetup(); });
     $("btn-openai-settings").addEventListener("click",()=>{ trace("openai.complete","settings-opened"); openExternal(CHATGPT_SECURITY_URL); });

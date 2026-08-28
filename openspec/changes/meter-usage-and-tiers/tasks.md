@@ -41,10 +41,10 @@
 
 ## 3. Billing
 
-- [ ] 3.1 Stripe adapter reporting Billing Meter events from the ledger, keyed by the WorkOS
+- [x] 3.1 Stripe adapter reporting Billing Meter events from the ledger, keyed by the WorkOS
       `sub`. Enforce the boundary: no Stripe import outside the adapter, asserted by a test.
       Key is vault-first via `scripts/load_secrets.sh`, never committed, never in compose.
-- [ ] 3.2 One $20/month subscription product plus the upgrade flow from a free universe.
+- [x] 3.2 One $20/month subscription product plus the upgrade flow from a free universe.
 
 ## 4. Verification
 
