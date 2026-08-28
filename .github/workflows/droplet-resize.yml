@@ -157,7 +157,7 @@ jobs:
           # Containers return on their own (`restart: unless-stopped`); give the
           # Cloudflare tunnel time to redial before calling the surface down.
           code=""
-          for i in $(seq 1 40); do
+          for _ in $(seq 1 40); do
             code=$(curl -s -o /dev/null -w '%{http_code}' -X POST https://tinyassets.io/mcp \
                     -H 'content-type: application/json' \
                     -H 'accept: application/json, text/event-stream' \
