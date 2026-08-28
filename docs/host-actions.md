@@ -38,12 +38,23 @@ WORKOS_API_KEY=sk_test_…
 The environment holds exactly two users — you and `simkalholdingsllc@gmail.com` — and they
 are the same two the `founder_home` table binds.
 
-**Why this cannot just be left.** WorkOS users are per-environment. The moment you move to
-the production environment, every `user_…` id changes, so **every `founder_home` binding
-breaks and every existing universe becomes unowned** — the exact state you told me on
-2026-08-28 must never exist, and the state PR #2638 now refuses to create. Migrating two
-users is a five-minute job. Migrating two hundred is a data-migration project, and every
-one of them signed up at a URL reading `-staging`, on a page asking for real money.
+**This is not an outage, and I said it too strongly the first time.** Signup and checkout
+work right now: both existing users signed up through this environment, and WorkOS
+documents no user cap on staging. A stranger could sign up and pay today. The problem is
+that it gets more expensive every time someone does.
+
+**Why it cannot just be left.** Per
+[WorkOS's own docs](https://workos.com/docs/authkit/environments), the two environments are
+*fully separate* — "API keys, organizations, connections, users, webhook endpoints, and
+branding are all scoped to a single environment and don't carry over between them." So the
+moment you move, every `user_…` id changes, **every `founder_home` binding breaks, and every
+existing universe becomes unowned** — the exact state you told me on 2026-08-28 must never
+exist, and the state PR #2638 now refuses to create. Migrating two users is a five-minute
+job. Migrating two hundred is a data-migration project.
+
+And the URL cannot be fixed in place: **custom AuthKit domains are production-only**. Until
+you move, every user signs in at `inventive-van-62-staging.authkit.app` on the page that
+asks them for $20.
 
 **What only you can do** (WorkOS dashboard):
 
@@ -51,7 +62,9 @@ one of them signed up at a URL reading `-staging`, on a page asking for real mon
 2. Point it at a custom auth domain (`auth.tinyassets.io`) so users never see
    `inventive-van-62-staging.authkit.app` on a payment flow.
 3. Add the redirect URI `https://tinyassets.io/mcp/app` and the MCP resource
-   `https://tinyassets.io/mcp` in the production environment.
+   `https://tinyassets.io/mcp` in the production environment. Note production rejects
+   wildcards and query parameters in redirect URIs where staging allows them, so it must
+   be the exact literal URI.
 
 **Then I do the rest:** stage `WORKOS_API_KEY` / `WORKOS_AUTHKIT_DOMAIN`, recreate the
 container (`env_file` is read at creation, not restart), re-point the two existing
