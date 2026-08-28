@@ -290,3 +290,73 @@ def test_deposit_host_tolerates_a_pasted_scheme():
 
     html, _csp = render_app_html()
     assert r'replace(/^[a-z][a-z0-9+.-]*:\/\//i,"")' in html
+
+
+def test_paste_box_is_the_primary_deposit_and_manual_fields_survive():
+    """Founder 2026-08-27: the form asked for "confusing unneeded things that the
+    ai or plateform could figure out". One box replaces five fields; the explicit
+    fields stay behind a disclosure so a wrong inference is a correction, not a
+    dead end."""
+    from tinyassets.onboarding import render_app_html
+
+    html, _csp = render_app_html()
+    for element in ("paste-blob", "paste-intent", "btn-paste-connect", "paste-result"):
+        assert f'id="{element}"' in html
+    # The explicit fields are still reachable, now inside the disclosure.
+    assert 'id="http-manual"' in html
+    assert "Fill it in myself" in html
+    assert 'id="btn-connect-http"' in html
+    # No confirmation step: the paste handler deposits straight through.
+    assert "MCP.connectHTTP(r.destination,secret,r.allowed_endpoints,r.auth_scheme)" in html
+    # ... and states the grant afterwards, as a receipt.
+    assert "r.receipt" in html
+
+
+def test_paste_extraction_sends_shape_never_the_credential():
+    """The no-transmission guarantee, asserted on the code the browser runs.
+
+    Only label + public prefix + length may be built into the resolve payload;
+    the resolve call must not be handed raw pasted values.
+    """
+    from tinyassets.onboarding import render_app_html
+
+    html, _csp = render_app_html()
+    # A public prefix ends at a delimiter — the rule that keeps entropy local.
+    assert "const PREFIX_RE=/^[A-Za-z][A-Za-z0-9_-]{0,10}[-_]/" in html
+    assert "shape.push({label,prefix:pm?pm[0]:\"\",length:raw.length})" in html
+    # The resolve call carries shape/hints/intent and nothing else.
+    assert "resolveConnection(shape,hints,intent)" in html
+    assert "payload_json:JSON.stringify({shape,hints,intent})" in html
+    # The pasted blob is cleared before any await, like the manual form.
+    assert "blobEl.value=\"\";" in html
+
+
+def test_resolve_operation_is_dispatched_but_adds_no_advertised_handle():
+    """Hard Rule 11: the public tool catalog stays pinned at the canonical set."""
+    import inspect
+
+    from tinyassets import universe_server as us
+
+    source = inspect.getsource(us)
+    assert '"resolve_connection"' in source
+    assert "from tinyassets.api.connection_inference import resolve_connection" in source
+
+
+def test_paste_extraction_closes_the_codex_client_findings():
+    """Codex cross-family review 2026-08-27 (REJECT) reproduced three of these
+    against the exact browser code; all are asserted on the shipped page."""
+    from tinyassets.onboarding import render_app_html
+
+    html, _csp = render_app_html()
+    # A webhook URL's secret is its PATH — hints carry the host only.
+    assert r'split(/[\/?#]/)[0]' in html
+    # A labelled short value ("Username: bob") is real; only unlabelled ones
+    # need length, or basic auth can never assemble user:pass.
+    assert "if(raw.length < (label?3:8)) return;" in html
+    # A Stripe page lists the publishable key first; it must never be chosen
+    # while another candidate exists.
+    assert "const publishable=(v)=>/^(?:pk|pub)[_-]/i.test(v.value||\"\");" in html
+    assert "/secret.{0,3}key/i" in html
+    # The intent box is cleared with the paste, so a credential typed into the
+    # wrong box does not persist through an inference failure.
+    assert 'blobEl.value=""; intentEl.value="";' in html

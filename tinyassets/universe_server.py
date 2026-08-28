@@ -996,6 +996,20 @@ def write_graph(
                     payload=payload_json,
                 )
             )
+        if connection_operation == "resolve_connection":
+            # Owner-scoped, WRITE-FREE proposal: turns the *shape* of pasted
+            # credential material (label + public prefix + length, never the
+            # credential) into a proposed endpoint policy, so a user does not have
+            # to author one by hand. Adds no advertised handle — the live tool
+            # catalog stays pinned at the canonical set.
+            from tinyassets.api.connection_inference import resolve_connection
+
+            return json.dumps(
+                resolve_connection(
+                    universe_id=graph_id,
+                    payload=payload_json,
+                )
+            )
         if connection_operation == "connect_compute":
             # Owner-scoped registration of an open COMPUTE provider (any Kimi/
             # OpenRouter/OpenAI-compatible endpoint or a CLI subscription). Its own
