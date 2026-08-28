@@ -157,3 +157,96 @@ def test_an_event_without_a_universe_is_ignored():
         "data": {"object": {"metadata": {}, "status": "active"}},
     }
     assert subscription_state_from_event(event) is None
+
+
+# --- Codex REJECT 2026-08-28 follow-ups --------------------------------------
+
+
+def test_a_stale_event_cannot_resurrect_a_cancelled_tier(tmp_path):
+    """Stripe does not guarantee delivery order.
+
+    A delayed but validly-signed `active` must not overwrite a newer cancellation,
+    or a universe gets a paid tier nobody is paying for. The signature's 5-minute
+    tolerance bounds replay of one event; it says nothing about ordering.
+    """
+    from tinyassets.storage.usage_ledger import apply_tier_event, get_tier
+
+    assert apply_tier_event(tmp_path, tier="free", event_created=200.0) is True
+    assert get_tier(tmp_path) == "free"
+
+    # Arrives late, describes an older state.
+    assert apply_tier_event(tmp_path, tier="paid", event_created=100.0) is False
+    assert get_tier(tmp_path) == "free", "a stale event must not re-entitle"
+
+    # A genuinely newer resubscribe still applies.
+    assert apply_tier_event(tmp_path, tier="paid", event_created=300.0) is True
+    assert get_tier(tmp_path) == "paid"
+
+
+def test_a_stripe_error_message_is_not_returned_to_the_caller(monkeypatch):
+    """Stripe quotes request params back, including customer identifiers."""
+    import io
+    import urllib.error
+
+    from tinyassets.billing import stripe_adapter
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_fake")
+
+    body = (
+        b'{"error":{"message":"No such customer: cus_SECRET123 for '
+        b'subscription sub_PRIVATE456"}}'
+    )
+
+    def _raise(*a, **k):
+        raise urllib.error.HTTPError(
+            "https://api.stripe.com/v1/x", 400, "Bad Request", {}, io.BytesIO(body)
+        )
+
+    monkeypatch.setattr(stripe_adapter.urllib.request, "urlopen", _raise)
+
+    with pytest.raises(stripe_adapter.BillingUnavailable) as caught:
+        stripe_adapter._post("customers", [])
+
+    message = str(caught.value)
+    assert "cus_SECRET123" not in message
+    assert "sub_PRIVATE456" not in message
+    assert "400" in message
+
+
+def test_checkout_refuses_a_second_subscription_for_one_universe(monkeypatch):
+    """Two completed sessions would bill the same universe twice."""
+    from tinyassets.billing import stripe_adapter
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_fake")
+    monkeypatch.setattr(
+        stripe_adapter, "find_active_subscription", lambda _u: "sub_existing"
+    )
+
+    with pytest.raises(stripe_adapter.AlreadySubscribed) as caught:
+        stripe_adapter.create_checkout_session(
+            universe_id="u-1", success_url="https://x/ok", cancel_url="https://x/no"
+        )
+    assert caught.value.subscription_id == "sub_existing"
+
+
+def test_finding_a_subscription_pages_past_the_first_hundred(monkeypatch):
+    """Cancel searched only page one, so a later subscriber could not cancel."""
+    from tinyassets.billing import stripe_adapter
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_fake")
+    pages = [
+        {"data": [{"id": f"sub_{i}", "metadata": {}} for i in range(100)],
+         "has_more": True},
+        {"data": [{"id": "sub_target", "metadata": {"universe_id": "u-1"}}],
+         "has_more": False},
+    ]
+    calls = {"n": 0}
+
+    def _get(_path, **_k):
+        out = pages[min(calls["n"], len(pages) - 1)]
+        calls["n"] += 1
+        return out
+
+    monkeypatch.setattr(stripe_adapter, "_get", _get)
+    assert stripe_adapter.find_active_subscription("u-1") == "sub_target"
+    assert calls["n"] == 2, "must have paged"

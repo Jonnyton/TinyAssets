@@ -300,3 +300,48 @@ def set_tier(universe_dir: str | Path, *, tier: str) -> None:
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (_TIER_KEY, tier),
         )
+
+
+_TIER_EVENT_AT_KEY = "tier_event_at"
+
+
+def apply_tier_event(
+    universe_dir: str | Path, *, tier: str, event_created: float
+) -> bool:
+    """Apply a billing event's tier only if it is NEWER than the last applied.
+
+    Stripe does not guarantee delivery order, and a retried delivery can arrive
+    long after the event it describes. Without this, a delayed-but-validly-signed
+    ``active`` event silently overwrites a newer cancellation and hands back a paid
+    tier nobody is paying for (Codex REJECT 2026-08-28 C). The 5-minute signature
+    tolerance bounds replay of the *same* event; it says nothing about ordering
+    between different ones.
+
+    Returns True when applied, False when ignored as stale.
+    """
+    with _connect(universe_dir) as conn:
+        conn.executescript(_SCHEMA)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT value FROM usage_meta WHERE key = ?", (_TIER_EVENT_AT_KEY,)
+            ).fetchone()
+            last = float(row[0]) if row is not None else float("-inf")
+            if event_created < last:
+                conn.execute("ROLLBACK")
+                return False
+            conn.execute(
+                "INSERT INTO usage_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (_TIER_KEY, tier),
+            )
+            conn.execute(
+                "INSERT INTO usage_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (_TIER_EVENT_AT_KEY, str(event_created)),
+            )
+            conn.execute("COMMIT")
+            return True
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise

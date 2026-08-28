@@ -58,9 +58,23 @@ def test_the_settlement_key_cannot_be_forged_by_a_colliding_pair():
     )
 
 
-def test_the_settlement_key_matches_the_receipt_identity():
-    key = settlement_key(sink="x:posting", effect_key="abc123")
-    assert "x:posting" in key and "abc123" in key
+def test_the_settlement_key_is_injective_even_when_a_field_holds_the_separator():
+    """Codex REJECT 2026-08-28 B: concatenation is not injective.
+
+    ("a", "bc") and ("ab", "c") produced ONE key, and since reserve treats
+    an existing row as "same effect, proceed", one tuple could ride another's
+    reservation and write with no budget of its own.
+    """
+    assert settlement_key(sink="a", effect_key="bc") != settlement_key(
+        sink="ab", effect_key="c"
+    )
+
+
+def test_the_settlement_key_is_stable_for_the_same_effect():
+    """A retry must find its own reservation, not take a second slot."""
+    assert settlement_key(sink="x:posting", effect_key="abc") == settlement_key(
+        sink="x:posting", effect_key="abc"
+    )
 
 
 def test_a_refusal_names_the_dimension_and_when_it_refills():

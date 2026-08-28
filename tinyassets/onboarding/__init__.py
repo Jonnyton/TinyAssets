@@ -971,6 +971,7 @@ async def _handle_billing_checkout(request: Any) -> Any:
 
     def _start() -> dict[str, Any]:
         from tinyassets.billing import BillingUnavailable, create_checkout_session
+        from tinyassets.billing.stripe_adapter import AlreadySubscribed
 
         with identity_context(identity):
             home = _read_home(identity)
@@ -982,6 +983,9 @@ async def _handle_billing_checkout(request: Any) -> Any:
                     success_url=origin + "/mcp/app?subscribed=1",
                     cancel_url=origin + "/mcp/app?subscribed=0",
                 )
+            except AlreadySubscribed:
+                # Not an error state for the user - they are already paying.
+                return {"error": "already_subscribed"}
             except BillingUnavailable as exc:
                 # Billing being off must read AS billing being off - never as a
                 # crash, and never as the universe having done something wrong.
@@ -1062,14 +1066,19 @@ async def _handle_billing_webhook(request: Any) -> Any:
     def _apply() -> dict[str, Any]:
         from tinyassets.api.helpers import _universe_dir
         from tinyassets.billing import subscription_state_from_event
-        from tinyassets.storage.usage_ledger import set_tier
+        from tinyassets.storage.usage_ledger import apply_tier_event
 
         mapped = subscription_state_from_event(event)
         if mapped is None:
             return {"applied": False}
         universe_id, tier = mapped
-        set_tier(_universe_dir(universe_id), tier=tier)
-        return {"applied": True, "tier": tier}
+        # Ordered by the event's own created time: Stripe does not guarantee
+        # delivery order, and a delayed `active` must not overwrite a newer cancel.
+        created = float(event.get("created") or 0.0)
+        applied = apply_tier_event(
+            _universe_dir(universe_id), tier=tier, event_created=created
+        )
+        return {"applied": applied, "tier": tier if applied else None}
 
     return JSONResponse(await run_in_threadpool(_apply))
 

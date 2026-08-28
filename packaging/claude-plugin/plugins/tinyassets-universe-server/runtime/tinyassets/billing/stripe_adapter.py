@@ -15,10 +15,13 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import urllib.error
 import urllib.parse
 import urllib.request
+
+_log = logging.getLogger(__name__)
 
 _API = "https://api.stripe.com/v1"
 
@@ -37,6 +40,14 @@ _WEBHOOK_TOLERANCE_S = 300
 def _basic_auth(key: str) -> str:
     """Stripe basic auth: the secret key as username, empty password."""
     return "Basic " + base64.b64encode(f"{key}:".encode()).decode("ascii")
+
+
+class AlreadySubscribed(RuntimeError):
+    """This universe already has an active subscription."""
+
+    def __init__(self, subscription_id: str) -> None:
+        super().__init__("universe already has an active subscription")
+        self.subscription_id = subscription_id
 
 
 class BillingUnavailable(RuntimeError):
@@ -69,14 +80,20 @@ def _post(path: str, fields: list[tuple[str, str]], *, timeout: float = 20.0) ->
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        detail = ""
+        # Do NOT surface Stripe's message. It can quote request parameters back,
+        # and those include customer and subscription identifiers — an avoidable
+        # disclosure surface once this string is returned to a browser
+        # (Codex REJECT 2026-08-28 D). Log the detail, return only the class.
         try:
             detail = json.loads(exc.read().decode("utf-8"))["error"]["message"]
         except Exception:
-            detail = f"HTTP {exc.code}"
-        # Never echo the key or the raw body — a Stripe error can quote request
-        # parameters back, and those parameters can include customer identifiers.
-        raise BillingUnavailable(f"Stripe rejected the request: {detail}") from None
+            detail = ""
+        _log.warning(
+            "stripe rejected %s: HTTP %s %s", path, exc.code, detail or "(no message)"
+        )
+        raise BillingUnavailable(
+            f"Stripe rejected the request (HTTP {exc.code})"
+        ) from None
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise BillingUnavailable(
             f"Stripe unreachable: {type(exc).__name__}"
@@ -120,6 +137,12 @@ def create_checkout_session(
     """
     if not universe_id:
         raise ValueError("universe_id is required")
+    # Idempotency at the product level: without this, two completed sessions
+    # create two live subscriptions for one universe and the user is billed
+    # twice (Codex REJECT 2026-08-28 C).
+    existing = find_active_subscription(universe_id)
+    if existing:
+        raise AlreadySubscribed(existing)
     session = _post(
         "checkout/sessions",
         [
@@ -152,11 +175,20 @@ def cancel_subscription(subscription_id: str, *, immediately: bool = False) -> d
 
 def find_active_subscription(universe_id: str) -> str | None:
     """The universe's active subscription id, or None. Used by the cancel path."""
-    found = _get("subscriptions?status=active&limit=100")
-    for sub in found.get("data") or []:
-        meta = sub.get("metadata") or {}
-        if meta.get("universe_id") == universe_id:
-            return str(sub["id"])
+    starting_after = ""
+    for _page in range(20):  # bounded, but far past the single page it had
+        path = "subscriptions?status=active&limit=100"
+        if starting_after:
+            path += f"&starting_after={starting_after}"
+        found = _get(path)
+        data = found.get("data") or []
+        for sub in data:
+            meta = sub.get("metadata") or {}
+            if meta.get("universe_id") == universe_id:
+                return str(sub["id"])
+        if not found.get("has_more") or not data:
+            return None
+        starting_after = str(data[-1]["id"])
     return None
 
 

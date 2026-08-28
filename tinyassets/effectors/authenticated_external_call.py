@@ -460,6 +460,36 @@ def _run(
     if header_name:
         wire_request["header_name"] = header_name
 
+    # QUOTA — pre-flight, on the path production actually uses. This effector is
+    # dispatched straight from run_effects_for_branch and calls proxy.request()
+    # itself; it never passes through execute_replay_safe_effect, so gating that
+    # helper left THE primary channel-agnostic write primitive unmetered
+    # (Codex REJECT 2026-08-28 A). run_id:node_id identifies one effect within a
+    # run and is stable across a replay of the same node.
+    from tinyassets.storage.usage_ledger import get_tier
+    from tinyassets.usage_policy import (
+        release_effect_quota,
+        reserve_effect_quota,
+        settle_effect_quota,
+    )
+
+    _quota_key = f"{run_id}:{node_id}"
+    _refusal = reserve_effect_quota(
+        base_path,
+        sink=EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+        effect_key=_quota_key,
+        tier=get_tier(base_path),
+    )
+    if _refusal is not None:
+        return {
+            "error": "usage limit reached",
+            "error_kind": "usage_limit_reached",
+            "dimension": _refusal.dimension,
+            "tier": _refusal.tier,
+            "detail": _refusal.message(),
+            "matched_output_key": matched_key,
+        }
+
     proxy = None
     try:
         proxy = _open_connection_proxy(
@@ -471,6 +501,12 @@ def _run(
         )
         response = proxy.request(verb, wire_request)
     except Exception as exc:
+        # Nothing reached the world, so the attempt costs nothing.
+        release_effect_quota(
+            base_path,
+            sink=EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+            effect_key=_quota_key,
+        )
         # Secret-free by construction: the proxy/broker raise only sanitized,
         # credential-free errors across the governed boundary.
         return {
@@ -490,6 +526,13 @@ def _run(
             except Exception:  # pragma: no cover — best-effort teardown
                 logger.debug("proxy close failed for node %s", node_id, exc_info=True)
 
+    # Reached the world: spend the reserved slot. Transition-sensitive, so a
+    # replay of the same run:node settles nothing further.
+    settle_effect_quota(
+        base_path,
+        sink=EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+        effect_key=_quota_key,
+    )
     return {
         "delivered": True,
         "response": response,

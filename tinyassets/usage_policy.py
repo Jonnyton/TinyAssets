@@ -20,6 +20,8 @@ dimension and runs are not.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import os
 from dataclasses import dataclass
@@ -135,8 +137,17 @@ def settlement_key(*, sink: str, effect_key: str) -> str:
 
     Must match the receipt's `(idempotency_hint, sink)` primary key exactly, or a
     retried effect would reserve a second slot instead of finding its first.
+
+    Hashed over a JSON-encoded PAIR rather than concatenated with a separator.
+    Concatenation is not injective when a field can itself contain the separator:
+    ``("a", "bc")`` and ``("ab", "c")`` produce the same string, and since
+    `reserve_effect` treats an existing row as "same effect, proceed", one tuple
+    could ride another's reservation and write with no budget of its own
+    (Codex REJECT 2026-08-28 B). JSON encoding is injective over the pair, so the
+    digest is too.
     """
-    return f"{sink}{effect_key}"
+    encoded = json.dumps([sink, effect_key], separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
