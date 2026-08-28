@@ -944,6 +944,34 @@ async def _handle_billing_status(request: Any) -> Any:
     )
 
 
+#: Where a checkout is allowed to send the user back to. Hard Rule 11 names
+#: ``https://tinyassets.io`` as the only canonical public endpoint.
+_CANONICAL_ORIGIN = "https://tinyassets.io"
+
+
+def _checkout_return_origin(request: Any) -> str:
+    """The origin to build Stripe's success/cancel URLs from.
+
+    Only an origin this app serves -- the request's own Host, or the configured
+    public resource -- is honoured. Everything else gets the canonical public origin,
+    because these URLs leave our control the moment Stripe has them.
+    """
+    origin = str(request.headers.get("origin", "")).strip().rstrip("/")
+    if not origin:
+        return _CANONICAL_ORIGIN
+    parts = urlsplit(origin.lower())
+    if parts.scheme not in ("https", "http") or not parts.netloc:
+        return _CANONICAL_ORIGIN
+    allowed = {str(request.headers.get("host", "")).strip().lower()}
+    try:
+        allowed.add(urlsplit(str(app_config().get("resource") or "")).netloc.lower())
+    except Exception:
+        pass
+    allowed.add(urlsplit(_CANONICAL_ORIGIN).netloc)
+    allowed.discard("")
+    return origin if parts.netloc in allowed else _CANONICAL_ORIGIN
+
+
 #: HTTP status for each checkout outcome. Explicit, because the previous rule --
 #: "200 if a url came back, else 503" -- reported three DELIBERATE refusals as a
 #: service outage. That is not merely imprecise: the Cloudflare Worker in front of
@@ -988,7 +1016,12 @@ async def _handle_billing_checkout(request: Any) -> Any:
     if denied is not None:
         return denied
     identity = current_identity()
-    origin = str(request.headers.get("origin") or "https://tinyassets.io").rstrip("/")
+    # The return URLs are built from this, so it is not free-form input. An
+    # unvalidated Origin header meant a non-browser caller could point its own
+    # checkout's success and cancel redirects at any host it liked (Codex,
+    # 2026-08-28). Accept only an origin this app actually serves; anything else
+    # falls back to the canonical public URL rather than being echoed.
+    origin = _checkout_return_origin(request)
 
     def _start() -> dict[str, Any]:
         import time as _t
@@ -1010,13 +1043,17 @@ async def _handle_billing_checkout(request: Any) -> Any:
             # subscription, so two concurrent clicks could each create one and bill
             # the universe twice.
             universe_dir = _universe_dir(home)
-            if not claim_checkout(universe_dir, now=_t.time()):
+            # The claim's timestamp IS this attempt's identity: the session's expiry
+            # and its Stripe idempotency key both derive from it.
+            anchor = claim_checkout(universe_dir, now=_t.time())
+            if anchor is None:
                 return {"error": "checkout_already_in_progress"}
             try:
                 return create_checkout_session(
                     universe_id=home,
                     success_url=origin + "/mcp/app?subscribed=1",
                     cancel_url=origin + "/mcp/app?subscribed=0",
+                    attempt_anchor=anchor,
                 )
             except AlreadySubscribed:
                 release_checkout_claim(universe_dir)
@@ -1124,6 +1161,7 @@ async def _handle_billing_webhook(request: Any) -> Any:
         from tinyassets.api.helpers import _universe_dir
         from tinyassets.billing import subscription_state_from_event
         from tinyassets.storage.subscription_state import (
+            TIER_PAID,
             apply_tier_event,
             release_checkout_claim,
         )
@@ -1137,20 +1175,29 @@ async def _handle_billing_webhook(request: Any) -> Any:
         # delivery order, and a delayed `active` must not overwrite a newer cancel.
         created = float(event.get("created") or 0.0)
         applied = apply_tier_event(universe_dir, tier=tier, event_created=created)
-        # This event IS Stripe telling us the checkout resolved, so the claim has
-        # done its job and must go. Holding it to its 900s TTL locked a user who
-        # subscribed and then cancelled out of resubscribing for a quarter hour
-        # (observed live 2026-08-28).
+        # An APPLIED, ENTITLING event is Stripe telling us a checkout resolved into a
+        # live subscription, so the claim has done its job. Holding it to its TTL
+        # locked a user who subscribed and then cancelled out of resubscribing for a
+        # quarter of an hour (observed live 2026-08-28). Afterwards it is
+        # `AlreadySubscribed` that refuses a second checkout, not the claim.
         #
-        # Released HERE and nowhere earlier. Releasing when the session URL is
-        # handed out would reopen the exact race the claim closes: a pending
-        # Checkout Session is not yet a subscription, so a second click would find
-        # no subscription to refuse against and create a second session. Once the
-        # subscription exists, `AlreadySubscribed` guards that instead; once it is
-        # gone, there is nothing left to guard. An ABANDONED checkout is still
-        # covered, because no event arrives for it and the TTL remains its only
-        # release -- which is correct, since the user can still complete it.
-        release_checkout_claim(universe_dir)
+        # Both conditions are load-bearing, and neither is defensive dressing:
+        #
+        # - `applied` -- a REPLAYED or out-of-order event was rejected as stale by
+        #   `apply_tier_event`; letting it release anyway would let a redelivery of an
+        #   old subscription's event erase the claim protecting a session pending RIGHT
+        #   NOW, and a second session could then be created alongside it.
+        # - entitling -- a cancellation must NOT release. Once the subscription is
+        #   gone, `AlreadySubscribed` no longer guards anything, so the claim's TTL is
+        #   the only thing standing between a pending session and a second one.
+        #
+        # Nowhere earlier, either. Releasing when the session URL is handed out would
+        # reopen the exact race the claim closes: a pending Checkout Session is not yet
+        # a subscription, so a second click would find nothing to refuse against. An
+        # ABANDONED checkout is deliberately left to the TTL, which now outlasts the
+        # session's own `expires_at` -- the user can still complete it until then.
+        if applied and tier == TIER_PAID:
+            release_checkout_claim(universe_dir)
         return {"applied": applied, "tier": tier if applied else None}
 
     return JSONResponse(await run_in_threadpool(_apply))
