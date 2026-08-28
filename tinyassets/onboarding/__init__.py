@@ -943,6 +943,13 @@ async def _handle_billing_status(request: Any) -> Any:
                     "compute_minutes": int(limits.compute_seconds / 60),
                     "storage_mb": int(limits.storage_bytes / 1024 / 1024),
                 },
+                # Say which dimensions are actually ENFORCED. Effects are gated
+                # pre-flight; compute is metered but not yet admission-checked, and
+                # storage is neither measured per-universe nor enforced (see
+                # docs/concerns/2026-08-28-per-universe-storage-is-515mb-of-
+                # duplication.md). Presenting all three as live limits would be a
+                # claim the code does not keep.
+                "enforced": ["effects"],
                 "used": {
                     "effects": int(used["effects_committed"]),
                     "compute_minutes": round(used["compute_seconds"] / 60, 1),

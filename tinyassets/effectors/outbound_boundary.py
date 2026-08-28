@@ -625,6 +625,15 @@ def _reconcile_effect(
         evidence,
         result_status,
     )
+    # Settle the quota on the reconciled outcome too. Reconciliation reaches a
+    # terminal status WITHOUT passing through finalize_receipt, so leaving it out
+    # stranded the reservation: a reconciled success never became billable, and a
+    # reconciled failure was never refunded — and a stranded row keeps admitting
+    # its key forever through the existing-row branch (Codex REJECT 2026-08-28 B).
+    if result_status == STATUS_SUCCEEDED:
+        settle_effect_quota(universe_dir, sink=sink, effect_key=effect_key)
+    elif result_status == STATUS_FAILED:
+        release_effect_quota(universe_dir, sink=sink, effect_key=effect_key)
     return evidence
 
 
