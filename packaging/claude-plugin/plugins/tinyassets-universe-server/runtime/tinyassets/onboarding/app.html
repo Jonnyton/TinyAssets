@@ -834,14 +834,34 @@
     }catch(_e){ /* the plan chip is never load-bearing for chat */ }
   }
 
+  // A cancelled subscription stays ACTIVE until the period ends, so "paid" alone
+  // cannot tell a user who just cancelled from one who did not. Without the date the
+  // only way to check was to click cancel again and see what it said.
+  function planEndsOn(){
+    if(!PLAN || !PLAN.ends_at) return null;
+    const when = new Date(PLAN.ends_at * 1000);
+    if(isNaN(when.getTime())) return null;
+    return when.toLocaleDateString(undefined, {month:"short", day:"numeric"});
+  }
+
   function renderPlan(){
     const b = $("btn-plan");
     if(!b || !PLAN) return;
     b.hidden = false;
-    b.textContent = PLAN.tier === "paid" ? "Paid plan" : "Upgrade";
-    b.title = PLAN.billing_enabled
-      ? (PLAN.tier === "paid" ? "Manage your plan" : "Subscribe for $20/month")
-      : "Billing is not configured on this deployment";
+    const ending = planEndsOn();
+    if(PLAN.tier === "paid"){
+      b.textContent = ending ? ("Paid · ends " + ending) : "Paid plan";
+      b.title = ending
+        ? ("Your subscription is cancelled and ends " + ending
+           + ". You keep the paid tier until then.")
+        : "Manage your plan";
+    }else{
+      b.textContent = "Upgrade";
+      b.title = "Subscribe for $20/month";
+    }
+    if(!PLAN.billing_enabled){
+      b.title = "Billing is not configured on this deployment";
+    }
   }
 
   // What the user is told for each refusal the checkout route can return. Keyed by
@@ -891,12 +911,17 @@
 
   function onPlanClick(){
     if(!PLAN) return;
-    if(PLAN.tier === "paid"){
-      if(confirm("Cancel your subscription? You keep the paid tier until the "
-                 + "end of the current period.")) startCancel();
-    }else{
-      startSubscribe();
+    if(PLAN.tier !== "paid"){ startSubscribe(); return; }
+    const ending = planEndsOn();
+    // Already cancelled. Offering to cancel again invited the user to conclude the
+    // first one had not worked.
+    if(ending){
+      appendMessage("system", "Your subscription is already cancelled and ends "
+        + ending + ". You keep the paid tier until then.");
+      return;
     }
+    if(confirm("Cancel your subscription? You keep the paid tier until the "
+               + "end of the current period.")) startCancel();
   }
 
   // Proactively establish the MCP session the moment chat opens, so the user's FIRST

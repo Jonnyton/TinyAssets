@@ -1,18 +1,16 @@
 # Worktree purpose
 
-Purpose: billing-refusal-status
+Purpose: pending-cancellation-visible
 Provider: claude-code
-Branch: claude/billing-refusal-status
-Base ref: origin/main
-Issue/PR: follow-up to #2601 (billing subscribe/cancel); found by the live user-path test
+Branch: claude/pending-cancellation-visible
+Base ref: claude/billing-lifecycle-correction (stacked; rebase to main once #2610 lands)
+Issue/PR: resolves docs/concerns/2026-08-28-a-cancelled-subscription-looks-uncancelled.md
 PLAN refs: billing / onboarding app surface
-Ship condition: checkout refusals answer 4xx and carry their own reason; a resolved
-  checkout releases its claim so a cancel-then-resubscribe is not locked out for 15
-  minutes; both proven live through the webapp after deploy
-Abandon condition: n/a — both defects were observed in production
-Pickup hints: docs/concerns/2026-08-28-worker-swallows-every-origin-5xx-body.md holds
-  the half NOT fixed here (the edge Worker still discards any origin 5xx body)
-Memory refs: syntax-check-is-not-reachability (JS scope, checked: all new symbols at
-  indent 2 = script scope); live-test-finds-what-tests-cannot
-Related implications: docs/concerns/2026-08-28-worker-swallows-every-origin-5xx-body.md
+Ship condition: after cancelling, a reload shows "Paid · ends <date>" and clicking it
+  does not offer a second cancellation; proven live through the webapp
+Abandon condition: n/a
+Pickup hints: ends_at is DISPLAY ONLY — get_tier remains the entitlement authority
+Memory refs: syntax-check-is-not-reachability (all new JS at indent 2 = script scope);
+  never-game-the-gate-with-xfail
+Related implications: stacked on #2610; do not merge before it
 Idea feed refs: (none)

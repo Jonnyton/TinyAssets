@@ -383,6 +383,40 @@ def verify_webhook_signature(
     return any(hmac.compare_digest(expected, candidate) for candidate in signatures)
 
 
+def subscription_end_from_event(event: dict, *, secret: str = "") -> float | None:
+    """When an entitling subscription is scheduled to lapse, or None.
+
+    DISPLAY ONLY. Entitlement is decided by ``subscription_state_from_event`` and
+    nothing else; this exists so the app can say "ends on the 27th" instead of
+    leaving a user who cancelled unable to tell whether their cancellation took.
+    Never gate access on it -- a date is not an authority.
+
+    Returns None whenever the subscription is not both entitling and scheduled to
+    end: a renewing subscription has no end to show, and a subscription that is
+    already gone is described by the tier itself.
+
+    Goes through the same authorization as the tier, so an unclaimed subscription
+    cannot inject a date any more than it can inject entitlement.
+    """
+    kind = str(event.get("type") or "")
+    if not kind.startswith("customer.subscription."):
+        return None
+    if kind == "customer.subscription.deleted":
+        return None
+    obj = (event.get("data") or {}).get("object") or {}
+    if not _authorized_subscription_universe(obj, secret=secret):
+        return None
+    if str(obj.get("status") or "") not in ("active", "trialing"):
+        return None
+    if not obj.get("cancel_at_period_end"):
+        return None
+    try:
+        ends_at = float(obj.get("current_period_end") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    return ends_at if ends_at > 0 else None
+
+
 def subscription_state_from_event(
     event: dict, *, secret: str = ""
 ) -> tuple[str, str] | None:
