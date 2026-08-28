@@ -621,9 +621,31 @@
   //      user decide, rather than silently double-sending.
   const MCP = {
     sessionId:null, nextId:1, _initing:null,
+    // Every teardown bumps `_gen`. A call captures the generation before it
+    // sends, so when its response finally lands it can tell whether the session
+    // it was speaking about is still the current one. Without that, two calls
+    // sharing this object fight: the 30s status poll and a multi-minute turn
+    // overlap constantly, and a late reply would otherwise re-adopt a session
+    // that had already been replaced, or tear down a healthy one a moment after
+    // somebody else had just built it.
+    _gen:0,
     // Dropping the handle is cheap and always safe: the next call rebuilds it.
-    invalidateSession(){ this.sessionId=null; },
+    invalidateSession(){ this.sessionId=null; this._gen++; },
     _pause(ms){ return new Promise(r=>setTimeout(r,ms)); },
+    // Tear down the session this call was speaking about - but only if it is
+    // still the live one, and never from inside the handshake.
+    //
+    // The handshake exclusion matters: `initialize` succeeds and hands back a
+    // session, then `notifications/initialized` hits a blip. Retiring there
+    // discards the id `initialize` just produced, so the retry goes out with no
+    // session at all and the server answers "Bad Request: Missing session ID" -
+    // the handshake destroys its own result. Half a handshake is repaired by
+    // ensureInit, which starts a clean one.
+    _retire(gen, isHandshake){
+      if(isHandshake) return;
+      if(this._gen!==gen) return;
+      this.invalidateSession();
+    },
     // "Your session is gone" per the MCP transport: 404 for unknown, expired,
     // terminated, or created-under-another-credential; 400 when the session
     // header is missing or rejected. A 400 for an unsupported protocol version
@@ -632,7 +654,14 @@
     _isSessionGone(resp, bodyText){
       if(resp.status===404) return true;
       if(resp.status!==400) return false;
-      return /session/i.test(bodyText||"");
+      // Only a JSON-RPC error whose MESSAGE names the session. Matching any 400
+      // body containing the word would let a CDN page, an auth interstitial, or
+      // a future transport error about some OTHER kind of session trigger a
+      // replay of a state-changing call.
+      let doc;
+      try{ doc=JSON.parse(String(bodyText||"")); }catch(_e){ return false; }
+      const msg = doc && doc.error && doc.error.message;
+      return typeof msg==="string" && /session/i.test(msg);
     },
     _parse(text){
       const t=(text||"").trim();
@@ -671,6 +700,10 @@
       const tk=token(); if(tk) headers["Authorization"]="Bearer "+tk;
       if(this.sessionId) headers["mcp-session-id"]=this.sessionId;
 
+      // The session this request is about. Anything we conclude from the
+      // response applies only while this is still the live generation.
+      const gen=this._gen;
+
       let resp;
       try{
         resp=await fetch("/mcp",{method:"POST",headers,body:JSON.stringify(frame)});
@@ -678,7 +711,7 @@
         // Offline, DNS, TLS, or the connection dropped before any response. The
         // session may or may not still be good, so assume not: the next call
         // rebuilds it rather than reusing a handle we can no longer trust.
-        this.invalidateSession();
+        this._retire(gen, isHandshake);
         if(opts.idempotent && attempt.gateway<1){
           attempt.gateway++;
           await this._pause(2500);
@@ -691,17 +724,29 @@
         if(attempt.auth<1 && token() && await refreshAccessToken()){
           attempt.auth++;
           // refreshAccessToken already nulled the session (it was bound to the
-          // old bearer); rebuild it before replaying anything but a handshake.
-          if(method!=="initialize") await this.ensureInit();
+          // old bearer); rebuild it before replaying a real call.
+          //
+          // NEVER from inside the handshake. `notifications/initialized` runs
+          // within the `_initing` promise, so calling ensureInit() there awaits
+          // the very promise it is inside and the client wedges permanently -
+          // no timeout, no further request. ensureInit repairs a half-finished
+          // handshake itself instead (see its catch).
+          if(!isHandshake) await this.ensureInit();
           return this._rpc(method, params, opts, attempt);
         }
         const e=new Error("authentication_required"); e.authRequired=true; throw e;
       }
 
-      // Adopt a session id ONLY from a successful response. Error responses can
-      // echo a session header (the transport stamps its own id onto error
-      // bodies), and adopting it there re-arms the very handle that just failed.
-      if(resp.ok){ const sid=resp.headers.get("mcp-session-id"); if(sid) this.sessionId=sid; }
+      // Adopt a session id ONLY from a successful response, and only while our
+      // generation is still current. Error responses echo a session header (the
+      // transport stamps its own id onto error bodies) and adopting it there
+      // re-arms the handle that just failed; a LATE success is worse still - a
+      // slow turn resolving after the status poll had already rebuilt the
+      // session would drag the client back to the older id and orphan the new
+      // one.
+      if(resp.ok && this._gen===gen){
+        const sid=resp.headers.get("mcp-session-id"); if(sid) this.sessionId=sid;
+      }
 
       let bodyText="";
       try{ bodyText=await resp.text(); }
@@ -709,7 +754,7 @@
         // The stream died while we were reading it - an edge timeout on a long
         // turn, or the daemon restarting mid-reply. Same class as a truncated
         // body: the turn may already have been accepted, so never auto-replay.
-        this.invalidateSession();
+        this._retire(gen, isHandshake);
         if(opts.idempotent && attempt.gateway<1){
           attempt.gateway++;
           await this._pause(2500);
@@ -724,21 +769,31 @@
       // state-changing turn. Re-initialize once and run it for real.
       if(!isHandshake && attempt.session<1 && this._isSessionGone(resp, bodyText)){
         attempt.session++;
-        this.invalidateSession();
+        // Only the FIRST arrival tears the dead session down. Several calls can
+        // be in flight against one session (the poll runs every 30s, a turn can
+        // take minutes), and their 404s come back one after another; if each one
+        // invalidated, every late arrival would discard the session the previous
+        // one had just built and mint another. `_retire` is a no-op once the
+        // generation has moved, so the stragglers simply re-run on the session
+        // that is now live.
+        this._retire(gen, isHandshake);
         await this.ensureInit();
         return this._rpc(method, params, opts, attempt);
       }
 
       if(resp.status===502||resp.status===503||resp.status===504){
         // Deploy window: the daemon restarts (~90s) and the tunnel answers with
-        // an HTML error page. No session survives that restart, so drop ours or
-        // the retry just 404s on a dead handle.
-        this.invalidateSession();
-        // Auto-retry ONLY what is safe to run twice. A 502 can mean the origin
-        // was never reached OR that it died after accepting the request, and
-        // those are indistinguishable from here - so a turn is handed back to
-        // the user instead of being silently replayed.
-        if((opts.idempotent||isHandshake) && attempt.gateway<1){
+        // an error page. No session survives that restart, so drop ours or the
+        // retry just 404s on a dead handle.
+        this._retire(gen, isHandshake);
+        // 502 and 503 mean the origin never took the request - unreachable, or
+        // down - so replaying it cannot duplicate anything, and the user should
+        // not have to click through a deploy blip. 504 is the opposite: the
+        // gateway timed out WAITING on the origin, so the request was delivered
+        // and the turn may be running right now. Replaying that would double-
+        // send, so a state-changing call stops and asks.
+        const neverArrived = (resp.status!==504);
+        if((neverArrived||opts.idempotent||isHandshake) && attempt.gateway<1){
           attempt.gateway++;
           await this._pause(2500);
           return this._rpc(method, params, opts, attempt);
@@ -747,7 +802,12 @@
           "your universe was restarting just then (HTTP "+resp.status+")", false);
       }
       if(resp.status>=500){
-        this.invalidateSession();
+        this._retire(gen, isHandshake);
+        if((opts.idempotent||isHandshake) && attempt.gateway<1){
+          attempt.gateway++;
+          await this._pause(2500);
+          return this._rpc(method, params, opts, attempt);
+        }
         throw transportError("unavailable",
           "your universe is briefly unavailable (HTTP "+resp.status+")", false);
       }
@@ -764,7 +824,7 @@
         // before the result, or something in the path replaced the body. The
         // session cannot be trusted afterwards - leaving it in place is exactly
         // what used to break the page until a reload.
-        this.invalidateSession();
+        this._retire(gen, isHandshake);
         if(parseErr && parseErr.transport){
           if(opts.idempotent && attempt.gateway<1){
             attempt.gateway++;
@@ -785,13 +845,27 @@
       // initialize handshake, or the second's session orphans the first's.
       if(this._initing){ await this._initing; return; }
       this._initing=(async()=>{
-        // The handshake carries no user intent, so it is always safe to repeat.
-        await this._rpc("initialize",{protocolVersion:"2024-11-05",capabilities:{},
-          clientInfo:{name:"tinyassets-onboarding-app",version:"1.0"}},{idempotent:true});
-        await this._rpc("notifications/initialized",{},
-          {expectResult:false, idempotent:true});
+        try{ await this._handshake(); }
+        catch(err){
+          // Half a handshake is worthless: the bearer can rotate BETWEEN the two
+          // steps, or a gateway blip can land on the second one, and either way
+          // the session `initialize` produced is not one the server will honour.
+          // Start a clean handshake - once. This is also why _rpc must never
+          // call ensureInit() from inside the handshake: that awaits the promise
+          // it is already inside, and the client wedges for good.
+          if(!err || !(err.authRequired || err.transport)) throw err;
+          this.sessionId=null;
+          await this._handshake();
+        }
       })();
       try{ await this._initing; } finally { this._initing=null; }
+    },
+    // The handshake carries no user intent, so every step is safe to repeat.
+    async _handshake(){
+      await this._rpc("initialize",{protocolVersion:"2024-11-05",capabilities:{},
+        clientInfo:{name:"tinyassets-onboarding-app",version:"1.0"}},{idempotent:true});
+      await this._rpc("notifications/initialized",{},
+        {expectResult:false, idempotent:true});
     },
     // `opts.idempotent` marks a read that may safely be run twice. It is opt-IN:
     // an unmarked tool call is treated as state-changing and is never replayed
