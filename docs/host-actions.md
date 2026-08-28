@@ -103,6 +103,38 @@ with a live key it is a double charge and a chargeback.
 
 ---
 
+### Confirm the free allowance, then I flip metering on
+
+*The `$20` question, now with a concrete proposal rather than an open one. Quota code is
+PR #2618, landed dark. Finding:
+`docs/concerns/2026-08-28-the-paid-tier-buys-nothing.md`.*
+
+You said the free tier should be "materially more than 50 effects/month". The defaults
+already in the code are far more generous than that, and cost says they can be:
+
+| | free | paid ($20/mo) |
+|---|---|---|
+| effects | **100 / day** (~3,000/mo) | **5,000 / day** |
+| window | rolling 24h | rolling 24h |
+
+An *effect* is one thing that reaches the outside world and succeeded. Reads, writes,
+edits, retries, and failed attempts cost nothing — that was the bug that started this,
+where fifteen failed 401s ate the budget the successful post needed.
+
+Why this generous: marginal cost is ~$0.12/user/month, and the platform supplies no
+inference. Cost is not what should constrain the free tier; abuse reaching the outside
+world is, which is why effects are metered and runs are not.
+
+**Say "yes" and I will:** flip `TINYASSETS_USAGE_ENFORCEMENT=1` for one universe, live
+-test that a real post still goes through and that the cap actually stops the next one,
+then roll it out. **Say a different number and I will use that instead** — they are env
+vars, not a rebuild.
+
+Nothing is enforced until you answer; the meter is recording either way, which is how we
+will know what real usage looks like before the number matters.
+
+---
+
 ### Phone app — send the first message and see it answered
 
 *Live and proven on the founder's S24+ via adb (2026-08-22): OpenAI link completes, PONG inside the

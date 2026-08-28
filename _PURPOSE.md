@@ -1,18 +1,17 @@
 # Worktree purpose
 
-Purpose: worker-5xx-passthrough
+Purpose: effect-quota-dark
 Provider: claude-code
-Branch: claude/worker-5xx-passthrough
+Branch: claude/effect-quota-dark
 Base ref: origin/main
-Issue/PR: resolves docs/concerns/2026-08-28-worker-swallows-every-origin-5xx-body.md
-PLAN refs: edge / public surface
-Ship condition: a JSON 5xx from the origin reaches the caller with body and status
-  intact; a non-JSON 5xx is still translated to bad_gateway; Hard Rule 11 canary green
-  after the wrangler deploy
+Issue/PR: extracts the metering half of #2598; addresses
+  docs/concerns/2026-08-28-the-paid-tier-buys-nothing.md
+PLAN refs: metering / tiers
+Ship condition: lands DARK (TINYASSETS_USAGE_ENFORCEMENT unset) with no behaviour
+  change provable by test; the flip is a founder decision on the free allowance
 Abandon condition: n/a
-Pickup hints: the Worker deploys via wrangler, NOT via deploy-prod.yml — landing the PR
-  does not ship it
-Memory refs: live-test-finds-what-tests-cannot
-Related implications: docs/concerns/2026-08-28-stripe-4xx-reads-as-an-outage.md is the
-  case this most benefits once fixed
+Pickup hints: the tier authority is subscription_state.get_tier, NOT the copy that
+  used to live in usage_ledger — that copy is deleted here
+Memory refs: no-review-loops-on-dark-mvp; silent-failure-dispatch-and-tests
+Related implications: docs/host-actions.md "Decide what the $20 actually buys"
 Idea feed refs: (none)

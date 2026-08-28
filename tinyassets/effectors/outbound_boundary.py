@@ -17,6 +17,7 @@ from tinyassets.storage.external_write_receipts import (
     finalize_receipt,
     finalize_reconciliation,
     lookup_receipt,
+    release_reservation,
     try_activate_confirmed_hold,
     try_record_held_receipt,
     try_reserve_receipt,
@@ -25,6 +26,16 @@ from tinyassets.storage.outbound_connections import (
     AmbiguousProxyOutcome,
     ConnectionLedger,
     ScopedConnectionProxy,
+)
+
+# Who is paying is decided by the billing module's own state, not by a second
+# copy in the usage ledger. Two authorities for one fact is how the stale one
+# ends up being the one that is read.
+from tinyassets.storage.subscription_state import get_tier
+from tinyassets.usage_policy import (
+    release_effect_quota,
+    reserve_effect_quota,
+    settle_effect_quota,
 )
 
 AmbiguousEffectOutcome = AmbiguousProxyOutcome
@@ -368,6 +379,36 @@ def execute_replay_safe_effect(
     if status not in ("reserved", "reserved_after_failed"):
         raise RuntimeError(f"effect reservation failed closed: {status}")
 
+    # Usage quota — PRE-FLIGHT, between the receipt reservation and the write. An
+    # outbound write is irreversible, so a budget consulted afterwards would be an
+    # accounting record rather than a limit. Refusing here means nothing leaves.
+    #
+    # The receipt slot is released with mark_failed=False: the destination was never
+    # contacted, so this is not a failed attempt and must not count toward the retry
+    # budget or look like the destination rejected us.
+    refusal = reserve_effect_quota(
+        universe_dir,
+        sink=sink,
+        effect_key=effect_key,
+        tier=get_tier(universe_dir),
+    )
+    if refusal is not None:
+        release_reservation(
+            universe_dir,
+            idempotency_hint=effect_key,
+            sink=sink,
+            run_id=run_id,
+            mark_failed=False,
+        )
+        return {
+            "status": STATUS_FAILED,
+            "terminal": True,
+            "reason": "usage_limit_reached",
+            "dimension": refusal.dimension,
+            "tier": refusal.tier,
+            "detail": refusal.message(),
+        }
+
     return _invoke_reserved_effect(
         universe_dir=universe_dir,
         effect_key=effect_key,
@@ -397,6 +438,44 @@ def _invoke_reserved_effect(
 ) -> dict[str, Any]:
     """Invoke only after the caller atomically acquired the pending journal."""
     preserved = dict(base_evidence or {})
+
+    # Quota gate lives HERE, at the single choke point every invoke path passes
+    # through, rather than at each call site. Placing it per-caller is how the
+    # confirmed-hold path (execute_capped_action -> try_activate_confirmed_hold)
+    # ended up firing with no quota admission at all: it reaches the destination
+    # without going through execute_replay_safe_effect, so a gate added there
+    # simply does not see it. Gating the choke point makes that class of bypass
+    # structurally impossible instead of a thing to remember.
+    #
+    # Reservation is idempotent on the settlement key, so a caller that already
+    # reserved (the ordinary path) finds its own row and consumes nothing extra.
+    refusal = reserve_effect_quota(
+        universe_dir,
+        sink=sink,
+        effect_key=effect_key,
+        tier=get_tier(universe_dir),
+    )
+    if refusal is not None:
+        evidence = {
+            **preserved,
+            "status": STATUS_FAILED,
+            "terminal": True,
+            "reason": "usage_limit_reached",
+            "dimension": refusal.dimension,
+            "tier": refusal.tier,
+            "detail": refusal.message(),
+            "replay": False,
+        }
+        finalize_receipt(
+            universe_dir,
+            idempotency_hint=effect_key,
+            sink=sink,
+            evidence=evidence,
+            run_id=run_id,
+            status=STATUS_FAILED,
+        )
+        return evidence
+
     try:
         destination_result = invoke()
     except AmbiguousEffectOutcome:
@@ -432,6 +511,8 @@ def _invoke_reserved_effect(
         )
         if not finalized:
             raise RuntimeError("failed effect could not finalize its journal")
+        # The destination rejected it, so nothing reached the world: refund.
+        release_effect_quota(universe_dir, sink=sink, effect_key=effect_key)
         return evidence
 
     evidence = {
@@ -451,6 +532,9 @@ def _invoke_reserved_effect(
     )
     if not finalized:
         raise RuntimeError("successful effect could not finalize its journal")
+    # Reached the world: spend the reserved slot. settle is transition-sensitive,
+    # so a later reconciliation or replay of this same effect settles nothing.
+    settle_effect_quota(universe_dir, sink=sink, effect_key=effect_key)
     return evidence
 
 
@@ -545,6 +629,15 @@ def _reconcile_effect(
         evidence,
         result_status,
     )
+    # Settle the quota on the reconciled outcome too. Reconciliation reaches a
+    # terminal status WITHOUT passing through finalize_receipt, so leaving it out
+    # stranded the reservation: a reconciled success never became billable, and a
+    # reconciled failure was never refunded — and a stranded row keeps admitting
+    # its key forever through the existing-row branch (Codex REJECT 2026-08-28 B).
+    if result_status == STATUS_SUCCEEDED:
+        settle_effect_quota(universe_dir, sink=sink, effect_key=effect_key)
+    elif result_status == STATUS_FAILED:
+        release_effect_quota(universe_dir, sink=sink, effect_key=effect_key)
     return evidence
 
 
