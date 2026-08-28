@@ -62,6 +62,14 @@ def _refresh_store_dir() -> Path:
 
     d = data_dir() / "app_refresh_sessions"
     d.mkdir(parents=True, exist_ok=True)
+    # These files hold RAW WorkOS refresh tokens. Written with only `os.replace`
+    # they landed at the process umask -- observed 0644 on production, world
+    # -readable inside the container. Narrow the directory too, so a file created
+    # before this change is no longer reachable by a non-owner.
+    try:
+        d.chmod(0o700)
+    except OSError:
+        pass
     return d
 
 
@@ -80,6 +88,13 @@ def _write_refresh_session(handle: str, refresh_token: str) -> None:
     tmp = path.with_suffix(".tmp")
     payload = {"rt": refresh_token, "exp": int(time.time()) + _REFRESH_SESSION_TTL}
     tmp.write_text(json.dumps(payload), encoding="utf-8")
+    # Before the swap, not after: the file must never exist at the umask default,
+    # even briefly, because what it holds is a bearer credential for someone's
+    # whole account.
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
     os.replace(tmp, path)  # atomic swap so a concurrent read never sees a partial
 
 
@@ -401,13 +416,30 @@ async def _handle_token(request: Any) -> Any:
     # or the refresh token itself — the page only ever sees the access token and
     # the opaque handle, never the AuthKit refresh token.
     handle = ""
+    # A caller-supplied handle may be REUSED only by a grant that already proved
+    # possession of it. `refresh_token` did -- the exchange above only succeeded
+    # because the handle resolved to a live token. `authorization_code` did NOT:
+    # it is a brand-new sign-in, and the handle arrived in the request body with
+    # nothing but a shape check behind it.
+    #
+    # Adopting it there is session fixation. An attacker plants a handle they know
+    # in a victim's localStorage; the victim signs in; the victim's refresh token
+    # is written under the attacker's handle; the attacker renews with it and holds
+    # the victim's session. Minting unconditionally on a new sign-in is what closes
+    # it -- the handle the page gets back is one only the server has seen.
+    may_reuse_handle = bool(session_ref) and grant == "refresh_token"
     if refresh_token and len(refresh_token) <= 4096:
-        if session_ref:
+        if may_reuse_handle:
             _write_refresh_session(session_ref, refresh_token)  # rotate in place
             handle = session_ref
         else:
+            if session_ref:
+                # Someone signed in while presenting a handle. Whatever it was, it
+                # is not theirs to keep using: drop it rather than leave a stale
+                # token renewable under an identifier a third party may know.
+                _drop_refresh_session(session_ref)
             handle = _mint_refresh_session(refresh_token)
-    elif session_ref:
+    elif may_reuse_handle:
         # AuthKit rotated without returning a new token (rare): keep the existing
         # server-side token under the same handle so the app can renew again.
         handle = session_ref
