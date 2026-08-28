@@ -261,13 +261,14 @@ _CHAIN_DRAIN_EMPTY_THRESHOLD: int = 2
 # Keep it above 1 so an unrelated slow provider call does not serialize all
 # other sync callers behind one shared worker.
 #
-# And keep it ABOVE the admission limit. At 8 it silently WAS the memory bound — a
-# latency constant capping concurrent ~31 MB subprocesses as a side effect, which is a
-# bound nobody could reason about and anyone tuning for throughput would have raised
-# without realising what it protected. Admission (`TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS`,
-# default 10) is now the binding constraint, sized from a measurement and observable
-# through `get_status.provider_admission`. This just has to stay out of its way.
-_SYNC_CALL_MAX_WORKERS: int = 12
+# It also acts as a second ceiling on concurrent provider subprocesses, which is a
+# property worth knowing about rather than relying on: admission
+# (`TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS`, default 6) is the bound sized against
+# memory and observable through `get_status.provider_admission`. Raising THIS number to
+# unlock concurrency would raise memory pressure with nothing reporting it — I proposed
+# exactly that and the arithmetic behind it was wrong, so it stays where it is until a
+# real turn's high-water is measured.
+_SYNC_CALL_MAX_WORKERS: int = 8
 
 # NOTE: `_provider_slot` (imported above) bounds concurrent provider SUBPROCESSES.
 # _SYNC_CALL_MAX_WORKERS bounds threads, which are cheap; a subprocess is ~77 MB.

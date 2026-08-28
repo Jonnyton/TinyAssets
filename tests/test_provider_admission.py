@@ -121,14 +121,24 @@ def test_the_default_fits_the_box_it_runs_on(monkeypatch):
         "a bound above the thread pool that already gates these calls would never bind "
         "— the pool would cap concurrency first and the explicit limit would be decor"
     )
-    # Sized from the marginal cost measured with verified overlap on the live box
-    # (~31 MB per additional concurrent subprocess: 25 concurrent consumed ~786 MB), not
-    # from the ~77 MB average at LOW concurrency that I first extrapolated linearly.
-    # 3x headroom because that measurement is a floor: `--version` loads no prompt, no
-    # history, no tools, and streams nothing.
-    assert pa._DEFAULT_LIMIT * 31 * 3 + 390 < 2048, (
-        "the default must fit the 2 GB box alongside the ~390 MB daemon, with headroom "
-        "for a real turn costing more than the measured floor"
+    # Baseline is what is AVAILABLE, not what is installed. My first version of this
+    # assertion budgeted against 2048 MB of total RAM, but the live box reported only
+    # 1189 MB available at idle — the other ~469 MB is kernel, Docker, the tunnel and
+    # friends, none of which the daemon may spend. Against the wrong baseline the test
+    # happily admitted a limit of 17, which is ~400 MB past the real ceiling.
+    #
+    # Cost per process is the MARGINAL slope measured on the live box between two
+    # verified-overlap points, (874-403)/(25-13) = 39 MB — not the 786/25 = 31 MB
+    # AVERAGE I first mistook it for. The average understates, because the observed
+    # per-process cost ROSE with concurrency rather than falling.
+    MEASURED_AVAILABLE_MB = 1189
+    MARGINAL_MB_PER_PROCESS = 39
+    REAL_TURN_MULTIPLIER = 3  # `--version` loads no prompt, no history, no MCP child
+
+    worst_case = pa._DEFAULT_LIMIT * MARGINAL_MB_PER_PROCESS * REAL_TURN_MULTIPLIER
+    assert worst_case < MEASURED_AVAILABLE_MB, (
+        f"{pa._DEFAULT_LIMIT} concurrent turns could need {worst_case} MB against "
+        f"{MEASURED_AVAILABLE_MB} MB actually available on the live box"
     )
 
 
