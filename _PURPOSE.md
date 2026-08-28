@@ -1,16 +1,17 @@
 # Worktree purpose
 
-Purpose: golive-check-accuracy
+Purpose: refresh-session-hardening
 Provider: claude-code
-Branch: claude/golive-check-accuracy
+Branch: claude/refresh-session-hardening
 Base ref: origin/main
-Issue/PR: fixes a misleading message in scripts/stripe_go_live.py; files the
-  assigned-queue error loop
-PLAN refs: billing
-Ship condition: the delivery check names the path it read and says when the answer is
-  "not visible from here" rather than "never happened"
-Abandon condition: n/a
-Pickup hints: the script is NOT in the deployed image — it runs from a checkout
-Memory refs: unavailable-often-means-unconfigured
-Related implications: docs/concerns/2026-08-28-assigned-queue-consumer-hot-error-loop.md
+Issue/PR: closes the session-fixation half of
+  docs/concerns/2026-08-23-byo-llm-refresh-token-store.md
+PLAN refs: auth / onboarding
+Ship condition: a new sign-in never adopts a caller-supplied handle; token files are
+  0600 and the store directory 0700
+Abandon condition: n/a — this blocks a second real user
+Pickup hints: the encryption-at-rest half is NOT here; a Codex review is open on
+  whether env-held-key encryption buys anything against an in-process reader
+Memory refs: never-infer-identity-from-adjacent-tables
+Related implications: the per-universe LLM credential vault is plaintext too
 Idea feed refs: (none)
