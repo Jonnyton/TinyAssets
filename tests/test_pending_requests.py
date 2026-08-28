@@ -179,7 +179,8 @@ def test_the_tab_states_the_exact_grant(base):
 
     out = _ask("u-1")
     assert out["grant_sentence"] == (
-        "This key will be able to POST api.github.com/repos/o/r/pulls - nothing else."
+        'This key as "github" will be able to POST '
+        "api.github.com/repos/o/r/pulls - nothing else."
     )
     assert [f["type"] for f in out["fields"]] == ["secret"]
 
@@ -423,7 +424,8 @@ def test_one_request_can_cover_the_several_calls_a_real_flow_needs(base):
     assert out["status"] == "pending"
     # The user sees every line before pasting once.
     assert out["grant_sentence"].startswith(
-        "This key will be able to reach exactly these, and nothing else:")
+        'This key as "github" will be able to reach exactly these, and nothing '
+        "else:")
     assert "/repos/o/r/pulls" in out["grant_sentence"]
     assert "/repos/o/r/git/refs" in out["grant_sentence"]
 
@@ -556,3 +558,27 @@ def test_codex_a_lifted_mute_is_recorded_because_the_agent_shares_the_principal(
     rail = _rail("u-1")
     assert rail["mutes_lifted"], "a lifted mute must be visible, not silent"
     assert rail["mutes_lifted"][0]["dedupe_key"] == key
+
+
+def test_two_asks_differing_only_by_destination_are_distinguishable(base):
+    """Observed live, 2026-08-28. The agent asked for one endpoint under
+    destination "github"; that would have conflicted with the existing
+    connection, so it re-raised the SAME endpoint under "github-theme". Both
+    tabs then rendered identical titles AND identical grant sentences — the user
+    could not tell the one that works from the one that fails. Naming the
+    connection is the difference."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    ep = {"host": "api.github.com",
+          "path_template": "/repos/o/r/contents/theme.json", "methods": ["PUT"]}
+
+    a = _ask("u-1", title="GitHub endpoint so I can update the theme",
+             action={"type": "connect_http", "destination": "github",
+                     "auth_scheme": "bearer", "endpoints": [ep]})
+    b = _ask("u-1", title="GitHub endpoint so I can update the theme",
+             action={"type": "connect_http", "destination": "github-theme",
+                     "auth_scheme": "bearer", "endpoints": [ep]})
+
+    assert a["grant_sentence"] != b["grant_sentence"]
+    assert '"github"' in a["grant_sentence"]
+    assert '"github-theme"' in b["grant_sentence"]

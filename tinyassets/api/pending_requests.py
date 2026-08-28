@@ -287,12 +287,17 @@ def _grant_sentence(row: dict[str, Any]) -> str:
     ]
     if not lines:
         return ""
+    # Name the connection. Two asks can differ ONLY by destination — the agent
+    # re-raised the same endpoint under a new name when the first would have
+    # conflicted — and with the destination hidden both tabs read identically,
+    # so a user cannot tell the one that works from the one that fails
+    # (observed live, 2026-08-28).
+    where = f' as "{action.get("destination")}"' if action.get("destination") else ""
     if len(lines) == 1:
-        return f"This key will be able to {lines[0]} - nothing else."
+        return f"This key{where} will be able to {lines[0]} - nothing else."
     return (
-        "This key will be able to reach exactly these, and nothing else: "
-        + "; ".join(lines)
-        + "."
+        f"This key{where} will be able to reach exactly these, and nothing "
+        "else: " + "; ".join(lines) + "."
     )
 
 
