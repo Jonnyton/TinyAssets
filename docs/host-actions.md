@@ -27,6 +27,34 @@ so this blocks acceptance, not just convenience.
 
 ---
 
+### Decide what the $20 actually buys — blocks live activation
+
+*Found 2026-08-28 while preparing Stripe to go live. Full finding:
+`docs/concerns/2026-08-28-the-paid-tier-buys-nothing.md`.*
+
+Nothing outside the billing module reads the subscription tier. There is no metering, no
+quota, no paid-only capability. **A user who pays $20/month today receives a flag in a
+SQLite table.** Every other blocker is mechanical; this one is a decision.
+
+Billing shipped without the metering half of the plan you approved — that half is PR
+**#2598**, still open, and it also carries a stale copy of the billing code that has since
+been corrected, so it needs extracting rather than rebasing whole.
+
+**Two questions only you can answer:**
+
+1. **What is the free monthly effect allowance?** You said "materially more than 50."
+   Marginal cost is ~$0.12/user/month, so cost is not the constraint — anchoring and abuse
+   are. Give me a number and I will land the quota dark, flip it for one universe, and
+   live-test it.
+2. **Or launch without it** — sell the paid tier as supporting the project rather than as
+   capacity. A legitimate choice, but it has to be a chosen one, and the pricing page must
+   then say that is what it is.
+
+Until one of those is answered, do not swap in the live key: the checkout would work and
+the customer would get nothing for their money.
+
+---
+
 ### Stripe is in sandbox — no real user can subscribe
 
 *Verified live 2026-08-28 against the Stripe API from production.*
@@ -45,20 +73,28 @@ move, and a real card would be declined:
 `charges_enabled: false` is the decisive one. The account cannot take a real payment in any
 mode until it is activated, and only the founder can do that.
 
-**Four steps, in order. Steps 1–3 are founder-only; step 4 I can do once you have the key.**
+**Check readiness at any time:** `python scripts/stripe_go_live.py --check` (run it on the
+daemon, where the key lives). It reports every blocker below and refuses to call a sandbox
+account ready.
+
+**Four steps. Step 1 is yours; 2 and 3 are now one command; step 4 I do once you have the key.**
 
 1. **Activate the Stripe account** — business details and a bank account, at
    <https://dashboard.stripe.com/account/onboarding>. Stripe also asks for a business URL and
    usually a terms/refund page. Nothing below works until `charges_enabled` is true.
-2. **Create the live product and price** — $20/month USD with lookup key
-   **`tinyassets_paid_monthly`**, exactly as in test mode. `resolve_price_id()` resolves by
-   lookup key, so a live price without that key makes every checkout refuse with
-   `billing_unavailable`.
-3. **Create a live webhook endpoint** → `https://tinyassets.io/mcp/app/billing/webhook`,
-   events `customer.subscription.created/updated/deleted`. Keep its signing secret.
-4. **Swap the two secrets on the droplet** — the live `sk_live_…` and that signing secret into
-   `/etc/tinyassets/env`, then restart. Hand them to me and I will place them without echoing
-   them; do not paste them into chat if you would rather not — a vault path works too.
+2–3. **Create the live price and webhook endpoint** — one command, once the live key is in
+   the environment: `python scripts/stripe_go_live.py --provision`. It creates the $20/month
+   price with the lookup key the code resolves by, registers the webhook endpoint with every
+   event entitlement depends on, and prints the signing secret once. Idempotent.
+4. **Place THREE secrets on the droplet** — the live `sk_live_…`, that signing secret, and
+   `TINYASSETS_BILLING_ENTITLEMENT_KEY` (I generate this one; it is ours, not Stripe's) into
+   `/etc/tinyassets/env`, then restart. Hand me the Stripe two however you like — a vault
+   path works; I will place them without echoing them.
+
+   The third one matters more than it looks: without it, every subscription's authority is
+   signed with Stripe's webhook secret, and rolling that secret — which Stripe tells you to
+   do, and which you must do on any leak — would permanently break every subscription
+   already sold. `docs/reference/environment-variables.md` § Billing has the detail.
 
 **Do not do this before the checkout-lease redesign lands**
 (`docs/concerns/2026-08-28-the-checkout-claim-is-not-tied-to-its-session.md`). The remaining

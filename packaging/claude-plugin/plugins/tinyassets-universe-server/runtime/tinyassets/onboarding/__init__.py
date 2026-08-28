@@ -1173,6 +1173,21 @@ async def _handle_billing_webhook(request: Any) -> Any:
     except (ValueError, UnicodeDecodeError):
         return JSONResponse({"error": "invalid_json"}, status_code=400)
 
+    from tinyassets.billing.stripe_adapter import event_mode_matches_key
+
+    # A valid signature proves Stripe sent it; it does not prove which MODE it came
+    # from. If a test endpoint's signing secret were ever left configured on a live
+    # deployment, TEST subscriptions -- free to create with card 4242 -- would grant
+    # the paid tier. Refuse loudly rather than entitle across modes.
+    if not event_mode_matches_key(event):
+        import logging
+
+        logging.getLogger(__name__).error(
+            "refusing a billing webhook from the wrong Stripe mode: event livemode=%r",
+            event.get("livemode"),
+        )
+        return JSONResponse({"error": "wrong_stripe_mode"}, status_code=400)
+
     def _apply() -> dict[str, Any]:
         from tinyassets.api.helpers import _universe_dir
         from tinyassets.billing import (

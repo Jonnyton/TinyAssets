@@ -85,6 +85,44 @@ the precedence logic elsewhere — call the resolver.
 **Container deploys:** set `TINYASSETS_DATA_DIR=/data` + bind-mount the
 host path to `/data`. See `deploy/README.md` for the full pattern.
 
+## Billing (Stripe)
+
+All three live on the daemon in `/etc/tinyassets/env` (root:tinyassets, 0640). None is
+baked into `deploy/compose.yml`: compose `environment` values ship in this repo, and
+these are secrets.
+
+| Variable | What it is |
+|---|---|
+| `STRIPE_SECRET_KEY` | `sk_live_…` in production, `sk_test_…` in sandbox. Authorizes real charges. |
+| `STRIPE_WEBHOOK_SECRET` | `whsec_…`, **per-endpoint and per-mode**. Going live means a new endpoint and therefore a new secret. |
+| `TINYASSETS_BILLING_ENTITLEMENT_KEY` | Signs the HMAC claim in each subscription's Stripe metadata. **Ours, not Stripe's.** |
+
+Billing is inert unless the first two are set (`billing_enabled()`), so a deployment
+without them serves the app with the Upgrade control disabled rather than failing.
+
+**Why the entitlement key is separate from the webhook secret.** The claim proves a
+subscription is one *we* created for a given universe. Signing it with Stripe's webhook
+secret tied that authority to a key Stripe tells you to rotate — and that you must
+rotate the moment it leaks. Rotating it would invalidate the claim on every subscription
+already sold, and those subscriptions could then never move a tier again: a later
+cancellation would fail authorization and be ignored, leaving someone entitled who had
+cancelled. Claims are versioned; `v1` (webhook secret) is still verified so existing
+subscriptions keep working, `v2` uses this key, and nothing new is issued as `v1` once
+it is set.
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+**Rotating `TINYASSETS_BILLING_ENTITLEMENT_KEY` invalidates every v2 subscription.** Only
+rotate it with a re-signing migration, or by adding a `v3` that verifies `v2` alongside.
+
+**Mode safety.** The webhook refuses any event whose `livemode` disagrees with the
+configured key, so a leftover test secret on a live deployment fails loudly instead of
+letting free test-mode subscriptions grant the paid tier.
+
+Readiness: `python scripts/stripe_go_live.py --check`.
+
 ## Local secrets — vault-first
 
 Local operator secrets (Cloudflare tokens, DigitalOcean token, Hetzner creds, OpenAI key) load from a password manager, not a plaintext file. Vendor is chosen via `TINYASSETS_SECRETS_VENDOR` — `1password` (default), `bitwarden`, or `plaintext` (migration-period opt-out, to be retired after cutover).

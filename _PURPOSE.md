@@ -1,16 +1,16 @@
 # Worktree purpose
 
-Purpose: pending-cancellation-visible
+Purpose: checkout-session-lease
 Provider: claude-code
-Branch: claude/pending-cancellation-visible
-Base ref: claude/billing-lifecycle-correction (stacked; rebase to main once #2610 lands)
-Issue/PR: resolves docs/concerns/2026-08-28-a-cancelled-subscription-looks-uncancelled.md
-PLAN refs: billing / onboarding app surface
-Ship condition: after cancelling, a reload shows "Paid · ends <date>" and clicking it
-  does not offer a second cancellation; proven live through the webapp
+Branch: claude/checkout-session-lease
+Base ref: origin/main
+Issue/PR: toward "ready to activate Stripe for real users"
+PLAN refs: billing
+Ship condition: `scripts/stripe_go_live.py --check` names every remaining blocker and
+  none of them is ours; no cross-mode entitlement is possible
 Abandon condition: n/a
-Pickup hints: ends_at is DISPLAY ONLY — get_tier remains the entitlement authority
-Memory refs: syntax-check-is-not-reachability (all new JS at indent 2 = script scope);
-  never-game-the-gate-with-xfail
-Related implications: stacked on #2610; do not merge before it
+Pickup hints: the checkout-lease redesign (the double-billing races) is NOT in this
+  commit — it is awaiting a Codex design verdict and lands separately
+Memory refs: automerge-can-land-a-stale-head (every commit independently safe)
+Related implications: docs/concerns/2026-08-28-the-checkout-claim-is-not-tied-to-its-session.md
 Idea feed refs: (none)

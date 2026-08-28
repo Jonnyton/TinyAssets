@@ -102,18 +102,22 @@ def _subscription_object(
     status: str = "active",
     secret: str = SECRET,
     price: dict | None = None,
+    version: str = "1",
 ) -> dict:
     from tinyassets.billing.stripe_adapter import _entitlement_claim
 
     selected_price = price or _plan_price()
+    # Sign with the SAME version stamped in metadata. Letting the signature follow
+    # the ambient env while the metadata said "1" produced an object no verifier
+    # should ever accept, and the fixture's meaning changed with the environment.
     return {
         "id": "sub_tinyassets",
         "status": status,
         "metadata": {
             "universe_id": universe_id,
-            "tinyassets_entitlement_version": "1",
+            "tinyassets_entitlement_version": version,
             "tinyassets_entitlement_claim": _entitlement_claim(
-                universe_id, selected_price["id"], secret=secret
+                universe_id, selected_price["id"], secret=secret, version=version
             ),
         },
         "items": {"data": [{"quantity": 1, "price": selected_price}]},
@@ -121,9 +125,20 @@ def _subscription_object(
 
 
 def _subscription_event(
-    status: str = "active", *, kind: str = "customer.subscription.updated", **kwargs
+    status: str = "active",
+    *,
+    kind: str = "customer.subscription.updated",
+    livemode: bool = False,
+    **kwargs,
 ) -> dict:
-    return {"type": kind, "data": {"object": _subscription_object(status=status, **kwargs)}}
+    # Real Stripe events always carry `livemode`, and the webhook refuses one whose
+    # mode does not match the configured key. Test mode is the default here because
+    # the suite runs with an sk_test key.
+    return {
+        "type": kind,
+        "livemode": livemode,
+        "data": {"object": _subscription_object(status=status, **kwargs)},
+    }
 
 
 def _sign(payload: bytes, timestamp: int, secret: str = SECRET) -> str:
@@ -378,6 +393,7 @@ def _capture_checkout(monkeypatch, *, anchor: float, universe_id: str = "u-1"):
 
     def _urlopen(request, timeout=None):
         seen["key"] = request.get_header("Idempotency-key")
+        seen["api_version"] = request.get_header("Stripe-version")
         seen["params"] = dict(
             urllib.parse.parse_qsl(request.data.decode("utf-8"))
         )
@@ -1177,3 +1193,212 @@ def test_the_page_shows_the_end_date_and_stops_offering_a_second_cancel():
     assert "already cancelled" in click, (
         "clicking an already-cancelled plan must not offer to cancel again"
     )
+
+
+
+# --- the test -> live switch -------------------------------------------------
+#
+# The one guard that only matters once, and matters absolutely then: a TEST-mode
+# subscription is free for anyone to create with card 4242. If a test endpoint's
+# signing secret were left configured on a live deployment, those would entitle.
+
+
+def test_an_event_from_the_wrong_stripe_mode_is_refused(tmp_path, monkeypatch):
+    import asyncio
+    import json as _json
+
+    import tinyassets.api.helpers as helpers
+    from tinyassets import onboarding
+    from tinyassets.storage.subscription_state import get_tier
+
+    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
+    monkeypatch.setattr(helpers, "_universe_dir", lambda u: tmp_path / u)
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", SECRET)
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
+
+    universe = "u-mode"
+    (tmp_path / universe).mkdir()
+    # A LIVE-mode event arriving at a TEST-mode deployment.
+    event = _subscription_event(universe_id=universe, livemode=True)
+    payload = _json.dumps(event).encode()
+
+    class _Request:
+        headers = {
+            "content-length": str(len(payload)),
+            "stripe-signature": _sign(payload, int(time.time())),
+        }
+
+        async def stream(self):
+            yield payload
+
+    response = asyncio.run(onboarding._handle_billing_webhook(_Request()))
+    assert response.status_code == 400
+    assert get_tier(tmp_path / universe) == "free", "no cross-mode entitlement"
+
+
+def test_a_test_mode_event_cannot_entitle_a_live_deployment(tmp_path, monkeypatch):
+    """The direction that actually costs money."""
+    import asyncio
+    import json as _json
+
+    import tinyassets.api.helpers as helpers
+    from tinyassets import onboarding
+    from tinyassets.storage.subscription_state import get_tier
+
+    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
+    monkeypatch.setattr(helpers, "_universe_dir", lambda u: tmp_path / u)
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", SECRET)
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_live_pretend")
+
+    universe = "u-livemode"
+    (tmp_path / universe).mkdir()
+    event = _subscription_event(universe_id=universe, livemode=False)
+    payload = _json.dumps(event).encode()
+
+    class _Request:
+        headers = {
+            "content-length": str(len(payload)),
+            "stripe-signature": _sign(payload, int(time.time())),
+        }
+
+        async def stream(self):
+            yield payload
+
+    assert asyncio.run(
+        onboarding._handle_billing_webhook(_Request())
+    ).status_code == 400
+    assert get_tier(tmp_path / universe) == "free"
+
+
+@pytest.mark.parametrize("livemode", [None, "true", 1, "", {}])
+def test_a_missing_or_non_boolean_livemode_is_a_mismatch(livemode, monkeypatch):
+    """Stripe always sends a real boolean. Anything else is not something to guess."""
+    from tinyassets.billing import event_mode_matches_key
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
+    event = {"type": "customer.subscription.updated"}
+    if livemode is not None:
+        event["livemode"] = livemode
+    assert event_mode_matches_key(event) is False
+
+
+def test_matching_modes_pass(monkeypatch):
+    from tinyassets.billing import event_mode_matches_key
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
+    assert event_mode_matches_key({"livemode": False}) is True
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_live_x")
+    assert event_mode_matches_key({"livemode": True}) is True
+
+
+# --- the entitlement key must not be Stripe's to rotate ----------------------
+#
+# v1 signed the claim with the STRIPE WEBHOOK SECRET. Stripe tells you to roll that
+# periodically, and you must roll it the moment it leaks — which nearly happened on
+# 2026-08-28. Rolling it invalidates the claim on every subscription already sold, and
+# those subscriptions can then never move a tier again.
+
+
+ENTITLEMENT_KEY = "tinyassets_entitlement_key_for_tests"
+_NOW_ANCHOR = time.time()
+
+
+def _v2_subscription(monkeypatch, *, universe_id="u-1"):
+    from tinyassets.billing import stripe_adapter
+
+    monkeypatch.setenv("TINYASSETS_BILLING_ENTITLEMENT_KEY", ENTITLEMENT_KEY)
+    assert stripe_adapter.entitlement_key() == ENTITLEMENT_KEY
+    return _subscription_object(universe_id=universe_id, version="2")
+
+
+def test_a_v2_claim_survives_rolling_the_stripe_webhook_secret(monkeypatch):
+    """The property the whole change exists for."""
+    from tinyassets.billing.stripe_adapter import _authorized_subscription_universe
+
+    obj = _v2_subscription(monkeypatch)
+    assert _authorized_subscription_universe(obj, secret=SECRET) == "u-1"
+
+    # Stripe's signing secret is rolled. The subscription must still authorize.
+    assert _authorized_subscription_universe(obj, secret="whsec_rolled") == "u-1"
+
+
+def test_a_v1_claim_does_not_survive_it(monkeypatch):
+    """Stated, not assumed. This is exactly why v1 had to be replaced."""
+    from tinyassets.billing.stripe_adapter import _authorized_subscription_universe
+
+    obj = _subscription_object()  # v1, signed with SECRET
+    assert _authorized_subscription_universe(obj, secret=SECRET) == "u-1"
+    assert _authorized_subscription_universe(obj, secret="whsec_rolled") == ""
+
+
+def test_v1_subscriptions_keep_working_after_the_upgrade(monkeypatch):
+    """Upgrading the scheme must not orphan what is already sold."""
+    from tinyassets.billing.stripe_adapter import _authorized_subscription_universe
+
+    monkeypatch.setenv("TINYASSETS_BILLING_ENTITLEMENT_KEY", ENTITLEMENT_KEY)
+    obj = _subscription_object()  # sold under v1
+    assert _authorized_subscription_universe(obj, secret=SECRET) == "u-1"
+
+
+def test_new_checkouts_issue_v2_once_the_key_exists(monkeypatch):
+    sent = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR)
+    assert sent["params"][
+        "subscription_data[metadata][tinyassets_entitlement_version]"
+    ] == "1", "without the key, the old scheme"
+
+    monkeypatch.setenv("TINYASSETS_BILLING_ENTITLEMENT_KEY", ENTITLEMENT_KEY)
+    sent = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR)
+    assert sent["params"][
+        "subscription_data[metadata][tinyassets_entitlement_version]"
+    ] == "2"
+
+
+@pytest.mark.parametrize("version", ["", "0", "3", "v2", None])
+def test_an_unrecognised_entitlement_version_authorizes_nothing(version, monkeypatch):
+    from tinyassets.billing.stripe_adapter import _authorized_subscription_universe
+
+    monkeypatch.setenv("TINYASSETS_BILLING_ENTITLEMENT_KEY", ENTITLEMENT_KEY)
+    obj = _v2_subscription(monkeypatch)
+    if version is None:
+        obj["metadata"].pop("tinyassets_entitlement_version")
+    else:
+        obj["metadata"]["tinyassets_entitlement_version"] = version
+    assert _authorized_subscription_universe(obj, secret=SECRET) == ""
+
+
+def test_a_v2_claim_cannot_be_verified_with_the_v1_key(monkeypatch):
+    """The version selects the key; a mismatched pairing must not validate."""
+    from tinyassets.billing.stripe_adapter import _authorized_subscription_universe
+
+    obj = _v2_subscription(monkeypatch)
+    obj["metadata"]["tinyassets_entitlement_version"] = "1"
+    assert _authorized_subscription_universe(obj, secret=SECRET) == ""
+
+
+def test_every_stripe_request_pins_the_api_version(monkeypatch):
+    """Unversioned requests inherit a DASHBOARD setting we do not control."""
+    from tinyassets.billing import stripe_adapter
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_fake")
+    seen: dict = {}
+
+    class _Resp:
+        def read(self):
+            return b'{"data": []}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _urlopen(request, timeout=None):
+        seen["version"] = request.get_header("Stripe-version")
+        return _Resp()
+
+    monkeypatch.setattr(stripe_adapter.urllib.request, "urlopen", _urlopen)
+    stripe_adapter._get("prices?limit=1")
+    assert seen["version"] == stripe_adapter.STRIPE_API_VERSION
+
+    sent = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR)
+    assert sent.get("api_version") == stripe_adapter.STRIPE_API_VERSION
