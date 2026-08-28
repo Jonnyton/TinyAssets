@@ -204,7 +204,8 @@
           </div>
           <label class="field"><span>API host</span>
             <input id="http-host" type="text" placeholder="e.g. openrouter.ai or api.x.com" /></label>
-          <label class="field"><span>Path it may call <span class="muted">(optional; default any path)</span></span>
+          <label class="field"><span>Path it may call
+              <span class="muted">(required; one exact path starting with /)</span></span>
             <input id="http-path" type="text" placeholder="e.g. /api/v1/chat/completions or /2/tweets" /></label>
           <label class="field"><span>Methods <span class="muted">(comma-separated)</span></span>
             <input id="http-methods" type="text" placeholder="POST, GET" value="POST" /></label>
@@ -1139,7 +1140,11 @@
       $("http-oauth1a").hidden=(scheme!=="oauth1a"); $("http-secret-field").hidden=(scheme==="oauth1a");
     });
     $("btn-connect-http").addEventListener("click",async()=>{
-      const dest=$("http-destination").value.trim(), host=$("http-host").value.trim();
+      const dest=$("http-destination").value.trim();
+      // A pasted "https://api.github.com" is unambiguous, but the SSRF allow-list
+      // wants a bare hostname and refuses the scheme. Normalize instead of sending
+      // the user through a refusal for something we can read perfectly well.
+      const host=$("http-host").value.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i,"").replace(/\/+$/,"");
       const path=$("http-path").value.trim(), methodsRaw=$("http-methods").value.trim();
       const secretEl=$("http-secret"), scheme=$("http-auth-scheme").value;
       let secret=secretEl.value.trim();
@@ -1161,12 +1166,21 @@
       secretEl.value="";
       if(scheme==="oauth1a"&&oauth1aMissing){ out.textContent="All four OAuth 1.0a values are needed: API Key, API Key Secret, Access Token, Access Token Secret. Please enter them again."; return; }
       if(!dest||!host||!secret){ out.textContent="Enter a name, host, and the credential"+(secret?" — please paste the credential again.":"."); return; }
+      // The path is REQUIRED, whatever the old label said. An endpoint with no
+      // path_template is refused by the allow-list validator ("path_template must
+      // be an absolute path"), and a blank one is NOT read as "any path" — there is
+      // no any-path form this deposit can express, since every {placeholder} needs
+      // param_patterns the form does not collect. Catch it here, in words, rather
+      // than let it come back as an endpoint_not_permitted code.
+      if(!path||path[0]!=="/"){
+        out.textContent="Add the exact path this key may call, starting with \"/\" — e.g. /repos/owner/repo/pulls. Leaving it blank is refused, not treated as \"any path\".";
+        return; }
       if(scheme==="basic"){
         const i=secret.indexOf(":");
         if(i<=0||i===secret.length-1){ out.textContent="Basic auth needs username:password (both non-empty). Please paste it again."; return; }
       }
       const methods=(methodsRaw||"POST").split(",").map(m=>m.trim().toUpperCase()).filter(Boolean);
-      const endpoint={host,methods}; if(path) endpoint.path_template=path;
+      const endpoint={host,methods,path_template:path};
       btn.disabled=true; out.textContent="Depositing securely...";
       try{
         const r=await MCP.connectHTTP(dest,secret,[endpoint],scheme);

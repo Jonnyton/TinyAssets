@@ -225,19 +225,63 @@ def test_deposit_form_makes_the_x_path_discoverable():
         assert field in html
 
 
+
+
 def test_deposit_error_surfaces_the_actionable_detail():
-    """Founder 2026-08-27: deposited a GitHub API connection twice ("i think i
-    deposited it"), and it never landed. ``connect_http`` had refused it with
-    ``{"error": "connection_setup_invalid", "detail": "destination must be 2-127
-    chars of [a-z0-9._:-] ..."}`` - a name with a space - but the form rendered
-    only the bare error code, so nothing on screen said what to change. The
-    ``detail`` is the half a user can act on; render it like the Claude path does,
-    and state the name rule on the field itself."""
+    """Founder 2026-08-27: deposited a GitHub API connection repeatedly ("i think i
+    deposited it") and it never landed. The form rendered only the bare error code
+    -- the founder eventually reported seeing exactly "Couldn't add it:
+    endpoint_not_permitted" -- while the server's ``detail`` said which rule fired.
+    The detail is the half a user can act on; render it like the Claude path does."""
     from tinyassets.onboarding import render_app_html
 
     html, _csp = render_app_html()
-    # The HTTP deposit renders detail-first, not the opaque error code alone.
-    assert '"Couldn\'t add it: "+(r.detail||r.error)' in html
-    assert '"Couldn\'t add it: "+r.error' not in html
+    assert "+(r.detail||r.error)" in html
+    assert '"+r.error;' not in html
     # The Name field states the constraint the server actually enforces.
     assert "no spaces" in html
+
+
+def test_deposit_path_is_presented_as_required_because_it_is():
+    """The field was labelled "optional; default any path". It is neither.
+
+    ``_parse_allowed_endpoints`` refuses an endpoint carrying no ``path_template``,
+    and there is no any-path form this deposit can express: every ``{placeholder}``
+    needs ``param_patterns`` the form does not collect. So a user who believed the
+    label got the ``endpoint_not_permitted`` refusal the founder actually saw."""
+    from tinyassets.api.http_connection import _parse_allowed_endpoints
+    from tinyassets.onboarding import render_app_html
+    from tinyassets.storage.outbound_connections import SsrfValidationError
+
+    # The server half: blank really is refused, so the old label was false.
+    with pytest.raises(SsrfValidationError):
+        _parse_allowed_endpoints([{"host": "api.github.com", "methods": ["POST"]}])
+    _parse_allowed_endpoints(
+        [{"host": "api.github.com", "path_template": "/repos/o/r/pulls",
+          "methods": ["POST"]}]
+    )
+
+    html, _csp = render_app_html()
+    assert "optional; default any path" not in html
+    assert "required; one exact path starting with /" in html
+    # The endpoint always carries the path now, and a blank one is caught in words.
+    assert "const endpoint={host,methods,path_template:path};" in html
+    assert "not treated as" in html
+
+
+def test_deposit_host_tolerates_a_pasted_scheme():
+    """A pasted "https://api.github.com" is refused by the allow-list ("endpoint
+    host is not a permitted hostname"). The form strips the scheme rather than
+    round-tripping the user through a refusal for something unambiguous."""
+    from tinyassets.api.http_connection import _parse_allowed_endpoints
+    from tinyassets.onboarding import render_app_html
+    from tinyassets.storage.outbound_connections import SsrfValidationError
+
+    with pytest.raises(SsrfValidationError):
+        _parse_allowed_endpoints(
+            [{"host": "https://api.github.com", "path_template": "/x",
+              "methods": ["POST"]}]
+        )
+
+    html, _csp = render_app_html()
+    assert r'replace(/^[a-z][a-z0-9+.-]*:\/\//i,"")' in html
