@@ -402,6 +402,24 @@ cmd_set() {
     fi
     value="${value%$'\n'}"
 
+    # A Windows/PowerShell caller pipes UTF-16-ish output: PowerShell prepends a
+    # UTF-8 BOM and terminates with CRLF, so the value arrives as
+    # $'\xef\xbb\xbfsk_test_...\r'. Stripping only the trailing LF above leaves both
+    # the BOM and a bare CR embedded in the stored secret, which then fails
+    # authentication at the destination with no hint as to why. Measured
+    # 2026-08-28 piping a probe value from PowerShell.
+    #
+    # A leading BOM is never part of a legitimate env value, so strip it. A single
+    # TRAILING CR is a line terminator exactly like the LF stripped above, so strip
+    # it too. An EMBEDDED CR is different in kind — that is the newline-smuggling
+    # vector (a value carrying its own second `KEY=value` line), so refuse it.
+    value="${value#$'\xef\xbb\xbf'}"
+    value="${value%$'\r'}"
+    if [[ "${value}" == *$'\r'* ]]; then
+        echo "::error::value for ${key} contains an embedded carriage return" >&2
+        exit 1
+    fi
+
     if [ "${immutable}" = "true" ]; then
         if [[ "${value}" == *$'\n'* || "${value}" == *$'\r'* ]]; then
             echo "::error::set-once requires a single-line value for ${key}" >&2
