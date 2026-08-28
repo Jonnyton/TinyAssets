@@ -360,3 +360,38 @@ def test_paste_extraction_closes_the_codex_client_findings():
     # The intent box is cleared with the paste, so a credential typed into the
     # wrong box does not persist through an inference failure.
     assert 'blobEl.value=""; intentEl.value="";' in html
+
+
+def test_pending_requests_render_as_a_side_rail_of_tabs():
+    """Founder 2026-08-27: *"pending-request should show up as tabs on the ...
+    side screen of the app, the hedder notates what it is like api in this case
+    you tap/click them to expand and in this case paist in the api right there"*
+    — moved to the RIGHT on his follow-up the same evening.
+    """
+    from tinyassets.onboarding import render_app_html
+
+    html, _csp = render_app_html()
+    assert 'id="request-rail"' in html and 'id="rail-items"' in html
+    # On the right: the thread comes first in the flex row, and the rail's
+    # divider is its left edge.
+    assert html.index('id="thread"') < html.index('id="request-rail"')
+    assert "border-left:1px solid var(--line)" in html
+    # The header IS the agent's chosen kind, not a fixed label.
+    assert 'kind.textContent = req.kind;' in html
+    # Tap to expand, answer in place.
+    assert "railOpen = (railOpen === req.request_id)" in html
+    assert "MCP.answerRequest(payload)" in html
+    # Fields are whatever the agent composed, including a paste box for a key.
+    assert 'field.type === "secret" ? "textarea" : "input"' in html
+    # Secrets are cleared from the DOM once submitted.
+    assert 'values[f.name] = el.value; el.value = "";' in html
+
+
+def test_the_rail_offers_feedback_and_dont_ask_again():
+    """An approval needs a way to disagree and a way to stop being asked."""
+    from tinyassets.onboarding import render_app_html
+
+    html, _csp = render_app_html()
+    assert "Don't ask me this again" in html
+    assert "payload.dont_ask_again = true" in html
+    assert "payload.feedback =" in html

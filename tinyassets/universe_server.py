@@ -564,6 +564,13 @@ def read_graph(
                 universe_id=graph_id,
             )
         )
+    if normalized == "pending_requests":
+        # The left-rail tabs: what the agent is waiting on the user for. Same
+        # read from every surface, which is what makes them addressable from the
+        # phone without a second mechanism. Carries no credential material.
+        from tinyassets.api.pending_requests import list_requests
+
+        return json.dumps(list_requests(universe_id=graph_id, limit=limit))
     if normalized == "agents":
         return json.dumps(
             _custom_agents_impl(
@@ -620,6 +627,7 @@ def read_graph(
             "automations",
             "automation",
             "connections",
+            "pending_requests",
             "compute",
             "agents",
             "agent",
@@ -996,6 +1004,19 @@ def write_graph(
                     payload=payload_json,
                 )
             )
+        if connection_operation in (
+            "request_from_user", "answer_request", "unmute_request",
+        ):
+            # ONE general primitive: the agent asks its user something and waits,
+            # rendered as a tab in the app's left rail (founder 2026-08-27). The
+            # agent composes the header, prose and fields, so kinds nobody coded
+            # for still work; "I need an API key" is just the first kind. New
+            # OPERATIONS on the pinned write_graph handle, so the advertised tool
+            # catalog is unchanged (Hard Rule 11).
+            from tinyassets.api import pending_requests as _pending
+
+            handler = getattr(_pending, connection_operation)
+            return json.dumps(handler(universe_id=graph_id, payload=payload_json))
         if connection_operation == "resolve_connection":
             # Owner-scoped, WRITE-FREE proposal: turns the *shape* of pasted
             # credential material (label + public prefix + length, never the
