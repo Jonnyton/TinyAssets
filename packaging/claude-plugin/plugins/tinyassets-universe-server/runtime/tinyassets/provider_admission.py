@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from contextlib import contextmanager
 
 _log = logging.getLogger(__name__)
@@ -91,11 +92,57 @@ def _get_semaphore() -> tuple[threading.BoundedSemaphore, int]:
         return _semaphore, _semaphore_limit
 
 
+#: Rolling record of what actually happened here. This exists because capacity in
+#: USERS is `slots / turn_duration`, and turn duration was not recorded anywhere: the
+#: `started_at`/`finished_at` columns on `run_events` sit microseconds apart with one
+#: event per run, so they are bookkeeping, not execution spans. Without this you can
+#: state a slots number and cannot honestly state a users-per-box number.
+#:
+#: Deliberately in-memory and bounded. A capacity metric that itself needs a database
+#: write per turn would be adding load to the thing it measures.
+_MAX_SAMPLES = 512
+_stats_lock = threading.Lock()
+_durations: list[float] = []
+_admitted = 0
+_refused = 0
+_live = 0
+_peak_live = 0
+
+
+def admission_snapshot() -> dict:
+    """What the bound has actually seen. Surfaced through `get_status`."""
+    with _stats_lock:
+        d = sorted(_durations)
+        out = {
+            "limit": _positive_int(_LIMIT_VAR, _DEFAULT_LIMIT),
+            "admitted": _admitted,
+            "refused": _refused,
+            "live": _live,
+            "peak_concurrent": _peak_live,
+            "samples": len(d),
+        }
+    if d:
+        out["turn_seconds"] = {
+            "p50": round(d[len(d) // 2], 2),
+            "p90": round(d[max(0, int(len(d) * 0.90) - 1)], 2),
+            "p99": round(d[max(0, int(len(d) * 0.99) - 1)], 2),
+            "max": round(d[-1], 2),
+        }
+        # The number the capacity question actually turns on.
+        p50 = d[len(d) // 2]
+        if p50 > 0:
+            out["sustainable_turns_per_second"] = round(out["limit"] / p50, 3)
+    return out
+
+
 def reset_for_tests() -> None:
-    global _semaphore, _semaphore_limit
+    global _semaphore, _semaphore_limit, _admitted, _refused, _live, _peak_live
     with _lock:
         _semaphore = None
         _semaphore_limit = 0
+    with _stats_lock:
+        _durations.clear()
+        _admitted = _refused = _live = _peak_live = 0
 
 
 @contextmanager
@@ -104,15 +151,36 @@ def provider_slot():
 
     Released on every exit path, including exceptions — a slot leaked on an error is a
     permanent capacity loss, and errors are exactly when the system is already busy.
+
+    Also times the hold, because this context manager brackets exactly the lifetime of
+    the provider subprocess. That makes it the one honest place to learn how long a real
+    turn takes, which is the missing half of every users-per-box claim.
     """
+    global _admitted, _refused, _live, _peak_live
     sem, limit = _get_semaphore()
     if not sem.acquire(timeout=_positive_float(_WAIT_VAR, _DEFAULT_WAIT_S)):
+        with _stats_lock:
+            _refused += 1
         _log.warning("provider admission: all %d slots busy; refusing", limit)
         raise ProviderBusy(
             f"All {limit} provider slots are busy right now. Your universe is "
             "working on other turns — try again in a moment."
         )
+    started = time.monotonic()
+    with _stats_lock:
+        _admitted += 1
+        _live += 1
+        _peak_live = max(_peak_live, _live)
     try:
         yield
     finally:
         sem.release()
+        # Timed on EVERY exit, failures included. A turn that died after 40 seconds
+        # occupied a slot for 40 seconds; excluding it would flatter the numbers in
+        # exactly the conditions worth measuring.
+        elapsed = time.monotonic() - started
+        with _stats_lock:
+            _live -= 1
+            _durations.append(elapsed)
+            if len(_durations) > _MAX_SAMPLES:
+                del _durations[: len(_durations) - _MAX_SAMPLES]

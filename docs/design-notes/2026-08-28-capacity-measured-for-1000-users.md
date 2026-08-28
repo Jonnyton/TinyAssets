@@ -196,11 +196,26 @@ The sensitivity, so the decision does not wait on it:
 table: today's 6 slots carry the average comfortably at any plausible turn length and
 miss the peak unless turns are fast; 25 slots carry the peak except at the slow end.
 
-**So the honest answer is that the resize plus the admission bound very likely covers
-1,000 users at ordinary intensity, and I cannot prove the peak without measuring turn
-duration.** That measurement needs instrumentation the code does not have — a real
-`started_at`/`finished_at` around the provider call — and it should land before anyone
-claims a users-per-box number rather than a slots number.
+**So the resize plus the admission bound very likely covers 1,000 users at ordinary
+intensity, and the peak cannot be proven without turn duration.**
+
+That instrumentation now exists. The admission context manager brackets exactly the
+provider subprocess's lifetime, which makes it the one honest place to time a turn, so it
+does — every turn, failures included (a turn that dies after 40 s occupied a slot for
+40 s; excluding it would flatter the numbers in precisely the conditions worth measuring).
+`get_status.provider_admission` reports it on the live surface:
+
+```json
+{"limit": 6, "admitted": 0, "refused": 0, "live": 0, "peak_concurrent": 0,
+ "samples": 0, "turn_seconds": {"p50": …, "p90": …, "p99": …},
+ "sustainable_turns_per_second": …}
+```
+
+`sustainable_turns_per_second` is `limit / p50` — the number this whole question turns
+on, computed from production rather than projected. `refused` and `peak_concurrent`
+answer the other half: whether the bound is actually binding, which is a fact about
+traffic and not a setting. **Once real turns have flowed through it, readiness stops
+being an argument and becomes a reading.**
 
 What the admission bound changes regardless of that unknown: exceeding capacity now
 queues briefly and then refuses honestly, instead of spawning until the host OOMs and

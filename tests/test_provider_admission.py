@@ -116,3 +116,85 @@ def test_a_bad_limit_falls_back_rather_than_disabling_the_bound(monkeypatch):
     for bad in ("0", "-5", "banana", ""):
         monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", bad)
         assert pa._positive_int(pa._LIMIT_VAR, pa._DEFAULT_LIMIT) == pa._DEFAULT_LIMIT
+
+
+class TestTurnDurationInstrumentation:
+    """The missing half of every users-per-box claim.
+
+    Capacity in USERS is `slots / turn_duration`. Slots were knowable; turn duration was
+    not recorded anywhere — `run_events.started_at/finished_at` sit microseconds apart
+    with one event per run, so they are bookkeeping, not execution spans. This context
+    manager brackets exactly the provider subprocess's lifetime, which makes it the one
+    honest place to measure it.
+    """
+
+    def test_it_records_how_long_a_turn_held_its_slot(self):
+        with pa.provider_slot():
+            time.sleep(0.05)
+        snap = pa.admission_snapshot()
+        assert snap["admitted"] == 1
+        assert snap["samples"] == 1
+        assert snap["turn_seconds"]["p50"] >= 0.04
+
+    def test_a_failed_turn_is_still_timed(self):
+        """A turn that dies after 40 s occupied a slot for 40 s. Excluding failures
+        would flatter the numbers in exactly the conditions worth measuring."""
+        with pytest.raises(ValueError):
+            with pa.provider_slot():
+                time.sleep(0.05)
+                raise ValueError("provider died")
+        assert pa.admission_snapshot()["samples"] == 1
+
+    def test_it_reports_the_capacity_number_the_question_turns_on(self, monkeypatch):
+        monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "10")
+        with pa.provider_slot():
+            time.sleep(0.1)
+        snap = pa.admission_snapshot()
+        # 10 slots / ~0.1 s per turn ~= 100 turns/sec
+        assert 50 < snap["sustainable_turns_per_second"] < 200, snap
+
+    def test_refusals_are_counted_separately_from_turns(self, monkeypatch):
+        monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "1")
+        monkeypatch.setenv("TINYASSETS_PROVIDER_ADMISSION_WAIT_S", "0.05")
+        with pa.provider_slot():
+            with pytest.raises(pa.ProviderBusy):
+                with pa.provider_slot():
+                    pass
+        snap = pa.admission_snapshot()
+        assert snap["refused"] == 1
+        assert snap["admitted"] == 1, "a refusal must not count as a turn"
+
+    def test_peak_concurrency_is_observed_not_assumed(self, monkeypatch):
+        """Whether the bound actually binds is a fact about production, not a setting."""
+        monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "4")
+        monkeypatch.setenv("TINYASSETS_PROVIDER_ADMISSION_WAIT_S", "10")
+        start = threading.Barrier(3)
+
+        def worker():
+            start.wait()
+            with pa.provider_slot():
+                time.sleep(0.08)
+
+        ts = [threading.Thread(target=worker) for _ in range(3)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(timeout=30)
+        assert pa.admission_snapshot()["peak_concurrent"] == 3
+
+    def test_the_sample_buffer_is_bounded(self):
+        """An unbounded list on a hot path is a leak, and this one is on every turn."""
+        for _ in range(pa._MAX_SAMPLES + 50):
+            with pa.provider_slot():
+                pass
+        assert pa.admission_snapshot()["samples"] <= pa._MAX_SAMPLES
+
+    def test_live_returns_to_zero(self):
+        """A live counter that drifts up makes the bound look saturated forever."""
+        for _ in range(5):
+            with pa.provider_slot():
+                pass
+        with pytest.raises(ValueError):
+            with pa.provider_slot():
+                raise ValueError("boom")
+        assert pa.admission_snapshot()["live"] == 0
