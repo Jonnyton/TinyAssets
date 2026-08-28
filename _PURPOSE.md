@@ -1,16 +1,18 @@
 # Worktree purpose
 
-Purpose: checkout-session-lease
+Purpose: worker-5xx-passthrough
 Provider: claude-code
-Branch: claude/checkout-session-lease
+Branch: claude/worker-5xx-passthrough
 Base ref: origin/main
-Issue/PR: toward "ready to activate Stripe for real users"
-PLAN refs: billing
-Ship condition: `scripts/stripe_go_live.py --check` names every remaining blocker and
-  none of them is ours; no cross-mode entitlement is possible
+Issue/PR: resolves docs/concerns/2026-08-28-worker-swallows-every-origin-5xx-body.md
+PLAN refs: edge / public surface
+Ship condition: a JSON 5xx from the origin reaches the caller with body and status
+  intact; a non-JSON 5xx is still translated to bad_gateway; Hard Rule 11 canary green
+  after the wrangler deploy
 Abandon condition: n/a
-Pickup hints: the checkout-lease redesign (the double-billing races) is NOT in this
-  commit — it is awaiting a Codex design verdict and lands separately
-Memory refs: automerge-can-land-a-stale-head (every commit independently safe)
-Related implications: docs/concerns/2026-08-28-the-checkout-claim-is-not-tied-to-its-session.md
+Pickup hints: the Worker deploys via wrangler, NOT via deploy-prod.yml — landing the PR
+  does not ship it
+Memory refs: live-test-finds-what-tests-cannot
+Related implications: docs/concerns/2026-08-28-stripe-4xx-reads-as-an-outage.md is the
+  case this most benefits once fixed
 Idea feed refs: (none)
