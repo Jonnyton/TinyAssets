@@ -28,6 +28,7 @@ from tinyassets.exceptions import (
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
+from tinyassets.provider_admission import provider_slot as _provider_slot
 from tinyassets.provider_work_authority import (
     ProviderInvocationCarrier,
     ProviderInvocationReservationState,
@@ -259,6 +260,9 @@ _CHAIN_DRAIN_EMPTY_THRESHOLD: int = 2
 # Keep it above 1 so an unrelated slow provider call does not serialize all
 # other sync callers behind one shared worker.
 _SYNC_CALL_MAX_WORKERS: int = 8
+
+# NOTE: `_provider_slot` (imported above) bounds concurrent provider SUBPROCESSES.
+# _SYNC_CALL_MAX_WORKERS bounds threads, which are cheap; a subprocess is ~77 MB.
 
 
 class ProviderRouter:
@@ -905,9 +909,14 @@ class ProviderRouter:
                     ) if served_authority is not None else None
                     if callable(before_launch):
                         before_launch()
-                    resp = await provider.complete(
-                        prompt, system, cfg, universe_dir=universe_dir,
-                    )
+                    # Bound concurrent provider SUBPROCESSES (~77 MB PSS each, measured).
+                    # The anyio threadpool admits 40 sync handlers; without this, 40
+                    # simultaneous turns meant 40 subprocesses and an OOM that kills the
+                    # host (and the tunnel with it), not just the request.
+                    with _provider_slot():
+                        resp = await provider.complete(
+                            prompt, system, cfg, universe_dir=universe_dir,
+                        )
                 except BaseException as exc:
                     if budget_reservation is not None:
                         # A provider that never became available produced no
@@ -1360,9 +1369,14 @@ class ProviderRouter:
             )
             tried += 1
             try:
-                resp = await provider.complete(
-                    prompt, system, cfg, universe_dir=universe_dir,
-                )
+                # Bound concurrent provider SUBPROCESSES (~77 MB PSS each, measured).
+                # The anyio threadpool admits 40 sync handlers; without this, 40
+                # simultaneous turns meant 40 subprocesses and an OOM that kills the
+                # host (and the tunnel with it), not just the request.
+                with _provider_slot():
+                    resp = await provider.complete(
+                        prompt, system, cfg, universe_dir=universe_dir,
+                    )
                 self._quota.record_success(provider_name)
                 return resp.text, provider_name, self._call_meta(resp, attempts=tried)
             except ProviderAuthorityHeldError:
@@ -1696,9 +1710,14 @@ class ProviderRouter:
             name: str, provider: BaseProvider,
         ) -> ProviderResponse | None:
             try:
-                resp = await provider.complete(
-                    prompt, system, cfg, universe_dir=universe_dir,
-                )
+                # Bound concurrent provider SUBPROCESSES (~77 MB PSS each, measured).
+                # The anyio threadpool admits 40 sync handlers; without this, 40
+                # simultaneous turns meant 40 subprocesses and an OOM that kills the
+                # host (and the tunnel with it), not just the request.
+                with _provider_slot():
+                    resp = await provider.complete(
+                        prompt, system, cfg, universe_dir=universe_dir,
+                    )
                 self._quota.record_success(name)
                 return resp
             except ProviderUnavailableError:
