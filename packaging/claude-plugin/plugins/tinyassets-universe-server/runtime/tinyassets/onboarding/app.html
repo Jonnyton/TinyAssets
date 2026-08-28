@@ -193,7 +193,8 @@
           via OpenRouter, posting to Slack/X, any HTTPS API. The key goes straight
           to the secure vault over TLS, <strong>never through chat</strong>. Your
           universe then builds on it (register it as compute, or wire a channel).</p>
-          <label class="field"><span>Name (a label you'll recognize)</span>
+          <label class="field"><span>Name (a label you'll recognize)
+              <span class="muted">(letters, numbers and . _ : - &mdash; no spaces)</span></span>
             <input id="http-destination" type="text" placeholder="e.g. openrouter or slack-webhook" /></label>
           <div class="preset-row">
             <span class="muted">Doing a common one? Fill it in for me:</span>
@@ -1169,7 +1170,13 @@
       btn.disabled=true; out.textContent="Depositing securely...";
       try{
         const r=await MCP.connectHTTP(dest,secret,[endpoint],scheme);
-        if(r&&r.error){ out.textContent="Couldn't add it: "+r.error; }
+        // Show the server's `detail` — it is the half that says WHAT to fix
+        // ("destination must be 2-127 chars of [a-z0-9._:-]..."). Rendering the
+        // bare `error` code left a real deposit dead with no way to self-correct:
+        // the founder typed a name with a space, saw only "connection_setup_invalid",
+        // and reported "i think i deposited it" twice while the connection did not
+        // exist (2026-08-27). The Claude-connect path above already does this.
+        if(r&&r.error){ out.textContent="Couldn't add it: "+(r.detail||r.error); }
         else{ out.textContent="Added — your universe can now use "+host+". Ask it to register this as compute (e.g. OpenRouter) or wire a channel with it.";
               $("http-destination").value=""; $("http-host").value=""; $("http-path").value=""; }
       }catch(err){ if(err.authRequired){ btn.disabled=false; return enterSignedOut(); } out.textContent="Couldn't add it: "+err.message; }

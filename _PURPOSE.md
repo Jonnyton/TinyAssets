@@ -1,12 +1,18 @@
-# Purpose
+# Worktree purpose
 
-Make the outbound credential broker's startup failure name its cause.
-
-The founder's `Hello World` post to X has failed since 2026-08-25 behind the
-fixed string `outbound proxy failed to start`, with no cause reachable by the
-founder, the universe, or the host. This branch does not fix the outage — it
-makes the next run say why.
-
-- PR: #2596
-- Concern: `docs/concerns/2026-08-27-outbound-proxy-start-failure.md`
-- Cross-family review: Codex ADAPT, acted on in `7315bd46`
+Purpose: fix-http-deposit-error-detail
+Provider: claude-code
+Branch: claude/fix-http-deposit-error-detail
+Base ref: origin/main
+Issue/PR: PR pending — found in the founder's live app conversation 2026-08-27
+PLAN refs: onboarding app / generic HTTP connection deposit (connect_http)
+Ship condition: onboarding tests green (incl. the new red-provable regression test),
+  ruff clean, plugin mirror rebuilt; live proof = a real deposit rejection now
+  renders the actionable detail in the app.
+Abandon condition: superseded by a broader deposit-form rework.
+Pickup hints: tinyassets/onboarding/app.html btn-connect-http handler; the Claude
+  connect path (~line 1003) was already detail-first and is the pattern copied.
+Memory refs: desktop-app-is-electron-cdp-testable, live-test-finds-what-tests-cannot
+Related implications: the founder's GitHub api.github.com deposit never landed;
+  endpoint validation was fine, the destination-name slug rule refused it silently.
+Idea feed refs: (none yet)
