@@ -85,6 +85,12 @@ the precedence logic elsewhere — call the resolver.
 **Container deploys:** set `TINYASSETS_DATA_DIR=/data` + bind-mount the
 host path to `/data`. See `deploy/README.md` for the full pattern.
 
+## Billing
+
+| Var | Purpose | Default |
+|-----|---------|---------|
+| `STRIPE_SECRET_KEY` | Stripe API key used by the billing adapter to report usage and manage subscriptions. **Droplet-side runtime secret** — lives in `/etc/tinyassets/env` alongside `CLOUDFLARE_TUNNEL_TOKEN` and `GH_TOKEN`, never in `compose.yml` (compose changes are inert in production, `docs/concerns/2026-08-27-deploy-drops-compose-sync.md`) and never in a committed file. Set it with the value on **stdin** so it never appears in argv or logs:<br>`printf '%s' 'sk_test_...' \| python scripts/droplet.py ssh -- "bash /root/install-tinyassets-env.sh set STRIPE_SECRET_KEY"`<br>Takes effect on the next container recreate. Absent = billing disabled; metering still runs and limits are still enforced, because the ledger is ours and does not depend on Stripe being reachable. | Unset (billing off). |
+
 ## Local secrets — vault-first
 
 Local operator secrets (Cloudflare tokens, DigitalOcean token, Hetzner creds, OpenAI key) load from a password manager, not a plaintext file. Vendor is chosen via `TINYASSETS_SECRETS_VENDOR` — `1password` (default), `bitwarden`, or `plaintext` (migration-period opt-out, to be retired after cutover).
