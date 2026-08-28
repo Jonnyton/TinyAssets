@@ -95,12 +95,19 @@ fi
 
 MIRROR_PREFIX="packaging/claude-plugin/plugins/tinyassets-universe-server/runtime"
 
-# List staged canonical paths under tinyassets/ (excluding subpackaged-only
-# paths that don't have a mirror - currently none, but defensive against
-# future additions).
+# List staged canonical paths under tinyassets/. Deliberately NOT filtered by
+# extension: build_plugin.py mirrors the tree with rglob("*"), so it copies
+# every file type, and an allow-list here can only ever be a stale subset of
+# that. It was `py|md|json|toml`, which silently passed every change to
+# tinyassets/onboarding/app.html - the entire browser app - so the mirror went
+# stale locally and only CI caught it (PR #2640, 2026-08-28).
+#
+# The real predicate is the one the loop below already applies: does a mirror
+# counterpart exist? Files without one are skipped there, which is what covers
+# new modules the plugin build has not picked up yet.
 STAGED_CANONICAL=$(
   git diff --cached --name-only --diff-filter=ACMR \
-    | grep -E '^tinyassets/.*\.(py|md|json|toml)$' || true
+    | grep -E '^tinyassets/' || true
 )
 
 if [ -z "${STAGED_CANONICAL}" ]; then
