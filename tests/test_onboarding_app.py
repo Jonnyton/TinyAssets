@@ -451,3 +451,21 @@ def test_a_bad_theme_value_never_reaches_the_page(tmp_path, monkeypatch):
 
     monkeypatch.setattr(onboarding.Path, "with_name", _fake_with_name, raising=False)
     assert onboarding.request_theme()["request_text"] == "#eef0ff"
+
+def test_the_app_restores_the_conversation_on_load():
+    """Founder, 2026-08-28: "the webapp seems to clear the conversation if you
+    refresh". It was worse than that — the app rendered ONLY what the current
+    page instance had appended, so EVERY refresh emptied the thread, finished
+    reply or not. The conversation was intact server-side the whole time; the
+    app simply never asked for it, including after its own automatic reload on a
+    new build."""
+    from tinyassets.onboarding import render_app_html
+
+    html, _csp = render_app_html()
+    assert "include_conversation:true" in html
+    assert "function loadHistory()" in html
+    assert "loadHistory();" in html
+    # Oldest-first render: the founder peek returns newest-first.
+    assert "turns.slice().reverse()" in html
+    # It must never block the chat on a history failure.
+    assert "history is a convenience; never block the chat on it" in html

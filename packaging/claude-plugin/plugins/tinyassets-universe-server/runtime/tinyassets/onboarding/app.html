@@ -684,6 +684,13 @@
     },
     converse(message){ return this.callTool("converse",{message}); },
     getStatus(){ return this.callTool("get_status",{}); },
+    // The shared cross-surface thread. The app rendered ONLY what was appended
+    // during the current page life, so any refresh — including the automatic
+    // one on a new build — emptied the conversation even though the server had
+    // it all along (founder, 2026-08-28).
+    getConversation(){
+      return this.callTool("get_status",{include_conversation:true});
+    },
     connectLLM(service,materialB64){
       return this.callTool("write_graph",{target:"connection",operation:"connect_llm",
         payload_json:JSON.stringify({service,auth_material_b64:materialB64})});
@@ -808,6 +815,7 @@
     engineConnected = true;
     showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus();
     loadPlan();
+    loadHistory();
   }
   // ---- plan / subscription -------------------------------------------
   // Reflects server-side tier and starts the two transitions. Cancellation does
@@ -1635,6 +1643,29 @@
       const r = await MCP.listRequests();
       if(r && Array.isArray(r.pending)) renderRail(r.pending);
     }catch(_e){ /* a rail that fails to load must never break the chat */ }
+  }
+
+  // Restore the conversation on load. Without this the thread only ever showed
+  // what this page instance had appended, so a refresh looked like the universe
+  // had forgotten everything — it had not; the app just never asked for it.
+  // A turn still in flight is NOT in the store yet (the exchange is recorded on
+  // completion), so a refresh mid-reply legitimately shows nothing for it; that
+  // is why the composer keeps its own optimistic copy until the reply lands.
+  let historyLoaded = false;
+  async function loadHistory(){
+    if(historyLoaded || !token()) return;
+    try{
+      const r = await MCP.getConversation();
+      const conv = r && r.recent_conversation;
+      const turns = (conv && Array.isArray(conv.turns)) ? conv.turns : [];
+      if(!turns.length) return;
+      historyLoaded = true;
+      // Oldest first: the peek returns newest-first.
+      turns.slice().reverse().forEach(t=>{
+        const who = (t && t.speaker === "universe") ? "universe" : "you";
+        if(t && typeof t.text === "string" && t.text) appendMessage(who, t.text);
+      });
+    }catch(_e){ /* history is a convenience; never block the chat on it */ }
   }
 
   // Proactive renewal: keep the ~5-minute access token fresh in the background so
