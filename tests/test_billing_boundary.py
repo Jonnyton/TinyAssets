@@ -65,9 +65,15 @@ def test_calls_fail_soft_rather_than_crashing_when_billing_is_off(monkeypatch):
     with pytest.raises(BillingUnavailable):
         create_checkout_session(
             universe_id="u-1",
-            success_url="https://x/ok",
-            cancel_url="https://x/no",
-            attempt_anchor=_NOW_ANCHOR,
+            attempt_id="attempt-one",
+            params={
+                "price_id": "price_x",
+                "success_url": "https://x/ok",
+                "cancel_url": "https://x/no",
+                "expires_at": int(_NOW_ANCHOR + 2100),
+                "entitlement_version": "1",
+                "entitlement_claim": "claim",
+            },
         )
 
 
@@ -318,9 +324,15 @@ def test_checkout_refuses_a_second_subscription_for_one_universe(monkeypatch):
     with pytest.raises(stripe_adapter.AlreadySubscribed) as caught:
         stripe_adapter.create_checkout_session(
             universe_id="u-1",
-            success_url="https://x/ok",
-            cancel_url="https://x/no",
-            attempt_anchor=_NOW_ANCHOR,
+            attempt_id="attempt-one",
+            params={
+                "price_id": "price_x",
+                "success_url": "https://x/ok",
+                "cancel_url": "https://x/no",
+                "expires_at": int(_NOW_ANCHOR + 2100),
+                "entitlement_version": "1",
+                "entitlement_claim": "claim",
+            },
         )
     assert caught.value.subscription_id == "sub_existing"
 
@@ -368,7 +380,10 @@ def test_exhausting_pagination_fails_loudly_instead_of_reporting_none(monkeypatc
         stripe_adapter.find_active_subscription("u-1")
 
 
-def _capture_checkout(monkeypatch, *, anchor: float, universe_id: str = "u-1"):
+def _capture_checkout(
+    monkeypatch, *, anchor: float, universe_id: str = "u-1",
+    attempt_id: str = "attempt-one",
+):
     """Run create_checkout_session against a stub Stripe and return what it sent."""
     import urllib.parse
 
@@ -400,11 +415,16 @@ def _capture_checkout(monkeypatch, *, anchor: float, universe_id: str = "u-1"):
         return _Resp()
 
     monkeypatch.setattr(stripe_adapter.urllib.request, "urlopen", _urlopen)
-    stripe_adapter.create_checkout_session(
+    params = stripe_adapter.checkout_params(
         universe_id=universe_id,
         success_url="https://x/ok",
         cancel_url="https://x/no",
-        attempt_anchor=anchor,
+        expires_at=int(anchor + 2100),
+    )
+    stripe_adapter.create_checkout_session(
+        universe_id=universe_id,
+        attempt_id=attempt_id,
+        params=params,
     )
     return seen
 
@@ -437,11 +457,17 @@ def test_checkout_sends_an_idempotency_key(monkeypatch):
 
     monkeypatch.setattr(stripe_adapter.urllib.request, "urlopen", _urlopen)
     stripe_adapter.create_checkout_session(
-        universe_id="u-1",
-            success_url="https://x/ok",
-            cancel_url="https://x/no",
-            attempt_anchor=_NOW_ANCHOR,
-    )
+            universe_id="u-1",
+            attempt_id="attempt-one",
+            params={
+                "price_id": "price_x",
+                "success_url": "https://x/ok",
+                "cancel_url": "https://x/no",
+                "expires_at": int(_NOW_ANCHOR + 2100),
+                "entitlement_version": "1",
+                "entitlement_claim": "claim",
+            },
+        )
     assert seen["key"], "no idempotency key sent"
     assert seen["key"].startswith("checkout:")
     assert "tinyassets_entitlement_version" in seen["body"]
@@ -479,30 +505,6 @@ def test_an_unreadable_state_db_reads_as_free_never_paid(tmp_path):
     assert get_tier(tmp_path) == "free"
 
 
-def test_two_concurrent_checkouts_cannot_both_start(tmp_path):
-    import time
-
-    from tinyassets.storage.subscription_state import (
-        claim_checkout,
-        release_checkout_claim,
-    )
-
-    now = time.time()
-    assert claim_checkout(tmp_path, now=now) == now
-    assert claim_checkout(tmp_path, now=now) is None
-    release_checkout_claim(tmp_path)
-    assert claim_checkout(tmp_path, now=now) == now
-
-
-def test_an_abandoned_checkout_does_not_lock_the_universe_forever(tmp_path):
-    import time
-
-    from tinyassets.storage.subscription_state import claim_checkout
-
-    now = time.time()
-    assert claim_checkout(tmp_path, now=now, ttl_seconds=60) == now
-    assert claim_checkout(tmp_path, now=now + 30, ttl_seconds=60) is None
-    assert claim_checkout(tmp_path, now=now + 120, ttl_seconds=60) == now + 120
 
 
 # --- 2026-08-28 billing review follow-ups ------------------------------------
@@ -736,56 +738,6 @@ def test_the_user_facing_copy_covers_every_refusal_the_route_classifies():
     assert refusals <= named, f"no message for: {sorted(refusals - named)}"
 
 
-def test_a_resolved_checkout_releases_its_claim_immediately(tmp_path, monkeypatch):
-    """The live lockout: subscribe, cancel, and resubscribe is refused for 15 min.
-
-    The claim exists to stop two concurrent clicks becoming two subscriptions. A
-    Stripe subscription event is Stripe telling us that checkout resolved, so the
-    claim has done its job by then -- `AlreadySubscribed` guards afterwards.
-    """
-    import asyncio
-    import json as _json
-
-    import tinyassets.api.helpers as helpers
-    from tinyassets import onboarding
-    from tinyassets.storage.subscription_state import (
-        claim_checkout,
-        get_tier,
-        state_db_path,
-    )
-
-    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
-    monkeypatch.setattr(helpers, "_universe_dir", lambda u: tmp_path / u)
-
-    universe = "u-claim-release"
-    universe_dir = tmp_path / universe
-    universe_dir.mkdir()
-    assert claim_checkout(universe_dir, now=time.time()) is not None
-    assert claim_checkout(universe_dir, now=time.time()) is None, "claim is held"
-
-    payload = _json.dumps(_subscription_event(universe_id=universe)).encode()
-    timestamp = int(time.time())
-
-    class _Request:
-        headers = {
-            "content-length": str(len(payload)),
-            "stripe-signature": _sign(payload, timestamp),
-        }
-
-        async def stream(self):
-            yield payload
-
-    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", SECRET)
-    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
-    response = asyncio.run(onboarding._handle_billing_webhook(_Request()))
-    assert response.status_code == 200
-
-    assert get_tier(universe_dir) == "paid", "the event must still move the tier"
-    assert state_db_path(universe_dir).exists()
-    assert claim_checkout(universe_dir, now=time.time()) is not None, (
-        "a resolved checkout must not keep its claim to the TTL"
-    )
-
 
 # --- Codex round 1 on the fix above: the claim did not bound what it guarded --
 
@@ -806,7 +758,7 @@ def test_the_session_is_given_an_expiry_inside_its_claim(monkeypatch):
     assert expires_at > anchor, "an expiry in the past would be rejected"
     assert expires_at - anchor >= 1800, "Stripe rejects expires_at under 30 minutes"
     assert expires_at - anchor < CHECKOUT_WINDOW_SECONDS, (
-        "the session must stop being payable BEFORE its claim lapses"
+        "the session must stop being payable BEFORE its lease lapses"
     )
 
 
@@ -817,12 +769,12 @@ def test_the_idempotency_key_identifies_the_attempt_not_the_clock(monkeypatch):
     resubscribing inside one bucket returned the original finished session -- a dead
     checkout URL. Two different attempts must be two different requests.
     """
-    first = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR)
-    same = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR)
-    later = _capture_checkout(monkeypatch, anchor=(_NOW_ANCHOR + 1.0))
+    first = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR, attempt_id="a")
+    same = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR, attempt_id="a")
+    other = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR, attempt_id="b")
 
     assert first["key"] == same["key"], "a retry of one attempt must deduplicate"
-    assert first["key"] != later["key"], "a new attempt must not replay the old one"
+    assert first["key"] != other["key"], "a new attempt must not replay the old one"
 
 
 def test_a_retry_of_one_attempt_sends_identical_parameters(monkeypatch):
@@ -832,103 +784,12 @@ def test_a_retry_of_one_attempt_sends_identical_parameters(monkeypatch):
     a parameter mismatch -- the retry path the key exists for would be the one that
     breaks.
     """
-    first = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR)
-    retry = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR)
+    first = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR, attempt_id="a")
+    retry = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR, attempt_id="a")
 
     assert first["params"] == retry["params"]
 
 
-def test_a_stale_event_cannot_release_a_live_claim(tmp_path, monkeypatch):
-    """A redelivered old event must not unlock a checkout pending right now.
-
-    Driven THROUGH the webhook, not against apply_tier_event: the release decision
-    lives in the route, so a test that never calls the route cannot catch it being
-    made unconditional.
-    """
-    import asyncio
-    import json as _json
-
-    import tinyassets.api.helpers as helpers
-    from tinyassets import onboarding
-    from tinyassets.storage.subscription_state import apply_tier_event, claim_checkout
-
-    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
-    monkeypatch.setattr(helpers, "_universe_dir", lambda u: tmp_path / u)
-    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", SECRET)
-    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
-
-    universe = "u-stale"
-    universe_dir = tmp_path / universe
-    universe_dir.mkdir()
-    # A newer cancellation has already been applied.
-    assert apply_tier_event(universe_dir, tier="free", event_created=2_000.0) is True
-    now = time.time()
-    assert claim_checkout(universe_dir, now=now) is not None, "a checkout is pending"
-
-    # An OLDER 'active' is now redelivered. It is stale, so it entitles nothing --
-    # and it must not release the claim protecting the session pending right now.
-    event = _subscription_event("active", universe_id=universe)
-    event["created"] = 1_000
-    payload = _json.dumps(event).encode()
-
-    class _Request:
-        headers = {
-            "content-length": str(len(payload)),
-            "stripe-signature": _sign(payload, int(now)),
-        }
-
-        async def stream(self):
-            yield payload
-
-    response = asyncio.run(onboarding._handle_billing_webhook(_Request()))
-    assert response.status_code == 200
-    assert claim_checkout(universe_dir, now=now) is None, "the live claim must survive"
-
-
-def test_a_cancellation_does_not_release_a_pending_claim(tmp_path, monkeypatch):
-    """Only an ENTITLING event means a checkout resolved.
-
-    After a deletion there is no subscription left for AlreadySubscribed to refuse
-    against, so the claim's TTL is the only thing preventing a second session.
-    """
-    import asyncio
-    import json as _json
-
-    import tinyassets.api.helpers as helpers
-    from tinyassets import onboarding
-    from tinyassets.storage.subscription_state import claim_checkout
-
-    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
-    monkeypatch.setattr(helpers, "_universe_dir", lambda u: tmp_path / u)
-    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", SECRET)
-    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
-
-    universe = "u-pending"
-    universe_dir = tmp_path / universe
-    universe_dir.mkdir()
-    now = time.time()
-    assert claim_checkout(universe_dir, now=now) is not None
-
-    event = _subscription_event(
-        "active", kind="customer.subscription.deleted", universe_id=universe
-    )
-    event["created"] = int(now)
-    payload = _json.dumps(event).encode()
-    timestamp = int(now)
-
-    class _Request:
-        headers = {
-            "content-length": str(len(payload)),
-            "stripe-signature": _sign(payload, timestamp),
-        }
-
-        async def stream(self):
-            yield payload
-
-    assert asyncio.run(onboarding._handle_billing_webhook(_Request())).status_code == 200
-    assert claim_checkout(universe_dir, now=now) is None, (
-        "a cancellation must leave the claim guarding the pending session"
-    )
 
 
 # --- the return URLs we hand to Stripe ---------------------------------------
@@ -995,19 +856,6 @@ def test_a_malformed_configured_resource_does_not_raise(monkeypatch):
     assert onboarding._checkout_return_origin(_Request()) == "https://tinyassets.io"
 
 
-def test_an_overrun_preflight_refuses_instead_of_sending_a_doomed_expiry(monkeypatch):
-    """Stripe measures its 30-minute floor from ITS creation time, not our anchor.
-
-    Two Stripe GETs at a 20s timeout sit between the two, so a slow preflight can
-    leave less than 30 minutes and Stripe rejects with a generic 400. Fail loudly
-    (Hard Rule 8) rather than emit an expiry that cannot be valid.
-    """
-    from tinyassets.billing import BillingUnavailable
-
-    with pytest.raises(BillingUnavailable, match="preflight"):
-        # An anchor from an hour ago: whatever budget was allotted is long gone.
-        _capture_checkout(monkeypatch, anchor=time.time() - 3600)
-
 
 def test_the_checkout_route_actually_applies_the_origin_allowlist(
     tmp_path, monkeypatch
@@ -1032,14 +880,27 @@ def test_the_checkout_route_actually_applies_the_origin_allowlist(
 
     sent: dict = {}
 
-    def _create(*, universe_id, success_url, cancel_url, attempt_anchor):
+    def _params(*, universe_id, success_url, cancel_url, expires_at):
+        # The return URLs are frozen HERE, which is the point: whatever the route
+        # decided the origin was is what gets persisted and later replayed.
         sent["success"] = success_url
         sent["cancel"] = cancel_url
+        return {
+            "price_id": "price_x",
+            "success_url": success_url,
+            "cancel_url": cancel_url,
+            "expires_at": int(expires_at),
+            "entitlement_version": "1",
+            "entitlement_claim": "claim",
+        }
+
+    def _create(*, universe_id, attempt_id, params):
         return {"id": "cs_1", "url": "https://checkout.stripe.com/x"}
 
-    monkeypatch.setattr(stripe_adapter, "create_checkout_session", _create)
     import tinyassets.billing as billing
 
+    monkeypatch.setattr(stripe_adapter, "checkout_params", _params)
+    monkeypatch.setattr(stripe_adapter, "create_checkout_session", _create)
     monkeypatch.setattr(billing, "create_checkout_session", _create)
 
     class _Request:

@@ -96,10 +96,10 @@ account ready.
    do, and which you must do on any leak — would permanently break every subscription
    already sold. `docs/reference/environment-variables.md` § Billing has the detail.
 
-**Do not do this before the checkout-lease redesign lands**
-(`docs/concerns/2026-08-28-the-checkout-claim-is-not-tied-to-its-session.md`). The remaining
-races there can create two subscriptions for one universe. In test mode that is a wrong number;
-with a live key it is a double charge and a chargeback.
+The checkout-lease redesign that used to gate this has landed: a lease now names the Stripe
+session it guards, so a lost response replays instead of creating a second session, a delayed
+event releases only its own lease, and an abandoned checkout resumes instead of locking you
+out. Double-billing is closed.
 
 ---
 

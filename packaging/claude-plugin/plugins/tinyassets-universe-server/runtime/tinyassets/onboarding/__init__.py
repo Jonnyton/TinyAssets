@@ -1041,45 +1041,115 @@ async def _handle_billing_checkout(request: Any) -> Any:
 
     def _start() -> dict[str, Any]:
         import time as _t
+        import uuid as _uuid
 
         from tinyassets.api.helpers import _universe_dir
         from tinyassets.billing import BillingUnavailable, create_checkout_session
-        from tinyassets.billing.stripe_adapter import AlreadySubscribed
+        from tinyassets.billing.stripe_adapter import (
+            AlreadySubscribed,
+            BillingAmbiguous,
+            checkout_params,
+            key_is_live,
+        )
         from tinyassets.storage.subscription_state import (
-            claim_checkout,
-            release_checkout_claim,
+            CHECKOUT_SESSION_SECONDS,
+            CHECKOUT_WINDOW_SECONDS,
+            begin_checkout_attempt,
+            current_checkout_attempt,
+            record_checkout_session,
+            settle_checkout_attempt,
         )
 
         with identity_context(identity):
             home = _read_home(identity)
             if not home:
                 return {"error": "no_home_universe"}
-            # Mutual exclusion BEFORE the Stripe round-trip. Checking Stripe then
-            # creating is check-then-act, and a pending session is not yet a
-            # subscription, so two concurrent clicks could each create one and bill
-            # the universe twice.
             universe_dir = _universe_dir(home)
-            # The claim's timestamp IS this attempt's identity: the session's expiry
-            # and its Stripe idempotency key both derive from it.
-            anchor = claim_checkout(universe_dir, now=_t.time())
-            if anchor is None:
+            now = _t.time()
+            mode = "live" if key_is_live() else "test"
+
+            existing = current_checkout_attempt(universe_dir, now=now)
+            if existing is not None and existing.get("__corrupt__"):
+                # Unreadable, and whatever it was may still be payable. Refusing is
+                # the only safe answer; the lease expires on its own.
                 return {"error": "checkout_already_in_progress"}
+
+            if existing is not None and existing.get("mode") != mode:
+                # A test-mode attempt must never be resumed against a live key, and
+                # vice versa. Settle it and start clean rather than hand back a URL
+                # from the wrong Stripe account.
+                settle_checkout_attempt(
+                    universe_dir, attempt_id=str(existing.get("attempt_id") or "")
+                )
+                existing = None
+
+            if existing is not None and existing.get("url"):
+                # A session is already open for this universe. Send the user BACK to
+                # it rather than refusing: the URL stays valid while the session is
+                # active, so a second click is just the same checkout again. Refusing
+                # here is what locked an abandoned checkout out for the whole lease.
+                return {"url": str(existing["url"]), "resumed": True}
+
+            if existing is not None:
+                # A previous call died between taking the lease and recording Stripe's
+                # answer. RESUME it: same attempt id, same frozen params, therefore the
+                # same idempotency key, so Stripe replays the session it already made
+                # instead of creating a second one.
+                attempt = existing
+            else:
+                try:
+                    params = checkout_params(
+                        universe_id=home,
+                        success_url=origin + "/mcp/app?subscribed=1",
+                        cancel_url=origin + "/mcp/app?subscribed=0",
+                        expires_at=int(now + CHECKOUT_SESSION_SECONDS),
+                    )
+                except AlreadySubscribed:
+                    return {"error": "already_subscribed"}
+                except BillingUnavailable as exc:
+                    return {"error": "billing_unavailable", "detail": str(exc)}
+                attempt = begin_checkout_attempt(
+                    universe_dir,
+                    now=now,
+                    attempt_id=_uuid.uuid4().hex,
+                    mode=mode,
+                    params=params,
+                    lease_seconds=CHECKOUT_WINDOW_SECONDS,
+                )
+                if attempt is None:
+                    # Either a concurrent click won, or a pre-lease claim is still
+                    # inside its original window.
+                    return {"error": "checkout_already_in_progress"}
+
+            attempt_id = str(attempt["attempt_id"])
             try:
-                return create_checkout_session(
+                out = create_checkout_session(
                     universe_id=home,
-                    success_url=origin + "/mcp/app?subscribed=1",
-                    cancel_url=origin + "/mcp/app?subscribed=0",
-                    attempt_anchor=anchor,
+                    attempt_id=attempt_id,
+                    params=attempt["params"],
                 )
             except AlreadySubscribed:
-                release_checkout_claim(universe_dir)
+                settle_checkout_attempt(universe_dir, attempt_id=attempt_id)
                 # Not an error state for the user - they are already paying.
                 return {"error": "already_subscribed"}
-            except BillingUnavailable as exc:
-                release_checkout_claim(universe_dir)
-                # Billing being off must read AS billing being off - never as a
-                # crash, and never as the universe having done something wrong.
+            except BillingAmbiguous as exc:
+                # We do not know whether Stripe made a session. KEEP the lease: a
+                # retry reuses this attempt and its idempotency key, so Stripe replays
+                # rather than creating a second payable session. Releasing here is the
+                # lost-response path that produced two subscriptions.
                 return {"error": "billing_unavailable", "detail": str(exc)}
+            except BillingUnavailable as exc:
+                # Stripe answered, so no session exists. Safe to release, and a
+                # misconfiguration must not lock the universe out for the lease.
+                settle_checkout_attempt(universe_dir, attempt_id=attempt_id)
+                return {"error": "billing_unavailable", "detail": str(exc)}
+            record_checkout_session(
+                universe_dir,
+                attempt_id=attempt_id,
+                session_id=out["id"],
+                url=out["url"],
+            )
+            return out
 
     out = await run_in_threadpool(_start)
     return JSONResponse(
@@ -1198,17 +1268,35 @@ async def _handle_billing_webhook(request: Any) -> Any:
         )
         return JSONResponse({"error": "wrong_stripe_mode"}, status_code=400)
 
+    def _settle_checkout() -> dict[str, Any] | None:
+        """A terminal Checkout Session event releases exactly its own lease."""
+        from tinyassets.api.helpers import _universe_dir
+        from tinyassets.billing.stripe_adapter import checkout_settlement_from_event
+        from tinyassets.storage.subscription_state import settle_checkout_attempt
+
+        identified = checkout_settlement_from_event(event)
+        if identified is None:
+            return None
+        session_id, attempt_id = identified
+        obj = (event.get("data") or {}).get("object") or {}
+        universe_id = str(obj.get("client_reference_id") or "")
+        if not universe_id:
+            # Routing hint only; without it we cannot find the record to release.
+            return {"settled": False, "reason": "no_universe_reference"}
+        settled = settle_checkout_attempt(
+            _universe_dir(universe_id),
+            session_id=session_id,
+            attempt_id=attempt_id,
+        )
+        return {"settled": settled}
+
     def _apply() -> dict[str, Any]:
         from tinyassets.api.helpers import _universe_dir
         from tinyassets.billing import (
             subscription_end_from_event,
             subscription_state_from_event,
         )
-        from tinyassets.storage.subscription_state import (
-            TIER_PAID,
-            apply_tier_event,
-            release_checkout_claim,
-        )
+        from tinyassets.storage.subscription_state import apply_tier_event
 
         mapped = subscription_state_from_event(event)
         if mapped is None:
@@ -1228,31 +1316,16 @@ async def _handle_billing_webhook(request: Any) -> Any:
             # tell their cancellation took.
             ends_at=subscription_end_from_event(event),
         )
-        # An APPLIED, ENTITLING event is Stripe telling us a checkout resolved into a
-        # live subscription, so the claim has done its job. Holding it to its TTL
-        # locked a user who subscribed and then cancelled out of resubscribing for a
-        # quarter of an hour (observed live 2026-08-28). Afterwards it is
-        # `AlreadySubscribed` that refuses a second checkout, not the claim.
-        #
-        # Both conditions are load-bearing, and neither is defensive dressing:
-        #
-        # - `applied` -- a REPLAYED or out-of-order event was rejected as stale by
-        #   `apply_tier_event`; letting it release anyway would let a redelivery of an
-        #   old subscription's event erase the claim protecting a session pending RIGHT
-        #   NOW, and a second session could then be created alongside it.
-        # - entitling -- a cancellation must NOT release. Once the subscription is
-        #   gone, `AlreadySubscribed` no longer guards anything, so the claim's TTL is
-        #   the only thing standing between a pending session and a second one.
-        #
-        # Nowhere earlier, either. Releasing when the session URL is handed out would
-        # reopen the exact race the claim closes: a pending Checkout Session is not yet
-        # a subscription, so a second click would find nothing to refuse against. An
-        # ABANDONED checkout is deliberately left to the TTL, which now outlasts the
-        # session's own `expires_at` -- the user can still complete it until then.
-        if applied and tier == TIER_PAID:
-            release_checkout_claim(universe_dir)
+        # NOTE: releasing the checkout lease is NOT done here. A subscription event
+        # says nothing about WHICH pending session it belongs to, so any rule based on
+        # it -- even one gated on the tier moving -- could release the lease protecting
+        # a different session that is open right now. The lease is released only by a
+        # terminal Checkout Session event naming its own id (see `_settle_checkout`).
         return {"applied": applied, "tier": tier if applied else None}
 
+    settled = await run_in_threadpool(_settle_checkout)
+    if settled is not None:
+        return JSONResponse(settled)
     return JSONResponse(await run_in_threadpool(_apply))
 
 
