@@ -55,7 +55,11 @@ let refreshes = 0;
 
 function token(){ return "test-bearer"; }
 async function ensureFreshToken(){ }
-async function refreshAccessToken(){ refreshes++; MCP.sessionId=null; return true; }
+// Mirrors the real refreshAccessToken's effect on the session. The real one
+// lives OUTSIDE the extracted transport block, so the behavioural tests can only
+// prove that this effect produces the right outcome; a companion structural test
+// pins the real call site to the same call.
+async function refreshAccessToken(){ refreshes++; MCP.invalidateSession(); return true; }
 
 function makeResponse(spec){
   const headers = spec.headers || {};
@@ -321,14 +325,20 @@ def test_a_gateway_timeout_never_silently_resends_a_turn(tmp_path):
     assert out["sessionIdAfter"] is None
 
 
-def test_a_deploy_blip_does_not_make_the_user_click(tmp_path):
-    """502/503 mean the origin never took it, so replaying cannot duplicate.
+def test_no_5xx_ever_replays_a_turn(tmp_path):
+    """This test previously asserted the opposite, and was wrong.
 
-    Codex was right to push back here: making every deploy-window turn need a
-    click is a real regression on a primary surface, and 502/503 are provably
-    the safe half of the ambiguity.
+    Round 1 flagged the click as a UX regression, so 502/503 were made to replay
+    on the theory that they mean "the origin never took it". Round 2 proved that
+    is false and a P0: the deploy recreates the container mid-flight
+    (deploy/deploy_fail_safe.sh), so an ACCEPTED converse can do minutes of work
+    and then have its connection die - emitting exactly that 502. The edge cannot
+    discriminate either.
+
+    A duplicate turn is worse than a click. Removing the dilemma needs an
+    idempotency key on `converse`; until then, ambiguity means ask.
     """
-    for status in (502, 503):
+    for status in (500, 502, 503, 504):
         out = _drive(
             tmp_path,
             _handshake()
@@ -337,8 +347,25 @@ def test_a_deploy_blip_does_not_make_the_user_click(tmp_path):
             + [_ok({"reply": "hi there"}, _SID2)],
             'MCP.converse("hello")',
         )
+        assert out["ok"] is False, f"HTTP {status} replayed a state-changing turn"
+        assert len([x for x in out["sent"] if x["tool"] == "converse"]) == 1, (
+            f"HTTP {status} sent the turn twice"
+        )
+        assert out["error"]["transport"] == "unavailable"
+
+
+def test_an_idempotent_read_still_rides_through_a_deploy_blip(tmp_path):
+    """The click is only paid where it buys something: a read is safe to repeat."""
+    for status in (502, 503):
+        out = _drive(
+            tmp_path,
+            _handshake()
+            + [{"status": status, "body": "<html>origin down</html>"}]
+            + _handshake()
+            + [_ok({"active_host": "codex"}, _SID2)],
+            "MCP.getStatus()",
+        )
         assert out["ok"] is True, (status, out.get("error"))
-        assert out["result"] == {"reply": "hi there"}
 
 
 def test_an_idempotent_read_does_retry_a_cut_stream(tmp_path):
@@ -619,6 +646,113 @@ def test_a_400_that_merely_mentions_a_session_is_not_a_session_rejection(tmp_pat
         "state-changing call"
     )
     assert len([s for s in out["sent"] if s["tool"] == "converse"]) == 1
+
+
+def test_a_bearer_refresh_also_bumps_the_session_generation(tmp_path):
+    """Codex round 2: the refresh cleared the id without moving the generation.
+
+    A slow turn in flight had captured the old generation, so its late 2xx
+    re-adopted the session it was sent on and orphaned the one built after the
+    refresh - the same defect the generation counter was added to prevent,
+    reached by a path that bypassed it.
+    """
+    out = _drive(
+        tmp_path,
+        _handshake()
+        # the turn, landing after the poll's refresh has rebuilt the session
+        + [dict(_ok({"reply": "slow"}, _SID), headersDelayMs=300)]
+        + [{"status": 401, "body": ""}]          # the poll: bearer expired
+        + _handshake_with(_SID2)
+        + [_ok({"active_host": "codex"}, _SID2)],
+        '(async()=>{ const turn=MCP.converse("hello");'
+        '  const poll=MCP.getStatus();'
+        '  return {turn: await turn, poll: await poll}; })()',
+    )
+    assert out["ok"] is True, out.get("error")
+    assert out["refreshes"] == 1
+    assert out["sessionIdAfter"] == "sess-2", (
+        "clearing the session on refresh without bumping the generation lets a "
+        "late reply re-adopt the pre-refresh session"
+    )
+
+
+def test_the_real_refresh_bumps_the_generation_not_just_the_id():
+    """The call-site half of the test above.
+
+    `refreshAccessToken` lives outside the extracted transport block, so the
+    harness has to stub it and the behavioural test can only prove that
+    invalidating-on-refresh yields the right outcome. This pins the real code to
+    actually do that, rather than assigning null and silently skipping the
+    generation bump - which is the bug Codex found.
+    """
+    html = _APP_HTML.read_text(encoding="utf-8")
+    assert "MCP.invalidateSession();   // the MCP session was bound to the old bearer" in html
+    assert "MCP.sessionId = null;   // the MCP session was bound to the old bearer" not in html
+
+
+def test_a_second_rejection_still_disarms_the_dead_session(tmp_path):
+    """Codex round 2: with the retry budget spent, the dead handle was kept.
+
+    That is precisely the state this whole change exists to prevent - the page
+    carrying a session the server has already disowned.
+    """
+    out = _drive(
+        tmp_path,
+        _handshake()
+        + [_session_gone()]
+        + _handshake_with(_SID2)
+        + [_session_gone()],
+        'MCP.converse("hello")',
+    )
+    assert out["ok"] is False
+    assert out["sessionIdAfter"] is None, (
+        "a session the server rejected twice was left armed for the next call"
+    )
+    assert out["error"]["transport"] == "session_lost"
+
+
+def test_two_evictions_in_a_row_do_not_leave_a_session_armed(tmp_path):
+    """Codex round 2: `_retire` is disabled during a handshake, by design.
+
+    So when the repair handshake is ALSO evicted, nothing disarmed its session
+    and the client kept a handle that had just been disowned.
+    """
+    out = _drive(
+        tmp_path,
+        [
+            {"status": 200, "headers": _SID,
+             "body": json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}})},
+            _session_gone(),                      # notification evicted
+            {"status": 200, "headers": _SID2,
+             "body": json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}})},
+            _session_gone(),                      # repair notification too
+        ],
+        'MCP.converse("hello")',
+    )
+    assert out["ok"] is False
+    assert out["sessionIdAfter"] is None, (
+        "the repair handshake's session survived its own eviction"
+    )
+
+
+def test_a_non_jsonrpc_body_naming_a_session_is_not_a_session_rejection(tmp_path):
+    """Codex round 2: valid JSON was enough, so any layer could trigger a replay.
+
+    `{"error":{"message":"browser session expired"}}` has no jsonrpc member and
+    no error code. It is not the MCP transport disowning us.
+    """
+    out = _drive(
+        tmp_path,
+        _handshake()
+        + [{"status": 400,
+            "body": json.dumps({"error": {"message": "browser session expired"}})}],
+        'MCP.converse("hello")',
+    )
+    assert out["ok"] is False
+    assert len([x for x in out["sent"] if x["tool"] == "converse"]) == 1, (
+        "a non-JSON-RPC 400 replayed a state-changing call"
+    )
+    assert [x["method"] for x in out["sent"]].count("initialize") == 1
 
 
 # --- the UI must offer the retry, not just report the failure ----------------
