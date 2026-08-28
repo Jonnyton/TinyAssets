@@ -40,13 +40,28 @@ from contextlib import asynccontextmanager, contextmanager
 
 _log = logging.getLogger(__name__)
 
-#: Concurrent provider subprocesses permitted. The default is deliberately below the
-#: anyio threadpool's 40: the threadpool bounds *handlers*, and a handler is cheap,
-#: while a provider subprocess is ~77 MB of private memory. Sized for the 2 GB box
-#: (6 x 77 MB is ~460 MB, leaving room for the ~390 MB daemon and page cache); raise
-#: it with the RAM, not with the core count.
+#: Concurrent provider subprocesses permitted.
+#:
+#: Sized from a measurement on the live 1 vCPU / 2 GB box (2026-08-28), not from the
+#: arithmetic I first used. I derived 6 from "~77 MB PSS each" — a figure taken from FOUR
+#: concurrent processes. Measured with true overlap verified by counting live PIDs:
+#:
+#:     overlap  13 -> MemAvailable 874 MB
+#:     overlap  25 -> MemAvailable 403 MB
+#:
+#: 25 concurrent cost ~786 MB, so the MARGINAL cost is about **31 MB**, not 77 — page
+#: sharing improves as more copies of the same runtime run at once, and the 77 MB figure
+#: was the average at low concurrency, where sharing is worst. Extrapolating it linearly
+#: was wrong in the conservative direction.
+#:
+#: 10 leaves roughly 3x the measured marginal headroom on a 2 GB box, which is deliberate:
+#: the measurement is a FLOOR. `claude --version` loads no system prompt, no conversation
+#: history, no tool definitions, and streams no response, so a real turn costs more by an
+#: amount nobody has measured yet. `get_status.provider_admission` now reports `refused`
+#: and `peak_concurrent`, so the next move on this number should come from production
+#: rather than from another estimate.
 _LIMIT_VAR = "TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS"
-_DEFAULT_LIMIT = 6
+_DEFAULT_LIMIT = 10
 
 #: How long a caller waits for a slot before being told no. Long enough to ride out a
 #: brief burst, short enough that a queued user gets an answer rather than a hang.

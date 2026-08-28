@@ -118,10 +118,17 @@ def test_the_default_fits_the_box_it_runs_on(monkeypatch):
     from tinyassets.providers import router
 
     assert pa._DEFAULT_LIMIT <= router._SYNC_CALL_MAX_WORKERS, (
-        "a bound above the thread pool that already gates these calls would never bind"
+        "a bound above the thread pool that already gates these calls would never bind "
+        "— the pool would cap concurrency first and the explicit limit would be decor"
     )
-    assert pa._DEFAULT_LIMIT * 77 + 390 < 2048, (
-        "the default must fit the 2 GB box alongside the ~390 MB daemon"
+    # Sized from the marginal cost measured with verified overlap on the live box
+    # (~31 MB per additional concurrent subprocess: 25 concurrent consumed ~786 MB), not
+    # from the ~77 MB average at LOW concurrency that I first extrapolated linearly.
+    # 3x headroom because that measurement is a floor: `--version` loads no prompt, no
+    # history, no tools, and streams nothing.
+    assert pa._DEFAULT_LIMIT * 31 * 3 + 390 < 2048, (
+        "the default must fit the 2 GB box alongside the ~390 MB daemon, with headroom "
+        "for a real turn costing more than the measured floor"
     )
 
 

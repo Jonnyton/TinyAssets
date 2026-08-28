@@ -260,7 +260,14 @@ _CHAIN_DRAIN_EMPTY_THRESHOLD: int = 2
 # Sync graph nodes call async provider routing through this bounded pool.
 # Keep it above 1 so an unrelated slow provider call does not serialize all
 # other sync callers behind one shared worker.
-_SYNC_CALL_MAX_WORKERS: int = 8
+#
+# And keep it ABOVE the admission limit. At 8 it silently WAS the memory bound — a
+# latency constant capping concurrent ~31 MB subprocesses as a side effect, which is a
+# bound nobody could reason about and anyone tuning for throughput would have raised
+# without realising what it protected. Admission (`TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS`,
+# default 10) is now the binding constraint, sized from a measurement and observable
+# through `get_status.provider_admission`. This just has to stay out of its way.
+_SYNC_CALL_MAX_WORKERS: int = 12
 
 # NOTE: `_provider_slot` (imported above) bounds concurrent provider SUBPROCESSES.
 # _SYNC_CALL_MAX_WORKERS bounds threads, which are cheap; a subprocess is ~77 MB.
