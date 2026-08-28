@@ -174,6 +174,61 @@ def source_channel(
     })
 
 
+#: Universe ids permitted to APPROVE source_code for in-process execution.
+#:
+#: Approving source is not an ordinary universe operation -- it is the authority to
+#: run arbitrary Python inside the daemon. `graph_compiler` executes an approved node
+#: with `exec()` and full builtins; the pattern denylist blocks a handful of substrings
+#: and leaves `open`, `os.environ`, sockets and ordinary imports available. So an
+#: approver can read every credential the process can read: the live Stripe key, the
+#: webhook secret, the session-store digest key, every per-universe credential vault,
+#: and every other user's refresh token. It can also write any database under the data
+#: dir, including the one that decides who has paid.
+#:
+#: The owner gate below is per-universe, and EVERY user owns their own universe, so on
+#: its own it authorises every user to do all of that (Codex, 2026-08-28, ranked the
+#: top second-user blocker). Until user code runs in a real OS sandbox, the capability
+#: is limited to an explicit allowlist.
+#:
+#: Empty = DARK, deliberately: a deployment that has not thought about this must not
+#: hand out in-process execution. Mirrors `engine_mcp_http.run_graph_allowlist()`,
+#: which exists for the same reason and was reviewed to the same conclusion.
+_SOURCE_APPROVAL_VAR = "TINYASSETS_SOURCE_APPROVAL_UNIVERSES"
+
+
+def source_approval_allowlist() -> frozenset[str]:
+    """Universe ids allowed to approve source_code. Empty = nobody."""
+    import os as _os
+
+    raw = _os.environ.get(_SOURCE_APPROVAL_VAR, "")
+    return frozenset(u.strip() for u in raw.split(",") if u.strip())
+
+
+def source_approval_allowed(universe_id: str) -> bool:
+    return bool(universe_id) and universe_id in source_approval_allowlist()
+
+
+def source_approval_refusal(universe_id: str) -> dict:
+    """The refusal body. Names the capability, so it does not read as a glitch."""
+    return {
+        "status": "rejected",
+        "error": (
+            "approving source_code runs arbitrary Python inside the daemon, and "
+            "this deployment has not allowlisted this universe for that. It is "
+            "off by default because an approver can read every credential the "
+            "process holds, including other users'."
+        ),
+        "failure_class": "source_approval_not_allowlisted",
+        "actionable_by": "host",
+        "universe_id": universe_id,
+        "remediation": (
+            f"Set {_SOURCE_APPROVAL_VAR} to a comma-separated list of universe ids "
+            "that may approve source. Until user code runs in an OS sandbox, keep "
+            "it to vetted founders only."
+        ),
+    }
+
+
 def _approve(
     base: Any,
     uid: str,
@@ -267,6 +322,11 @@ def _approve_source_code(
             "failure_class": "no_source_code",
             "actionable_by": "chatbot",
         })
+
+    # Checked HERE, at the write that grants execution, not at the route edge:
+    # this is the line that turns text into something the daemon will run.
+    if not source_approval_allowed(uid):
+        return json.dumps(source_approval_refusal(uid))
 
     source_hash = _source_code_hash(target_node.source_code)
     target_node.approved = True
