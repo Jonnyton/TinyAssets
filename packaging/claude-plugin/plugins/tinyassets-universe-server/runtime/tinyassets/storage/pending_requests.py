@@ -71,6 +71,12 @@ CREATE TABLE IF NOT EXISTS request_suppressions (
     feedback   TEXT,
     created_at REAL NOT NULL
 );
+-- A lifted mute is recorded, not just applied: the agent runs as the user's
+-- own principal, so "who lifted this" cannot be decided at the gate.
+CREATE TABLE IF NOT EXISTS request_unmutes (
+    dedupe_key TEXT NOT NULL,
+    lifted_at  REAL NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_pending_requests_status
     ON pending_requests(status, created_at);
 """
@@ -263,6 +269,32 @@ def list_resolved(universe_dir: Path, limit: int = 20) -> list[dict[str, Any]]:
         return []
 
 
+def record_unmute(universe_dir: Path, dedupe_key: str) -> None:
+    """Record that a mute was lifted, so the lift is visible in the rail."""
+    try:
+        with _db(universe_dir) as conn:
+            conn.execute(
+                "INSERT INTO request_unmutes (dedupe_key, lifted_at) VALUES (?,?)",
+                (dedupe_key, time.time()),
+            )
+    except Exception:  # noqa: BLE001
+        logger.warning("pending_requests: record_unmute failed", exc_info=True)
+
+
+def list_unmutes(universe_dir: Path, limit: int = 10) -> list[dict[str, Any]]:
+    try:
+        with _db(universe_dir) as conn:
+            rows = conn.execute(
+                "SELECT dedupe_key, lifted_at FROM request_unmutes "
+                "ORDER BY lifted_at DESC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [{"dedupe_key": r[0], "lifted_at": r[1]} for r in rows]
+    except Exception:  # noqa: BLE001
+        logger.warning("pending_requests: list_unmutes failed", exc_info=True)
+        return []
+
+
 def list_suppressions(universe_dir: Path) -> list[dict[str, Any]]:
     """What the user has said not to be asked again — visible, so it is undoable."""
     try:
@@ -302,6 +334,8 @@ __all__ = [
     "list_pending",
     "list_resolved",
     "list_suppressions",
+    "list_unmutes",
+    "record_unmute",
     "resolve_request",
     "unsuppress",
 ]

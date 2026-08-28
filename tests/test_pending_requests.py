@@ -458,3 +458,101 @@ def test_a_request_cannot_ask_for_a_whole_api(base):
     })
     assert out["error"] == "request_invalid"
     assert "at most" in out["detail"]
+
+
+# --------------------------------------------------------------------------- #
+# Codex cross-family review, 2026-08-27 (verdict ADAPT). Each case below is a
+# reproduction it supplied against the primitive as first written.
+# --------------------------------------------------------------------------- #
+
+
+def test_codex_an_undeclared_key_cannot_smuggle_a_secret_into_storage(base):
+    """Excluding known secret NAMES was not enough — an undeclared key persisted
+    verbatim. Only values for declared non-secret fields are recorded."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    asked = _ask("u-1", fields=[
+        {"name": "secret", "label": "Key", "type": "secret"},
+        {"name": "note", "label": "Note", "type": "text"},
+    ])
+
+    _answer("u-1", request_id=asked["request_id"], values={
+        "secret": "ghp_" + "x" * 36,
+        "shadow": "ghp_REPRO_SECRET_123456789",   # never declared
+        "note": "fine",
+    })
+
+    answered = _rail("u-1")["recently_answered"][0]
+    assert answered["answer"] == {"note": "fine"}
+    assert "ghp_" not in json.dumps(answered)
+
+
+@pytest.mark.parametrize("mode", ["answer", "dismiss"])
+def test_codex_feedback_cannot_carry_a_credential(base, mode):
+    """Feedback is free text stored in the clear; Codex put the key there."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    asked = _ask("u-1")
+
+    doc = {"request_id": asked["request_id"],
+           "feedback": "ghp_REPRO_SECRET_123456789"}
+    if mode == "dismiss":
+        doc["dismiss"] = True
+    else:
+        doc["values"] = {"secret": "ghp_" + "x" * 36}
+    out = _answer("u-1", **doc)
+
+    assert out["error"] == "request_invalid"
+    assert "credential" in out["detail"]
+    assert "ghp_REPRO" not in json.dumps(_rail("u-1"))
+
+
+def test_codex_duplicate_field_names_are_refused(base):
+    """Duplicate names collide as DOM ids: the browser clears the first control
+    twice and leaves the second holding its secret."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+
+    out = _ask("u-1", fields=[
+        {"name": "same", "label": "One", "type": "secret"},
+        {"name": "same", "label": "Two", "type": "secret"},
+    ])
+    assert out["error"] == "request_invalid"
+    assert "unique" in out["detail"]
+
+
+def test_codex_muting_one_approval_does_not_silence_a_different_one(base):
+    """The dedupe key omitted body and fields, and an `answer` action normalizes
+    to a bare {"type":"answer"} — so muting "Approve this?" about a harmless
+    draft also silenced "Approve this?" about deleting production data."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    harmless = _ask("u-1", kind="Approval", title="Approve this?",
+                    body="post a harmless draft", action={"type": "answer"},
+                    fields=[{"name": "ok", "label": "OK?", "type": "text"}])
+    _answer("u-1", request_id=harmless["request_id"], dismiss=True,
+            dont_ask_again=True)
+
+    dangerous = _ask("u-1", kind="Approval", title="Approve this?",
+                     body="delete production data", action={"type": "answer"},
+                     fields=[{"name": "ok", "label": "OK?", "type": "text"}])
+    assert dangerous["status"] == "pending", "a different ask must still reach the user"
+
+
+def test_codex_a_lifted_mute_is_recorded_because_the_agent_shares_the_principal(base):
+    """The agent runs as the user's own principal, so nothing at the gate can
+    tell "the user lifted this" from "the universe lifted it". A distinction the
+    auth model cannot make is not faked — the lift is recorded and surfaced."""
+    from tinyassets.api.pending_requests import unmute_request
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    asked = _ask("u-1")
+    _answer("u-1", request_id=asked["request_id"], dismiss=True, dont_ask_again=True)
+    key = _rail("u-1")["muted"][0]["dedupe_key"]
+
+    unmute_request(universe_id="u-1", payload=json.dumps({"dedupe_key": key}))
+
+    rail = _rail("u-1")
+    assert rail["mutes_lifted"], "a lifted mute must be visible, not silent"
+    assert rail["mutes_lifted"][0]["dedupe_key"] == key
