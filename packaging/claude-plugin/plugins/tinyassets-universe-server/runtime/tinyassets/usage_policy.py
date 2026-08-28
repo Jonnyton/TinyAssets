@@ -1,0 +1,166 @@
+"""Tier resolution and the effect-quota gate.
+
+Sits between the raw ledger (`storage/usage_ledger`) and the effect call sites. The
+ledger knows how to reserve and settle; this module knows *how much* a given universe
+is allowed and turns a refusal into something a caller can act on.
+
+Two deliberate properties:
+
+* **Free is the absence of a subscription**, not a separate plan record. Fewer states,
+  less to drift out of sync.
+* **An unresolvable tier falls back to FREE, never to unlimited.** A lookup failure
+  must not silently hand out the paid tier.
+
+Sizing is deliberately generous. Cost work on 2026-08-28 measured marginal cost per
+user at roughly $0.12/month — the platform supplies no inference, and WorkOS is free
+to a million MAU — so cost is not what should constrain the free tier. What should
+constrain it is abuse reaching the outside world, which is why *effects* are the tight
+dimension and runs are not.
+"""
+
+from __future__ import annotations
+
+import math
+import os
+from dataclasses import dataclass
+
+TIER_FREE = "free"
+TIER_PAID = "paid"
+
+#: Rolling window all quotas are measured over.
+_WINDOW_VAR = "TINYASSETS_USAGE_WINDOW_S"
+_DEFAULT_WINDOW_S = 86_400.0  # one day
+
+#: Effects. The billable dimension, and the only tight one.
+_FREE_EFFECTS_VAR = "TINYASSETS_FREE_EFFECTS_PER_WINDOW"
+_PAID_EFFECTS_VAR = "TINYASSETS_PAID_EFFECTS_PER_WINDOW"
+_DEFAULT_FREE_EFFECTS = 100
+_DEFAULT_PAID_EFFECTS = 5_000
+
+#: Compute. A guard, not a product limit — sized so ordinary iterative debugging
+#: never reaches it. The 2026-08-28 outage was caused by a limit tight enough to
+#: catch honest work.
+_FREE_COMPUTE_VAR = "TINYASSETS_FREE_COMPUTE_MINUTES"
+_PAID_COMPUTE_VAR = "TINYASSETS_PAID_COMPUTE_MINUTES"
+_DEFAULT_FREE_COMPUTE_MIN = 600.0
+_DEFAULT_PAID_COMPUTE_MIN = 12_000.0
+
+#: Storage. Capped, not charged — per-universe attribution is still wrong
+#: (docs/concerns/2026-08-28-per-universe-storage-is-515mb-of-duplication.md), and
+#: ~99% of the current footprint is our own duplicated provider runtime, which the
+#: user did not put there.
+_FREE_STORAGE_VAR = "TINYASSETS_FREE_STORAGE_MB"
+_PAID_STORAGE_VAR = "TINYASSETS_PAID_STORAGE_MB"
+_DEFAULT_FREE_STORAGE_MB = 2_000.0
+_DEFAULT_PAID_STORAGE_MB = 20_000.0
+
+#: Longest a single run may be charged for, so a wedged run cannot accrue forever.
+_MAX_RUN_VAR = "TINYASSETS_MAX_CHARGEABLE_RUN_S"
+_DEFAULT_MAX_RUN_S = 3_600.0
+
+
+def _positive_number(var: str, default: float) -> float:
+    """Read a positive finite number, announcing an unusable override rather than
+    swallowing it. A misconfiguration must not silently become the default."""
+    raw = os.environ.get(var, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value) or value <= 0:
+        print(
+            f"{var}={raw!r} is not a positive number; using {default:g}",
+            flush=True,
+        )
+        return default
+    return value
+
+
+@dataclass(frozen=True)
+class TierLimits:
+    """What one tier permits over the rolling window."""
+
+    name: str
+    effects: int
+    compute_seconds: float
+    storage_bytes: float
+    window_seconds: float
+    max_chargeable_run_seconds: float
+
+    @property
+    def is_paid(self) -> bool:
+        return self.name == TIER_PAID
+
+
+def window_seconds() -> float:
+    return _positive_number(_WINDOW_VAR, _DEFAULT_WINDOW_S)
+
+
+def max_chargeable_run_seconds() -> float:
+    return _positive_number(_MAX_RUN_VAR, _DEFAULT_MAX_RUN_S)
+
+
+def limits_for(tier: str) -> TierLimits:
+    """Resolve a tier's limits. An unknown tier resolves to FREE, never unlimited."""
+    normalized = (tier or "").strip().lower()
+    if normalized != TIER_PAID:
+        normalized = TIER_FREE
+    paid = normalized == TIER_PAID
+    effects = _positive_number(
+        _PAID_EFFECTS_VAR if paid else _FREE_EFFECTS_VAR,
+        float(_DEFAULT_PAID_EFFECTS if paid else _DEFAULT_FREE_EFFECTS),
+    )
+    compute_min = _positive_number(
+        _PAID_COMPUTE_VAR if paid else _FREE_COMPUTE_VAR,
+        _DEFAULT_PAID_COMPUTE_MIN if paid else _DEFAULT_FREE_COMPUTE_MIN,
+    )
+    storage_mb = _positive_number(
+        _PAID_STORAGE_VAR if paid else _FREE_STORAGE_VAR,
+        _DEFAULT_PAID_STORAGE_MB if paid else _DEFAULT_FREE_STORAGE_MB,
+    )
+    return TierLimits(
+        name=normalized,
+        effects=int(effects),
+        compute_seconds=compute_min * 60.0,
+        storage_bytes=storage_mb * 1024.0 * 1024.0,
+        window_seconds=window_seconds(),
+        max_chargeable_run_seconds=max_chargeable_run_seconds(),
+    )
+
+
+def settlement_key(*, sink: str, effect_key: str) -> str:
+    """The ledger key for one effect — the receipt's own identity.
+
+    Must match the receipt's `(idempotency_hint, sink)` primary key exactly, or a
+    retried effect would reserve a second slot instead of finding its first.
+    """
+    return f"{sink}{effect_key}"
+
+
+@dataclass(frozen=True)
+class QuotaRefusal:
+    """Why a request was refused, and when it can succeed — never just 'try later'."""
+
+    dimension: str
+    limit: int | float
+    tier: str
+    retry_after_seconds: float
+
+    def message(self) -> str:
+        when = (
+            f"{self.retry_after_seconds / 3600:.1f}h"
+            if self.retry_after_seconds >= 3600
+            else f"{max(1, round(self.retry_after_seconds / 60))}m"
+        )
+        return (
+            f"{self.dimension} limit reached for the {self.tier} tier "
+            f"(max {self.limit:g} per {self.window_label}); "
+            f"capacity returns in about {when}."
+        )
+
+    @property
+    def window_label(self) -> str:
+        hours = window_seconds() / 3600
+        return "24h" if abs(hours - 24) < 0.01 else f"{hours:g}h"
