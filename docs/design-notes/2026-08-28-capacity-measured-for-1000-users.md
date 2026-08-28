@@ -43,6 +43,36 @@ At 25 concurrent the daemon sits at **95% of the single core** with a host load 
 of **4.94** — five-fold oversubscribed. Memory stays at ~390 MB of 1.9 GB throughout, so
 this is **CPU-bound, not memory-bound**, on the read path.
 
+## Measured again after deploying the memos
+
+Identical probe, same box, after #2648 shipped — and this is the end-to-end number, not
+an in-process one:
+
+| concurrency | p50 before → after | p95 before → after | req/s before → after |
+|---:|---|---|---|
+| 1 | 421 → **280 ms** | — | 2.4 → 3.6 |
+| 10 | 1,112 → **413 ms** | 1,590 → **620 ms** | 7.5 → **22.7** |
+| 25 | 1,583 → **654 ms** | 2,409 → **1,824 ms** | 13.0 → **25.8** |
+| 50 | 3,215 → **849 ms** | 11,176 → **3,294 ms** | 8.6 → **30.0** |
+| 100 | 3,215 → **559 ms** | 17,529 → **5,170 ms** | 11.1 → **38.4** |
+
+**The ceiling moved from ~13 req/s to 38+ req/s, and the shape changed.** Before,
+throughput *fell* past 25 concurrent (13.0 → 8.6 → 11.1) — the signature of a queue
+forming. Now it *rises* monotonically to 100 concurrent and has not turned over. p95 at
+100 concurrent improved 3.4×, from 17.5 s to 5.2 s.
+
+*Caveat, stated because the effect is large enough to want to over-claim:* this is a
+before/after across a deploy on a live box, not a controlled A/B — I cannot toggle the
+memos without recreating the container, since `env_file` is read at creation. Two things
+argue it is real rather than drift: the effect size is far beyond plausible noise, and
+the *shape* change is exactly what removing a per-request O(n) cost predicts. It is also
+still the `status` handle — the one I optimized — so it bounds connector polling, not
+`converse`.
+
+Note this was measured with the memos as merged, which still contain the thundering herd
+(#2648 landed at a stale head without the fix). The herd duplicates work precisely under
+concurrency, so #2650 should improve the right-hand columns further.
+
 ## Where a request goes
 
 | | |
