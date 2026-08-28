@@ -49,6 +49,11 @@ CREATE TABLE IF NOT EXISTS effect_reservations (
 CREATE INDEX IF NOT EXISTS idx_effect_reserved_at
     ON effect_reservations(reserved_at);
 
+CREATE TABLE IF NOT EXISTS usage_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS compute_settlements (
     run_id     TEXT PRIMARY KEY,
     seconds    REAL NOT NULL,
@@ -261,3 +266,37 @@ def prune_before(universe_dir: str | Path, *, cutoff: float) -> int:
             (cutoff,),
         ).rowcount
         return removed
+
+
+_TIER_KEY = "tier"
+
+
+def get_tier(universe_dir: str | Path, *, default: str = "free") -> str:
+    """Read this universe's tier. Absent means the free tier.
+
+    Deliberately falls back rather than raising: a universe with no billing record
+    is a free universe, which is the common case and must not be an error.
+    """
+    try:
+        with _connect(universe_dir) as conn:
+            conn.executescript(_SCHEMA)
+            row = conn.execute(
+                "SELECT value FROM usage_meta WHERE key = ?", (_TIER_KEY,)
+            ).fetchone()
+    except sqlite3.Error:
+        # A ledger we cannot read must not silently grant the paid tier.
+        return default
+    return str(row[0]) if row is not None else default
+
+
+def set_tier(universe_dir: str | Path, *, tier: str) -> None:
+    """Record this universe's tier. Written by the billing adapter only."""
+    if not tier:
+        raise ValueError("tier is required")
+    with _connect(universe_dir) as conn:
+        conn.executescript(_SCHEMA)
+        conn.execute(
+            "INSERT INTO usage_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (_TIER_KEY, tier),
+        )

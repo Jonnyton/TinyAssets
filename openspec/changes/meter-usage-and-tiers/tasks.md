@@ -6,7 +6,7 @@
       atomic `BEGIN IMMEDIATE` count-and-insert shape from `_engine_run_admit`
       (`tinyassets/engine_mcp_server.py:86-148`) — it closes a real TOCTOU race — and the
       symlink/path-escape refusal guarding that ledger.
-- [ ] 1.2 Enforce effect quota at reservation (`try_reserve_receipt`, refusing pre-flight when
+- [x] 1.2 Enforce effect quota at reservation (`try_reserve_receipt`, refusing pre-flight when
       exhausted) and return it in `release_reservation`. Settlement is **one transition-sensitive
       operation**, not a hook on each function: `finalize_receipt` does not require the prior
       status to be `pending` (`external_write_receipts.py:685`) and returns True on replay

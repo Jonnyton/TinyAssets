@@ -17,6 +17,7 @@ from tinyassets.storage.external_write_receipts import (
     finalize_receipt,
     finalize_reconciliation,
     lookup_receipt,
+    release_reservation,
     try_activate_confirmed_hold,
     try_record_held_receipt,
     try_reserve_receipt,
@@ -25,6 +26,12 @@ from tinyassets.storage.outbound_connections import (
     AmbiguousProxyOutcome,
     ConnectionLedger,
     ScopedConnectionProxy,
+)
+from tinyassets.storage.usage_ledger import get_tier
+from tinyassets.usage_policy import (
+    release_effect_quota,
+    reserve_effect_quota,
+    settle_effect_quota,
 )
 
 AmbiguousEffectOutcome = AmbiguousProxyOutcome
@@ -368,6 +375,36 @@ def execute_replay_safe_effect(
     if status not in ("reserved", "reserved_after_failed"):
         raise RuntimeError(f"effect reservation failed closed: {status}")
 
+    # Usage quota — PRE-FLIGHT, between the receipt reservation and the write. An
+    # outbound write is irreversible, so a budget consulted afterwards would be an
+    # accounting record rather than a limit. Refusing here means nothing leaves.
+    #
+    # The receipt slot is released with mark_failed=False: the destination was never
+    # contacted, so this is not a failed attempt and must not count toward the retry
+    # budget or look like the destination rejected us.
+    refusal = reserve_effect_quota(
+        universe_dir,
+        sink=sink,
+        effect_key=effect_key,
+        tier=get_tier(universe_dir),
+    )
+    if refusal is not None:
+        release_reservation(
+            universe_dir,
+            idempotency_hint=effect_key,
+            sink=sink,
+            run_id=run_id,
+            mark_failed=False,
+        )
+        return {
+            "status": STATUS_FAILED,
+            "terminal": True,
+            "reason": "usage_limit_reached",
+            "dimension": refusal.dimension,
+            "tier": refusal.tier,
+            "detail": refusal.message(),
+        }
+
     return _invoke_reserved_effect(
         universe_dir=universe_dir,
         effect_key=effect_key,
@@ -432,6 +469,8 @@ def _invoke_reserved_effect(
         )
         if not finalized:
             raise RuntimeError("failed effect could not finalize its journal")
+        # The destination rejected it, so nothing reached the world: refund.
+        release_effect_quota(universe_dir, sink=sink, effect_key=effect_key)
         return evidence
 
     evidence = {
@@ -451,6 +490,9 @@ def _invoke_reserved_effect(
     )
     if not finalized:
         raise RuntimeError("successful effect could not finalize its journal")
+    # Reached the world: spend the reserved slot. settle is transition-sensitive,
+    # so a later reconciliation or replay of this same effect settles nothing.
+    settle_effect_quota(universe_dir, sink=sink, effect_key=effect_key)
     return evidence
 
 
