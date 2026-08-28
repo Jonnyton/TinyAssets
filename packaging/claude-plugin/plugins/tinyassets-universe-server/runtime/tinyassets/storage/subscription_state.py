@@ -72,6 +72,20 @@ def get_tier(universe_dir: str | Path, *, default: str = TIER_FREE) -> str:
     Falling back rather than raising is deliberate twice over: a universe with no
     billing record is the ordinary case and must not be an error, and a database we
     cannot read must never silently grant the PAID tier.
+
+    Catches Exception, not just sqlite3.Error, and the difference is load-bearing.
+    `_connect` first does `mkdir(parents=True)`, which raises OSError on a read-only
+    filesystem, a full disk, or a permissions problem -- none of them sqlite errors.
+    That mattered because the effect-quota gate resolves the tier as an ARGUMENT:
+
+        reserve_effect_quota(..., tier=get_tier(universe_dir))
+
+    so the lookup runs OUTSIDE that function's own guard. The guard is what keeps
+    metering harmless while dark; a lookup that raises before the call is even made
+    slips past it and takes the outbound effect down with it -- a failure mode created
+    purely by merging metering, which is exactly what landing dark is meant to avoid.
+
+    Free is the safe answer to every failure here: it is the tier that grants nothing.
     """
     try:
         with _connect(universe_dir) as conn:
@@ -79,7 +93,7 @@ def get_tier(universe_dir: str | Path, *, default: str = TIER_FREE) -> str:
             row = conn.execute(
                 "SELECT value FROM subscription_meta WHERE key = ?", (_TIER_KEY,)
             ).fetchone()
-    except sqlite3.Error:
+    except Exception:
         return default
     return str(row[0]) if row is not None else default
 
