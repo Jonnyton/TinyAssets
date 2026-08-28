@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,10 @@ _MAX_REQUEST_METHODS = 2
 #: Enough for a real multi-call flow (a GitHub PR needs three) without
 #: becoming a way to ask for a whole API in one go.
 _MAX_REQUEST_ENDPOINTS = 6
+
+#: An unbroken run this long is a credential, not prose. Feedback is free text
+#: stored in the clear, so it gets the same screen the resolver applies.
+_ENTROPY_RUN_RE = re.compile(r"[A-Za-z0-9_\-]{16,}")
 
 
 def _payload(value: Any) -> dict[str, Any]:
@@ -194,6 +199,12 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
         name = str(field.get("name") or "").strip()
         if not name or len(name) > 40:
             raise ValueError("each field needs a name of at most 40 chars")
+        if any(existing["name"] == name for existing in out):
+            # Duplicate names collide as DOM ids: the browser clears the first
+            # control twice and leaves the second holding its value, which for a
+            # secret field means a credential left in the page (Codex 2026-08-27,
+            # reproduced headless).
+            raise ValueError("field names must be unique within a request")
         ftype = str(field.get("type") or "text").strip().lower()
         if ftype not in FIELD_TYPES:
             raise ValueError("field type must be one of " + ", ".join(sorted(FIELD_TYPES)))
@@ -247,8 +258,12 @@ def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str
     except Exception as exc:  # noqa: BLE001 - endpoint validator
         return {"error": "endpoint_not_permitted", "detail": str(exc)}
 
+    # Include body AND fields. With only (kind, title, action), muting "Approve
+    # this?" about a harmless draft also silenced "Approve this?" about deleting
+    # production data — the `answer` action normalizes to a bare {"type":"answer"},
+    # so those two asks shared a key (Codex 2026-08-27, reproduced).
     dedupe = json.dumps(
-        [kind, title, action], sort_keys=True, separators=(",", ":")
+        [kind, title, body, fields, action], sort_keys=True, separators=(",", ":")
     )
     row = create_request(
         udir, kind=kind, title=title, body=body, fields=fields,
@@ -287,6 +302,7 @@ def list_requests(*, universe_id: str = "", limit: int = 10) -> dict[str, Any]:
         list_pending,
         list_resolved,
         list_suppressions,
+        list_unmutes,
     )
 
     uid, udir, denied = _owner_gate(universe_id)
@@ -303,12 +319,15 @@ def list_requests(*, universe_id: str = "", limit: int = 10) -> dict[str, Any]:
         ],
         # Visible, so a standing "don't ask again" is undoable rather than a trap.
         "muted": list_suppressions(udir),
+        # …and lifts are visible too, because the agent shares the user's
+        # principal and can lift one itself.
+        "mutes_lifted": list_unmutes(udir),
     }
 
 
 def unmute_request(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
     """Lift a "don't ask again". A standing refusal a user cannot undo is a trap."""
-    from tinyassets.storage.pending_requests import unsuppress
+    from tinyassets.storage.pending_requests import record_unmute, unsuppress
 
     _uid, udir, denied = _owner_gate(universe_id)
     if denied is not None:
@@ -320,7 +339,15 @@ def unmute_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
     key = str(document.get("dedupe_key") or "")
     if not key:
         return _bad("dedupe_key is required; read it from the muted list")
-    return {"status": "unmuted" if unsuppress(udir, key) else "not_muted"}
+    lifted = unsuppress(udir, key)
+    if lifted:
+        # The agent runs as the user's own principal, so nothing at this gate can
+        # tell "the user lifted a mute" from "the universe lifted the mute the
+        # user set" — Codex reproduced mute -> agent reads key -> agent unmutes.
+        # A distinction the auth model cannot make must not be faked here; record
+        # it so the lift is visible in the rail rather than silent.
+        record_unmute(udir, key)
+    return {"status": "unmuted" if lifted else "not_muted"}
 
 
 def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
@@ -351,6 +378,11 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
 
     if document.get("dismiss") is True:
         fb = str(document.get("feedback") or "").strip()[:_MAX_ANSWER_CHARS]
+        if fb and _ENTROPY_RUN_RE.search(fb):
+            return _bad(
+                "that feedback looks like it contains a credential; it is stored "
+                "in the clear, so say it in words instead"
+            )
         again = document.get("dont_ask_again") is True
         resolve_request(udir, request_id, status="dismissed", feedback=fb,
                         dont_ask_again=again)
@@ -374,12 +406,25 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
 
     action = row["action"]
     secret_names = {f["name"] for f in row["fields"] if f["type"] == "secret"}
-    # Only NON-secret answers are ever recorded.
+    # Record ONLY values for fields the request actually declared as non-secret.
+    # Excluding known secret names was not enough: Codex (2026-08-27) submitted
+    # the credential under an UNDECLARED key and it was persisted verbatim. An
+    # allow-list of declared names has nowhere for an extra key to land.
+    recordable = {
+        f["name"] for f in row["fields"] if f["type"] != "secret"
+    }
     answer = {
         str(k): str(v)[:_MAX_ANSWER_CHARS]
         for k, v in values.items()
-        if str(k) not in secret_names
+        if str(k) in recordable
     }
+    # Feedback is free text the user types, so it can hold anything — including a
+    # credential pasted into the wrong box. Same entropy screen the resolver uses.
+    if feedback and _ENTROPY_RUN_RE.search(feedback):
+        return _bad(
+            "that feedback looks like it contains a credential; it is stored in "
+            "the clear, so say it in words instead"
+        )
 
     if action.get("type") == "connect_http":
         secret = next(
