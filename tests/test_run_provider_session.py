@@ -426,16 +426,31 @@ def test_foreground_run_rejects_branch_not_authored_by_authenticated_principal(
     monkeypatch,
     authenticate_request,
 ) -> None:
-    response, provider, captured = _run_branch(
-        tmp_path,
-        monkeypatch,
-        authenticate_request,
-        _branch(node_count=1, author="acct_bob"),
-    )
+    """Now refused at RESOLUTION rather than as a failed run.
 
-    assert response["terminal_status"] == "failed"
-    assert provider.calls == []
-    assert captured["effects"] == []
+    This used to create a run and let it terminate `failed`, which meant a branch the
+    caller may not read was still loaded and a run row still written under their
+    universe. The refusal now happens before the load, so there is nothing to write --
+    and it reads as "not found", because saying "exists but not yours" is itself a
+    disclosure.
+
+    The property the test was written for is unchanged and stronger: the branch is not
+    executed and no provider is called.
+
+    This asserts only that no run is created -- via the helper's own `run_id` check,
+    which is indirect and could in principle trip for another reason. The DIRECT
+    assertion on the refusal body lives in
+    `tests/test_branch_run_read_check.py::test_an_unreadable_branch_is_reported_as_not_found`,
+    which is the canonical coverage; this one is kept so the original scenario stays
+    represented at the provider-session layer.
+    """
+    with pytest.raises(AssertionError, match="run_id"):
+        _run_branch(
+            tmp_path,
+            monkeypatch,
+            authenticate_request,
+            _branch(node_count=1, author="acct_bob"),
+        )
 
 
 def test_foreground_run_rejects_unsupported_provider_role_before_launch(
