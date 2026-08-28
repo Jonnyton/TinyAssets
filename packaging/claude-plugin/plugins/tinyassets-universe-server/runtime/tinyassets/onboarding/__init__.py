@@ -1052,8 +1052,18 @@ async def _handle_billing_webhook(request: Any) -> Any:
 
     if not onboarding_enabled():
         return PlainTextResponse("Not Found", status_code=404)
+    # Refuse on the DECLARED length before reading, so an unauthenticated caller
+    # cannot make us materialise an arbitrarily large body first — checking after
+    # the read is an assertion, not a memory bound (Codex 2026-08-28).
+    _max = 262_144
+    try:
+        declared = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        declared = 0
+    if declared > _max:
+        return JSONResponse({"error": "payload_too_large"}, status_code=413)
     payload = await request.body()
-    if len(payload) > 262_144:
+    if len(payload) > _max:
         return JSONResponse({"error": "payload_too_large"}, status_code=413)
     signature = str(request.headers.get("stripe-signature") or "")
 

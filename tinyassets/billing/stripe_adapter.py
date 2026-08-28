@@ -26,16 +26,19 @@ _log = logging.getLogger(__name__)
 
 _API = "https://api.stripe.com/v1"
 
-#: Referenced by lookup key and event name rather than raw ids, so the same code
-#: works against test and live mode without an id-swap step.
+#: Referenced by lookup key rather than a raw id, so the same code works against
+#: test and live mode without an id-swap step.
 PRICE_LOOKUP_KEY = "tinyassets_paid_monthly"
-EFFECT_METER_EVENT = "tinyassets_effect"
 
 _KEY_VAR = "STRIPE_SECRET_KEY"
 _WEBHOOK_SECRET_VAR = "STRIPE_WEBHOOK_SECRET"
 
 #: Stripe rejects a signature older than this; so do we, to stop replay.
 _WEBHOOK_TOLERANCE_S = 300
+
+#: Shared by the checkout claim TTL and the Stripe idempotency bucket; they must
+#: agree or a session can outlive the mutual exclusion that guards it.
+CHECKOUT_WINDOW_SECONDS = 900
 
 
 def _basic_auth(key: str) -> str:
@@ -170,10 +173,14 @@ def create_checkout_session(
         ],
         # Keyed on the universe and the day, so a retry after a lost response
         # returns the SAME session rather than creating another.
+        # Bucketed on the SAME window as the checkout claim. A daily key with a
+        # 15-minute claim let two still-completable sessions straddle the boundary
+        # and become two subscriptions (Codex 2026-08-28).
         idempotency_key=(
             "checkout:"
             + hashlib.sha256(
-                f"{universe_id}:{int(_time.time() // 86400)}".encode()
+                f"{universe_id}:"
+                f"{int(_time.time() // CHECKOUT_WINDOW_SECONDS)}".encode()
             ).hexdigest()
         ),
     )
@@ -199,15 +206,22 @@ def find_active_subscription(universe_id: str) -> str | None:
     """The universe's active subscription id, or None. Used by the cancel path."""
     starting_after = ""
     for _page in range(20):  # bounded, but far past the single page it had
-        path = "subscriptions?status=active&limit=100"
+        # `all`, not `active`. trialing is treated as PAID here, and past_due /
+        # unpaid still bill — searching only `active` made cancel report "no
+        # subscription" while billing continued (Codex 2026-08-28).
+        path = "subscriptions?status=all&limit=100"
         if starting_after:
             path += f"&starting_after={starting_after}"
         found = _get(path)
         data = found.get("data") or []
         for sub in data:
             meta = sub.get("metadata") or {}
-            if meta.get("universe_id") == universe_id:
-                return str(sub["id"])
+            if meta.get("universe_id") != universe_id:
+                continue
+            # Terminal states are not cancellable and must not mask a live one.
+            if str(sub.get("status") or "") in ("canceled", "incomplete_expired"):
+                continue
+            return str(sub["id"])
         if not found.get("has_more") or not data:
             return None
         starting_after = str(data[-1]["id"])
@@ -219,19 +233,6 @@ def find_active_subscription(universe_id: str) -> str | None:
     )
 
 
-def report_effect_usage(*, stripe_customer_id: str, count: int) -> dict:
-    """Report metered effects. Reads OUR ledger's number and sends it upward."""
-    if count <= 0:
-        return {"reported": 0}
-    _post(
-        "billing/meter_events",
-        [
-            ("event_name", EFFECT_METER_EVENT),
-            ("payload[stripe_customer_id]", stripe_customer_id),
-            ("payload[value]", str(count)),
-        ],
-    )
-    return {"reported": count}
 
 
 def verify_webhook_signature(
@@ -281,9 +282,15 @@ def subscription_state_from_event(event: dict) -> tuple[str, str] | None:
 
     if kind == "checkout.session.completed":
         universe_id = str(obj.get("client_reference_id") or "")
-        if universe_id and obj.get("mode") == "subscription":
-            return universe_id, "paid"
-        return None
+        if not universe_id or obj.get("mode") != "subscription":
+            return None
+        # A completed session is not a paid session. Stripe emits this for sessions
+        # whose payment is still processing or has failed, so entitling on mode
+        # alone mis-entitles (Codex 2026-08-28). Require the payment to have landed;
+        # otherwise the subscription.* events decide once its status is real.
+        if str(obj.get("payment_status") or "") != "paid":
+            return None
+        return universe_id, "paid"
 
     if kind.startswith("customer.subscription."):
         universe_id = str((obj.get("metadata") or {}).get("universe_id") or "")

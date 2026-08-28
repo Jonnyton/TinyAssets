@@ -335,3 +335,96 @@ def test_an_abandoned_checkout_does_not_lock_the_universe_forever(tmp_path):
     assert claim_checkout(tmp_path, now=now, ttl_seconds=60) is True
     assert claim_checkout(tmp_path, now=now + 30, ttl_seconds=60) is False
     assert claim_checkout(tmp_path, now=now + 120, ttl_seconds=60) is True
+
+
+# --- 2026-08-28 billing review follow-ups ------------------------------------
+
+
+@pytest.mark.parametrize("payment_status", ["unpaid", "no_payment_required", ""])
+def test_a_completed_session_does_not_entitle_until_it_is_paid(payment_status):
+    """Stripe emits checkout.session.completed for unpaid sessions too."""
+    event = {
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "client_reference_id": "u-1",
+                "mode": "subscription",
+                "payment_status": payment_status,
+            }
+        },
+    }
+    assert subscription_state_from_event(event) is None
+
+
+def test_a_paid_session_entitles():
+    event = {
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "client_reference_id": "u-1",
+                "mode": "subscription",
+                "payment_status": "paid",
+            }
+        },
+    }
+    assert subscription_state_from_event(event) == ("u-1", "paid")
+
+
+@pytest.mark.parametrize("status", ["trialing", "past_due", "unpaid", "active"])
+def test_cancel_finds_every_billable_status_not_only_active(monkeypatch, status):
+    """trialing is treated as PAID, and past_due/unpaid still bill.
+
+    Searching only status=active made cancel report "no subscription" while the
+    customer kept being charged.
+    """
+    from tinyassets.billing import stripe_adapter
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_fake")
+    monkeypatch.setattr(
+        stripe_adapter,
+        "_get",
+        lambda *_a, **_k: {
+            "data": [
+                {"id": "sub_t", "status": status, "metadata": {"universe_id": "u-1"}}
+            ],
+            "has_more": False,
+        },
+    )
+    assert stripe_adapter.find_active_subscription("u-1") == "sub_t"
+
+
+@pytest.mark.parametrize("status", ["canceled", "incomplete_expired"])
+def test_a_terminal_subscription_is_not_offered_for_cancellation(monkeypatch, status):
+    from tinyassets.billing import stripe_adapter
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_fake")
+    monkeypatch.setattr(
+        stripe_adapter,
+        "_get",
+        lambda *_a, **_k: {
+            "data": [
+                {"id": "sub_x", "status": status, "metadata": {"universe_id": "u-1"}}
+            ],
+            "has_more": False,
+        },
+    )
+    assert stripe_adapter.find_active_subscription("u-1") is None
+
+
+def test_the_idempotency_window_matches_the_checkout_claim_ttl():
+    """A daily key with a 15-minute claim let two sessions straddle the boundary."""
+    from tinyassets.billing.stripe_adapter import CHECKOUT_WINDOW_SECONDS as A
+    from tinyassets.storage.subscription_state import CHECKOUT_WINDOW_SECONDS as B
+
+    assert A == B
+
+
+def test_no_metering_machinery_is_exported():
+    """Dead metering code implies a capability this branch does not have."""
+    import tinyassets.billing as billing
+
+    assert not hasattr(billing, "report_effect_usage")
+    source = (
+        REPO / "tinyassets" / "billing" / "stripe_adapter.py"
+    ).read_text(encoding="utf-8")
+    assert "meter_events" not in source

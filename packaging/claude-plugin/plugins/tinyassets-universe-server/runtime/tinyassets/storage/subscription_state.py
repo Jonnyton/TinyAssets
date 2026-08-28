@@ -30,6 +30,10 @@ _TIER_KEY = "tier"
 _EVENT_AT_KEY = "tier_event_at"
 _CHECKOUT_CLAIM_KEY = "checkout_claim_at"
 
+#: Must equal the Stripe idempotency bucket in the adapter, or a session can
+#: outlive the mutual exclusion guarding it and a second one can be created.
+CHECKOUT_WINDOW_SECONDS = 900.0
+
 
 def state_db_path(universe_dir: str | Path) -> Path:
     return Path(universe_dir) / _DB_FILENAME
@@ -121,7 +125,10 @@ def apply_tier_event(
 
 
 def claim_checkout(
-    universe_dir: str | Path, *, now: float, ttl_seconds: float = 900.0
+    universe_dir: str | Path,
+    *,
+    now: float,
+    ttl_seconds: float = CHECKOUT_WINDOW_SECONDS,
 ) -> bool:
     """Exclusive, expiring claim on starting a checkout for this universe.
 
