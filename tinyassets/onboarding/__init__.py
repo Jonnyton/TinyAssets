@@ -924,17 +924,22 @@ async def _handle_billing_status(request: Any) -> Any:
     def _read() -> dict[str, Any]:
         from tinyassets.api.helpers import _universe_dir
         from tinyassets.billing import billing_enabled
-        from tinyassets.storage.subscription_state import TIER_FREE, get_tier
+        from tinyassets.storage.subscription_state import TIER_FREE, get_plan
 
         with identity_context(identity):
             home = _read_home(identity)
             if not home:
-                return {"tier": TIER_FREE, "reason": "no_home_universe"}
-            # Tier only. Usage limits belong to the metering change, which has NOT
-            # landed — reporting quotas here would advertise enforcement that does
+                return {"tier": TIER_FREE, "ends_at": None,
+                        "reason": "no_home_universe"}
+            # Tier and, if it is ending, when. No Stripe round-trip: `ends_at` is
+            # persisted by the webhook, so this stays a local read even though it is
+            # polled. Usage limits belong to the metering change, which has NOT
+            # landed - reporting quotas here would advertise enforcement that does
             # not exist.
+            plan = get_plan(_universe_dir(home))
             return {
-                "tier": get_tier(_universe_dir(home)),
+                "tier": plan["tier"],
+                "ends_at": plan["ends_at"],
                 "billing_enabled": billing_enabled(),
                 "enforced": [],
             }
@@ -1159,7 +1164,10 @@ async def _handle_billing_webhook(request: Any) -> Any:
 
     def _apply() -> dict[str, Any]:
         from tinyassets.api.helpers import _universe_dir
-        from tinyassets.billing import subscription_state_from_event
+        from tinyassets.billing import (
+            subscription_end_from_event,
+            subscription_state_from_event,
+        )
         from tinyassets.storage.subscription_state import (
             TIER_PAID,
             apply_tier_event,
@@ -1174,7 +1182,16 @@ async def _handle_billing_webhook(request: Any) -> Any:
         # Ordered by the event's own created time: Stripe does not guarantee
         # delivery order, and a delayed `active` must not overwrite a newer cancel.
         created = float(event.get("created") or 0.0)
-        applied = apply_tier_event(universe_dir, tier=tier, event_created=created)
+        applied = apply_tier_event(
+            universe_dir,
+            tier=tier,
+            event_created=created,
+            # Display only, and stored with the tier it describes so the two cannot
+            # disagree. A cancellation leaves the subscription ACTIVE until the period
+            # ends, so without this the user sees an unchanged "Paid plan" and cannot
+            # tell their cancellation took.
+            ends_at=subscription_end_from_event(event),
+        )
         # An APPLIED, ENTITLING event is Stripe telling us a checkout resolved into a
         # live subscription, so the claim has done its job. Holding it to its TTL
         # locked a user who subscribed and then cancelled out of resubscribing for a

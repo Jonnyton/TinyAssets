@@ -980,3 +980,147 @@ def test_the_checkout_route_actually_applies_the_origin_allowlist(
     assert response.status_code == 200
     assert sent["success"].startswith("https://tinyassets.io/"), sent
     assert "evil.example" not in sent["success"] + sent["cancel"]
+
+
+# --- a cancellation the user can actually see --------------------------------
+#
+# Cancelling leaves the subscription ACTIVE until the period ends, so "paid" alone
+# cannot distinguish a user who cancelled from one who did not. On reload the chip
+# read "Paid plan" exactly as before and offered to cancel again, which invited the
+# conclusion that the first cancellation had not worked.
+
+
+def _cancelling_event(**kwargs):
+    event = _subscription_event("active", **kwargs)
+    event["data"]["object"]["cancel_at_period_end"] = True
+    event["data"]["object"]["current_period_end"] = 1_790_000_000
+    return event
+
+
+def test_a_scheduled_cancellation_is_reported():
+    from tinyassets.billing import subscription_end_from_event
+
+    assert subscription_end_from_event(_cancelling_event(), secret=SECRET) == (
+        1_790_000_000.0
+    )
+
+
+def test_a_renewing_subscription_has_no_end_to_show():
+    from tinyassets.billing import subscription_end_from_event
+
+    assert subscription_end_from_event(_subscription_event(), secret=SECRET) is None
+
+
+def test_a_deleted_subscription_reports_no_end():
+    """It is gone; the tier says so. A date would imply it is still coming."""
+    from tinyassets.billing import subscription_end_from_event
+
+    event = _cancelling_event(kind="customer.subscription.deleted")
+    assert subscription_end_from_event(event, secret=SECRET) is None
+
+
+def test_an_unclaimed_subscription_cannot_inject_an_end_date():
+    """The date goes through the same authorization as entitlement does."""
+    from tinyassets.billing import subscription_end_from_event
+
+    event = _cancelling_event()
+    event["data"]["object"]["metadata"]["tinyassets_entitlement_claim"] = "forged"
+    assert subscription_end_from_event(event, secret=SECRET) is None
+
+
+def test_the_end_date_is_stored_and_cleared_with_the_tier(tmp_path):
+    """One transaction, one ordering. Two would drift apart out of order."""
+    import sqlite3
+
+    from tinyassets.storage.subscription_state import (
+        apply_tier_event,
+        get_plan,
+        state_db_path,
+    )
+
+    apply_tier_event(tmp_path, tier="paid", event_created=100.0, ends_at=500.0)
+    assert get_plan(tmp_path) == {"tier": "paid", "ends_at": 500.0}
+
+    # Reactivating CLEARS the date rather than leaving a stale one behind.
+    apply_tier_event(tmp_path, tier="paid", event_created=200.0, ends_at=None)
+    assert get_plan(tmp_path) == {"tier": "paid", "ends_at": None}
+
+    # Assert the ROW is gone, not merely that it parses back as absent. Writing the
+    # string "None" also reads as absent -- get_plan's float() raises and it falls
+    # back -- so a version that stored garbage instead of deleting passed this test
+    # until it checked the row. (Caught by mutation, 2026-08-28.)
+    with sqlite3.connect(state_db_path(tmp_path)) as conn:
+        stored = conn.execute(
+            "SELECT COUNT(*) FROM subscription_meta WHERE key = 'tier_ends_at'"
+        ).fetchone()[0]
+    assert stored == 0, "a cleared end date must leave no row behind"
+
+
+def test_a_rejected_event_cannot_leave_its_end_date_behind(tmp_path):
+    """The date must never outlive the tier decision it belonged to."""
+    from tinyassets.storage.subscription_state import apply_tier_event, get_plan
+
+    apply_tier_event(tmp_path, tier="free", event_created=300.0)
+    assert apply_tier_event(
+        tmp_path, tier="paid", event_created=100.0, ends_at=999.0
+    ) is False
+    assert get_plan(tmp_path) == {"tier": "free", "ends_at": None}
+
+
+def test_an_unreadable_db_reports_no_end_date(tmp_path):
+    from tinyassets.storage.subscription_state import get_plan, state_db_path
+
+    state_db_path(tmp_path).write_bytes(b"not a database")
+    assert get_plan(tmp_path) == {"tier": "free", "ends_at": None}
+
+
+def test_the_webhook_persists_the_end_date_through_the_route(tmp_path, monkeypatch):
+    """Driven through the route: the wiring is what regressed before."""
+    import asyncio
+    import json as _json
+
+    import tinyassets.api.helpers as helpers
+    from tinyassets import onboarding
+    from tinyassets.storage.subscription_state import get_plan
+
+    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
+    monkeypatch.setattr(helpers, "_universe_dir", lambda u: tmp_path / u)
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", SECRET)
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
+
+    universe = "u-ending"
+    (tmp_path / universe).mkdir()
+    event = _cancelling_event(universe_id=universe)
+    event["created"] = 1_000
+    payload = _json.dumps(event).encode()
+
+    class _Request:
+        headers = {
+            "content-length": str(len(payload)),
+            "stripe-signature": _sign(payload, int(time.time())),
+        }
+
+        async def stream(self):
+            yield payload
+
+    assert asyncio.run(
+        onboarding._handle_billing_webhook(_Request())
+    ).status_code == 200
+    assert get_plan(tmp_path / universe) == {
+        "tier": "paid",
+        "ends_at": 1_790_000_000.0,
+    }
+
+
+def test_the_page_shows_the_end_date_and_stops_offering_a_second_cancel():
+    """The UI half. A stored date nobody renders fixes nothing."""
+    page = (REPO / "tinyassets" / "onboarding" / "app.html").read_text(
+        encoding="utf-8"
+    )
+    assert "planEndsOn" in page
+    render = page.split("function renderPlan()")[1].split("\n  }")[0]
+    assert "ends " in render, "the chip must name the date"
+    click = page.split("function onPlanClick()")[1].split("\n  }")[0]
+    assert "already cancelled" in click, (
+        "clicking an already-cancelled plan must not offer to cancel again"
+    )

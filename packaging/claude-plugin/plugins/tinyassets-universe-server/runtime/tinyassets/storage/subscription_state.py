@@ -29,6 +29,9 @@ CREATE TABLE IF NOT EXISTS subscription_meta (
 _TIER_KEY = "tier"
 _EVENT_AT_KEY = "tier_event_at"
 _CHECKOUT_CLAIM_KEY = "checkout_claim_at"
+#: When an entitling subscription is scheduled to lapse. DISPLAY ONLY -- the tier
+#: is the sole entitlement authority, and a date must never gate access.
+_ENDS_AT_KEY = "tier_ends_at"
 
 #: How long a Checkout Session we create stays completable. Stripe's floor for
 #: ``expires_at`` is 30 minutes; the extra minute absorbs clock skew between the
@@ -78,8 +81,37 @@ def get_tier(universe_dir: str | Path, *, default: str = TIER_FREE) -> str:
     return str(row[0]) if row is not None else default
 
 
+def get_plan(universe_dir: str | Path) -> dict[str, object]:
+    """This universe's tier plus, if it is ending, when.
+
+    ``ends_at`` is None unless an entitling subscription is scheduled to lapse. It
+    exists so the app can show a cancellation that has already happened -- without it
+    a user who cancelled sees the same "Paid plan" as before and cannot tell whether
+    it took. It is DISPLAY ONLY; ``get_tier`` remains the entitlement authority.
+    """
+    plan: dict[str, object] = {"tier": get_tier(universe_dir), "ends_at": None}
+    try:
+        with _connect(universe_dir) as conn:
+            conn.executescript(_SCHEMA)
+            row = conn.execute(
+                "SELECT value FROM subscription_meta WHERE key = ?", (_ENDS_AT_KEY,)
+            ).fetchone()
+    except sqlite3.Error:
+        return plan
+    if row is not None:
+        try:
+            plan["ends_at"] = float(row[0])
+        except (TypeError, ValueError):
+            pass
+    return plan
+
+
 def apply_tier_event(
-    universe_dir: str | Path, *, tier: str, event_created: float
+    universe_dir: str | Path,
+    *,
+    tier: str,
+    event_created: float,
+    ends_at: float | None = None,
 ) -> bool:
     """Apply a billing event's tier only if it is not older than the last applied.
 
@@ -92,6 +124,10 @@ def apply_tier_event(
     Stripe timestamps are second-granularity, so ties are ordinary. Ties resolve
     toward DE-ESCALATION — a same-second cancel beats a same-second activate — so
     entitlement is never granted by arrival-order coin flip.
+
+    ``ends_at`` rides along in the same transaction: it describes THIS tier, so it
+    is accepted or rejected with it. None clears any stored date, which is what a
+    renewal or a reactivation means.
 
     Returns True when applied, False when ignored.
     """
@@ -127,6 +163,20 @@ def apply_tier_event(
                     "INSERT INTO subscription_meta (key, value) VALUES (?, ?) "
                     "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                     (key, value),
+                )
+            # Written in the SAME transaction, under the SAME ordering check, as the
+            # tier it describes. A second ordered write would be a second ordering,
+            # and the two would drift apart on out-of-order delivery -- leaving a
+            # universe showing an end date from an event its tier had rejected.
+            if ends_at is None:
+                conn.execute(
+                    "DELETE FROM subscription_meta WHERE key = ?", (_ENDS_AT_KEY,)
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO subscription_meta (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (_ENDS_AT_KEY, str(ends_at)),
                 )
             conn.execute("COMMIT")
             return True
