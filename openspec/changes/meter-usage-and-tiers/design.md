@@ -36,13 +36,30 @@ to us. Nothing about our cost structure justifies a tight free tier.
 
 ## Decisions
 
-**1. Count effects at completion, not admission.**
-`finalize_receipt(... STATUS_SUCCEEDED)` in
-`tinyassets/storage/external_write_receipts.py` is the one place an effect is known to have
-actually reached the world. The receipts DB is already per-universe
-(`receipts_db_path(universe_dir)`), so the meter lives beside the thing it measures.
-Failed, held, and released receipts never decrement. *Rationale:* tonight proved that
-counting attempts punishes debugging, which is the opposite of the intent.
+**1. Reserve the effect budget pre-flight; settle it on outcome.**
+
+The naive fix — count at `finalize_receipt(... STATUS_SUCCEEDED)` — is wrong, and it is
+worth writing down why, because it looks right. Counting only on success makes the cap
+**post-hoc**: the effect has already reached the world before the meter moves. For an
+irreversible outbound action that is not a control at all, and it would reopen the security
+gate this bound exists to provide (Codex gate #5).
+
+Instead, reuse the reservation lifecycle `external_write_receipts.py` already has:
+
+| Point | Existing primitive | Quota action |
+|---|---|---|
+| Before the write | `try_reserve_receipt` (atomic) | **reserve** a slot; refuse here if the budget is exhausted |
+| Write failed | `release_reservation` | **release** the slot — a failure costs nothing |
+| Write succeeded | `finalize_receipt(SUCCEEDED)` | **commit** the slot |
+
+This gets both properties at once: enforcement happens *before* the effect (a real control,
+bounded even under concurrency, since reservation is atomic), and failed attempts still cost
+the user nothing — which was the whole point of tonight's outage. Held and released receipts
+release; replay finds the existing reservation rather than taking a second one.
+
+*Rationale:* counting attempts punishes debugging; counting only successes stops being a
+security control. Reserving is the only shape that satisfies both, and the repo already has
+the primitive.
 
 **2. Keep a compute guard, but do not bill it.**
 Effects-only accounting leaves a hole: a prompt-injected engine can still burn unlimited

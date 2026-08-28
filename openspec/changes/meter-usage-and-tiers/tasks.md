@@ -6,10 +6,12 @@
       atomic `BEGIN IMMEDIATE` count-and-insert shape from `_engine_run_admit`
       (`tinyassets/engine_mcp_server.py:86-148`) — it closes a real TOCTOU race — and the
       symlink/path-escape refusal guarding that ledger.
-- [ ] 1.2 Count an effect at `finalize_receipt` terminal success only
-      (`tinyassets/storage/external_write_receipts.py`), per universe via the existing
-      `receipts_db_path(universe_dir)`. Failed/held/released/replayed receipts never count.
-      A metering failure must never change the effect's own outcome.
+- [ ] 1.2 Enforce effect quota through the EXISTING reservation lifecycle in
+      `tinyassets/storage/external_write_receipts.py`: reserve budget in
+      `try_reserve_receipt` (refusing pre-flight when exhausted), return it in
+      `release_reservation`, commit it in `finalize_receipt(SUCCEEDED)`. Counting only on
+      success would make the cap post-hoc on an irreversible action — an accounting record,
+      not a control. Replay settles against the existing reservation, never a second one.
 - [ ] 1.3 Meter compute-minutes as run subprocess wall-time per universe, recorded through
       the run executor (`tinyassets/runs.py`; 4-worker top-level pool at `:3002`).
 - [ ] 1.4 Attribute run-transcript storage per universe so the storage dimension is honest
