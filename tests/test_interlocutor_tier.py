@@ -736,10 +736,56 @@ class TestTheSinkResolvesItsOwnAuthority:
             "the founder's private grounding"
         )
 
-    def test_the_sink_calls_the_clamp_and_not_the_raw_argument(self):
-        """Source-shape, and deliberately narrow: the escalation was possible
-        because `tier` reached `bound_tier` unfiltered, so that exact assignment
-        is what must not come back."""
+    @pytest.mark.parametrize("requested", [il.T0, il.T1, il.T2, None])
+    @pytest.mark.parametrize("resolved", [il.T0, il.T1, il.T2])
+    def test_every_pair_of_known_tiers_never_widens(self, requested, resolved):
+        """The exhaustive matrix, because a one-case fix passes a one-case test.
+
+        Codex round 2 built a mutant that special-cased exactly the reproduction
+        it had reported -- `if requested == T2 and resolved == T1: return T1` --
+        and every assertion here stayed green while anonymous T0 asking for T2
+        still disclosed. A CVE-shaped test invites a CVE-shaped fix.
+        """
+        from tinyassets.api import interlocutor
+
+        out = interlocutor.clamp_tier(requested, resolved=resolved)
+        if requested is None:
+            assert out == resolved
+        else:
+            assert interlocutor.TIERS.index(out) <= interlocutor.TIERS.index(
+                resolved
+            ), f"clamp({requested!r}, resolved={resolved!r}) widened to {out!r}"
+
+    def test_an_anonymous_caller_asking_for_t2_gets_no_founder_grounding(
+        self, base, monkeypatch
+    ):
+        """The weakest caller asking for the strongest tier -- the case the
+        round-1 fix happened to handle and the round-1 tests did not check."""
+        udir = _make_universe(base, "u-pub", level="public")
+        # No _authenticate(): anonymous, so the resolver binds T0.
+        monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-pub")
+        monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
+
+        seen: list[str] = []
+
+        def _fake_provider(prompt, system="", **_kw):
+            seen.append(system)
+            return "{}" if "strict JSON" in system else "hello"
+
+        monkeypatch.setattr(ui, "call_provider", _fake_provider)
+        ui.converse("u-pub", "hi", tier=il.T2)
+
+        assert seen, "provider was never called"
+        assert FOUNDER_FACT not in seen[0], (
+            "an anonymous caller asked for founder tier and got the founder's "
+            "private grounding"
+        )
+
+    def test_the_sink_routes_the_tier_through_the_clamp(self):
+        """Kept, but demoted: on its own this is satisfiable by a dead
+        `clamp_tier(...)` call beside a raw assignment, which is why the two
+        disclosure tests above are the real gate. It earns its place only by
+        naming the exact bypass that must not come back."""
         import pathlib as _p
 
         from tinyassets import universe_intelligence as ui
@@ -777,3 +823,33 @@ class TestConverseSurvivesAnUnreadableAcl:
         out = _json.loads(us.converse("u-own", "hello"))
         assert "error" in out, "an unreadable ACL must refuse, not raise"
         assert out.get("auth_scope_required") is True
+
+    def test_a_home_store_failure_is_also_a_refusal(self, base, monkeypatch):
+        """Codex round 2: the first fix wrapped the ACL read and left the read one
+        call EARLIER — resolving the home when no `graph_id` is given — bare. Same
+        defect, one line up, which is what "fix the pattern not the instance"
+        means in practice."""
+        import json as _json
+
+        from tinyassets import universe_server as us
+
+        _make_universe(base, "u-own", level="private")
+        grant_universe_access(
+            base, universe_id="u-own", actor_id="owner-1", permission="admin"
+        )
+        _authenticate("owner-1")
+
+        def _boom(*_a, **_kw):
+            raise OSError("home store unavailable")
+
+        monkeypatch.setattr("tinyassets.daemon_server.get_founder_home", _boom)
+        # A real message: the first version passed "" and passed under the
+        # mutation too, because an empty turn is refused before the home is ever
+        # resolved. A test that goes green for the wrong reason is the failure
+        # mode this whole review is about.
+        out = _json.loads(us.converse("hello", ""))  # no graph_id: the home path
+        assert "error" in out, "an unreadable home store must refuse, not raise"
+        assert out.get("auth_scope_required") is True, (
+            "and it must be the honest envelope, not some other refusal that "
+            "happens to also contain 'error'"
+        )
