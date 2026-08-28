@@ -93,9 +93,24 @@ def run_effects_for_branch(
         for sink in effects:
             adapter = _EFFECTORS.get(sink)
             if adapter is None:
+                # Name the way FORWARD, not just the fact of refusal. Per-channel
+                # sinks (github_pull_request, slack_message, x_post, …) were deleted
+                # in the channel-agnostic rebuild: every integration is now composed
+                # from the one generic primitive. A caller reaching here is almost
+                # always a graph author still using a retired name, and telling them
+                # only "unknown" leaves them guessing at a sink that will never exist.
                 per_node[sink] = {
                     "error": f"unknown effect sink: {sink}",
                     "error_kind": "unknown_sink",
+                    "valid_sinks": sorted(_EFFECTORS),
+                    "remediation": (
+                        f"{sink!r} is not a sink. Per-channel effectors were removed: "
+                        f"any external integration — GitHub, Slack, X, anything with "
+                        f"an HTTP API — is composed from "
+                        f"{EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL!r} pointed at that "
+                        f"API, using a deposited connection and a granted destination. "
+                        f"Use that sink and put the endpoint in the request packet."
+                    ),
                 }
                 continue
             try:
