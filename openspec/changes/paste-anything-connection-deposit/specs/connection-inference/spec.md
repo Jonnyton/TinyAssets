@@ -75,24 +75,33 @@ tradeoff).
 - **WHEN** a user pastes credential material that the resolver can identify
 - **THEN** the connection is deposited and usable with no further interaction
 
-### Requirement: The resulting grant is stated back and revocable
+### Requirement: The resulting grant is stated back and correctable
 
 After depositing, the interface SHALL state in one plain sentence what the key
-was granted — method, host, path — and SHALL offer changing or removing it. This
-is a receipt, not a gate: it appears after the connection exists and blocks
-nothing.
+was granted — method, host, path — and SHALL offer changing it. This is a
+receipt, not a gate: it appears after the connection exists and blocks nothing.
+
+The receipt SHALL NOT offer an action the surface cannot perform. **Removal is
+out of scope for this change**: no operation exposes the ledger's
+`revoke_connection` today, and a naive one would permanently burn the
+destination name (ids are deterministic on `(universe, destination)` and the
+`revoked_at` conflict then refuses every re-deposit). That is a storage-shape
+decision with its own design, tracked in
+`docs/concerns/2026-08-27-no-reachable-remove-for-http-connections.md`.
 
 #### Scenario: A deposit lands
 
 - **WHEN** the connection is created
 - **THEN** the user is told this key may POST to that exact path and nothing
-  else, with change and remove available in the same place
+  else, and how to change it
+- **AND** the receipt does not claim the key can be removed here, because it
+  cannot
 
 #### Scenario: The inference chose wrongly
 
 - **WHEN** the receipt names a host or path the user did not intend
-- **THEN** the user can correct or remove it there, without needing to know
-  where connections are otherwise managed
+- **THEN** the user can correct it there by supplying the right values, without
+  needing to know where connections are otherwise managed
 
 ### Requirement: Pasted material is data, never instructions
 
@@ -122,20 +131,26 @@ thing steering where a credential becomes usable.
 
 When the resolver cannot produce a policy, or produces one the user judges
 wrong, the interface SHALL expose the explicit fields — destination, host, path,
-methods, auth scheme — pre-filled with whatever was inferred, so the user can
-correct and proceed.
+methods, auth scheme — so the user can supply the right values and proceed.
+
+The pasted material SHALL still be cleared from the page before any request, as
+the manual form already does: a credential must not sit in the DOM while a
+request is in flight, and that outranks the convenience of not re-pasting. The
+failure message SHALL therefore say the credential needs pasting again, rather
+than leaving the user to discover an empty box.
 
 #### Scenario: Inference fails
 
 - **WHEN** the resolver cannot identify the service
-- **THEN** the explicit fields are shown, empty or partially filled, with the
-  paste preserved
+- **THEN** the explicit fields are shown, and the message says what to do next
+  including that the credential must be pasted again
+- **AND** the pasted material is no longer present in the page
 
 #### Scenario: Inference is wrong
 
 - **WHEN** the proposed path is not the endpoint the user wants
-- **THEN** the user can edit the proposal before confirming, and the edited
-  values are what get deposited
+- **THEN** the user can enter the values they want in the explicit fields, and
+  those are what get deposited
 
 ### Requirement: The egress boundary is unchanged by inference
 

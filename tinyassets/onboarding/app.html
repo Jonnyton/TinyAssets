@@ -1222,19 +1222,25 @@
         const r=await MCP.resolveConnection(shape,hints,intent);
         if(r&&r.error){ out.textContent="Couldn't add it: "+(r.detail||r.error); openManual(); return; }
         if(!r||!r.resolved){
+          // The paste was cleared before the request (hygiene), so say so —
+          // otherwise the user finds an empty box and no explanation.
           out.textContent=(r&&r.reason?r.reason:"Couldn't work out what this is.")+
-            " Fill it in below and it'll go through.";
+            " Fill in the fields below and paste the credential again there.";
           openManual(); return;
         }
         const secret=pickSecret(r.auth_scheme,values);
-        if(!secret){ out.textContent="Found the service, but not the value it needs. Fill it in below.";
+        if(!secret){ out.textContent="Found the service, but not the value it needs. Fill in the fields below and paste the credential again there.";
           openManual(); return; }
         // No confirmation step (founder, 2026-08-27): pasting IS the interaction.
         // The sentence still gets shown — after the fact, as a receipt.
         const d=await MCP.connectHTTP(r.destination,secret,r.allowed_endpoints,r.auth_scheme);
         if(d&&d.error){ out.textContent="Couldn't add it: "+(d.detail||d.error); openManual(); return; }
+        // Says only what this surface can actually do. There is no reachable
+        // remove for an http connection yet (the ledger has revoke_connection,
+        // nothing exposes it), and promising one would be the same class of bug
+        // as the old path label that promised a default this deposit never had.
         out.textContent="Added as “"+r.destination+"”. "+r.receipt+
-          " Change or remove it below.";
+          " To change it, fill it in below and add it again.";
         $("paste-intent").value="";
       }catch(err){ if(err.authRequired){ btn.disabled=false; return enterSignedOut(); }
         out.textContent="Couldn't add it: "+err.message; }
