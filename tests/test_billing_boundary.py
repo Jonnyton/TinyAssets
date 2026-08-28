@@ -586,3 +586,125 @@ def test_no_metering_machinery_is_exported():
         REPO / "tinyassets" / "billing" / "stripe_adapter.py"
     ).read_text(encoding="utf-8")
     assert "meter_events" not in source
+
+
+# --- 2026-08-28 live subscribe/cancel run: refusals reported as outages -------
+#
+# Found by driving the real webapp: subscribe worked, cancel worked, and then an
+# immediate resubscribe told the user "Billing unavailable: tunnel origin returned
+# 5xx". Two defects stacked -- the route answered a deliberate refusal with 503, and
+# the claim guarding the finished checkout was still held.
+
+
+@pytest.mark.parametrize(
+    ("out", "expected"),
+    [
+        ({"url": "https://checkout.stripe.com/c/pay/cs_test_x"}, 200),
+        ({"error": "already_subscribed"}, 409),
+        ({"error": "checkout_already_in_progress"}, 409),
+        ({"error": "no_home_universe"}, 409),
+        ({"error": "billing_unavailable", "detail": "no key"}, 503),
+    ],
+)
+def test_a_refusal_is_not_reported_as_a_service_outage(out, expected):
+    """Only billing actually being unavailable may answer 5xx.
+
+    This is not cosmetic. The Cloudflare Worker in front of production replaces the
+    BODY of any origin 5xx with its own bad_gateway JSON, so a refusal sent as 503
+    reaches the browser with our reason stripped out and the tunnel blamed.
+    """
+    from tinyassets.onboarding import _checkout_status
+
+    assert _checkout_status(out) == expected
+
+
+def test_an_unclassified_checkout_error_is_a_500_not_a_plausible_refusal():
+    """An error string nobody classified is a bug here, and must read as one."""
+    from tinyassets.onboarding import _checkout_status
+
+    assert _checkout_status({"error": "something_new"}) == 500
+
+
+def test_every_checkout_error_the_route_can_return_is_classified():
+    """The table is only load-bearing if it actually covers the route.
+
+    Greps the route body for the error strings it can return, so adding a new one
+    without classifying it fails here instead of reaching a user as a 500.
+    """
+    from tinyassets.onboarding import _CHECKOUT_STATUS
+
+    source = (REPO / "tinyassets" / "onboarding" / "__init__.py").read_text(
+        encoding="utf-8"
+    )
+    body = source.split("async def _handle_billing_checkout")[1].split(
+        "async def _handle_billing_cancel"
+    )[0]
+    returned = set(re.findall(r'"error":\s*"([a-z_]+)"', body))
+    assert returned, "the grep found nothing - the anchor moved"
+    assert returned <= set(_CHECKOUT_STATUS), (
+        f"unclassified checkout errors: {sorted(returned - set(_CHECKOUT_STATUS))}"
+    )
+
+
+def test_the_user_facing_copy_covers_every_refusal_the_route_classifies():
+    """A classified refusal with no message falls back to 'Billing unavailable'."""
+    from tinyassets.onboarding import _CHECKOUT_STATUS
+
+    page = (REPO / "tinyassets" / "onboarding" / "app.html").read_text(
+        encoding="utf-8"
+    )
+    block = page.split("const CHECKOUT_REFUSALS = {")[1].split("};")[0]
+    named = set(re.findall(r"^\s*([a-z_]+):", block, re.M))
+    refusals = {k for k, v in _CHECKOUT_STATUS.items() if v < 500}
+    assert refusals <= named, f"no message for: {sorted(refusals - named)}"
+
+
+def test_a_resolved_checkout_releases_its_claim_immediately(tmp_path, monkeypatch):
+    """The live lockout: subscribe, cancel, and resubscribe is refused for 15 min.
+
+    The claim exists to stop two concurrent clicks becoming two subscriptions. A
+    Stripe subscription event is Stripe telling us that checkout resolved, so the
+    claim has done its job by then -- `AlreadySubscribed` guards afterwards.
+    """
+    import asyncio
+    import json as _json
+
+    import tinyassets.api.helpers as helpers
+    from tinyassets import onboarding
+    from tinyassets.storage.subscription_state import (
+        claim_checkout,
+        get_tier,
+        state_db_path,
+    )
+
+    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
+    monkeypatch.setattr(helpers, "_universe_dir", lambda u: tmp_path / u)
+
+    universe = "u-claim-release"
+    universe_dir = tmp_path / universe
+    universe_dir.mkdir()
+    assert claim_checkout(universe_dir, now=time.time()) is True
+    assert claim_checkout(universe_dir, now=time.time()) is False, "claim is held"
+
+    payload = _json.dumps(_subscription_event(universe_id=universe)).encode()
+    timestamp = int(time.time())
+
+    class _Request:
+        headers = {
+            "content-length": str(len(payload)),
+            "stripe-signature": _sign(payload, timestamp),
+        }
+
+        async def stream(self):
+            yield payload
+
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", SECRET)
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
+    response = asyncio.run(onboarding._handle_billing_webhook(_Request()))
+    assert response.status_code == 200
+
+    assert get_tier(universe_dir) == "paid", "the event must still move the tier"
+    assert state_db_path(universe_dir).exists()
+    assert claim_checkout(universe_dir, now=time.time()) is True, (
+        "a resolved checkout must not keep its claim to the TTL"
+    )

@@ -944,6 +944,37 @@ async def _handle_billing_status(request: Any) -> Any:
     )
 
 
+#: HTTP status for each checkout outcome. Explicit, because the previous rule --
+#: "200 if a url came back, else 503" -- reported three DELIBERATE refusals as a
+#: service outage. That is not merely imprecise: the Cloudflare Worker in front of
+#: production replaces the BODY of any origin 5xx with
+#: ``{"error": "bad_gateway", "detail": "tunnel origin returned 5xx"}``
+#: (``deploy/cloudflare-worker/worker.js``), so a 5xx destroys the reason on its way
+#: out. A user who cancelled and immediately tried to resubscribe was told the tunnel
+#: was sick (observed live 2026-08-28).
+#:
+#: A table rather than a chain of ifs so a new error string has to be classified here
+#: rather than silently inheriting a wrong default.
+_CHECKOUT_STATUS = {
+    # The universe already has what checkout would create, or a checkout for it is
+    # already open. Both are conflicts with existing state, not failures.
+    "already_subscribed": 409,
+    "checkout_already_in_progress": 409,
+    "no_home_universe": 409,
+    # Genuinely us: billing is unconfigured or the processor is unreachable.
+    "billing_unavailable": 503,
+}
+
+
+def _checkout_status(out: dict[str, Any]) -> int:
+    if "url" in out:
+        return 200
+    error = str(out.get("error") or "")
+    # An unclassified error is a bug in this table, and 500 says so honestly rather
+    # than dressing it up as any particular refusal.
+    return _CHECKOUT_STATUS.get(error, 500)
+
+
 async def _handle_billing_checkout(request: Any) -> Any:
     """Start a subscription; returns the hosted Stripe checkout URL."""
     from starlette.concurrency import run_in_threadpool
@@ -998,9 +1029,10 @@ async def _handle_billing_checkout(request: Any) -> Any:
                 return {"error": "billing_unavailable", "detail": str(exc)}
 
     out = await run_in_threadpool(_start)
-    status = 200 if "url" in out else 503
     return JSONResponse(
-        out, status_code=status, headers={"Cache-Control": "no-store"}
+        out,
+        status_code=_checkout_status(out),
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -1091,18 +1123,34 @@ async def _handle_billing_webhook(request: Any) -> Any:
     def _apply() -> dict[str, Any]:
         from tinyassets.api.helpers import _universe_dir
         from tinyassets.billing import subscription_state_from_event
-        from tinyassets.storage.subscription_state import apply_tier_event
+        from tinyassets.storage.subscription_state import (
+            apply_tier_event,
+            release_checkout_claim,
+        )
 
         mapped = subscription_state_from_event(event)
         if mapped is None:
             return {"applied": False}
         universe_id, tier = mapped
+        universe_dir = _universe_dir(universe_id)
         # Ordered by the event's own created time: Stripe does not guarantee
         # delivery order, and a delayed `active` must not overwrite a newer cancel.
         created = float(event.get("created") or 0.0)
-        applied = apply_tier_event(
-            _universe_dir(universe_id), tier=tier, event_created=created
-        )
+        applied = apply_tier_event(universe_dir, tier=tier, event_created=created)
+        # This event IS Stripe telling us the checkout resolved, so the claim has
+        # done its job and must go. Holding it to its 900s TTL locked a user who
+        # subscribed and then cancelled out of resubscribing for a quarter hour
+        # (observed live 2026-08-28).
+        #
+        # Released HERE and nowhere earlier. Releasing when the session URL is
+        # handed out would reopen the exact race the claim closes: a pending
+        # Checkout Session is not yet a subscription, so a second click would find
+        # no subscription to refuse against and create a second session. Once the
+        # subscription exists, `AlreadySubscribed` guards that instead; once it is
+        # gone, there is nothing left to guard. An ABANDONED checkout is still
+        # covered, because no event arrives for it and the TTL remains its only
+        # release -- which is correct, since the user can still complete it.
+        release_checkout_claim(universe_dir)
         return {"applied": applied, "tier": tier if applied else None}
 
     return JSONResponse(await run_in_threadpool(_apply))
