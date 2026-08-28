@@ -189,10 +189,19 @@
         <div class="provider-card">
           <div class="provider-head"><strong>Any API service</strong>
             <span class="muted">OpenRouter, Slack, X, any HTTPS API</span></div>
-          <p>Add an API key so your universe can use an outside service — free LLMs
-          via OpenRouter, posting to Slack/X, any HTTPS API. The key goes straight
-          to the secure vault over TLS, <strong>never through chat</strong>. Your
-          universe then builds on it (register it as compute, or wire a channel).</p>
+          <p>Paste whatever the service gave you &mdash; a key, a page of values, all
+          four OAuth values, extra things it doesn't need. Your universe works out
+          what the service is and what it may call. The key goes straight to the
+          secure vault over TLS, <strong>never through chat</strong>.</p>
+          <label class="field"><span>Paste it here</span>
+            <textarea id="paste-blob" rows="4" placeholder="Paste keys, tokens, or the whole credentials page"></textarea></label>
+          <label class="field"><span>What should it do?
+              <span class="muted">(optional &mdash; helps when the key alone doesn't say)</span></span>
+            <input id="paste-intent" type="text" placeholder="e.g. open pull requests on my repo" /></label>
+          <button id="btn-paste-connect" class="btn btn--primary">Add it</button>
+          <div id="paste-result" class="notice" role="status"></div>
+
+          <details class="connect-advanced" id="http-manual"><summary>Fill it in myself</summary>
           <label class="field"><span>Name (a label you'll recognize)
               <span class="muted">(letters, numbers and . _ : - &mdash; no spaces)</span></span>
             <input id="http-destination" type="text" placeholder="e.g. openrouter or slack-webhook" /></label>
@@ -233,6 +242,7 @@
           </div>
           <button id="btn-connect-http" class="btn btn--primary">Deposit API connection</button>
           <div id="http-result" class="notice" role="status"></div>
+          </details>
         </div>
 
         <details class="connect-advanced">
@@ -641,6 +651,12 @@
       if(authScheme) payload.auth_scheme=authScheme;   // bearer (default) | basic | oauth1a
       return this.callTool("write_graph",{target:"connection",operation:"connect_http",
         payload_json:JSON.stringify(payload)});
+    },
+    // Ask the universe what a pasted credential IS, from its SHAPE only. The
+    // credential itself never rides this call — see extractShape() below.
+    resolveConnection(shape,hints,intent){
+      return this.callTool("write_graph",{target:"connection",operation:"resolve_connection",
+        payload_json:JSON.stringify({shape,hints,intent})});
     },
     connectCompute(payload){
       return this.callTool("write_graph",{target:"connection",operation:"connect_compute",
@@ -1139,6 +1155,94 @@
       // person with X's four values should never have to guess what goes where.
       $("http-oauth1a").hidden=(scheme!=="oauth1a"); $("http-secret-field").hidden=(scheme==="oauth1a");
     });
+    // ---- Paste anything ----------------------------------------------------
+    // Split a paste into candidate credentials WITHOUT sending any of them. Only
+    // the identifying part leaves this function: a label, a PUBLIC prefix (one
+    // that ends at a delimiter, like github_pat_ / sk- / xoxb-), and a length.
+    // The entropy that makes a token a secret says nothing about which service it
+    // belongs to, so keeping it here costs the inference nothing.
+    const PREFIX_RE=/^[A-Za-z][A-Za-z0-9_-]{0,10}[-_]/;
+    const HINT_RE=/\b(?:[a-z][a-z0-9+.-]*:\/\/)?(?:[a-z0-9][a-z0-9-]*\.)+[a-z]{2,}(?:\/[^\s"'<>]*)?/gi;
+    function extractShape(blob){
+      const shape=[], values=[];
+      blob.split(/[\r\n,;]+/).forEach(line=>{
+        const t=line.trim(); if(!t) return;
+        // A bare URL splits on its own colon ("https" = "//host/path"), which put
+        // the URL into the shape as if it were a credential. A URL is a hint.
+        if(/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) return;
+        const m=t.match(/^["']?([A-Za-z][A-Za-z0-9 _.-]{0,63})["']?\s*[:=]\s*["']?(\S+?)["']?$/);
+        const label=m?m[1].trim():"", raw=m?m[2]:t;
+        // A credential-ish value: no spaces, long enough to not be a word.
+        if(/\s/.test(raw)||raw.length<8) return;
+        if(/^(?:[a-z][a-z0-9+.-]*:\/\/)/i.test(raw)) return;   // a URL is a hint, not a secret
+        const pm=raw.match(PREFIX_RE);
+        shape.push({label,prefix:pm?pm[0]:"",length:raw.length});
+        values.push({label,value:raw});
+      });
+      const hints=[...new Set((blob.match(HINT_RE)||[]).map(h=>h.trim()))].slice(0,20);
+      return {shape,values,hints};
+    }
+    // Choose which pasted values the resolved scheme actually needs, ignoring the
+    // rest — pasting more than necessary is the expected behaviour, not an error.
+    function pickSecret(scheme,values){
+      const by=(re)=>values.find(v=>re.test(v.label||""))||null;
+      // Labels are prose ("API Key Secret"), so the separator between words is
+      // not one character — `api.?secret` never matches it. Allow a gap, and
+      // match the MORE specific variant first so "API Key" does not swallow
+      // "API Key Secret".
+      if(scheme==="oauth1a"){
+        const s=by(/(?:consumer|api).{0,8}secret/i),
+              ts=by(/access.{0,3}token.{0,3}secret/i),
+              k=values.find(v=>/(?:consumer|api).{0,3}key/i.test(v.label||"")&&v!==s),
+              t=values.find(v=>/access.{0,3}token/i.test(v.label||"")&&v!==ts);
+        if(k&&s&&t&&ts) return JSON.stringify({api_key:k.value,api_secret:s.value,
+          access_token:t.value,access_token_secret:ts.value});
+        return "";
+      }
+      if(scheme==="basic"){ const u=by(/user|login/i), p=by(/pass/i);
+        return (u&&p)?(u.value+":"+p.value):""; }
+      // Priority order, most specific first: a paste containing both an "API Key"
+      // and a "Bearer token" means the bearer one for a bearer connection.
+      for(const re of [/bearer/i,/access.{0,3}token/i,/\btoken\b/i,/\bpat\b|personal.{0,3}access/i,
+                       /\bkey\b/i,/secret/i]){
+        const hit=by(re); if(hit) return hit.value;
+      }
+      return (values.slice().sort((a,b)=>b.value.length-a.value.length)[0]||{}).value||"";
+    }
+    $("btn-paste-connect").addEventListener("click",async()=>{
+      const blobEl=$("paste-blob"), blob=blobEl.value, intent=$("paste-intent").value.trim();
+      const out=$("paste-result"), btn=$("btn-paste-connect");
+      // Clear the paste from the DOM before any await, exactly as the manual form
+      // does — a pasted credential never sits visible while a request is in flight.
+      blobEl.value="";
+      if(!blob.trim()){ out.textContent="Paste the key (or whatever the service gave you) first."; return; }
+      const {shape,values,hints}=extractShape(blob);
+      btn.disabled=true; out.textContent="Working out what this is...";
+      try{
+        const r=await MCP.resolveConnection(shape,hints,intent);
+        if(r&&r.error){ out.textContent="Couldn't add it: "+(r.detail||r.error); openManual(); return; }
+        if(!r||!r.resolved){
+          out.textContent=(r&&r.reason?r.reason:"Couldn't work out what this is.")+
+            " Fill it in below and it'll go through.";
+          openManual(); return;
+        }
+        const secret=pickSecret(r.auth_scheme,values);
+        if(!secret){ out.textContent="Found the service, but not the value it needs. Fill it in below.";
+          openManual(); return; }
+        // No confirmation step (founder, 2026-08-27): pasting IS the interaction.
+        // The sentence still gets shown — after the fact, as a receipt.
+        const d=await MCP.connectHTTP(r.destination,secret,r.allowed_endpoints,r.auth_scheme);
+        if(d&&d.error){ out.textContent="Couldn't add it: "+(d.detail||d.error); openManual(); return; }
+        out.textContent="Added as “"+r.destination+"”. "+r.receipt+
+          " Change or remove it below.";
+        $("paste-intent").value="";
+      }catch(err){ if(err.authRequired){ btn.disabled=false; return enterSignedOut(); }
+        out.textContent="Couldn't add it: "+err.message; }
+      finally{ btn.disabled=false; }
+    });
+    // A wrong or absent proposal must never be a dead end — open the explicit
+    // fields so the user can correct it in place.
+    function openManual(){ const d=$("http-manual"); if(d) d.open=true; }
     $("btn-connect-http").addEventListener("click",async()=>{
       const dest=$("http-destination").value.trim();
       // A pasted "https://api.github.com" is unambiguous, but the SSRF allow-list
