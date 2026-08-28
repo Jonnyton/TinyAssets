@@ -64,10 +64,52 @@ _RUN_CAPABILITIES = ("read", "list", "write", "submit_request", "costly")
 # ``costly`` because branch create/build is a scope-gated costly op.
 _REMIX_CAPABILITIES = ("read", "list", "write", "costly")
 
-#: Effect-spam rate limit for run_graph (Codex gate #5): at most this many
-#: engine-triggered runs per universe per rolling window.
+#: COMPUTE guard for engine-triggered work (Codex gate #5). Originally this single
+#: counter also bounded EFFECTS — that job now belongs to the effect quota, which is
+#: reserved pre-flight per universe in `usage_policy`. What remains here is purely
+#: protecting platform compute from a runaway or prompt-injected engine.
+#:
+#: Two changes follow from that split:
+#:
+#: 1. Runs and writes get SEPARATE buckets. They shared one pool of 20/hour, so
+#:    authoring a branch spent the budget needed to run it — on 2026-08-28 the
+#:    founder's universe repaired a branch and then could not execute the repair.
+#: 2. The ceiling is far higher and configurable. 20/hour was tight enough to catch
+#:    honest iterative debugging, which is the opposite of the intent.
 _RUN_GRAPH_RATE_WINDOW_S = 3600
-_RUN_GRAPH_RATE_MAX = 20
+_ENGINE_RUN_LIMIT_VAR = "TINYASSETS_ENGINE_RUN_GUARD_PER_HOUR"
+_ENGINE_WRITE_LIMIT_VAR = "TINYASSETS_ENGINE_WRITE_GUARD_PER_HOUR"
+_DEFAULT_ENGINE_RUN_LIMIT = 300
+_DEFAULT_ENGINE_WRITE_LIMIT = 300
+
+#: Retained under the old name because the refusal text and tests reference it.
+_RUN_GRAPH_RATE_MAX = _DEFAULT_ENGINE_RUN_LIMIT
+
+BUCKET_RUN = "run"
+BUCKET_WRITE = "write"
+
+
+def _engine_guard_limit(bucket: str) -> int:
+    """Per-bucket ceiling, configurable, falling back loudly on a bad value."""
+    import os as _os
+
+    var = _ENGINE_WRITE_LIMIT_VAR if bucket == BUCKET_WRITE else _ENGINE_RUN_LIMIT_VAR
+    default = (
+        _DEFAULT_ENGINE_WRITE_LIMIT
+        if bucket == BUCKET_WRITE
+        else _DEFAULT_ENGINE_RUN_LIMIT
+    )
+    raw = (_os.environ.get(var) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value <= 0:
+        print(f"{var}={raw!r} is not a positive integer; using {default}", flush=True)
+        return default
+    return value
 
 
 def _bearer_ok(authorization_header, secret) -> bool:
@@ -83,7 +125,9 @@ def _bearer_ok(authorization_header, secret) -> bool:
     return hmac.compare_digest(authorization_header or "", "Bearer " + secret)
 
 
-def _engine_run_admit(*, fail_closed: bool = False) -> bool:
+def _engine_run_admit(
+    *, bucket: str = BUCKET_RUN, fail_closed: bool = True
+) -> bool:
     """Atomically admit one engine-triggered write under the rolling cap, or refuse.
 
     A dedicated engine-admission ledger (NOT the shared runs table, which would
@@ -122,19 +166,35 @@ def _engine_run_admit(*, fail_closed: bool = False) -> bool:
         try:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS admissions "
-                "(universe_id TEXT NOT NULL, ts REAL NOT NULL)"
+                "(universe_id TEXT NOT NULL, ts REAL NOT NULL, "
+                "bucket TEXT NOT NULL DEFAULT 'run')"
             )
+            # MIGRATION: CREATE TABLE IF NOT EXISTS is a no-op against the round-1
+            # two-column table that already exists in production, so the bucket
+            # column has to be added explicitly. Without this the bucket predicate
+            # raises "no such column", and since this guard now fails CLOSED that
+            # would refuse every engine-triggered run on the live droplet.
+            have = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(admissions)").fetchall()
+            }
+            if "bucket" not in have:
+                conn.execute(
+                    "ALTER TABLE admissions "
+                    "ADD COLUMN bucket TEXT NOT NULL DEFAULT 'run'"
+                )
             conn.execute("BEGIN IMMEDIATE")
             n = conn.execute(
-                "SELECT COUNT(*) FROM admissions WHERE universe_id = ? AND ts >= ?",
-                (_GRAPH_ID, cutoff),
+                "SELECT COUNT(*) FROM admissions "
+                "WHERE universe_id = ? AND bucket = ? AND ts >= ?",
+                (_GRAPH_ID, bucket, cutoff),
             ).fetchone()[0]
-            if int(n) >= _RUN_GRAPH_RATE_MAX:
+            if int(n) >= _engine_guard_limit(bucket):
                 conn.rollback()
                 return False
             conn.execute(
-                "INSERT INTO admissions (universe_id, ts) VALUES (?, ?)",
-                (_GRAPH_ID, now),
+                "INSERT INTO admissions (universe_id, ts, bucket) VALUES (?, ?, ?)",
+                (_GRAPH_ID, now, bucket),
             )
             conn.execute(
                 "DELETE FROM admissions WHERE ts < ?",
@@ -374,11 +434,12 @@ def run_graph(
     # run_graph on an already-approved effect branch (e.g. opening many PRs). Cap
     # the runs THIS universe can trigger via the engine per rolling window. The
     # approved-source-hash gate already pins WHAT runs; this bounds HOW OFTEN.
-    if not _engine_run_admit():
+    if not _engine_run_admit(bucket=BUCKET_RUN):
         return json.dumps({
             "error": (
-                f"run_graph rate limit reached (max {_RUN_GRAPH_RATE_MAX} per "
-                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); try again shortly."
+                f"run_graph compute guard reached (max {_engine_guard_limit(BUCKET_RUN)} per "
+                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); capacity returns within "
+                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m."
             ),
         })
 
@@ -881,11 +942,12 @@ def write_graph(
         })
     # Effect-spam rate limit (shared with run_graph), FAIL-CLOSED: a DB blip must
     # refuse the write, not admit it.
-    if not _engine_run_admit(fail_closed=True):
+    if not _engine_run_admit(bucket=BUCKET_WRITE, fail_closed=True):
         return json.dumps({
             "error": (
-                f"write_graph rate limit reached (max {_RUN_GRAPH_RATE_MAX} per "
-                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); try again shortly."
+                f"write_graph compute guard reached (max {_engine_guard_limit(BUCKET_WRITE)} per "
+                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); capacity returns within "
+                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m."
             ),
         })
 
@@ -1160,11 +1222,12 @@ def remix_shape(
     if not new_name:
         return json.dumps({"error": "name is required for the remixed branch."})
     # Rolling write bound — FAIL CLOSED for this autonomous write (Codex #6).
-    if not _engine_run_admit(fail_closed=True):
+    if not _engine_run_admit(bucket=BUCKET_WRITE, fail_closed=True):
         return json.dumps({
             "error": (
-                f"engine write rate limit reached (max {_RUN_GRAPH_RATE_MAX} per "
-                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); try again shortly."
+                f"engine write compute guard reached (max {_engine_guard_limit(BUCKET_WRITE)} per "
+                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); capacity returns within "
+                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m."
             ),
         })
 
@@ -1402,11 +1465,12 @@ def write_brain(
                 "(identity/founder/origin/body/orgchart) or a name."
             ),
         })
-    if not _engine_run_admit(fail_closed=True):
+    if not _engine_run_admit(bucket=BUCKET_WRITE, fail_closed=True):
         return json.dumps({
             "error": (
-                f"engine write rate limit reached (max {_RUN_GRAPH_RATE_MAX} per "
-                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); try again shortly."
+                f"engine write compute guard reached (max {_engine_guard_limit(BUCKET_WRITE)} per "
+                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); capacity returns within "
+                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m."
             ),
         })
 

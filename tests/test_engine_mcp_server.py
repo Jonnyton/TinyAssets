@@ -296,7 +296,7 @@ def test_remix_shape_admission_fails_closed(monkeypatch):
     monkeypatch.setattr(us, "write_graph", lambda **kw: (calls.update(n=1), "{}")[1])
     out = json.loads(s.remix_shape(fork_from="v-1", name="mine"))
     assert seen.get("fail_closed") is True
-    assert "rate limit" in out.get("error", "")
+    assert "compute guard" in out.get("error", "")
     assert calls["n"] == 0
 
 
@@ -311,7 +311,7 @@ def test_remix_shape_rate_limited(monkeypatch):
     calls = {"n": 0}
     monkeypatch.setattr(us, "write_graph", lambda **kw: (calls.update(n=1), "{}")[1])
     out = json.loads(s.remix_shape(fork_from="v-1", name="mine"))
-    assert "rate limit" in out.get("error", "")
+    assert "compute guard" in out.get("error", "")
     assert calls["n"] == 0
 
 
@@ -595,7 +595,7 @@ def test_write_brain_admission_fails_closed(monkeypatch, tmp_path):
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: seen.update(kw) or False)
     out = json.loads(s.write_brain(name="Aria"))
     assert seen.get("fail_closed") is True
-    assert "rate limit" in out.get("error", "")
+    assert "compute guard" in out.get("error", "")
 
 
 def test_read_brain_fails_closed_unbound(monkeypatch):
@@ -1664,7 +1664,7 @@ def test_served_write_graph_admission_fails_closed(monkeypatch):
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
     out = json.loads(s.write_graph(target="branch", operation="create", payload_json="{}"))
     assert seen.get("fail_closed") is True
-    assert "rate limit" in out.get("error", "").lower()
+    assert "compute guard" in out.get("error", "").lower()
     assert calls["n"] == 0
 
 

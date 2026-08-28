@@ -99,6 +99,32 @@ def _connect(base_path: str | Path) -> sqlite3.Connection:
         conn.close()
 
 
+def _settle_run_compute(base_path, run_id: str, acquired_at: float) -> None:
+    """Meter this run's worker-held wall-time against its OWNING universe.
+
+    Best-effort by construction: metering observes a run, it must never be able to
+    fail one. Any error here is swallowed after logging.
+
+    Resolves the universe through `_resolve_effector_base` rather than using
+    `base_path` directly — `base_path` is the flat data root, and billing the root
+    would repeat the exact mis-binding that made effector gates read /data instead
+    of /data/<universe_id>.
+    """
+    try:
+        from tinyassets.storage.usage_ledger import settle_compute
+        from tinyassets.usage_policy import max_chargeable_run_seconds
+
+        universe_dir = _resolve_effector_base(base_path, run_id)
+        settle_compute(
+            universe_dir,
+            run_id=run_id,
+            seconds=max(0.0, _now() - acquired_at),
+            max_chargeable_seconds=max_chargeable_run_seconds(),
+        )
+    except Exception:
+        logger.exception("compute metering failed for run %s", run_id)
+
+
 def _now() -> float:
     return time.time()
 
@@ -3197,6 +3223,12 @@ def _execute_branch_core(
 
     def _worker() -> RunOutcome:
         outcome: RunOutcome
+        # Compute metering starts HERE — at worker acquisition, not at enqueue.
+        # `started_at` is stamped while the run is still queued and is not reset on
+        # the transition to running, so finished_at - started_at would include
+        # arbitrary queue delay and bill a user for platform load (Codex ADAPT
+        # 2026-08-28 D). This is the first instant the run actually holds a slot.
+        _worker_acquired_at = _now()
         try:
             outcome = _invoke_graph(
                 base_path,
@@ -3252,6 +3284,7 @@ def _execute_branch_core(
                 output={},
                 error=message,
             )
+        _settle_run_compute(base_path, run_id, _worker_acquired_at)
         return outcome
 
     future = executor.submit(_worker)
