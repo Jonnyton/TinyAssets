@@ -55,6 +55,17 @@ def read_ttl(var: str, default: float) -> float:
     return value
 
 
+class _Flight:
+    """One in-progress computation, and the answer waiters will take from it."""
+
+    __slots__ = ("done", "value", "failed")
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.value: Any = None
+        self.failed = False
+
+
 class TTLMemo:
     """Per-key TTL cache with single-flight and generation-safe publication.
 
@@ -65,7 +76,7 @@ class TTLMemo:
     def __init__(self, *, max_entries: int = DEFAULT_MAX_ENTRIES) -> None:
         self._lock = threading.Lock()
         self._entries: OrderedDict[str, tuple[float, Any]] = OrderedDict()
-        self._inflight: dict[str, threading.Event] = {}
+        self._inflight: dict[str, _Flight] = {}
         self._generation = 0
         self._max_entries = max_entries
 
@@ -81,43 +92,60 @@ class TTLMemo:
             self._generation += 1
 
     def get(self, key: str, compute: Callable[[], Any], *, ttl: float) -> Any:
-        if ttl <= 0:
-            return compute()
+        """Memoize for ``ttl`` seconds. ``ttl <= 0`` is SINGLE-FLIGHT ONLY.
 
+        The distinction matters and I got it wrong once. Single-flight collapses
+        *concurrent* duplicates; caching also serves *sequential* callers a stale
+        answer. Wrapping the codex auth probe in a 30-second cache meant a re-login read
+        `not_logged_in` for half a minute, and six tests calling the probe with different
+        mocked subprocess behaviour all got the first one's verdict.
+
+        So `ttl <= 0` still deduplicates a stampede — which is the whole point for an
+        expensive spawn — while every sequential caller gets a fresh answer.
+        """
         while True:
             now = time.monotonic()
             with self._lock:
                 hit = self._entries.get(key)
-                if hit is not None and now < hit[0]:
+                if ttl > 0 and hit is not None and now < hit[0]:
                     self._entries.move_to_end(key)
                     return copy.deepcopy(hit[1])
-                waiter = self._inflight.get(key)
-                if waiter is None:
-                    waiter = self._inflight[key] = threading.Event()
+                flight = self._inflight.get(key)
+                if flight is None:
+                    flight = self._inflight[key] = _Flight()
                     generation = self._generation
                     leader = True
                 else:
                     leader = False
 
             if not leader:
-                # Someone else is already doing this exact work. Wait for their
-                # answer instead of duplicating a filesystem walk at the moment the
-                # box is least able to afford one.
-                waiter.wait(timeout=30.0)
-                continue
+                # Someone else is already doing this exact work. Wait for THEIR ANSWER
+                # rather than duplicating a spawn or a filesystem walk. Taking the
+                # leader's result is what makes this single-flight even with no cache:
+                # an earlier version let waiters wake and recompute, which deduplicated
+                # nothing.
+                flight.done.wait(timeout=30.0)
+                if flight.failed:
+                    continue  # the leader errored; try to become the leader ourselves
+                return copy.deepcopy(flight.value)
 
             try:
                 value = compute()
-            finally:
+            except BaseException:
                 with self._lock:
                     self._inflight.pop(key, None)
-                waiter.set()
-
+                flight.failed = True
+                flight.done.set()
+                raise
+            flight.value = value
             with self._lock:
-                # Only publish if nothing invalidated while we were computing.
-                if generation == self._generation:
+                self._inflight.pop(key, None)
+                # Publish only when caching, and only if nothing invalidated while we
+                # were computing.
+                if ttl > 0 and generation == self._generation:
                     self._entries[key] = (time.monotonic() + ttl, value)
                     self._entries.move_to_end(key)
                     while len(self._entries) > self._max_entries:
                         self._entries.popitem(last=False)  # LRU, not clear-all
+            flight.done.set()
             return copy.deepcopy(value)

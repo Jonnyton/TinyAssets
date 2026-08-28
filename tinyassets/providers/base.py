@@ -851,7 +851,12 @@ def _codex_last_refresh_age_s(codex_home: Path, now: float | None = None) -> flo
 #: `TTLMemo` already is single-flight plus a short TTL, and is tested against exactly
 #: this stampede, so this reuses it rather than hand-rolling the primitive twice.
 _auth_probe_memo = _TTLMemo(max_entries=4)
-_AUTH_PROBE_TTL_S = 30.0
+#: SINGLE-FLIGHT ONLY, not caching. Codex asked for single-flight and I first shipped a
+#: 30-second cache, which is a different thing: it also serves SEQUENTIAL callers a stale
+#: verdict, so a re-login would read `not_logged_in` for half a minute. Concurrent
+#: duplicates are what cost a ~189 MB spawn; a later caller asking again deserves a real
+#: answer.
+_AUTH_PROBE_TTL_S = 0.0
 
 
 def _codex_live_auth_probe(timeout_s: float) -> dict[str, str]:

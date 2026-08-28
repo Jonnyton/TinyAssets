@@ -165,3 +165,84 @@ def test_a_normal_ttl_is_honoured(monkeypatch):
     assert read_ttl("X_TTL", 5.0) == 12.5
     monkeypatch.setenv("X_TTL", "garbage")
     assert read_ttl("X_TTL", 5.0) == 5.0
+
+
+def test_single_flight_works_with_no_caching_at_all():
+    """`ttl<=0` must still deduplicate a stampede.
+
+    This is the distinction I got wrong in production: Codex asked for single-flight and
+    I shipped a 30-second CACHE, which also hands SEQUENTIAL callers a stale answer — a
+    codex re-login read `not_logged_in` for half a minute. Fixing it by disabling the
+    cache then broke deduplication a second way: waiters woke, found nothing stored, and
+    each recomputed. Waiters have to take the LEADER'S result.
+    """
+    memo = TTLMemo()
+    calls, lock = [], threading.Lock()
+    start = threading.Barrier(10)
+
+    def compute():
+        with lock:
+            calls.append(1)
+        time.sleep(0.05)
+        return {"v": len(calls)}
+
+    out = []
+
+    def worker():
+        start.wait()
+        out.append(memo.get("k", compute, ttl=0))
+
+    ts = [threading.Thread(target=worker) for _ in range(10)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(timeout=30)
+
+    assert len(calls) == 1, f"{len(calls)} concurrent computations with ttl=0"
+    assert all(o == {"v": 1} for o in out), "waiters did not receive the leader's answer"
+
+
+def test_sequential_callers_still_get_a_fresh_answer_with_no_cache():
+    """The other half: single-flight must NOT become caching by the back door."""
+    memo, calls = TTLMemo(), []
+    for _ in range(3):
+        memo.get("k", lambda: calls.append(1) or len(calls), ttl=0)
+    assert len(calls) == 3
+
+
+def test_a_failed_leader_does_not_wedge_its_waiters():
+    """If the leader raises, waiters must be able to proceed rather than inherit a
+    failure or block until the 30 s timeout."""
+    memo = TTLMemo()
+    state = {"fail": True}
+    start = threading.Barrier(2)
+    results, errors = [], []
+
+    def compute():
+        if state["fail"]:
+            state["fail"] = False
+            raise RuntimeError("leader failed")
+        return "second-attempt"
+
+    def leader():
+        start.wait()
+        try:
+            memo.get("k", compute, ttl=0)
+        except RuntimeError as exc:
+            errors.append(exc)
+
+    def waiter():
+        start.wait()
+        time.sleep(0.01)
+        try:
+            results.append(memo.get("k", compute, ttl=0))
+        except RuntimeError as exc:
+            errors.append(exc)
+
+    ts = [threading.Thread(target=leader), threading.Thread(target=waiter)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(timeout=20)
+    assert len(errors) >= 1, "the leader's exception must reach its own caller"
+    assert results in ([], ["second-attempt"]), results
