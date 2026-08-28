@@ -21,6 +21,17 @@ now promises only what the surface can do. The spec requirement it partially
 fails is `connection-inference` → *"The resulting grant is stated back and
 revocable"*.
 
+## Update 2026-08-27 — the ADD half is fixed
+
+Adding endpoints to an existing connection no longer conflicts: a re-deposit
+whose endpoint set is a strict SUPERSET extends the connection in place, so a
+credential is deposited once and grows with the work. That was the half that
+forced a new destination name (and a fresh paste) per endpoint.
+
+**Removal is still unsupported, and this concern still stands for it.** The
+reasoning below is unchanged — it is about taking access away, which is the
+destructive direction and needs the design decision named there.
+
 ## Why it is not a one-liner
 
 Revoking stamps `revoked_at`, and `connect_http`'s conflict check refuses any

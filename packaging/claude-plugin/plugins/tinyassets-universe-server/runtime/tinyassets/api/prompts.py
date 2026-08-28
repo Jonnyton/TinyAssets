@@ -289,7 +289,11 @@ infer additional callable tools from legacy action names in old conversations.
    |                                | A CREDENTIAL is asked for ONCE per      |
    |                                | service (or when it expires), covering  |
    |                                | what you will need from that service —  |
-   |                                | never once per action. For an ACTION,   |
+   |                                | never once per action. Later you may    |
+   |                                | ADD endpoints to that same destination: |
+   |                                | re-ask with the old endpoints PLUS the  |
+   |                                | new ones and it extends in place, same  |
+   |                                | connection. Dropping one is refused. For an ACTION,   |
    |                                | just ask in the conversation and let    |
    |                                | them reply; use a tab only when it      |
    |                                | genuinely suits the ask better.         |
