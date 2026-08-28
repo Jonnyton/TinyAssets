@@ -66,7 +66,10 @@ BACKUP_LOG="${BACKUP_LOG:-/var/log/tinyassets-backup.log}"
 VOLUME_DIR="/var/lib/docker/volumes/${BACKUP_VOLUME}/_data"
 
 log() {
-    local msg="[backup $(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"
+    # Declared and assigned separately: `local x="$(cmd)"` masks the
+    # command's return value in `local`'s own exit status (SC2155).
+    local msg
+    msg="[backup $(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"
     echo "${msg}"
     echo "${msg}" >> "${BACKUP_LOG}" 2>/dev/null || true
 }
