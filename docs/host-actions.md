@@ -45,10 +45,38 @@ waiting run holds its runtime resident the whole time it waits.
 At $20/user, the $48 tier is paid for by **three** subscribers. This is the cheapest
 large move available and it needs no code — but it is spend, so it is yours.
 
-**Say "resize to 4/8" and I will:** take a snapshot first, resize (DigitalOcean resizes
-need a brief power-off), bring the stack back, verify with the canary + `deployed_sha`,
-re-run the load probe to confirm the new ceiling, then raise the run pool to match the
-RAM and prove it.
+**APPROVED 2026-08-28 — and I cannot execute it.** There is no DigitalOcean token in the
+vault, none on the droplet, and no `doctl` anywhere. The resize needs either your hands
+in the control panel or a token I can use. Everything that could be done without one is
+done (below).
+
+### Runbook — about 3 minutes of your time
+
+1. **Choose "CPU and RAM only", NOT "Disk, CPU and RAM".** This is the important one:
+   disk expansion is **permanent and cannot be undone**, while a CPU/RAM-only resize can
+   be reversed later if 8 GB turns out to be more than we need. Our disk is 47% full with
+   25 GB free, so there is nothing to gain from growing it.
+2. Power off cleanly first — `ssh` in and `sudo shutdown -h now` rather than the control
+   panel's power button, which DigitalOcean warns can corrupt data.
+3. Resize to **4 vCPU / 8 GB ($48/mo)**, power back on. The three containers come back on
+   their own (`restart=unless-stopped`).
+4. Tell me it is done.
+
+**Expected downtime: roughly 20 minutes.** DigitalOcean bills about one minute per GB of
+*used* disk, because the droplet may migrate hypervisors. That is why I pruned the image
+cache first — it took used disk from 30 GB to 22 GB, which is worth roughly 8 minutes of
+outage. Public surface is down for the duration; there is no way around that.
+
+**Then I take it from there:** verify with the canary + `deployed_sha` + an unauthenticated
+checkout probe, re-run the load probe to measure the new ceiling, raise
+`TINYASSETS_RUN_MAX_CONCURRENT` to match the RAM (the reboot re-reads `env_file`, so this
+lands with the resize rather than needing a second recreate), add the container memory
+limit that is currently absent, and prove the new concurrent-run count rather than
+asserting it.
+
+**If you would rather I did it:** create a DigitalOcean API token with write scope and
+put it in the vault as `DIGITALOCEAN_TOKEN`. Then this becomes one command and I will run
+the whole sequence, including the verification, without waking you.
 
 ### Related, and free: the container has no memory limit
 
