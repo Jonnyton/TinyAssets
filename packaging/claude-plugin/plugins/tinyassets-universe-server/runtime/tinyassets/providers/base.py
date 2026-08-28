@@ -10,7 +10,6 @@ import abc
 import logging
 import os
 import stat
-import threading as _threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -705,9 +704,6 @@ _CODEX_SILENT_AUTH_SIGNALS: tuple[str, ...] = (
 
 _AUTH_PROBE_PROMPT = "Reply with exactly: OK"
 
-#: One probe at a time. The result describes the machine's credentials, so a
-#: concurrent second probe can only duplicate the first — at ~189 MB a copy.
-_auth_probe_lock = _threading.Lock()
 
 DEFAULT_CODEX_AUTH_FRESH_S = 24 * 3600.0
 DEFAULT_AUTH_PROBE_TTL_S = 1800.0
@@ -901,36 +897,19 @@ def _codex_live_auth_probe_uncached(timeout_s: float) -> dict[str, str]:
         *base_cmd, "exec", "--skip-git-repo-check", "-s", "read-only",
         _AUTH_PROBE_PROMPT,
     ]
-    # This spawns a REAL `codex exec`, so it costs the same ~189 MB as any other
-    # provider subprocess — and it ran outside the admission bound, before the router,
-    # with no single-flight, so concurrent stale-auth callers each launched their own
-    # (cross-family review, 2026-08-28). Two fixes, both needed:
-    #
-    #   * `_auth_probe_lock` collapses a stampede into one probe. The answer is a
-    #     property of the machine's credentials, not of the caller, so a second
-    #     simultaneous probe could only ever duplicate the first.
-    #   * the admission slot makes it VISIBLE to the bound, so the limit counts every
-    #     provider subprocess rather than most of them.
-    #
-    # A busy box degrades this to "inconclusive" rather than queueing: the probe is a
-    # diagnostic, and making a diagnostic wait behind real user turns is the wrong
-    # trade.
-    from tinyassets.provider_admission import ProviderBusy, provider_slot
-
+    # Admission and single-flight belong to the WRAPPER, not here. Doing both in both
+    # places double-counted the bound — one probe reported `admitted=2, peak=2`, and at
+    # limit 1 the inner acquire refused itself into a false "inconclusive" having
+    # spawned nothing (Codex round 3).
     try:
-        with _auth_probe_lock:
-            with provider_slot():
-                proc = subprocess.run(
-                    cmd if not use_shell else subprocess.list2cmdline(cmd),
-                    shell=use_shell,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_s,
-                    cwd=tempfile.gettempdir(),
-                )
-    except ProviderBusy:
-        return {"status": "inconclusive",
-                "detail": "provider slots busy; auth probe deferred"}
+        proc = subprocess.run(
+            cmd if not use_shell else subprocess.list2cmdline(cmd),
+            shell=use_shell,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            cwd=tempfile.gettempdir(),
+        )
     except FileNotFoundError:
         return {"status": "inconclusive",
                 "detail": "codex binary not on PATH; probe skipped"}

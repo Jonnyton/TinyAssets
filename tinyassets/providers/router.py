@@ -266,6 +266,17 @@ _SYNC_CALL_MAX_WORKERS: int = 8
 # _SYNC_CALL_MAX_WORKERS bounds threads, which are cheap; a subprocess is ~77 MB.
 
 
+def _is_nested(universe_context) -> bool:
+    """Is this call spawned BY a turn that already holds a slot?
+
+    `run_graph` child calls carry a typed `provider_invocation` carrier, so the answer
+    is available exactly where it is needed. Nested work draws on the reserve, because
+    otherwise a served turn holding a slot starves the children it created and both
+    fail (Codex round 3).
+    """
+    return bool(getattr(universe_context, "provider_invocation", None))
+
+
 class ProviderRouter:
     """Routes LLM calls across providers with fallback and quota tracking.
 
@@ -915,7 +926,7 @@ class ProviderRouter:
                     # budget reservation as INDETERMINATE and cooled a provider that had
                     # never started — the caller then saw AllProvidersExhaustedError
                     # instead of "busy, retry" (Codex reproduced this).
-                    async with _provider_slot():
+                    async with _provider_slot(nested=_is_nested(universe_context)):
                         before_launch = getattr(
                             served_authority, "before_provider_launch", None
                         ) if served_authority is not None else None
@@ -1415,7 +1426,7 @@ class ProviderRouter:
                 # Bound concurrent provider SUBPROCESSES (~77 MB PSS each,
                 # measured). ASYNC form — a blocking acquire stalls the event loop, and
                 # this method gathers admission-taking tasks onto one loop.
-                async with _provider_slot():
+                async with _provider_slot(nested=_is_nested(universe_context)):
                     resp = await provider.complete(
                         prompt, system, cfg, universe_dir=universe_dir,
                     )
@@ -1762,12 +1773,18 @@ class ProviderRouter:
                 # Bound concurrent provider SUBPROCESSES (~77 MB PSS each,
                 # measured). ASYNC form — a blocking acquire stalls the event loop, and
                 # this method gathers admission-taking tasks onto one loop.
-                async with _provider_slot():
+                async with _provider_slot(nested=_is_nested(universe_context)):
                     resp = await provider.complete(
                         prompt, system, cfg, universe_dir=universe_dir,
                     )
                 self._quota.record_success(name)
                 return resp
+            except _ProviderBusy:
+                # The judge fan-out had no busy guard, so saturation returned an empty
+                # ensemble AND cooled a provider that never ran: `result=[]`,
+                # `provider_calls=0`, `cooldown=29s` (Codex round 3). Re-raised so the
+                # gather surfaces it rather than silently degrading the ensemble.
+                raise
             except ProviderUnavailableError:
                 self._quota.cooldown(name, COOLDOWN_UNAVAILABLE)
             except ProviderTimeoutError:

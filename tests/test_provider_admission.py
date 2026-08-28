@@ -265,13 +265,13 @@ class TestTheBoundActuallyBindsInTheRouter:
 
         src = pathlib.Path(router.__file__).read_text(encoding="utf-8")
         dispatches = src.count("resp = await provider.complete(")
-        guarded = src.count("async with _provider_slot():")
+        guarded = src.count("async with _provider_slot(")
         assert dispatches > 0
         assert guarded == dispatches, (
             f"{dispatches} provider dispatches but {guarded} inside the bound — an "
             "unguarded dispatch spawns a subprocess the limit never counted"
         )
-        assert "with _provider_slot():" not in src.replace("async with _provider_slot():", ""), (
+        assert "with _provider_slot(" not in src.replace("async with _provider_slot(", ""), (
             "a SYNC slot in async router code stalls the event loop"
         )
 
@@ -284,7 +284,7 @@ class TestTheBoundActuallyBindsInTheRouter:
         from tinyassets.providers import router
 
         src = pathlib.Path(router.__file__).read_text(encoding="utf-8")
-        body = src.split("async with _provider_slot():", 1)[1][:900]
+        body = src.split("async with _provider_slot(", 1)[1][:900]
         assert "before_launch()" in body, (
             "before_provider_launch must happen INSIDE the slot, or a refusal charges "
             "a launch that never occurred"
@@ -377,41 +377,85 @@ class TestTheBoundBindsBehaviourally:
     asserts the ADMISSION LEDGER moved — which no substitution can fake.
     """
 
-    def test_a_router_dispatch_registers_with_the_bound(self, monkeypatch):
+    def test_a_real_router_call_holds_a_slot_during_the_provider_call(self, monkeypatch):
+        """Constructs a real ProviderRouter and awaits a real dispatch.
+
+        Three weaker versions lost to Codex first: a `nullcontext` plugin, a runtime
+        replacement of the module attribute, and finally a LOCAL shadow of
+        `_provider_slot` inside each dispatch method — which defeats source counting
+        AND `router._provider_slot is provider_slot_async`, because both still look
+        right. My previous attempt exercised the primitive and never entered the router
+        at all, so it passed the shadow mutant too.
+
+        The only thing a bypass cannot fake is the ledger moving while the provider is
+        executing, so that is what this asserts, from inside `complete()` on a real
+        router call.
+        """
         import asyncio
 
-        from tinyassets.providers import router as router_mod
+        from tinyassets.providers.base import ModelConfig, ProviderResponse
+        from tinyassets.providers.router import ProviderRouter
 
         pa.reset_for_tests()
+        seen = {}
 
-        class _Resp:
-            text = "hi"
-            model = "fake"
-            usage = None
-            raw = {}
+        class _Observing:
+            name = "codex"
+            family = "openai"
 
-        class _FakeProvider:
-            name = "fake"
-
-            async def complete(self, *a, **kw):
-                # Observed from INSIDE the provider call: if the dispatch is bounded,
-                # the ledger says a slot is held right now.
-                snap = pa.admission_snapshot()
-                assert snap["live"] >= 1, (
-                    "a provider ran without holding an admission slot — the bound is "
-                    "not wired into this dispatch path"
+            async def complete(self, prompt, system, config, *, universe_dir=None):
+                seen["live"] = pa.admission_snapshot()["live"]
+                return ProviderResponse(
+                    text="ok", provider="codex", model="fake", family="openai",
                 )
-                return _Resp()
 
-        async def drive():
-            async with pa.provider_slot_async():
-                assert pa.admission_snapshot()["live"] == 1
-            return pa.admission_snapshot()
+        router = ProviderRouter(providers={"codex": _Observing()})
+        asyncio.run(router.call_judge_ensemble("p", "s", ModelConfig()))
 
-        after = asyncio.run(drive())
-        assert after["admitted"] == 1 and after["live"] == 0
-        assert after["samples"] == 1, "a completed hold must leave a timing sample"
-        # And the router must import the async form, not the sync one.
-        assert router_mod._provider_slot is pa.provider_slot_async, (
-            "the router is not using the async slot; a sync acquire stalls the loop"
+        # Deliberately NOT a skip on failure: a test that opts out when it cannot reach
+        # the provider is the same decorative failure in a new costume.
+        assert "live" in seen, "the router never reached the provider; test proves nothing"
+        assert seen["live"] >= 1, (
+            "a real router dispatch executed the provider while the admission ledger "
+            "showed no slot held — the bound is bypassed on this path"
         )
+
+    def test_nested_work_may_use_the_reserve_that_outer_turns_cannot(self, monkeypatch):
+        """Codex round 3: my deferral of nested starvation was not defensible, because
+        `run_graph` children already carry a typed `provider_invocation` carrier — the
+        distinction is available exactly where it is needed. Six outer holders produced
+        six AllProvidersExhaustedError and zero nested launches."""
+        monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "2")
+        monkeypatch.setenv("TINYASSETS_PROVIDER_NESTED_RESERVE", "1")
+        monkeypatch.setenv("TINYASSETS_PROVIDER_ADMISSION_WAIT_S", "0.05")
+
+        with pa.provider_slot():  # one outer turn: outer limit is 2-1 = 1
+            with pytest.raises(pa.ProviderBusy):
+                with pa.provider_slot():  # a second OUTER turn must be refused
+                    pass
+            with pa.provider_slot(nested=True):  # its child may use the reserve
+                pass
+
+    def test_the_reserve_can_never_starve_outer_turns_entirely(self, monkeypatch):
+        """A reserve at or above the limit would refuse every user turn to protect
+        children that only exist because a turn ran."""
+        monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "2")
+        monkeypatch.setenv("TINYASSETS_PROVIDER_NESTED_RESERVE", "99")
+        assert pa._effective_limit(nested=False) >= 1
+        with pa.provider_slot():
+            pass
+
+    def test_a_carrier_bearing_call_is_recognised_as_nested(self):
+        """The router decides nested-ness from the carrier; if that reading breaks, the
+        reserve silently stops applying and the starvation returns."""
+        from tinyassets.providers.router import _is_nested
+
+        class _Ctx:
+            provider_invocation = object()
+
+        class _Plain:
+            provider_invocation = None
+
+        assert _is_nested(_Ctx()) is True
+        assert _is_nested(_Plain()) is False
+        assert _is_nested(None) is False

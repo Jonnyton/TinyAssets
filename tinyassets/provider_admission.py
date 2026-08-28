@@ -98,13 +98,39 @@ _admitted = 0
 _refused = 0
 
 
-def _try_acquire(timeout: float) -> tuple[bool, int]:
+#: Slots held back for NESTED work. A served turn holds a slot for the whole life of its
+#: provider subprocess, and that subprocess is an agent that can call `run_graph` — whose
+#: nodes need slots of their own. With every slot taken by outer turns, the children
+#: queue behind their own parents and fail (Codex reproduced six outer holders producing
+#: six AllProvidersExhaustedError and zero nested launches).
+#:
+#: I first deferred this as needing a design change, on the grounds that nothing marks a
+#: call as nested. That was wrong, and Codex showed why: `run_graph` child calls already
+#: carry a typed `provider_invocation` carrier, so the distinction is available for free
+#: at the point it is needed. Arbitrary deeper recursion would still need propagated
+#: depth — this covers the served-root -> child topology that is actually reachable.
+_NESTED_RESERVE_VAR = "TINYASSETS_PROVIDER_NESTED_RESERVE"
+_DEFAULT_NESTED_RESERVE = 1
+
+
+def _effective_limit(nested: bool) -> int:
+    """Outer callers cannot take the last ``reserve`` slots; nested work can."""
+    limit = _positive_int(_LIMIT_VAR, _DEFAULT_LIMIT)
+    if nested:
+        return limit
+    reserve = _positive_int(_NESTED_RESERVE_VAR, _DEFAULT_NESTED_RESERVE)
+    # Never starve outer callers entirely: a reserve at or above the limit would refuse
+    # every user turn to protect children that only exist because a turn ran.
+    return max(1, limit - min(reserve, limit - 1))
+
+
+def _try_acquire(timeout: float, *, nested: bool = False) -> tuple[bool, int]:
     """Take a slot, or give up after ``timeout``. Blocking — see `provider_slot_async`."""
     global _live, _peak_live, _admitted
     deadline = time.monotonic() + timeout
     with _cv:
         while True:
-            limit = _positive_int(_LIMIT_VAR, _DEFAULT_LIMIT)
+            limit = _effective_limit(nested)
             if _live < limit:
                 _live += 1
                 _peak_live = max(_peak_live, _live)
@@ -199,7 +225,7 @@ def reset_for_tests() -> None:
 
 
 @contextmanager
-def provider_slot():
+def provider_slot(*, nested: bool = False):
     """Hold one provider-subprocess slot, or raise :class:`ProviderBusy`.
 
     **Blocking.** Only for callers that are already on a worker thread. Async callers
@@ -210,7 +236,7 @@ def provider_slot():
     Released on every exit path, including exceptions — a slot leaked on an error is a
     permanent capacity loss, and errors are exactly when the system is already busy.
     """
-    ok, limit = _try_acquire(_positive_float(_WAIT_VAR, _DEFAULT_WAIT_S))
+    ok, limit = _try_acquire(_positive_float(_WAIT_VAR, _DEFAULT_WAIT_S), nested=nested)
     if not ok:
         raise _refuse(limit)
     started = time.monotonic()
@@ -222,7 +248,7 @@ def provider_slot():
 
 
 @asynccontextmanager
-async def provider_slot_async():
+async def provider_slot_async(*, nested: bool = False):
     """Async-safe form: waits for a slot WITHOUT blocking the event loop.
 
     The wait happens on a worker thread, so other coroutines on the same loop — notably
@@ -239,7 +265,7 @@ async def provider_slot_async():
     # cancellation-safe by construction: nothing is in flight to abandon.
     deadline = time.monotonic() + _positive_float(_WAIT_VAR, _DEFAULT_WAIT_S)
     while True:
-        ok, limit = _try_acquire(0.0)
+        ok, limit = _try_acquire(0.0, nested=nested)
         if ok:
             break
         if time.monotonic() >= deadline:
