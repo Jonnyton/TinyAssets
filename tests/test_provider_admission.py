@@ -290,3 +290,57 @@ class TestTheBoundActuallyBindsInTheRouter:
             "a launch that never occurred"
         )
         assert "except _ProviderBusy:" in src, "a busy refusal must propagate, not be classified"
+
+
+class TestTheLifecycleGapsCodexFound:
+    """Codex REJECT 2026-08-28, findings 3 and 4 — a slot freed while its subprocess
+    lived, and a real `codex exec` that spawned outside the bound entirely."""
+
+    def test_cancellation_kills_the_subprocess_it_accounted_for(self):
+        """Reproduced as `{'slot_live': 0, 'subprocess_killed': False}`: the slot came
+        back while the ~189 MB process was still running, so the bound drifted further
+        from reality with every cancellation until the box ran out of memory it
+        believed was free."""
+        import pathlib
+
+        from tinyassets.providers import codex_provider
+
+        src = pathlib.Path(codex_provider.__file__).read_text(encoding="utf-8")
+        body = src.split("timeout=config.timeout,", 1)[1][:1400]
+        assert "except BaseException:" in body, (
+            "only asyncio.TimeoutError was cleaned up; cancellation is the case that "
+            "actually happens, and CancelledError is a BaseException"
+        )
+        # It must actually kill, not merely re-raise.
+        after = body.split("except BaseException:", 1)[1]
+        assert "_terminate(proc)" in after
+
+    def test_an_already_dead_process_does_not_mask_the_real_exception(self):
+        """`proc.kill()` on a finished process raises ProcessLookupError on POSIX,
+        which would replace CancelledError with something confusing."""
+        from tinyassets.providers.codex_provider import _terminate
+
+        class _Dead:
+            returncode = 0
+
+            def kill(self):
+                raise ProcessLookupError("already reaped")
+
+        _terminate(_Dead())  # must not raise
+
+    def test_the_auth_probe_is_inside_the_bound_and_single_flighted(self):
+        """It spawns a REAL `codex exec` at the same ~189 MB as any turn, and ran
+        before the router with no lock, so concurrent stale-auth callers each launched
+        one."""
+        import pathlib
+
+        from tinyassets.providers import base
+
+        src = pathlib.Path(base.__file__).read_text(encoding="utf-8")
+        probe = src.split("_AUTH_PROBE_PROMPT,", 1)[1][:1800]
+        assert "_auth_probe_lock" in probe, "no single-flight: a stampede spawns N probes"
+        assert "provider_slot()" in probe, "the probe spawns outside the bound it should count against"
+        assert "except ProviderBusy:" in probe, (
+            "a busy box must degrade the diagnostic to inconclusive, not queue it "
+            "behind real user turns"
+        )

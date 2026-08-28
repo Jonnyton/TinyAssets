@@ -7,6 +7,7 @@ Claude, making it ideal as a judge when Claude is the writer.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -304,6 +305,17 @@ def _codex_engine_mcp_args(config: ModelConfig, proc_env: dict[str, str]) -> lis
     return args
 
 
+def _terminate(proc) -> None:
+    """Kill a provider subprocess, tolerating one that has already exited.
+
+    `proc.kill()` on a finished process raises ProcessLookupError on POSIX, which would
+    replace the real exception (often CancelledError) with a confusing one.
+    """
+    with contextlib.suppress(ProcessLookupError, OSError):
+        if proc.returncode is None:
+            proc.kill()
+
+
 class CodexProvider(BaseProvider):
     """Calls GPT via the ``codex exec`` CLI binary."""
 
@@ -516,11 +528,26 @@ class CodexProvider(BaseProvider):
                 timeout=config.timeout,
             )
         except asyncio.TimeoutError:
-            proc.kill()
+            _terminate(proc)
             await proc.wait()
             raise ProviderTimeoutError(
                 f"codex exec exceeded {config.timeout}s timeout"
             )
+        except BaseException:
+            # Every OTHER way out — cancellation, shutdown, an unexpected error in
+            # communicate() — used to leave the subprocess running. Cross-family review
+            # reproduced it: cancelling an in-flight call gave
+            # `{'slot_live': 0, 'subprocess_killed': False}`. The admission slot was
+            # returned while the ~189 MB process it was accounting for was still alive,
+            # so the bound would drift further from reality with every cancellation
+            # until the box ran out of memory it believed was free.
+            #
+            # BaseException, not Exception: `asyncio.CancelledError` derives from
+            # BaseException, and cancellation is the case that actually happens.
+            _terminate(proc)
+            with contextlib.suppress(Exception):
+                await proc.wait()
+            raise
 
         elapsed_ms = (time.monotonic() - start) * 1000
 
