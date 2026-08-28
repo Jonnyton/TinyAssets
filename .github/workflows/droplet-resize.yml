@@ -1,0 +1,175 @@
+# Resize the production droplet, driven from OUTSIDE it.
+#
+# Written after I tried to drive a resize from a script running ON the droplet. That
+# script's first step was `shutdown`, which killed the script — so the box would have
+# powered off with nothing left alive to resize it or turn it back on: an indefinite
+# outage from an operation meant to take twenty minutes. I cancelled the shutdown with
+# seconds to spare (2026-08-28). The lesson is structural rather than a matter of care:
+# **the thing that power-cycles a machine cannot live on that machine.**
+#
+# So this runs on GitHub's runner, and the power-on step is `if: always()` — if the
+# resize errors, times out, or the job is cancelled, the droplet still comes back.
+name: droplet-resize
+
+on:
+  workflow_dispatch:
+    inputs:
+      size:
+        description: "Target size slug. CPU/RAM only — the disk is never resized, so this stays reversible."
+        required: true
+        default: s-4vcpu-8gb
+        type: choice
+        options:
+          - s-2vcpu-4gb
+          - s-4vcpu-8gb
+          - s-8vcpu-16gb
+          - s-1vcpu-2gb
+      confirm:
+        description: "Type RESIZE to confirm. This takes the public surface down for roughly 20 minutes."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: droplet-power
+  cancel-in-progress: false
+
+jobs:
+  resize:
+    runs-on: ubuntu-latest
+    env:
+      DROPLET_ID: "565953121"
+      EXPECTED_NAME: workflow-daemon-1
+      DO_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+    steps:
+      - name: Refuse without explicit confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "RESIZE" ]; then
+            echo "::error::confirm must be exactly RESIZE"
+            exit 1
+          fi
+
+      - name: Identify the droplet, and refuse if it is not the one we mean
+        run: |
+          set -euo pipefail
+          d=$(curl -sf -H "Authorization: Bearer $DO_TOKEN" \
+                "https://api.digitalocean.com/v2/droplets/${DROPLET_ID}")
+          name=$(echo "$d" | jq -r .droplet.name)
+          echo "droplet=$name size=$(echo "$d" | jq -r .droplet.size_slug) status=$(echo "$d" | jq -r .droplet.status)"
+          # A resize aimed at the wrong droplet is the one mistake with no undo.
+          if [ "$name" != "$EXPECTED_NAME" ]; then
+            echo "::error::expected $EXPECTED_NAME, got $name"
+            exit 1
+          fi
+
+      - name: Shut down cleanly from inside the OS
+        env:
+          SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+          SSH_HOST: ${{ secrets.DO_DROPLET_HOST }}
+          SSH_USER: ${{ secrets.DO_SSH_USER }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s\n' "$SSH_KEY" > key
+          # DigitalOcean warns the control panel's power-off can corrupt data. A clean
+          # shutdown lets SQLite checkpoint its WALs before the disk goes away.
+          ssh -i key -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o ConnectTimeout=20 \
+            "${SSH_USER}@${SSH_HOST}" 'systemctl stop docker || true; sync; shutdown -h now' || true
+          rm -f key
+
+      - name: Wait for the droplet to be off
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            st=$(curl -sf -H "Authorization: Bearer $DO_TOKEN" \
+                  "https://api.digitalocean.com/v2/droplets/${DROPLET_ID}" | jq -r .droplet.status)
+            echo "  status=$st"
+            if [ "$st" = "off" ]; then exit 0; fi
+            sleep 10
+          done
+          echo "::error::droplet never reached 'off'"
+          exit 1
+
+      - name: Resize CPU and RAM only
+        env:
+          TARGET: ${{ inputs.size }}
+        run: |
+          set -euo pipefail
+          # disk:false is what keeps this REVERSIBLE. A disk resize is permanent and
+          # cannot be undone, and there is nothing to gain — the volume is 47% used.
+          a=$(curl -sf -X POST -H "Authorization: Bearer $DO_TOKEN" -H "Content-Type: application/json" \
+                -d "{\"type\":\"resize\",\"disk\":false,\"size\":\"${TARGET}\"}" \
+                "https://api.digitalocean.com/v2/droplets/${DROPLET_ID}/actions")
+          id=$(echo "$a" | jq -r .action.id)
+          echo "action=$id"
+          # DigitalOcean bills roughly a minute per GB of USED disk for the migration.
+          for i in $(seq 1 180); do
+            st=$(curl -sf -H "Authorization: Bearer $DO_TOKEN" \
+                  "https://api.digitalocean.com/v2/actions/${id}" | jq -r .action.status)
+            if [ $((i % 6)) -eq 0 ]; then echo "  resize=$st"; fi
+            if [ "$st" = "completed" ]; then exit 0; fi
+            if [ "$st" = "errored" ]; then echo "::error::resize errored"; exit 1; fi
+            sleep 10
+          done
+          echo "::error::resize timed out"
+          exit 1
+
+      - name: Power on, ALWAYS — even if the resize failed or this job was cancelled
+        if: always()
+        run: |
+          set -euo pipefail
+          # The whole reason this workflow exists off-box. A resize that fails halfway
+          # must never leave the machine off: an outage with no automatic recovery is far
+          # worse than a resize that simply did not happen.
+          st=$(curl -sf -H "Authorization: Bearer $DO_TOKEN" \
+                "https://api.digitalocean.com/v2/droplets/${DROPLET_ID}" | jq -r .droplet.status)
+          if [ "$st" = "off" ]; then
+            curl -sf -X POST -H "Authorization: Bearer $DO_TOKEN" -H "Content-Type: application/json" \
+              -d '{"type":"power_on"}' \
+              "https://api.digitalocean.com/v2/droplets/${DROPLET_ID}/actions" > /dev/null
+          fi
+          for i in $(seq 1 60); do
+            st=$(curl -sf -H "Authorization: Bearer $DO_TOKEN" \
+                  "https://api.digitalocean.com/v2/droplets/${DROPLET_ID}" | jq -r .droplet.status)
+            echo "  status=$st"
+            if [ "$st" = "active" ]; then break; fi
+            sleep 10
+          done
+          if [ "$st" != "active" ]; then
+            echo "::error::droplet is not active — MANUAL RECOVERY NEEDED"
+            exit 1
+          fi
+
+      - name: Report the new shape and prove the public surface came back
+        if: always()
+        run: |
+          set -euo pipefail
+          d=$(curl -sf -H "Authorization: Bearer $DO_TOKEN" \
+                "https://api.digitalocean.com/v2/droplets/${DROPLET_ID}")
+          {
+            echo "### Droplet after resize"
+            echo "$d" | jq -r '.droplet | "- size: \(.size_slug)\n- vcpus: \(.vcpus)\n- memory: \(.memory) MB\n- disk: \(.disk) GB\n- status: \(.status)"'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Containers return on their own (`restart: unless-stopped`); give the
+          # Cloudflare tunnel time to redial before calling the surface down.
+          code=""
+          for i in $(seq 1 40); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -X POST https://tinyassets.io/mcp \
+                    -H 'content-type: application/json' \
+                    -H 'accept: application/json, text/event-stream' \
+                    -H 'user-agent: droplet-resize-verify/1.0' \
+                    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"v","version":"0"}}}' || true)
+            echo "  public MCP: $code"
+            if [ "$code" = "200" ]; then
+              echo "- public surface: **back**" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "- public surface: **NOT RESPONDING**" >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::droplet is active but the public MCP surface did not return"
+          exit 1

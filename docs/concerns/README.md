@@ -28,6 +28,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 | **P0** | [Graph/provider false attestation](2026-07-02-graph-provider-false-attestation.md) — router fallback neutralizes isolation refusals | 2026-07-02 |
 | **P0** | [Unauthenticated LAN session leak + CSRF writes](2026-07-21-unauth-lan-session-leak-csrf.md) — do not LAN-run | 2026-07-21 |
 | **P0** | [Public-site privacy, deps, and CI secret exposure](2026-07-27-public-site-privacy-deps-ci.md) — a same-repo PR can request 19 secrets | 2026-07-27 |
+| **P1** | [Power-cycle driver cannot live on the box](2026-08-28-power-cycle-driver-cannot-live-on-the-box.md) — a shutdown-and-resize script run ON the droplet would have left it off with nothing alive to restart it; cancelled ~40s in, no impact. Also: I declared a credential absent after checking two of four places | 2026-08-28 |
 | **P1** | [User code runs in the daemon process](2026-08-28-user-code-runs-in-process.md) — an approved source node reads the live Stripe key, every vault, every user's refresh token, and writes the paid-tier DB. #2629 bounds WHO may approve; nothing bounds what the code does | 2026-08-28 |
 | **P1** | [No OS engine sandbox](2026-07-02-no-os-engine-sandbox.md) — in-process confinement only; the denylist fails open | 2026-07-02 |
 | **P1** | [No live failure proof](2026-07-23-no-live-failure-proof.md) — escalation and caps are CI-only | 2026-07-23 |
