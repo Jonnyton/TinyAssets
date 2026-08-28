@@ -1,10 +1,14 @@
 """The bound between 40 concurrent handlers and a 189 MB subprocess each.
 
-Measured 2026-08-28: `converse` is a sync MCP handler, so Starlette runs it in the anyio
-threadpool (capacity 40, confirmed in production). Each turn spawns a provider CLI at
-~189 MB RSS / ~77 MB PSS, floor. Nothing bounded the product of those two numbers, and
-with no container memory limit the resulting OOM would kill the HOST and take the
+Measured 2026-08-28. Each turn spawns a provider CLI at ~189 MB RSS / ~77 MB PSS, floor,
+and the container has no memory limit, so an overshoot OOMs the HOST and takes the
 Cloudflare tunnel with it — a total outage rather than a slow service.
+
+The pre-existing ceiling was **8**, not the 40 I first claimed: `converse` reaches
+providers through `call_provider` -> `ProviderRouter.call_sync`, which runs on a thread
+pool of `_SYNC_CALL_MAX_WORKERS = 8`. That 8 is incidental — its own comment gives a
+latency rationale — so raising it for throughput, exactly what chasing capacity does,
+would multiply memory risk with nothing to warn you.
 """
 
 from __future__ import annotations
@@ -143,7 +147,7 @@ class TestTurnDurationInstrumentation:
         snap = pa.admission_snapshot()
         assert snap["admitted"] == 1
         assert snap["samples"] == 1
-        assert snap["turn_seconds"]["p50"] >= 0.04
+        assert snap["attempt_seconds"]["p50"] >= 0.04
 
     def test_a_failed_turn_is_still_timed(self):
         """A turn that dies after 40 s occupied a slot for 40 s. Excluding failures
@@ -154,13 +158,19 @@ class TestTurnDurationInstrumentation:
                 raise ValueError("provider died")
         assert pa.admission_snapshot()["samples"] == 1
 
-    def test_it_reports_the_capacity_number_the_question_turns_on(self, monkeypatch):
+    def test_it_publishes_no_derived_throughput_figure(self, monkeypatch):
+        """It used to report `limit / p50` as sustainable throughput. That is wrong
+        twice over (Codex, 2026-08-28): Little's Law wants effective concurrency over
+        MEAN service time, not a limit over a median; and these samples are provider
+        ATTEMPTS, so a fallback chain or judge ensemble contributes several per user
+        turn. A number that reads authoritative and is not is worse than no number."""
         monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "10")
         with pa.provider_slot():
-            time.sleep(0.1)
+            time.sleep(0.02)
         snap = pa.admission_snapshot()
-        # 10 slots / ~0.1 s per turn ~= 100 turns/sec
-        assert 50 < snap["sustainable_turns_per_second"] < 200, snap
+        assert "sustainable_turns_per_second" not in snap
+        assert snap["sample_unit"] == "provider attempt, not user turn"
+        assert "mean" in snap["attempt_seconds"], "Little's Law needs the mean"
 
     def test_refusals_are_counted_separately_from_turns(self, monkeypatch):
         monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "1")
@@ -207,3 +217,76 @@ class TestTurnDurationInstrumentation:
             with pa.provider_slot():
                 raise ValueError("boom")
         assert pa.admission_snapshot()["live"] == 0
+
+
+class TestTheAsyncSlotDoesNotStallItsOwnLoop:
+    """Codex REJECT 2026-08-28, finding 2 — the one that made the cure worse.
+
+    A blocking `acquire()` inside async router code stalls the event loop, so a waiter
+    prevents the very holder it is waiting for from finishing. Reproduced with limit 1,
+    a 200 ms wait and 10 ms of admitted work: `[0.201, 'ProviderBusy']`. It reaches
+    production through `call_judge_ensemble`, which gathers admission-taking tasks onto
+    one loop.
+    """
+
+    def test_two_coroutines_on_one_loop_do_not_refuse_each_other(self, monkeypatch):
+        import asyncio
+
+        monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "1")
+        monkeypatch.setenv("TINYASSETS_PROVIDER_ADMISSION_WAIT_S", "2")
+
+        async def one():
+            async with pa.provider_slot_async():
+                await asyncio.sleep(0.01)
+            return "ok"
+
+        async def main():
+            return await asyncio.gather(one(), one(), return_exceptions=True)
+
+        got = asyncio.run(main())
+        assert got == ["ok", "ok"], (
+            f"a waiter starved the holder on the same loop: {got}"
+        )
+
+
+class TestTheBoundActuallyBindsInTheRouter:
+    """Codex REJECT 2026-08-28, finding 6 — my unit tests were decorative.
+
+    Codex replaced every router admission context with `nullcontext`, disabling
+    enforcement completely, and all 13 tests still passed. They proved the primitive
+    worked and said nothing about production using it. This asserts the wiring at the
+    place the mutant attacked.
+    """
+
+    def test_every_provider_dispatch_is_inside_the_bound(self):
+        import pathlib
+
+        from tinyassets.providers import router
+
+        src = pathlib.Path(router.__file__).read_text(encoding="utf-8")
+        dispatches = src.count("resp = await provider.complete(")
+        guarded = src.count("async with _provider_slot():")
+        assert dispatches > 0
+        assert guarded == dispatches, (
+            f"{dispatches} provider dispatches but {guarded} inside the bound — an "
+            "unguarded dispatch spawns a subprocess the limit never counted"
+        )
+        assert "with _provider_slot():" not in src.replace("async with _provider_slot():", ""), (
+            "a SYNC slot in async router code stalls the event loop"
+        )
+
+    def test_a_busy_refusal_is_not_charged_as_a_provider_failure(self):
+        """Finding 1: acquiring after `before_provider_launch` meant a refusal
+        abandoned the budget, cooled a provider that never started, and reached the
+        caller as AllProvidersExhaustedError instead of an actionable 'busy'."""
+        import pathlib
+
+        from tinyassets.providers import router
+
+        src = pathlib.Path(router.__file__).read_text(encoding="utf-8")
+        body = src.split("async with _provider_slot():", 1)[1][:900]
+        assert "before_launch()" in body, (
+            "before_provider_launch must happen INSIDE the slot, or a refusal charges "
+            "a launch that never occurred"
+        )
+        assert "except _ProviderBusy:" in src, "a busy refusal must propagate, not be classified"

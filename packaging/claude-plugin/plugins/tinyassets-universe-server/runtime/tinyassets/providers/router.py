@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextlib
 import logging
 import math
 import os
@@ -28,7 +29,8 @@ from tinyassets.exceptions import (
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
-from tinyassets.provider_admission import provider_slot as _provider_slot
+from tinyassets.provider_admission import ProviderBusy as _ProviderBusy
+from tinyassets.provider_admission import provider_slot_async as _provider_slot
 from tinyassets.provider_work_authority import (
     ProviderInvocationCarrier,
     ProviderInvocationReservationState,
@@ -904,19 +906,40 @@ class ProviderRouter:
                     )
                     cfg = replace(cfg, max_tokens=budget_reservation.output_tokens)
                 try:
-                    before_launch = getattr(
-                        served_authority, "before_provider_launch", None
-                    ) if served_authority is not None else None
-                    if callable(before_launch):
-                        before_launch()
-                    # Bound concurrent provider SUBPROCESSES (~77 MB PSS each, measured).
-                    # The anyio threadpool admits 40 sync handlers; without this, 40
-                    # simultaneous turns meant 40 subprocesses and an OOM that kills the
-                    # host (and the tunnel with it), not just the request.
-                    with _provider_slot():
+                    # Bound concurrent provider SUBPROCESSES (~77 MB PSS each,
+                    # measured). ASYNC form: a blocking acquire here stalls the event
+                    # loop, and `call_judge_ensemble` gathers admission-taking tasks on
+                    # one loop, so the bound would refuse work it was itself holding up.
+                    #
+                    # Acquired BEFORE `before_provider_launch` on purpose. With the
+                    # order reversed, a busy refusal charged the launch, abandoned the
+                    # budget reservation as INDETERMINATE and cooled a provider that had
+                    # never started — the caller then saw AllProvidersExhaustedError
+                    # instead of "busy, retry" (Codex reproduced this).
+                    async with _provider_slot():
+                        before_launch = getattr(
+                            served_authority, "before_provider_launch", None
+                        ) if served_authority is not None else None
+                        if callable(before_launch):
+                            before_launch()
                         resp = await provider.complete(
                             prompt, system, cfg, universe_dir=universe_dir,
                         )
+                except _ProviderBusy:
+                    # Not a provider failure: nothing launched, so the reservation is
+                    # released untouched, no cooldown is applied, and the actionable
+                    # message reaches the caller instead of being flattened into
+                    # "all providers exhausted".
+                    if budget_reservation is not None:
+                        # RELEASED, not abandoned: nothing launched, so no tokens were
+                        # spent and charging the binding would exhaust a budget that
+                        # still has capacity — the same reasoning the
+                        # ProviderUnavailableError branch below applies.
+                        with contextlib.suppress(Exception):
+                            release_served_provider_budget(
+                                universe_dir.parent, budget_reservation,
+                            )
+                    raise
                 except BaseException as exc:
                     if budget_reservation is not None:
                         # A provider that never became available produced no
@@ -1373,7 +1396,7 @@ class ProviderRouter:
                 # The anyio threadpool admits 40 sync handlers; without this, 40
                 # simultaneous turns meant 40 subprocesses and an OOM that kills the
                 # host (and the tunnel with it), not just the request.
-                with _provider_slot():
+                async with _provider_slot():
                     resp = await provider.complete(
                         prompt, system, cfg, universe_dir=universe_dir,
                     )
@@ -1714,7 +1737,7 @@ class ProviderRouter:
                 # The anyio threadpool admits 40 sync handlers; without this, 40
                 # simultaneous turns meant 40 subprocesses and an OOM that kills the
                 # host (and the tunnel with it), not just the request.
-                with _provider_slot():
+                async with _provider_slot():
                     resp = await provider.complete(
                         prompt, system, cfg, universe_dir=universe_dir,
                     )

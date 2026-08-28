@@ -30,11 +30,12 @@ can retry is strictly better than an OOM that takes every other user down with i
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 
 _log = logging.getLogger(__name__)
 
@@ -83,20 +84,55 @@ def _positive_float(var: str, default: float) -> float:
     return value
 
 
-_lock = threading.Lock()
-_semaphore: threading.BoundedSemaphore | None = None
-_semaphore_limit = 0
+#: A Condition + explicit counter rather than a BoundedSemaphore.
+#:
+#: A semaphore has to be REPLACED when the configured limit changes, and Codex
+#: reproduced what that costs: existing holders keep the old object, so two holders
+#: under limit=2 plus one admission after dropping to limit=1 gave
+#: `{'limit': 1, 'live': 3}` — the advertised bound violated by its own reconfiguration.
+#: A counter compared against the CURRENT limit at admission time cannot do that;
+#: lowering the limit simply drains as holders finish.
+_cv = threading.Condition()
+_live = 0
+_peak_live = 0
+_admitted = 0
+_refused = 0
 
 
-def _get_semaphore() -> tuple[threading.BoundedSemaphore, int]:
-    """Build (or rebuild, if the configured limit changed) the shared bound."""
-    global _semaphore, _semaphore_limit
-    limit = _positive_int(_LIMIT_VAR, _DEFAULT_LIMIT)
-    with _lock:
-        if _semaphore is None or _semaphore_limit != limit:
-            _semaphore = threading.BoundedSemaphore(limit)
-            _semaphore_limit = limit
-        return _semaphore, _semaphore_limit
+def _try_acquire(timeout: float) -> tuple[bool, int]:
+    """Take a slot, or give up after ``timeout``. Blocking — see `provider_slot_async`."""
+    global _live, _peak_live, _admitted
+    deadline = time.monotonic() + timeout
+    with _cv:
+        while True:
+            limit = _positive_int(_LIMIT_VAR, _DEFAULT_LIMIT)
+            if _live < limit:
+                _live += 1
+                _peak_live = max(_peak_live, _live)
+                _admitted += 1
+                return True, limit
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False, limit
+            _cv.wait(remaining)
+
+
+def _release() -> None:
+    global _live
+    with _cv:
+        _live -= 1
+        _cv.notify()
+
+
+def _refuse(limit: int) -> ProviderBusy:
+    global _refused
+    with _cv:
+        _refused += 1
+    _log.warning("provider admission: all %d slots busy; refusing", limit)
+    return ProviderBusy(
+        f"All {limit} provider slots are busy right now. Your universe is "
+        "working on other turns — try again in a moment."
+    )
 
 
 #: Rolling record of what actually happened here. This exists because capacity in
@@ -110,84 +146,99 @@ def _get_semaphore() -> tuple[threading.BoundedSemaphore, int]:
 _MAX_SAMPLES = 512
 _stats_lock = threading.Lock()
 _durations: list[float] = []
-_admitted = 0
-_refused = 0
-_live = 0
-_peak_live = 0
 
 
 def admission_snapshot() -> dict:
-    """What the bound has actually seen. Surfaced through `get_status`."""
+    """What the bound has actually seen. Surfaced through `get_status`.
+
+    Deliberately reports NO derived throughput figure. The obvious one, `limit / p50`,
+    is wrong twice over (Codex, 2026-08-28): Little's Law needs effective concurrency
+    over MEAN service time, not the limit over a median; and these samples are provider
+    *attempts*, so a fallback chain or a judge ensemble contributes several samples per
+    user turn while fast failures inflate the median and slow ones deflate it. Reporting
+    the raw observations and letting a human do the arithmetic beats publishing a number
+    that reads authoritative and is not.
+    """
+    with _cv:
+        live, peak, admitted, refused = _live, _peak_live, _admitted, _refused
     with _stats_lock:
         d = sorted(_durations)
-        out = {
-            "limit": _positive_int(_LIMIT_VAR, _DEFAULT_LIMIT),
-            "admitted": _admitted,
-            "refused": _refused,
-            "live": _live,
-            "peak_concurrent": _peak_live,
-            "samples": len(d),
-        }
+    out = {
+        "limit": _positive_int(_LIMIT_VAR, _DEFAULT_LIMIT),
+        "admitted": admitted,
+        "refused": refused,
+        "live": live,
+        "peak_concurrent": peak,
+        "samples": len(d),
+        "sample_unit": "provider attempt, not user turn",
+    }
     if d:
-        out["turn_seconds"] = {
+        out["attempt_seconds"] = {
             "p50": round(d[len(d) // 2], 2),
             "p90": round(d[max(0, int(len(d) * 0.90) - 1)], 2),
             "p99": round(d[max(0, int(len(d) * 0.99) - 1)], 2),
+            "mean": round(sum(d) / len(d), 2),
             "max": round(d[-1], 2),
         }
-        # The number the capacity question actually turns on.
-        p50 = d[len(d) // 2]
-        if p50 > 0:
-            out["sustainable_turns_per_second"] = round(out["limit"] / p50, 3)
     return out
 
 
 def reset_for_tests() -> None:
-    global _semaphore, _semaphore_limit, _admitted, _refused, _live, _peak_live
-    with _lock:
-        _semaphore = None
-        _semaphore_limit = 0
+    global _live, _peak_live, _admitted, _refused
+    with _cv:
+        _live = _peak_live = _admitted = _refused = 0
     with _stats_lock:
         _durations.clear()
-        _admitted = _refused = _live = _peak_live = 0
 
 
 @contextmanager
 def provider_slot():
     """Hold one provider-subprocess slot, or raise :class:`ProviderBusy`.
 
+    **Blocking.** Only for callers that are already on a worker thread. Async callers
+    must use :func:`provider_slot_async`, or they stall their event loop — Codex
+    reproduced exactly that: with a blocking acquire, two coroutines gathered on one
+    loop refused each other because the waiter prevented the holder from finishing.
+
     Released on every exit path, including exceptions — a slot leaked on an error is a
     permanent capacity loss, and errors are exactly when the system is already busy.
-
-    Also times the hold, because this context manager brackets exactly the lifetime of
-    the provider subprocess. That makes it the one honest place to learn how long a real
-    turn takes, which is the missing half of every users-per-box claim.
     """
-    global _admitted, _refused, _live, _peak_live
-    sem, limit = _get_semaphore()
-    if not sem.acquire(timeout=_positive_float(_WAIT_VAR, _DEFAULT_WAIT_S)):
-        with _stats_lock:
-            _refused += 1
-        _log.warning("provider admission: all %d slots busy; refusing", limit)
-        raise ProviderBusy(
-            f"All {limit} provider slots are busy right now. Your universe is "
-            "working on other turns — try again in a moment."
-        )
+    ok, limit = _try_acquire(_positive_float(_WAIT_VAR, _DEFAULT_WAIT_S))
+    if not ok:
+        raise _refuse(limit)
     started = time.monotonic()
-    with _stats_lock:
-        _admitted += 1
-        _live += 1
-        _peak_live = max(_peak_live, _live)
     try:
         yield
     finally:
-        sem.release()
-        # Timed on EVERY exit, failures included. A turn that died after 40 seconds
-        # occupied a slot for 40 seconds; excluding it would flatter the numbers in
-        # exactly the conditions worth measuring.
-        elapsed = time.monotonic() - started
-        with _stats_lock:
-            _live -= 1
-            _durations.append(elapsed)
-            if len(_durations) > _MAX_SAMPLES:
-                del _durations[: len(_durations) - _MAX_SAMPLES]
+        _release()
+        _record(time.monotonic() - started)
+
+
+@asynccontextmanager
+async def provider_slot_async():
+    """Async-safe form: waits for a slot WITHOUT blocking the event loop.
+
+    The wait happens on a worker thread, so other coroutines on the same loop — notably
+    the ones already holding slots — keep running and can release. A blocking acquire
+    here turned the bound into a self-inflicted deadlock at any limit.
+    """
+    ok, limit = await asyncio.to_thread(
+        _try_acquire, _positive_float(_WAIT_VAR, _DEFAULT_WAIT_S)
+    )
+    if not ok:
+        raise _refuse(limit)
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        _release()
+        _record(time.monotonic() - started)
+
+
+def _record(elapsed: float) -> None:
+    """Time every exit, failures included. A turn that died after 40 s occupied a slot
+    for 40 s; excluding it would flatter the numbers in the conditions worth measuring."""
+    with _stats_lock:
+        _durations.append(elapsed)
+        if len(_durations) > _MAX_SAMPLES:
+            del _durations[: len(_durations) - _MAX_SAMPLES]
