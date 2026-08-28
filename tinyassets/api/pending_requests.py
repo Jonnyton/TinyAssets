@@ -59,6 +59,9 @@ _MAX_ANSWER_CHARS = 2000
 #: An agent-requested grant stays narrow; a broader one is a deliberate manual
 #: deposit, chosen by a person in the explicit form.
 _MAX_REQUEST_METHODS = 2
+#: Enough for a real multi-call flow (a GitHub PR needs three) without
+#: becoming a way to ask for a whole API in one go.
+_MAX_REQUEST_ENDPOINTS = 6
 
 
 def _payload(value: Any) -> dict[str, Any]:
@@ -131,26 +134,43 @@ def _validated_action(raw: Any) -> dict[str, Any]:
         raise ValueError(
             "auth_scheme must be one of " + ", ".join(sorted(_DEPOSITABLE_AUTH_SCHEMES))
         )
-    methods = action.get("methods")
-    if not isinstance(methods, list) or not methods:
-        methods = ["POST"]
-    methods = sorted({str(m).strip().upper() for m in methods if str(m).strip()})
-    if len(methods) > _MAX_REQUEST_METHODS:
+    # One request may cover SEVERAL exact endpoints. A GitHub pull request needs
+    # three calls (create a ref, put contents, open the pull), and one path per
+    # request would mean pasting the same key three times. A list of named exact
+    # paths is still least privilege -- it is not a widening, and the user sees
+    # every line before pasting once.
+    raw_endpoints = action.get("endpoints")
+    if not isinstance(raw_endpoints, list) or not raw_endpoints:
+        raw_endpoints = [action]          # the single-endpoint shorthand
+    if len(raw_endpoints) > _MAX_REQUEST_ENDPOINTS:
         raise ValueError(
-            f"a requested grant may cover at most {_MAX_REQUEST_METHODS} methods; "
-            "ask for the one action you need"
+            f"a request may cover at most {_MAX_REQUEST_ENDPOINTS} endpoints; "
+            "ask for the calls you actually need"
         )
-    endpoint = {
-        "host": str(action.get("host") or "").strip().lower(),
-        "path_template": str(action.get("path_template") or "").strip(),
-        "methods": methods,
-    }
-    _parse_allowed_endpoints([endpoint])  # raises on anything the deposit refuses
+    endpoints = []
+    for raw in raw_endpoints:
+        if not isinstance(raw, dict):
+            raise ValueError("each endpoint must be an object")
+        methods = raw.get("methods")
+        if not isinstance(methods, list) or not methods:
+            methods = ["POST"]
+        methods = sorted({str(m).strip().upper() for m in methods if str(m).strip()})
+        if len(methods) > _MAX_REQUEST_METHODS:
+            raise ValueError(
+                f"an endpoint may cover at most {_MAX_REQUEST_METHODS} methods; "
+                "ask for the one action you need on it"
+            )
+        endpoints.append({
+            "host": str(raw.get("host") or action.get("host") or "").strip().lower(),
+            "path_template": str(raw.get("path_template") or "").strip(),
+            "methods": methods,
+        })
+    _parse_allowed_endpoints(endpoints)   # raises on anything the deposit refuses
     return {
         "type": "connect_http",
         "destination": destination,
         "auth_scheme": scheme,
-        **endpoint,
+        "endpoints": endpoints,
     }
 
 
@@ -246,10 +266,18 @@ def _grant_sentence(row: dict[str, Any]) -> str:
     action = row.get("action") or {}
     if action.get("type") != "connect_http":
         return ""
-    methods = "/".join(action.get("methods") or [])
+    lines = [
+        f"{'/'.join(e.get('methods') or [])} {e.get('host')}{e.get('path_template')}"
+        for e in (action.get("endpoints") or [])
+    ]
+    if not lines:
+        return ""
+    if len(lines) == 1:
+        return f"This key will be able to {lines[0]} - nothing else."
     return (
-        f"This key will be able to {methods} "
-        f"{action.get('host')}{action.get('path_template')} - nothing else."
+        "This key will be able to reach exactly these, and nothing else: "
+        + "; ".join(lines)
+        + "."
     )
 
 
@@ -366,13 +394,7 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
                     "destination": action["destination"],
                     "secret": secret,
                     "auth_scheme": action["auth_scheme"],
-                    "allowed_endpoints": [
-                        {
-                            "host": action["host"],
-                            "path_template": action["path_template"],
-                            "methods": action["methods"],
-                        }
-                    ],
+                    "allowed_endpoints": action["endpoints"],
                 }
             ),
         )
