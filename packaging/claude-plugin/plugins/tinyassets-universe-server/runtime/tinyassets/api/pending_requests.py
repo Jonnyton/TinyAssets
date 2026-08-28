@@ -119,15 +119,32 @@ def _validated_action(raw: Any) -> dict[str, Any]:
     from tinyassets.api.http_connection import (
         _DEPOSITABLE_AUTH_SCHEMES,
         _DESTINATION_RE,
-        _parse_allowed_endpoints,
     )
 
     action = raw if isinstance(raw, dict) else {"type": "answer"}
     kind = str(action.get("type") or "answer").strip().lower()
     if kind == "answer":
         return {"type": "answer"}
+    if kind == "extend_http":
+        # Widening a grant the user already funded. No secret is involved: the
+        # vault keeps the one they deposited, and answering this request IS the
+        # authorization. Endpoints are validated by the same allow-list.
+        destination = str(action.get("destination") or "").strip().lower()
+        if not _DESTINATION_RE.match(destination):
+            raise ValueError(
+                "destination must be 2-127 chars of [a-z0-9._:-] starting "
+                "alphanumeric"
+            )
+        endpoints = _validated_endpoint_list(action)
+        return {
+            "type": "extend_http",
+            "destination": destination,
+            "endpoints": endpoints,
+        }
     if kind != "connect_http":
-        raise ValueError("action type must be answer or connect_http")
+        raise ValueError(
+            "action type must be answer, connect_http or extend_http"
+        )
 
     destination = str(action.get("destination") or "").strip().lower()
     if not _DESTINATION_RE.match(destination):
@@ -144,6 +161,19 @@ def _validated_action(raw: Any) -> dict[str, Any]:
     # request would mean pasting the same key three times. A list of named exact
     # paths is still least privilege -- it is not a widening, and the user sees
     # every line before pasting once.
+    endpoints = _validated_endpoint_list(action)
+    return {
+        "type": "connect_http",
+        "destination": destination,
+        "auth_scheme": scheme,
+        "endpoints": endpoints,
+    }
+
+
+def _validated_endpoint_list(action: dict[str, Any]) -> list[dict[str, Any]]:
+    """Shared endpoint validation for connect_http and extend_http."""
+    from tinyassets.api.http_connection import _parse_allowed_endpoints
+
     raw_endpoints = action.get("endpoints")
     if not isinstance(raw_endpoints, list) or not raw_endpoints:
         raw_endpoints = [action]          # the single-endpoint shorthand
@@ -171,12 +201,7 @@ def _validated_action(raw: Any) -> dict[str, Any]:
             "methods": methods,
         })
     _parse_allowed_endpoints(endpoints)   # raises on anything the deposit refuses
-    return {
-        "type": "connect_http",
-        "destination": destination,
-        "auth_scheme": scheme,
-        "endpoints": endpoints,
-    }
+    return endpoints
 
 
 def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
@@ -188,6 +213,9 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
         # what it wants rather than presenting an empty tab.
         if action["type"] == "connect_http":
             fields = [{"name": "secret", "label": "Paste the key", "type": "secret"}]
+        elif action["type"] == "extend_http":
+            # Nothing to type. The key is already in the vault; this is a yes/no.
+            return []
         else:
             raise ValueError("a request needs at least one field")
     if len(fields) > _MAX_FIELDS:
@@ -279,6 +307,15 @@ def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str
 def _grant_sentence(row: dict[str, Any]) -> str:
     """For a credential ask, the exact grant in one line. Empty otherwise."""
     action = row.get("action") or {}
+    if action.get("type") == "extend_http":
+        lines = [
+            f"{'/'.join(e.get('methods') or [])} {e.get('host')}{e.get('path_template')}"
+            for e in (action.get("endpoints") or [])
+        ]
+        return (
+            f'Also let the key you already gave as "{action.get("destination")}" '
+            "reach " + "; ".join(lines) + ". You do not need to paste it again."
+        )
     if action.get("type") != "connect_http":
         return ""
     lines = [
@@ -431,6 +468,27 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             "the clear, so say it in words instead"
         )
 
+    if action.get("type") == "extend_http":
+        from tinyassets.api.http_connection import extend_http
+
+        widened = extend_http(
+            universe_id=universe_id,
+            payload=json.dumps({
+                "destination": action["destination"],
+                "endpoints": action["endpoints"],
+            }),
+        )
+        if widened.get("error"):
+            return widened
+        resolve_request(udir, request_id, status="answered", answer=answer,
+                        feedback=feedback, dont_ask_again=dont_ask_again)
+        return {
+            "status": "answered",
+            "request_id": request_id,
+            "destination": action["destination"],
+            "receipt": _grant_sentence(row),
+            "secret_reused": True,
+        }
     if action.get("type") == "connect_http":
         secret = next(
             (str(values.get(n) or "") for n in secret_names if values.get(n)), ""
