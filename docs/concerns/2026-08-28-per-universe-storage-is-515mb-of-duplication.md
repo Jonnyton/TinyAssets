@@ -56,11 +56,39 @@ admits 4 concurrent top-level runs, but each spawns a `codex exec` / `claude -p`
 on a 2 GB box with ~1.1 GB free. Four concurrent provider subprocesses will not fit; the
 pool is over-provisioned for this hardware.
 
-## Open
+## Root cause (measured 2026-08-28)
 
-1. **Deduplicate the provider runtime.** Is a per-universe copy of `.credentials/codex` and
-   `.runtime/*` actually required for isolation, or can it be shared/hard-linked with only
-   the credential material kept per-universe? This is the highest-value question here.
+`_provider_child_runtime_env` (`tinyassets/providers/base.py:459-500`) gives every universe
+a private fake `HOME` for its provider subprocess — separate `HOME`, `XDG_*`, `TMPDIR`,
+`CLAUDE_CONFIG_DIR`, `CODEX_HOME`. **That isolation is correct and must stay**: it is what
+stops one universe's provider child seeing another's state, and an empty auth home is what
+prevents ambient credential fallback.
+
+What is wrong is that ~300 MB of the 515 MB is **regenerable cache**, not isolated state:
+
+| Path | Size | Nature |
+|---|---|---|
+| `.runtime/provider-child/codex/home/.npm` | **207.4 MB** | npm cache — content-addressed, no secrets, **safely shareable** |
+| `.runtime/provider-child/codex/auth-empty/codex` | **92.0 MB** | Codex CLI state + plugins written into the dir named *auth-**empty*** |
+| `.runtime/provider-child/claude-code` | 15.7 MB | same shape, smaller |
+
+So the fix is not to weaken isolation. It is to stop giving each universe its own copy of a
+cache that is identical across all of them:
+
+1. Point `npm_config_cache` at a **shared, read-only** cache mounted into every provider
+   child. Isolation is unaffected — an npm cache holds no credential material.
+2. Decide whether the Codex plugin/state directory can be seeded from a shared read-only
+   base with only per-universe writes layered on top.
+3. Either way, add cache eviction: a universe idle for N days does not need 300 MB of
+   regenerated cache resident.
+
+Expected effect: per-universe storage falls from ~515 MB to well under 20 MB, which is the
+~10x infrastructure lever.
+
+`auth-empty` holding 92 MB also deserves a second look on its own merits — the name asserts
+an invariant the directory no longer satisfies. Confirm nothing auth-bearing is landing there.
+
+## Open
 2. **Bound `checkpoints.db`.** `concordance` reached 8.6 GB unbounded. `storage_utilization`
    already reports `subsystem_caps.checkpoints.status = "unbounded"` — it knows, and nothing
    acts on it.
