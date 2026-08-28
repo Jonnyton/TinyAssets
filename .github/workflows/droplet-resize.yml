@@ -84,7 +84,7 @@ jobs:
       - name: Wait for the droplet to be off
         run: |
           set -euo pipefail
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             st=$(curl -sf -H "Authorization: Bearer $DO_TOKEN" \
                   "https://api.digitalocean.com/v2/droplets/${DROPLET_ID}" | jq -r .droplet.status)
             echo "  status=$st"
@@ -132,7 +132,7 @@ jobs:
               -d '{"type":"power_on"}' \
               "https://api.digitalocean.com/v2/droplets/${DROPLET_ID}/actions" > /dev/null
           fi
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             st=$(curl -sf -H "Authorization: Bearer $DO_TOKEN" \
                   "https://api.digitalocean.com/v2/droplets/${DROPLET_ID}" | jq -r .droplet.status)
             echo "  status=$st"
