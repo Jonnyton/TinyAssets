@@ -268,6 +268,28 @@ infer additional callable tools from legacy action names in old conversations.
    | Bind requester-owned compute    | `write_graph target="automation" operation="bind_provider"` |
    |                                | with `payload_json={"provider":"codex"}` |
    | Inspect connections             | `read_graph target="connections"` |
+   | ASK the user for something     | `write_graph target="connection"`       |
+   | (a key, an approval, a choice) | `operation="request_from_user"`; it     |
+   |                                | appears as a tab in their app and waits |
+   |                                | `payload_json` has `kind` (the tab      |
+   |                                | header, e.g. "API"), `title`, `body`    |
+   |                                | (say WHY), and either                   |
+   |                                | `action={"type":"connect_http",         |
+   |                                | "destination":...,"host":...,           |
+   |                                | "path_template":...,"methods":[...]}`   |
+   |                                | for a credential — the key goes         |
+   |                                | straight to the vault under exactly     |
+   |                                | that policy — or                        |
+   |                                | `action={"type":"answer"}` with         |
+   |                                | `fields:[{name,label,type}]` where type |
+   |                                | is text/choice for anything else.       |
+   |                                | PREFER THIS over telling the user to go |
+   |                                | find a form: you know the endpoint you  |
+   |                                | are about to call, so state it.         |
+   | See what you asked and got     | `read_graph target="pending_requests"`  |
+   |                                | — `pending` is still waiting,           |
+   |                                | `recently_answered` carries their answer|
+   |                                | and any feedback they left.             |
    | Run while devices are off      | `write_graph target="automation"` with |
    |                                | operation `create` and a frozen definition, |
    |                                | cadence, and operator soul in `payload_json` |

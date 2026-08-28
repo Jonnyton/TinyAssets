@@ -378,3 +378,22 @@ def test_muting_one_ask_does_not_mute_a_different_one(base):
     other = _ask("u-1", title="Different key for a different repo",
                  action={**_CRED["action"], "path_template": "/repos/o/other/pulls"})
     assert other["status"] == "pending"
+
+
+def test_the_agent_prompt_teaches_the_ask_verb():
+    """A primitive the agent does not know about is a primitive it never uses.
+
+    The rail shipped before the served prompt mentioned `request_from_user`, so
+    the universe had no way to learn it could ask — it would keep telling the
+    user to go find a form instead.
+    """
+    import inspect
+
+    from tinyassets.api import prompts
+
+    src = inspect.getsource(prompts)
+    assert 'operation="request_from_user"' in src
+    assert 'read_graph target="pending_requests"' in src
+    # It must know BOTH shapes, or it can only ever ask for credentials.
+    assert '"type":"connect_http"' in src
+    assert '"type":"answer"' in src
