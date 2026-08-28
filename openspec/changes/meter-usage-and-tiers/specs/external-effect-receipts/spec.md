@@ -37,3 +37,35 @@ consent, and destination gates would refuse; it may only refuse one they would a
 #### Scenario: quota never widens authority
 - **WHEN** available effect budget exists but authority or destination consent is absent
 - **THEN** the effect is still refused
+
+### Requirement: Effect settlement is a single transition-sensitive, exactly-once operation
+Effect budget SHALL be settled by one operation keyed by receipt identity that fires only on
+an actual transition **into** terminal success. A call that finds the receipt already in
+terminal success SHALL NOT settle again, even where the underlying update reports success.
+
+Settlement SHALL cover every path by which an effect reaches terminal success — ordinary
+finalization, reconciled finalization, and confirmed-hold activation — so that no success
+path can settle twice and none can escape settlement.
+
+Confirmed-hold activation SHALL reserve effect budget before invoking the effect, exactly as
+the ordinary path does. A held effect SHALL NOT be able to fire without quota admission.
+
+The ledger write SHALL be atomic with the receipt transition, or SHALL go through a uniquely
+keyed outbox. A sequence of "update the receipt, then increment the ledger" SHALL NOT be
+treated as exactly-once.
+
+#### Scenario: replaying a finalization does not settle twice
+- **WHEN** finalization is applied to a receipt already in terminal success
+- **THEN** the effect budget is unchanged
+
+#### Scenario: a reconciled success still settles
+- **WHEN** an ambiguous effect later reconciles to success without passing through ordinary finalization
+- **THEN** the effect budget settles exactly once for that effect
+
+#### Scenario: a confirmed hold cannot bypass quota
+- **WHEN** a held effect is confirmed and activated while the effect budget is exhausted
+- **THEN** the effect is refused rather than invoked
+
+#### Scenario: a crash between write and increment does not lose or duplicate the charge
+- **WHEN** the process fails between the receipt transition and the ledger write
+- **THEN** recovery settles that effect exactly once

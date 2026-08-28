@@ -17,11 +17,30 @@ There SHALL be no GPU dimension: the platform supplies no inference and owns no 
 - **WHEN** a run blocks on the user's provider for the majority of its duration
 - **THEN** the full elapsed wall-time is metered, not the CPU time consumed
 
-### Requirement: The billable effect budget is drawn down only by completed effects
-An effect quota SHALL decrement only when an external write reaches terminal success.
-Reads, branch writes, branch edits, run admissions, and failed or held effects SHALL NOT
-decrement it. Exhausting the effect budget SHALL NOT prevent a universe from reading,
-authoring, editing, or debugging.
+#### Scenario: queue delay is not charged to the user
+- **WHEN** a run waits in the queue before a worker becomes available
+- **THEN** the metered duration starts at worker acquisition, so platform load does not
+  inflate the user's usage
+
+#### Scenario: a run cannot be metered without bound
+- **WHEN** a run exceeds the maximum chargeable duration, or is interrupted by a restart and
+  never reaches a terminal state
+- **THEN** it settles at the capped duration rather than accruing indefinitely or being lost
+
+#### Scenario: settlement is idempotent per run
+- **WHEN** compute settlement for the same run is applied more than once
+- **THEN** the metered duration reflects that run exactly once
+
+### Requirement: The billable effect budget is charged only for effects that reach the world
+An effect quota SHALL be reserved before an outbound write and settled by its outcome:
+committed on success, returned on failure. Reads, branch writes, branch edits, and run
+admissions SHALL NOT touch it, and a failed or released effect SHALL cost nothing.
+Exhausting the effect budget SHALL NOT prevent a universe from reading, authoring, editing,
+or debugging.
+
+Enforcement SHALL occur at reservation, before the write. Settling only after success would
+leave the cap post-hoc on an irreversible action, which is an accounting record rather than
+a control.
 
 #### Scenario: a failed outbound attempt costs no effect budget
 - **WHEN** an outbound write reaches the destination and is rejected (for example an

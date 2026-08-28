@@ -72,23 +72,66 @@ release; replay finds the existing reservation rather than taking a second one.
 security control. Reserving is the only shape that satisfies both, and the repo already has
 the primitive.
 
-**2. Keep a compute guard, but do not bill it.**
-Effects-only accounting leaves a hole: a prompt-injected engine can still burn unlimited
-CPU on runs that never emit an effect. So the admission gate stays — with a far higher
-ceiling — as a safety bound. Preserve the existing asymmetry (`run_graph` fails open, remix
-fails closed — Codex ADAPT 2026-08-22 #6): a DB blip must not wedge legitimate runs, but it
-must not wave through an autonomous write either.
+**1a. Settlement is one transition-sensitive operation, not three hooks.** Cross-family
+review (Codex, 2026-08-28) showed the receipt lifecycle is *state*-idempotent but not
+*accounting*-idempotent, so hooking the three obvious functions both double-counts and
+leaks:
 
-**3. Meter compute-minutes as wall-time, not CPU-time.**
-A run holds one of four worker slots for its full duration, including time blocked on the
-user's LLM. Wall-time is what actually consumes capacity, and it is what a user can reason
-about. CPU-seconds would under-count the resource that is genuinely scarce.
+- `finalize_receipt` does not require the prior status to be `pending`
+  (`external_write_receipts.py:685`) and returns `True` when replayed against an
+  already-succeeded row (`:697`) — incrementing on a truthy return **double-counts**.
+- Reconciled success reaches `succeeded` via `finalize_reconciliation()`, never
+  `finalize_receipt` (`effectors/outbound_boundary.py:559`) — a **bypass**.
+- A confirmed hold goes `held`/`failed` → `pending` (`:894`) and is then invoked
+  (`outbound_boundary.py:203`) **without calling `try_reserve_receipt`** — so a held effect
+  can fire with no quota admission at all.
+
+Therefore: settlement SHALL be a single operation keyed by receipt identity that fires only
+on an actual transition *into* terminal success, covering normal success, reconciled
+success, and confirmed-hold activation; and confirmed-hold activation SHALL reserve quota
+before invoking. The ledger write must be atomic with the receipt transition (or go through
+a uniquely-keyed outbox) — "update receipt, then increment ledger" cannot be exactly-once.
+
+**2. Keep a compute guard, and make it fail closed.**
+Effects-only accounting leaves a hole: a prompt-injected engine can still burn unlimited
+CPU on runs that never emit an effect. So the admission gate stays, with a far higher
+ceiling, as a safety bound.
+
+It must **fail closed**, reversing the current posture. The old fail-open was justified when
+this same gate also bounded effects and the approved-source gate was the primary control;
+once effects are separately reserved, compute is this gate's *only* job, and a gate that
+admits everything when its ledger errors does not do that job. Codex (2026-08-28) showed the
+teeth: `ThreadPoolExecutor.submit()` queues without bound (`runs.py:3002`, `:3257`), so the
+4-worker pool limits *simultaneous* execution but not *accepted* work — during a ledger
+outage an injected engine can create unlimited queued runs, durable rows and transcripts.
+The allowlist and readable-branch checks constrain *what* runs, never *how often*
+(`engine_mcp_server.py:352`, `:392`).
+
+Scope the reversal to the **engine-triggered** path. Ordinary browser/user run submission
+stays outside this dedicated gate and is unaffected.
+
+**3. Meter compute-minutes as *worker-held* wall-time, bounded.**
+A run holds a worker slot for its full duration, including time blocked on the user's
+provider, so wall-time is what consumes capacity. But it must be measured from **worker
+acquisition**, not from enqueue: `runs.started_at` is written while the run is still
+`queued` (`runs.py:797`), the pool submit happens later (`:3257`), and moving to `running`
+does not reset it (`:2417`) — so `finished_at - started_at` includes arbitrary queue delay,
+and platform load would inflate a user's bill. Codex, 2026-08-28.
+
+Three further requirements fall out:
+- A **maximum chargeable duration** per run. Provider calls have individual timeouts (e.g.
+  600 s absolute for Claude, `providers/base.py:83`) but nothing bounds a whole multi-node run.
+- **Crash handling.** Restart marks queued/running rows interrupted with the restart time
+  (`runs.py:3844`); a terminal-only meter under-counts a crash, while a live
+  `now - started_at` meter accrues forever. Settle interrupted runs at the capped duration.
+- **Idempotent settlement keyed by `run_id`**, so a retried settlement cannot double-charge.
 
 **4. Storage is metered and capped, not charged — yet.**
 `api/status.py:1252-1277` attributes only `checkpoint_db`, `activity_log` and
-`universe_outputs` to a universe; the large pools (wiki, run transcripts) are shared/root.
-Billing a number that excludes the biggest contributors would be dishonest. Attribute run
-transcripts first, then revisit charging.
+`universe_outputs`, which is why it reports 20 KB for a universe that is really 516 MB.
+Billing a number that misses 99.8% of the footprint would be dishonest, and charging for
+storage that is ~99% *our own duplicated provider runtime* would be worse — the user did not
+put it there. Fix attribution first; dedupe the runtime; then revisit charging.
 
 **5. One ledger, three dimensions.**
 Effects, compute-minutes and storage report from a single per-universe usage ledger. The
@@ -118,6 +161,7 @@ Not a separate plan record. One paid tier at $20/month. Fewer states, less to dr
 - **Effect counting changes a security-relevant gate.** The current bound is a Codex
   security finding; loosening the wrong half would reopen it. Requires cross-family review
   before landing (`AGENTS.md` § Quality Gates — authority/public-surface change).
-- **Unmeasured:** per-run CPU/RSS. Each run spawns a `codex exec`/`claude -p` subprocess, so
-  memory may be the true users-per-box ceiling rather than the 4-worker pool. The capacity
-  planning in the cost model is soft until measured on the droplet.
+- **Measured 2026-08-28:** the box is 1 vCPU / 1,967 MB, daemon RSS 449.6 MiB, ~1.1 GB free.
+  Four concurrent provider subprocesses will not fit, so `runs.py:3002`'s 4-worker pool is
+  over-provisioned for this hardware and **memory is the concurrency ceiling**. Per-run RSS
+  under load is still unmeasured — take it during the live verification in 4.3.

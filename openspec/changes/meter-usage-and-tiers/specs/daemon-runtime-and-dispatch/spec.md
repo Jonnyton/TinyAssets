@@ -25,16 +25,29 @@ concurrent callers cannot both pass a full cap.
 - **WHEN** an engine triggers runs far in excess of the configured guard
 - **THEN** further runs are refused regardless of remaining effect budget
 
-### Requirement: Admission failure posture is explicit per call site
-A failure to evaluate the admission guard SHALL fail open for ordinary run submission,
-whose primary controls are the approved-source gate and destination allowlist, and SHALL
-fail closed for autonomous writes, where the rolling cap is itself the safety bound. This
-asymmetry SHALL be explicit rather than incidental.
+### Requirement: The engine compute guard fails closed
+A failure to evaluate the engine-triggered admission guard SHALL refuse the request. Once
+effect budget is reserved separately, bounding compute is this guard's only remaining job,
+and a guard that admits everything when its ledger errors does not perform that job.
 
-#### Scenario: a ledger error does not wedge legitimate runs
-- **WHEN** the admission ledger cannot be read during ordinary run submission
-- **THEN** the run is admitted and the primary gates still apply
+This SHALL apply to engine-triggered submission specifically. Ordinary browser or user run
+submission is not subject to this dedicated gate and SHALL be unaffected.
 
-#### Scenario: a ledger error refuses an autonomous write
-- **WHEN** the admission ledger cannot be read during an autonomous write
-- **THEN** the write is refused
+The approved-source and destination-allowlist gates constrain *what* may run and SHALL NOT
+be treated as a substitute: they place no bound on *how often* a run is submitted.
+
+Accepted runs SHALL be bounded in number, not merely in concurrency. A worker pool that
+limits simultaneous execution while accepting unbounded queued work SHALL NOT by itself be
+considered a compute bound.
+
+#### Scenario: a ledger error refuses an engine-triggered run
+- **WHEN** the admission ledger cannot be evaluated for an engine-triggered run
+- **THEN** the run is refused rather than admitted
+
+#### Scenario: ordinary user submission is unaffected
+- **WHEN** the same ledger error occurs during ordinary browser or user run submission
+- **THEN** that submission proceeds under its own controls
+
+#### Scenario: queue depth is bounded, not just concurrency
+- **WHEN** an engine submits far more runs than the guard permits
+- **THEN** the excess is refused at admission rather than accumulating as queued work
