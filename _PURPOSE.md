@@ -1,16 +1,15 @@
 # Worktree purpose
 
-Purpose: branch-run-read-check
+Purpose: multiuser-review-record
 Provider: claude-code
-Branch: claude/branch-run-read-check
+Branch: claude/multiuser-review-record
 Base ref: origin/main
-Issue/PR: blocker #3 from the 2026-08-28 Codex multi-user review
-PLAN refs: authority / runs
-Ship condition: running a branch requires read access to it; an unreadable branch is
-  reported as absent
+Issue/PR: records the 2026-08-28 multi-user review outcome
+PLAN refs: authority
+Ship condition: the board says which halves are closed and which are not; the founder
+  has the decision written down with what each option costs
 Abandon condition: n/a
-Pickup hints: the permissive `_resolve_branch_id` is unchanged on purpose — passing an
-  unresolvable selector through is right for NAMING, wrong for LOADING
-Memory refs: permissive-helper-used-as-restrictive
-Related implications: #2629 (source approval gate), #2627 (session credential source)
+Pickup hints: the four code fixes are #2627 #2629 #2630 #2632
+Memory refs: grep-typed-homes-before-rederiving
+Related implications: docs/concerns/2026-07-02-no-os-engine-sandbox.md
 Idea feed refs: (none)

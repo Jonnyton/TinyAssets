@@ -12,6 +12,97 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Taking real money
+
+### Stripe is LIVE and ready — WorkOS is still the STAGING environment
+
+*Verified on the droplet 2026-08-28. This is now the only thing between us and real
+subscriptions, and it gets more expensive every day it waits.*
+
+**Stripe: READY.** `scripts/stripe_go_live.py --check` inside the live container is green
+on every line — live key, account can accept payments and payouts, price
+`price_1U9KBOLA6QWGlclhu642Y5Ub` at $20.00/month, webhook `we_1U9KBOLA6QWGlclhGfUr2cOh`
+enabled and subscribed to all five events entitlement depends on, entitlement key set, and
+a **live-mode signature has verified** (`/data/.billing_webhook_verified.json`,
+`livemode: true`). That last one was the final blocker; I cleared it by creating a live
+Checkout Session and immediately expiring it — a real signed `checkout.session.expired`,
+no money moved.
+
+**WorkOS: still staging.** In the same container:
+
+```
+WORKOS_AUTHKIT_DOMAIN=inventive-van-62-staging.authkit.app
+WORKOS_API_KEY=sk_test_…
+```
+
+The environment holds exactly two users — you and `simkalholdingsllc@gmail.com` — and they
+are the same two the `founder_home` table binds.
+
+**Why this cannot just be left.** WorkOS users are per-environment. The moment you move to
+the production environment, every `user_…` id changes, so **every `founder_home` binding
+breaks and every existing universe becomes unowned** — the exact state you told me on
+2026-08-28 must never exist, and the state PR #2638 now refuses to create. Migrating two
+users is a five-minute job. Migrating two hundred is a data-migration project, and every
+one of them signed up at a URL reading `-staging`, on a page asking for real money.
+
+**What only you can do** (WorkOS dashboard):
+
+1. Switch to the **Production** environment and copy its API key and AuthKit domain.
+2. Point it at a custom auth domain (`auth.tinyassets.io`) so users never see
+   `inventive-van-62-staging.authkit.app` on a payment flow.
+3. Add the redirect URI `https://tinyassets.io/mcp/app` and the MCP resource
+   `https://tinyassets.io/mcp` in the production environment.
+
+**Then I do the rest:** stage `WORKOS_API_KEY` / `WORKOS_AUTHKIT_DOMAIN`, recreate the
+container (`env_file` is read at creation, not restart), re-point the two existing
+bindings at the new production `user_…` ids once you and the other user have signed in
+once, and re-run the canary. Give me the two values and I will take it from there.
+
+---
+
+## Legacy pre-credential data in `/data`
+
+### 12 ownerless workspace directories predate the universe model — keep or delete?
+
+*Found 2026-08-28 while acting on the founder rule "no universe should exist that is not
+bound to a WorkOS user."*
+
+The rule was applied to **universes**, which is what it says. `founder_home` in
+`/data/.tinyassets.db` holds exactly two bindings, and both their universes are present:
+
+| WorkOS subject | Universe |
+|---|---|
+| `user_01KWGB2NV5PV4PWHT5RYKJPB8X` | `u-01kxm1vszd8hwp7em418asq8h9` |
+| `user_01KY3ZGR4VY0DYQ6BVJS4ZM5Y5` | `u-01ky3zh1arr8qth8jee7zx63pq` |
+
+`u-01ky3gkxg9qmz111v5qk7p2qbm` had no binding and was archived to
+`/data/_removed_universes_20260828/`. `u-tiny` is unbound too but is the live operator
+universe doing the work — archived as a copy, left in place, and it is the open question
+below.
+
+**What needs a decision.** Twelve further directories under `/data` are *pre-universe*
+workspaces: no `soul.md`, no `identity.md`, no owner, from the old workflow model —
+`concordance`, `earthos`, `echoes-of-the-cosmos`, `grandma-bread-recipe`,
+`local-bubble-galactic-survival-model`, `meridian-ashes`, `patch-loop-live`,
+`team-standup-action-tracker`, `tiny`, `workflow-voice`, `default-universe`, plus
+`cloud-automation-inputs`. Four hold real content (`PROGRAM.md`, `activity.log`,
+`artifacts/`, `branch_tasks.json`); the rest are empty but for lock files.
+
+They are not universes, so the rule does not reach them, and I am not going to widen a
+deletion instruction on my own judgment — I already got one wrong today (below). **Say
+"delete the legacy workspaces" and I will archive and remove all twelve; say "keep" and
+I will close this row.**
+
+### `u-tiny` is unbound, and it is the universe doing the work
+
+Same rule, genuinely awkward case: `u-tiny` has no `founder_home` row and its only admin
+grant is to `u-tiny-operator`, a synthetic non-WorkOS actor. Under the rule it should not
+exist. It is also live. The fix is to bind it to your WorkOS subject rather than delete
+it — **confirm and I will bind `u-tiny` to `user_01KWGB2NV5PV4PWHT5RYKJPB8X`** (or another
+subject you name) and drop the synthetic admin grant.
+
+---
+
 ## Blocking a proof path
 
 ### claude.ai account out of credits — blocks the browser `ui-test` route
@@ -105,6 +196,39 @@ The checkout-lease redesign that used to gate this has landed: a lease now names
 session it guards, so a lost response replays instead of creating a second session, a delayed
 event releases only its own lease, and an abandoned checkout resumes instead of locking you
 out. Double-billing is closed.
+
+---
+
+### Decide who may sign up — the platform is single-tenant by construction
+
+*2026-08-28, from a cross-family multi-user review. Full finding:
+`docs/concerns/2026-08-28-user-code-runs-in-process.md`.*
+
+Stripe is live and provisioned. Four second-user blockers were found and fixed
+(#2627 session fixation and world-readable tokens, #2629 source-approval gate, #2630
+private-branch run bypass, #2632 write-ACL granting founder tier).
+
+**One is not fixed, because it is not a bug — it is the architecture.** Universe code
+runs `exec()` inside the daemon, with `os.environ` and the data dir reachable. So anyone
+who can get source approved can read the live Stripe key, every credential vault, every
+other user's session token, and can write the database that decides who has paid.
+
+#2629 bounds **who** may approve source (an allowlist, currently just your universe). It
+does not bound **what** approved code can do. Encryption would not help: the key lives in
+the same process.
+
+**So the decision is yours, and it is not technical:**
+
+1. **Open checkout to the public** — accept that a paying stranger who gets source
+   approved owns the deployment. Only sane if the approval allowlist stays exactly one
+   universe forever, which makes the paid tier a promise you cannot keep.
+2. **Keep checkout closed; subscribe yourself** — everything works, single-founder is the
+   threat model it was built for, and it is materially stronger than yesterday.
+3. **Build the boundary first** — run universe code in a real OS/container sandbox, or
+   move credential custody into a separate process the graph cannot reach. That is the
+   work that makes "real users" mean what it sounds like.
+
+I would do (2) now and (3) next. (1) is the one I would not do.
 
 ---
 

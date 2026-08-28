@@ -36,3 +36,29 @@ ship-then-harden rule. **The deferral expires when a second real user exists** -
 cross-user by construction.
 
 Codex review artifact: `.tmp/codex-2474-review.txt` (untracked, local; re-request if absent).
+
+---
+
+## Update 2026-08-28 — the fixation half is closed; the disclosure half is not
+
+**Closed** (#2624, corrected by #2627):
+
+- A sign-in no longer adopts a caller-supplied handle. The first attempt gated on
+  `grant == "refresh_token"` and was insufficient: a refresh can succeed off the
+  victim's HttpOnly cookie while the presented handle resolved to nothing, and the
+  rotated token was then filed under the handle the caller chose. Reuse is now licensed
+  by which credential actually worked.
+- Files are `0600` and the directory `0700`, with the mode narrowed before the atomic
+  swap rather than after. Production was observed at `0644`.
+- The filename is no longer the handle. It was, and the handle is a bearer credential,
+  so a directory listing published every live session. It is now a keyed digest -- which
+  is also why encrypting the file CONTENTS would have changed nothing.
+
+**Still open:** the tokens remain plaintext at rest, and encrypting them does not help
+against the attacker that matters. See
+`2026-08-28-user-code-runs-in-process.md`: the key would live in `os.environ` of the
+same process the attacker is executing in.
+
+So the "MUST fix before a second real user" line no longer refers to session fixation.
+It refers to the process boundary, and it is still true.
+
