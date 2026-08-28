@@ -17,6 +17,28 @@ from tinyassets.universe_bundle import seed_okf_bundle
 
 
 @pytest.fixture(autouse=True)
+def _reset_auth():
+    """Put the auth provider back after every test in this module.
+
+    `_become_founder` installs a static authenticated provider through the real
+    middleware, and process-global auth state does not unwind itself. Without
+    this, the LAST test here left `founder-1` authenticated for whatever ran
+    next, and `test_universe_list_observability` / `test_universe_server_five_handles`
+    failed several files later — passing in isolation, failing in a full run.
+    Sibling module `test_interlocutor_tier.py` already had this fixture; adding
+    `_become_founder` here without it is what introduced the leak.
+    """
+    from tinyassets.auth.middleware import auth_middleware, set_provider
+    from tinyassets.auth.provider import DevAuthProvider
+
+    set_provider(DevAuthProvider())
+    auth_middleware(None)
+    yield
+    set_provider(DevAuthProvider())
+    auth_middleware(None)
+
+
+@pytest.fixture(autouse=True)
 def _data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Point the resolvers at the test tree.
 

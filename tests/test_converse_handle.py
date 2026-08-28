@@ -35,16 +35,14 @@ def test_converse_denied_for_non_owner(monkeypatch):
     assert "reply" not in out
 
 
-def test_converse_founder_relays_intelligence_reply(monkeypatch):
+def test_converse_founder_relays_intelligence_reply(monkeypatch, tmp_path):
     import tinyassets.universe_intelligence as ui
 
-    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
-    monkeypatch.setattr(helpers, "_request_universe", lambda gid="": "u-x")
-    monkeypatch.setattr(permissions, "universe_access_allows", lambda uid, write=False: True)
-    monkeypatch.setattr(permissions, "current_actor_id", lambda: "founder-1")
     # Tier binding (relay task 6.6) reads the request subject directly, so the
     # fake auth layer has to supply it too — not just is_authenticated_request.
-    monkeypatch.setattr(permissions, "current_request_actor_id", lambda: "founder-1")
+    # And founder tier is now an `admin` ACL row rather than whatever the
+    # permissive access helper allows, so the grant has to be real.
+    _founder_auth(monkeypatch, base=tmp_path)
     monkeypatch.setattr(
         ui,
         "converse",
@@ -75,12 +73,36 @@ def test_converse_surfaces_engine_failure_honestly(monkeypatch):
     assert "reply" not in out
 
 
-def _founder_auth(monkeypatch, actor="founder-1"):
+def _founder_auth(monkeypatch, actor="founder-1", *, base=None, uid="u-x"):
+    """Authenticate ``actor`` as a real admin-granted founder of ``uid``.
+
+    This used to establish founder-ness by patching
+    ``permissions.universe_access_allows`` to return True. That worked because
+    the permissive helper WAS the tier check -- and it accepts a `write` grant as
+    readily as `admin`, which is exactly the conflation this branch removes. So
+    the fixture stops faking it and writes a real `admin` ACL row.
+
+    These three tests failing was the change doing its job. I first recorded them
+    as pre-existing after comparing against a stale base; against a tree pinned to
+    origin/main they pass, which is what settled it.
+    """
     monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
-    monkeypatch.setattr(helpers, "_request_universe", lambda gid="": "u-x")
-    monkeypatch.setattr(permissions, "universe_access_allows", lambda uid, write=False: True)
+    monkeypatch.setattr(helpers, "_request_universe", lambda gid="": uid)
     monkeypatch.setattr(permissions, "current_actor_id", lambda: actor)
     monkeypatch.setattr(permissions, "current_request_actor_id", lambda: actor)
+    if base is not None:
+        from tinyassets.daemon_server import (
+            ensure_universe_registered,
+            grant_universe_access,
+        )
+
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+        udir = base / uid
+        udir.mkdir(parents=True, exist_ok=True)
+        ensure_universe_registered(base, universe_id=uid, universe_path=udir)
+        grant_universe_access(
+            base, universe_id=uid, actor_id=actor, permission="admin"
+        )
 
 
 def test_converse_carries_memory_across_turns_and_principals_are_isolated(monkeypatch, tmp_path):
@@ -92,7 +114,7 @@ def test_converse_carries_memory_across_turns_and_principals_are_isolated(monkey
 
     (tmp_path / "u-x").mkdir()
     monkeypatch.setattr(helpers, "_base_path", lambda: tmp_path)
-    _founder_auth(monkeypatch)
+    _founder_auth(monkeypatch, base=tmp_path)
     seen: list[list] = []
 
     def fake(uid, msg, *, actor_id="", tier=None, conversation_history=None, **_kw):
@@ -112,7 +134,7 @@ def test_converse_carries_memory_across_turns_and_principals_are_isolated(monkey
     us.converse(message="and again?", graph_id="u-x")
     assert [s for s, _ in seen[0]] == ["founder", "universe", "founder", "universe"]
     # A different verified principal gets its own thread, not this one.
-    _founder_auth(monkeypatch, actor="founder-2")
+    _founder_auth(monkeypatch, actor="founder-2", base=tmp_path)
     seen.clear()
     us.converse(message="hello", graph_id="u-x")
     assert seen[0] == []
@@ -124,7 +146,7 @@ def test_converse_memory_failure_never_costs_the_turn(monkeypatch, tmp_path):
 
     (tmp_path / "u-x").mkdir()
     monkeypatch.setattr(helpers, "_base_path", lambda: tmp_path)
-    _founder_auth(monkeypatch)
+    _founder_auth(monkeypatch, base=tmp_path)
     monkeypatch.setattr(ui, "converse", lambda uid, msg, **_kw: "ok")
     monkeypatch.setattr(
         cs, "load_recent", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db"))
