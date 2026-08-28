@@ -305,3 +305,36 @@ def test_exhausting_pagination_fails_loudly_instead_of_reporting_none(monkeypatc
     )
     with pytest.raises(stripe_adapter.BillingUnavailable):
         stripe_adapter.find_active_subscription("u-1")
+
+
+def test_enforcement_ships_dark_and_the_meter_still_records(tmp_path, monkeypatch):
+    """Landing dark: the meter runs from day one, the gate does not.
+
+    Enforcing a quota whose settlement is not yet exactly-once would refuse a
+    user's legitimate action on a number we know can drift. Recording it costs
+    nothing and is how real usage gets learned before the gate is trusted.
+    """
+    from tinyassets.storage.usage_ledger import usage_summary
+    from tinyassets.usage_policy import enforcement_enabled, reserve_effect_quota
+
+    monkeypatch.delenv("TINYASSETS_USAGE_ENFORCEMENT", raising=False)
+    monkeypatch.setenv("TINYASSETS_FREE_EFFECTS_PER_WINDOW", "1")
+
+    assert enforcement_enabled() is False
+
+    assert reserve_effect_quota(tmp_path, sink="s", effect_key="a") is None
+    # Over the cap, but dark: allowed rather than refused.
+    assert reserve_effect_quota(tmp_path, sink="s", effect_key="b") is None
+
+    # The first one was still recorded, so usage is observable while dark.
+    assert usage_summary(tmp_path, window_seconds=86_400.0)["effects"] >= 1.0
+
+
+def test_turning_enforcement_on_makes_the_cap_bite(tmp_path, monkeypatch):
+    from tinyassets.usage_policy import reserve_effect_quota
+
+    monkeypatch.setenv("TINYASSETS_USAGE_ENFORCEMENT", "1")
+    monkeypatch.setenv("TINYASSETS_FREE_EFFECTS_PER_WINDOW", "1")
+
+    assert reserve_effect_quota(tmp_path, sink="s", effect_key="a") is None
+    assert reserve_effect_quota(tmp_path, sink="s", effect_key="b") is not None

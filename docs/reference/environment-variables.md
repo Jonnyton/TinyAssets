@@ -89,6 +89,7 @@ host path to `/data`. See `deploy/README.md` for the full pattern.
 
 | Var | Purpose | Default |
 |-----|---------|---------|
+| `TINYASSETS_USAGE_ENFORCEMENT` | Whether usage limits are ENFORCED. Metering records regardless; this only controls whether an over-cap effect is refused. Ships **off**: cross-family review established that settlement is not yet exactly-once (receipt finalization and the quota write are separate commits), and refusing a user's legitimate action on accounting that can drift is worse than not refusing. Flip on per deployment once the settlement outbox lands and one universe has been proven on it. | Unset (dark — meters, does not enforce). |
 | `STRIPE_SECRET_KEY` | Stripe API key used by the billing adapter to report usage and manage subscriptions. **Droplet-side runtime secret** — lives in `/etc/tinyassets/env` alongside `CLOUDFLARE_TUNNEL_TOKEN` and `GH_TOKEN`, never in `compose.yml` (compose changes are inert in production, `docs/concerns/2026-08-27-deploy-drops-compose-sync.md`) and never in a committed file. Set it with the value on **stdin** so it never appears in argv or logs:<br>`printf '%s' 'sk_test_...' \| python scripts/droplet.py ssh -- "bash /root/install-tinyassets-env.sh set STRIPE_SECRET_KEY"`<br>Takes effect on the next container recreate. Absent = billing disabled; metering still runs and limits are still enforced, because the ledger is ours and does not depend on Stripe being reachable. | Unset (billing off). |
 
 ## Local secrets — vault-first

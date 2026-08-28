@@ -13,6 +13,18 @@ from tinyassets.storage.external_write_receipts import STATUS_FAILED, STATUS_SUC
 from tinyassets.storage.usage_ledger import set_tier, usage_summary
 
 
+@pytest.fixture(autouse=True)
+def _enforcement_on(monkeypatch):
+    """These tests are ABOUT enforcement, so they opt in explicitly.
+
+    Enforcement ships dark (default off) until settlement is exactly-once, so a
+    test silently relying on the default would stop testing anything the day that
+    default flips.
+    """
+    monkeypatch.setenv("TINYASSETS_USAGE_ENFORCEMENT", "1")
+
+
+
 def _fire(universe, key, calls, *, run_id="run-1", fail=False):
     def invoke():
         calls.append(key)

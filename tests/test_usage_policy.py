@@ -13,6 +13,18 @@ from tinyassets.usage_policy import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _enforcement_on(monkeypatch):
+    """These tests are ABOUT enforcement, so they opt in explicitly.
+
+    Enforcement ships dark (default off) until settlement is exactly-once, so a
+    test silently relying on the default would stop testing anything the day that
+    default flips.
+    """
+    monkeypatch.setenv("TINYASSETS_USAGE_ENFORCEMENT", "1")
+
+
+
 @pytest.mark.parametrize(
     "value",
     ["", "   ", "unknown", "enterprise", "PAID_UNLIMITED", "admin", None],

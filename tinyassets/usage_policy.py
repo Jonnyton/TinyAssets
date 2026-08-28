@@ -185,6 +185,31 @@ def _ledger():
     return usage_ledger
 
 
+_ENFORCE_VAR = "TINYASSETS_USAGE_ENFORCEMENT"
+
+
+def enforcement_enabled() -> bool:
+    """Is usage ENFORCEMENT live? Default OFF — metering still records either way.
+
+    Landing dark. Cross-family review (Codex, 2026-08-28, two rounds) established
+    that settlement is not yet exactly-once: receipt finalization and the quota
+    write are separate commits, so a crash between them strands a reservation, and
+    `wiki_write_back` is a registered sink that writes unmetered. Those are real,
+    and closing them properly needs the outbox this change's own spec asks for.
+
+    Enforcing a quota whose accounting can drift means refusing a user's legitimate
+    action on a number we do not trust — strictly worse than not enforcing. So the
+    meter runs and records from day one (which is how we learn real usage), and the
+    gate stays off until the outbox lands and one universe has been proven on it.
+    """
+    return (os.environ.get(_ENFORCE_VAR, "").strip().lower()) in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 def reserve_effect_quota(
     universe_dir,
     *,
@@ -209,6 +234,11 @@ def reserve_effect_quota(
         now=now,
     )
     if admitted:
+        return None
+    if not enforcement_enabled():
+        # Dark: the reservation was declined, and that is RECORDED, but we do not
+        # act on it. Refusing on accounting we know can drift would be worse than
+        # letting the action through.
         return None
     return QuotaRefusal(
         dimension="effect",
