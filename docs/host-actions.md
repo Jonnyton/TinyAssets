@@ -12,6 +12,54 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Taking real money
+
+### Stripe is LIVE and ready — WorkOS is still the STAGING environment
+
+*Verified on the droplet 2026-08-28. This is now the only thing between us and real
+subscriptions, and it gets more expensive every day it waits.*
+
+**Stripe: READY.** `scripts/stripe_go_live.py --check` inside the live container is green
+on every line — live key, account can accept payments and payouts, price
+`price_1U9KBOLA6QWGlclhu642Y5Ub` at $20.00/month, webhook `we_1U9KBOLA6QWGlclhGfUr2cOh`
+enabled and subscribed to all five events entitlement depends on, entitlement key set, and
+a **live-mode signature has verified** (`/data/.billing_webhook_verified.json`,
+`livemode: true`). That last one was the final blocker; I cleared it by creating a live
+Checkout Session and immediately expiring it — a real signed `checkout.session.expired`,
+no money moved.
+
+**WorkOS: still staging.** In the same container:
+
+```
+WORKOS_AUTHKIT_DOMAIN=inventive-van-62-staging.authkit.app
+WORKOS_API_KEY=sk_test_…
+```
+
+The environment holds exactly two users — you and `simkalholdingsllc@gmail.com` — and they
+are the same two the `founder_home` table binds.
+
+**Why this cannot just be left.** WorkOS users are per-environment. The moment you move to
+the production environment, every `user_…` id changes, so **every `founder_home` binding
+breaks and every existing universe becomes unowned** — the exact state you told me on
+2026-08-28 must never exist, and the state PR #2638 now refuses to create. Migrating two
+users is a five-minute job. Migrating two hundred is a data-migration project, and every
+one of them signed up at a URL reading `-staging`, on a page asking for real money.
+
+**What only you can do** (WorkOS dashboard):
+
+1. Switch to the **Production** environment and copy its API key and AuthKit domain.
+2. Point it at a custom auth domain (`auth.tinyassets.io`) so users never see
+   `inventive-van-62-staging.authkit.app` on a payment flow.
+3. Add the redirect URI `https://tinyassets.io/mcp/app` and the MCP resource
+   `https://tinyassets.io/mcp` in the production environment.
+
+**Then I do the rest:** stage `WORKOS_API_KEY` / `WORKOS_AUTHKIT_DOMAIN`, recreate the
+container (`env_file` is read at creation, not restart), re-point the two existing
+bindings at the new production `user_…` ids once you and the other user have signed in
+once, and re-run the canary. Give me the two values and I will take it from there.
+
+---
+
 ## Legacy pre-credential data in `/data`
 
 ### 12 ownerless workspace directories predate the universe model — keep or delete?
