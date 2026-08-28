@@ -529,12 +529,10 @@ def _auth_challenge_path(path: str) -> bool:
         # flag still returns a bare 404 when the app is off.
         return False
     # Billing webhook: Stripe POSTs here with no MCP bearer, so like /mcp/app and
-    # /mcp/hooks it must not be swept into the /mcp bearer 401. The SOLE boundary
-    # is the Stripe signature (HMAC-SHA256 over timestamp.payload, constant-time,
-    # 5-minute replay window) — verified inside the handler, which refuses when no
-    # webhook secret is configured. Exactly one path is opened; no deeper
-    # /mcp/app/billing/... route is exempt, so checkout and cancel stay
-    # identity-gated.
+    # /mcp/hooks it must not be swept into the /mcp bearer 401. The handler requires
+    # both Stripe provenance (signed, replay-bounded payload) and entitlement
+    # authority (our HMAC-claimed exact plan). Exactly one path is opened; no deeper
+    # /mcp/app/billing/... route is exempt, so checkout and cancel stay identity-gated.
     if path == "/mcp/app/billing/webhook":
         return False
     # Narrow, ordered exemption for the browser deposit flow: when enabled, its

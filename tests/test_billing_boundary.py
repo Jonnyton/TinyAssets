@@ -46,6 +46,19 @@ def test_billing_is_off_without_a_key_and_says_so(monkeypatch):
     assert billing_enabled() is False
 
 
+def test_billing_is_off_without_webhook_authority(monkeypatch):
+    """Do not take payment when the resulting entitlement cannot be authorized."""
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_fake")
+    monkeypatch.delenv("STRIPE_WEBHOOK_SECRET", raising=False)
+    assert billing_enabled() is False
+
+
+def test_billing_is_enabled_only_with_both_secrets(monkeypatch):
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_fake")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", SECRET)
+    assert billing_enabled() is True
+
+
 def test_calls_fail_soft_rather_than_crashing_when_billing_is_off(monkeypatch):
     """A missing processor must be a clear refusal, never an unhandled error."""
     monkeypatch.delenv("STRIPE_SECRET_KEY", raising=False)
@@ -58,6 +71,53 @@ def test_calls_fail_soft_rather_than_crashing_when_billing_is_off(monkeypatch):
 # --- webhook verification ----------------------------------------------------
 
 SECRET = "whsec_test_secret"
+PRICE_ID = "price_tinyassets_monthly"
+
+
+def _plan_price(*, price_id: str = PRICE_ID, **overrides):
+    price = {
+        "id": price_id,
+        "lookup_key": "tinyassets_paid_monthly",
+        "unit_amount": 2_000,
+        "currency": "usd",
+        "recurring": {
+            "interval": "month",
+            "interval_count": 1,
+            "usage_type": "licensed",
+        },
+    }
+    price.update(overrides)
+    return price
+
+
+def _subscription_object(
+    *,
+    universe_id: str = "u-1",
+    status: str = "active",
+    secret: str = SECRET,
+    price: dict | None = None,
+) -> dict:
+    from tinyassets.billing.stripe_adapter import _entitlement_claim
+
+    selected_price = price or _plan_price()
+    return {
+        "id": "sub_tinyassets",
+        "status": status,
+        "metadata": {
+            "universe_id": universe_id,
+            "tinyassets_entitlement_version": "1",
+            "tinyassets_entitlement_claim": _entitlement_claim(
+                universe_id, selected_price["id"], secret=secret
+            ),
+        },
+        "items": {"data": [{"quantity": 1, "price": selected_price}]},
+    }
+
+
+def _subscription_event(
+    status: str = "active", *, kind: str = "customer.subscription.updated", **kwargs
+) -> dict:
+    return {"type": kind, "data": {"object": _subscription_object(status=status, **kwargs)}}
 
 
 def _sign(payload: bytes, timestamp: int, secret: str = SECRET) -> str:
@@ -131,19 +191,13 @@ def test_verification_fails_closed_without_a_configured_secret(monkeypatch):
     ],
 )
 def test_only_an_entitling_status_yields_the_paid_tier(status, expected):
-    event = {
-        "type": "customer.subscription.updated",
-        "data": {"object": {"metadata": {"universe_id": "u-1"}, "status": status}},
-    }
-    assert subscription_state_from_event(event) == ("u-1", expected)
+    event = _subscription_event(status)
+    assert subscription_state_from_event(event, secret=SECRET) == ("u-1", expected)
 
 
 def test_deletion_always_returns_the_universe_to_free():
-    event = {
-        "type": "customer.subscription.deleted",
-        "data": {"object": {"metadata": {"universe_id": "u-1"}, "status": "active"}},
-    }
-    assert subscription_state_from_event(event) == ("u-1", "free")
+    event = _subscription_event("active", kind="customer.subscription.deleted")
+    assert subscription_state_from_event(event, secret=SECRET) == ("u-1", "free")
 
 
 def test_an_unrelated_event_moves_no_tier():
@@ -152,11 +206,37 @@ def test_an_unrelated_event_moves_no_tier():
 
 
 def test_an_event_without_a_universe_is_ignored():
-    event = {
-        "type": "customer.subscription.updated",
-        "data": {"object": {"metadata": {}, "status": "active"}},
-    }
-    assert subscription_state_from_event(event) is None
+    event = _subscription_event(universe_id="")
+    assert subscription_state_from_event(event, secret=SECRET) is None
+
+
+def test_an_authentic_but_unclaimed_subscription_cannot_move_a_tier():
+    """Stripe provenance alone does not authorize arbitrary metadata as entitlement."""
+    obj = _subscription_object()
+    obj["metadata"].pop("tinyassets_entitlement_claim")
+    event = {"type": "customer.subscription.updated", "data": {"object": obj}}
+    assert subscription_state_from_event(event, secret=SECRET) is None
+
+
+def test_an_entitlement_claim_cannot_be_moved_to_another_universe():
+    obj = _subscription_object(universe_id="u-1")
+    obj["metadata"]["universe_id"] = "u-2"
+    event = {"type": "customer.subscription.updated", "data": {"object": obj}}
+    assert subscription_state_from_event(event, secret=SECRET) is None
+
+
+@pytest.mark.parametrize(
+    "price",
+    [
+        _plan_price(lookup_key="some_other_plan"),
+        _plan_price(unit_amount=1),
+        _plan_price(currency="eur"),
+        _plan_price(recurring={"interval": "year", "interval_count": 1}),
+    ],
+)
+def test_a_claimed_subscription_for_the_wrong_plan_cannot_move_a_tier(price):
+    event = _subscription_event(price=price)
+    assert subscription_state_from_event(event, secret=SECRET) is None
 
 
 # --- Codex REJECT 2026-08-28 follow-ups --------------------------------------
@@ -192,6 +272,19 @@ def test_a_stripe_error_message_is_not_returned_to_the_caller(monkeypatch):
     assert "400" in message
 
 
+def test_price_lookup_rejects_a_misconfigured_plan(monkeypatch):
+    from tinyassets.billing import stripe_adapter
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_fake")
+    monkeypatch.setattr(
+        stripe_adapter,
+        "_get",
+        lambda *_a, **_k: {"data": [_plan_price(unit_amount=1)]},
+    )
+    with pytest.raises(stripe_adapter.BillingUnavailable, match="not the \\$20"):
+        stripe_adapter.resolve_price_id()
+
+
 def test_checkout_refuses_a_second_subscription_for_one_universe(monkeypatch):
     """Two completed sessions would bill the same universe twice."""
     from tinyassets.billing import stripe_adapter
@@ -213,10 +306,13 @@ def test_finding_a_subscription_pages_past_the_first_hundred(monkeypatch):
     from tinyassets.billing import stripe_adapter
 
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_fake")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", SECRET)
+    target = _subscription_object()
+    target["id"] = "sub_target"
     pages = [
         {"data": [{"id": f"sub_{i}", "metadata": {}} for i in range(100)],
          "has_more": True},
-        {"data": [{"id": "sub_target", "metadata": {"universe_id": "u-1"}}],
+        {"data": [target],
          "has_more": False},
     ]
     calls = {"n": 0}
@@ -253,6 +349,7 @@ def test_checkout_sends_an_idempotency_key(monkeypatch):
     from tinyassets.billing import stripe_adapter
 
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_fake")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", SECRET)
     monkeypatch.setattr(stripe_adapter, "find_active_subscription", lambda _u: None)
     monkeypatch.setattr(stripe_adapter, "resolve_price_id", lambda: "price_x")
 
@@ -270,6 +367,7 @@ def test_checkout_sends_an_idempotency_key(monkeypatch):
 
     def _urlopen(request, timeout=None):
         seen["key"] = request.get_header("Idempotency-key")
+        seen["body"] = request.data.decode("utf-8")
         return _Resp()
 
     monkeypatch.setattr(stripe_adapter.urllib.request, "urlopen", _urlopen)
@@ -278,6 +376,8 @@ def test_checkout_sends_an_idempotency_key(monkeypatch):
     )
     assert seen["key"], "no idempotency key sent"
     assert seen["key"].startswith("checkout:")
+    assert "tinyassets_entitlement_version" in seen["body"]
+    assert "tinyassets_entitlement_claim" in seen["body"]
 
 
 # --- subscription state (this branch's only durable state) -------------------
@@ -356,7 +456,8 @@ def test_a_completed_session_does_not_entitle_until_it_is_paid(payment_status):
     assert subscription_state_from_event(event) is None
 
 
-def test_a_paid_session_entitles():
+def test_a_paid_session_waits_for_the_authorized_subscription_event():
+    """Expectation changed: payment proves money landed, not which plan we created."""
     event = {
         "type": "checkout.session.completed",
         "data": {
@@ -367,7 +468,7 @@ def test_a_paid_session_entitles():
             }
         },
     }
-    assert subscription_state_from_event(event) == ("u-1", "paid")
+    assert subscription_state_from_event(event, secret=SECRET) is None
 
 
 @pytest.mark.parametrize("status", ["trialing", "past_due", "unpaid", "active"])
@@ -380,13 +481,14 @@ def test_cancel_finds_every_billable_status_not_only_active(monkeypatch, status)
     from tinyassets.billing import stripe_adapter
 
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_fake")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", SECRET)
+    subscription = _subscription_object(status=status)
+    subscription["id"] = "sub_t"
     monkeypatch.setattr(
         stripe_adapter,
         "_get",
         lambda *_a, **_k: {
-            "data": [
-                {"id": "sub_t", "status": status, "metadata": {"universe_id": "u-1"}}
-            ],
+            "data": [subscription],
             "has_more": False,
         },
     )
@@ -398,17 +500,73 @@ def test_a_terminal_subscription_is_not_offered_for_cancellation(monkeypatch, st
     from tinyassets.billing import stripe_adapter
 
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_fake")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", SECRET)
+    subscription = _subscription_object(status=status)
+    subscription["id"] = "sub_x"
     monkeypatch.setattr(
         stripe_adapter,
         "_get",
         lambda *_a, **_k: {
-            "data": [
-                {"id": "sub_x", "status": status, "metadata": {"universe_id": "u-1"}}
-            ],
+            "data": [subscription],
             "has_more": False,
         },
     )
     assert stripe_adapter.find_active_subscription("u-1") is None
+
+
+def test_cancel_ignores_an_unclaimed_subscription(monkeypatch):
+    """Cancellation uses the same service-created plan authority as entitlement."""
+    from tinyassets.billing import stripe_adapter
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_fake")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", SECRET)
+    subscription = _subscription_object()
+    subscription["metadata"].pop("tinyassets_entitlement_claim")
+    monkeypatch.setattr(
+        stripe_adapter,
+        "_get",
+        lambda *_a, **_k: {"data": [subscription], "has_more": False},
+    )
+    assert stripe_adapter.find_active_subscription("u-1") is None
+
+
+def test_webhook_refuses_a_declared_oversize_before_streaming(monkeypatch):
+    import asyncio
+
+    from tinyassets import onboarding
+
+    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
+
+    class _Request:
+        headers = {"content-length": "262145"}
+        streamed = False
+
+        async def stream(self):
+            self.streamed = True
+            yield b"should not be read"
+
+    request = _Request()
+    response = asyncio.run(onboarding._handle_billing_webhook(request))
+    assert response.status_code == 413
+    assert request.streamed is False
+
+
+def test_webhook_bounds_an_undeclared_chunked_body(monkeypatch):
+    import asyncio
+
+    from tinyassets import onboarding
+
+    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
+
+    class _Request:
+        headers = {}
+
+        async def stream(self):
+            yield b"x" * 262_144
+            yield b"y"
+
+    response = asyncio.run(onboarding._handle_billing_webhook(_Request()))
+    assert response.status_code == 413
 
 
 def test_the_idempotency_window_matches_the_checkout_claim_ttl():

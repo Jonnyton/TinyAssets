@@ -4,9 +4,9 @@ Deliberately stdlib-only. Adding the SDK would put a Stripe import one `pip inst
 away from anywhere in the tree, and the boundary this package exists to hold is
 easier to keep when there is nothing to accidentally import.
 
-**Fail soft, always.** No key configured means billing is off — but metering keeps
-running and limits keep enforcing, because the ledger is ours. A payment processor
-being unreachable must never decide whether a universe may act.
+**Fail closed around money.** Billing is off unless both Stripe API and webhook
+secrets are configured. A payment processor being unreachable must never grant an
+entitlement or turn a normal free universe into an application crash.
 """
 
 from __future__ import annotations
@@ -29,9 +29,16 @@ _API = "https://api.stripe.com/v1"
 #: Referenced by lookup key rather than a raw id, so the same code works against
 #: test and live mode without an id-swap step.
 PRICE_LOOKUP_KEY = "tinyassets_paid_monthly"
+PLAN_UNIT_AMOUNT = 2_000
+PLAN_CURRENCY = "usd"
+PLAN_INTERVAL = "month"
 
 _KEY_VAR = "STRIPE_SECRET_KEY"
 _WEBHOOK_SECRET_VAR = "STRIPE_WEBHOOK_SECRET"
+
+_ENTITLEMENT_VERSION = "1"
+_ENTITLEMENT_VERSION_KEY = "tinyassets_entitlement_version"
+_ENTITLEMENT_CLAIM_KEY = "tinyassets_entitlement_claim"
 
 #: Stripe rejects a signature older than this; so do we, to stop replay.
 _WEBHOOK_TOLERANCE_S = 300
@@ -62,9 +69,74 @@ def _secret_key() -> str:
     return (os.environ.get(_KEY_VAR) or "").strip()
 
 
+def _webhook_secret(secret: str = "") -> str:
+    return (secret or os.environ.get(_WEBHOOK_SECRET_VAR) or "").strip()
+
+
 def billing_enabled() -> bool:
-    """True when a key is configured. Everything still works when this is False."""
-    return bool(_secret_key())
+    """True only when checkout and authoritative webhook handling can both work."""
+    return bool(_secret_key() and _webhook_secret())
+
+
+def _price_matches_plan(price: object) -> bool:
+    """Whether a Stripe Price is exactly the advertised $20 USD monthly plan."""
+    if not isinstance(price, dict):
+        return False
+    recurring = price.get("recurring")
+    return bool(
+        price.get("lookup_key") == PRICE_LOOKUP_KEY
+        and price.get("unit_amount") == PLAN_UNIT_AMOUNT
+        and str(price.get("currency") or "").lower() == PLAN_CURRENCY
+        and isinstance(recurring, dict)
+        and recurring.get("interval") == PLAN_INTERVAL
+        and recurring.get("interval_count") == 1
+        and recurring.get("usage_type") in (None, "licensed")
+    )
+
+
+def _entitlement_claim(universe_id: str, price_id: str, *, secret: str = "") -> str:
+    """Sign authority that only our checkout creator may attach to metadata."""
+    key = _webhook_secret(secret)
+    if not key:
+        raise BillingUnavailable("no Stripe webhook secret configured")
+    message = "\0".join(
+        (_ENTITLEMENT_VERSION, universe_id, PRICE_LOOKUP_KEY, price_id)
+    ).encode("utf-8")
+    return hmac.new(key.encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def _authorized_subscription_universe(obj: object, *, secret: str = "") -> str:
+    """Return the bound universe only for a service-created subscription plan."""
+    if not isinstance(obj, dict):
+        return ""
+    metadata = obj.get("metadata")
+    items = obj.get("items")
+    if not isinstance(metadata, dict) or not isinstance(items, dict):
+        return ""
+    item_data = items.get("data")
+    if not isinstance(item_data, list) or len(item_data) != 1:
+        return ""
+    item = item_data[0]
+    if not isinstance(item, dict) or item.get("quantity") != 1:
+        return ""
+    price = item.get("price")
+    if not _price_matches_plan(price):
+        return ""
+    universe_id = str(metadata.get("universe_id") or "")
+    price_id = str(price.get("id") or "")
+    claim = str(metadata.get(_ENTITLEMENT_CLAIM_KEY) or "")
+    if (
+        not universe_id
+        or not price_id
+        or metadata.get(_ENTITLEMENT_VERSION_KEY) != _ENTITLEMENT_VERSION
+        or not claim
+    ):
+        return ""
+    try:
+        expected = _entitlement_claim(universe_id, price_id, secret=secret)
+    except BillingUnavailable:
+        return ""
+    return universe_id if hmac.compare_digest(expected, claim) else ""
 
 
 def _post(
@@ -140,7 +212,12 @@ def resolve_price_id() -> str:
         raise BillingUnavailable(
             f"no active price with lookup key {PRICE_LOOKUP_KEY!r}"
         )
-    return str(prices[0]["id"])
+    price = prices[0]
+    if not _price_matches_plan(price):
+        raise BillingUnavailable(
+            f"active price {PRICE_LOOKUP_KEY!r} is not the $20 USD monthly plan"
+        )
+    return str(price["id"])
 
 
 def create_checkout_session(
@@ -160,20 +237,29 @@ def create_checkout_session(
     existing = find_active_subscription(universe_id)
     if existing:
         raise AlreadySubscribed(existing)
+    price_id = resolve_price_id()
+    claim = _entitlement_claim(universe_id, price_id)
     session = _post(
         "checkout/sessions",
         [
             ("mode", "subscription"),
-            ("line_items[0][price]", resolve_price_id()),
+            ("line_items[0][price]", price_id),
             ("line_items[0][quantity]", "1"),
             ("success_url", success_url),
             ("cancel_url", cancel_url),
             ("client_reference_id", universe_id),
             ("subscription_data[metadata][universe_id]", universe_id),
+            (
+                f"subscription_data[metadata][{_ENTITLEMENT_VERSION_KEY}]",
+                _ENTITLEMENT_VERSION,
+            ),
+            (
+                f"subscription_data[metadata][{_ENTITLEMENT_CLAIM_KEY}]",
+                claim,
+            ),
         ],
-        # Keyed on the universe and the day, so a retry after a lost response
-        # returns the SAME session rather than creating another.
-        # Bucketed on the SAME window as the checkout claim. A daily key with a
+        # Keyed on the universe and the SAME window as the checkout claim, so a
+        # retry after a lost response returns the SAME session. A daily key with a
         # 15-minute claim let two still-completable sessions straddle the boundary
         # and become two subscriptions (Codex 2026-08-28).
         idempotency_key=(
@@ -204,6 +290,8 @@ def cancel_subscription(subscription_id: str, *, immediately: bool = False) -> d
 
 def find_active_subscription(universe_id: str) -> str | None:
     """The universe's active subscription id, or None. Used by the cancel path."""
+    if not _webhook_secret():
+        raise BillingUnavailable("no Stripe webhook secret configured")
     starting_after = ""
     for _page in range(20):  # bounded, but far past the single page it had
         # `all`, not `active`. trialing is treated as PAID here, and past_due /
@@ -215,8 +303,7 @@ def find_active_subscription(universe_id: str) -> str | None:
         found = _get(path)
         data = found.get("data") or []
         for sub in data:
-            meta = sub.get("metadata") or {}
-            if meta.get("universe_id") != universe_id:
+            if _authorized_subscription_universe(sub) != universe_id:
                 continue
             # Terminal states are not cancellable and must not mask a live one.
             if str(sub.get("status") or "") in ("canceled", "incomplete_expired"):
@@ -270,7 +357,9 @@ def verify_webhook_signature(
     return any(hmac.compare_digest(expected, candidate) for candidate in signatures)
 
 
-def subscription_state_from_event(event: dict) -> tuple[str, str] | None:
+def subscription_state_from_event(
+    event: dict, *, secret: str = ""
+) -> tuple[str, str] | None:
     """Map a Stripe event to ``(universe_id, tier)``, or None if irrelevant.
 
     Only subscription lifecycle events move a tier. Anything else — including a
@@ -280,20 +369,14 @@ def subscription_state_from_event(event: dict) -> tuple[str, str] | None:
     kind = str(event.get("type") or "")
     obj = (event.get("data") or {}).get("object") or {}
 
+    # A Checkout Session does not carry the complete subscription item/price
+    # authority needed here. Even a paid completion is therefore non-authoritative;
+    # the service-claimed customer.subscription event decides entitlement.
     if kind == "checkout.session.completed":
-        universe_id = str(obj.get("client_reference_id") or "")
-        if not universe_id or obj.get("mode") != "subscription":
-            return None
-        # A completed session is not a paid session. Stripe emits this for sessions
-        # whose payment is still processing or has failed, so entitling on mode
-        # alone mis-entitles (Codex 2026-08-28). Require the payment to have landed;
-        # otherwise the subscription.* events decide once its status is real.
-        if str(obj.get("payment_status") or "") != "paid":
-            return None
-        return universe_id, "paid"
+        return None
 
     if kind.startswith("customer.subscription."):
-        universe_id = str((obj.get("metadata") or {}).get("universe_id") or "")
+        universe_id = _authorized_subscription_universe(obj, secret=secret)
         if not universe_id:
             return None
         status = str(obj.get("status") or "")

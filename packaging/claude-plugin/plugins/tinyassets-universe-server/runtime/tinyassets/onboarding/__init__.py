@@ -1043,7 +1043,7 @@ async def _handle_billing_cancel(request: Any) -> Any:
 
 
 async def _handle_billing_webhook(request: Any) -> Any:
-    """Stripe webhook. The SIGNATURE is the only boundary - no bearer here."""
+    """Stripe webhook: signed provenance plus a service-claimed plan, no bearer."""
     import json as _json
     import time as _time
 
@@ -1056,23 +1056,32 @@ async def _handle_billing_webhook(request: Any) -> Any:
     # cannot make us materialise an arbitrarily large body first — checking after
     # the read is an assertion, not a memory bound (Codex 2026-08-28).
     _max = 262_144
+    raw_length = request.headers.get("content-length")
     try:
-        declared = int(request.headers.get("content-length") or 0)
-    except ValueError:
-        declared = 0
+        declared = int(raw_length) if raw_length is not None else 0
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "invalid_content_length"}, status_code=400)
+    if declared < 0:
+        return JSONResponse({"error": "invalid_content_length"}, status_code=400)
     if declared > _max:
         return JSONResponse({"error": "payload_too_large"}, status_code=413)
-    payload = await request.body()
-    if len(payload) > _max:
-        return JSONResponse({"error": "payload_too_large"}, status_code=413)
+    # Content-Length can be absent (for example with chunked transfer) or false.
+    # Bound the actual stream too, without first materialising an unbounded body.
+    chunks: list[bytes] = []
+    received = 0
+    async for chunk in request.stream():
+        received += len(chunk)
+        if received > _max:
+            return JSONResponse({"error": "payload_too_large"}, status_code=413)
+        chunks.append(chunk)
+    payload = b"".join(chunks)
     signature = str(request.headers.get("stripe-signature") or "")
 
     from tinyassets.billing.stripe_adapter import verify_webhook_signature
 
     if not verify_webhook_signature(payload, signature, now=_time.time()):
         # Fails closed with no secret configured, so an unverified caller can
-        # never move a tier - otherwise reaching this URL would be enough to
-        # grant yourself the paid tier.
+        # never move a tier.
         return JSONResponse({"error": "invalid_signature"}, status_code=400)
     try:
         event = _json.loads(payload.decode("utf-8"))
