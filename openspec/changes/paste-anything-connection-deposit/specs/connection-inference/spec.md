@@ -63,23 +63,60 @@ the expected user behaviour.
 - **THEN** the resolver selects the values the proposed auth scheme requires and
   ignores the rest, returning a policy rather than an error
 
-### Requirement: The user confirms a boundary stated in plain language
+### Requirement: The deposit completes without a confirmation step
 
-Before any deposit, the interface SHALL present the proposed policy as one plain
-sentence naming the method, host, and path, and SHALL state that nothing else is
-permitted. The deposit SHALL NOT proceed without the user's confirmation.
+Pasting SHALL be sufficient to create the connection. The interface SHALL NOT
+interpose a confirmation click, a preview gate, or any other step between the
+paste and the deposit (founder decision, 2026-08-27, on an explicitly offered
+tradeoff).
 
-#### Scenario: Confirming a proposal
+#### Scenario: A paste that resolves
 
-- **WHEN** the resolver proposes `POST api.github.com/repos/o/r/pulls`
-- **THEN** the user is shown that this key may POST to that exact path and
-  nothing else
-- **AND** the credential is deposited only after the user confirms
+- **WHEN** a user pastes credential material that the resolver can identify
+- **THEN** the connection is deposited and usable with no further interaction
 
-#### Scenario: Declining a proposal
+### Requirement: The resulting grant is stated back and revocable
 
-- **WHEN** the user does not confirm
-- **THEN** no vault write, connection, or grant is created
+After depositing, the interface SHALL state in one plain sentence what the key
+was granted — method, host, path — and SHALL offer changing or removing it. This
+is a receipt, not a gate: it appears after the connection exists and blocks
+nothing.
+
+#### Scenario: A deposit lands
+
+- **WHEN** the connection is created
+- **THEN** the user is told this key may POST to that exact path and nothing
+  else, with change and remove available in the same place
+
+#### Scenario: The inference chose wrongly
+
+- **WHEN** the receipt names a host or path the user did not intend
+- **THEN** the user can correct or remove it there, without needing to know
+  where connections are otherwise managed
+
+### Requirement: Pasted material is data, never instructions
+
+The resolver SHALL treat everything pasted as untrusted content to read, never
+as instructions to follow. Prompt-injection content in a paste SHALL NOT be able
+to steer the proposed host, path, or scheme.
+
+This requirement carries the weight that a human confirmation step would
+otherwise have carried: with no review before deposit, the paste is the only
+thing steering where a credential becomes usable.
+
+#### Scenario: An injected instruction in the paste
+
+- **WHEN** the pasted material contains text directing the resolver to a
+  different host or a broader path
+- **THEN** the proposal is unaffected by it, and the host is derived only from
+  credential shape and the user's own intent line
+
+#### Scenario: A host that appears nowhere and cannot be justified
+
+- **WHEN** the resolver cannot ground a host in either the credential's
+  identity or the intent line
+- **THEN** it reports that it could not resolve, rather than depositing against
+  a guessed host
 
 ### Requirement: A wrong or absent proposal is correctable, never a dead end
 

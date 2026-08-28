@@ -42,9 +42,16 @@ including for services added after this code was written.
   `sk-`, `xoxb-`), any hostnames or URLs present, and value lengths — never the
   high-entropy remainder. The secret itself goes only where it goes today: to
   `connect_http` over TLS, into the per-universe vault.
-- **The user confirms one plain sentence**, not a form:
-  *"This key will be allowed to POST to `api.github.com/repos/jonnyton/tinyassets/pulls`
-  — nothing else."* They review a boundary instead of authoring one.
+- **No confirmation step.** Pasting is enough; the connection is created. The
+  founder was offered the tradeoff explicitly and cut the click (2026-08-27).
+  What replaces it is a **receipt** — after the deposit, one plain sentence says
+  *"this key may POST to `api.github.com/repos/jonnyton/tinyassets/pulls`,
+  nothing else"*, with change and remove right there. It gates nothing.
+- **Because nothing human reviews the host before the credential becomes usable,
+  the injection fence becomes load-bearing**: pasted material is data the
+  resolver reads, never instructions it follows, and a host it cannot ground in
+  the credential's identity or the user's intent line is a failure to resolve,
+  not a guess to deposit against.
 - **The manual fields survive as a disclosure**, so a service the model reads
   wrongly is corrected in place rather than becoming a dead end.
 
