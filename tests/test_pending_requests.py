@@ -396,4 +396,65 @@ def test_the_agent_prompt_teaches_the_ask_verb():
     assert 'read_graph target="pending_requests"' in src
     # It must know BOTH shapes, or it can only ever ask for credentials.
     assert '"type":"connect_http"' in src
+    # It must know to ask for every call the flow needs in ONE request.
+    assert '"endpoints":[' in src
     assert '"type":"answer"' in src
+
+
+def test_one_request_can_cover_the_several_calls_a_real_flow_needs(base):
+    """A GitHub pull request takes three calls: create a ref, put contents, open
+    the pull. One path per request would mean pasting the same key three times.
+    Several EXACT paths is still least privilege — a named list, not a widening."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+
+    out = _ask("u-1", action={
+        "type": "connect_http", "destination": "github", "auth_scheme": "bearer",
+        "endpoints": [
+            {"host": "api.github.com", "path_template": "/repos/o/r/git/refs",
+             "methods": ["POST"]},
+            {"host": "api.github.com", "path_template": "/repos/o/r/contents/x.css",
+             "methods": ["PUT"]},
+            {"host": "api.github.com", "path_template": "/repos/o/r/pulls",
+             "methods": ["POST"]},
+        ],
+    })
+
+    assert out["status"] == "pending"
+    # The user sees every line before pasting once.
+    assert out["grant_sentence"].startswith(
+        "This key will be able to reach exactly these, and nothing else:")
+    assert "/repos/o/r/pulls" in out["grant_sentence"]
+    assert "/repos/o/r/git/refs" in out["grant_sentence"]
+
+    done = _answer("u-1", request_id=out["request_id"],
+                   values={"secret": "ghp_" + "x" * 36})
+    assert done["status"] == "answered"
+
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    ledger = ConnectionLedger(base / "outbound.db",
+                              verify_authenticated_principal=lambda: "alice")
+    resource = ledger._get_connection_resource(done["connection_id"])
+    paths = sorted(e.path_template for e in resource.allowed_endpoints)
+    assert paths == ["/repos/o/r/contents/x.css", "/repos/o/r/git/refs",
+                     "/repos/o/r/pulls"]
+
+
+def test_a_request_cannot_ask_for_a_whole_api(base):
+    """Several named endpoints is fine; an unbounded list is asking for the API."""
+    from tinyassets.api.pending_requests import _MAX_REQUEST_ENDPOINTS
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+
+    out = _ask("u-1", action={
+        "type": "connect_http", "destination": "github", "auth_scheme": "bearer",
+        "endpoints": [
+            {"host": "api.github.com", "path_template": "/repos/o/r/p%d" % i,
+             "methods": ["POST"]}
+            for i in range(_MAX_REQUEST_ENDPOINTS + 1)
+        ],
+    })
+    assert out["error"] == "request_invalid"
+    assert "at most" in out["detail"]

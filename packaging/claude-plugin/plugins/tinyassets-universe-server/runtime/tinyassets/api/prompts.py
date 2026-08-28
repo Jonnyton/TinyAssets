@@ -275,11 +275,14 @@ infer additional callable tools from legacy action names in old conversations.
    |                                | header, e.g. "API"), `title`, `body`    |
    |                                | (say WHY), and either                   |
    |                                | `action={"type":"connect_http",         |
-   |                                | "destination":...,"host":...,           |
-   |                                | "path_template":...,"methods":[...]}`   |
+   |                                | "destination":..., "endpoints":[        |
+   |                                | {host,path_template,methods},...]}`     |
    |                                | for a credential — the key goes         |
    |                                | straight to the vault under exactly     |
-   |                                | that policy — or                        |
+   |                                | those endpoints. List EVERY call the    |
+   |                                | flow needs in ONE request (a GitHub PR  |
+   |                                | needs git/refs + contents + pulls), so  |
+   |                                | the user pastes once — or                |
    |                                | `action={"type":"answer"}` with         |
    |                                | `fields:[{name,label,type}]` where type |
    |                                | is text/choice for anything else.       |
