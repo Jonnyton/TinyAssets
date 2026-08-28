@@ -840,14 +840,31 @@
       : "Billing is not configured on this deployment";
   }
 
+  // What the user is told for each refusal the checkout route can return. Keyed by
+  // the same strings the server classifies in _CHECKOUT_STATUS, so a refusal reads
+  // as the thing that actually happened. Before this, everything that was not a URL
+  // fell through to "Billing unavailable: <detail>", which reported a deliberate
+  // refusal as an outage — and when the status was 5xx the detail the user saw was
+  // the Cloudflare Worker's "tunnel origin returned 5xx", not ours at all.
+  const CHECKOUT_REFUSALS = {
+    already_subscribed: "You already have an active subscription.",
+    checkout_already_in_progress:
+      "A checkout for this universe is already open. Finish it in the other tab, "
+      + "or wait a few minutes for it to expire and try again.",
+    no_home_universe: "You don't have a universe to subscribe yet.",
+  };
+
   async function startSubscribe(){
-    const r = await billingFetch("/mcp/app/billing/checkout", "POST");
-    const out = r ? await r.json() : null;
+    let out = null;
+    try{
+      const r = await billingFetch("/mcp/app/billing/checkout", "POST");
+      // A non-JSON body is what a proxy error page looks like; treat it as one
+      // rather than throwing out of an unawaited click handler.
+      out = r ? await r.json() : null;
+    }catch(_e){ out = null; }
     if(out && out.url){ location.href = out.url; return; }
-    if(out && out.error === "already_subscribed"){
-      appendMessage("system", "You already have an active subscription.");
-      loadPlan(); return;
-    }
+    const known = out && CHECKOUT_REFUSALS[out.error];
+    if(known){ appendMessage("system", known); loadPlan(); return; }
     appendMessage("system", out && out.detail
       ? ("Billing unavailable: " + out.detail)
       : "Billing is not available right now.");
