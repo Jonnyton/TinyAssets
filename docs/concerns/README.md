@@ -53,6 +53,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 | **P2** | [`_current_actor` env fallback](2026-06-30-current-actor-env-fallback.md) — bypasses `permissions.py` | 2026-06-30 |
 | **P2** | [The scheduled tripwire has been red continuously](2026-08-27-full-tests-permanently-red.md) — `full-tests`, now `heavy-tests`: 107 unquarantined failures, since before the reset; a permanent red carries no more signal than a permanent green | 2026-08-27 |
 | **P2** | [`deployed_sha` proves the receipt, not the running binary](2026-08-26-deployed-sha-proves-receipt-only.md) — a rollback with an intact receipt reads as shipped | 2026-08-26 |
+| **P2** | [An agent cannot withdraw its own stale ask](2026-08-28-an-agent-cannot-withdraw-its-own-stale-ask.md) — the rail is append-only from the agent side, so asks it knows are obsolete sit in the founder's face until the founder clears them | 2026-08-28 |
 | **P2** | [One key serves both dedupe and muting](2026-08-28-one-key-serves-dedupe-and-muting.md) — the agent rewords its prose, dedupe misses, and the rail grows a second tab for a grant already pending | 2026-08-28 |
 | **P2** | [`converse` SSE stream has no keepalive](2026-08-28-converse-sse-stream-has-no-keepalive.md) — a minutes-long turn sends zero bytes until the result | 2026-08-28 |
 | — | [Provider fallback-chain privacy](2026-04-17-provider-fallback-chain-privacy.md) — gemini/groq/grok still in the chains | 2026-04-17 |
