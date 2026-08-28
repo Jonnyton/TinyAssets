@@ -342,3 +342,52 @@ def test_write_graph_dispatches_the_operation(base: Path, monkeypatch) -> None:
         assert json.loads(raw)["resolved"] is True
     finally:
         importlib.reload(us)
+
+
+def test_a_proposal_deposits_cleanly_through_connect_http(base: Path, monkeypatch) -> None:
+    """The whole chain: resolve -> connect_http -> a usable connection.
+
+    The unit tests above stop at the proposal, which would let a shape mismatch
+    between what resolve returns and what the deposit accepts survive every test
+    and only fail live. This is the founder's actual case end to end.
+    """
+    import json as _json
+
+    from tinyassets.api.http_connection import connect_http
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    _stub_model(monkeypatch, _GOOD)
+
+    proposal = _resolve(
+        "u-1",
+        shape=[{"label": "", "prefix": "github_pat_", "length": 93}],
+        hints=["https://github.com/o/r"],
+        intent="open pull requests",
+    )
+    assert proposal["resolved"] is True
+
+    deposited = connect_http(
+        universe_id="u-1",
+        payload=_json.dumps(
+            {
+                "destination": proposal["destination"],
+                "secret": "github_pat_" + "x" * 82,
+                "allowed_endpoints": proposal["allowed_endpoints"],
+                "auth_scheme": proposal["auth_scheme"],
+            }
+        ),
+    )
+
+    assert deposited.get("status") == "provisioned", deposited
+    assert deposited["destination"] == "github"
+    # The grant is exactly what the receipt promised — one method, one path.
+    assert deposited["allowed_endpoints"] == [
+        {"host": "api.github.com", "path_template": "/repos/o/r/pulls",
+         "methods": ["POST"], "param_patterns": {}, "allowed_query": [],
+         "query_patterns": {}, "required_query": []}
+    ]
+    assert deposited["auth_scheme"] == "bearer"
+    assert deposited["connection_class"] == "http"
+    # And no secret is echoed back anywhere in the projection.
+    assert "github_pat_xxx" not in _json.dumps(deposited)
