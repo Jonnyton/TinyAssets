@@ -1,15 +1,16 @@
 # Worktree purpose
 
-Purpose: multiuser-review-record
+Purpose: status-storage-cache
 Provider: claude-code
-Branch: claude/multiuser-review-record
+Branch: claude/status-storage-cache
 Base ref: origin/main
-Issue/PR: records the 2026-08-28 multi-user review outcome
-PLAN refs: authority
-Ship condition: the board says which halves are closed and which are not; the founder
-  has the decision written down with what each option costs
+Issue/PR: capacity work for the 1000-user goal (2026-08-28)
+PLAN refs: capacity / storage
+Ship condition: the storage walk leaves the per-request path; status reads stop being
+  O(files on disk); snapshot stays correct and per-root
 Abandon condition: n/a
-Pickup hints: the four code fixes are #2627 #2629 #2630 #2632
-Memory refs: grep-typed-homes-before-rederiving
-Related implications: docs/concerns/2026-07-02-no-os-engine-sandbox.md
+Pickup hints: measured on the live box — 19% of a status read today, and the ONLY part
+  of the request whose cost grows with the platform. The 19% is not the reason.
+Memory refs: silent-failure-dispatch-and-tests
+Related implications: 1 vCPU box saturates at ~13 req/s; this is one lever of several
 Idea feed refs: (none)
