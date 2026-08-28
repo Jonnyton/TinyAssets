@@ -25,5 +25,12 @@
       (its two "must hold without served authority" tests describe the OLD reachability; update them
       to assert the new lane holds for an UNAUTHORIZED context and admits an authorized run).
 - [x] 2.2 Plugin mirror parity.
-- [ ] 2.3 Live proof after deploy: the founder's own branch `8ab6516d50c5` runs, the run reads back
+- [x] 2.3 Live proof after deploy: the founder's own branch `8ab6516d50c5` runs, the run reads back
       `succeeded`, and exactly one authenticated X POST happens.
+      **Proven live 2026-08-28 UTC** through the webapp (`tinyassets.io/mcp/app`) as the founder,
+      not via MCP. Branch `X Hello World via Codex v2` = `8ab6516d50c5`, run `578790eb1a4c41db`,
+      terminal `completed`, `POST https://api.x.com/2/tweets` → **201 Created**, tweet id
+      `2093135439029059608`, `x-access-level: read-write-directmessages`. Exactly one POST.
+      Prior attempts that day failed at X's own auth layer (403 `x-access-level: read`, then 401
+      after the token was regenerated) — never at the provider-authority lane this change owns,
+      which is what makes the 201 a clean proof of THIS requirement.
