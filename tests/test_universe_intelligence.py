@@ -17,6 +17,28 @@ from tinyassets.universe_bundle import seed_okf_bundle
 
 
 @pytest.fixture(autouse=True)
+def _reset_auth():
+    """Put the auth provider back after every test in this module.
+
+    `_become_founder` installs a static authenticated provider through the real
+    middleware, and process-global auth state does not unwind itself. Without
+    this, the LAST test here left `founder-1` authenticated for whatever ran
+    next, and `test_universe_list_observability` / `test_universe_server_five_handles`
+    failed several files later — passing in isolation, failing in a full run.
+    Sibling module `test_interlocutor_tier.py` already had this fixture; adding
+    `_become_founder` here without it is what introduced the leak.
+    """
+    from tinyassets.auth.middleware import auth_middleware, set_provider
+    from tinyassets.auth.provider import DevAuthProvider
+
+    set_provider(DevAuthProvider())
+    auth_middleware(None)
+    yield
+    set_provider(DevAuthProvider())
+    auth_middleware(None)
+
+
+@pytest.fixture(autouse=True)
 def _data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Point the resolvers at the test tree.
 
@@ -45,6 +67,56 @@ def _declare(base: Path, uid: str) -> None:
 
     ensure_universe_registered(base, universe_id=uid, universe_path=base / uid)
     vis.set_universe_visibility(uid, "public")
+
+
+def _become_founder(base: Path, uid: str = "u-test", actor_id: str = "founder-1") -> None:
+    """Authenticate as a real admin-granted founder of ``uid``.
+
+    Tests below used to assert founder tier by passing ``tier=FOUNDER`` and
+    relying on the sink to take their word for it. It did, and that was the
+    escalation Codex reproduced on 2026-08-28 -- a `write`-only actor got the
+    founder's grounding the same way. Now the sink resolves and only narrows, so
+    a test that wants founder authority has to actually hold it. That is
+    strictly better evidence: these assertions now prove the founder path works
+    end to end rather than that a keyword argument is honoured.
+    """
+    from tinyassets.auth.middleware import auth_middleware, set_provider
+    from tinyassets.auth.provider import AuthProvider, Identity
+    from tinyassets.daemon_server import grant_universe_access
+
+    grant_universe_access(base, universe_id=uid, actor_id=actor_id, permission="admin")
+
+    identity = Identity(
+        user_id=actor_id,
+        username=actor_id,
+        capabilities=[
+            "tinyassets.universe.read",
+            "tinyassets.universe.write",
+            "tinyassets.universe.admin",
+        ],
+    )
+
+    class _Static(AuthProvider):
+        """Minimal concrete provider: this Resource Server never runs the OAuth
+        flow itself, so the four flow methods are unreachable stubs."""
+
+        def resolve_token(self, token: str):
+            return identity if token == "ok" else None
+
+        def is_auth_required(self) -> bool:
+            return True
+
+        def register_client(self, metadata: dict) -> dict:
+            return {"client_id": "test-client", **metadata}
+
+        def create_authorization(self, *_a, **_kw) -> str:
+            raise NotImplementedError
+
+        def exchange_code(self, *_a, **_kw) -> dict:
+            raise NotImplementedError
+
+    set_provider(_Static())
+    auth_middleware("ok")
 
 
 def _fm(path: Path, key: str) -> str:
@@ -209,6 +281,7 @@ def test_converse_persists_founder_identity_to_soul(tmp_path, monkeypatch):
     # The regression fix end-to-end: after a turn where the founder shares who
     # they are, the UNIVERSE (not the chatbot) persists it to its governed soul.
     udir = _seed(tmp_path)
+    _become_founder(tmp_path)
 
     def fake_call_provider(prompt, system="", *, role="writer",
                            universe_context=None, **_kw):
@@ -296,6 +369,7 @@ def test_converse_persists_worldbuilding_to_canon(tmp_path, monkeypatch):
     # converse turn persists them to the universe's own canon.
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     udir = _seed(tmp_path)
+    _become_founder(tmp_path)
 
     def fake_call_provider(prompt, system="", *, role="writer",
                            universe_context=None, **_kw):
@@ -340,6 +414,7 @@ def test_sandboxed_config_locks_down_the_engine(tmp_path):
 
 def test_converse_sandboxes_both_engine_turns(tmp_path, monkeypatch):
     udir = _seed(tmp_path)
+    _become_founder(tmp_path)
     configs: list = []
 
     def fake_call_provider(prompt, system="", *, role="writer",
@@ -445,6 +520,7 @@ def test_non_founder_turn_never_persists_learning(tmp_path, monkeypatch):
 def test_founder_turn_still_persists(tmp_path, monkeypatch):
     """The accept direction — a write gate that blocks everyone is not a gate."""
     udir = _seed(tmp_path)
+    _become_founder(tmp_path)
 
     def fake_call_provider(prompt, system="", *, role="writer",
                            universe_context=None, **_kw):
@@ -489,6 +565,7 @@ def _capture_writer_call(monkeypatch, udir):
 
 def test_continuity_directive_rides_founder_turn_with_history(tmp_path, monkeypatch):
     udir = _seed(tmp_path)
+    _become_founder(tmp_path)
     cap = _capture_writer_call(monkeypatch, udir)
     history = [("You", "we were reshaping the website to be app-first"),
                ("Universe", "yes — open the web app first")]

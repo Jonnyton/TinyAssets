@@ -1725,17 +1725,41 @@ def converse(message: str = "", graph_id: str = "") -> str:
             "error": "Sign in as this universe's founder to talk with it.",
             "auth_required": True,
         })
-    uid = (
-        _request_universe(graph_id)
-        if graph_id.strip()
-        else ensure_founder_home(_base_path(), current_actor_id())
-    )
+    # Resolving the universe reads a store too. With no `graph_id`,
+    # `ensure_founder_home` reads `founder_home` before any of the guards below,
+    # so a store failure escaped as a raw OSError — the SAME defect as the ACL
+    # read, one call earlier (Codex round 2, 2026-08-28: fixing the instance is
+    # not fixing the pattern). Wrapped here so every store read on the way in
+    # lands in the honest envelope.
+    try:
+        uid = (
+            _request_universe(graph_id)
+            if graph_id.strip()
+            else ensure_founder_home(_base_path(), current_actor_id())
+        )
+    except Exception:
+        logger.warning(
+            "converse: could not resolve the universe for %r", graph_id, exc_info=True
+        )
+        uid = ""
     if not uid:
         return json.dumps({
             "error": "Your home universe could not be created or loaded.",
             "auth_scope_required": True,
         })
-    if not universe_access_allows(uid, write=True):
+    # This reads the ACL store, so it needs the same honest envelope the tier
+    # binding below already has. Codex found the ordering defect (REJECT
+    # 2026-08-28): a store failure here escaped `converse` as a raw OSError,
+    # because the try/except started one call too late. Fail closed — an ACL we
+    # cannot read is not an ACL that permits.
+    try:
+        permitted = universe_access_allows(uid, write=True)
+    except Exception:
+        logger.warning(
+            "converse: universe access check failed for %r", uid, exc_info=True
+        )
+        permitted = False
+    if not permitted:
         return json.dumps({
             "error": "Only this universe's founder can talk with it.",
             "auth_scope_required": True,

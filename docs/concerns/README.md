@@ -60,7 +60,6 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 | **P2** | [`converse` SSE stream has no keepalive](2026-08-28-converse-sse-stream-has-no-keepalive.md) — a minutes-long turn sends zero bytes until the result | 2026-08-28 |
 | — | [Provider fallback-chain privacy](2026-04-17-provider-fallback-chain-privacy.md) — gemini/groq/grok still in the chains | 2026-04-17 |
 | — | [Cloud automation rollback refused >24h](2026-08-05-cloud-automation-rollback-refused.md) — tested, not fixed | 2026-08-05 |
-| — | [Write ACL grants founder tier](2026-08-05-write-acl-grants-founder-tier.md) — a collaborator resolves as founder | 2026-08-05 |
 
 Predating the migration: [synthesis skip echoes](2026-04-16-synthesis-skip-echoes.md),
 [`test_record_and_get_stats` flake](2026-04-26-test_record_and_get_stats_flake.md),
