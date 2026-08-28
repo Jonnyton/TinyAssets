@@ -1,18 +1,17 @@
-# Worktree purpose
+# Purpose
 
-Purpose: fix-http-deposit-error-detail
-Provider: claude-code
-Branch: claude/fix-http-deposit-error-detail
-Base ref: origin/main
-Issue/PR: PR pending — found in the founder's live app conversation 2026-08-27
-PLAN refs: onboarding app / generic HTTP connection deposit (connect_http)
-Ship condition: onboarding tests green (incl. the new red-provable regression test),
-  ruff clean, plugin mirror rebuilt; live proof = a real deposit rejection now
-  renders the actionable detail in the app.
-Abandon condition: superseded by a broader deposit-form rework.
-Pickup hints: tinyassets/onboarding/app.html btn-connect-http handler; the Claude
-  connect path (~line 1003) was already detail-first and is the pattern copied.
-Memory refs: desktop-app-is-electron-cdp-testable, live-test-finds-what-tests-cannot
-Related implications: the founder's GitHub api.github.com deposit never landed;
-  endpoint validation was fine, the destination-name slug rule refused it silently.
-Idea feed refs: (none yet)
+Subscribe and cancel a $20/month plan from the webapp, and nothing else.
+
+Split out of `claude/metering-tiers-billing` after three cross-family REJECTs, all
+of which targeted the METERING half (settlement is not exactly-once, wiki_write_back
+unmetered, quota wiring). None of that is here. This branch carries only:
+
+- `tinyassets/billing/` — Stripe adapter, stdlib-only, behind a boundary test
+- `tinyassets/storage/subscription_state.py` — tier + checkout claim, the only state
+- four `/mcp/app/billing/*` routes + the webhook auth exemption
+- the plan control in the chat header
+
+No quota, no metering, no enforcement. A universe is `paid` while it has an
+entitling subscription and `free` otherwise.
+
+- Metering continues on `claude/metering-tiers-billing`, blocked on a settlement outbox.

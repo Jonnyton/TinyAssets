@@ -906,6 +906,208 @@ async def _handle_serving_bind(request: Any) -> Any:
     return JSONResponse({"serving": out}, headers={"Cache-Control": "no-store"})
 
 
+
+async def _handle_billing_status(request: Any) -> Any:
+    """Current tier + usage for the signed-in user's home universe."""
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.auth.middleware import current_identity, identity_context
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    identity = current_identity()
+
+    def _read() -> dict[str, Any]:
+        from tinyassets.api.helpers import _universe_dir
+        from tinyassets.billing import billing_enabled
+        from tinyassets.storage.subscription_state import TIER_FREE, get_tier
+
+        with identity_context(identity):
+            home = _read_home(identity)
+            if not home:
+                return {"tier": TIER_FREE, "reason": "no_home_universe"}
+            # Tier only. Usage limits belong to the metering change, which has NOT
+            # landed — reporting quotas here would advertise enforcement that does
+            # not exist.
+            return {
+                "tier": get_tier(_universe_dir(home)),
+                "billing_enabled": billing_enabled(),
+                "enforced": [],
+            }
+
+    return JSONResponse(
+        await run_in_threadpool(_read), headers={"Cache-Control": "no-store"}
+    )
+
+
+async def _handle_billing_checkout(request: Any) -> Any:
+    """Start a subscription; returns the hosted Stripe checkout URL."""
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.auth.middleware import current_identity, identity_context
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    identity = current_identity()
+    origin = str(request.headers.get("origin") or "https://tinyassets.io").rstrip("/")
+
+    def _start() -> dict[str, Any]:
+        import time as _t
+
+        from tinyassets.api.helpers import _universe_dir
+        from tinyassets.billing import BillingUnavailable, create_checkout_session
+        from tinyassets.billing.stripe_adapter import AlreadySubscribed
+        from tinyassets.storage.subscription_state import (
+            claim_checkout,
+            release_checkout_claim,
+        )
+
+        with identity_context(identity):
+            home = _read_home(identity)
+            if not home:
+                return {"error": "no_home_universe"}
+            # Mutual exclusion BEFORE the Stripe round-trip. Checking Stripe then
+            # creating is check-then-act, and a pending session is not yet a
+            # subscription, so two concurrent clicks could each create one and bill
+            # the universe twice.
+            universe_dir = _universe_dir(home)
+            if not claim_checkout(universe_dir, now=_t.time()):
+                return {"error": "checkout_already_in_progress"}
+            try:
+                return create_checkout_session(
+                    universe_id=home,
+                    success_url=origin + "/mcp/app?subscribed=1",
+                    cancel_url=origin + "/mcp/app?subscribed=0",
+                )
+            except AlreadySubscribed:
+                release_checkout_claim(universe_dir)
+                # Not an error state for the user - they are already paying.
+                return {"error": "already_subscribed"}
+            except BillingUnavailable as exc:
+                release_checkout_claim(universe_dir)
+                # Billing being off must read AS billing being off - never as a
+                # crash, and never as the universe having done something wrong.
+                return {"error": "billing_unavailable", "detail": str(exc)}
+
+    out = await run_in_threadpool(_start)
+    status = 200 if "url" in out else 503
+    return JSONResponse(
+        out, status_code=status, headers={"Cache-Control": "no-store"}
+    )
+
+
+async def _handle_billing_cancel(request: Any) -> Any:
+    """Cancel the signed-in user's subscription at period end."""
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.auth.middleware import current_identity, identity_context
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    identity = current_identity()
+
+    def _cancel() -> dict[str, Any]:
+        from tinyassets.billing import BillingUnavailable, cancel_subscription
+        from tinyassets.billing.stripe_adapter import find_active_subscription
+
+        with identity_context(identity):
+            home = _read_home(identity)
+            if not home:
+                return {"error": "no_home_universe"}
+            try:
+                subscription_id = find_active_subscription(home)
+                if not subscription_id:
+                    return {"cancelled": False, "reason": "no_active_subscription"}
+                cancel_subscription(subscription_id)
+                # The tier itself moves on the WEBHOOK, which is the single
+                # authority - writing it here too would let the UI and Stripe
+                # disagree whenever a cancellation is later reversed.
+                return {"cancelled": True, "at_period_end": True}
+            except BillingUnavailable as exc:
+                return {"error": "billing_unavailable", "detail": str(exc)}
+
+    out = await run_in_threadpool(_cancel)
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+async def _handle_billing_webhook(request: Any) -> Any:
+    """Stripe webhook: signed provenance plus a service-claimed plan, no bearer."""
+    import json as _json
+    import time as _time
+
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    # Refuse on the DECLARED length before reading, so an unauthenticated caller
+    # cannot make us materialise an arbitrarily large body first — checking after
+    # the read is an assertion, not a memory bound (Codex 2026-08-28).
+    _max = 262_144
+    raw_length = request.headers.get("content-length")
+    try:
+        declared = int(raw_length) if raw_length is not None else 0
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "invalid_content_length"}, status_code=400)
+    if declared < 0:
+        return JSONResponse({"error": "invalid_content_length"}, status_code=400)
+    if declared > _max:
+        return JSONResponse({"error": "payload_too_large"}, status_code=413)
+    # Content-Length can be absent (for example with chunked transfer) or false.
+    # Bound the actual stream too, without first materialising an unbounded body.
+    chunks: list[bytes] = []
+    received = 0
+    async for chunk in request.stream():
+        received += len(chunk)
+        if received > _max:
+            return JSONResponse({"error": "payload_too_large"}, status_code=413)
+        chunks.append(chunk)
+    payload = b"".join(chunks)
+    signature = str(request.headers.get("stripe-signature") or "")
+
+    from tinyassets.billing.stripe_adapter import verify_webhook_signature
+
+    if not verify_webhook_signature(payload, signature, now=_time.time()):
+        # Fails closed with no secret configured, so an unverified caller can
+        # never move a tier.
+        return JSONResponse({"error": "invalid_signature"}, status_code=400)
+    try:
+        event = _json.loads(payload.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return JSONResponse({"error": "invalid_json"}, status_code=400)
+
+    def _apply() -> dict[str, Any]:
+        from tinyassets.api.helpers import _universe_dir
+        from tinyassets.billing import subscription_state_from_event
+        from tinyassets.storage.subscription_state import apply_tier_event
+
+        mapped = subscription_state_from_event(event)
+        if mapped is None:
+            return {"applied": False}
+        universe_id, tier = mapped
+        # Ordered by the event's own created time: Stripe does not guarantee
+        # delivery order, and a delayed `active` must not overwrite a newer cancel.
+        created = float(event.get("created") or 0.0)
+        applied = apply_tier_event(
+            _universe_dir(universe_id), tier=tier, event_created=created
+        )
+        return {"applied": applied, "tier": tier if applied else None}
+
+    return JSONResponse(await run_in_threadpool(_apply))
+
+
 def onboarding_routes() -> list[Any]:
     """Starlette routes for the onboarding app, mounted alongside ``/mcp``.
 
@@ -925,6 +1127,10 @@ def onboarding_routes() -> list[Any]:
         Route("/mcp/app/me", _handle_me, methods=["GET"]),
         Route("/mcp/app/trace", _handle_trace, methods=["POST"]),
         Route("/mcp/app/serving/bind", _handle_serving_bind, methods=["POST"]),
+        Route("/mcp/app/billing/status", _handle_billing_status, methods=["GET"]),
+        Route("/mcp/app/billing/checkout", _handle_billing_checkout, methods=["POST"]),
+        Route("/mcp/app/billing/cancel", _handle_billing_cancel, methods=["POST"]),
+        Route("/mcp/app/billing/webhook", _handle_billing_webhook, methods=["POST"]),
     ]
 
 

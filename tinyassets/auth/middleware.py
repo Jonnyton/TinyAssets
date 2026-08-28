@@ -528,6 +528,13 @@ def _auth_challenge_path(path: str) -> bool:
         # Their own authenticated /mcp tool calls are still challenged; the dark
         # flag still returns a bare 404 when the app is off.
         return False
+    # Billing webhook: Stripe POSTs here with no MCP bearer, so like /mcp/app and
+    # /mcp/hooks it must not be swept into the /mcp bearer 401. The handler requires
+    # both Stripe provenance (signed, replay-bounded payload) and entitlement
+    # authority (our HMAC-claimed exact plan). Exactly one path is opened; no deeper
+    # /mcp/app/billing/... route is exempt, so checkout and cancel stay identity-gated.
+    if path == "/mcp/app/billing/webhook":
+        return False
     # Narrow, ordered exemption for the browser deposit flow: when enabled, its
     # own signed-state / signed-session validation is the sole boundary for these
     # routes, so they must not be swept into the MCP bearer 401. Scoped to exactly
