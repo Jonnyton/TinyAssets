@@ -33,7 +33,15 @@ def _data_dir(tmp_path, monkeypatch):
 )
 def test_a_stored_session_is_not_readable_by_anyone_else():
     handle = onboarding._mint_refresh_session("rt_secret_value")
-    path = onboarding._refresh_store_dir() / f"{handle}.json"
+    # Resolve the file the way the code does. This test was written when the handle
+    # WAS the filename; the digest rename left it pointing at a path that no longer
+    # exists, and because it skips on Windows the local run never noticed. CI on
+    # Linux did.
+    path = (
+        onboarding._refresh_store_dir()
+        / f"{onboarding._handle_path_key(handle)}.json"
+    )
+    assert path.exists(), "the store did not write where the code reads"
     mode = stat.S_IMODE(path.stat().st_mode)
     assert mode & (stat.S_IRGRP | stat.S_IROTH) == 0, (
         f"refresh token file is group/other readable: {oct(mode)}"
@@ -70,10 +78,15 @@ def test_a_new_signin_never_adopts_a_caller_supplied_handle():
     src = (
         __import__("pathlib").Path(onboarding.__file__).read_text(encoding="utf-8")
     )
-    assert "may_reuse_handle" in src, "the grant-aware guard is gone"
+    assert "may_reuse_handle" in src, "the reuse guard is gone"
     guard = src.split("may_reuse_handle = ")[1].split("\n")[0]
-    assert 'grant == "refresh_token"' in guard, (
-        "a handle may only be reused by the grant that proved possession of it"
+    # This originally asserted the guard was `grant == "refresh_token"`. That rule
+    # was insufficient and the assertion enshrined it: a refresh can succeed off the
+    # victim's cookie while the presented handle proved nothing. The real invariant
+    # is the credential SOURCE (test_session_credential_source.py).
+    assert "refresh_came_from_handle" in guard, (
+        "a handle may only be reused when THAT handle supplied the credential the "
+        "exchange actually succeeded with"
     )
 
 
@@ -98,7 +111,12 @@ def test_an_expired_session_yields_nothing_and_is_removed():
     import time
 
     handle = onboarding._mint_refresh_session("rt_abc")
-    path = onboarding._refresh_store_dir() / f"{handle}.json"
+    # The filename is a keyed digest now, not the handle -- the handle is a bearer
+    # credential and must not be published by a directory listing.
+    path = (
+        onboarding._refresh_store_dir()
+        / f"{onboarding._handle_path_key(handle)}.json"
+    )
     path.write_text(json.dumps({"rt": "rt_abc", "exp": int(time.time()) - 1}))
     assert onboarding._read_refresh_session(handle) == ""
     assert not path.exists()

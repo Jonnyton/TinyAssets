@@ -1,16 +1,16 @@
 # Worktree purpose
 
-Purpose: source-approval-gate
+Purpose: session-credential-source
 Provider: claude-code
-Branch: claude/source-approval-gate
+Branch: claude/session-credential-source
 Base ref: origin/main
-Issue/PR: the #1 second-user blocker from the 2026-08-28 Codex multi-user review
-PLAN refs: authority / execution
-Ship condition: source approval is dark by default and limited to an explicit universe
-  allowlist; the founder's universe is allowlisted on the droplet so nothing regresses
+Issue/PR: corrects #2624, which did NOT close the fixation Codex re-found
+PLAN refs: auth / onboarding
+Ship condition: handle reuse is licensed by the credential source; the bearer handle
+  is never a filename
 Abandon condition: n/a
-Pickup hints: this is a GATE, not a sandbox. The real fix is running user code out of
-  process; until then the capability is limited rather than confined.
-Memory refs: source-code-nodes-cannot-run (NOW STALE — source_channel added a path)
-Related implications: docs/concerns/2026-07-02-no-os-engine-sandbox.md
+Pickup hints: the #1 multi-user blocker is NOT this — it is in-process source
+  execution (graph_compiler exec with os.environ reachable)
+Memory refs: silent-failure-dispatch-and-tests
+Related implications: docs/concerns/2026-08-23-byo-llm-refresh-token-store.md
 Idea feed refs: (none)
