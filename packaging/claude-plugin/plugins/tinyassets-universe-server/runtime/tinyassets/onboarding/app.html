@@ -41,6 +41,42 @@
     .dot--ok{background:var(--ok);box-shadow:0 0 8px var(--ok)}
     .dot--warn{background:var(--warn)}
     .dot--err{background:var(--err)}
+    /* Pending-request rail (founder 2026-08-27): the agent's asks live down
+       the RIGHT as tabs whose header says what kind they are; tap one to expand
+       and answer it in place. Stacks below the thread on a phone, where the same
+       requests are reachable through the same read. */
+    .chat-body{flex:1;min-height:0;display:flex}
+    .rail{width:16rem;flex:0 0 auto;border-left:1px solid var(--line);
+          overflow-y:auto;padding:.6rem;display:flex;flex-direction:column;gap:.5rem}
+    .rail[hidden]{display:none}
+    .rail-head{font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;
+               color:var(--muted);padding:.2rem .3rem}
+    .rtab{border:1px solid var(--line);border-radius:10px;background:var(--surface-2);
+          overflow:hidden}
+    .rtab-btn{width:100%;text-align:left;font:inherit;color:inherit;background:none;
+              border:0;padding:.6rem .7rem;cursor:pointer;display:block}
+    .rtab-kind{display:inline-block;font-size:.68rem;letter-spacing:.06em;
+               text-transform:uppercase;color:var(--accent);border:1px solid var(--line);
+               border-radius:6px;padding:.05rem .4rem;margin-bottom:.3rem}
+    .rtab-title{display:block;font-size:.85rem;line-height:1.3}
+    .rtab-body{padding:0 .7rem .7rem;border-top:1px solid var(--line)}
+    .rtab-why{font-size:.8rem;color:var(--muted);margin:.5rem 0}
+    .rtab-grant{font-size:.78rem;margin:.5rem 0;padding:.4rem .5rem;
+                border-left:2px solid var(--accent);background:var(--surface)}
+    .rtab-body input,.rtab-body textarea,.rtab-body select{width:100%;font:inherit;
+        padding:.45rem;border-radius:8px;border:1px solid var(--line);
+        background:var(--surface);color:inherit;margin-top:.25rem}
+    .rtab-label{display:block;font-size:.78rem;color:var(--muted);margin-top:.5rem}
+    .rtab-row{display:flex;gap:.4rem;margin-top:.6rem}
+    .rtab-row .btn{padding:.4rem .7rem;font-size:.82rem}
+    .rtab-mute{display:flex;align-items:center;gap:.4rem;font-size:.76rem;
+               color:var(--muted);margin-top:.5rem}
+    .rtab-mute input{width:auto;margin:0}
+    .rtab-note{font-size:.76rem;color:var(--muted);margin-top:.4rem;min-height:1rem}
+    @media (max-width:760px){
+      .chat-body{flex-direction:column}
+      .rail{width:auto;max-height:45vh;border-left:0;border-top:1px solid var(--line)}
+    }
     .thread{flex:1;min-height:0;overflow-y:auto;padding:1.1rem;display:flex;flex-direction:column;gap:.9rem}
     .thread-empty{margin:auto;text-align:center;color:var(--ink-dim)}
     .waking{font-size:1.15rem;color:var(--ink)}
@@ -115,11 +151,17 @@
           <button id="btn-signout" class="btn btn--link">Sign out</button>
         </nav>
       </header>
-      <div id="thread" class="thread">
-        <div id="thread-empty" class="thread-empty">
-          <div class="waking">Your universe is waking up.</div>
-          <div class="waking-sub">Say hello to begin.</div>
+      <div class="chat-body">
+        <div id="thread" class="thread">
+          <div id="thread-empty" class="thread-empty">
+            <div class="waking">Your universe is waking up.</div>
+            <div class="waking-sub">Say hello to begin.</div>
+          </div>
         </div>
+        <aside id="request-rail" class="rail" hidden>
+          <div class="rail-head">Waiting on you</div>
+          <div id="rail-items"></div>
+        </aside>
       </div>
       <div id="attachments" class="attachments" hidden></div>
       <form id="composer" class="composer">
@@ -658,6 +700,13 @@
     resolveConnection(shape,hints,intent){
       return this.callTool("write_graph",{target:"connection",operation:"resolve_connection",
         payload_json:JSON.stringify({shape,hints,intent})});
+    },
+    // The agent's pending asks. Same read from every surface, which is what
+    // makes them answerable from the phone with no second mechanism.
+    listRequests(){ return this.callTool("read_graph",{target:"pending_requests"}); },
+    answerRequest(payload){
+      return this.callTool("write_graph",{target:"connection",operation:"answer_request",
+        payload_json:JSON.stringify(payload)});
     },
     connectCompute(payload){
       return this.callTool("write_graph",{target:"connection",operation:"connect_compute",
@@ -1401,6 +1450,143 @@
     });
   }
 
+  // ---- Pending-request rail ------------------------------------------------
+  // The agent raises asks; they appear as tabs whose header is the KIND it chose
+  // ("API", "Approval", anything). The agent composes the fields, so a kind this
+  // code has never heard of still renders — that is the point of the primitive.
+  let railOpen = null;      // request_id of the expanded tab
+  let railCache = [];
+
+  function railFieldControl(field, reqId){
+    const id = "f_" + reqId + "_" + field.name;
+    if(field.type === "choice"){
+      const sel = document.createElement("select");
+      sel.id = id;
+      (field.options||[]).forEach(o=>{
+        const opt=document.createElement("option"); opt.value=o; opt.textContent=o;
+        sel.appendChild(opt);
+      });
+      return sel;
+    }
+    const el = document.createElement(field.type === "secret" ? "textarea" : "input");
+    el.id = id;
+    if(field.type === "secret"){ el.rows = 2; el.placeholder = "Paste it here"; }
+    else { el.type = "text"; }
+    return el;
+  }
+
+  function renderRail(items){
+    railCache = items || [];
+    const rail = $("request-rail"), host = $("rail-items");
+    if(!rail || !host) return;
+    host.textContent = "";
+    rail.hidden = railCache.length === 0;
+    railCache.forEach(req=>{
+      const tab = document.createElement("div"); tab.className = "rtab";
+      const btn = document.createElement("button");
+      btn.type = "button"; btn.className = "rtab-btn";
+      const kind = document.createElement("span");
+      kind.className = "rtab-kind"; kind.textContent = req.kind;
+      const title = document.createElement("span");
+      title.className = "rtab-title"; title.textContent = req.title;
+      btn.appendChild(kind); btn.appendChild(title);
+      btn.addEventListener("click",()=>{
+        railOpen = (railOpen === req.request_id) ? null : req.request_id;
+        renderRail(railCache);
+      });
+      tab.appendChild(btn);
+      if(railOpen === req.request_id) tab.appendChild(railBody(req));
+      host.appendChild(tab);
+    });
+  }
+
+  function railBody(req){
+    const box = document.createElement("div"); box.className = "rtab-body";
+    if(req.body){
+      const why = document.createElement("p");
+      why.className = "rtab-why"; why.textContent = req.body; box.appendChild(why);
+    }
+    if(req.grant_sentence){
+      // For a credential ask, the exact grant — the agent named the endpoint, so
+      // there is nothing inferred to second-guess here.
+      const g = document.createElement("p");
+      g.className = "rtab-grant"; g.textContent = req.grant_sentence;
+      box.appendChild(g);
+    }
+    (req.fields||[]).forEach(f=>{
+      const lab = document.createElement("label");
+      lab.className = "rtab-label"; lab.textContent = f.label || f.name;
+      lab.appendChild(railFieldControl(f, req.request_id));
+      box.appendChild(lab);
+    });
+    // Feedback + "don't ask this again" (founder 2026-08-27): an approval needs a
+    // way to disagree, and a standing way to stop being asked.
+    const fb = document.createElement("label");
+    fb.className = "rtab-label"; fb.textContent = "Anything to tell it? (optional)";
+    const fbi = document.createElement("input");
+    fbi.type = "text"; fbi.id = "fb_" + req.request_id;
+    fb.appendChild(fbi); box.appendChild(fb);
+
+    const mute = document.createElement("label"); mute.className = "rtab-mute";
+    const mbox = document.createElement("input");
+    mbox.type = "checkbox"; mbox.id = "mute_" + req.request_id;
+    mute.appendChild(mbox);
+    mute.appendChild(document.createTextNode("Don't ask me this again"));
+    box.appendChild(mute);
+
+    const note = document.createElement("div");
+    note.className = "rtab-note"; note.id = "note_" + req.request_id;
+
+    const row = document.createElement("div"); row.className = "rtab-row";
+    const submit = document.createElement("button");
+    submit.className = "btn btn--primary"; submit.textContent = "Send";
+    const dismiss = document.createElement("button");
+    dismiss.className = "btn btn--ghost"; dismiss.textContent = "Not now";
+    submit.addEventListener("click",()=>answerRail(req,false,note,[submit,dismiss]));
+    dismiss.addEventListener("click",()=>answerRail(req,true,note,[submit,dismiss]));
+    row.appendChild(submit); row.appendChild(dismiss);
+    box.appendChild(row); box.appendChild(note);
+    return box;
+  }
+
+  async function answerRail(req, dismiss, note, buttons){
+    const payload = { request_id: req.request_id };
+    const fbEl = $("fb_" + req.request_id), muteEl = $("mute_" + req.request_id);
+    if(fbEl && fbEl.value.trim()) payload.feedback = fbEl.value.trim();
+    if(muteEl && muteEl.checked) payload.dont_ask_again = true;
+    if(dismiss){ payload.dismiss = true; }
+    else {
+      const values = {};
+      (req.fields||[]).forEach(f=>{
+        const el = $("f_" + req.request_id + "_" + f.name);
+        if(el){ values[f.name] = el.value; el.value = ""; }   // clear secrets from the DOM
+      });
+      payload.values = values;
+    }
+    buttons.forEach(b=>{ b.disabled = true; });
+    note.textContent = dismiss ? "Dismissing..." : "Sending...";
+    try{
+      const r = await MCP.answerRequest(payload);
+      if(r && r.error){ note.textContent = "Couldn't do that: " + (r.detail || r.error); }
+      else {
+        note.textContent = r.receipt || (dismiss ? "Dismissed." : "Sent.");
+        railOpen = null;
+        await refreshRail();
+      }
+    }catch(err){
+      if(err.authRequired) return enterSignedOut();
+      note.textContent = "Couldn't do that: " + err.message;
+    }finally{ buttons.forEach(b=>{ b.disabled = false; }); }
+  }
+
+  async function refreshRail(){
+    if(!token()) return;
+    try{
+      const r = await MCP.listRequests();
+      if(r && Array.isArray(r.pending)) renderRail(r.pending);
+    }catch(_e){ /* a rail that fails to load must never break the chat */ }
+  }
+
   // Proactive renewal: keep the ~5-minute access token fresh in the background so
   // a long conversation never stalls on an expired token. ensureFreshToken()
   // only calls the network when the token is within 60s of expiry, so this is a
@@ -1409,6 +1595,9 @@
   // lapse while the user is away — renew on resume before the next message).
   function startSessionKeepAlive(){
     setInterval(()=>{ if(token()) ensureFreshToken().catch(()=>{}); }, 60*1000);
+    // The agent may raise an ask at any point, including while the user is idle.
+    setInterval(()=>{ refreshRail(); }, 15*1000);
+    refreshRail();
     document.addEventListener("visibilitychange", ()=>{
       if(document.visibilityState==="visible" && token()) ensureFreshToken().catch(()=>{});
       if(document.visibilityState==="visible") checkForNewBuild();
