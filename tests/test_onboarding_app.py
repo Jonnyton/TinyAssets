@@ -223,3 +223,21 @@ def test_deposit_form_makes_the_x_path_discoverable():
         "http-oauth1a-access-token-secret",
     ):
         assert field in html
+
+
+def test_deposit_error_surfaces_the_actionable_detail():
+    """Founder 2026-08-27: deposited a GitHub API connection twice ("i think i
+    deposited it"), and it never landed. ``connect_http`` had refused it with
+    ``{"error": "connection_setup_invalid", "detail": "destination must be 2-127
+    chars of [a-z0-9._:-] ..."}`` - a name with a space - but the form rendered
+    only the bare error code, so nothing on screen said what to change. The
+    ``detail`` is the half a user can act on; render it like the Claude path does,
+    and state the name rule on the field itself."""
+    from tinyassets.onboarding import render_app_html
+
+    html, _csp = render_app_html()
+    # The HTTP deposit renders detail-first, not the opaque error code alone.
+    assert '"Couldn\'t add it: "+(r.detail||r.error)' in html
+    assert '"Couldn\'t add it: "+r.error' not in html
+    # The Name field states the constraint the server actually enforces.
+    assert "no spaces" in html
