@@ -803,9 +803,13 @@ def write_graph(
     credential - an approval, a choice, a missing detail. The tab is a general
     way to ask, not a credential form.
 
-    (They can still deposit by hand: "Connect / add API connection" at the top of
-    this app. Prefer asking - a hand deposit makes them author an endpoint policy
-    you already know.) That deposit is ``connect_http``: it stores the connection
+    They can still deposit by hand, from the rail in this same app - never send
+    them to a separate or external "browser flow". PREFER ASKING: a hand deposit
+    makes them author an endpoint policy you already know. If they do go by hand
+    and the service uses OAuth 1.0a (X/Twitter and similar), the form shows FOUR
+    LABELLED BOXES - API Key, API Key Secret, Access Token, Access Token Secret -
+    one value per box, never all four in one field. That deposit is
+    ``connect_http``: it stores the connection
     + grant and pins the host/path/method allow-list. Then
     ``source_channel operation=approve`` grants the destination consent (you can
     do that part). The node's
