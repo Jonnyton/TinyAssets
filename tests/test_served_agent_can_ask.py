@@ -81,3 +81,26 @@ def test_the_served_guidance_tells_it_to_ask_rather_than_point_at_a_button():
     assert "ASK THEM FOR IT" in text
     assert 'target="pending_request"' in text
     assert "You cannot answer your own ask" in text
+
+
+def test_the_guidance_says_a_credential_is_durable_not_one_shot():
+    """Founder, 2026-08-28, watching the universe ask for its first key:
+
+        "it implied it would only keep it for this one shot, which was not the
+        flow i wanted, for credentials unless spasifically told to clear them
+        they are to be in the vault for future use"
+
+    The universe wrote "I will use this GitHub token only to make one bounded UI
+    change ... I will not use it for broader repository changes." Factually the
+    key persists — vault records carry no expiry and nothing clears them — so the
+    sentence was a scope promise that READS as a lifetime one, and nothing in the
+    guidance told it the difference. An owner who believes a key is discarded
+    expects to paste again.
+    """
+    text = _write_graph_source()
+    assert "DURABLE" in text
+    assert "ONGOING ACCESS" in text
+    # It must be told not to make the promise that misleads.
+    assert "only this once" in text
+    # …and pointed at the bound that IS real.
+    assert "the endpoint list already bounds it" in text

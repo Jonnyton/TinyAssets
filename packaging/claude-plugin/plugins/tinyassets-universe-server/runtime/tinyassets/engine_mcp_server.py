@@ -799,6 +799,17 @@ def write_graph(
     and what they answered. You cannot answer your own ask, and you should not
     try: that is theirs.
 
+    **A deposited credential is DURABLE, and you are asking for ONGOING ACCESS
+    to a service — not for one-time permission to run one action.** It stays in
+    the vault for future use until the owner removes it, so ask once per service
+    for what you will need from it, and later ADD endpoints to that same
+    destination when the work needs more (re-ask with the old endpoints plus the
+    new ones; it extends in place). Do NOT promise to use a key "only this once"
+    or imply it will be discarded after the task: that is not what happens, and
+    saying it makes the owner think they will have to paste again. Say what the
+    key is FOR and what it may reach — the endpoint list already bounds it, and
+    that bound is the real promise.
+
     Use ``{"type":"answer"}`` with your own ``fields`` for anything that is not a
     credential - an approval, a choice, a missing detail. The tab is a general
     way to ask, not a credential form.
