@@ -52,14 +52,16 @@ _log = logging.getLogger(__name__)
 #:     verified overlap 25 -> MemAvailable 403 MB
 #:
 #:   * I called 786/25 = 31 MB the "marginal" cost. It is the AVERAGE. The marginal
-#:     slope between the two points is (874-403)/(25-12) = **39 MB**.
+#:     slope between the two points is (874-403)/(25-13) = **39 MB**.
 #:   * Per-process cost therefore ROSE with concurrency (24 MB/process at 13, 39 MB
 #:     marginal from 13 to 25). My claim that page sharing improves with concurrency was
 #:     the opposite of what my own two points said. I fitted a story to two data points
 #:     and got the sign wrong.
 #:   * My headroom check used 2048 MB total, but the probe's real baseline was 1189 MB
-#:     AVAILABLE — the other ~469 MB is kernel, Docker, tunnel and friends. Against the
-#:     right baseline, 10 x 39 x 3 leaves about 12 MB. That is not headroom.
+#:     AVAILABLE. The missing 859 MB is roughly 390 MB of daemon plus ~469 MB of kernel,
+#:     Docker, tunnel and other services — none of it spendable. Against the right
+#:     baseline, 10 x 39 x 3 leaves about 19 MB (12 MB on the unrounded 39.25 slope).
+#:     Either way it is not headroom.
 #:
 #: And `--version` is not the production process tree: a real turn runs `claude -p` with
 #: a system prompt, streaming state and tool policy, and when engine MCP is enabled it

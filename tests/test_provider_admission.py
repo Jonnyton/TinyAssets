@@ -135,10 +135,19 @@ def test_the_default_fits_the_box_it_runs_on(monkeypatch):
     MARGINAL_MB_PER_PROCESS = 39
     REAL_TURN_MULTIPLIER = 3  # `--version` loads no prompt, no history, no MCP child
 
+    # "Fits" is not "safe". Merely staying under the available figure admitted a limit
+    # of 10, which the module's own comment calls no headroom at all (~19 MB left) — the
+    # test protected 6 while still licensing the number Codex had just rejected. Demand
+    # an explicit floor of genuinely spare memory instead, so the assertion agrees with
+    # the reasoning it is supposed to enforce.
+    MIN_HEADROOM_MB = 300
+
     worst_case = pa._DEFAULT_LIMIT * MARGINAL_MB_PER_PROCESS * REAL_TURN_MULTIPLIER
-    assert worst_case < MEASURED_AVAILABLE_MB, (
-        f"{pa._DEFAULT_LIMIT} concurrent turns could need {worst_case} MB against "
-        f"{MEASURED_AVAILABLE_MB} MB actually available on the live box"
+    spare = MEASURED_AVAILABLE_MB - worst_case
+    assert spare >= MIN_HEADROOM_MB, (
+        f"{pa._DEFAULT_LIMIT} concurrent turns could need {worst_case} MB of the "
+        f"{MEASURED_AVAILABLE_MB} MB available, leaving {spare} MB — under the "
+        f"{MIN_HEADROOM_MB} MB floor this box needs for everything else it does"
     )
 
 
