@@ -18,11 +18,14 @@ storage.rotation) follow the pattern that was already in place pre-extraction.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import hmac
 import json
 import os
 import re
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -452,7 +455,79 @@ def _provider_auth_snapshot() -> dict[str, Any]:
     return {"writers": writers, "all_writers_unauthenticated": all_down}
 
 
+#: Liveness is read far more often than it changes, and computing it is the single
+#: most expensive part of a `get_status` request: measured on the live box
+#: 2026-08-28, it reads ~59 per-worker liveness files per call and was 58% of what
+#: remained after the storage walk was memoized. Caching it took a status read from
+#: 73 ms to 15 ms.
+#:
+#: Five seconds is chosen against the watchdog's own threshold, not by feel:
+#: `docs/specs/daemon-liveness-watchdog.md` alerts on
+#: `stuck_pending_max_age_s < 60`, and the real wedges it was built for measured
+#: 312 s, 420 s and 851 s. A snapshot up to 5 s old under-reports those ages by at
+#: most 5 s, which cannot flip a 60-second decision. Set to 0 to disable.
+_LIVENESS_TTL_VAR = "TINYASSETS_SUPERVISOR_LIVENESS_TTL_S"
+_DEFAULT_LIVENESS_TTL_S = 5.0
+
+_liveness_lock = threading.Lock()
+#: {udir_key: (expires_at_monotonic, snapshot)}
+_liveness_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def _liveness_ttl() -> float:
+    raw = (os.environ.get(_LIVENESS_TTL_VAR) or "").strip()
+    if not raw:
+        return _DEFAULT_LIVENESS_TTL_S
+    try:
+        return float(raw)
+    except ValueError:
+        return _DEFAULT_LIVENESS_TTL_S
+
+
+def reset_supervisor_liveness_cache() -> None:
+    """Drop every memoized snapshot. For tests, and for a caller that has just
+    changed queue state and wants the next read to reflect it immediately."""
+    with _liveness_lock:
+        _liveness_cache.clear()
+
+
 def _compute_supervisor_liveness(
+    udir: Any,
+    *,
+    now_ts: float | None = None,
+) -> dict[str, Any]:
+    """Cached front for :func:`_compute_supervisor_liveness_uncached`.
+
+    Same shape and same contract. An explicit ``now_ts`` bypasses the cache
+    entirely: a caller pinning the clock is asking for a snapshot computed against
+    THAT instant, and handing them one computed against a different one would be a
+    wrong answer rather than a stale one.
+    """
+    ttl = _liveness_ttl()
+    if ttl <= 0 or now_ts is not None:
+        return _compute_supervisor_liveness_uncached(udir, now_ts=now_ts)
+
+    key = str(udir)
+    now = time.monotonic()
+    with _liveness_lock:
+        hit = _liveness_cache.get(key)
+        if hit is not None and now < hit[0]:
+            return copy.deepcopy(hit[1])
+
+    # Computed outside the lock: this reads dozens of files, and holding the lock
+    # across it would serialize concurrent status reads behind one another --
+    # making a cache added for capacity into a contention point instead.
+    snapshot = _compute_supervisor_liveness_uncached(udir)
+    with _liveness_lock:
+        # Bound the map: one entry per universe is fine, an unbounded dict keyed
+        # by caller-influenced paths is a slow leak.
+        if len(_liveness_cache) > 256:
+            _liveness_cache.clear()
+        _liveness_cache[key] = (time.monotonic() + ttl, snapshot)
+    return copy.deepcopy(snapshot)
+
+
+def _compute_supervisor_liveness_uncached(
     udir: Any,
     *,
     now_ts: float | None = None,
