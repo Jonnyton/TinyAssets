@@ -108,6 +108,23 @@ def _answer(uid, **doc):
 
 
 def _rail(uid):
+    """The rail, minus the platform's own synthesized "connect a model" tab.
+
+    That row is prepended whenever nothing serves the universe, which is true of
+    every fixture here. These tests are about the AGENT's asks, so they filter it
+    out; it has its own tests below.
+    """
+    from tinyassets.api.pending_requests import _LLM_REQUEST_ID, list_requests
+
+    out = list_requests(universe_id=uid)
+    if isinstance(out.get("pending"), list):
+        out["pending"] = [r for r in out["pending"]
+                          if r.get("request_id") != _LLM_REQUEST_ID]
+        out["count"] = len(out["pending"])
+    return out
+
+
+def _raw_rail(uid):
     from tinyassets.api.pending_requests import list_requests
 
     return list_requests(universe_id=uid)
@@ -295,10 +312,11 @@ def test_dispatch_through_the_pinned_handles(base):
         assert json.loads(raw)["status"] == "pending"
 
         rail = json.loads(us.read_graph(target="pending_requests", graph_id="u-1"))
-        assert rail["count"] == 1
-        assert rail["pending"][0]["kind"] == "API"
+        asks = [r for r in rail["pending"] if r["request_id"] != "sys_connect_llm"]
+        assert len(asks) == 1
+        assert asks[0]["kind"] == "API"
 
-        rid = rail["pending"][0]["request_id"]
+        rid = asks[0]["request_id"]
         done = us.write_graph(target="connection", operation="answer_request",
                               graph_id="u-1",
                               payload_json=json.dumps(
@@ -320,7 +338,9 @@ def test_feedback_and_dont_ask_again_ride_the_answer(base):
                  fields=[{"name": "ok", "label": "Go ahead?", "type": "choice",
                           "options": ["yes", "no"]}])
 
-    out = _answer("u-1", request_id=asked["request_id"], values={"ok": "no"},
+    # A user who thinks it is too promotional clicks "Not now" — the system
+    # knows Send vs Not now, and cannot read intent out of a field value.
+    out = _answer("u-1", request_id=asked["request_id"], dismiss=True,
                   feedback="too promotional", dont_ask_again=True)
 
     assert out["suppressed"] is True
@@ -328,12 +348,15 @@ def test_feedback_and_dont_ask_again_ride_the_answer(base):
     # The agent can read back WHY, not just that it was refused.
     assert _rail("u-1")["recently_answered"][0]["feedback"] == "too promotional"
 
-    # Asking the identical thing again is refused, with the reason attached.
+    # Asking the identical thing again returns the STANDING DECISION, with the
+    # reason attached — not a bare refusal.
     again = _ask("u-1", kind="Approval", title="Post this to X?",
                  action={"type": "answer"},
                  fields=[{"name": "ok", "label": "Go ahead?", "type": "choice",
                           "options": ["yes", "no"]}])
-    assert again["error"] == "suppressed"
+    assert again["status"] == "settled"
+    assert again["decision"] == "declined"
+    assert again["may_proceed"] is False
     assert again["feedback"] == "too promotional"
     assert _rail("u-1")["count"] == 0
 
@@ -346,7 +369,8 @@ def test_a_dismissal_can_also_mute(base):
     out = _answer("u-1", request_id=asked["request_id"], dismiss=True,
                   feedback="I will do this myself", dont_ask_again=True)
     assert out["suppressed"] is True
-    assert _ask("u-1")["error"] == "suppressed"
+    settled = _ask("u-1")
+    assert settled["status"] == "settled" and settled["may_proceed"] is False
 
 
 def test_muting_is_visible_and_undoable(base):
@@ -365,6 +389,53 @@ def test_muting_is_visible_and_undoable(base):
                             payload=json.dumps({"dedupe_key": muted[0]["dedupe_key"]}))
     assert lifted["status"] == "unmuted"
     assert _ask("u-1")["status"] == "pending"
+
+
+def test_a_standing_yes_lets_the_agent_proceed_without_asking_again(base):
+    """Founder 2026-08-27: "it might know from past interaction what it is
+    allowed and what needs approval".
+
+    "Don't ask me this again" on an approval usually means *yes, and stop
+    asking*. The first cut only ever produced a standing refusal, so a remembered
+    decision could only ever block — the opposite of what the user meant.
+    """
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    asked = _ask("u-1", kind="Approval", title="Post the weekly summary?",
+                 action={"type": "answer"},
+                 fields=[{"name": "ok", "label": "Go ahead?", "type": "text"}])
+
+    _answer("u-1", request_id=asked["request_id"], values={"ok": "yes"},
+            feedback="always fine for the weekly one", dont_ask_again=True)
+
+    again = _ask("u-1", kind="Approval", title="Post the weekly summary?",
+                 action={"type": "answer"},
+                 fields=[{"name": "ok", "label": "Go ahead?", "type": "text"}])
+
+    assert again["status"] == "settled"
+    assert again["decision"] == "allowed"
+    assert again["may_proceed"] is True, "a standing yes must let it proceed"
+    assert again["answer"] == {"ok": "yes"}
+    assert again["feedback"] == "always fine for the weekly one"
+    # And it costs the user nothing: no new tab appears.
+    assert _rail("u-1")["count"] == 0
+
+
+def test_the_rail_shows_what_was_decided_not_just_that_it_was_muted(base):
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    yes = _ask("u-1", kind="Approval", title="Allowed thing",
+               action={"type": "answer"},
+               fields=[{"name": "ok", "label": "OK?", "type": "text"}])
+    _answer("u-1", request_id=yes["request_id"], values={"ok": "y"},
+            dont_ask_again=True)
+    no = _ask("u-1", kind="Approval", title="Refused thing",
+              action={"type": "answer"},
+              fields=[{"name": "ok", "label": "OK?", "type": "text"}])
+    _answer("u-1", request_id=no["request_id"], dismiss=True, dont_ask_again=True)
+
+    decisions = {m["title"]: m["decision"] for m in _rail("u-1")["muted"]}
+    assert decisions == {"Allowed thing": "allowed", "Refused thing": "declined"}
 
 
 def test_muting_one_ask_does_not_mute_a_different_one(base):
@@ -556,3 +627,78 @@ def test_codex_a_lifted_mute_is_recorded_because_the_agent_shares_the_principal(
     rail = _rail("u-1")
     assert rail["mutes_lifted"], "a lifted mute must be visible, not silent"
     assert rail["mutes_lifted"][0]["dedupe_key"] == key
+
+
+def test_the_prompt_says_credentials_are_asked_for_once_not_per_action():
+    """Founder 2026-08-27: a credential is added "one or as they expire as
+    needed, not for each action with that credential". The earlier row pushed the
+    opposite way — it framed the tab as the way to get permission to act."""
+    import inspect
+
+    from tinyassets.api import prompts
+
+    src = inspect.getsource(prompts)
+    assert "ONCE per" in src and "never once per action" in src
+    # An action is a conversation by default; the tab is optional.
+    assert "ask in the conversation" in src
+    # And a standing yes must be acted on, not re-asked.
+    assert "may_proceed=true" in src
+
+
+# --------------------------------------------------------------------------- #
+# The one ask the platform raises for itself.
+# Founder 2026-08-27: "if the universe doesnt have an llm to run on then a
+# request for that will remain be present intil that is added and it will be
+# already in expanded view."
+# --------------------------------------------------------------------------- #
+
+
+def test_a_universe_with_no_model_is_asked_to_connect_one(base):
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+
+    rail = _raw_rail("u-1")
+    first = rail["pending"][0]
+
+    assert first["request_id"] == "sys_connect_llm"
+    assert first["kind"] == "LLM"
+    assert first["sticky"] is True, "it renders expanded and cannot be dismissed"
+
+
+def test_the_model_ask_leads_the_rail(base):
+    """It is a precondition, so it sits above whatever else is waiting."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    _ask("u-1")
+
+    kinds = [r["kind"] for r in _raw_rail("u-1")["pending"]]
+    assert kinds[0] == "LLM"
+    assert "API" in kinds
+
+
+def test_the_model_ask_cannot_be_answered_or_dismissed_away(base):
+    """A blocking ask that could be dismissed would leave the universe mute with
+    no way back. It is satisfied by connecting a model, not by answering."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+
+    for doc in ({"dismiss": True}, {"values": {"anything": "x"}}):
+        out = _answer("u-1", request_id="sys_connect_llm", **doc)
+        assert out["error"] == "not_answerable"
+
+    # Still there.
+    assert _raw_rail("u-1")["pending"][0]["request_id"] == "sys_connect_llm"
+
+
+def test_the_model_ask_disappears_once_something_serves(base, monkeypatch):
+    """It is derived, not stored — so it cannot go stale, and it goes away by
+    being satisfied rather than by being cleared."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    monkeypatch.setattr(
+        "tinyassets.api.pending_requests._serving_llm_bound",
+        lambda *a, **k: True,
+    )
+
+    ids = [r["request_id"] for r in _raw_rail("u-1")["pending"]]
+    assert "sys_connect_llm" not in ids

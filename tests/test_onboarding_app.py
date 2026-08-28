@@ -406,3 +406,74 @@ def test_request_tab_text_colour_is_one_named_variable():
     html, _csp = render_app_html()
     assert "--request-text:" in html
     assert "color:var(--request-text)" in html
+
+
+def test_the_request_colour_lives_in_a_file_an_agent_can_reproduce():
+    """Codex, 2026-08-27: the GitHub Contents API replaces a WHOLE file and has
+    no patch parameter, and app.html is ~98KB — no prompt reproduces that
+    byte-for-byte. So the founder's "change the colour and ship it live" goal was
+    unreachable through the substrate the agent actually has. The colour moved to
+    a few-line file, which is reachable."""
+    import json
+    from pathlib import Path
+
+    from tinyassets import onboarding
+    from tinyassets.onboarding import render_app_html, request_theme
+
+    theme_path = Path(onboarding.__file__).with_name("request_theme.json")
+    assert theme_path.is_file()
+    assert theme_path.stat().st_size < 1000, "the point is that it is small"
+    assert json.loads(theme_path.read_text("utf-8"))["request_text"].startswith("#")
+
+    html, _csp = render_app_html()
+    assert "__TA_REQUEST_TEXT__" not in html, "the placeholder must be substituted"
+    assert f"--request-text:{request_theme()['request_text']}" in html
+
+
+def test_a_bad_theme_value_never_reaches_the_page(tmp_path, monkeypatch):
+    """The file is editable by an agent through a pull request, so it is input,
+    not trusted CSS. A non-colour value falls back rather than being injected."""
+    from tinyassets import onboarding
+
+    bad = tmp_path / "request_theme.json"
+    bad.write_text('{"request_text": "red; } body{display:none} :root{"}', "utf-8")
+    monkeypatch.setattr(
+        onboarding.Path, "__truediv__", onboarding.Path.__truediv__, raising=False
+    )
+    monkeypatch.setattr(
+        onboarding, "_DEFAULT_REQUEST_TEXT", "#eef0ff", raising=False
+    )
+    # Point the reader at the hostile file.
+    real_with_name = onboarding.Path.with_name
+
+    def _fake_with_name(self, name):
+        return bad if name == "request_theme.json" else real_with_name(self, name)
+
+    monkeypatch.setattr(onboarding.Path, "with_name", _fake_with_name, raising=False)
+    assert onboarding.request_theme()["request_text"] == "#eef0ff"
+
+
+def test_the_connect_nav_button_is_gone_and_the_rail_is_the_way_in():
+    """Founder 2026-08-27: "the entire connect/add api connection button at the
+    top right of the app is being cut". It was also clipping against Upgrade and
+    Sign out at that width. The rail replaces it — including a way to add a key
+    proactively, so cutting the button does not remove the ability."""
+    from tinyassets.onboarding import render_app_html
+
+    html, _csp = render_app_html()
+    assert 'id="btn-connect"' not in html
+    assert 'id="btn-rail-add"' in html
+    # The rail stays present even with nothing waiting, or that route vanishes.
+    assert "rail.hidden = false;" in html
+
+
+def test_a_sticky_ask_renders_expanded_and_offers_no_dismiss():
+    """A universe with no model cannot be asked to accept having no model."""
+    from tinyassets.onboarding import render_app_html
+
+    html, _csp = render_app_html()
+    assert "req.sticky ?" in html
+    assert 'req.action.type === "connect_llm"' in html
+    # It hands off to the provider cards that already work, rather than
+    # reinventing the OAuth and token flows inside a tab.
+    assert "no fields, no feedback, no dismiss" in html

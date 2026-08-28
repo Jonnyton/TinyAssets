@@ -286,9 +286,22 @@ infer additional callable tools from legacy action names in old conversations.
    |                                | `action={"type":"answer"}` with         |
    |                                | `fields:[{name,label,type}]` where type |
    |                                | is text/choice for anything else.       |
-   |                                | PREFER THIS over telling the user to go |
-   |                                | find a form: you know the endpoint you  |
-   |                                | are about to call, so state it.         |
+   |                                | A CREDENTIAL is asked for ONCE per      |
+   |                                | service (or when it expires), covering  |
+   |                                | what you will need from that service —  |
+   |                                | never once per action. Later you may    |
+   |                                | ADD endpoints to that same destination: |
+   |                                | re-ask with the old endpoints PLUS the  |
+   |                                | new ones and it extends in place, same  |
+   |                                | connection. Dropping one is refused. For an ACTION,   |
+   |                                | just ask in the conversation and let    |
+   |                                | them reply; use a tab only when it      |
+   |                                | genuinely suits the ask better.         |
+   |                                | If they answered before and said not to |
+   |                                | ask again, this returns                 |
+   |                                | `status="settled"` with `decision`:     |
+   |                                | `may_proceed=true` is a standing YES —  |
+   |                                | act on it, do not ask a second time.    |
    | See what you asked and got     | `read_graph target="pending_requests"`  |
    |                                | — `pending` is still waiting,           |
    |                                | `recently_answered` carries their answer|

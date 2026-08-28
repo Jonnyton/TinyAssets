@@ -2872,6 +2872,92 @@ class ConnectionLedger:
                 (json.dumps(list(new_scopes)), connection_id, json.dumps(["http"])),
             )
 
+    def delete_connection(self, *, connection_id: str) -> bool:
+        """Remove a connection row outright, scoped to the VERIFIED principal.
+
+        ``revoke_connection`` stamps ``revoked_at`` and leaves the row. That is a
+        tombstone, and connection ids are DETERMINISTIC on (universe,
+        destination) — so a tombstone permanently burns that name: every later
+        deposit of it trips the revoked-row conflict. Removal has to actually
+        delete, or "remove it and add it again" is impossible.
+
+        The owner comes from ``require_authenticated_principal_id`` — the trusted
+        daemon verifier — NOT from a caller argument. Codex (2026-08-27) showed
+        the first version trusted a caller-supplied ``owner_user_id``: with the
+        verifier identity ``mallory``, passing ``owner_user_id="alice"`` deleted
+        Alice's connection. The only caller happened to pass its own actor, so it
+        was not exploitable, but the invariant the docstring claimed was false —
+        and an invariant that holds only because of who calls it is not one.
+        """
+        owner = self.require_authenticated_principal_id()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM outbound_connections "
+                "WHERE connection_id = ? AND owner_user_id = ?",
+                (connection_id, owner),
+            )
+            return cursor.rowcount > 0
+
+    def delete_grant(self, *, grant_id: str) -> bool:
+        """Remove a grant row outright, scoped to the VERIFIED principal."""
+        owner = self.require_authenticated_principal_id()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM outbound_connection_grants "
+                "WHERE grant_id = ? AND owner_user_id = ?",
+                (grant_id, owner),
+            )
+            return cursor.rowcount > 0
+
+    def extend_http_connection_endpoints(
+        self,
+        *,
+        connection_id: str,
+        endpoints: Any,
+        scopes: tuple[str, ...],
+        expected_endpoints_json: str,
+    ) -> bool:
+        """ADD endpoints to an existing http connection. Never remove or replace.
+
+        A credential is deposited once and extended as the work needs it — the
+        alternative was a fresh connection (and a fresh paste) per endpoint,
+        because a deterministic id plus any policy difference read as a hard
+        conflict.
+
+        Two things keep this from being a widening primitive:
+
+        * **Additive only.** The caller has already checked the new set is a
+          superset; this re-checks nothing about intent but writes the union, so
+          an endpoint another graph depends on cannot vanish here. Narrowing and
+          removal stay unsupported (they are a different, destructive intent).
+        * **CAS-guarded.** The UPDATE matches on the exact endpoint JSON the
+          caller read, so a concurrent deposit that changed the policy in between
+          makes this a no-op instead of clobbering it.
+
+        Returns True when the row was updated.
+        """
+        parsed = _parse_allowed_endpoints(endpoints)
+        if not parsed:
+            raise SsrfValidationError(
+                "an http connection requires at least one allowed endpoint"
+            )
+        new_scopes = tuple(_required("scope", scope) for scope in scopes)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE outbound_connections
+                SET allowed_endpoints_json = ?, scopes_json = ?
+                WHERE connection_id = ? AND allowed_endpoints_json = ?
+                """,
+                (
+                    json.dumps([ep.as_dict() for ep in parsed]),
+                    json.dumps(list(new_scopes)),
+                    connection_id,
+                    expected_endpoints_json,
+                ),
+            )
+            return cursor.rowcount > 0
+
     def _get_connection_resource(
         self, connection_id: str
     ) -> ConnectionResource | None:

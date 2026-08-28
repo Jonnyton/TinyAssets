@@ -550,6 +550,82 @@ def _restore_owner_rows(
     conn.commit()
 
 
+def forget_credential(
+    universe_dir: str | Path,
+    *,
+    credential_type: str,
+    service: str,
+    universe_id: str | None = None,
+) -> dict[str, Any]:
+    """Remove matching records from the vault. The ONLY path that forgets.
+
+    ``write_credential_vault`` merges: ``_merge_single_record`` either appends a
+    new record or replaces a matching one, and has no branch that drops one. So
+    until now nothing could take a secret back out — revoking a grant stopped it
+    being *usable* while the material stayed on disk, and calling that "removed"
+    would have been a lie to the person who asked.
+
+    Ordering mirrors the write exactly, for the same reason: the owner-row
+    transaction commits FIRST and the vault file is replaced last, so a
+    concurrent unlocked reader never sees a credential whose ownership row has
+    already gone. Ownership rows prune to the records that survive, which is the
+    existing behaviour for a vanished record — nothing special is needed here.
+
+    Returns ``{"removed": n}``; removing something absent is 0, not an error, so
+    a retry after a partial failure is safe.
+    """
+    from tinyassets.provider_assignment import provider_assignment_admission
+    from tinyassets.storage import db_path
+
+    universe = Path(universe_dir).resolve(strict=False)
+    uid = (universe_id or universe.name).strip()
+    if uid != universe.name:
+        raise ValueError("credential universe does not match its canonical directory")
+    wanted_type = (credential_type or "").strip()
+    wanted_service = (service or "").strip()
+    if not wanted_type or not wanted_service:
+        raise ValueError("credential_type and service are required to forget")
+
+    with provider_assignment_admission().exclusive(universe):
+        conn = sqlite3.connect(db_path(universe.parent), isolation_level=None)
+        try:
+            _ensure_llm_deposit_owner_schema(conn)
+            existing = load_credential_vault(universe)
+            final_records = [
+                record
+                for record in existing
+                if not (
+                    str(record.get("credential_type") or "") == wanted_type
+                    and str(record.get("service") or "") == wanted_service
+                )
+            ]
+            removed = len(existing) - len(final_records)
+            if not removed:
+                return {"removed": 0}
+
+            final_owner_keys = _ownership_service_keys(final_records)
+            conn.execute("BEGIN IMMEDIATE")
+            if final_owner_keys:
+                placeholders = ",".join("?" for _ in final_owner_keys)
+                conn.execute(
+                    f"""
+                    DELETE FROM llm_credential_deposit_owners
+                     WHERE universe_id = ? AND service NOT IN ({placeholders})
+                    """,
+                    (uid, *sorted(final_owner_keys)),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM llm_credential_deposit_owners WHERE universe_id = ?",
+                    (uid,),
+                )
+            conn.commit()
+            _persist_credential_vault_file(universe, final_records)
+            return {"removed": removed}
+        finally:
+            conn.close()
+
+
 def write_credential_vault(
     universe_dir: str | Path,
     credentials: list[dict[str, Any]] | dict[str, Any],

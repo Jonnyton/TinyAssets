@@ -722,7 +722,10 @@ def test_reprovision_with_changed_endpoints_is_a_conflict(base: Path) -> None:
     silent reuse of the old connection under a rotated secret. Changing an
     existing connection's policy is UNSUPPORTED in Slice 1 (no revoke-then-
     reprovision path exists — revoke only stamps revoked_at); a policy change
-    needs a new destination until the dedicated update op lands."""
+    needs a new destination. ADDING endpoints is a different intent and now
+    extends in place (see the extension tests below); REPLACING one still
+    conflicts, because silently dropping an endpoint another graph depends on is
+    the dangerous direction."""
     udir = _make_universe(base, "u-epchg", admin="founder")
     _login("founder")
 
@@ -1047,3 +1050,276 @@ def test_connect_http_adds_no_advertised_handle(base: Path) -> None:
         assert "connect_http" not in advertised
     finally:
         importlib.reload(us)
+
+
+# --------------------------------------------------------------------------- #
+# Endpoint EXTENSION — a credential is deposited once and grows with the work.
+# Founder 2026-08-27: "not for each action with that credential".
+# --------------------------------------------------------------------------- #
+
+_MORE = [
+    {"host": "api.example.com", "path_template": "/v1/messages", "methods": ["POST"]},
+    {"host": "api.example.com", "path_template": "/v1/threads", "methods": ["POST"]},
+]
+
+
+def test_adding_an_endpoint_extends_instead_of_conflicting(base: Path) -> None:
+    """Before this, a deterministic id plus ANY policy difference was a hard
+    conflict — so adding one endpoint meant a whole new connection under a new
+    name, and another paste of the same key."""
+    _make_universe(base, "u-ext", admin="founder")
+    _login("founder")
+    assert _connect("u-ext", secret="sk-v1")["status"] == "provisioned"
+
+    out = _connect("u-ext", secret="sk-v1", endpoints=_MORE)
+
+    assert out["status"] == "provisioned", out
+    paths = sorted(e["path_template"] for e in out["allowed_endpoints"])
+    assert paths == ["/v1/messages", "/v1/threads"]
+    # The original endpoint survives — extension adds, it never replaces.
+    from tinyassets.api.http_connection import _ids
+
+    conn_id, _ = _ids(universe_id="u-ext", destination="webhook:acme")
+    resource = _ledger(base, "founder")._get_connection_resource(conn_id)
+    assert sorted(e.path_template for e in resource.allowed_endpoints) == [
+        "/v1/messages", "/v1/threads",
+    ]
+
+
+def test_extension_widens_the_method_scope_with_it(base: Path) -> None:
+    """The scope is the method union the effector matches a verb against, so it
+    has to grow with the endpoints or the new one is unusable."""
+    _make_universe(base, "u-ext2", admin="founder")
+    _login("founder")
+    _connect("u-ext2", secret="sk-v1")
+
+    out = _connect("u-ext2", secret="sk-v1", endpoints=[
+        {"host": "api.example.com", "path_template": "/v1/messages",
+         "methods": ["POST"]},
+        {"host": "api.example.com", "path_template": "/v1/files", "methods": ["PUT"]},
+    ])
+
+    assert out["status"] == "provisioned"
+    from tinyassets.api.http_connection import _ids
+
+    conn_id, _ = _ids(universe_id="u-ext2", destination="webhook:acme")
+    resource = _ledger(base, "founder")._get_connection_resource(conn_id)
+    assert sorted(resource.scopes) == ["POST", "PUT"]
+
+
+def test_removing_an_endpoint_is_still_a_conflict(base: Path) -> None:
+    """Only ADDITION is an extension. Dropping an endpoint another graph depends
+    on is a different, destructive intent and must not happen by re-deposit."""
+    _make_universe(base, "u-narrow", admin="founder")
+    _login("founder")
+    assert _connect("u-narrow", secret="sk-v1", endpoints=_MORE)["status"] == "provisioned"
+
+    out = _connect("u-narrow", secret="sk-v2", endpoints=[_MORE[0]])
+
+    assert out == {"error": "connection_conflict", "resource": "connection"}
+    from tinyassets.api.http_connection import _ids
+
+    conn_id, _ = _ids(universe_id="u-narrow", destination="webhook:acme")
+    resource = _ledger(base, "founder")._get_connection_resource(conn_id)
+    assert len(resource.allowed_endpoints) == 2, "nothing was dropped"
+
+
+def test_extension_still_refuses_a_different_owner_or_scheme(base: Path) -> None:
+    """Extension relaxes ONE field. Every other immutable check still holds."""
+    from tinyassets.daemon_server import grant_universe_access
+
+    _make_universe(base, "u-ext3", admin="founder")
+    grant_universe_access(base, universe_id="u-ext3", actor_id="other",
+                          permission="admin", granted_by="founder")
+    _login("founder")
+    _connect("u-ext3", secret="sk-v1")
+
+    # A different auth scheme, even while adding endpoints, is not an extension.
+    assert _connect("u-ext3", secret="u:p", endpoints=_MORE,
+                    auth_scheme="basic")["error"] == "connection_conflict"
+    # Nor is a different owner.
+    _login("other")
+    assert _connect("u-ext3", secret="sk-v1",
+                    endpoints=_MORE)["error"] == "connection_conflict"
+
+
+def test_an_unchanged_redeposit_is_still_idempotent(base: Path) -> None:
+    """Extension must not turn the ordinary same-policy re-deposit into a write."""
+    _make_universe(base, "u-same", admin="founder")
+    _login("founder")
+    first = _connect("u-same", secret="sk-v1")
+    again = _connect("u-same", secret="sk-v2")
+
+    assert again["status"] == "provisioned"
+    assert again["connection_id"] == first["connection_id"]
+    assert again["allowed_endpoints"] == first["allowed_endpoints"]
+
+
+# --------------------------------------------------------------------------- #
+# Removal — grant, row, AND secret. Anything less is not a removal.
+# --------------------------------------------------------------------------- #
+
+
+def _forget(uid: str, destination: str = "webhook:acme") -> Any:
+    from tinyassets.api.http_connection import forget_http
+
+    return forget_http(universe_id=uid,
+                       payload=json.dumps({"destination": destination}))
+
+
+def test_forgetting_removes_the_secret_not_just_the_grant(base: Path) -> None:
+    """The vault could only add or replace — `_merge_single_record` has no branch
+    that drops a record — so nothing could take a secret back out. Revoking the
+    grant stopped it being USABLE while the material stayed on disk, and calling
+    that "removed" would have been a lie."""
+    udir = _make_universe(base, "u-forget", admin="founder")
+    _login("founder")
+    assert _connect("u-forget", secret="sk-SECRET-v1")["status"] == "provisioned"
+    assert len(_http_records(udir)) == 1
+
+    out = _forget("u-forget")
+
+    assert out["status"] == "forgotten"
+    assert out["secret_removed"] is True
+    assert _http_records(udir) == [], "the secret must actually be gone"
+    from tinyassets.api.http_connection import _ids
+
+    conn_id, grant_id = _ids(universe_id="u-forget", destination="webhook:acme")
+    ledger = _ledger(base, "founder")
+    assert ledger._get_connection_resource(conn_id) is None
+    assert ledger.get_grant(grant_id) is None
+
+
+def test_a_forgotten_name_is_free_again(base: Path) -> None:
+    """THE reason removal deletes rather than tombstones. revoke_connection
+    stamps revoked_at and leaves the row, and ids are deterministic on
+    (universe, destination) — so a tombstone would burn that name forever."""
+    _make_universe(base, "u-reuse", admin="founder")
+    _login("founder")
+    _connect("u-reuse", secret="sk-v1")
+    _forget("u-reuse")
+
+    again = _connect("u-reuse", secret="sk-v2")
+
+    assert again["status"] == "provisioned", again
+    assert [e["path_template"] for e in again["allowed_endpoints"]] == ["/v1/messages"]
+
+
+def test_a_second_forget_refuses_rather_than_deleting_whatever_is_there_now(
+    base: Path,
+) -> None:
+    """Codex 2026-08-27: the first version claimed "idempotent, safe to retry",
+    and it was destructive. Fail between the row deletion and the secret
+    deletion, let the owner re-deposit, retry — and the retry deleted the NEW
+    credential. Nothing in a stateless "forget destination X" call distinguishes
+    a retry from a fresh request, and ids are deterministic so even the
+    connection id matches. So a forget with no connection present is a refusal."""
+    udir = _make_universe(base, "u-idem", admin="founder")
+    _login("founder")
+    _connect("u-idem", secret="sk-v1")
+
+    assert _forget("u-idem")["secret_removed"] is True
+    assert _forget("u-idem") == {"error": "not_found", "resource": "connection"}
+
+    # The case that actually matters: a re-deposit after a forget must survive a
+    # stale retry of that forget.
+    assert _connect("u-idem", secret="sk-NEW")["status"] == "provisioned"
+    assert _forget("u-idem")["secret_removed"] is True  # deliberate, not stale
+    _connect("u-idem", secret="sk-NEWER")
+    recs = _http_records(udir)
+    assert len(recs) == 1 and recs[0]["token"] == "sk-NEWER"
+
+
+def test_a_co_admin_cannot_forget_another_principals_credential(base: Path) -> None:
+    from tinyassets.daemon_server import grant_universe_access
+
+    udir = _make_universe(base, "u-fowner", admin="founder")
+    grant_universe_access(base, universe_id="u-fowner", actor_id="coadmin",
+                          permission="admin", granted_by="founder")
+    _login("founder")
+    _connect("u-fowner", secret="founder-secret")
+
+    _login("coadmin")
+    assert _forget("u-fowner") == {"error": "not_found", "resource": "connection"}
+    _login("founder")
+    assert len(_http_records(udir)) == 1, "the owner's secret survived"
+
+
+def test_forgetting_needs_an_owner(base: Path) -> None:
+    _make_universe(base, "u-fauth", admin="founder", write="writer")
+    _login("writer")
+    assert _forget("u-fauth") == {"error": "not_found", "resource": "connection"}
+    _logout()
+    assert _forget("u-fauth")["error"] == "authentication_required"
+
+
+def test_forget_routes_through_write_graph(base: Path) -> None:
+    import importlib
+
+    from tinyassets import universe_server as us
+
+    udir = _make_universe(base, "u-froute", admin="founder")
+    _login("founder")
+    _connect("u-froute", secret="sk-route")
+    importlib.reload(us)
+    try:
+        raw = us.write_graph(target="connection", operation="forget_http",
+                             graph_id="u-froute",
+                             payload_json=json.dumps({"destination": "webhook:acme"}))
+        assert json.loads(raw)["status"] == "forgotten"
+        assert _http_records(udir) == []
+    finally:
+        importlib.reload(us)
+
+
+def test_an_orphaned_secret_cannot_be_deleted_by_a_co_admin(base: Path) -> None:
+    """Codex reproduction: orphan a credential (vault write succeeds, connection
+    creation fails), then have a co-admin call forget. With no connection row
+    there is no proof of ownership, so the first version deleted another
+    principal's secret. An absent row is a refusal, not a licence."""
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.daemon_server import grant_universe_access
+
+    udir = _make_universe(base, "u-orph", admin="founder")
+    grant_universe_access(base, universe_id="u-orph", actor_id="coadmin",
+                          permission="admin", granted_by="founder")
+    # An orphan: vault record with no connection row.
+    write_credential_vault(
+        udir,
+        [{"credential_type": "http", "service": "webhook:acme",
+          "destination": "webhook:acme", "token": "sk-ORPHAN"}],
+        owner_user_id="founder", universe_id="u-orph",
+    )
+    assert len(_http_records(udir)) == 1
+
+    _login("coadmin")
+    assert _forget("u-orph") == {"error": "not_found", "resource": "connection"}
+    assert _http_records(udir)[0]["token"] == "sk-ORPHAN", "the orphan survived"
+
+
+def test_the_ledger_delete_uses_the_verified_principal_not_an_argument(base: Path) -> None:
+    """Codex: with verifier identity `mallory`, passing owner_user_id="alice"
+    deleted Alice's rows. The owner now comes from the trusted verifier, so the
+    invariant holds regardless of who calls it."""
+    import inspect
+
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    for name in ("delete_connection", "delete_grant"):
+        sig = inspect.signature(getattr(ConnectionLedger, name))
+        assert "owner_user_id" not in sig.parameters, name
+        src = inspect.getsource(getattr(ConnectionLedger, name))
+        assert "require_authenticated_principal_id()" in src, name
+
+    _make_universe(base, "u-verif", admin="founder")
+    _login("founder")
+    _connect("u-verif", secret="sk-v1")
+    from tinyassets.api.http_connection import _ids
+
+    conn_id, grant_id = _ids(universe_id="u-verif", destination="webhook:acme")
+    # A ledger whose verifier says "mallory" cannot delete founder's rows.
+    mallory = ConnectionLedger(base / "outbound.db",
+                               verify_authenticated_principal=lambda: "mallory")
+    assert mallory.delete_grant(grant_id=grant_id) is False
+    assert mallory.delete_connection(connection_id=conn_id) is False
+    assert _ledger(base, "founder")._get_connection_resource(conn_id) is not None

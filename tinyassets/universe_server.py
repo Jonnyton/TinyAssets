@@ -991,6 +991,15 @@ def write_graph(
                     payload=payload_json,
                 )
             )
+        if connection_operation in ("forget_http", "forget"):
+            # Remove a connection AND its secret. Deliberately NOT on the served
+            # surface: destruction is the user's, and the agent shares their
+            # principal so no gate could tell the two apart.
+            from tinyassets.api.http_connection import forget_http
+
+            return json.dumps(
+                forget_http(universe_id=graph_id, payload=payload_json)
+            )
         if connection_operation == "connect_http":
             # Owner-scoped provisioning of a generic outbound http connection so a
             # universe can act on a channel (Slack, any HTTPS API). Its own
