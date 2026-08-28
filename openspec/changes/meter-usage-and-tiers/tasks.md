@@ -2,7 +2,7 @@
 
 ## 1. Metering foundation
 
-- [ ] 1.1 Per-universe usage ledger holding effects, compute-minutes and storage. Reuse the
+- [x] 1.1 Per-universe usage ledger holding effects, compute-minutes and storage. Reuse the
       atomic `BEGIN IMMEDIATE` count-and-insert shape from `_engine_run_admit`
       (`tinyassets/engine_mcp_server.py:86-148`) — it closes a real TOCTOU race — and the
       symlink/path-escape refusal guarding that ledger.
