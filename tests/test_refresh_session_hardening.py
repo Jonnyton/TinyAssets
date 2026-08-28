@@ -33,7 +33,15 @@ def _data_dir(tmp_path, monkeypatch):
 )
 def test_a_stored_session_is_not_readable_by_anyone_else():
     handle = onboarding._mint_refresh_session("rt_secret_value")
-    path = onboarding._refresh_store_dir() / f"{handle}.json"
+    # Resolve the file the way the code does. This test was written when the handle
+    # WAS the filename; the digest rename left it pointing at a path that no longer
+    # exists, and because it skips on Windows the local run never noticed. CI on
+    # Linux did.
+    path = (
+        onboarding._refresh_store_dir()
+        / f"{onboarding._handle_path_key(handle)}.json"
+    )
+    assert path.exists(), "the store did not write where the code reads"
     mode = stat.S_IMODE(path.stat().st_mode)
     assert mode & (stat.S_IRGRP | stat.S_IROTH) == 0, (
         f"refresh token file is group/other readable: {oct(mode)}"
