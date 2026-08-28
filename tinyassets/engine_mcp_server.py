@@ -1555,10 +1555,13 @@ def connect_compute(
     uses whatever provider the universe serves.
 
     NO SECRET crosses this surface. For an ``api_key_http`` provider the owner must
-    FIRST deposit the credential in the app's "Deposit API connection" form (tap
-    "Connect / add API connection" at the top of this app; same app, one tap; it
-    is ``connect_http``),
-    which grants an http connection to this universe; pass that grant's id as ``ref``.
+    FIRST deposit the credential, which grants an http connection to this universe;
+    pass that grant's id as ``ref``. ASK THEM FOR IT — raise a request with
+    ``write_graph target="pending_request" operation="ask"`` and an
+    ``action={"type":"connect_http", ...}`` naming the exact endpoints you need. It
+    appears as a tab on the right of their app, they paste the key into it, and the
+    deposit happens there (that is ``connect_http``). Never send them hunting for a
+    control: the nav button was cut on 2026-08-27 and asking is the route now.
     For a ``subscription_cli`` provider the ``ref`` is the CLI name (``codex`` /
     ``claude-code``) and the subscription is deposited via ``connect_llm``.
 

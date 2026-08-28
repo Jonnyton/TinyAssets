@@ -491,3 +491,29 @@ def test_an_unconfirmed_message_survives_a_reload_and_says_so():
     assert "function restoreInflight(turns)" in html
     assert "This message was never confirmed" in html
     assert "Send it again" in html
+
+
+def test_the_connect_nav_button_is_gone_and_the_rail_is_the_way_in():
+    """Founder 2026-08-27: "the entire connect/add api connection button at the
+    top right of the app is being cut". It was also clipping against Upgrade and
+    Sign out at that width. The rail replaces it — including a way to add a key
+    proactively, so cutting the button does not remove the ability."""
+    from tinyassets.onboarding import render_app_html
+
+    html, _csp = render_app_html()
+    assert 'id="btn-connect"' not in html
+    assert 'id="btn-rail-add"' in html
+    # The rail stays present even with nothing waiting, or that route vanishes.
+    assert "rail.hidden = false;" in html
+
+
+def test_a_sticky_ask_renders_expanded_and_offers_no_dismiss():
+    """A universe with no model cannot be asked to accept having no model."""
+    from tinyassets.onboarding import render_app_html
+
+    html, _csp = render_app_html()
+    assert "req.sticky ?" in html
+    assert 'req.action.type === "connect_llm"' in html
+    # It hands off to the provider cards that already work, rather than
+    # reinventing the OAuth and token flows inside a tab.
+    assert "no fields, no feedback, no dismiss" in html

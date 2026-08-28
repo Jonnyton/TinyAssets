@@ -108,6 +108,23 @@ def _answer(uid, **doc):
 
 
 def _rail(uid):
+    """The rail, minus the platform's own synthesized "connect a model" tab.
+
+    That row is prepended whenever nothing serves the universe, which is true of
+    every fixture here. These tests are about the AGENT's asks, so they filter it
+    out; it has its own tests below.
+    """
+    from tinyassets.api.pending_requests import _LLM_REQUEST_ID, list_requests
+
+    out = list_requests(universe_id=uid)
+    if isinstance(out.get("pending"), list):
+        out["pending"] = [r for r in out["pending"]
+                          if r.get("request_id") != _LLM_REQUEST_ID]
+        out["count"] = len(out["pending"])
+    return out
+
+
+def _raw_rail(uid):
     from tinyassets.api.pending_requests import list_requests
 
     return list_requests(universe_id=uid)
@@ -296,10 +313,11 @@ def test_dispatch_through_the_pinned_handles(base):
         assert json.loads(raw)["status"] == "pending"
 
         rail = json.loads(us.read_graph(target="pending_requests", graph_id="u-1"))
-        assert rail["count"] == 1
-        assert rail["pending"][0]["kind"] == "API"
+        asks = [r for r in rail["pending"] if r["request_id"] != "sys_connect_llm"]
+        assert len(asks) == 1
+        assert asks[0]["kind"] == "API"
 
-        rid = rail["pending"][0]["request_id"]
+        rid = asks[0]["request_id"]
         done = us.write_graph(target="connection", operation="answer_request",
                               graph_id="u-1",
                               payload_json=json.dumps(
@@ -746,3 +764,63 @@ def test_the_prompt_says_credentials_are_asked_for_once_not_per_action():
     assert "ask in the conversation" in src
     # And a standing yes must be acted on, not re-asked.
     assert "may_proceed=true" in src
+
+
+
+# --------------------------------------------------------------------------- #
+# The one ask the platform raises for itself.
+# Founder 2026-08-27: "if the universe doesnt have an llm to run on then a
+# request for that will remain be present intil that is added and it will be
+# already in expanded view."
+# --------------------------------------------------------------------------- #
+
+
+def test_a_universe_with_no_model_is_asked_to_connect_one(base):
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+
+    rail = _raw_rail("u-1")
+    first = rail["pending"][0]
+
+    assert first["request_id"] == "sys_connect_llm"
+    assert first["kind"] == "LLM"
+    assert first["sticky"] is True, "it renders expanded and cannot be dismissed"
+
+
+def test_the_model_ask_leads_the_rail(base):
+    """It is a precondition, so it sits above whatever else is waiting."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    _ask("u-1")
+
+    kinds = [r["kind"] for r in _raw_rail("u-1")["pending"]]
+    assert kinds[0] == "LLM"
+    assert "API" in kinds
+
+
+def test_the_model_ask_cannot_be_answered_or_dismissed_away(base):
+    """A blocking ask that could be dismissed would leave the universe mute with
+    no way back. It is satisfied by connecting a model, not by answering."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+
+    for doc in ({"dismiss": True}, {"values": {"anything": "x"}}):
+        out = _answer("u-1", request_id="sys_connect_llm", **doc)
+        assert out["error"] == "not_answerable"
+
+    # Still there.
+    assert _raw_rail("u-1")["pending"][0]["request_id"] == "sys_connect_llm"
+
+
+def test_the_model_ask_disappears_once_something_serves(base, monkeypatch):
+    """It is derived, not stored — so it cannot go stale, and it goes away by
+    being satisfied rather than by being cleared."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    monkeypatch.setattr(
+        "tinyassets.api.pending_requests._serving_llm_bound",
+        lambda *a, **k: True,
+    )
+
+    ids = [r["request_id"] for r in _raw_rail("u-1")["pending"]]
+    assert "sys_connect_llm" not in ids
