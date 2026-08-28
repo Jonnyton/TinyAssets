@@ -313,18 +313,30 @@ This is a *different* token from the one above: it is the fine-grained PAT the f
 their own universe on 2026-08-28 so the agent could open a PR itself. It is live and correctly
 scoped to the repo; only the Contents permission is short.
 
-Evidence, 2026-08-28 (three probes, all write-free):
+**GitHub itself names the missing permission.** Captured 2026-08-28 19:14 UTC from the raw
+effect-evidence map of a live `authenticated_external_call` run (`delivered: true` — the call
+reached GitHub and was refused there, not by us):
 
 ```
-POST /repos/jonnyton/tinyassets/git/refs
-403 {"message":"Resource not accessible by personal access token",
-     "documentation_url":"https://docs.github.com/rest/git/refs#create-a-reference"}
+POST /repos/jonnyton/tinyassets/git/refs   ->   403
+{"message":"Resource not accessible by personal access token",
+ "documentation_url":"https://docs.github.com/rest/git/refs#create-a-reference"}
+
+x-accepted-github-permissions:      contents=write; contents=write,workflows=write
+github-authentication-token-expiration: 2026-09-27 03:07:38 UTC
 ```
 
-`GET`s on the same repo succeed for the same token — it reads `main`'s ref and the full
-`app.html` — which is what proves the token is live and the repo is selected. `Pull requests:
-Read and write` is already set and does **not** cover `POST /git/refs`; branch creation is a
-Contents write.
+`x-accepted-github-permissions` is GitHub stating the requirement outright: **`contents=write`**.
+The expiry header proves the token is live and not expired. `GET`s on the same repo succeed —
+it reads `main`'s ref and the full `app.html` — which is what proves the repo is selected.
+`Pull requests: Read and write` is already set and does **not** cover `POST /git/refs`; branch
+creation, and `PUT /contents/...`, are both Contents writes.
+
+Everything on the platform side is already open and was verified the same day: the connection
+exists with `POST /git/refs` allowed, effector consent for destination `github` is granted and
+unrevoked, and `TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED` /
+`TINYASSETS_GITHUB_OUTBOUND_VIA_CONNECTION` are both `1` in the running daemon. This one
+dropdown is the only remaining gate.
 
 *Blocks:* the founder's standing goal that the universe push a PR end-to-end to deployed.
 *Where:* GitHub → Settings → Developer settings → Fine-grained tokens → this token →
