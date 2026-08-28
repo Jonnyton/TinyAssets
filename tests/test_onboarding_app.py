@@ -395,3 +395,14 @@ def test_the_rail_offers_feedback_and_dont_ask_again():
     assert "Don't ask me this again" in html
     assert "payload.dont_ask_again = true" in html
     assert "payload.feedback =" in html
+
+
+def test_request_tab_text_colour_is_one_named_variable():
+    """The universe's first end-to-end change is a colour edit on the request
+    rail. Routing that text through a single named variable makes the patch one
+    line with a tiny blast radius, and makes "did it land?" answerable by eye."""
+    from tinyassets.onboarding import render_app_html
+
+    html, _csp = render_app_html()
+    assert "--request-text:" in html
+    assert "color:var(--request-text)" in html
