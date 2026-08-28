@@ -27,6 +27,46 @@ so this blocks acceptance, not just convenience.
 
 ---
 
+### Stripe is in sandbox — no real user can subscribe
+
+*Verified live 2026-08-28 against the Stripe API from production.*
+
+The subscribe/cancel flow is proven end-to-end, but against **test mode**. Real money cannot
+move, and a real card would be declined:
+
+| fact | value |
+|---|---|
+| `STRIPE_SECRET_KEY` in production | `sk_test_…` (sandbox) |
+| `charges_enabled` | **false** |
+| `payouts_enabled` | **false** |
+| `details_submitted` | **false** — activation never started |
+| the $20 price | `livemode: false`, test mode only |
+
+`charges_enabled: false` is the decisive one. The account cannot take a real payment in any
+mode until it is activated, and only the founder can do that.
+
+**Four steps, in order. Steps 1–3 are founder-only; step 4 I can do once you have the key.**
+
+1. **Activate the Stripe account** — business details and a bank account, at
+   <https://dashboard.stripe.com/account/onboarding>. Stripe also asks for a business URL and
+   usually a terms/refund page. Nothing below works until `charges_enabled` is true.
+2. **Create the live product and price** — $20/month USD with lookup key
+   **`tinyassets_paid_monthly`**, exactly as in test mode. `resolve_price_id()` resolves by
+   lookup key, so a live price without that key makes every checkout refuse with
+   `billing_unavailable`.
+3. **Create a live webhook endpoint** → `https://tinyassets.io/mcp/app/billing/webhook`,
+   events `customer.subscription.created/updated/deleted`. Keep its signing secret.
+4. **Swap the two secrets on the droplet** — the live `sk_live_…` and that signing secret into
+   `/etc/tinyassets/env`, then restart. Hand them to me and I will place them without echoing
+   them; do not paste them into chat if you would rather not — a vault path works too.
+
+**Do not do this before the checkout-lease redesign lands**
+(`docs/concerns/2026-08-28-the-checkout-claim-is-not-tied-to-its-session.md`). The remaining
+races there can create two subscriptions for one universe. In test mode that is a wrong number;
+with a live key it is a double charge and a chargeback.
+
+---
+
 ### Phone app — send the first message and see it answered
 
 *Live and proven on the founder's S24+ via adb (2026-08-22): OpenAI link completes, PONG inside the

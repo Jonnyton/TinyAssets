@@ -67,12 +67,15 @@ def test_calls_fail_soft_rather_than_crashing_when_billing_is_off(monkeypatch):
             universe_id="u-1",
             success_url="https://x/ok",
             cancel_url="https://x/no",
-            attempt_anchor=1_700_000_000.5,
+            attempt_anchor=_NOW_ANCHOR,
         )
 
 
 # --- webhook verification ----------------------------------------------------
 
+#: A CURRENT anchor. A fixed past one now fails the preflight-budget check, which
+#: is the check working: an anchor from an hour ago cannot yield a valid expiry.
+_NOW_ANCHOR = time.time()
 SECRET = "whsec_test_secret"
 PRICE_ID = "price_tinyassets_monthly"
 
@@ -302,7 +305,7 @@ def test_checkout_refuses_a_second_subscription_for_one_universe(monkeypatch):
             universe_id="u-1",
             success_url="https://x/ok",
             cancel_url="https://x/no",
-            attempt_anchor=1_700_000_000.5,
+            attempt_anchor=_NOW_ANCHOR,
         )
     assert caught.value.subscription_id == "sub_existing"
 
@@ -421,7 +424,7 @@ def test_checkout_sends_an_idempotency_key(monkeypatch):
         universe_id="u-1",
             success_url="https://x/ok",
             cancel_url="https://x/no",
-            attempt_anchor=1_700_000_000.5,
+            attempt_anchor=_NOW_ANCHOR,
     )
     assert seen["key"], "no idempotency key sent"
     assert seen["key"].startswith("checkout:")
@@ -780,7 +783,7 @@ def test_the_session_is_given_an_expiry_inside_its_claim(monkeypatch):
     """
     from tinyassets.storage.subscription_state import CHECKOUT_WINDOW_SECONDS
 
-    anchor = 1_700_000_000.0
+    anchor = _NOW_ANCHOR
     sent = _capture_checkout(monkeypatch, anchor=anchor)
 
     expires_at = int(sent["params"]["expires_at"])
@@ -798,9 +801,9 @@ def test_the_idempotency_key_identifies_the_attempt_not_the_clock(monkeypatch):
     resubscribing inside one bucket returned the original finished session -- a dead
     checkout URL. Two different attempts must be two different requests.
     """
-    first = _capture_checkout(monkeypatch, anchor=1_700_000_000.0)
-    same = _capture_checkout(monkeypatch, anchor=1_700_000_000.0)
-    later = _capture_checkout(monkeypatch, anchor=1_700_000_001.0)
+    first = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR)
+    same = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR)
+    later = _capture_checkout(monkeypatch, anchor=(_NOW_ANCHOR + 1.0))
 
     assert first["key"] == same["key"], "a retry of one attempt must deduplicate"
     assert first["key"] != later["key"], "a new attempt must not replay the old one"
@@ -813,8 +816,8 @@ def test_a_retry_of_one_attempt_sends_identical_parameters(monkeypatch):
     a parameter mismatch -- the retry path the key exists for would be the one that
     breaks.
     """
-    first = _capture_checkout(monkeypatch, anchor=1_700_000_000.0)
-    retry = _capture_checkout(monkeypatch, anchor=1_700_000_000.0)
+    first = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR)
+    retry = _capture_checkout(monkeypatch, anchor=_NOW_ANCHOR)
 
     assert first["params"] == retry["params"]
 
@@ -922,10 +925,21 @@ def test_a_cancellation_does_not_release_a_pending_claim(tmp_path, monkeypatch):
         ({"origin": "https://tinyassets.io"}, "https://tinyassets.io"),
         ({"origin": "https://evil.example"}, "https://tinyassets.io"),
         ({"origin": "javascript:alert(1)"}, "https://tinyassets.io"),
+        # A matching Host does NOT make an origin ours. Nothing enforces an
+        # allowed-hosts list, so Host is attacker-controlled: an allowlist that
+        # accepts whatever the client claims to be is not an allowlist. The first
+        # version of this test asserted the OPPOSITE and so could not see the
+        # bypass (Codex, 2026-08-28).
         (
-            {"origin": "https://local.test", "host": "local.test"},
-            "https://local.test",
+            {"origin": "https://attacker.example", "host": "attacker.example"},
+            "https://tinyassets.io",
         ),
+        # Scheme is part of the identity: this origin is only ever served over HTTPS.
+        ({"origin": "http://tinyassets.io"}, "https://tinyassets.io"),
+        # A malformed authority must not raise out of a billing route.
+        ({"origin": "https://["}, "https://tinyassets.io"),
+        ({"origin": "https://tinyassets.io/"}, "https://tinyassets.io"),
+        ({"origin": "HTTPS://TinyAssets.IO"}, "https://tinyassets.io"),
     ],
 )
 def test_checkout_return_urls_only_use_an_origin_we_serve(headers, expected):
@@ -938,6 +952,45 @@ def test_checkout_return_urls_only_use_an_origin_we_serve(headers, expected):
     request = _Request()
     request.headers = headers
     assert _checkout_return_origin(request) == expected
+
+
+def test_a_configured_public_resource_is_honoured(monkeypatch):
+    """A deployment on another hostname configures it; it does not claim it."""
+    from tinyassets import onboarding
+
+    monkeypatch.setattr(
+        onboarding, "app_config", lambda: {"resource": "https://staging.example/mcp"}
+    )
+
+    class _Request:
+        headers = {"origin": "https://staging.example", "host": "staging.example"}
+
+    assert onboarding._checkout_return_origin(_Request()) == "https://staging.example"
+
+
+def test_a_malformed_configured_resource_does_not_raise(monkeypatch):
+    from tinyassets import onboarding
+
+    monkeypatch.setattr(onboarding, "app_config", lambda: {"resource": "https://["})
+
+    class _Request:
+        headers = {"origin": "https://evil.example"}
+
+    assert onboarding._checkout_return_origin(_Request()) == "https://tinyassets.io"
+
+
+def test_an_overrun_preflight_refuses_instead_of_sending_a_doomed_expiry(monkeypatch):
+    """Stripe measures its 30-minute floor from ITS creation time, not our anchor.
+
+    Two Stripe GETs at a 20s timeout sit between the two, so a slow preflight can
+    leave less than 30 minutes and Stripe rejects with a generic 400. Fail loudly
+    (Hard Rule 8) rather than emit an expiry that cannot be valid.
+    """
+    from tinyassets.billing import BillingUnavailable
+
+    with pytest.raises(BillingUnavailable, match="preflight"):
+        # An anchor from an hour ago: whatever budget was allotted is long gone.
+        _capture_checkout(monkeypatch, anchor=time.time() - 3600)
 
 
 def test_the_checkout_route_actually_applies_the_origin_allowlist(

@@ -957,24 +957,35 @@ _CANONICAL_ORIGIN = "https://tinyassets.io"
 def _checkout_return_origin(request: Any) -> str:
     """The origin to build Stripe's success/cancel URLs from.
 
-    Only an origin this app serves -- the request's own Host, or the configured
-    public resource -- is honoured. Everything else gets the canonical public origin,
-    because these URLs leave our control the moment Stripe has them.
+    Only the canonical public origin or the configured public resource is honoured.
+    Everything else gets the canonical origin, because these URLs leave our control
+    the moment Stripe has them.
+
+    The request's own ``Host`` is deliberately NOT trusted. Nothing in this app
+    enforces an allowed-hosts list, so a caller can send ``Host: attacker.example``
+    with a matching ``Origin`` and have it echoed straight back -- an allowlist that
+    accepts whatever the client claims to be is not an allowlist (Codex, 2026-08-28).
+    A deployment on another hostname configures ``resource`` rather than relying on
+    the header.
+
+    Scheme is compared too. Matching on host alone accepted ``http://tinyassets.io``
+    for an origin that is only ever served over HTTPS.
     """
-    origin = str(request.headers.get("origin", "")).strip().rstrip("/")
+    origin = str(request.headers.get("origin", "")).strip().rstrip("/").lower()
     if not origin:
         return _CANONICAL_ORIGIN
-    parts = urlsplit(origin.lower())
-    if parts.scheme not in ("https", "http") or not parts.netloc:
-        return _CANONICAL_ORIGIN
-    allowed = {str(request.headers.get("host", "")).strip().lower()}
-    try:
-        allowed.add(urlsplit(str(app_config().get("resource") or "")).netloc.lower())
-    except Exception:
-        pass
-    allowed.add(urlsplit(_CANONICAL_ORIGIN).netloc)
-    allowed.discard("")
-    return origin if parts.netloc in allowed else _CANONICAL_ORIGIN
+    allowed = {_CANONICAL_ORIGIN}
+    resource = str(app_config().get("resource") or "").strip().lower()
+    if resource:
+        # urlsplit raises on a malformed authority (`https://[` -> Invalid IPv6 URL),
+        # and an unhandled ValueError here is a 500 on a billing route.
+        try:
+            parts = urlsplit(resource)
+            if parts.scheme in ("https", "http") and parts.netloc:
+                allowed.add(f"{parts.scheme}://{parts.netloc}")
+        except ValueError:
+            pass
+    return origin if origin in allowed else _CANONICAL_ORIGIN
 
 
 #: HTTP status for each checkout outcome. Explicit, because the previous rule --
