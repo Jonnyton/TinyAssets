@@ -12,6 +12,49 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Legacy pre-credential data in `/data`
+
+### 12 ownerless workspace directories predate the universe model — keep or delete?
+
+*Found 2026-08-28 while acting on the founder rule "no universe should exist that is not
+bound to a WorkOS user."*
+
+The rule was applied to **universes**, which is what it says. `founder_home` in
+`/data/.tinyassets.db` holds exactly two bindings, and both their universes are present:
+
+| WorkOS subject | Universe |
+|---|---|
+| `user_01KWGB2NV5PV4PWHT5RYKJPB8X` | `u-01kxm1vszd8hwp7em418asq8h9` |
+| `user_01KY3ZGR4VY0DYQ6BVJS4ZM5Y5` | `u-01ky3zh1arr8qth8jee7zx63pq` |
+
+`u-01ky3gkxg9qmz111v5qk7p2qbm` had no binding and was archived to
+`/data/_removed_universes_20260828/`. `u-tiny` is unbound too but is the live operator
+universe doing the work — archived as a copy, left in place, and it is the open question
+below.
+
+**What needs a decision.** Twelve further directories under `/data` are *pre-universe*
+workspaces: no `soul.md`, no `identity.md`, no owner, from the old workflow model —
+`concordance`, `earthos`, `echoes-of-the-cosmos`, `grandma-bread-recipe`,
+`local-bubble-galactic-survival-model`, `meridian-ashes`, `patch-loop-live`,
+`team-standup-action-tracker`, `tiny`, `workflow-voice`, `default-universe`, plus
+`cloud-automation-inputs`. Four hold real content (`PROGRAM.md`, `activity.log`,
+`artifacts/`, `branch_tasks.json`); the rest are empty but for lock files.
+
+They are not universes, so the rule does not reach them, and I am not going to widen a
+deletion instruction on my own judgment — I already got one wrong today (below). **Say
+"delete the legacy workspaces" and I will archive and remove all twelve; say "keep" and
+I will close this row.**
+
+### `u-tiny` is unbound, and it is the universe doing the work
+
+Same rule, genuinely awkward case: `u-tiny` has no `founder_home` row and its only admin
+grant is to `u-tiny-operator`, a synthetic non-WorkOS actor. Under the rule it should not
+exist. It is also live. The fix is to bind it to your WorkOS subject rather than delete
+it — **confirm and I will bind `u-tiny` to `user_01KWGB2NV5PV4PWHT5RYKJPB8X`** (or another
+subject you name) and drop the synthetic admin grant.
+
+---
+
 ## Blocking a proof path
 
 ### claude.ai account out of credits — blocks the browser `ui-test` route
