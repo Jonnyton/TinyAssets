@@ -7,14 +7,21 @@ Measured on the live box 2026-08-28, and this is the gap it closes:
 * Each turn spawns a provider CLI subprocess costing **~189 MB RSS / ~77 MB PSS** —
   and that is the floor, measured with `--version`, before any prompt, history or
   inference.
-* Nothing between those two numbers bounded anything. 40 x 77 MB is 3.1 GB on a 2 GB
-  box.
-* The container has no memory limit, so the OOM would kill the **host**, taking the
+* The container has no memory limit, so an overshoot OOMs the **host**, taking the
   Cloudflare tunnel with it — a total public outage rather than a degraded service.
 
-So the failure mode for "many simultaneous users" was not slowness, it was the box
-falling over, and no amount of RAM removes an unbounded spawn. A bigger box moves the
-number; a bound changes the shape.
+**The honest ceiling was 8, not 40**, and I said 40 first. `converse` reaches providers
+through `call_provider` -> `ProviderRouter.call_sync`, which runs the async chain on a
+thread pool of `_SYNC_CALL_MAX_WORKERS = 8`. So 8 x 77 MB is ~620 MB beside a ~390 MB
+daemon: tight on a 2 GB box, not the 3.1 GB catastrophe.
+
+That does not make an explicit bound unnecessary, and it is worth being precise about
+why. The 8 was **incidental**: its own comment says it exists to stop one slow provider
+serializing other sync callers — a LATENCY rationale that happens to cap memory as a side
+effect. Anyone raising it for throughput, which is exactly what someone chasing capacity
+would do, would silently multiply memory risk with no sign that they had. A bound whose
+stated purpose is the thing it protects can be reasoned about; one that protects by
+accident cannot.
 
 Hard Rule 8 (fail loudly, never silently) decides the behaviour at the limit: wait
 briefly for a slot, then **refuse with an honest, actionable message**. A refusal a user

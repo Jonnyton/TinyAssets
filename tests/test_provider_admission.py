@@ -102,12 +102,21 @@ def test_a_waiter_is_admitted_when_a_slot_frees(monkeypatch):
     assert admitted == [True], "a waiter was refused even though a slot freed up"
 
 
-def test_the_default_is_below_the_anyio_handler_pool(monkeypatch):
-    """The threadpool bounds cheap handlers; this bounds ~77 MB subprocesses. A
-    default at or above 40 would be no bound at all on the thing that costs memory."""
+def test_the_default_fits_the_box_it_runs_on(monkeypatch):
+    """Sized from memory, not from a thread count.
+
+    The pre-existing ceiling was the router's `_SYNC_CALL_MAX_WORKERS = 8` thread pool
+    — incidental, since its own comment gives a latency rationale, so raising it for
+    throughput would have multiplied memory risk invisibly. This bound is explicitly
+    about the ~77 MB each subprocess costs.
+    """
     monkeypatch.delenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", raising=False)
-    assert pa._DEFAULT_LIMIT < 40
-    assert pa._DEFAULT_LIMIT * 77 < 2048, (
+    from tinyassets.providers import router
+
+    assert pa._DEFAULT_LIMIT <= router._SYNC_CALL_MAX_WORKERS, (
+        "a bound above the thread pool that already gates these calls would never bind"
+    )
+    assert pa._DEFAULT_LIMIT * 77 + 390 < 2048, (
         "the default must fit the 2 GB box alongside the ~390 MB daemon"
     )
 

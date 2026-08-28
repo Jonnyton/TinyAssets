@@ -131,6 +131,27 @@ Average load is not the problem. 1,000 users × ~20 calls/day is 0.23 req/s, com
   entire platform, all users.
 - So the honest ceiling on *simultaneous real work* is single digits, not hundreds.
 
+## The ceiling on concurrent turns was 8, and it was there by accident
+
+Two claims I made and had to walk back, both by tracing the call graph instead of
+reasoning from the handler:
+
+1. **"`converse` takes one of the 4 run-pool slots."** It does not. It calls
+   `_call_writer` directly, so the run pool bounds `run_graph`, not chat turns.
+2. **"So 40 anyio handlers could spawn 40 subprocesses."** Also wrong, and I said it
+   after correcting the first one. `converse` reaches providers through `call_provider`
+   -> `ProviderRouter.call_sync`, which runs the async chain on a thread pool of
+   `_SYNC_CALL_MAX_WORKERS = 8`. The real ceiling was **8**: about 620 MB of PSS beside a
+   ~390 MB daemon. Tight on 2 GB, not the 3.1 GB catastrophe I described.
+
+The interesting part is *why* an explicit bound is still worth having. That 8 is
+**incidental**: its own comment says it exists so one slow provider cannot serialize
+other sync callers — a latency rationale that caps memory only as a side effect. Anyone
+raising it for throughput, which is precisely what someone chasing capacity would do,
+would multiply memory risk with nothing to warn them. A bound whose stated purpose is the
+thing it protects can be reasoned about and tuned against the box; one that protects by
+accident cannot.
+
 ## Real work is bound by MEMORY, not CPU — and I had this backwards
 
 I wrote above that the 4-worker run pool was "conservative given that a run is mostly
