@@ -1,0 +1,36 @@
+# Tasks
+
+## 1. Resolve operation (server)
+
+- [ ] Add the owner-gated resolve handler: accepts credential *shape* + optional
+      intent, returns a proposed policy, writes nothing.
+- [ ] Refuse payloads carrying full credential values, so the
+      no-transmission guarantee is enforced at the boundary.
+- [ ] Narrow or reject any proposal broader than a hand-authored deposit can
+      express (no host-wide, no wildcard path).
+- [ ] Tests: unknown-service resolution, secret-bearing payload refused,
+      non-owner gets the uniform not-found envelope.
+
+## 2. Shape extraction (client)
+
+- [ ] Split a paste into candidate values, sending label + public prefix +
+      length only; keep the remainder in the browser.
+- [ ] Carry hostnames, URLs and field labels through as-is — already non-secret
+      and usually decisive.
+- [ ] Test: a paste with four OAuth values plus extras yields shape with no
+      high-entropy material.
+
+## 3. The one-box surface
+
+- [ ] Replace the five-field card with one textarea + optional intent line;
+      move the explicit fields behind a disclosure, pre-filled from the proposal.
+- [ ] Render the proposal as one plain sentence and deposit only on confirm.
+- [ ] Test: declining confirms nothing is written; a wrong proposal is editable
+      and the edited values are what deposit.
+
+## 4. Proof
+
+- [ ] Live test through the deployed app: paste GitHub material with extra
+      unused values, confirm, and have the universe open a real PR on the
+      resulting connection.
+- [ ] Sync the delta specs and archive.
