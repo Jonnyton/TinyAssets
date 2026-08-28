@@ -59,6 +59,9 @@ _ENTITLEMENT_V2 = "2"
 _ENTITLEMENT_VERSION_KEY = "tinyassets_entitlement_version"
 _ENTITLEMENT_CLAIM_KEY = "tinyassets_entitlement_claim"
 
+#: Carried on the Checkout Session so terminal session events name their attempt.
+ATTEMPT_ID_KEY = "tinyassets_attempt_id"
+
 #: Stripe rejects a signature older than this; so do we, to stop replay.
 _WEBHOOK_TOLERANCE_S = 300
 
@@ -66,9 +69,6 @@ _WEBHOOK_TOLERANCE_S = 300
 #: long a checkout stays completable. Two constants that "must agree" is a comment,
 #: not an invariant -- and this pair silently did not agree with Stripe's actual
 #: behaviour at all (see CHECKOUT_SESSION_SECONDS).
-from tinyassets.storage.subscription_state import (  # noqa: E402
-    CHECKOUT_SESSION_SECONDS,
-)
 
 
 def _basic_auth(key: str) -> str:
@@ -86,6 +86,18 @@ class AlreadySubscribed(RuntimeError):
 
 class BillingUnavailable(RuntimeError):
     """Billing is not configured, or Stripe could not be reached."""
+
+
+class BillingAmbiguous(BillingUnavailable):
+    """The request may or may not have reached Stripe.
+
+    A subclass, so every existing `except BillingUnavailable` keeps catching it, but
+    the checkout route can tell the two apart -- and it must. On a definite refusal
+    (Stripe answered) no session was created, so the attempt can be released. On an
+    ambiguous one (timeout, connection reset, lost response) a session MAY exist, and
+    releasing the attempt would let a retry create a second one beside it. That is the
+    lost-response path that made the old idempotency key useless.
+    """
 
 
 def _secret_key() -> str:
@@ -239,7 +251,8 @@ def _post(
             f"Stripe rejected the request (HTTP {exc.code})"
         ) from None
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise BillingUnavailable(
+        # We do not know whether Stripe processed this. AMBIGUOUS, not refused.
+        raise BillingAmbiguous(
             f"Stripe unreachable: {type(exc).__name__}"
         ) from None
 
@@ -276,12 +289,37 @@ def resolve_price_id() -> str:
     return str(price["id"])
 
 
+def checkout_params(
+    *, universe_id: str, success_url: str, cancel_url: str, expires_at: int
+) -> dict:
+    """The creation inputs for one attempt, resolved ONCE and then frozen.
+
+    Everything that could drift between calls is settled here and persisted with the
+    attempt: the price id (re-resolved per call otherwise), the entitlement version
+    and its claim (recomputed from the current key otherwise), and the return URLs
+    (built from the request Origin otherwise). Stripe replays an idempotent request
+    only for byte-identical parameters, so a retry that recomputes any of these is not
+    a retry -- it is a second request that creates a second session.
+    """
+    price_id = resolve_price_id()
+    version = _issuing_version()
+    return {
+        "price_id": price_id,
+        "success_url": success_url,
+        "cancel_url": cancel_url,
+        "expires_at": int(expires_at),
+        "entitlement_version": version,
+        "entitlement_claim": _entitlement_claim(
+            universe_id, price_id, version=version
+        ),
+    }
+
+
 def create_checkout_session(
     *,
     universe_id: str,
-    success_url: str,
-    cancel_url: str,
-    attempt_anchor: float,
+    attempt_id: str,
+    params: dict,
 ) -> dict[str, str]:
     """Start a subscription. Returns the hosted checkout URL for the user.
 
@@ -289,34 +327,37 @@ def create_checkout_session(
     the webhook can map the resulting subscription back to a universe without us
     keeping a side table that could drift.
 
-    ``attempt_anchor`` is the checkout claim's timestamp, and it identifies this
-    attempt. Both the session's expiry and its idempotency key derive from it, which
-    is what makes "retry of the same attempt" and "a genuinely new attempt" different
-    requests to Stripe. It must be the value ``claim_checkout`` returned -- deriving
-    either from the wall clock instead re-created one of two bugs: a retry seconds
-    later changed ``expires_at`` and so conflicted with its own idempotency key, and
-    a resubscribe inside the same bucket replayed the original completed session.
+    ``params`` must be the FROZEN inputs stored with the attempt, and ``attempt_id``
+    its identity. Together they make "a retry of this attempt" byte-identical to its
+    first send, so Stripe replays the original session instead of creating a second.
+    Recomputing any input here -- as re-resolving the price or re-deriving the expiry
+    from the clock would -- turns a retry into a new request under the same key, which
+    Stripe rejects outright.
+
+    The attempt id also rides on the SESSION's metadata, not just the subscription's,
+    so a terminal Checkout Session event can be bound back to its attempt even when
+    the session id was never recorded locally.
     """
     if not universe_id:
         raise ValueError("universe_id is required")
+    if not attempt_id:
+        raise ValueError("attempt_id is required")
     # Idempotency at the product level: without this, two completed sessions
     # create two live subscriptions for one universe and the user is billed
     # twice (Codex REJECT 2026-08-28 C).
     existing = find_active_subscription(universe_id)
     if existing:
         raise AlreadySubscribed(existing)
-    if attempt_anchor <= 0:
-        raise ValueError("attempt_anchor is required")
-    price_id = resolve_price_id()
-    claim = _entitlement_claim(universe_id, price_id)
-    # Stripe measures the 30-minute floor from ITS creation time, not our anchor, and
-    # the calls above can take tens of seconds. If they overran the budget, say so
-    # instead of sending an expiry Stripe will reject with a generic 400.
-    expires_at = int(attempt_anchor + CHECKOUT_SESSION_SECONDS)
+    price_id = str(params["price_id"])
+    claim = str(params["entitlement_claim"])
+    expires_at = int(params["expires_at"])
+    # Stripe measures its 30-minute floor from ITS creation time, not from when we
+    # froze these params. If a slow preflight or a late retry has eaten the margin,
+    # say so instead of sending an expiry Stripe will reject with a generic 400.
     if expires_at < _time.time() + 1800:
         raise BillingUnavailable(
-            "checkout preflight exceeded its budget; the session could not be "
-            "given a valid expiry"
+            "this checkout attempt is too old to be given a valid Stripe expiry; "
+            "start a new one"
         )
     session = _post(
         "checkout/sessions",
@@ -332,13 +373,17 @@ def create_checkout_session(
             ("expires_at", str(expires_at)),
             ("line_items[0][price]", price_id),
             ("line_items[0][quantity]", "1"),
-            ("success_url", success_url),
-            ("cancel_url", cancel_url),
+            ("success_url", str(params["success_url"])),
+            ("cancel_url", str(params["cancel_url"])),
             ("client_reference_id", universe_id),
+            # On the SESSION, so `checkout.session.completed` / `.expired` carry it.
+            # That is what lets a terminal event settle an attempt whose session id we
+            # never managed to record -- Stripe can deliver it before we write.
+            (f"metadata[{ATTEMPT_ID_KEY}]", attempt_id),
             ("subscription_data[metadata][universe_id]", universe_id),
             (
                 f"subscription_data[metadata][{_ENTITLEMENT_VERSION_KEY}]",
-                _issuing_version(),
+                str(params["entitlement_version"]),
             ),
             (
                 f"subscription_data[metadata][{_ENTITLEMENT_CLAIM_KEY}]",
@@ -355,12 +400,11 @@ def create_checkout_session(
         # therefore a new key, and Stripe creates a second session. Closing that needs
         # the claim to remember its session id -- see
         # docs/concerns/2026-08-28-the-checkout-claim-is-not-tied-to-its-session.md.
-        idempotency_key=(
-            "checkout:"
-            + hashlib.sha256(
-                f"{universe_id}:{attempt_anchor!r}".encode()
-            ).hexdigest()
-        ),
+        # The ATTEMPT is the identity. A retry of this attempt is the same request;
+        # a new attempt is a new one. A wall-clock bucket was neither: resubscribing
+        # inside the same bucket replayed the original COMPLETED session and handed
+        # the user a dead checkout URL.
+        idempotency_key="checkout:" + attempt_id,
     )
     return {"id": str(session["id"]), "url": str(session["url"])}
 
@@ -562,6 +606,33 @@ def subscription_end_from_event(event: dict, *, secret: str = "") -> float | Non
     except (TypeError, ValueError):
         return None
     return ends_at if ends_at > 0 else None
+
+
+def checkout_settlement_from_event(event: dict) -> tuple[str, str] | None:
+    """``(session_id, attempt_id)`` for a TERMINAL Checkout Session event, else None.
+
+    Only `completed` and `expired` settle a lease: they are the two ways a session
+    stops being payable. Every other session event leaves it open, and releasing the
+    lease then would allow a second session beside one the user can still pay.
+
+    This grants nothing. It only identifies which lease may be released -- signature
+    verification already established that Stripe sent it, `livemode` already matched,
+    and entitlement is decided elsewhere, by the subscription's own signed claim.
+    """
+    kind = str(event.get("type") or "")
+    if kind not in ("checkout.session.completed", "checkout.session.expired"):
+        return None
+    obj = (event.get("data") or {}).get("object") or {}
+    if not isinstance(obj, dict):
+        return None
+    metadata = obj.get("metadata")
+    attempt_id = ""
+    if isinstance(metadata, dict):
+        attempt_id = str(metadata.get(ATTEMPT_ID_KEY) or "")
+    session_id = str(obj.get("id") or "")
+    if not session_id and not attempt_id:
+        return None
+    return session_id, attempt_id
 
 
 def subscription_state_from_event(
