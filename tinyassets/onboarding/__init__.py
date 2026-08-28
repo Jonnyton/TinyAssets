@@ -949,7 +949,12 @@ async def _handle_billing_status(request: Any) -> Any:
                 # docs/concerns/2026-08-28-per-universe-storage-is-515mb-of-
                 # duplication.md). Presenting all three as live limits would be a
                 # claim the code does not keep.
-                "enforced": ["effects"],
+                # Named for what it actually gates. wiki_write_back is a registered
+                # sink but writes to OUR OWN wiki, not the outside world, and is not
+                # metered; calling the dimension "effects" would claim more than is
+                # enforced (Codex REJECT round 2). External effects are the ones
+                # gated pre-flight.
+                "enforced": ["external_effects"],
                 "used": {
                     "effects": int(used["effects_committed"]),
                     "compute_minutes": round(used["compute_seconds"] / 60, 1),
@@ -977,13 +982,27 @@ async def _handle_billing_checkout(request: Any) -> Any:
     origin = str(request.headers.get("origin") or "https://tinyassets.io").rstrip("/")
 
     def _start() -> dict[str, Any]:
+        import time as _t
+
+        from tinyassets.api.helpers import _universe_dir
         from tinyassets.billing import BillingUnavailable, create_checkout_session
         from tinyassets.billing.stripe_adapter import AlreadySubscribed
+        from tinyassets.storage.usage_ledger import (
+            claim_checkout,
+            release_checkout_claim,
+        )
 
         with identity_context(identity):
             home = _read_home(identity)
             if not home:
                 return {"error": "no_home_universe"}
+            # Mutual exclusion BEFORE the Stripe round-trip. Checking Stripe then
+            # creating is check-then-act, and a pending session is not yet a
+            # subscription, so two concurrent clicks could each create one and bill
+            # the universe twice.
+            universe_dir = _universe_dir(home)
+            if not claim_checkout(universe_dir, now=_t.time()):
+                return {"error": "checkout_already_in_progress"}
             try:
                 return create_checkout_session(
                     universe_id=home,
@@ -991,9 +1010,11 @@ async def _handle_billing_checkout(request: Any) -> Any:
                     cancel_url=origin + "/mcp/app?subscribed=0",
                 )
             except AlreadySubscribed:
+                release_checkout_claim(universe_dir)
                 # Not an error state for the user - they are already paying.
                 return {"error": "already_subscribed"}
             except BillingUnavailable as exc:
+                release_checkout_claim(universe_dir)
                 # Billing being off must read AS billing being off - never as a
                 # crash, and never as the universe having done something wrong.
                 return {"error": "billing_unavailable", "detail": str(exc)}

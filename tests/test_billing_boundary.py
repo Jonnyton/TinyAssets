@@ -250,3 +250,58 @@ def test_finding_a_subscription_pages_past_the_first_hundred(monkeypatch):
     monkeypatch.setattr(stripe_adapter, "_get", _get)
     assert stripe_adapter.find_active_subscription("u-1") == "sub_target"
     assert calls["n"] == 2, "must have paged"
+
+
+def test_two_concurrent_checkouts_cannot_both_start(tmp_path):
+    """Check-then-create is not atomic; a pending session is not yet a subscription."""
+    import time
+
+    from tinyassets.storage.usage_ledger import claim_checkout, release_checkout_claim
+
+    now = time.time()
+    assert claim_checkout(tmp_path, now=now) is True
+    assert claim_checkout(tmp_path, now=now) is False, "second click must be refused"
+
+    release_checkout_claim(tmp_path)
+    assert claim_checkout(tmp_path, now=now) is True
+
+
+def test_an_abandoned_checkout_does_not_lock_the_universe_forever(tmp_path):
+    import time
+
+    from tinyassets.storage.usage_ledger import claim_checkout
+
+    now = time.time()
+    assert claim_checkout(tmp_path, now=now, ttl_seconds=60) is True
+    assert claim_checkout(tmp_path, now=now + 30, ttl_seconds=60) is False
+    assert claim_checkout(tmp_path, now=now + 120, ttl_seconds=60) is True
+
+
+def test_a_same_second_cancel_beats_a_same_second_activate(tmp_path):
+    """Stripe timestamps are second-granularity, so ties are ordinary.
+
+    Arrival order is not a safe tie-break for entitlement, so ties resolve toward
+    de-escalation: a paid tier is never handed out by a coin flip.
+    """
+    from tinyassets.storage.usage_ledger import apply_tier_event, get_tier
+
+    apply_tier_event(tmp_path, tier="free", event_created=500.0)
+    assert apply_tier_event(tmp_path, tier="paid", event_created=500.0) is False
+    assert get_tier(tmp_path) == "free"
+
+
+def test_exhausting_pagination_fails_loudly_instead_of_reporting_none(monkeypatch):
+    """Returning None would read as 'no subscription' and refuse a real cancel."""
+    from tinyassets.billing import stripe_adapter
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_fake")
+    monkeypatch.setattr(
+        stripe_adapter,
+        "_get",
+        lambda *_a, **_k: {
+            "data": [{"id": "sub_x", "metadata": {}}],
+            "has_more": True,
+        },
+    )
+    with pytest.raises(stripe_adapter.BillingUnavailable):
+        stripe_adapter.find_active_subscription("u-1")

@@ -466,6 +466,7 @@ def _run(
     # helper left THE primary channel-agnostic write primitive unmetered
     # (Codex REJECT 2026-08-28 A). run_id:node_id identifies one effect within a
     # run and is stable across a replay of the same node.
+    from tinyassets.storage.outbound_connections import AmbiguousProxyOutcome
     from tinyassets.storage.usage_ledger import get_tier
     from tinyassets.usage_policy import (
         release_effect_quota,
@@ -501,12 +502,17 @@ def _run(
         )
         response = proxy.request(verb, wire_request)
     except Exception as exc:
-        # Nothing reached the world, so the attempt costs nothing.
-        release_effect_quota(
-            base_path,
-            sink=EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
-            effect_key=_quota_key,
-        )
+        # Refund ONLY when we know nothing reached the world. An ambiguous outcome
+        # means the destination may already have applied the request — refunding it
+        # would let an effect that DID land be retried for free, which is the
+        # opposite of what a cap is for. Ambiguity keeps its slot; reconciliation
+        # settles or releases it once the truth is known (Codex REJECT round 2 A).
+        if not isinstance(exc, AmbiguousProxyOutcome):
+            release_effect_quota(
+                base_path,
+                sink=EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+                effect_key=_quota_key,
+            )
         # Secret-free by construction: the proxy/broker raise only sanitized,
         # credential-free errors across the governed boundary.
         return {

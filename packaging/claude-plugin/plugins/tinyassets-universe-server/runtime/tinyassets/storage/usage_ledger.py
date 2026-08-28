@@ -330,6 +330,18 @@ def apply_tier_event(
             if event_created < last:
                 conn.execute("ROLLBACK")
                 return False
+            if event_created == last:
+                # Stripe timestamps are second-granularity, so ties are ordinary and
+                # arrival order is not a safe tie-break for entitlement. Resolve
+                # deterministically in the direction that cannot over-entitle:
+                # de-escalation wins, so a same-second cancel beats a same-second
+                # activate regardless of which arrives first (Codex REJECT round 2 C).
+                current = conn.execute(
+                    "SELECT value FROM usage_meta WHERE key = ?", (_TIER_KEY,)
+                ).fetchone()
+                if current is not None and str(current[0]) == "free" and tier != "free":
+                    conn.execute("ROLLBACK")
+                    return False
             conn.execute(
                 "INSERT INTO usage_meta (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -345,3 +357,55 @@ def apply_tier_event(
         except Exception:
             conn.execute("ROLLBACK")
             raise
+
+
+_CHECKOUT_CLAIM_KEY = "checkout_claim_at"
+
+
+def claim_checkout(
+    universe_dir: str | Path, *, now: float, ttl_seconds: float = 900.0
+) -> bool:
+    """Take an exclusive, expiring claim on starting a checkout for this universe.
+
+    Checking Stripe for an existing subscription and then creating a session is
+    check-then-act: two concurrent requests can both see "none" and both create
+    sessions, which later become two subscriptions billing one universe twice
+    (Codex REJECT round 2 C). Stripe cannot close that for us — a pending session is
+    not yet a subscription — so the mutual exclusion has to live here.
+
+    The claim expires so an abandoned checkout cannot lock a universe out forever.
+    """
+    with _connect(universe_dir) as conn:
+        conn.executescript(_SCHEMA)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT value FROM usage_meta WHERE key = ?", (_CHECKOUT_CLAIM_KEY,)
+            ).fetchone()
+            if row is not None:
+                try:
+                    held_since = float(row[0])
+                except (TypeError, ValueError):
+                    held_since = 0.0
+                if now - held_since < ttl_seconds:
+                    conn.execute("ROLLBACK")
+                    return False
+            conn.execute(
+                "INSERT INTO usage_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (_CHECKOUT_CLAIM_KEY, str(now)),
+            )
+            conn.execute("COMMIT")
+            return True
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+
+def release_checkout_claim(universe_dir: str | Path) -> None:
+    """Drop the claim after a failed start, so a retry is not made to wait."""
+    with _connect(universe_dir) as conn:
+        conn.executescript(_SCHEMA)
+        conn.execute(
+            "DELETE FROM usage_meta WHERE key = ?", (_CHECKOUT_CLAIM_KEY,)
+        )

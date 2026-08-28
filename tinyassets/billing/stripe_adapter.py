@@ -189,7 +189,12 @@ def find_active_subscription(universe_id: str) -> str | None:
         if not found.get("has_more") or not data:
             return None
         starting_after = str(data[-1]["id"])
-    return None
+    # Ran out of pages while Stripe still says there are more. Returning None here
+    # would read as "no subscription" and silently refuse a legitimate cancel, so
+    # fail loudly instead (Codex REJECT round 2 C).
+    raise BillingUnavailable(
+        "could not scan all active subscriptions; cancel not attempted"
+    )
 
 
 def report_effect_usage(*, stripe_customer_id: str, count: int) -> dict:
