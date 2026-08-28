@@ -40,6 +40,7 @@ from tinyassets.billing.stripe_adapter import (  # noqa: E402
     PLAN_UNIT_AMOUNT,
     PRICE_LOOKUP_KEY,
     _price_matches_plan,
+    last_verified_delivery,
 )
 
 _API = "https://api.stripe.com/v1"
@@ -209,16 +210,30 @@ def check(webhook_url: str) -> list[str]:
         )
 
     # --- 5. what this script cannot see ---------------------------------------
-    print("\nNot checkable from here")
+    print("\nProof the configured secret matches the endpoint")
     if not os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip():
         print(f"{BAD} STRIPE_WEBHOOK_SECRET is not set in THIS environment")
         blockers.append("STRIPE_WEBHOOK_SECRET unset here (it must be set on the daemon)")
     else:
         print(f"{OK} STRIPE_WEBHOOK_SECRET is set here")
-    print(
-        f"{WARN} whether the daemon's secret matches THIS endpoint's signing secret "
-        "can only be proven by a real delivery"
-    )
+    delivery = last_verified_delivery()
+    if delivery is None:
+        print(f"{BAD} no webhook signature has EVER verified on this deployment")
+        print("         Send a test event from the Stripe dashboard, then re-run.")
+        blockers.append(
+            "no verified webhook delivery - the daemon's signing secret has never "
+            "been shown to match the endpoint; a live key with a stale test secret "
+            "takes real money and entitles nobody"
+        )
+    elif bool(delivery["livemode"]) != (mode == "live"):
+        got = "live" if delivery["livemode"] else "test"
+        print(f"{BAD} the last verified delivery was {got}-mode, but the key is {mode}")
+        blockers.append(
+            f"last verified webhook delivery was {got}-mode; send one in {mode} mode "
+            "to prove the configured secret matches the endpoint now"
+        )
+    else:
+        print(f"{OK} a {mode}-mode webhook signature has verified on this deployment")
     return blockers
 
 

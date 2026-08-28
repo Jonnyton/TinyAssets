@@ -1173,12 +1173,22 @@ async def _handle_billing_webhook(request: Any) -> Any:
     except (ValueError, UnicodeDecodeError):
         return JSONResponse({"error": "invalid_json"}, status_code=400)
 
-    from tinyassets.billing.stripe_adapter import event_mode_matches_key
+    from tinyassets.billing.stripe_adapter import (
+        event_mode_matches_key,
+        record_verified_delivery,
+    )
 
     # A valid signature proves Stripe sent it; it does not prove which MODE it came
     # from. If a test endpoint's signing secret were ever left configured on a live
     # deployment, TEST subscriptions -- free to create with card 4242 -- would grant
     # the paid tier. Refuse loudly rather than entitle across modes.
+    # The signature verified, so the configured secret really does belong to the
+    # endpoint Stripe is delivering to. Recorded BEFORE the mode check: a mode
+    # mismatch is a misconfiguration we want to refuse, but the signature being good
+    # is exactly the fact the go-live check needs, and it is true either way.
+    record_verified_delivery(
+        now=_time.time(), livemode=bool(event.get("livemode"))
+    )
     if not event_mode_matches_key(event):
         import logging
 

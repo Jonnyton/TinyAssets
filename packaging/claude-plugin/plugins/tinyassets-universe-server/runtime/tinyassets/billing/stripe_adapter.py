@@ -414,6 +414,60 @@ def find_active_subscription(universe_id: str) -> str | None:
 
 
 
+#: Written when a webhook signature verifies. See `record_verified_delivery`.
+_DELIVERY_MARKER = ".billing_webhook_verified.json"
+
+
+def verified_delivery_marker_path():
+    from tinyassets.storage import data_dir
+
+    return data_dir() / _DELIVERY_MARKER
+
+
+def record_verified_delivery(*, now: float, livemode: bool) -> None:
+    """Remember that a webhook's signature verified, and in which Stripe mode.
+
+    This is the ONLY evidence that the daemon's configured signing secret actually
+    belongs to the endpoint Stripe is delivering to. Nothing else can establish it:
+    signing secrets are per-endpoint and cannot be read back from the API, so the
+    go-live check could otherwise only warn.
+
+    It matters because of a failure that is silent in the worst direction. A live API
+    key with a STALE TEST signing secret lets real checkout succeed -- Stripe takes the
+    money -- while every entitlement webhook fails signature verification and is
+    dropped. The user pays and is never entitled, and nothing in the checkout flow
+    looks wrong. Recording a verified delivery turns that into something a go-live
+    check can refuse on.
+
+    Best-effort: a marker we cannot write must never cost us a webhook we can process.
+    """
+    import json as _json
+
+    try:
+        path = verified_delivery_marker_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            _json.dumps({"at": float(now), "livemode": bool(livemode)}),
+            encoding="utf-8",
+        )
+    except Exception:
+        _log.warning("could not record verified webhook delivery", exc_info=True)
+
+
+def last_verified_delivery() -> dict | None:
+    """The last verified delivery, or None if there has never been one."""
+    import json as _json
+
+    try:
+        raw = verified_delivery_marker_path().read_text(encoding="utf-8")
+        record = _json.loads(raw)
+        float(record["at"])
+        bool(record["livemode"])
+    except Exception:
+        return None
+    return record
+
+
 def key_is_live() -> bool:
     """Whether the configured key transacts real money."""
     return _secret_key().startswith("sk_live")
