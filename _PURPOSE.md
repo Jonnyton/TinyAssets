@@ -1,16 +1,16 @@
 # Worktree purpose
 
-Purpose: checkout-lease-build
+Purpose: golive-check-accuracy
 Provider: claude-code
-Branch: claude/checkout-lease-build
-Base ref: claude/checkout-session-lease (stacked on #2616)
-Issue/PR: resolves docs/concerns/2026-08-28-the-checkout-claim-is-not-tied-to-its-session.md
+Branch: claude/golive-check-accuracy
+Base ref: origin/main
+Issue/PR: fixes a misleading message in scripts/stripe_go_live.py; files the
+  assigned-queue error loop
 PLAN refs: billing
-Ship condition: the three money races are closed and mutation-checked; live activation
-  is no longer gated on this
+Ship condition: the delivery check names the path it read and says when the answer is
+  "not visible from here" rather than "never happened"
 Abandon condition: n/a
-Pickup hints: start-over is DEFERRED by design — resuming the open session closes the
-  lockout without adding a race around expiring a session the user may have just paid in
-Memory refs: two-authorities-for-one-fact; never-game-the-gate-with-xfail
-Related implications: stacked on #2616; retarget to main once that lands
+Pickup hints: the script is NOT in the deployed image — it runs from a checkout
+Memory refs: unavailable-often-means-unconfigured
+Related implications: docs/concerns/2026-08-28-assigned-queue-consumer-hot-error-loop.md
 Idea feed refs: (none)
