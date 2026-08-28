@@ -28,12 +28,12 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 | **P0** | [Graph/provider false attestation](2026-07-02-graph-provider-false-attestation.md) — router fallback neutralizes isolation refusals | 2026-07-02 |
 | **P0** | [Unauthenticated LAN session leak + CSRF writes](2026-07-21-unauth-lan-session-leak-csrf.md) — do not LAN-run | 2026-07-21 |
 | **P0** | [Public-site privacy, deps, and CI secret exposure](2026-07-27-public-site-privacy-deps-ci.md) — a same-repo PR can request 19 secrets | 2026-07-27 |
-| **P1** | [Subscribing buys a flag and nothing else](2026-08-28-the-paid-tier-buys-nothing.md) — nothing outside the billing module reads the tier; there is no metering, quota, or paid-only capability, so the $20 tier confers nothing. Blocks live activation | 2026-08-28 |
+| **P1** | [User code runs in the daemon process](2026-08-28-user-code-runs-in-process.md) — an approved source node reads the live Stripe key, every vault, every user's refresh token, and writes the paid-tier DB. #2629 bounds WHO may approve; nothing bounds what the code does | 2026-08-28 |
 | **P1** | [No OS engine sandbox](2026-07-02-no-os-engine-sandbox.md) — in-process confinement only; the denylist fails open | 2026-07-02 |
 | **P1** | [No live failure proof](2026-07-23-no-live-failure-proof.md) — escalation and caps are CI-only | 2026-07-23 |
 | **P1** | [Founder-taught canon defaults public](2026-08-06-founder-canon-defaults-public.md) — Codex reproduced | 2026-08-06 |
 | **P1** | [Served-agent BUILD verb parity](2026-08-23-served-surface-build-verb-parity.md) — partial; the rest is authority-sensitive | 2026-08-23 |
-| **P1** | [BYO-LLM refresh-token store](2026-08-23-byo-llm-refresh-token-store.md) — worker-readable tokens + session fixation; fix before a 2nd user | 2026-08-23 |
+| **P1** | [BYO-LLM refresh-token store](2026-08-23-byo-llm-refresh-token-store.md) — fixation + world-readable files + handle-as-filename CLOSED (#2627); plaintext at rest remains, and encryption cannot fix it while user code shares the process | 2026-08-23 |
 | **P1** | [`write_brain` persistent prompt-injection](2026-08-24-write-brain-prompt-injection.md) — attacker content re-injected into system role every turn | 2026-08-24 |
 | **P1** | [Pending-request mute bypass](2026-08-27-pending-request-mute-bypass.md) — different asks collide, and the asking agent can unmute itself | 2026-08-27 |
 | **P1** | [Unsafe-fence recovery path deleted](2026-08-27-unsafe-fence-recovery-path-deleted.md) — #2442 removed the only exit from `phase=unsafe_fenced` (observed live 2026-08-05, all five containers Exited) while three workflows still arm the fence | 2026-08-27 |

@@ -108,6 +108,39 @@ out. Double-billing is closed.
 
 ---
 
+### Decide who may sign up — the platform is single-tenant by construction
+
+*2026-08-28, from a cross-family multi-user review. Full finding:
+`docs/concerns/2026-08-28-user-code-runs-in-process.md`.*
+
+Stripe is live and provisioned. Four second-user blockers were found and fixed
+(#2627 session fixation and world-readable tokens, #2629 source-approval gate, #2630
+private-branch run bypass, #2632 write-ACL granting founder tier).
+
+**One is not fixed, because it is not a bug — it is the architecture.** Universe code
+runs `exec()` inside the daemon, with `os.environ` and the data dir reachable. So anyone
+who can get source approved can read the live Stripe key, every credential vault, every
+other user's session token, and can write the database that decides who has paid.
+
+#2629 bounds **who** may approve source (an allowlist, currently just your universe). It
+does not bound **what** approved code can do. Encryption would not help: the key lives in
+the same process.
+
+**So the decision is yours, and it is not technical:**
+
+1. **Open checkout to the public** — accept that a paying stranger who gets source
+   approved owns the deployment. Only sane if the approval allowlist stays exactly one
+   universe forever, which makes the paid tier a promise you cannot keep.
+2. **Keep checkout closed; subscribe yourself** — everything works, single-founder is the
+   threat model it was built for, and it is materially stronger than yesterday.
+3. **Build the boundary first** — run universe code in a real OS/container sandbox, or
+   move credential custody into a separate process the graph cannot reach. That is the
+   work that makes "real users" mean what it sounds like.
+
+I would do (2) now and (3) next. (1) is the one I would not do.
+
+---
+
 ### Confirm the free allowance, then I flip metering on
 
 *The `$20` question, now with a concrete proposal rather than an open one. Quota code is
