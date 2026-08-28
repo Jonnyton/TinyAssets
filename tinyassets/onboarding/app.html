@@ -1173,13 +1173,20 @@
         const m=t.match(/^["']?([A-Za-z][A-Za-z0-9 _.-]{0,63})["']?\s*[:=]\s*["']?(\S+?)["']?$/);
         const label=m?m[1].trim():"", raw=m?m[2]:t;
         // A credential-ish value: no spaces, long enough to not be a word.
-        if(/\s/.test(raw)||raw.length<8) return;
+        if(/\s/.test(raw)) return;
+        if(raw.length < (label?3:8)) return;   // labelled "Username: bob" is real
         if(/^(?:[a-z][a-z0-9+.-]*:\/\/)/i.test(raw)) return;   // a URL is a hint, not a secret
         const pm=raw.match(PREFIX_RE);
         shape.push({label,prefix:pm?pm[0]:"",length:raw.length});
         values.push({label,value:raw});
       });
-      const hints=[...new Set((blob.match(HINT_RE)||[]).map(h=>h.trim()))].slice(0,20);
+      // Host only. For some services the URL *is* the credential — a Slack
+      // webhook's secret lives entirely in its path — and the host is the only
+      // part that identifies anything. Stripping here means the secret never
+      // leaves the browser, rather than trusting the server to notice.
+      const hints=[...new Set((blob.match(HINT_RE)||[])
+        .map(h=>h.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i,"").split(/[\/?#]/)[0])
+        .filter(Boolean))].slice(0,20);
       return {shape,values,hints};
     }
     // Choose which pasted values the resolved scheme actually needs, ignoring the
@@ -1203,18 +1210,28 @@
         return (u&&p)?(u.value+":"+p.value):""; }
       // Priority order, most specific first: a paste containing both an "API Key"
       // and a "Bearer token" means the bearer one for a bearer connection.
-      for(const re of [/bearer/i,/access.{0,3}token/i,/\btoken\b/i,/\bpat\b|personal.{0,3}access/i,
-                       /\bkey\b/i,/secret/i]){
+      // Order matters. A Stripe page reads "Publishable key" and THEN "Secret
+      // key", so a bare /\bkey\b/ picked the publishable one — the wrong half of
+      // the pair. Secret-bearing labels come first, and a pk_/pub_ value is
+      // never chosen while any other candidate exists.
+      const publishable=(v)=>/^(?:pk|pub)[_-]/i.test(v.value||"");
+      for(const re of [/bearer/i,/secret.{0,3}key/i,/access.{0,3}token/i,/\btoken\b/i,
+                       /\bpat\b|personal.{0,3}access/i,/secret/i,/\bkey\b/i]){
+        const hit=values.find(v=>re.test(v.label||"")&&!publishable(v));
+        if(hit) return hit.value;
+      }
+      for(const re of [/bearer/i,/\btoken\b/i,/\bkey\b/i,/secret/i]){
         const hit=by(re); if(hit) return hit.value;
       }
       return (values.slice().sort((a,b)=>b.value.length-a.value.length)[0]||{}).value||"";
     }
     $("btn-paste-connect").addEventListener("click",async()=>{
-      const blobEl=$("paste-blob"), blob=blobEl.value, intent=$("paste-intent").value.trim();
+      const blobEl=$("paste-blob"), blob=blobEl.value;
+      const intentEl=$("paste-intent"), intent=intentEl.value.trim();
       const out=$("paste-result"), btn=$("btn-paste-connect");
       // Clear the paste from the DOM before any await, exactly as the manual form
       // does — a pasted credential never sits visible while a request is in flight.
-      blobEl.value="";
+      blobEl.value=""; intentEl.value="";
       if(!blob.trim()){ out.textContent="Paste the key (or whatever the service gave you) first."; return; }
       const {shape,values,hints}=extractShape(blob);
       btn.disabled=true; out.textContent="Working out what this is...";
@@ -1241,7 +1258,7 @@
         // as the old path label that promised a default this deposit never had.
         out.textContent="Added as “"+r.destination+"”. "+r.receipt+
           " To change it, fill it in below and add it again.";
-        $("paste-intent").value="";
+
       }catch(err){ if(err.authRequired){ btn.disabled=false; return enterSignedOut(); }
         out.textContent="Couldn't add it: "+err.message; }
       finally{ btn.disabled=false; }

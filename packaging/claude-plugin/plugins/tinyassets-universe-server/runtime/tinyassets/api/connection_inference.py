@@ -75,13 +75,28 @@ logger = logging.getLogger(__name__)
 
 #: A public credential prefix ends at a delimiter. This is what makes "we only
 #: ever receive the identifying part" enforceable rather than promised.
-_PREFIX_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,10}[-_]$")
+#: LOWERCASE only, and at most two delimiter-terminated groups. Codex (2026-08-27)
+#: showed the earlier mixed-case form accepted "AbCdEfGhIjK_" — eleven
+#: attacker-chosen characters, roughly 65 bits of entropy wearing a delimiter.
+#: Every real prefix is lowercase (``github_pat_``, ``sk-``, ``xoxb-``, ``ghp_``,
+#: ``pk_live_``), so this admits all of them and cuts what a hostile caller can
+#: smuggle to a short lowercase run.
+_PREFIX_RE = re.compile(r"^[a-z][a-z0-9]{0,7}[_-](?:[a-z0-9]{1,7}[_-])?$")
 _MAX_PREFIX_CHARS = 12
-_MAX_LABEL_CHARS = 64
+_MAX_LABEL_CHARS = 40
+
+#: An unbroken run this long is a credential, not a field name or a sentence.
+#: Used to keep secret material out of ``label`` and ``intent``, which are
+#: otherwise free text (Codex 2026-08-27: both were length-checked only, so
+#: ``{"label": "sk_live_51ABCDEFSECRET"}`` sailed through).
+_ENTROPY_RUN_RE = re.compile(r"[A-Za-z0-9_\-]{16,}")
 _MAX_INTENT_CHARS = 300
 _MAX_HINT_CHARS = 253
 _MAX_SHAPE_ENTRIES = 40
 _MAX_HINTS = 20
+
+#: An inferred grant stays narrow; a broader one is a deliberate manual choice.
+_MAX_INFERRED_METHODS = 2
 
 #: A hint must look like a host or a URL. Anything else is a place a secret
 #: could hide, so it is refused rather than trimmed.
@@ -174,6 +189,12 @@ def _validated_shape(raw: Any) -> list[dict[str, Any]]:
         label = str(entry.get("label") or "").strip()
         if len(label) > _MAX_LABEL_CHARS:
             raise ValueError(f"shape label exceeds {_MAX_LABEL_CHARS} chars")
+        if _ENTROPY_RUN_RE.search(label):
+            # A field NAME is words ("Access Token Secret"). An unbroken 16+
+            # character run is the value, and label was otherwise unscreened.
+            raise ValueError(
+                "shape label looks like credential material, not a field name"
+            )
         prefix = str(entry.get("prefix") or "").strip()
         if prefix:
             if len(prefix) > _MAX_PREFIX_CHARS or not _PREFIX_RE.match(prefix):
@@ -208,7 +229,15 @@ def _validated_hints(raw: Any) -> list[str]:
                 "each hint must look like a host or URL -- anything else is a "
                 "place credential material could hide"
             )
-        out.append(text)
+        # Keep the HOST, drop the path. For some services the URL *is* the
+        # credential -- a Slack webhook's secret lives entirely in its path
+        # (Codex 2026-08-27) -- and the host is the only part that grounds
+        # anything. Narrowing here means no hint can carry a secret at all,
+        # rather than relying on spotting which services are like that.
+        host = re.sub(r"^[a-z][a-z0-9+.-]*://", "", text, flags=re.IGNORECASE)
+        host = host.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0].strip()
+        if host and host not in out:
+            out.append(host)
     return out
 
 
@@ -227,15 +256,51 @@ def _ground_host(host: str, hints: list[str], intent: str) -> str:
     host = (host or "").strip().lower()
     if not host:
         return ""
-    haystack = " ".join(hints).lower() + " " + (intent or "").lower()
-    if host in haystack:
-        return host
-    labels = [p for p in host.split(".") if p and p not in {"www", "api", "com",
-                                                            "org", "net", "io"}]
-    for label in labels:
-        if len(label) >= 3 and re.search(rf"\b{re.escape(label)}\b", haystack):
+    # ASCII only. A homograph host (Cyrillic "а" in "аpi.github.com") reads as the
+    # real thing to a person and is a different host to a resolver.
+    if not host.isascii():
+        return ""
+    owner = _registrable_label(host)
+
+    # Hints ARE hosts, so compare them as hosts rather than scanning them as
+    # text. Substring/word scans both grounded `evil.com` on a pasted
+    # `not-evil.com` -- the plain `in` test directly, and the registrable-label
+    # fallback because `\bevil\b` matches inside `not-evil.com` (Codex
+    # 2026-08-27 found the first; the second surfaced fixing it).
+    for hint in hints:
+        candidate = (hint or "").strip().lower()
+        if not candidate:
+            continue
+        if candidate == host:
             return host
+        if owner and _registrable_label(candidate) == owner:
+            return host
+
+    # The intent is prose, so a word match is the right test there.
+    if owner and len(owner) >= 3 and re.search(
+        rf"\b{re.escape(owner)}\b", (intent or "").lower()
+    ):
+        return host
     return ""
+
+
+#: Second-level names that are really part of the suffix, so the registrable
+#: label is one further left ("example" in "example.co.uk").
+_SUFFIX_SLDS = frozenset({"co", "com", "org", "net", "ac", "gov", "edu"})
+
+
+def _registrable_label(host: str) -> str:
+    """The name the host actually belongs to: `github` in `api.github.com`.
+
+    Deliberately the ONE label left of the public suffix, never a scan of every
+    label — see the suffix attack described in :func:`_ground_host`.
+    """
+    parts = [p for p in host.split(".") if p]
+    if len(parts) < 2:
+        return ""
+    if len(parts) >= 3 and len(parts[-1]) == 2 and parts[-2] in _SUFFIX_SLDS:
+        return parts[-3]
+    return parts[-2]
 
 
 def _parse_proposal(raw: str) -> dict[str, Any]:
@@ -312,6 +377,13 @@ def resolve_connection(*, universe_id: str = "", payload: Any = None) -> dict[st
     except ValueError as exc:
         return _bad(str(exc))
     intent = str(document.get("intent") or "").strip()[:_MAX_INTENT_CHARS]
+    if _ENTROPY_RUN_RE.search(intent):
+        # Free text, forwarded verbatim -- so a credential pasted into the wrong
+        # box would have been disclosed to inference (Codex 2026-08-27).
+        return _bad(
+            "the intent line looks like it contains a credential; describe what "
+            "the key is for instead"
+        )
     if not shape and not hints and not intent:
         return {
             "resolved": False,
@@ -340,6 +412,19 @@ def resolve_connection(*, universe_id: str = "", payload: Any = None) -> dict[st
     if not isinstance(methods, list) or not methods:
         methods = ["POST"]
     methods = sorted({str(m).strip().upper() for m in methods if str(m).strip()})
+    # Least privilege is ENFORCED, not merely requested in the prompt. Codex
+    # (2026-08-27) noted the endpoint parser happily accepts every permitted verb
+    # if the model proposes them, so "narrow" rested entirely on the model
+    # complying. An inferred grant is capped; a genuinely broader one is still
+    # available by hand, where the person is choosing it deliberately.
+    if len(methods) > _MAX_INFERRED_METHODS:
+        return {
+            "resolved": False,
+            "reason": (
+                "this looks like it needs broad access; set it up in the fields "
+                "below so the permissions are yours to choose"
+            ),
+        }
     path = str(proposal.get("path_template") or "").strip()
     destination = str(proposal.get("destination") or "").strip().lower()
 

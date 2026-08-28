@@ -335,3 +335,23 @@ def test_resolve_operation_is_dispatched_but_adds_no_advertised_handle():
     source = inspect.getsource(us)
     assert '"resolve_connection"' in source
     assert "from tinyassets.api.connection_inference import resolve_connection" in source
+
+
+def test_paste_extraction_closes_the_codex_client_findings():
+    """Codex cross-family review 2026-08-27 (REJECT) reproduced three of these
+    against the exact browser code; all are asserted on the shipped page."""
+    from tinyassets.onboarding import render_app_html
+
+    html, _csp = render_app_html()
+    # A webhook URL's secret is its PATH — hints carry the host only.
+    assert r'split(/[\/?#]/)[0]' in html
+    # A labelled short value ("Username: bob") is real; only unlabelled ones
+    # need length, or basic auth can never assemble user:pass.
+    assert "if(raw.length < (label?3:8)) return;" in html
+    # A Stripe page lists the publishable key first; it must never be chosen
+    # while another candidate exists.
+    assert "const publishable=(v)=>/^(?:pk|pub)[_-]/i.test(v.value||\"\");" in html
+    assert "/secret.{0,3}key/i" in html
+    # The intent box is cleared with the paste, so a credential typed into the
+    # wrong box does not persist through an inference failure.
+    assert 'blobEl.value=""; intentEl.value="";' in html

@@ -419,3 +419,130 @@ def test_no_serving_binding_degrades_to_the_manual_fields(base: Path, monkeypatc
 
     assert out["resolved"] is False
     assert "error" not in out
+
+
+# --------------------------------------------------------------------------- #
+# Codex cross-family review, 2026-08-27 (verdict REJECT). Every case below is a
+# reproduction it supplied; all of them worked before these guards.
+# --------------------------------------------------------------------------- #
+
+
+def test_codex_a_webhook_url_cannot_carry_its_secret_path(base: Path, monkeypatch) -> None:
+    """For some services the URL IS the credential.
+
+    `https://hooks.slack.com/services/T000/B000/SECRET` has its whole secret in
+    the path, and hints accepted a full URL — so inference was handed the
+    credential.
+    """
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    seen = _stub_model(monkeypatch, {**_GOOD, "host": "hooks.slack.com"})
+
+    _resolve("u-1", hints=["https://hooks.slack.com/services/T000/B000/SECRET123"],
+             intent="post to slack")
+
+    assert seen, "the model should have been called"
+    assert "SECRET123" not in seen[0]
+    assert "hooks.slack.com" in seen[0]
+
+
+@pytest.mark.parametrize(
+    "field,doc",
+    [
+        ("label", {"shape": [{"label": "sk_live_51ABCDEFSECRET", "length": 32}]}),
+        ("intent", {"intent": "my key is sk_live_51ABCDEFSECRETVALUE"}),
+    ],
+)
+def test_codex_b_free_text_fields_cannot_smuggle_a_credential(
+    base: Path, monkeypatch, field: str, doc: dict
+) -> None:
+    """`label` and `intent` were length-checked only, so both forwarded secrets."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    seen = _stub_model(monkeypatch, _GOOD)
+
+    out = _resolve("u-1", **doc)
+    assert out["error"] == "resolve_payload_invalid", field
+    assert seen == []
+
+
+def test_codex_c_prefix_cannot_carry_mixed_case_entropy(base: Path, monkeypatch) -> None:
+    """"AbCdEfGhIjK_" passed the old rule — 11 attacker-chosen chars in a hat."""
+    from tinyassets.api.connection_inference import _PREFIX_RE
+
+    assert not _PREFIX_RE.match("AbCdEfGhIjK_")
+    # …while every real public prefix still passes.
+    for good in ("github_pat_", "sk-", "xoxb-", "ghp_", "pk_live_", "sk_live_"):
+        assert _PREFIX_RE.match(good), good
+
+
+@pytest.mark.parametrize(
+    "host,hints,intent",
+    [
+        ("evil.com", ["https://not-evil.com/setup"], ""),      # substring collision
+        ("evil.com", ["not-evil.com"], ""),                    # and as a bare host
+        ("github.com.evil.io", [], "open PRs on github"),      # suffix attack
+        ("api.github.com.attacker.net", [], "github"),         # deeper suffix attack
+    ],
+)
+def test_codex_d_host_grounding_is_not_a_substring_test(
+    base: Path, monkeypatch, host: str, hints: list, intent: str
+) -> None:
+    """Codex deposited against `evil.com` from a pasted `not-evil.com`.
+
+    Hints are hosts, so they are compared as hosts; the intent is prose, so the
+    registrable label is word-matched there. Neither is a substring scan.
+    """
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    _stub_model(monkeypatch, {**_GOOD, "host": host})
+
+    out = _resolve("u-1", hints=hints, intent=intent)
+    assert out["resolved"] is False, f"{host} must not ground on {hints}/{intent!r}"
+
+
+@pytest.mark.parametrize(
+    "host,hints,intent",
+    [
+        ("api.github.com", [], "open pull requests on my github repo"),
+        ("api.github.com", ["github.com"], ""),
+        ("api.github.com", ["api.github.com"], ""),
+        ("api.stripe.com", [], "charge cards with stripe"),
+    ],
+)
+def test_codex_d_legitimate_hosts_still_ground(
+    base: Path, monkeypatch, host: str, hints: list, intent: str
+) -> None:
+    """The guard has to refuse attacks without refusing the real thing."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    _stub_model(monkeypatch, {**_GOOD, "host": host, "destination": "svc"})
+
+    out = _resolve("u-1", hints=hints, intent=intent)
+    assert out["resolved"] is True, f"{host} should ground on {hints}/{intent!r}"
+
+
+def test_codex_e_homograph_host_is_refused(base: Path, monkeypatch) -> None:
+    """A Cyrillic "а" reads as the real host to a person, and is a different one."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    _stub_model(monkeypatch, {**_GOOD, "host": "\u0430pi.github.com"})
+
+    out = _resolve("u-1", intent="github", hints=["github.com"])
+    assert out["resolved"] is False
+
+
+def test_codex_f_an_inferred_grant_cannot_be_broad(base: Path, monkeypatch) -> None:
+    """Codex's caveat on claim 3: the parser accepts every permitted verb, so
+    "narrow" rested entirely on the model complying with the prompt. Enforce it —
+    a broader grant is still available by hand, chosen deliberately."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    _stub_model(
+        monkeypatch,
+        {**_GOOD, "methods": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+    )
+
+    out = _resolve("u-1", intent="github", hints=["api.github.com"])
+    assert out["resolved"] is False
+    assert "fields below" in out["reason"]
