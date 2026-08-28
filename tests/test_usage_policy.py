@@ -73,3 +73,60 @@ def test_a_refusal_names_the_dimension_and_when_it_refills():
     # The specific failure of the old text: "try again shortly" with no reset time.
     assert "shortly" not in message
     assert any(unit in message for unit in ("h", "m"))
+
+
+# --- the quota gate over the ledger -----------------------------------------
+
+
+def test_the_gate_admits_until_the_tier_limit_then_refuses(tmp_path, monkeypatch):
+    from tinyassets.usage_policy import reserve_effect_quota
+
+    monkeypatch.setenv("TINYASSETS_FREE_EFFECTS_PER_WINDOW", "2")
+
+    assert reserve_effect_quota(tmp_path, sink="s", effect_key="a") is None
+    assert reserve_effect_quota(tmp_path, sink="s", effect_key="b") is None
+
+    refusal = reserve_effect_quota(tmp_path, sink="s", effect_key="c")
+    assert refusal is not None
+    assert refusal.dimension == "effect"
+    assert refusal.tier == TIER_FREE
+    assert "effect" in refusal.message()
+
+
+def test_a_released_effect_returns_its_budget(tmp_path, monkeypatch):
+    from tinyassets.usage_policy import release_effect_quota, reserve_effect_quota
+
+    monkeypatch.setenv("TINYASSETS_FREE_EFFECTS_PER_WINDOW", "1")
+
+    assert reserve_effect_quota(tmp_path, sink="s", effect_key="a") is None
+    assert reserve_effect_quota(tmp_path, sink="s", effect_key="b") is not None
+
+    release_effect_quota(tmp_path, sink="s", effect_key="a")
+
+    assert reserve_effect_quota(tmp_path, sink="s", effect_key="b") is None
+
+
+def test_settling_the_same_effect_twice_charges_once(tmp_path, monkeypatch):
+    """Every success path may call settle; only the transition counts."""
+    from tinyassets.usage_policy import reserve_effect_quota, settle_effect_quota
+
+    monkeypatch.setenv("TINYASSETS_FREE_EFFECTS_PER_WINDOW", "5")
+    reserve_effect_quota(tmp_path, sink="s", effect_key="a")
+
+    assert settle_effect_quota(tmp_path, sink="s", effect_key="a") is True
+    # Reconciliation / replay / confirmed-hold arriving late must not re-charge.
+    assert settle_effect_quota(tmp_path, sink="s", effect_key="a") is False
+
+
+def test_the_paid_tier_admits_where_free_refuses(tmp_path, monkeypatch):
+    from tinyassets.usage_policy import reserve_effect_quota
+
+    monkeypatch.setenv("TINYASSETS_FREE_EFFECTS_PER_WINDOW", "1")
+    monkeypatch.setenv("TINYASSETS_PAID_EFFECTS_PER_WINDOW", "10")
+
+    assert reserve_effect_quota(tmp_path, sink="s", effect_key="a") is None
+    assert reserve_effect_quota(tmp_path, sink="s", effect_key="b") is not None
+    # Same universe, same ledger — the tier is what changes the answer.
+    assert (
+        reserve_effect_quota(tmp_path, sink="s", effect_key="b", tier=TIER_PAID) is None
+    )

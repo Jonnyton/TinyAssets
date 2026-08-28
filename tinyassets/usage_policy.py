@@ -164,3 +164,70 @@ class QuotaRefusal:
     def window_label(self) -> str:
         hours = window_seconds() / 3600
         return "24h" if abs(hours - 24) < 0.01 else f"{hours:g}h"
+
+
+def _ledger():
+    # Imported lazily so this module stays importable in contexts that never
+    # touch the ledger (config readers, docs tooling).
+    from tinyassets.storage import usage_ledger
+
+    return usage_ledger
+
+
+def reserve_effect_quota(
+    universe_dir,
+    *,
+    sink: str,
+    effect_key: str,
+    tier: str = TIER_FREE,
+    now: float | None = None,
+) -> QuotaRefusal | None:
+    """Reserve effect budget before an outbound write.
+
+    Returns ``None`` when the effect may proceed, or a ``QuotaRefusal`` the caller
+    must surface *without* performing the write. This is a pre-flight control: an
+    outbound write is irreversible, so a budget checked afterwards is an accounting
+    record rather than a limit.
+    """
+    limits = limits_for(tier)
+    admitted = _ledger().reserve_effect(
+        universe_dir,
+        settlement_key=settlement_key(sink=sink, effect_key=effect_key),
+        limit=limits.effects,
+        window_seconds=limits.window_seconds,
+        now=now,
+    )
+    if admitted:
+        return None
+    return QuotaRefusal(
+        dimension="effect",
+        limit=limits.effects,
+        tier=limits.name,
+        retry_after_seconds=limits.window_seconds,
+    )
+
+
+def release_effect_quota(universe_dir, *, sink: str, effect_key: str) -> bool:
+    """Return budget after a write that did not reach the world."""
+    return _ledger().release_effect(
+        universe_dir,
+        settlement_key=settlement_key(sink=sink, effect_key=effect_key),
+    )
+
+
+def settle_effect_quota(
+    universe_dir, *, sink: str, effect_key: str, now: float | None = None
+) -> bool:
+    """Commit budget for an effect that reached the world.
+
+    Safe to call from every success path — ordinary finalization, reconciliation,
+    and confirmed-hold activation — because the underlying commit only fires on the
+    reserved->committed transition. A second call for the same effect settles
+    nothing and returns False, which is what stops a replayed finalization from
+    double-charging.
+    """
+    return _ledger().commit_effect(
+        universe_dir,
+        settlement_key=settlement_key(sink=sink, effect_key=effect_key),
+        now=now,
+    )
