@@ -86,15 +86,20 @@ account ready.
    the environment: `python scripts/stripe_go_live.py --provision`. It creates the $20/month
    price with the lookup key the code resolves by, registers the webhook endpoint with every
    event entitlement depends on, and prints the signing secret once. Idempotent.
-4. **Place THREE secrets on the droplet** — the live `sk_live_…`, that signing secret, and
-   `TINYASSETS_BILLING_ENTITLEMENT_KEY` (I generate this one; it is ours, not Stripe's) into
-   `/etc/tinyassets/env`, then restart. Hand me the Stripe two however you like — a vault
-   path works; I will place them without echoing them.
+4. **Place the two Stripe secrets on the droplet** — the live `sk_live_…` and that signing
+   secret into `/etc/tinyassets/env`. Hand them to me however you like; a vault path works,
+   and I will place them without echoing them.
 
-   The third one matters more than it looks: without it, every subscription's authority is
-   signed with Stripe's webhook secret, and rolling that secret — which Stripe tells you to
-   do, and which you must do on any leak — would permanently break every subscription
-   already sold. `docs/reference/environment-variables.md` § Billing has the detail.
+   **`TINYASSETS_BILLING_ENTITLEMENT_KEY` is already done** (2026-08-28): generated *on the
+   droplet* so it never crossed the wire, 64 chars, `root:tinyassets 0640`. It takes effect
+   on the next container **recreate** — `env_file` is read at creation, not at restart — so
+   the next deploy activates it. Until then new claims still issue as v1.
+
+   Why it exists: without it, every subscription's authority is signed with Stripe's webhook
+   secret, and rolling that secret — which Stripe tells you to do, and which you must do on
+   any leak — would permanently break every subscription already sold.
+   `docs/reference/environment-variables.md` § Billing has the detail, including that
+   rotating this key invalidates every v2 subscription.
 
 The checkout-lease redesign that used to gate this has landed: a lease now names the Stripe
 session it guards, so a lost response replays instead of creating a second session, a delayed
