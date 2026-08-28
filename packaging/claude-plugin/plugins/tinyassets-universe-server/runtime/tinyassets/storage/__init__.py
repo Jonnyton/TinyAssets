@@ -32,14 +32,15 @@ intermediate file.
 from __future__ import annotations
 
 import contextlib
-import copy
 import json
 import os
 import sqlite3
-import threading
 import time
 from pathlib import Path
 from typing import Any
+
+from tinyassets.ttl_memo import TTLMemo as _TTLMemo
+from tinyassets.ttl_memo import read_ttl as _read_ttl
 
 # -------------------------------------------------------------------
 # Constants
@@ -638,63 +639,32 @@ def _pressure_level_from_percent(percent: float) -> str:
 _STORAGE_SNAPSHOT_TTL_VAR = "TINYASSETS_STORAGE_SNAPSHOT_TTL_S"
 _DEFAULT_STORAGE_SNAPSHOT_TTL_S = 60.0
 
-_storage_snapshot_lock = threading.Lock()
-#: (root, expires_at, snapshot). Keyed by root so a test tmpdir never serves a
-#: cached answer computed for production's data dir.
-_storage_snapshot_cache: tuple[str, float, dict[str, Any]] | None = None
-
-
-def _storage_snapshot_ttl() -> float:
-    """TTL in seconds. A non-positive or unparseable value disables caching."""
-    raw = (os.environ.get(_STORAGE_SNAPSHOT_TTL_VAR) or "").strip()
-    if not raw:
-        return _DEFAULT_STORAGE_SNAPSHOT_TTL_S
-    try:
-        return float(raw)
-    except ValueError:
-        return _DEFAULT_STORAGE_SNAPSHOT_TTL_S
+_storage_snapshot_memo = _TTLMemo()
 
 
 def reset_storage_snapshot_cache() -> None:
-    """Drop the memo. For tests, and for any caller that has just freed space and
-    wants the next read to tell the truth immediately."""
-    global _storage_snapshot_cache
-    with _storage_snapshot_lock:
-        _storage_snapshot_cache = None
+    """Drop the memo, and disown any walk already in flight so it cannot republish."""
+    _storage_snapshot_memo.invalidate()
 
 
 def inspect_storage_utilization() -> dict[str, Any]:
     """Cached front for :func:`_inspect_storage_utilization_uncached`.
 
-    Same contract and same shape; the only difference is that a snapshot up to
-    `TINYASSETS_STORAGE_SNAPSHOT_TTL_S` seconds old may be returned. Set that to
-    `0` for the uncached behaviour.
+    Same contract and shape; a snapshot up to `TINYASSETS_STORAGE_SNAPSHOT_TTL_S`
+    seconds old may be returned, and `0` restores the uncached behaviour. Keyed by
+    data dir so a test tmpdir never inherits production's figures.
 
-    Returns a deep copy, so a caller mutating the dict it gets back cannot poison
-    the next caller's snapshot -- the failure mode a shared memo introduces that
-    the uncached version could not have.
+    The walk is expensive (~3,300 `stat` syscalls) and its cost is O(files on disk),
+    so it must not run per request. :class:`TTLMemo` supplies single-flight, so 25
+    concurrent cold callers run ONE walk rather than 25 — which matters because the
+    box saturates at about that concurrency, and a cache that stampedes there makes
+    the worst moment worse (Codex ADAPT 2026-08-28).
     """
-    global _storage_snapshot_cache
-
-    ttl = _storage_snapshot_ttl()
-    root_key = str(data_dir())
-    if ttl <= 0:
-        return _inspect_storage_utilization_uncached()
-
-    now = time.monotonic()
-    with _storage_snapshot_lock:
-        cached = _storage_snapshot_cache
-        if cached is not None and cached[0] == root_key and now < cached[1]:
-            return copy.deepcopy(cached[2])
-
-    # Computed OUTSIDE the lock: this walk is slow, and holding the lock across it
-    # would serialize every concurrent status read behind one filesystem walk --
-    # turning a cache meant to add capacity into a new contention point. A racing
-    # duplicate walk is cheaper than that, and both produce the same answer.
-    snapshot = _inspect_storage_utilization_uncached()
-    with _storage_snapshot_lock:
-        _storage_snapshot_cache = (root_key, time.monotonic() + ttl, snapshot)
-    return copy.deepcopy(snapshot)
+    return _storage_snapshot_memo.get(
+        str(data_dir()),
+        _inspect_storage_utilization_uncached,
+        ttl=_read_ttl(_STORAGE_SNAPSHOT_TTL_VAR, _DEFAULT_STORAGE_SNAPSHOT_TTL_S),
+    )
 
 
 def _inspect_storage_utilization_uncached() -> dict[str, Any]:

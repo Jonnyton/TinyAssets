@@ -43,6 +43,36 @@ At 25 concurrent the daemon sits at **95% of the single core** with a host load 
 of **4.94** — five-fold oversubscribed. Memory stays at ~390 MB of 1.9 GB throughout, so
 this is **CPU-bound, not memory-bound**, on the read path.
 
+## Measured again after deploying the memos
+
+Identical probe, same box, after #2648 shipped — and this is the end-to-end number, not
+an in-process one:
+
+| concurrency | p50 before → after | p95 before → after | req/s before → after |
+|---:|---|---|---|
+| 1 | 421 → **280 ms** | — | 2.4 → 3.6 |
+| 10 | 1,112 → **413 ms** | 1,590 → **620 ms** | 7.5 → **22.7** |
+| 25 | 1,583 → **654 ms** | 2,409 → **1,824 ms** | 13.0 → **25.8** |
+| 50 | 3,215 → **849 ms** | 11,176 → **3,294 ms** | 8.6 → **30.0** |
+| 100 | 3,215 → **559 ms** | 17,529 → **5,170 ms** | 11.1 → **38.4** |
+
+**The ceiling moved from ~13 req/s to 38+ req/s, and the shape changed.** Before,
+throughput *fell* past 25 concurrent (13.0 → 8.6 → 11.1) — the signature of a queue
+forming. Now it *rises* monotonically to 100 concurrent and has not turned over. p95 at
+100 concurrent improved 3.4×, from 17.5 s to 5.2 s.
+
+*Caveat, stated because the effect is large enough to want to over-claim:* this is a
+before/after across a deploy on a live box, not a controlled A/B — I cannot toggle the
+memos without recreating the container, since `env_file` is read at creation. Two things
+argue it is real rather than drift: the effect size is far beyond plausible noise, and
+the *shape* change is exactly what removing a per-request O(n) cost predicts. It is also
+still the `status` handle — the one I optimized — so it bounds connector polling, not
+`converse`.
+
+Note this was measured with the memos as merged, which still contain the thundering herd
+(#2648 landed at a stale head without the fix). The herd duplicates work precisely under
+concurrency, so #2650 should improve the right-hand columns further.
+
 ## Where a request goes
 
 | | |
@@ -66,9 +96,23 @@ arm equally:
 | + storage walk memoized | 30.8 ms | **-58%** |
 | + supervisor liveness memoized | 15.3 ms | **-79%** |
 
-**A 4.8× cut in the CPU each request costs is 4.8× the requests one core can serve**, and
-unlike buying cores it is free. Both were O(n) in something that grows: the storage walk
-sums every subsystem directory (~3,300 `stat`s), and liveness reads ~59 per-worker files.
+**That 4.8× does not generalize, and I claimed it did.** A cross-family review (Codex
+ADAPT) reproduced the counter-case: the liveness memo is *per universe* with a 5-second
+TTL, and the app polls every 30 seconds, so a thousand distinct universes produce a
+thousand misses. Measured directly — 1,000 universes × 2 passes gave **2,000
+computations and zero hits**. The 73→15 ms figure is a warm, same-universe benchmark.
+
+What each piece actually buys, stated separately because they differ:
+
+| | Scope | Helps |
+|---|---|---|
+| Storage-walk memo | **process-global** | every status request, any universe — this one does generalize |
+| Liveness memo | per universe, 5 s | repeat reads of the *same* universe inside the window; nothing at 1,000 distinct pollers |
+| **Single-flight** | per key | concurrent readers of the same key: measured **50 computations for 400 requests (8×)** |
+
+Single-flight is the part that matters under load, and it was the review's sharpest
+finding: before it, 25 concurrent cold callers ran 25 filesystem walks — a stampede at
+exactly the concurrency where the box already saturates.
 
 *A correction worth keeping.* I first reported the storage walk as 19%, measured
 sequentially on an unusually warm page cache; cProfile separately inflated it to 59%
@@ -87,19 +131,64 @@ Average load is not the problem. 1,000 users × ~20 calls/day is 0.23 req/s, com
   entire platform, all users.
 - So the honest ceiling on *simultaneous real work* is single digits, not hundreds.
 
+## Real work is bound by MEMORY, not CPU — and I had this backwards
+
+I wrote above that the 4-worker run pool was "conservative given that a run is mostly
+*waiting* on the user's own LLM subscription rather than burning our CPU". That is true
+of CPU and wrong about the thing that actually binds. Measured on the live box:
+
+| | |
+|---|---|
+| One provider CLI (`claude --version`, no inference) | **197 MB** peak RSS |
+| Four concurrent, RSS sum | **+758 MB** (~189 MB each — barely shared) |
+| Four concurrent, **PSS** sum (sharing-adjusted) | **+310 MB** (~77 MB each) |
+| Peak total container RSS during that | **1,135 MB** on a 2 GB box |
+
+PSS is the honest figure for pressure: **~77 MB of genuinely private memory per
+concurrent run**, and that is the FLOOR — `--version` loads no system prompt, no
+conversation history and no tool definitions, and performs no inference. A real turn is
+larger.
+
+A waiting run is not free. It holds its runtime resident for the whole wait, so "it is
+only waiting on the user's LLM" reduces CPU pressure and not memory pressure.
+
+**So the 4-worker pool is not conservative — it is about right for 2 GB, and arguably
+already optimistic.** Raising it on this box would not add throughput; it would add
+OOMs. Rough sizing for simultaneous *real* turns, at the measured floor:
+
+| Simultaneous turns | Run memory (PSS floor) | + daemon | Realistic box |
+|---:|---:|---:|---|
+| 4 (today) | ~310 MB | ~700 MB | 2 GB — at the edge |
+| 25 | ~1.9 GB | ~2.3 GB | 8 GB |
+| 50 | ~3.9 GB | ~4.3 GB | 8–16 GB |
+
+**This changes the buying advice.** It is not "buy cores", it is **buy the 4 vCPU / 8 GB
+tier ($48/mo)** — the cores raise the read ceiling and the RAM is what actually unlocks
+the run pool. RAM is the constraint on the work users care about.
+
+### And there is no memory limit on the container
+
+`docker inspect` reports `mem_limit=0` — the daemon may consume the entire host. With
+the run pool already able to peak at 1.1 GB of 2 GB, an overshoot OOMs the *host*, which
+takes `tinyassets-tunnel` with it and drops the public surface completely. A container
+limit would convert that into a container restart (`restart=unless-stopped`) with the
+tunnel surviving. No OOM has happened yet, which is why this is a hardening item and not
+an incident — but the margin is thin and every added worker eats it.
+
 ## What would change it, cheapest first
 
-0. **Done, and free: 4.8× less CPU per request** (above). On its own this should take the
-   read ceiling from ~13 req/s toward ~60 req/s on the *same* box — to be confirmed
-   against the live endpoint once deployed, because the measurement above is in-process
-   and excludes transport.
+0. **Done, partially free: less CPU on the status path** (above). Worth having, but
+   narrower than I first claimed, and **it does not raise the real-turn ceiling at all**:
+   `converse` calls neither cached function. It reduces shared overhead and removes a
+   stampede; it does not make the platform ready. No throughput claim until a deployed,
+   authenticated, multi-universe load test says so.
 1. **Buy cores.** 1 → 4 vCPU is $12 → $48/mo and should be roughly 4× the read ceiling
    again, compounding with the above. At $20/user this is paid for by *three*
    subscribers. This is the highest-value remaining action and it needs no code.
-2. **Raise the run pool once cores exist.** 4 workers is conservative given that a run is
-   mostly *waiting* on the user's own LLM subscription rather than burning our CPU — but
-   the per-subprocess RSS is still unmeasured, and 2 GB is not much room. Measure before
-   raising.
+2. **Do NOT raise the run pool on this box.** Measured above: ~77 MB PSS / ~189 MB RSS
+   per concurrent run, floor. 4 workers already peaks at 1.1 GB of 2 GB. More workers
+   here buys OOMs, not throughput. The pool rises *after* the RAM does — which is why
+   the tier above matters more than the core count.
 3. **Keep O(n) work out of per-request paths.** The storage walk was one. Others will
    appear as data grows; the profile above is the method.
 4. **Horizontal scale needs a storage rearchitecture.** SQLite on a local filesystem

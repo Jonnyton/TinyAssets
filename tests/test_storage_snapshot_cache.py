@@ -133,19 +133,35 @@ def test_an_unparseable_ttl_falls_back_to_the_default_rather_than_disabling(
     assert calls[0] == 1
 
 
-def test_the_walk_is_not_held_under_the_lock(monkeypatch):
-    """Serializing every concurrent status read behind one filesystem walk would
-    turn a cache meant to ADD capacity into a new contention point -- the exact
-    thing this change exists to avoid."""
-    import pathlib
+def test_concurrent_cold_readers_walk_the_disk_once(monkeypatch):
+    """Replaces a source-inspection test that Codex showed was decorative: a mutant
+    moving the walk INSIDE the lock passed it. This asserts the behaviour that
+    actually matters, and it is the behaviour the review found broken -- 25 cold
+    callers ran 25 walks, at the concurrency where the box already saturates."""
+    import threading
 
-    src = pathlib.Path(storage.__file__).read_text(encoding="utf-8")
-    body = src.split("def inspect_storage_utilization(")[1].split("\ndef ")[0]
-    tail = body.split("snapshot = _inspect_storage_utilization_uncached()")[0]
-    # The walk must come after the lock block is closed, not inside it.
-    last_with = tail.rfind("with _storage_snapshot_lock:")
-    assert last_with != -1
-    between = tail[last_with:]
-    assert between.count("return") >= 1, (
-        "expected the cache-hit return inside the lock and the walk outside it"
-    )
+    storage.reset_storage_snapshot_cache()
+    calls, lock = [], threading.Lock()
+    real = storage._inspect_storage_utilization_uncached
+
+    def counted():
+        with lock:
+            calls.append(1)
+        import time as _t
+
+        _t.sleep(0.03)
+        return real()
+
+    monkeypatch.setattr(storage, "_inspect_storage_utilization_uncached", counted)
+    start = threading.Barrier(12)
+
+    def worker():
+        start.wait()
+        storage.inspect_storage_utilization()
+
+    ts = [threading.Thread(target=worker) for _ in range(12)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(timeout=30)
+    assert len(calls) == 1, f"{len(calls)} concurrent walks; single-flight is not wired"
