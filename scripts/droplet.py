@@ -36,9 +36,26 @@ from pathlib import Path
 
 HOST = os.environ.get("TINYASSETS_DROPLET_HOST", "161.35.237.133")
 USER = os.environ.get("TINYASSETS_DROPLET_USER", "root")
-KEY = os.environ.get(
-    "TINYASSETS_DROPLET_KEY", str(Path.home() / ".ssh" / "tinyassets_deploy_ed25519")
-)
+#: Key filenames tried in order when TINYASSETS_DROPLET_KEY is unset. The project was
+#: renamed workflow -> tinyassets, but the key on disk was minted under the OLD name and
+#: never renamed — so the "correct" name has never existed on the founder's machine, and
+#: this script reported "SSH key not found" as though there were no droplet access at all.
+#: A session believed that on 2026-08-28 and filed a host-action for it; the key was there
+#: the whole time. Try the current name first, then the legacy one.
+_KEY_CANDIDATES = ("tinyassets_deploy_ed25519", "workflow_deploy_ed25519")
+
+
+def _default_key() -> str:
+    ssh_dir = Path.home() / ".ssh"
+    for name in _KEY_CANDIDATES:
+        candidate = ssh_dir / name
+        if candidate.is_file():
+            return str(candidate)
+    # None present: return the canonical name so the error message names what to install.
+    return str(ssh_dir / _KEY_CANDIDATES[0])
+
+
+KEY = os.environ.get("TINYASSETS_DROPLET_KEY") or _default_key()
 
 
 def _ensure_key() -> str | None:
