@@ -391,3 +391,31 @@ def test_a_proposal_deposits_cleanly_through_connect_http(base: Path, monkeypatc
     assert deposited["connection_class"] == "http"
     # And no secret is echoed back anywhere in the projection.
     assert "github_pat_xxx" not in _json.dumps(deposited)
+
+
+def test_no_serving_binding_degrades_to_the_manual_fields(base: Path, monkeypatch) -> None:
+    """A universe with no serving binding must not turn the deposit into an error.
+
+    Binding resolution used to sit outside the guard around the provider call, so
+    a fresh universe — or one whose automation and serving providers disagree,
+    which is the live state of the founder's own universe — raised out of the
+    tool call instead of reporting that it could not identify the service.
+    """
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+
+    def _boom(*a, **k):
+        raise PermissionError("connect your provider")
+
+    monkeypatch.setattr(
+        "tinyassets.provider_serving_binding.resolve_serving_agent_binding", _boom
+    )
+
+    out = _resolve(
+        "u-1",
+        shape=[{"label": "", "prefix": "github_pat_", "length": 93}],
+        intent="open pull requests on github",
+    )
+
+    assert out["resolved"] is False
+    assert "error" not in out

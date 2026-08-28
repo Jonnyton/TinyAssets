@@ -382,20 +382,35 @@ def _run_model(udir, uid: str, *, shape: list, hints: list, intent: str) -> str:
     from tinyassets.providers.base import UniverseContext
     from tinyassets.providers.call import call_provider
 
-    capability = provider_request_capability()
+    # Binding resolution is INSIDE the guard with the call. A universe with no
+    # serving binding — a fresh one, or one whose automation and serving
+    # providers disagree — raises here, and outside the guard that surfaced as a
+    # failed tool call instead of "I could not identify this". The deposit form
+    # must degrade to its explicit fields, never to an error page.
     request_carrier = None
-    if capability is not None:
-        from tinyassets.provider_serving_binding import resolve_serving_agent_binding
+    try:
+        capability = provider_request_capability()
+        if capability is not None:
+            from tinyassets.provider_serving_binding import (
+                resolve_serving_agent_binding,
+            )
 
-        selected = resolve_serving_agent_binding(
-            udir.parent, universe_id=uid, owner_user_id=capability.principal_id
+            selected = resolve_serving_agent_binding(
+                udir.parent, universe_id=uid, owner_user_id=capability.principal_id
+            )
+            request_carrier = mint_provider_request_carrier(
+                universe_id=uid,
+                agent_binding_id=selected["agent_binding_id"],
+                binding_revision=int(selected["revision"]),
+                operation="resolve_connection",
+            )
+    except Exception:  # noqa: BLE001 - degrade to the manual fields, loudly logged
+        logger.warning(
+            "resolve_connection: no serving binding for %s; cannot infer", uid,
+            exc_info=True,
         )
-        request_carrier = mint_provider_request_carrier(
-            universe_id=uid,
-            agent_binding_id=selected["agent_binding_id"],
-            binding_revision=int(selected["revision"]),
-            operation="resolve_connection",
-        )
+        return ""
+
     ctx = UniverseContext(
         universe_dir=udir,
         config=load_universe_config(udir),
