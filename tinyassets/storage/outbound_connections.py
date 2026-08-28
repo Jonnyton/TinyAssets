@@ -2872,6 +2872,55 @@ class ConnectionLedger:
                 (json.dumps(list(new_scopes)), connection_id, json.dumps(["http"])),
             )
 
+    def extend_http_connection_endpoints(
+        self,
+        *,
+        connection_id: str,
+        endpoints: Any,
+        scopes: tuple[str, ...],
+        expected_endpoints_json: str,
+    ) -> bool:
+        """ADD endpoints to an existing http connection. Never remove or replace.
+
+        A credential is deposited once and extended as the work needs it — the
+        alternative was a fresh connection (and a fresh paste) per endpoint,
+        because a deterministic id plus any policy difference read as a hard
+        conflict.
+
+        Two things keep this from being a widening primitive:
+
+        * **Additive only.** The caller has already checked the new set is a
+          superset; this re-checks nothing about intent but writes the union, so
+          an endpoint another graph depends on cannot vanish here. Narrowing and
+          removal stay unsupported (they are a different, destructive intent).
+        * **CAS-guarded.** The UPDATE matches on the exact endpoint JSON the
+          caller read, so a concurrent deposit that changed the policy in between
+          makes this a no-op instead of clobbering it.
+
+        Returns True when the row was updated.
+        """
+        parsed = _parse_allowed_endpoints(endpoints)
+        if not parsed:
+            raise SsrfValidationError(
+                "an http connection requires at least one allowed endpoint"
+            )
+        new_scopes = tuple(_required("scope", scope) for scope in scopes)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE outbound_connections
+                SET allowed_endpoints_json = ?, scopes_json = ?
+                WHERE connection_id = ? AND allowed_endpoints_json = ?
+                """,
+                (
+                    json.dumps([ep.as_dict() for ep in parsed]),
+                    json.dumps(list(new_scopes)),
+                    connection_id,
+                    expected_endpoints_json,
+                ),
+            )
+            return cursor.rowcount > 0
+
     def _get_connection_resource(
         self, connection_id: str
     ) -> ConnectionResource | None:

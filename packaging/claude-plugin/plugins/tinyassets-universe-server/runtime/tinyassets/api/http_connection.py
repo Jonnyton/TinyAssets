@@ -183,6 +183,16 @@ def _project(resource: Any, grant: Any) -> dict[str, Any]:
     }
 
 
+def _canonical_endpoint_set(endpoints: list[dict[str, Any]]) -> set[str]:
+    """Each endpoint in its own canonical form, as a set.
+
+    ``_canonical_policy`` answers "is this the same policy?"; extension needs
+    "does this policy CONTAIN that one?", which needs the endpoints separable.
+    Both normalize the same way, so the two answers cannot disagree.
+    """
+    return {_canonical_policy([endpoint]) for endpoint in endpoints}
+
+
 def _canonical_policy(endpoints: list[dict[str, Any]]) -> str:
     """Order-insensitive canonical form of an endpoint allow-list, for the
     idempotency conflict-check ONLY.
@@ -375,6 +385,7 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     #    server code); the ref never reaches the projection.
     resource = ledger._get_connection_resource(connection_id)
     legacy_scope_upgrade = False
+    endpoints_extend = False
     if resource is not None:
         # Every immutable field EXCEPT scopes must match for either idempotent reuse
         # or the bounded legacy-scope upgrade applied at the END of this handler.
@@ -389,6 +400,33 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
             or resource.revoked_at is not None
             or _canonical_policy([e.as_dict() for e in resource.allowed_endpoints])
             != _canonical_policy(requested_endpoints)
+        )
+        stored_endpoints = [e.as_dict() for e in resource.allowed_endpoints]
+        # A credential is deposited ONCE and extended as the work needs it
+        # (founder, 2026-08-27: "not for each action with that credential").
+        # Before this, a deterministic connection id plus ANY policy difference
+        # read as a hard conflict, so adding one endpoint meant a whole new
+        # connection under a new name — and another paste of the same key.
+        #
+        # Only ADDITION is an extension. Removal or replacement stays a conflict:
+        # silently dropping an endpoint another graph depends on is the dangerous
+        # direction, and it is a different intent from "also let it do this".
+        endpoints_extend = (
+            _canonical_endpoint_set(requested_endpoints)
+            > _canonical_endpoint_set(stored_endpoints)
+        )
+        non_scope_mismatch = non_scope_mismatch and not (
+            endpoints_extend
+            and _canonical_policy(stored_endpoints)
+            != _canonical_policy(requested_endpoints)
+            and resource.owner_user_id == actor
+            and resource.connection_type == "http"
+            and resource.connection_class == "http"
+            and resource.provider == "http"
+            and resource.auth_scheme == scheme
+            and resource.destination == destination
+            and resource.credential_ref == credential_ref
+            and resource.revoked_at is None
         )
         scopes_match = tuple(resource.scopes) == http_scopes
         # A connection provisioned BEFORE the scope fix carries the legacy ("http",)
@@ -408,7 +446,9 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
             and not scopes_match
             and tuple(resource.scopes) == ("http",)
         )
-        if non_scope_mismatch or (not scopes_match and not legacy_scope_upgrade):
+        if non_scope_mismatch or (
+            not scopes_match and not legacy_scope_upgrade and not endpoints_extend
+        ):
             return {"error": "connection_conflict", "resource": "connection"}
     existing_grant = ledger.get_grant(grant_id)
     if existing_grant is not None and (
@@ -493,7 +533,136 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
         )
         resource = ledger._get_connection_resource(connection_id)
 
+    # 9. Endpoint EXTENSION, applied only now — after the grant-conflict check and
+    #    a successful credential deposit — so a failure above leaves the stored
+    #    policy exactly as it was. CAS-guarded on the endpoints we read, so a
+    #    concurrent deposit that moved the policy makes this a no-op rather than
+    #    a clobber; the caller sees the row as it actually stands.
+    if endpoints_extend and resource is not None:
+        import json as _json
+
+        try:
+            ledger.extend_http_connection_endpoints(
+                connection_id=connection_id,
+                endpoints=requested_endpoints,
+                scopes=http_scopes,
+                expected_endpoints_json=_json.dumps(
+                    [e.as_dict() for e in resource.allowed_endpoints]
+                ),
+            )
+        except SsrfValidationError as exc:
+            return {"error": "endpoint_not_permitted", "detail": str(exc)}
+        resource = ledger._get_connection_resource(connection_id)
+
     return _project(resource, grant)
 
 
-__all__ = ["connect_http"]
+def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
+    """Add endpoints to an EXISTING connection, reusing the stored credential.
+
+    Founder, 2026-08-28, on being asked to paste the same key a second time:
+    *"why would we have the user need to reput the api in again? you said it was
+    safe in the vault so why would the user give it again?"*
+
+    They were right, and the answer was that nothing could widen a grant without
+    a secret. ``connect_http`` stores one secret PER DESTINATION and requires
+    ``secret`` on every call, so both routes to "let it also reach X" — a second
+    destination, or extending the first — demanded a key the vault already held.
+
+    This is the missing verb. It touches no vault record at all: the connection
+    keeps its existing ``credential_ref``, and only the endpoint allow-list
+    grows. The user's authorization is answering the request that asks for it —
+    which the agent cannot do for itself, because ``answer_request`` is not on
+    the served surface.
+
+    ADDITIVE ONLY, exactly like the deposit path: the new set must be a strict
+    superset. Narrowing and replacement stay unsupported here, because taking
+    access away is a different intent from granting it and must not ride in on
+    an "extend" verb.
+    """
+    from tinyassets.api import permissions
+    from tinyassets.daemon_server import list_universe_acl
+
+    if not permissions.is_authenticated_request():
+        return {"error": "authentication_required", "resource": "connection"}
+    actor = permissions.current_actor_id().strip()
+    if not actor or actor == "anonymous":
+        return {"error": "authentication_required", "resource": "connection"}
+
+    uid = _request_universe(universe_id)
+    base = _base_path()
+    admin = [
+        row
+        for row in list_universe_acl(base, universe_id=uid)
+        if row.get("actor_id") == actor and row.get("permission") == "admin"
+    ]
+    if not admin:
+        return dict(_NOT_FOUND)
+
+    try:
+        document = _payload(payload)
+    except ValueError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
+    destination = str(document.get("destination") or "").strip().lower()
+    if not _DESTINATION_RE.match(destination):
+        return {
+            "error": "connection_setup_invalid",
+            "detail": "destination must be 2-127 chars of [a-z0-9._:-] starting "
+                      "alphanumeric",
+        }
+    added = document.get("endpoints")
+    if not isinstance(added, list) or not added:
+        return {
+            "error": "connection_setup_invalid",
+            "detail": "endpoints must be a non-empty list",
+        }
+
+    connection_id, _grant_id = _ids(universe_id=uid, destination=destination)
+    ledger = ConnectionLedger(
+        Path(base) / "outbound.db",
+        verify_authenticated_principal=lambda: actor,
+    )
+    resource = ledger._get_connection_resource(connection_id)
+    if resource is None or resource.owner_user_id != actor:
+        # Nothing to extend, or not this principal's connection. Uniform
+        # envelope so this cannot be used to probe which destinations exist.
+        return dict(_NOT_FOUND)
+    if resource.revoked_at is not None:
+        return {"error": "connection_conflict", "resource": "connection"}
+
+    stored = [e.as_dict() for e in resource.allowed_endpoints]
+    try:
+        merged = _parse_allowed_endpoints([*stored, *added])
+    except SsrfValidationError as exc:
+        return {"error": "endpoint_not_permitted", "detail": str(exc)}
+    except (ValueError, TypeError) as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
+    merged_dicts = [e.as_dict() for e in merged]
+    if _canonical_endpoint_set(merged_dicts) <= _canonical_endpoint_set(stored):
+        return {"status": "unchanged", "destination": destination,
+                "allowed_endpoints": stored}
+
+    scopes = tuple(sorted({m for e in merged for m in e.methods}))
+    try:
+        widened = ledger.extend_http_connection_endpoints(
+            connection_id=connection_id,
+            endpoints=merged_dicts,
+            scopes=scopes,
+            expected_endpoints_json=json.dumps(stored),
+        )
+    except SsrfValidationError as exc:
+        return {"error": "endpoint_not_permitted", "detail": str(exc)}
+    if not widened:
+        # A concurrent deposit moved the policy after we read it.
+        return {"error": "connection_conflict", "resource": "connection"}
+
+    resource = ledger._get_connection_resource(connection_id)
+    return {
+        "status": "extended",
+        "destination": destination,
+        "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
+        "secret_reused": True,
+    }
+
+
+__all__ = ["connect_http", "extend_http"]

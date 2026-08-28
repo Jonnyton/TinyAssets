@@ -582,3 +582,99 @@ def test_two_asks_differing_only_by_destination_are_distinguishable(base):
     assert a["grant_sentence"] != b["grant_sentence"]
     assert '"github"' in a["grant_sentence"]
     assert '"github-theme"' in b["grant_sentence"]
+
+# --------------------------------------------------------------------------- #
+# Widening a grant without a re-paste.
+# Founder 2026-08-28: "why would we have the user need to reput the api in
+# again? you said it was safe in the vault so why would the user give it again?"
+# --------------------------------------------------------------------------- #
+
+
+def _seed_connection(uid, destination="github", path="/repos/o/r/pulls"):
+    """A deposited connection, as if the user had already pasted once."""
+    from tinyassets.api.http_connection import connect_http
+
+    return connect_http(universe_id=uid, payload=json.dumps({
+        "destination": destination, "secret": "ghp_" + "x" * 36,
+        "auth_scheme": "bearer",
+        "allowed_endpoints": [{"host": "api.github.com",
+                               "path_template": path, "methods": ["POST"]}],
+    }))
+
+
+def test_extending_a_grant_needs_no_secret_and_no_new_field(base):
+    """The key is already in the vault. Widening it is an approval, not a paste."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    assert _seed_connection("u-1")["status"] == "provisioned"
+
+    ask = _ask("u-1", kind="API", title="Also let me write the theme file",
+               body="one more endpoint on the key you already gave",
+               action={"type": "extend_http", "destination": "github",
+                       "endpoints": [{"host": "api.github.com",
+                                      "path_template": "/repos/o/r/contents/t.json",
+                                      "methods": ["GET", "PUT"]}]})
+
+    assert ask["status"] == "pending"
+    assert ask["fields"] == [], "nothing to type - it is a yes/no"
+    assert "do not need to paste it again" in ask["grant_sentence"]
+
+    out = _answer("u-1", request_id=ask["request_id"], values={})
+    assert out["status"] == "answered"
+    assert out["secret_reused"] is True
+
+    from tinyassets.api.http_connection import _ids
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    conn_id, _ = _ids(universe_id="u-1", destination="github")
+    ledger = ConnectionLedger(base / "outbound.db",
+                              verify_authenticated_principal=lambda: "alice")
+    res = ledger._get_connection_resource(conn_id)
+    assert sorted(e.path_template for e in res.allowed_endpoints) == [
+        "/repos/o/r/contents/t.json", "/repos/o/r/pulls",
+    ]
+
+
+def test_extending_never_writes_a_second_vault_record(base):
+    """The whole point: one key, one vault record, however many endpoints."""
+    from tinyassets.credential_vault import load_credential_vault
+
+    udir = _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    _seed_connection("u-1")
+    before = [r for r in load_credential_vault(udir) if r["credential_type"] == "http"]
+
+    ask = _ask("u-1", kind="API", title="one more endpoint",
+               action={"type": "extend_http", "destination": "github",
+                       "endpoints": [{"host": "api.github.com",
+                                      "path_template": "/repos/o/r/contents/t.json",
+                                      "methods": ["PUT"]}]})
+    _answer("u-1", request_id=ask["request_id"], values={})
+
+    after = [r for r in load_credential_vault(udir) if r["credential_type"] == "http"]
+    assert len(after) == len(before) == 1
+    assert after[0]["token"] == before[0]["token"], "the stored key is untouched"
+
+
+def test_extending_a_connection_that_does_not_exist_is_refused(base):
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    ask = _ask("u-1", kind="API", title="widen nothing",
+               action={"type": "extend_http", "destination": "nope",
+                       "endpoints": [{"host": "api.github.com",
+                                      "path_template": "/x", "methods": ["PUT"]}]})
+    out = _answer("u-1", request_id=ask["request_id"], values={})
+    assert out == {"error": "not_found", "resource": "connection"}
+
+
+def test_an_extend_request_cannot_carry_a_secret_field(base):
+    """A secret field belongs only where a secret is deposited."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    out = _ask("u-1", kind="API", title="sneaky",
+               action={"type": "extend_http", "destination": "github",
+                       "endpoints": [{"host": "api.github.com",
+                                      "path_template": "/x", "methods": ["PUT"]}]},
+               fields=[{"name": "secret", "label": "Key", "type": "secret"}])
+    assert out["error"] == "request_invalid"
+    assert "only allowed on a connect_http request" in out["detail"]
