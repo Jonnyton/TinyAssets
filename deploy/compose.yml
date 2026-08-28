@@ -44,6 +44,38 @@ services:
     container_name: tinyassets-daemon
     restart: unless-stopped
     logging: *tinyassets_log_forwarding
+    # Bound the daemon so a memory runaway kills the CONTAINER, not the host.
+    #
+    # `docker inspect` reported mem_limit=0 (2026-08-28): the daemon could consume the
+    # whole box. That matters because a host OOM takes `tinyassets-tunnel` with it — the
+    # public surface disappears — whereas a container OOM is contained.
+    #
+    # ### These values assume the 4 vCPU / 8 GB box. On the 2 GB box they protect nothing.
+    #
+    # That is not an oversight, it is the finding: the daemon cgroup has ALREADY peaked at
+    # 1,480,417,280 bytes (1411.8 MiB), which is 69% of a 2 GB host. Any limit low enough
+    # to protect that host is low enough to OOM-kill the daemon under load it has already
+    # survived. **A 2 GB box cannot protect itself from this workload** — one more reason
+    # the resize is not merely a throughput upgrade.
+    #
+    # 4g is 2.9x the observed peak and leaves about half of an 8 GiB host outside the
+    # cgroup. My first attempt was 1400m, derived as `390 + 6*39*3` from per-process PSS —
+    # 11.8 MiB BELOW that observed peak, and wrong in kind as well as degree: a cgroup's
+    # `memory.max` also charges file cache and kernel memory, so a PSS sum cannot size it.
+    # Provider and engine-MCP children inherit this cgroup (cgroup v2 counts descendants),
+    # and production already runs two persistent engine-MCP children inside it.
+    #
+    # `memswap_limit` equal to `mem_limit` DISABLES container swap, making failure
+    # deterministic. Without it Docker allows swap equal to the limit, so the container
+    # could thrash through most of the host's 2 GB of swap while nominally respecting its
+    # RAM ceiling. Production already showed ~152 MiB of charged container swap.
+    #
+    # Caveat worth knowing when this fires: the cgroup reports `memory.oom.group=0`, so
+    # the kernel may kill only the allocating child rather than the container. Then
+    # `restart: unless-stopped` does NOT fire — the daemon survives and that one turn
+    # fails. Containment, not automatic recovery.
+    mem_limit: 4g
+    memswap_limit: 4g
     security_opt:
       - seccomp=unconfined
       - apparmor=unconfined

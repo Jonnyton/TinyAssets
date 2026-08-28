@@ -24,8 +24,9 @@ and the gap is hardware before it is code. Two independent ceilings, both measur
 
 | Ceiling | Measured | Binds |
 |---|---|---|
-| Reads | saturates at **~13 req/s** at 25 concurrent; 95% of one core, load 4.94 | **CPU** |
-| Real turns | **~77 MB PSS / ~189 MB RSS** per concurrent run, floor | **MEMORY** |
+| Reads | now **38+ req/s** after two O(n) hot spots left the request path | CPU (no longer the worry) |
+| Real turns | **6 concurrent**, bounded explicitly and observably | **MEMORY** |
+| Self-protection | daemon cgroup has peaked at **1411.8 MiB = 69% of the host** | **MEMORY** |
 
 The second one is the important correction. I initially argued the 4-worker run pool was
 conservative because a run mostly waits on the user's own LLM rather than our CPU — true
