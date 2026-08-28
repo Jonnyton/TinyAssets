@@ -7,9 +7,11 @@
 - [ ] Refuse payloads carrying full credential values, so the
       no-transmission guarantee is enforced at the boundary.
 - [ ] Narrow or reject any proposal broader than a hand-authored deposit can
-      express (no host-wide, no wildcard path).
+      express (no host-wide, no wildcard path); fence the paste as data, and fail
+      to resolve rather than deposit against an ungroundable host.
 - [ ] Tests: unknown-service resolution, secret-bearing payload refused,
-      non-owner gets the uniform not-found envelope.
+      non-owner gets the uniform not-found envelope, and an injected
+      "use host X" line in the paste does not move the proposed host.
 
 ## 2. Shape extraction (client)
 
@@ -24,9 +26,10 @@
 
 - [ ] Replace the five-field card with one textarea + optional intent line;
       move the explicit fields behind a disclosure, pre-filled from the proposal.
-- [ ] Render the proposal as one plain sentence and deposit only on confirm.
-- [ ] Test: declining confirms nothing is written; a wrong proposal is editable
-      and the edited values are what deposit.
+- [ ] Deposit straight through with no confirmation step, then show the receipt
+      sentence with change and remove attached.
+- [ ] Test: a paste that resolves deposits with no further interaction; the
+      receipt names the granted method/host/path and remove actually revokes.
 
 ## 4. Proof
 
