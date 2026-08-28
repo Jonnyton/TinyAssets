@@ -32,6 +32,9 @@ from tinyassets.api.helpers import (
     _default_universe,
     _universe_dir,
 )
+from tinyassets.provider_admission import (
+    admission_snapshot as _provider_admission_snapshot,
+)
 from tinyassets.providers.base import API_KEY_PROVIDER_ENV_VARS, api_key_providers_enabled
 from tinyassets.ttl_memo import TTLMemo as _TTLMemo
 from tinyassets.ttl_memo import read_ttl as _read_ttl
@@ -1492,6 +1495,11 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
         "request_identity": request_identity,
         "session_boundary": session_boundary,
         "storage_utilization": storage_utilization,
+        # Provider ATTEMPT latencies and whether the bound is actually binding. Not
+        # user-turn duration: a fallback chain or judge ensemble contributes several
+        # attempts per turn, which is why the payload labels its own `sample_unit`
+        # rather than letting a reader assume otherwise.
+        "provider_admission": _provider_admission_snapshot(),
         "per_provider_cooldown_remaining": per_provider_cooldown_remaining,
         "sandbox_status": sandbox_status,
         "missing_data_files": missing_data_files,

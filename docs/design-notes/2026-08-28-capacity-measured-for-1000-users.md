@@ -131,6 +131,27 @@ Average load is not the problem. 1,000 users × ~20 calls/day is 0.23 req/s, com
   entire platform, all users.
 - So the honest ceiling on *simultaneous real work* is single digits, not hundreds.
 
+## The ceiling on concurrent turns was 8, and it was there by accident
+
+Two claims I made and had to walk back, both by tracing the call graph instead of
+reasoning from the handler:
+
+1. **"`converse` takes one of the 4 run-pool slots."** It does not. It calls
+   `_call_writer` directly, so the run pool bounds `run_graph`, not chat turns.
+2. **"So 40 anyio handlers could spawn 40 subprocesses."** Also wrong, and I said it
+   after correcting the first one. `converse` reaches providers through `call_provider`
+   -> `ProviderRouter.call_sync`, which runs the async chain on a thread pool of
+   `_SYNC_CALL_MAX_WORKERS = 8`. The real ceiling was **8**: about 620 MB of PSS beside a
+   ~390 MB daemon. Tight on 2 GB, not the 3.1 GB catastrophe I described.
+
+The interesting part is *why* an explicit bound is still worth having. That 8 is
+**incidental**: its own comment says it exists so one slow provider cannot serialize
+other sync callers — a latency rationale that caps memory only as a side effect. Anyone
+raising it for throughput, which is precisely what someone chasing capacity would do,
+would multiply memory risk with nothing to warn them. A bound whose stated purpose is the
+thing it protects can be reasoned about and tuned against the box; one that protects by
+accident cannot.
+
 ## Real work is bound by MEMORY, not CPU — and I had this backwards
 
 I wrote above that the 4-worker run pool was "conservative given that a run is mostly
@@ -174,6 +195,53 @@ takes `tinyassets-tunnel` with it and drops the public surface completely. A con
 limit would convert that into a container restart (`restart=unless-stopped`) with the
 tunnel surviving. No OOM has happened yet, which is why this is a hardening item and not
 an incident — but the margin is thin and every added worker eats it.
+
+## Turning slots into users — the formula, and the one number we do not have
+
+Concurrent-turn capacity is `slots / turn_duration` turns per second. Slots are now
+known and bounded (`TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS`, default 6; ~25 after the
+approved resize). **Turn duration is not measured**, and I tried: `run_events` in
+`.runs.db` has `started_at`/`finished_at`, but they sit microseconds apart with one event
+per run — bookkeeping records, not execution spans. So the platform does not currently
+record how long a real turn takes.
+
+The sensitivity, so the decision does not wait on it:
+
+| slots | 10 s turn | 30 s turn | 60 s turn |
+|---:|---:|---:|---:|
+| 6 (today) | 0.60 /s | 0.20 /s | 0.10 /s |
+| 25 (after resize) | 2.50 /s | 0.83 /s | 0.42 /s |
+
+1,000 users at ~10 turns/day is ~10,000 turns/day, which is **0.12 /s averaged over a
+24 h day** and roughly **0.7 /s at a 5× peak in a 12 h active window**. Read against the
+table: today's 6 slots carry the average comfortably at any plausible turn length and
+miss the peak unless turns are fast; 25 slots carry the peak except at the slow end.
+
+**So the resize plus the admission bound very likely covers 1,000 users at ordinary
+intensity, and the peak cannot be proven without turn duration.**
+
+That instrumentation now exists. The admission context manager brackets exactly the
+provider subprocess's lifetime, which makes it the one honest place to time a turn, so it
+does — every turn, failures included (a turn that dies after 40 s occupied a slot for
+40 s; excluding it would flatter the numbers in precisely the conditions worth measuring).
+`get_status.provider_admission` reports it on the live surface:
+
+```json
+{"limit": 6, "admitted": 0, "refused": 0, "live": 0, "peak_concurrent": 0,
+ "samples": 0, "turn_seconds": {"p50": …, "p90": …, "p99": …},
+ "sustainable_turns_per_second": …}
+```
+
+`sustainable_turns_per_second` is `limit / p50` — the number this whole question turns
+on, computed from production rather than projected. `refused` and `peak_concurrent`
+answer the other half: whether the bound is actually binding, which is a fact about
+traffic and not a setting. **Once real turns have flowed through it, readiness stops
+being an argument and becomes a reading.**
+
+What the admission bound changes regardless of that unknown: exceeding capacity now
+queues briefly and then refuses honestly, instead of spawning until the host OOMs and
+takes the tunnel down. Being *under-provisioned* is a product problem; being *unbounded*
+was an outage.
 
 ## What would change it, cheapest first
 

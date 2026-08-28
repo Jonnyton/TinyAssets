@@ -28,6 +28,8 @@ from tinyassets.exceptions import (
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
+from tinyassets.provider_admission import ProviderBusy as _ProviderBusy
+from tinyassets.provider_admission import provider_slot_async as _provider_slot
 from tinyassets.provider_work_authority import (
     ProviderInvocationCarrier,
     ProviderInvocationReservationState,
@@ -259,6 +261,20 @@ _CHAIN_DRAIN_EMPTY_THRESHOLD: int = 2
 # Keep it above 1 so an unrelated slow provider call does not serialize all
 # other sync callers behind one shared worker.
 _SYNC_CALL_MAX_WORKERS: int = 8
+
+# NOTE: `_provider_slot` (imported above) bounds concurrent provider SUBPROCESSES.
+# _SYNC_CALL_MAX_WORKERS bounds threads, which are cheap; a subprocess is ~77 MB.
+
+
+def _is_nested(universe_context) -> bool:
+    """Is this call spawned BY a turn that already holds a slot?
+
+    `run_graph` child calls carry a typed `provider_invocation` carrier, so the answer
+    is available exactly where it is needed. Nested work draws on the reserve, because
+    otherwise a served turn holding a slot starves the children it created and both
+    fail (Codex round 3).
+    """
+    return bool(getattr(universe_context, "provider_invocation", None))
 
 
 class ProviderRouter:
@@ -900,14 +916,47 @@ class ProviderRouter:
                     )
                     cfg = replace(cfg, max_tokens=budget_reservation.output_tokens)
                 try:
-                    before_launch = getattr(
-                        served_authority, "before_provider_launch", None
-                    ) if served_authority is not None else None
-                    if callable(before_launch):
-                        before_launch()
-                    resp = await provider.complete(
-                        prompt, system, cfg, universe_dir=universe_dir,
-                    )
+                    # Bound concurrent provider SUBPROCESSES (~77 MB PSS each,
+                    # measured). ASYNC form: a blocking acquire here stalls the event
+                    # loop, and `call_judge_ensemble` gathers admission-taking tasks on
+                    # one loop, so the bound would refuse work it was itself holding up.
+                    #
+                    # Acquired BEFORE `before_provider_launch` on purpose. With the
+                    # order reversed, a busy refusal charged the launch, abandoned the
+                    # budget reservation as INDETERMINATE and cooled a provider that had
+                    # never started — the caller then saw AllProvidersExhaustedError
+                    # instead of "busy, retry" (Codex reproduced this).
+                    async with _provider_slot(nested=_is_nested(universe_context)):
+                        before_launch = getattr(
+                            served_authority, "before_provider_launch", None
+                        ) if served_authority is not None else None
+                        if callable(before_launch):
+                            before_launch()
+                        resp = await provider.complete(
+                            prompt, system, cfg, universe_dir=universe_dir,
+                        )
+                except _ProviderBusy:
+                    # Not a provider failure: nothing launched, so the reservation is
+                    # released untouched, no cooldown is applied, and the actionable
+                    # message reaches the caller instead of being flattened into
+                    # "all providers exhausted".
+                    if budget_reservation is not None:
+                        # RELEASED, not abandoned: nothing launched, so no tokens were
+                        # spent and charging the binding would exhaust a budget that
+                        # still has capacity — the same reasoning the
+                        # ProviderUnavailableError branch below applies.
+                        try:
+                            release_served_provider_budget(
+                                universe_dir.parent, budget_reservation,
+                            )
+                        except Exception:
+                            # Logged, not suppressed silently: a failed release leaves a
+                            # binding charged for a turn that never ran, and swallowing
+                            # it is how that becomes an unexplained "budget exhausted".
+                            logger.exception(
+                                "failed to release reservation after admission refusal"
+                            )
+                    raise
                 except BaseException as exc:
                     if budget_reservation is not None:
                         # A provider that never became available produced no
@@ -992,6 +1041,13 @@ class ProviderRouter:
                         cost_microunits=resp.cost_microunits,
                     )
                 self._quota.record_success(provider_name)
+            except _ProviderBusy:
+                # Nothing launched: not a provider failure, so no cooldown and no
+                # "exhausted" verdict about a provider that was never asked. Codex
+                # reproduced the alternative — `provider_calls=0`, cooldown 29s,
+                # AllProvidersExhaustedError — where the inner re-raise was swallowed by
+                # this outer classifier.
+                raise
             except ProviderAuthorityHeldError:
                 raise
             except (ProviderRateLimitedError, ProviderOverloadedError) as exc:
@@ -1079,6 +1135,13 @@ class ProviderRouter:
                     detail=str(exc)[:200],
                 ))
                 continue
+            except _ProviderBusy:
+                # Nothing launched: not a provider failure, so no cooldown and no
+                # "exhausted" verdict about a provider that was never asked. Codex
+                # reproduced the alternative — `provider_calls=0`, cooldown 29s,
+                # AllProvidersExhaustedError — where the inner re-raise was swallowed by
+                # this outer classifier.
+                raise
             except Exception as exc:
                 self._quota.cooldown(provider_name, COOLDOWN_OTHER)
                 logger.exception("Unexpected error from %s", provider_name)
@@ -1360,9 +1423,13 @@ class ProviderRouter:
             )
             tried += 1
             try:
-                resp = await provider.complete(
-                    prompt, system, cfg, universe_dir=universe_dir,
-                )
+                # Bound concurrent provider SUBPROCESSES (~77 MB PSS each,
+                # measured). ASYNC form — a blocking acquire stalls the event loop, and
+                # this method gathers admission-taking tasks onto one loop.
+                async with _provider_slot(nested=_is_nested(universe_context)):
+                    resp = await provider.complete(
+                        prompt, system, cfg, universe_dir=universe_dir,
+                    )
                 self._quota.record_success(provider_name)
                 return resp.text, provider_name, self._call_meta(resp, attempts=tried)
             except ProviderAuthorityHeldError:
@@ -1402,6 +1469,13 @@ class ProviderRouter:
                     "Policy provider %s protocol error, cooldown %ds",
                     provider_name, COOLDOWN_OTHER,
                 )
+            except _ProviderBusy:
+                # Nothing launched: not a provider failure, so no cooldown and no
+                # "exhausted" verdict about a provider that was never asked. Codex
+                # reproduced the alternative — `provider_calls=0`, cooldown 29s,
+                # AllProvidersExhaustedError — where the inner re-raise was swallowed by
+                # this outer classifier.
+                raise
             except ProviderUnavailableError:
                 self._quota.cooldown(provider_name, COOLDOWN_UNAVAILABLE)
                 logger.warning(
@@ -1696,11 +1770,21 @@ class ProviderRouter:
             name: str, provider: BaseProvider,
         ) -> ProviderResponse | None:
             try:
-                resp = await provider.complete(
-                    prompt, system, cfg, universe_dir=universe_dir,
-                )
+                # Bound concurrent provider SUBPROCESSES (~77 MB PSS each,
+                # measured). ASYNC form — a blocking acquire stalls the event loop, and
+                # this method gathers admission-taking tasks onto one loop.
+                async with _provider_slot(nested=_is_nested(universe_context)):
+                    resp = await provider.complete(
+                        prompt, system, cfg, universe_dir=universe_dir,
+                    )
                 self._quota.record_success(name)
                 return resp
+            except _ProviderBusy:
+                # The judge fan-out had no busy guard, so saturation returned an empty
+                # ensemble AND cooled a provider that never ran: `result=[]`,
+                # `provider_calls=0`, `cooldown=29s` (Codex round 3). Re-raised so the
+                # gather surfaces it rather than silently degrading the ensemble.
+                raise
             except ProviderUnavailableError:
                 self._quota.cooldown(name, COOLDOWN_UNAVAILABLE)
             except ProviderTimeoutError:
