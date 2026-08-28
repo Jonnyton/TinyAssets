@@ -338,3 +338,70 @@ def test_turning_enforcement_on_makes_the_cap_bite(tmp_path, monkeypatch):
 
     assert reserve_effect_quota(tmp_path, sink="s", effect_key="a") is None
     assert reserve_effect_quota(tmp_path, sink="s", effect_key="b") is not None
+
+
+def test_a_broken_ledger_cannot_block_an_effect_while_dark(tmp_path, monkeypatch):
+    """Dark must mean dark.
+
+    The reservation used to happen before the flag was read, so a locked or
+    unwritable ledger could stop a real outbound write even with enforcement off —
+    a failure mode created purely by merging this (Codex round 3, 1 and 4).
+    """
+    from tinyassets import usage_policy
+
+    monkeypatch.delenv("TINYASSETS_USAGE_ENFORCEMENT", raising=False)
+
+    class _Broken:
+        def reserve_effect(self, *a, **k):
+            raise OSError("ledger unavailable")
+
+    monkeypatch.setattr(usage_policy, "_ledger", lambda: _Broken())
+    assert (
+        usage_policy.reserve_effect_quota(tmp_path, sink="s", effect_key="a") is None
+    ), "a broken meter must not veto an effect while dark"
+
+
+def test_a_broken_ledger_fails_closed_while_enforcing(tmp_path, monkeypatch):
+    """Enforcing, the opposite must hold, or the cap is defeated by breaking it."""
+    from tinyassets import usage_policy
+
+    monkeypatch.setenv("TINYASSETS_USAGE_ENFORCEMENT", "1")
+
+    class _Broken:
+        def reserve_effect(self, *a, **k):
+            raise OSError("ledger unavailable")
+
+    monkeypatch.setattr(usage_policy, "_ledger", lambda: _Broken())
+    assert usage_policy.reserve_effect_quota(tmp_path, sink="s", effect_key="a")
+
+
+def test_checkout_sends_an_idempotency_key(monkeypatch):
+    """A lost response must not turn a retry into a second subscription."""
+    from tinyassets.billing import stripe_adapter
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_fake")
+    monkeypatch.setattr(stripe_adapter, "find_active_subscription", lambda _u: None)
+    monkeypatch.setattr(stripe_adapter, "resolve_price_id", lambda: "price_x")
+
+    seen = {}
+
+    class _Resp:
+        def read(self):
+            return b'{"id":"cs_1","url":"https://checkout"}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _urlopen(request, timeout=None):
+        seen["key"] = request.get_header("Idempotency-key")
+        return _Resp()
+
+    monkeypatch.setattr(stripe_adapter.urllib.request, "urlopen", _urlopen)
+    stripe_adapter.create_checkout_session(
+        universe_id="u-1", success_url="https://x/ok", cancel_url="https://x/no"
+    )
+    assert seen["key"], "no idempotency key sent"
+    assert seen["key"].startswith("checkout:")

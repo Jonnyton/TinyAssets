@@ -226,19 +226,35 @@ def reserve_effect_quota(
     record rather than a limit.
     """
     limits = limits_for(tier)
-    admitted = _ledger().reserve_effect(
-        universe_dir,
-        settlement_key=settlement_key(sink=sink, effect_key=effect_key),
-        limit=limits.effects,
-        window_seconds=limits.window_seconds,
-        now=now,
-    )
+    enforcing = enforcement_enabled()
+    try:
+        admitted = _ledger().reserve_effect(
+            universe_dir,
+            settlement_key=settlement_key(sink=sink, effect_key=effect_key),
+            limit=limits.effects,
+            window_seconds=limits.window_seconds,
+            now=now,
+        )
+    except Exception:
+        # While dark, metering must not be able to decide whether an effect
+        # happens. A locked or unwritable ledger would otherwise block a real
+        # outbound write — a failure mode created purely by merging this, which is
+        # exactly what landing dark is supposed to avoid (Codex round 3, 1 and 4).
+        if not enforcing:
+            return None
+        # Enforcing: a ledger we cannot read must fail closed, or the cap is
+        # trivially defeated by making the ledger unavailable.
+        return QuotaRefusal(
+            dimension="effect",
+            limit=limits.effects,
+            tier=limits.name,
+            retry_after_seconds=limits.window_seconds,
+        )
     if admitted:
         return None
-    if not enforcement_enabled():
-        # Dark: the reservation was declined, and that is RECORDED, but we do not
-        # act on it. Refusing on accounting we know can drift would be worse than
-        # letting the action through.
+    if not enforcing:
+        # Dark: the decline is RECORDED but not acted on. Refusing on accounting we
+        # know can drift would be worse than letting the action through.
         return None
     return QuotaRefusal(
         dimension="effect",

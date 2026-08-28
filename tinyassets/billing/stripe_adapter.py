@@ -17,6 +17,7 @@ import hmac
 import json
 import logging
 import os
+import time as _time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -63,7 +64,13 @@ def billing_enabled() -> bool:
     return bool(_secret_key())
 
 
-def _post(path: str, fields: list[tuple[str, str]], *, timeout: float = 20.0) -> dict:
+def _post(
+    path: str,
+    fields: list[tuple[str, str]],
+    *,
+    timeout: float = 20.0,
+    idempotency_key: str = "",
+) -> dict:
     key = _secret_key()
     if not key:
         raise BillingUnavailable("no Stripe key configured")
@@ -76,6 +83,13 @@ def _post(path: str, fields: list[tuple[str, str]], *, timeout: float = 20.0) ->
     )
     # Basic auth: key as username, empty password, per Stripe.
     request.add_unredirected_header("Authorization", _basic_auth(key))
+    if idempotency_key:
+        # Stripe deduplicates on this for 24h. Without it, a response lost in
+        # transit turns a retry into a SECOND object — for checkout that means a
+        # second subscription billing one universe twice, and our own duplicate
+        # check cannot see it because a pending session is not yet a subscription
+        # (Codex round 3, 3).
+        request.add_unredirected_header("Idempotency-Key", idempotency_key)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
@@ -154,6 +168,14 @@ def create_checkout_session(
             ("client_reference_id", universe_id),
             ("subscription_data[metadata][universe_id]", universe_id),
         ],
+        # Keyed on the universe and the day, so a retry after a lost response
+        # returns the SAME session rather than creating another.
+        idempotency_key=(
+            "checkout:"
+            + hashlib.sha256(
+                f"{universe_id}:{int(_time.time() // 86400)}".encode()
+            ).hexdigest()
+        ),
     )
     return {"id": str(session["id"]), "url": str(session["url"])}
 

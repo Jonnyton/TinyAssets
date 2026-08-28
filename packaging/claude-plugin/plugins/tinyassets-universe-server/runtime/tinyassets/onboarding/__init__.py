@@ -925,7 +925,7 @@ async def _handle_billing_status(request: Any) -> Any:
         from tinyassets.api.helpers import _universe_dir
         from tinyassets.billing import billing_enabled
         from tinyassets.storage.usage_ledger import get_tier, usage_summary
-        from tinyassets.usage_policy import limits_for
+        from tinyassets.usage_policy import enforcement_enabled, limits_for
 
         with identity_context(identity):
             home = _read_home(identity)
@@ -954,7 +954,11 @@ async def _handle_billing_status(request: Any) -> Any:
                 # metered; calling the dimension "effects" would claim more than is
                 # enforced (Codex REJECT round 2). External effects are the ones
                 # gated pre-flight.
-                "enforced": ["external_effects"],
+                # Read the FLAG. Reporting enforcement while dark is a false claim
+                # about what the platform will actually do (Codex round 3, 2).
+                "enforced": (
+                    ["external_effects"] if enforcement_enabled() else []
+                ),
                 "used": {
                     "effects": int(used["effects_committed"]),
                     "compute_minutes": round(used["compute_seconds"] / 60, 1),
