@@ -194,7 +194,8 @@
           via OpenRouter, posting to Slack/X, any HTTPS API. The key goes straight
           to the secure vault over TLS, <strong>never through chat</strong>. Your
           universe then builds on it (register it as compute, or wire a channel).</p>
-          <label class="field"><span>Name (a label you'll recognize)</span>
+          <label class="field"><span>Name (a label you'll recognize)
+              <span class="muted">(letters, numbers and . _ : - &mdash; no spaces)</span></span>
             <input id="http-destination" type="text" placeholder="e.g. openrouter or slack-webhook" /></label>
           <div class="preset-row">
             <span class="muted">Doing a common one? Fill it in for me:</span>
@@ -1016,15 +1017,15 @@
 
   function wire(){
     // ---- plan / subscription -------------------------------------------
-    // The tier itself is server-side; this only reflects it and starts the two
-    // transitions. Cancellation deliberately does NOT flip the label locally —
-    // the webhook is the single authority on entitlement, so the UI re-reads
-    // rather than guessing, and cannot disagree with Stripe.
+    // Reflects server-side tier and starts the two transitions. Cancellation does
+    // NOT flip the label locally: the webhook is the single authority on
+    // entitlement, so the UI re-reads rather than guessing and cannot disagree
+    // with Stripe.
     let PLAN = null;
 
     async function billingFetch(path, method){
-      // Same bearer discipline as every other authenticated call in this app:
-      // refresh first, because the token rotates about every five minutes.
+      // Same bearer discipline as every other authenticated call here: refresh
+      // first, because the token rotates about every five minutes.
       await ensureFreshToken();
       const headers = {};
       const tk = token(); if(tk) headers["Authorization"] = "Bearer " + tk;
@@ -1054,21 +1055,26 @@
       const r = await billingFetch("/mcp/app/billing/checkout", "POST");
       const out = r ? await r.json() : null;
       if(out && out.url){ location.href = out.url; return; }
-      appendMessage("system", out && out.detail ? ("Billing unavailable: " + out.detail)
-                            : "Billing is not available right now.");
+      if(out && out.error === "already_subscribed"){
+        appendMessage("system", "You already have an active subscription.");
+        loadPlan(); return;
+      }
+      appendMessage("system", out && out.detail
+        ? ("Billing unavailable: " + out.detail)
+        : "Billing is not available right now.");
     }
 
     async function startCancel(){
       const r = await billingFetch("/mcp/app/billing/cancel", "POST");
       const out = r ? await r.json() : null;
       if(out && out.cancelled){
-        appendMessage("system", "Your subscription will end at the close of the current period. "
-            + "You keep the paid tier until then.");
+        appendMessage("system", "Your subscription will end at the close of the "
+          + "current period. You keep the paid tier until then.");
       }else if(out && out.reason === "no_active_subscription"){
         appendMessage("system", "No active subscription to cancel.");
       }else{
-        appendMessage("system", out && out.detail ? ("Could not cancel: " + out.detail)
-                              : "Could not cancel right now.");
+        appendMessage("system", out && out.detail
+          ? ("Could not cancel: " + out.detail) : "Could not cancel right now.");
       }
       loadPlan();
     }
@@ -1254,7 +1260,13 @@
       btn.disabled=true; out.textContent="Depositing securely...";
       try{
         const r=await MCP.connectHTTP(dest,secret,[endpoint],scheme);
-        if(r&&r.error){ out.textContent="Couldn't add it: "+r.error; }
+        // Show the server's `detail` — it is the half that says WHAT to fix
+        // ("destination must be 2-127 chars of [a-z0-9._:-]..."). Rendering the
+        // bare `error` code left a real deposit dead with no way to self-correct:
+        // the founder typed a name with a space, saw only "connection_setup_invalid",
+        // and reported "i think i deposited it" twice while the connection did not
+        // exist (2026-08-27). The Claude-connect path above already does this.
+        if(r&&r.error){ out.textContent="Couldn't add it: "+(r.detail||r.error); }
         else{ out.textContent="Added — your universe can now use "+host+". Ask it to register this as compute (e.g. OpenRouter) or wire a channel with it.";
               $("http-destination").value=""; $("http-host").value=""; $("http-path").value=""; }
       }catch(err){ if(err.authRequired){ btn.disabled=false; return enterSignedOut(); } out.textContent="Couldn't add it: "+err.message; }
