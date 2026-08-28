@@ -64,6 +64,10 @@ function makeResponse(spec){
     ok: spec.status >= 200 && spec.status < 300,
     headers: {get(name){ return headers[String(name).toLowerCase()] || null; }},
     async text(){
+      // `delayMs` holds the BODY open while the response headers have already
+      // landed - exactly the shape of a slow turn, and the only way to get two
+      // calls genuinely in flight against one shared session.
+      if(spec.delayMs) await new Promise(r=>setTimeout(r, spec.delayMs));
       if(spec.readFails) throw new Error("stream closed");
       return spec.body === undefined ? "" : spec.body;
     },
@@ -80,6 +84,12 @@ async function fetch(url, init){
   const spec = PLAN.shift();
   if(spec === undefined) throw new Error("harness ran out of scripted responses");
   if(spec === null) throw new TypeError("Failed to fetch");
+  // `headersDelayMs` holds the RESPONSE ITSELF back, not just its body. The
+  // session id is adopted the moment the headers land, so this is the only way
+  // to place that adoption AFTER a concurrent call has already rebuilt the
+  // session - which is the race being tested. The queue is consumed at call
+  // time (above), so request ORDER stays deterministic regardless.
+  if(spec.headersDelayMs) await new Promise(r=>setTimeout(r, spec.headersDelayMs));
   return makeResponse(spec);
 }
 
@@ -88,10 +98,31 @@ __TRANSPORT__
 // Recovery pauses are real seconds in production; here they only slow the test.
 MCP._pause = function(){ return Promise.resolve(); };
 
+// A wedged client is a real failure mode (awaiting the promise you are inside),
+// and it must read as a clean assertion rather than a harness timeout.
+const DEADLOCK = Symbol("deadlock");
+function guard(promise){
+  return Promise.race([
+    promise,
+    new Promise(r=>setTimeout(()=>r(DEADLOCK), 5000)),
+  ]);
+}
+
 (async () => {
   const out = {sent: SENT, refreshes: 0, sessionIdAfter: null};
   try{
-    out.result = await (__CALL__);
+    const settled = await guard(Promise.resolve().then(()=>(__CALL__)));
+    if(settled === DEADLOCK){
+      out.ok = false;
+      out.error = {message: "client wedged - never settled", transport: "DEADLOCK",
+                   replayable: false, authRequired: false};
+      out.refreshes = refreshes;
+      out.sessionIdAfter = MCP.sessionId;
+      out.unusedResponses = PLAN.length;
+      console.log(JSON.stringify(out));
+      return;
+    }
+    out.result = settled;
     out.ok = true;
   }catch(err){
     out.ok = false;
@@ -161,13 +192,17 @@ def _ok(payload, headers=None):
             "headers": headers or {}}
 
 
-def _handshake():
+def _handshake_with(headers):
     """initialize + notifications/initialized, the pair ensureInit sends."""
     return [
-        {"status": 200, "headers": _SID,
+        {"status": 200, "headers": headers,
          "body": json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}})},
-        {"status": 202, "body": "", "headers": _SID},
+        {"status": 202, "body": "", "headers": headers},
     ]
+
+
+def _handshake():
+    return _handshake_with(_SID)
 
 
 def _session_gone():
@@ -269,17 +304,41 @@ def test_a_cut_stream_never_silently_resends_a_turn(tmp_path):
     assert out["error"]["replayable"] is False
 
 
-def test_a_gateway_blip_never_silently_resends_a_turn(tmp_path):
-    """A 502 can mean 'never arrived' OR 'died after accepting'. Ask the user."""
+def test_a_gateway_timeout_never_silently_resends_a_turn(tmp_path):
+    """504 means the gateway timed out WAITING on the origin.
+
+    So the request was delivered and the turn may be running right now.
+    Replaying it would double-send, which is the one thing this must not do.
+    """
     out = _drive(
         tmp_path,
-        _handshake() + [{"status": 503, "body": "<html>bad gateway</html>"}],
+        _handshake() + [{"status": 504, "body": "<html>gateway timeout</html>"}],
         'MCP.converse("hello")',
     )
     assert out["ok"] is False
     assert len([s for s in out["sent"] if s["tool"] == "converse"]) == 1
     assert out["error"]["transport"] == "unavailable"
     assert out["sessionIdAfter"] is None
+
+
+def test_a_deploy_blip_does_not_make_the_user_click(tmp_path):
+    """502/503 mean the origin never took it, so replaying cannot duplicate.
+
+    Codex was right to push back here: making every deploy-window turn need a
+    click is a real regression on a primary surface, and 502/503 are provably
+    the safe half of the ambiguity.
+    """
+    for status in (502, 503):
+        out = _drive(
+            tmp_path,
+            _handshake()
+            + [{"status": status, "body": "<html>origin down</html>"}]
+            + _handshake()
+            + [_ok({"reply": "hi there"}, _SID2)],
+            'MCP.converse("hello")',
+        )
+        assert out["ok"] is True, (status, out.get("error"))
+        assert out["result"] == {"reply": "hi there"}
 
 
 def test_an_idempotent_read_does_retry_a_cut_stream(tmp_path):
@@ -422,10 +481,156 @@ def test_a_dropped_connection_is_reported_as_offline(tmp_path):
     assert out["sessionIdAfter"] is None
 
 
+# --- half a handshake is worthless; repair it, do not wedge on it ------------
+
+
+def test_a_blip_on_the_second_handshake_step_keeps_the_session_it_just_got(tmp_path):
+    """`initialize` hands back a session; the notification then blips.
+
+    Retiring the session there discards the id `initialize` just produced, so the
+    retry goes out with no session at all and the server answers "Missing session
+    ID" - the handshake destroys its own result. Reproduced by Codex.
+    """
+    out = _drive(
+        tmp_path,
+        [
+            {"status": 200, "headers": _SID,
+             "body": json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}})},
+            {"status": 503, "body": "<html>blip</html>"},   # the notification
+            {"status": 202, "body": "", "headers": _SID},   # its retry
+        ]
+        + [_ok({"reply": "hi"}, _SID)],
+        'MCP.converse("hello")',
+    )
+    assert out["ok"] is True, out.get("error")
+    notifications = [s for s in out["sent"]
+                     if s["method"] == "notifications/initialized"]
+    assert len(notifications) == 2
+    assert notifications[1]["sessionId"] == "sess-1", (
+        "the handshake retried without the session initialize had just given it"
+    )
+
+
+def test_a_token_rotation_mid_handshake_does_not_wedge_the_client(tmp_path):
+    """The bearer can rotate BETWEEN the two handshake steps.
+
+    Repairing that from inside `_rpc` awaits the `_initing` promise it is already
+    inside: the client wedges permanently, with no timeout and no further
+    request. Codex reproduced exactly that. `ensureInit` restarts the handshake
+    instead.
+    """
+    out = _drive(
+        tmp_path,
+        [
+            {"status": 200, "headers": _SID,
+             "body": json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}})},
+            {"status": 401, "body": ""},                    # the notification
+            {"status": 400, "body": json.dumps(             # its session-less retry
+                {"jsonrpc": "2.0", "id": "server-error",
+                 "error": {"code": -32600,
+                           "message": "Bad Request: Missing session ID"}})},
+        ]
+        + _handshake_with(_SID2)                            # a clean handshake
+        + [_ok({"reply": "recovered"}, _SID2)],
+        'MCP.converse("hello")',
+    )
+    assert out["error"] != {"transport": "DEADLOCK"} if not out["ok"] else True
+    assert out.get("error", {}).get("transport") != "DEADLOCK", "the client wedged"
+    assert out["ok"] is True, out.get("error")
+    assert out["result"] == {"reply": "recovered"}
+
+
+# --- two calls share one session; late replies must not fight ---------------
+
+
+def test_a_late_reply_cannot_drag_the_client_back_to_an_older_session(tmp_path):
+    """The 30s poll and a multi-minute turn overlap constantly.
+
+    Codex held a `converse` on sess-1, let the poll rebuild the session as
+    sess-2, then resolved the older 2xx - whose header still said sess-1 - and
+    the client adopted it, orphaning sess-2.
+    """
+    out = _drive(
+        tmp_path,
+        _handshake()
+        # the turn: its whole RESPONSE lands after the poll has rebuilt the
+        # session, so the id it carries is already one generation stale
+        + [dict(_ok({"reply": "slow"}, _SID), headersDelayMs=300)]
+        + [_session_gone()]                      # the poll, on the same session
+        + _handshake_with(_SID2)
+        + [_ok({"active_host": "codex"}, _SID2)],
+        '(async()=>{ const turn=MCP.converse("hello");'
+        '  const poll=MCP.getStatus();'
+        '  return {turn: await turn, poll: await poll}; })()',
+    )
+    assert out["ok"] is True, out.get("error")
+    assert out["result"]["turn"] == {"reply": "slow"}
+    assert out["sessionIdAfter"] == "sess-2", (
+        "a late success re-adopted the session it had been sent on, orphaning "
+        "the one the poll had already rebuilt"
+    )
+
+
+def test_concurrent_rejections_rebuild_the_session_once_not_once_each(tmp_path):
+    """Three calls share a dead session; their 404s arrive one after another.
+
+    If each tore the session down, every late arrival would discard the session
+    the previous one had just built. Codex measured three handshakes producing
+    sess-2, sess-3 and sess-4.
+    """
+    out = _drive(
+        tmp_path,
+        _handshake()
+        + [dict(_session_gone(), delayMs=50),
+           dict(_session_gone(), delayMs=250),
+           dict(_session_gone(), delayMs=450)]
+        + _handshake_with(_SID2)
+        + [_ok({"active_host": "a"}, _SID2),
+           _ok({"active_host": "b"}, _SID2),
+           _ok({"active_host": "c"}, _SID2)],
+        '(async()=>{ const a=MCP.getStatus(), b=MCP.getStatus(), c=MCP.getStatus();'
+        '  return [await a, await b, await c]; })()',
+    )
+    assert out["ok"] is True, out.get("error")
+    handshakes = [s for s in out["sent"] if s["method"] == "initialize"]
+    assert len(handshakes) == 2, (
+        f"expected one recovery handshake, got {len(handshakes) - 1}: each late "
+        "rejection rebuilt the session again"
+    )
+    assert out["sessionIdAfter"] == "sess-2"
+
+
+# --- a 400 that is not about our session must not trigger a replay ----------
+
+
+def test_a_400_that_merely_mentions_a_session_is_not_a_session_rejection(tmp_path):
+    """An edge page or auth interstitial can say "session" and mean something else."""
+    out = _drive(
+        tmp_path,
+        _handshake()
+        + [{"status": 400,
+            "body": "<html><body>Your session has expired, please sign in"
+                    "</body></html>"}],
+        'MCP.converse("hello")',
+    )
+    assert out["ok"] is False
+    assert [s["method"] for s in out["sent"]].count("initialize") == 1, (
+        "a non-JSON-RPC 400 was treated as a session rejection and replayed a "
+        "state-changing call"
+    )
+    assert len([s for s in out["sent"] if s["tool"] == "converse"]) == 1
+
+
 # --- the UI must offer the retry, not just report the failure ----------------
 
 
 def test_a_failed_turn_offers_to_send_again():
+    """Structural, unlike the rest of this file.
+
+    The resend path is DOM wiring, and there is no DOM shim here to drive it, so
+    this checks the wiring exists rather than that clicking it works. The
+    behavioural proof is the live surface.
+    """
     html = _APP_HTML.read_text(encoding="utf-8")
     # The failure path hands back a working button rather than a dead sentence.
     assert "function offerResend(" in html
