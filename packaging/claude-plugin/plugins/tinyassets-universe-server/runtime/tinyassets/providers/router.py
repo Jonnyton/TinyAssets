@@ -260,6 +260,14 @@ _CHAIN_DRAIN_EMPTY_THRESHOLD: int = 2
 # Sync graph nodes call async provider routing through this bounded pool.
 # Keep it above 1 so an unrelated slow provider call does not serialize all
 # other sync callers behind one shared worker.
+#
+# It also acts as a second ceiling on concurrent provider subprocesses, which is a
+# property worth knowing about rather than relying on: admission
+# (`TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS`, default 6) is the bound sized against
+# memory and observable through `get_status.provider_admission`. Raising THIS number to
+# unlock concurrency would raise memory pressure with nothing reporting it — I proposed
+# exactly that and the arithmetic behind it was wrong, so it stays where it is until a
+# real turn's high-water is measured.
 _SYNC_CALL_MAX_WORKERS: int = 8
 
 # NOTE: `_provider_slot` (imported above) bounds concurrent provider SUBPROCESSES.

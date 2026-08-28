@@ -40,11 +40,37 @@ from contextlib import asynccontextmanager, contextmanager
 
 _log = logging.getLogger(__name__)
 
-#: Concurrent provider subprocesses permitted. The default is deliberately below the
-#: anyio threadpool's 40: the threadpool bounds *handlers*, and a handler is cheap,
-#: while a provider subprocess is ~77 MB of private memory. Sized for the 2 GB box
-#: (6 x 77 MB is ~460 MB, leaving room for the ~390 MB daemon and page cache); raise
-#: it with the RAM, not with the core count.
+#: Concurrent provider subprocesses permitted. **Stays at 6 until a real turn's
+#: high-water is measured**, and the story of why is worth keeping.
+#:
+#: I first derived 6 from "~77 MB PSS each", taken from four concurrent processes and
+#: extrapolated linearly. Suspecting that was too conservative, I re-measured with
+#: verified overlap and proposed raising it to 10. Cross-family review refuted that too,
+#: and my arithmetic was the problem:
+#:
+#:     verified overlap 13 -> MemAvailable 874 MB
+#:     verified overlap 25 -> MemAvailable 403 MB
+#:
+#:   * I called 786/25 = 31 MB the "marginal" cost. It is the AVERAGE. The marginal
+#:     slope between the two points is (874-403)/(25-13) = **39 MB**.
+#:   * Per-process cost therefore ROSE with concurrency (24 MB/process at 13, 39 MB
+#:     marginal from 13 to 25). My claim that page sharing improves with concurrency was
+#:     the opposite of what my own two points said. I fitted a story to two data points
+#:     and got the sign wrong.
+#:   * My headroom check used 2048 MB total, but the probe's real baseline was 1189 MB
+#:     AVAILABLE. The missing 859 MB is roughly 390 MB of daemon plus ~469 MB of kernel,
+#:     Docker, tunnel and other services — none of it spendable. Against the right
+#:     baseline, 10 x 39 x 3 leaves about 19 MB (12 MB on the unrounded 39.25 slope).
+#:     Either way it is not headroom.
+#:
+#: And `--version` is not the production process tree: a real turn runs `claude -p` with
+#: a system prompt, streaming state and tool policy, and when engine MCP is enabled it
+#: starts a SECOND Python/FastMCP process. So the floor I measured is not one process.
+#:
+#: The honest position: 6 is not proven optimal, it is proven not-yet-refuted. The number
+#: moves when `get_status.provider_admission` has real turns in it — `refused` rising
+#: while `peak_concurrent` sits at the limit is the evidence that would justify raising
+#: it, and nothing else should.
 _LIMIT_VAR = "TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS"
 _DEFAULT_LIMIT = 6
 

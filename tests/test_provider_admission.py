@@ -118,10 +118,36 @@ def test_the_default_fits_the_box_it_runs_on(monkeypatch):
     from tinyassets.providers import router
 
     assert pa._DEFAULT_LIMIT <= router._SYNC_CALL_MAX_WORKERS, (
-        "a bound above the thread pool that already gates these calls would never bind"
+        "a bound above the thread pool that already gates these calls would never bind "
+        "— the pool would cap concurrency first and the explicit limit would be decor"
     )
-    assert pa._DEFAULT_LIMIT * 77 + 390 < 2048, (
-        "the default must fit the 2 GB box alongside the ~390 MB daemon"
+    # Baseline is what is AVAILABLE, not what is installed. My first version of this
+    # assertion budgeted against 2048 MB of total RAM, but the live box reported only
+    # 1189 MB available at idle — the other ~469 MB is kernel, Docker, the tunnel and
+    # friends, none of which the daemon may spend. Against the wrong baseline the test
+    # happily admitted a limit of 17, which is ~400 MB past the real ceiling.
+    #
+    # Cost per process is the MARGINAL slope measured on the live box between two
+    # verified-overlap points, (874-403)/(25-13) = 39 MB — not the 786/25 = 31 MB
+    # AVERAGE I first mistook it for. The average understates, because the observed
+    # per-process cost ROSE with concurrency rather than falling.
+    MEASURED_AVAILABLE_MB = 1189
+    MARGINAL_MB_PER_PROCESS = 39
+    REAL_TURN_MULTIPLIER = 3  # `--version` loads no prompt, no history, no MCP child
+
+    # "Fits" is not "safe". Merely staying under the available figure admitted a limit
+    # of 10, which the module's own comment calls no headroom at all (~19 MB left) — the
+    # test protected 6 while still licensing the number Codex had just rejected. Demand
+    # an explicit floor of genuinely spare memory instead, so the assertion agrees with
+    # the reasoning it is supposed to enforce.
+    MIN_HEADROOM_MB = 300
+
+    worst_case = pa._DEFAULT_LIMIT * MARGINAL_MB_PER_PROCESS * REAL_TURN_MULTIPLIER
+    spare = MEASURED_AVAILABLE_MB - worst_case
+    assert spare >= MIN_HEADROOM_MB, (
+        f"{pa._DEFAULT_LIMIT} concurrent turns could need {worst_case} MB of the "
+        f"{MEASURED_AVAILABLE_MB} MB available, leaving {spare} MB — under the "
+        f"{MIN_HEADROOM_MB} MB floor this box needs for everything else it does"
     )
 
 
