@@ -853,3 +853,76 @@ class TestConverseSurvivesAnUnreadableAcl:
             "and it must be the honest envelope, not some other refusal that "
             "happens to also contain 'error'"
         )
+
+
+class TestDisclosureMatchesResolutionForEveryCallerInput:
+    """The invariant at the POINT OF USE, not at the helper.
+
+    Codex round 3 made the fair objection that the tests above prove `clamp_tier`
+    in isolation and two specific sink calls, but never that the `bound_tier`
+    actually used for prompt assembly is no stronger than the authenticated
+    resolution. Its mutant inserted a widening branch AFTER the clamp, keyed on
+    `actor_id`, and the whole suite stayed green. (`actor_id` is attribution
+    only -- engine identity deliberately binds to the verified request principal,
+    not this parameter -- so the mutant invented that coupling. The gap in
+    coverage was real regardless.)
+
+    So sweep every caller-controlled input to the sink and assert the one thing
+    that actually matters: the founder's private grounding reaches the prompt
+    **if and only if** the resolver bound T2. Any post-clamp widening from any
+    argument fails this, which the per-argument tests could never promise.
+    """
+
+    @pytest.mark.parametrize("requested", [None, il.T0, il.T1, il.T2])
+    @pytest.mark.parametrize("supplied_actor", ["", "forged-founder"])
+    @pytest.mark.parametrize(
+        "grant", [None, "read", "write", "admin"], ids=["anon", "read", "write", "admin"]
+    )
+    def test_founder_grounding_appears_iff_resolution_says_t2(
+        self, base, monkeypatch, grant, supplied_actor, requested
+    ):
+        udir = _make_universe(base, "u-own", level="public")
+        grant_universe_access(
+            base, universe_id="u-own", actor_id="owner-1", permission="admin"
+        )
+        if grant is not None:
+            grant_universe_access(
+                base, universe_id="u-own", actor_id="caller-1", permission=grant
+            )
+            _authenticate("caller-1")
+
+        resolved = il.resolve_interlocutor_tier("u-own").tier
+
+        monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-own")
+        monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
+        seen: list[str] = []
+
+        def _fake_provider(prompt, system="", **_kw):
+            seen.append(system)
+            return "{}" if "strict JSON" in system else "hello"
+
+        monkeypatch.setattr(ui, "call_provider", _fake_provider)
+        ui.converse("u-own", "hi", actor_id=supplied_actor, tier=requested)
+
+        assert seen, "provider was never called"
+        disclosed = FOUNDER_FACT in seen[0]
+        where = (
+            f"grant={grant!r} actor_id={supplied_actor!r} tier={requested!r}: "
+            f"resolved {resolved}, disclosed={disclosed}"
+        )
+
+        # SAFETY, stated without reference to `clamp_tier` on purpose. If the
+        # expectation were `clamp_tier(...) == T2` then a clamp mutated to widen
+        # would move both sides together and this would stay green — the exact
+        # trap the source-shape assertions fell into.
+        if disclosed:
+            assert resolved == il.T2, (
+                "founder grounding reached the prompt for a caller the resolver "
+                f"did not bind as founder. {where}"
+            )
+
+        # LIVENESS: when the caller does not ask to be narrowed, the founder must
+        # actually get their own grounding — a gate that discloses to nobody
+        # would satisfy the safety half and break the product.
+        if requested in (None, il.T2):
+            assert disclosed == (resolved == il.T2), where
