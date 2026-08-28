@@ -42,22 +42,40 @@ The server-side operation refuses payloads that contain full credential values
 rather than trusting callers to have done the split — the guarantee is enforced
 at the boundary, not documented at it.
 
-## Why the user still confirms
+## The confirmation step: proposed, and cut
 
-The obvious reading of "the platform just figures it out" is that nothing is
-shown. That would be wrong here, for one reason: the endpoint allow-list is the
-only thing bounding a leaked credential. A host-wide grant on `api.github.com`
-turns one stolen token into access to every repository the token can reach; a
-one-path grant does not.
+The first draft kept one click — the user reading a single sentence before the
+deposit. The argument for it was that the endpoint allow-list is the only thing
+bounding a leaked credential, and a human glance is cheap.
 
-So the boundary is *shown*, not *authored* — one sentence, no vocabulary:
+**The founder was shown that tradeoff and cut it (2026-08-27, "cut").** Pasting
+is the whole interaction. This section records what that decision costs and what
+carries the weight instead, because the decision is sound only if something does.
 
-> This key will be allowed to **POST** to
-> `api.github.com/repos/jonnyton/tinyassets/pulls` — nothing else.
+What the click was actually protecting against was never the *width* of the
+grant — the validator bounds that either way, and a confirmed grant and an
+unconfirmed one are equally narrow. It was protecting against the grant pointing
+at the **wrong host**: a credential deposited against `api.evil.com` is usable
+against `api.evil.com` on its first call. Confirmation was a human noticing that.
 
-The user reads a consequence instead of filling in a policy. That is the smallest
-thing they can be asked to do while the grant stays narrow, and it costs one
-click rather than five fields.
+With the click gone, three things carry it:
+
+1. **The paste is data, never instructions.** This moves from hygiene to
+   load-bearing. Injected text in a pasted "credentials page" is the one input
+   that could steer a host, and no human now reviews the result.
+2. **An ungroundable host is a failure, not a guess.** If the resolver cannot
+   tie a host to the credential's identity or the user's own intent line, it
+   reports that it could not resolve. Depositing against a hallucinated host is
+   the outcome to refuse, not to soften.
+3. **The receipt makes it immediately visible and reversible.** The sentence
+   still gets shown — after the fact, with change and remove attached. The
+   founder's own standing ask from the same evening was that every world-facing
+   action return a receipt; this is that, not the cut step wearing a hat.
+
+The honest residue: a wrong inference now becomes a live connection for however
+long it takes someone to read the receipt. That is the accepted cost, and it is
+bounded — the grant is still one method on one path, and the credential still
+only ever reaches the vault.
 
 ## Why the manual fields stay
 
