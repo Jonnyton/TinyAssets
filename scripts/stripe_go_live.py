@@ -41,6 +41,7 @@ from tinyassets.billing.stripe_adapter import (  # noqa: E402
     PRICE_LOOKUP_KEY,
     _price_matches_plan,
     last_verified_delivery,
+    verified_delivery_marker_path,
 )
 
 _API = "https://api.stripe.com/v1"
@@ -216,14 +217,29 @@ def check(webhook_url: str) -> list[str]:
         blockers.append("STRIPE_WEBHOOK_SECRET unset here (it must be set on the daemon)")
     else:
         print(f"{OK} STRIPE_WEBHOOK_SECRET is set here")
+    # Everything above this point is Stripe-side and answerable from anywhere. This
+    # is not: the marker lives in the DAEMON's data directory, so run off the daemon
+    # it reports "never" no matter how many deliveries have verified there. Naming the
+    # path it actually looked at is the difference between a blocker someone can act
+    # on and one that reads as a bug in the tool.
+    marker = verified_delivery_marker_path()
+    on_daemon = str(marker).startswith("/data")
     delivery = last_verified_delivery()
     if delivery is None:
-        print(f"{BAD} no webhook signature has EVER verified on this deployment")
-        print("         Send a test event from the Stripe dashboard, then re-run.")
+        print(f"{BAD} no verified delivery found at {marker}")
+        if on_daemon:
+            print("         Send a test event from the Stripe dashboard, then re-run.")
+        else:
+            print(
+                "         This file lives on the DAEMON -- run this check there. From "
+                "here the answer is"
+            )
+            print("         'not visible', which is being reported as 'not proven'.")
         blockers.append(
-            "no verified webhook delivery - the daemon's signing secret has never "
-            "been shown to match the endpoint; a live key with a stale test secret "
-            "takes real money and entitles nobody"
+            f"no verified webhook delivery at {marker}"
+            + ("" if on_daemon else " (checked off-daemon; run this on the daemon)")
+            + " - the signing secret has never been shown to match the endpoint; a "
+            "live key with a stale test secret takes real money and entitles nobody"
         )
     elif bool(delivery["livemode"]) != (mode == "live"):
         got = "live" if delivery["livemode"] else "test"
@@ -233,7 +249,7 @@ def check(webhook_url: str) -> list[str]:
             "to prove the configured secret matches the endpoint now"
         )
     else:
-        print(f"{OK} a {mode}-mode webhook signature has verified on this deployment")
+        print(f"{OK} a {mode}-mode webhook signature has verified ({marker})")
     return blockers
 
 
