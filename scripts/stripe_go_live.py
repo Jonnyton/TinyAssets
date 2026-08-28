@@ -45,12 +45,24 @@ from tinyassets.billing.stripe_adapter import (  # noqa: E402
 _API = "https://api.stripe.com/v1"
 _TIMEOUT = 20
 
-#: The subscription lifecycle events entitlement depends on, plus the two Checkout
-#: Session events. Anything not listed here we do not act on.
+#: The subscription lifecycle events entitlement depends on. Anything not listed
+#: here we do not act on.
+#:
+#: This comment previously also claimed "plus the two Checkout Session events"
+#: while listing none of them. Not a stale comment - a wrong one: an endpoint
+#: provisioned from it would silently lack what a reader believed was covered.
 REQUIRED_EVENTS = [
     "customer.subscription.created",
     "customer.subscription.updated",
     "customer.subscription.deleted",
+]
+
+#: Not required today - nothing consumes them yet. They ARE required by the
+#: checkout-lease redesign, which settles a claim by session id. Provisioning
+#: them now costs nothing and saves editing a live endpoint later.
+FORWARD_EVENTS = [
+    "checkout.session.completed",
+    "checkout.session.expired",
 ]
 
 PRODUCT_NAME = "TinyAssets"
@@ -103,9 +115,13 @@ def check(webhook_url: str) -> list[str]:
     mode = _mode()
     print(f"\nStripe mode: {mode.upper()}")
     if mode != "live":
-        print(
-            f"{WARN} the key in this environment is not a live key, so everything "
-            "below describes TEST mode"
+        # A BLOCKER, not a warning. This script exists to answer "can we take
+        # real money", and a green report from a sandbox key answers a different
+        # question while looking like it answered that one (Codex, 2026-08-28).
+        print(f"{BAD} this is not a live key - nothing below describes real money")
+        blockers.append(
+            f"the configured key is {mode}-mode, not live; a test-mode check "
+            "cannot establish live readiness"
         )
 
     # --- 1. the account itself -------------------------------------------------
@@ -177,7 +193,22 @@ def check(webhook_url: str) -> list[str]:
         else:
             print(f"{OK} subscribed to every event entitlement depends on")
 
-    # --- 4. what this script cannot see ---------------------------------------
+    # --- 4. authority that Stripe cannot revoke -------------------------------
+    print("")
+    print("Entitlement signing key")
+    if os.environ.get("TINYASSETS_BILLING_ENTITLEMENT_KEY", "").strip():
+        print(f"{OK} TINYASSETS_BILLING_ENTITLEMENT_KEY is set (claims issue as v2)")
+    else:
+        print(f"{BAD} TINYASSETS_BILLING_ENTITLEMENT_KEY is unset")
+        print("         Claims would be signed with the STRIPE WEBHOOK SECRET, which")
+        print("         Stripe tells you to roll and which you MUST roll if it leaks -")
+        print("         permanently breaking every subscription already sold.")
+        blockers.append(
+            "TINYASSETS_BILLING_ENTITLEMENT_KEY unset - entitlement would rest on a "
+            "secret Stripe can invalidate; set it before selling anything durable"
+        )
+
+    # --- 5. what this script cannot see ---------------------------------------
     print("\nNot checkable from here")
     if not os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip():
         print(f"{BAD} STRIPE_WEBHOOK_SECRET is not set in THIS environment")
@@ -239,7 +270,8 @@ def provision(webhook_url: str) -> None:
         )
         return
     params = [("url", webhook_url)]
-    params += [(f"enabled_events[{i}]", e) for i, e in enumerate(REQUIRED_EVENTS)]
+    events = REQUIRED_EVENTS + FORWARD_EVENTS
+    params += [(f"enabled_events[{i}]", e) for i, e in enumerate(events)]
     endpoint = _request("POST", "webhook_endpoints", params)
     print(f"{OK} created webhook endpoint {endpoint['id']}")
     secret = endpoint.get("secret")
@@ -278,6 +310,10 @@ def main() -> int:
             print(f"  - {reason}")
         return 1
     print("READY: this Stripe account can take real subscriptions.")
+    print(
+        "Note: a matching signing secret can only be proven by a real signed "
+        "delivery. Send one before opening checkout to users."
+    )
     return 0
 
 

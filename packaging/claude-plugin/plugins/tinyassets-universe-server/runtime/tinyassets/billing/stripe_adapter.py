@@ -26,6 +26,12 @@ _log = logging.getLogger(__name__)
 
 _API = "https://api.stripe.com/v1"
 
+#: Pinned, per Stripe's own go-live checklist. An unversioned request inherits the
+#: ACCOUNT's default version -- a dashboard setting, not something in this repo -- so
+#: Stripe could change the shape of what we send and receive without us deploying
+#: anything. Bump this deliberately, with tests.
+STRIPE_API_VERSION = "2025-08-27.basil"
+
 #: Referenced by lookup key rather than a raw id, so the same code works against
 #: test and live mode without an id-swap step.
 PRICE_LOOKUP_KEY = "tinyassets_paid_monthly"
@@ -36,7 +42,20 @@ PLAN_INTERVAL = "month"
 _KEY_VAR = "STRIPE_SECRET_KEY"
 _WEBHOOK_SECRET_VAR = "STRIPE_WEBHOOK_SECRET"
 
-_ENTITLEMENT_VERSION = "1"
+#: Version 1 signed the entitlement claim with the STRIPE WEBHOOK SECRET -- a key
+#: Stripe tells you to roll periodically, and one you MUST roll the moment it leaks.
+#: Rolling it silently invalidates the claim on every subscription already sold, and
+#: those subscriptions can then never move a tier again: a later cancellation fails
+#: authorization and is ignored, leaving someone entitled who cancelled. That nearly
+#: happened on 2026-08-28 when the signing secret leaked and the endpoint had to be
+#: recreated. There were no live subscriptions yet. There will be.
+#:
+#: Version 2 signs with a key of OUR OWN that no third party can force us to rotate.
+#: Version 1 is still VERIFIED so subscriptions sold under it keep working; nothing
+#: new is issued under it.
+_ENTITLEMENT_KEY_VAR = "TINYASSETS_BILLING_ENTITLEMENT_KEY"
+_ENTITLEMENT_V1 = "1"
+_ENTITLEMENT_V2 = "2"
 _ENTITLEMENT_VERSION_KEY = "tinyassets_entitlement_version"
 _ENTITLEMENT_CLAIM_KEY = "tinyassets_entitlement_claim"
 
@@ -98,13 +117,39 @@ def _price_matches_plan(price: object) -> bool:
     )
 
 
-def _entitlement_claim(universe_id: str, price_id: str, *, secret: str = "") -> str:
-    """Sign authority that only our checkout creator may attach to metadata."""
-    key = _webhook_secret(secret)
-    if not key:
-        raise BillingUnavailable("no Stripe webhook secret configured")
+def entitlement_key() -> str:
+    """The key NEW entitlement claims are signed with, or '' if unconfigured."""
+    return (os.environ.get(_ENTITLEMENT_KEY_VAR) or "").strip()
+
+
+def _issuing_version() -> str:
+    """Version 2 when we have our own key, else the old scheme.
+
+    Falling back keeps existing deployments working, but the go-live check BLOCKS on
+    the fallback: selling durable subscriptions whose authority rests on a secret
+    Stripe can invalidate is not a live-safe state.
+    """
+    return _ENTITLEMENT_V2 if entitlement_key() else _ENTITLEMENT_V1
+
+
+def _entitlement_claim(
+    universe_id: str, price_id: str, *, secret: str = "", version: str = ""
+) -> str:
+    """Sign authority that only our checkout creator may attach to metadata.
+
+    The VERSION selects the key -- that is the point of versioning it.
+    """
+    version = version or _issuing_version()
+    if version == _ENTITLEMENT_V2:
+        key = entitlement_key()
+        if not key:
+            raise BillingUnavailable("no billing entitlement key configured")
+    else:
+        key = _webhook_secret(secret)
+        if not key:
+            raise BillingUnavailable("no Stripe webhook secret configured")
     message = "\0".join(
-        (_ENTITLEMENT_VERSION, universe_id, PRICE_LOOKUP_KEY, price_id)
+        (version, universe_id, PRICE_LOOKUP_KEY, price_id)
     ).encode("utf-8")
     return hmac.new(key.encode("utf-8"), message, hashlib.sha256).hexdigest()
 
@@ -129,15 +174,20 @@ def _authorized_subscription_universe(obj: object, *, secret: str = "") -> str:
     universe_id = str(metadata.get("universe_id") or "")
     price_id = str(price.get("id") or "")
     claim = str(metadata.get(_ENTITLEMENT_CLAIM_KEY) or "")
+    version = str(metadata.get(_ENTITLEMENT_VERSION_KEY) or "")
     if (
         not universe_id
         or not price_id
-        or metadata.get(_ENTITLEMENT_VERSION_KEY) != _ENTITLEMENT_VERSION
         or not claim
+        or version not in (_ENTITLEMENT_V1, _ENTITLEMENT_V2)
     ):
         return ""
     try:
-        expected = _entitlement_claim(universe_id, price_id, secret=secret)
+        # Verify against the version the subscription was SOLD under, so upgrading
+        # the scheme never orphans subscriptions already in the wild.
+        expected = _entitlement_claim(
+            universe_id, price_id, secret=secret, version=version
+        )
     except BillingUnavailable:
         return ""
     return universe_id if hmac.compare_digest(expected, claim) else ""
@@ -162,6 +212,7 @@ def _post(
     )
     # Basic auth: key as username, empty password, per Stripe.
     request.add_unredirected_header("Authorization", _basic_auth(key))
+    request.add_unredirected_header("Stripe-Version", STRIPE_API_VERSION)
     if idempotency_key:
         # Stripe deduplicates on this for 24h. Without it, a response lost in
         # transit turns a retry into a SECOND object — for checkout that means a
@@ -199,6 +250,7 @@ def _get(path: str, *, timeout: float = 20.0) -> dict:
         raise BillingUnavailable("no Stripe key configured")
     request = urllib.request.Request(f"{_API}/{path.lstrip('/')}", method="GET")
     request.add_unredirected_header("Authorization", _basic_auth(key))
+    request.add_unredirected_header("Stripe-Version", STRIPE_API_VERSION)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
@@ -286,7 +338,7 @@ def create_checkout_session(
             ("subscription_data[metadata][universe_id]", universe_id),
             (
                 f"subscription_data[metadata][{_ENTITLEMENT_VERSION_KEY}]",
-                _ENTITLEMENT_VERSION,
+                _issuing_version(),
             ),
             (
                 f"subscription_data[metadata][{_ENTITLEMENT_CLAIM_KEY}]",
