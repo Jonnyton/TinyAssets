@@ -101,6 +101,50 @@ Average load is not the problem. 1,000 users × ~20 calls/day is 0.23 req/s, com
   entire platform, all users.
 - So the honest ceiling on *simultaneous real work* is single digits, not hundreds.
 
+## Real work is bound by MEMORY, not CPU — and I had this backwards
+
+I wrote above that the 4-worker run pool was "conservative given that a run is mostly
+*waiting* on the user's own LLM subscription rather than burning our CPU". That is true
+of CPU and wrong about the thing that actually binds. Measured on the live box:
+
+| | |
+|---|---|
+| One provider CLI (`claude --version`, no inference) | **197 MB** peak RSS |
+| Four concurrent, RSS sum | **+758 MB** (~189 MB each — barely shared) |
+| Four concurrent, **PSS** sum (sharing-adjusted) | **+310 MB** (~77 MB each) |
+| Peak total container RSS during that | **1,135 MB** on a 2 GB box |
+
+PSS is the honest figure for pressure: **~77 MB of genuinely private memory per
+concurrent run**, and that is the FLOOR — `--version` loads no system prompt, no
+conversation history and no tool definitions, and performs no inference. A real turn is
+larger.
+
+A waiting run is not free. It holds its runtime resident for the whole wait, so "it is
+only waiting on the user's LLM" reduces CPU pressure and not memory pressure.
+
+**So the 4-worker pool is not conservative — it is about right for 2 GB, and arguably
+already optimistic.** Raising it on this box would not add throughput; it would add
+OOMs. Rough sizing for simultaneous *real* turns, at the measured floor:
+
+| Simultaneous turns | Run memory (PSS floor) | + daemon | Realistic box |
+|---:|---:|---:|---|
+| 4 (today) | ~310 MB | ~700 MB | 2 GB — at the edge |
+| 25 | ~1.9 GB | ~2.3 GB | 8 GB |
+| 50 | ~3.9 GB | ~4.3 GB | 8–16 GB |
+
+**This changes the buying advice.** It is not "buy cores", it is **buy the 4 vCPU / 8 GB
+tier ($48/mo)** — the cores raise the read ceiling and the RAM is what actually unlocks
+the run pool. RAM is the constraint on the work users care about.
+
+### And there is no memory limit on the container
+
+`docker inspect` reports `mem_limit=0` — the daemon may consume the entire host. With
+the run pool already able to peak at 1.1 GB of 2 GB, an overshoot OOMs the *host*, which
+takes `tinyassets-tunnel` with it and drops the public surface completely. A container
+limit would convert that into a container restart (`restart=unless-stopped`) with the
+tunnel surviving. No OOM has happened yet, which is why this is a hardening item and not
+an incident — but the margin is thin and every added worker eats it.
+
 ## What would change it, cheapest first
 
 0. **Done, partially free: less CPU on the status path** (above). Worth having, but
@@ -111,10 +155,10 @@ Average load is not the problem. 1,000 users × ~20 calls/day is 0.23 req/s, com
 1. **Buy cores.** 1 → 4 vCPU is $12 → $48/mo and should be roughly 4× the read ceiling
    again, compounding with the above. At $20/user this is paid for by *three*
    subscribers. This is the highest-value remaining action and it needs no code.
-2. **Raise the run pool once cores exist.** 4 workers is conservative given that a run is
-   mostly *waiting* on the user's own LLM subscription rather than burning our CPU — but
-   the per-subprocess RSS is still unmeasured, and 2 GB is not much room. Measure before
-   raising.
+2. **Do NOT raise the run pool on this box.** Measured above: ~77 MB PSS / ~189 MB RSS
+   per concurrent run, floor. 4 workers already peaks at 1.1 GB of 2 GB. More workers
+   here buys OOMs, not throughput. The pool rises *after* the RAM does — which is why
+   the tier above matters more than the core count.
 3. **Keep O(n) work out of per-request paths.** The storage walk was one. Others will
    appear as data grows; the profile above is the method.
 4. **Horizontal scale needs a storage rearchitecture.** SQLite on a local filesystem
