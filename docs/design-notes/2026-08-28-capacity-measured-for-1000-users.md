@@ -66,9 +66,23 @@ arm equally:
 | + storage walk memoized | 30.8 ms | **-58%** |
 | + supervisor liveness memoized | 15.3 ms | **-79%** |
 
-**A 4.8× cut in the CPU each request costs is 4.8× the requests one core can serve**, and
-unlike buying cores it is free. Both were O(n) in something that grows: the storage walk
-sums every subsystem directory (~3,300 `stat`s), and liveness reads ~59 per-worker files.
+**That 4.8× does not generalize, and I claimed it did.** A cross-family review (Codex
+ADAPT) reproduced the counter-case: the liveness memo is *per universe* with a 5-second
+TTL, and the app polls every 30 seconds, so a thousand distinct universes produce a
+thousand misses. Measured directly — 1,000 universes × 2 passes gave **2,000
+computations and zero hits**. The 73→15 ms figure is a warm, same-universe benchmark.
+
+What each piece actually buys, stated separately because they differ:
+
+| | Scope | Helps |
+|---|---|---|
+| Storage-walk memo | **process-global** | every status request, any universe — this one does generalize |
+| Liveness memo | per universe, 5 s | repeat reads of the *same* universe inside the window; nothing at 1,000 distinct pollers |
+| **Single-flight** | per key | concurrent readers of the same key: measured **50 computations for 400 requests (8×)** |
+
+Single-flight is the part that matters under load, and it was the review's sharpest
+finding: before it, 25 concurrent cold callers ran 25 filesystem walks — a stampede at
+exactly the concurrency where the box already saturates.
 
 *A correction worth keeping.* I first reported the storage walk as 19%, measured
 sequentially on an unusually warm page cache; cProfile separately inflated it to 59%
@@ -89,10 +103,11 @@ Average load is not the problem. 1,000 users × ~20 calls/day is 0.23 req/s, com
 
 ## What would change it, cheapest first
 
-0. **Done, and free: 4.8× less CPU per request** (above). On its own this should take the
-   read ceiling from ~13 req/s toward ~60 req/s on the *same* box — to be confirmed
-   against the live endpoint once deployed, because the measurement above is in-process
-   and excludes transport.
+0. **Done, partially free: less CPU on the status path** (above). Worth having, but
+   narrower than I first claimed, and **it does not raise the real-turn ceiling at all**:
+   `converse` calls neither cached function. It reduces shared overhead and removes a
+   stampede; it does not make the platform ready. No throughput claim until a deployed,
+   authenticated, multi-universe load test says so.
 1. **Buy cores.** 1 → 4 vCPU is $12 → $48/mo and should be roughly 4× the read ceiling
    again, compounding with the above. At $20/user this is paid for by *three*
    subscribers. This is the highest-value remaining action and it needs no code.

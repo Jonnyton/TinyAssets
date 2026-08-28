@@ -120,9 +120,11 @@ def test_the_default_ttl_cannot_flip_the_watchdog_threshold(udir):
 
 
 def test_the_cache_does_not_grow_without_bound(monkeypatch, tmp_path):
-    """Keyed by a path, so an unbounded dict is a slow leak."""
+    """Keyed by a path, so an unbounded map is a slow leak. The bound (and its LRU
+    policy, replacing a clear-all that guaranteed churn at exactly the 1,000-universe
+    scale this is for) lives in TTLMemo and is tested there; this asserts the wiring."""
     for i in range(300):
         d = tmp_path / f"u-{i}"
         d.mkdir()
         status._compute_supervisor_liveness(d)
-    assert len(status._liveness_cache) <= 257
+    assert len(status._liveness_memo._entries) <= 256
