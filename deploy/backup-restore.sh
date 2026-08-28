@@ -51,10 +51,7 @@ for arg in "$@"; do
 done
 
 log() {
-    # Declared and assigned separately: `local x="$(cmd)"` masks the
-    # command's return value in `local`'s own status (SC2155).
-    local msg
-    msg="[restore $(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"
+    local msg="[restore $(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"
     echo "${msg}"
     echo "${msg}" >> "${BACKUP_LOG}" 2>/dev/null || true
 }
