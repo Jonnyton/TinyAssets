@@ -273,6 +273,22 @@ def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str
         return {"error": "request_storage_unavailable"}
     if row.get("error"):
         return row
+    if row.get("settled"):
+        # Already decided in a past interaction. This is the "it might know from
+        # past interaction what it is allowed" case: a standing ALLOW means go
+        # ahead, a standing decline means do not, and neither costs the user a
+        # second answer.
+        return {
+            "status": "settled",
+            "decision": row["decision"],
+            "may_proceed": row["decision"] == "allowed",
+            "answer": row.get("answer"),
+            "feedback": row.get("feedback", ""),
+            "note": (
+                "You already asked this and they settled it. Act on the standing "
+                "decision rather than asking again."
+            ),
+        }
     return {**row, "grant_sentence": _grant_sentence(row)}
 
 
@@ -385,7 +401,7 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             )
         again = document.get("dont_ask_again") is True
         resolve_request(udir, request_id, status="dismissed", feedback=fb,
-                        dont_ask_again=again)
+                        dont_ask_again=again, decision="declined")
         return {
             "status": "dismissed",
             "request_id": request_id,
@@ -448,7 +464,8 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             # here would lose the ask with nothing deposited.
             return deposited
         resolve_request(udir, request_id, status="answered", answer=answer,
-                        feedback=feedback, dont_ask_again=dont_ask_again)
+                        feedback=feedback, dont_ask_again=dont_ask_again,
+                        decision="allowed")
         return {
             "status": "answered",
             "request_id": request_id,
@@ -458,10 +475,22 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             "connection_id": deposited.get("connection_id"),
         }
 
+    # For a plain answer the user's own words decide it: an explicit decline
+    # field, else answering at all is a yes.
+    # Send means allowed, Not now means declined — that is all the surface knows,
+    # and it must not try to read intent out of a field value. A caller that DOES
+    # know (a choice field it defined) can say so outright.
+    stated = str(document.get("decision") or "").strip().lower()
+    if stated in {"allowed", "declined"}:
+        decided = stated
+    else:
+        decided = "declined" if document.get("decline") is True else "allowed"
     resolve_request(udir, request_id, status="answered", answer=answer,
-                    feedback=feedback, dont_ask_again=dont_ask_again)
+                    feedback=feedback, dont_ask_again=dont_ask_again,
+                    decision=decided)
     return {
         "status": "answered",
+        "decision": decided,
         "request_id": request_id,
         "answer": answer,
         "feedback": feedback,
