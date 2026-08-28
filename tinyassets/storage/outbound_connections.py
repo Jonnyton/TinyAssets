@@ -2872,6 +2872,36 @@ class ConnectionLedger:
                 (json.dumps(list(new_scopes)), connection_id, json.dumps(["http"])),
             )
 
+    def delete_connection(self, *, connection_id: str, owner_user_id: str) -> bool:
+        """Remove a connection row outright, owner-guarded.
+
+        ``revoke_connection`` stamps ``revoked_at`` and leaves the row. That is a
+        tombstone, and connection ids are DETERMINISTIC on (universe,
+        destination) — so a tombstone permanently burns that name: every later
+        deposit of it trips the revoked-row conflict. Removal has to actually
+        delete, or "remove it and add it again" is impossible.
+
+        Owner-guarded in the WHERE clause so a co-admin cannot delete another
+        principal's connection. Returns True when a row went.
+        """
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM outbound_connections "
+                "WHERE connection_id = ? AND owner_user_id = ?",
+                (connection_id, owner_user_id),
+            )
+            return cursor.rowcount > 0
+
+    def delete_grant(self, *, grant_id: str, owner_user_id: str) -> bool:
+        """Remove a grant row outright, owner-guarded. Same reasoning."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM outbound_connection_grants "
+                "WHERE grant_id = ? AND owner_user_id = ?",
+                (grant_id, owner_user_id),
+            )
+            return cursor.rowcount > 0
+
     def extend_http_connection_endpoints(
         self,
         *,

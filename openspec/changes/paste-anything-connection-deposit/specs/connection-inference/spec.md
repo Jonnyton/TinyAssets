@@ -81,21 +81,20 @@ After depositing, the interface SHALL state in one plain sentence what the key
 was granted — method, host, path — and SHALL offer changing it. This is a
 receipt, not a gate: it appears after the connection exists and blocks nothing.
 
-The receipt SHALL NOT offer an action the surface cannot perform. **Removal is
-out of scope for this change**: no operation exposes the ledger's
-`revoke_connection` today, and a naive one would permanently burn the
-destination name (ids are deterministic on `(universe, destination)` and the
-`revoked_at` conflict then refuses every re-deposit). That is a storage-shape
-decision with its own design, tracked in
-`docs/concerns/2026-08-27-no-reachable-remove-for-http-connections.md`.
+The receipt SHALL NOT offer an action the surface cannot perform.
+
+Removal now exists (`forget_http`) and SHALL remove the grant, the connection
+row, and the stored secret — all three. Revoking the grant alone leaves the
+material on disk, and reporting that as removed would be false. The row is
+DELETED rather than tombstoned, so the destination name is free for re-use: ids
+are deterministic on `(universe, destination)`, and a `revoked_at` tombstone
+would refuse every later deposit of that name.
 
 #### Scenario: A deposit lands
 
 - **WHEN** the connection is created
 - **THEN** the user is told this key may POST to that exact path and nothing
   else, and how to change it
-- **AND** the receipt does not claim the key can be removed here, because it
-  cannot
 
 #### Scenario: The inference chose wrongly
 

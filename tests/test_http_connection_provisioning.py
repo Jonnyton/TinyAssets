@@ -1153,3 +1153,107 @@ def test_an_unchanged_redeposit_is_still_idempotent(base: Path) -> None:
     assert again["status"] == "provisioned"
     assert again["connection_id"] == first["connection_id"]
     assert again["allowed_endpoints"] == first["allowed_endpoints"]
+
+
+# --------------------------------------------------------------------------- #
+# Removal — grant, row, AND secret. Anything less is not a removal.
+# --------------------------------------------------------------------------- #
+
+
+def _forget(uid: str, destination: str = "webhook:acme") -> Any:
+    from tinyassets.api.http_connection import forget_http
+
+    return forget_http(universe_id=uid,
+                       payload=json.dumps({"destination": destination}))
+
+
+def test_forgetting_removes_the_secret_not_just_the_grant(base: Path) -> None:
+    """The vault could only add or replace — `_merge_single_record` has no branch
+    that drops a record — so nothing could take a secret back out. Revoking the
+    grant stopped it being USABLE while the material stayed on disk, and calling
+    that "removed" would have been a lie."""
+    udir = _make_universe(base, "u-forget", admin="founder")
+    _login("founder")
+    assert _connect("u-forget", secret="sk-SECRET-v1")["status"] == "provisioned"
+    assert len(_http_records(udir)) == 1
+
+    out = _forget("u-forget")
+
+    assert out["status"] == "forgotten"
+    assert out["secret_removed"] is True
+    assert _http_records(udir) == [], "the secret must actually be gone"
+    from tinyassets.api.http_connection import _ids
+
+    conn_id, grant_id = _ids(universe_id="u-forget", destination="webhook:acme")
+    ledger = _ledger(base, "founder")
+    assert ledger._get_connection_resource(conn_id) is None
+    assert ledger.get_grant(grant_id) is None
+
+
+def test_a_forgotten_name_is_free_again(base: Path) -> None:
+    """THE reason removal deletes rather than tombstones. revoke_connection
+    stamps revoked_at and leaves the row, and ids are deterministic on
+    (universe, destination) — so a tombstone would burn that name forever."""
+    _make_universe(base, "u-reuse", admin="founder")
+    _login("founder")
+    _connect("u-reuse", secret="sk-v1")
+    _forget("u-reuse")
+
+    again = _connect("u-reuse", secret="sk-v2")
+
+    assert again["status"] == "provisioned", again
+    assert [e["path_template"] for e in again["allowed_endpoints"]] == ["/v1/messages"]
+
+
+def test_forgetting_is_idempotent(base: Path) -> None:
+    """A retry after a partial failure must complete, not wedge."""
+    _make_universe(base, "u-idem", admin="founder")
+    _login("founder")
+    _connect("u-idem", secret="sk-v1")
+
+    assert _forget("u-idem")["secret_removed"] is True
+    second = _forget("u-idem")
+    assert second["status"] == "forgotten"
+    assert second["secret_removed"] is False
+
+
+def test_a_co_admin_cannot_forget_another_principals_credential(base: Path) -> None:
+    from tinyassets.daemon_server import grant_universe_access
+
+    udir = _make_universe(base, "u-fowner", admin="founder")
+    grant_universe_access(base, universe_id="u-fowner", actor_id="coadmin",
+                          permission="admin", granted_by="founder")
+    _login("founder")
+    _connect("u-fowner", secret="founder-secret")
+
+    _login("coadmin")
+    assert _forget("u-fowner") == {"error": "not_found", "resource": "connection"}
+    _login("founder")
+    assert len(_http_records(udir)) == 1, "the owner's secret survived"
+
+
+def test_forgetting_needs_an_owner(base: Path) -> None:
+    _make_universe(base, "u-fauth", admin="founder", write="writer")
+    _login("writer")
+    assert _forget("u-fauth") == {"error": "not_found", "resource": "connection"}
+    _logout()
+    assert _forget("u-fauth")["error"] == "authentication_required"
+
+
+def test_forget_routes_through_write_graph(base: Path) -> None:
+    import importlib
+
+    from tinyassets import universe_server as us
+
+    udir = _make_universe(base, "u-froute", admin="founder")
+    _login("founder")
+    _connect("u-froute", secret="sk-route")
+    importlib.reload(us)
+    try:
+        raw = us.write_graph(target="connection", operation="forget_http",
+                             graph_id="u-froute",
+                             payload_json=json.dumps({"destination": "webhook:acme"}))
+        assert json.loads(raw)["status"] == "forgotten"
+        assert _http_records(udir) == []
+    finally:
+        importlib.reload(us)

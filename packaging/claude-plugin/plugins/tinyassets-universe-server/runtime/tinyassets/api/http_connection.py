@@ -557,4 +557,82 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     return _project(resource, grant)
 
 
-__all__ = ["connect_http"]
+def forget_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
+    """Remove an http connection: its grant, its row, and its SECRET.
+
+    All three, or it is not a removal. Revoking the grant alone stops the
+    credential being usable while the material stays on disk, and telling a user
+    their key is gone when it is still there is the kind of lie this codebase
+    exists to avoid.
+
+    Order is deliberate: grant first (so nothing can authorize a call while the
+    rest is torn down), then the connection row, then the vault record. Each step
+    is idempotent, so a retry after a partial failure completes rather than
+    wedging.
+
+    The row is DELETED, not tombstoned. ``revoke_connection`` stamps
+    ``revoked_at`` and leaves the row, and ids are deterministic on (universe,
+    destination) — so a tombstone would permanently burn that name and the user
+    could never deposit it again.
+    """
+    from tinyassets.api import permissions
+    from tinyassets.credential_vault import forget_credential
+    from tinyassets.daemon_server import list_universe_acl
+
+    if not permissions.is_authenticated_request():
+        return {"error": "authentication_required", "resource": "connection"}
+    actor = permissions.current_actor_id().strip()
+    if not actor or actor == "anonymous":
+        return {"error": "authentication_required", "resource": "connection"}
+
+    uid = _request_universe(universe_id)
+    base = _base_path()
+    admin = [
+        row
+        for row in list_universe_acl(base, universe_id=uid)
+        if row.get("actor_id") == actor and row.get("permission") == "admin"
+    ]
+    if not admin:
+        return dict(_NOT_FOUND)
+
+    try:
+        document = _payload(payload)
+    except ValueError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
+    destination = str(document.get("destination") or "").strip().lower()
+    if not _DESTINATION_RE.match(destination):
+        return {
+            "error": "connection_setup_invalid",
+            "detail": "destination must be 2-127 chars of [a-z0-9._:-] starting "
+                      "alphanumeric",
+        }
+
+    connection_id, grant_id = _ids(universe_id=uid, destination=destination)
+    ledger = ConnectionLedger(
+        Path(base) / "outbound.db",
+        verify_authenticated_principal=lambda: actor,
+    )
+    resource = ledger._get_connection_resource(connection_id)
+    if resource is not None and resource.owner_user_id != actor:
+        # Someone else's credential, in a universe this actor also administers.
+        return dict(_NOT_FOUND)
+
+    ledger.delete_grant(grant_id=grant_id, owner_user_id=actor)
+    ledger.delete_connection(connection_id=connection_id, owner_user_id=actor)
+    udir = _universe_dir(uid)
+    forgotten = forget_credential(
+        udir, credential_type="http", service=destination, universe_id=uid
+    )
+
+    return {
+        "status": "forgotten",
+        "destination": destination,
+        "secret_removed": bool(forgotten.get("removed")),
+        "next": [
+            "the name is free again - depositing this destination now starts "
+            "fresh rather than conflicting",
+        ],
+    }
+
+
+__all__ = ["connect_http", "forget_http"]
