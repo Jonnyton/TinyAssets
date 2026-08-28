@@ -291,6 +291,32 @@ as an Actions secret, and point `.github/workflows/auto-enroll-merge.yml` at it.
 Background: `docs/decisions/ADR-004-merge-attribution-and-the-deploy-gap.md`.
 This is the mechanism behind Hard Rule 14 — five PRs merged 2026-07-21 and none reached production.
 
+### Set `Contents: Read and write` on the PAT deposited in the universe's vault
+
+**The whole ask: change one dropdown from Read-only to Read and write.** No new token, no re-paste
+— the key already in the vault keeps working.
+
+This is a *different* token from the one above: it is the fine-grained PAT the founder pasted into
+their own universe on 2026-08-28 so the agent could open a PR itself. It is live and correctly
+scoped to the repo; only the Contents permission is short.
+
+Evidence, 2026-08-28 (three probes, all write-free):
+
+```
+POST /repos/jonnyton/tinyassets/git/refs
+403 {"message":"Resource not accessible by personal access token",
+     "documentation_url":"https://docs.github.com/rest/git/refs#create-a-reference"}
+```
+
+`GET`s on the same repo succeed for the same token — it reads `main`'s ref and the full
+`app.html` — which is what proves the token is live and the repo is selected. `Pull requests:
+Read and write` is already set and does **not** cover `POST /git/refs`; branch creation is a
+Contents write.
+
+*Blocks:* the founder's standing goal that the universe push a PR end-to-end to deployed.
+*Where:* GitHub → Settings → Developer settings → Fine-grained tokens → this token →
+Repository permissions → Contents.
+
 ### Create the WorkOS native/public client
 
 PKCE S256, no secret, exact variable-port `127.0.0.1` loopback redirect, offline access, plus the
