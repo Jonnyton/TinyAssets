@@ -94,9 +94,43 @@ MAX_PENDING = 10
 FIELD_TYPES = frozenset({"text", "secret", "choice"})
 
 
+#: Columns added to a table AFTER it first shipped, as
+#: ``(table, column, declaration)``.
+#:
+#: ``CREATE TABLE IF NOT EXISTS`` silently leaves an existing table exactly as it
+#: was, so a column added to ``_SCHEMA`` never reaches a database that already
+#: exists — and every live universe has one. On 2026-08-28 that took the rail's
+#: front door down in production: #2636 added ``decision`` and ``answer_json``
+#: with no migration, so every ``create_request`` raised
+#: ``sqlite3.OperationalError: no such column: decision``, was swallowed by the
+#: catch-all below, and reached the agent as the generic
+#: ``request_storage_unavailable``. It could not raise a single request.
+#:
+#: Add a row here whenever you add a column to ``_SCHEMA``. Names are module
+#: constants, never caller input, so the interpolation below is safe.
+_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("request_suppressions", "decision", "TEXT NOT NULL DEFAULT 'declined'"),
+    ("request_suppressions", "answer_json", "TEXT"),
+)
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    """Bring an older database up to the current schema, in place."""
+    seen: dict[str, set[str]] = {}
+    for table, column, declaration in _ADDED_COLUMNS:
+        columns = seen.get(table)
+        if columns is None:
+            columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            seen[table] = columns
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+            columns.add(column)
+
+
 def _db(universe_dir: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(Path(universe_dir) / _DB_NAME), timeout=10.0)
     conn.executescript(_SCHEMA)
+    _ensure_columns(conn)
     return conn
 
 
@@ -164,9 +198,17 @@ def create_request(
                 ),
             )
         return get_request(universe_dir, row_id)
-    except Exception:  # noqa: BLE001 - never break the turn that asked
-        logger.warning("pending_requests: create failed", exc_info=True)
-        return None
+    except Exception as exc:  # noqa: BLE001 - never break the turn that asked
+        # Carry the REASON, do not just log it. On 2026-08-28 this returned a
+        # bare None, the API turned it into the generic
+        # ``request_storage_unavailable``, and the agent was told only that
+        # storage was unavailable — so it retried the identical call, failed
+        # identically, and stopped. The actual fault was one line
+        # (``no such column: decision``) and sat only in a container log nobody
+        # was tailing. A schema fault is not sensitive; withholding it just
+        # costs an hour.
+        logger.exception("pending_requests: create failed")
+        return {"error": "request_storage_unavailable", "detail": str(exc)}
 
 
 def _project(row: Any) -> dict[str, Any]:
