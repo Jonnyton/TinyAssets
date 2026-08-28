@@ -11,10 +11,21 @@ the one ledger — `run_graph` (`:377`), `write_graph` (`:884`), and two engine 
 2026-08-28 that is precisely what happened: the universe spent its budget building a repair
 and had none left to run it.
 
-The measured economics (2026-08-28) frame the sizing. Marginal cost is ~$0.12/user/month;
-storage per universe is ~20 KB; a run costs ~11.5 KB of durable transcript; a box gives 4
-concurrent top-level runs (`tinyassets/runs.py:3002`). Inference is BYO and therefore free
-to us. Nothing about our cost structure justifies a tight free tier.
+The measured economics (2026-08-28) frame the sizing, and the first pass got one of them
+badly wrong. Inference is BYO and therefore free to us, and WorkOS is free to 1M MAU, so
+per-user *compute* really is cheap. But **storage per universe is ~515 MB, not the ~20 KB
+`get_status` reports** — measured on the droplet, and dominated by a per-universe copy of
+the provider runtime (`.runtime/provider-child` 315 MB, `.credentials/codex` 119 MB,
+`.runtime/provider-launch-credentials` 81 MB) against ~0.9 MB of actual user content. See
+`docs/concerns/2026-08-28-per-universe-storage-is-515mb-of-duplication.md`.
+
+The live box is 1 vCPU / 2 GB / 50 GB ($12/mo, not the $24 first assumed), 69% full, with
+13.4 GB of that reclaimable. At 515 MB/universe, ~100 users would fill it on storage alone.
+
+Two consequences for this design: storage is a **real** dimension after all and worth
+capping; and the biggest available cost lever is not pricing but deduplicating that
+provider runtime — which would return per-universe storage to ~1 MB and is tracked
+separately from this change.
 
 ## Goals / Non-Goals
 
