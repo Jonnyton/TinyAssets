@@ -17,7 +17,6 @@ import hmac
 import json
 import logging
 import os
-import time as _time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -43,9 +42,13 @@ _ENTITLEMENT_CLAIM_KEY = "tinyassets_entitlement_claim"
 #: Stripe rejects a signature older than this; so do we, to stop replay.
 _WEBHOOK_TOLERANCE_S = 300
 
-#: Shared by the checkout claim TTL and the Stripe idempotency bucket; they must
-#: agree or a session can outlive the mutual exclusion that guards it.
-CHECKOUT_WINDOW_SECONDS = 900
+#: Re-exported from the storage module so there is exactly ONE definition of how
+#: long a checkout stays completable. Two constants that "must agree" is a comment,
+#: not an invariant -- and this pair silently did not agree with Stripe's actual
+#: behaviour at all (see CHECKOUT_SESSION_SECONDS).
+from tinyassets.storage.subscription_state import (  # noqa: E402
+    CHECKOUT_SESSION_SECONDS,
+)
 
 
 def _basic_auth(key: str) -> str:
@@ -221,13 +224,25 @@ def resolve_price_id() -> str:
 
 
 def create_checkout_session(
-    *, universe_id: str, success_url: str, cancel_url: str
+    *,
+    universe_id: str,
+    success_url: str,
+    cancel_url: str,
+    attempt_anchor: float,
 ) -> dict[str, str]:
     """Start a subscription. Returns the hosted checkout URL for the user.
 
     ``universe_id`` rides on ``client_reference_id`` and on subscription metadata so
     the webhook can map the resulting subscription back to a universe without us
     keeping a side table that could drift.
+
+    ``attempt_anchor`` is the checkout claim's timestamp, and it identifies this
+    attempt. Both the session's expiry and its idempotency key derive from it, which
+    is what makes "retry of the same attempt" and "a genuinely new attempt" different
+    requests to Stripe. It must be the value ``claim_checkout`` returned -- deriving
+    either from the wall clock instead re-created one of two bugs: a retry seconds
+    later changed ``expires_at`` and so conflicted with its own idempotency key, and
+    a resubscribe inside the same bucket replayed the original completed session.
     """
     if not universe_id:
         raise ValueError("universe_id is required")
@@ -237,12 +252,22 @@ def create_checkout_session(
     existing = find_active_subscription(universe_id)
     if existing:
         raise AlreadySubscribed(existing)
+    if attempt_anchor <= 0:
+        raise ValueError("attempt_anchor is required")
     price_id = resolve_price_id()
     claim = _entitlement_claim(universe_id, price_id)
     session = _post(
         "checkout/sessions",
         [
             ("mode", "subscription"),
+            # Bound how long this session stays completable. Sending nothing let
+            # Stripe apply its 24-HOUR default, so the session outlived the claim
+            # guarding it by nearly a day: after the claim expired a second session
+            # could be created while the first was still payable, and completing both
+            # billed one universe twice (Codex, 2026-08-28). Derived from the attempt
+            # anchor, not the clock, so a retry sends byte-identical parameters under
+            # the same idempotency key.
+            ("expires_at", str(int(attempt_anchor + CHECKOUT_SESSION_SECONDS))),
             ("line_items[0][price]", price_id),
             ("line_items[0][quantity]", "1"),
             ("success_url", success_url),
@@ -258,15 +283,16 @@ def create_checkout_session(
                 claim,
             ),
         ],
-        # Keyed on the universe and the SAME window as the checkout claim, so a
-        # retry after a lost response returns the SAME session. A daily key with a
-        # 15-minute claim let two still-completable sessions straddle the boundary
-        # and become two subscriptions (Codex 2026-08-28).
+        # Keyed on the ATTEMPT, so a retry after a lost response returns the same
+        # session and a new attempt gets a new one. A wall-clock bucket did neither
+        # reliably: resubscribing inside the same bucket replayed the original
+        # COMPLETED session (Stripe keeps idempotency results ~24h), handing the user
+        # a dead checkout URL, while two attempts straddling a boundary each got
+        # their own still-completable session.
         idempotency_key=(
             "checkout:"
             + hashlib.sha256(
-                f"{universe_id}:"
-                f"{int(_time.time() // CHECKOUT_WINDOW_SECONDS)}".encode()
+                f"{universe_id}:{attempt_anchor!r}".encode()
             ).hexdigest()
         ),
     )
