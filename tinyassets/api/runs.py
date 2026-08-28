@@ -646,7 +646,7 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
     available today; do not poll an ``interrupted`` run expecting it to
     flip back to ``running``.
     """
-    from tinyassets.api.branches import _resolve_branch_id
+    from tinyassets.api.branches import resolve_branch_id_for_read
     from tinyassets.branches import BranchDefinition
     from tinyassets.daemon_server import get_branch_definition
     from tinyassets.runs import (
@@ -662,9 +662,19 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
     _ensure_runs_recovery()
     actor = _run_actor_for_kwargs(kwargs)
 
-    bid = _resolve_branch_id(kwargs.get("branch_def_id", "").strip(), _base_path())
-    if not bid:
+    selector = kwargs.get("branch_def_id", "").strip()
+    if not selector:
         return json.dumps({"error": "branch_def_id is required."})
+    # The scope check above established that the caller may WRITE to the universe the
+    # run is recorded under -- their own. It says nothing about the branch. Without a
+    # read check here, a caller names another user's PRIVATE branch by exact id, the
+    # resolver passes it through, the raw load succeeds, and the run executes it and
+    # files the output under the caller's universe (Codex, 2026-08-28).
+    bid = resolve_branch_id_for_read(selector, _base_path())
+    if bid is None:
+        # Deliberately indistinguishable from absent: telling a caller that a branch
+        # exists but is not theirs is itself a disclosure.
+        return json.dumps({"error": f"Branch '{selector}' not found."})
 
     try:
         source_dict = get_branch_definition(_base_path(), branch_def_id=bid)
