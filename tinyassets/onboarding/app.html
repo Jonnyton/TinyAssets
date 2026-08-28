@@ -590,20 +590,72 @@
   }
 
   // ---- MCP client (same-origin /mcp, Bearer from sessionStorage) ----
+  //
+  // A transport-level failure, tagged so the UI can say something true about it
+  // and decide whether resending is safe.
+  //   code       - short machine tag (also what the tests assert on)
+  //   replayable - the request provably never reached the tool, so running it
+  //                again cannot duplicate work
+  function transportError(code, message, replayable){
+    const e=new Error(message);
+    e.transport=code;
+    e.replayable=!!replayable;
+    return e;
+  }
+
+  // The MCP session id is a server-side handle that dies for ordinary reasons:
+  // the daemon restarts on every deploy, the bearer rotates every ~5 min, an
+  // idle session is evicted, a stream is cut mid-flight. Until 2026-08-28 only
+  // ONE of those (HTTP 404) reset it, so every other failure left the dead
+  // handle in place and each later call reused it - the page stayed broken
+  // until a manual reload, showing the parser internal "no JSON or SSE frame"
+  // every time. Founder: *"the mcp session going stale and giving the json
+  // issue is a bug to fix"*.
+  //
+  // Two rules the rest of this object exists to keep:
+  //   1. ANY failure that could mean the session is gone invalidates it, so the
+  //      next call re-initializes and the page heals itself.
+  //   2. A call is replayed automatically ONLY when it provably never ran. A cut
+  //      stream is not that - the universe may have taken the turn and be
+  //      answering it - so those surface with a Send-again button and let the
+  //      user decide, rather than silently double-sending.
   const MCP = {
     sessionId:null, nextId:1, _initing:null,
+    // Dropping the handle is cheap and always safe: the next call rebuilds it.
+    invalidateSession(){ this.sessionId=null; },
+    _pause(ms){ return new Promise(r=>setTimeout(r,ms)); },
+    // "Your session is gone" per the MCP transport: 404 for unknown, expired,
+    // terminated, or created-under-another-credential; 400 when the session
+    // header is missing or rejected. A 400 for an unsupported protocol version
+    // is a DIFFERENT, non-recoverable fault - re-initializing on it would just
+    // loop - so a 400 only counts when the body actually names the session.
+    _isSessionGone(resp, bodyText){
+      if(resp.status===404) return true;
+      if(resp.status!==400) return false;
+      return /session/i.test(bodyText||"");
+    },
     _parse(text){
       const t=(text||"").trim();
-      if(!t) throw new Error("empty MCP response");
+      // An SSE stream cut before its result frame: the body is empty, or holds
+      // only the event/comment lines that precede the data line. That is what a
+      // mid-flight disconnect looks like from here, and it used to reach the
+      // user as the raw string "no JSON or SSE frame".
+      if(!t) throw transportError("stream_empty",
+        "the connection closed before your universe replied", false);
       if(t[0]==="{"||t[0]==="[") return JSON.parse(t);
       for(const line of t.split(/\r?\n/)){
         const s=line.trim();
         if(s.startsWith("data:")){ const p=s.slice(5).trim(); if(p) return JSON.parse(p); }
       }
-      throw new Error("no JSON or SSE frame");
+      throw transportError("stream_truncated",
+        "the reply was cut off in transit", false);
     },
-    async _rpc(method, params, opts, _retried){
+    // `attempt` carries a SEPARATE budget per recovery kind. It used to be one
+    // boolean, so a gateway retry spent the session retry (and the reverse), and
+    // the second failure inside one call could never recover.
+    async _rpc(method, params, opts, attempt){
       opts=opts||{};
+      attempt=attempt||{auth:0, session:0, gateway:0};
       const isHandshake = (method==="initialize" || method==="notifications/initialized");
       await ensureFreshToken();
       // A proactive token refresh (above) resets the session — it was bound to
@@ -618,46 +670,111 @@
       const headers={"Content-Type":"application/json","Accept":"application/json, text/event-stream"};
       const tk=token(); if(tk) headers["Authorization"]="Bearer "+tk;
       if(this.sessionId) headers["mcp-session-id"]=this.sessionId;
-      const resp=await fetch("/mcp",{method:"POST",headers,body:JSON.stringify(frame)});
+
+      let resp;
+      try{
+        resp=await fetch("/mcp",{method:"POST",headers,body:JSON.stringify(frame)});
+      }catch(netErr){
+        // Offline, DNS, TLS, or the connection dropped before any response. The
+        // session may or may not still be good, so assume not: the next call
+        // rebuilds it rather than reusing a handle we can no longer trust.
+        this.invalidateSession();
+        if(opts.idempotent && attempt.gateway<1){
+          attempt.gateway++;
+          await this._pause(2500);
+          return this._rpc(method, params, opts, attempt);
+        }
+        throw transportError("offline", "couldn\u2019t reach the network", false);
+      }
+
       if(resp.status===401){
-        if(!_retried && token() && await refreshAccessToken()){
+        if(attempt.auth<1 && token() && await refreshAccessToken()){
+          attempt.auth++;
+          // refreshAccessToken already nulled the session (it was bound to the
+          // old bearer); rebuild it before replaying anything but a handshake.
           if(method!=="initialize") await this.ensureInit();
-          return this._rpc(method, params, opts, true);
+          return this._rpc(method, params, opts, attempt);
         }
         const e=new Error("authentication_required"); e.authRequired=true; throw e;
       }
-      // MCP transport signals an expired/evicted session with HTTP 404 to a
-      // request that carried a session id. Reset + re-initialize once and retry.
-      // Do NOT retry on JSON-RPC errors: that would replay state-changing calls
-      // and could discard a healthy session (session recovery is 404-scoped).
-      if(resp.status===404 && this.sessionId && !_retried && !isHandshake){
-        this.sessionId=null;
-        await this.ensureInit();
-        return this._rpc(method, params, opts, true);
+
+      // Adopt a session id ONLY from a successful response. Error responses can
+      // echo a session header (the transport stamps its own id onto error
+      // bodies), and adopting it there re-arms the very handle that just failed.
+      if(resp.ok){ const sid=resp.headers.get("mcp-session-id"); if(sid) this.sessionId=sid; }
+
+      let bodyText="";
+      try{ bodyText=await resp.text(); }
+      catch(_readErr){
+        // The stream died while we were reading it - an edge timeout on a long
+        // turn, or the daemon restarting mid-reply. Same class as a truncated
+        // body: the turn may already have been accepted, so never auto-replay.
+        this.invalidateSession();
+        if(opts.idempotent && attempt.gateway<1){
+          attempt.gateway++;
+          await this._pause(2500);
+          return this._rpc(method, params, opts, attempt);
+        }
+        throw transportError("stream_truncated",
+          "the reply was cut off in transit", false);
       }
-      // Gateway / restart blips: during a deploy the daemon restarts (~90s) and
-      // the tunnel answers 502/503/504 with an HTML page. That body is neither
-      // JSON nor SSE, so it used to surface as the generic, misleading "no JSON
-      // or SSE frame" — hiding the real cause and hitting the founder mid-chat on
-      // deploy nights. Retry ONCE after a short pause (the daemon is usually back),
-      // and if it still fails, name the real status instead of the parse error.
-      if((resp.status===502||resp.status===503||resp.status===504) && !_retried){
-        await new Promise(r=>setTimeout(r,2500));
-        return this._rpc(method, params, opts, true);
+
+      // Session gone. This is provably PRE-DISPATCH - the transport rejected the
+      // envelope, so the tool never ran - which makes replaying safe even for a
+      // state-changing turn. Re-initialize once and run it for real.
+      if(!isHandshake && attempt.session<1 && this._isSessionGone(resp, bodyText)){
+        attempt.session++;
+        this.invalidateSession();
+        await this.ensureInit();
+        return this._rpc(method, params, opts, attempt);
+      }
+
+      if(resp.status===502||resp.status===503||resp.status===504){
+        // Deploy window: the daemon restarts (~90s) and the tunnel answers with
+        // an HTML error page. No session survives that restart, so drop ours or
+        // the retry just 404s on a dead handle.
+        this.invalidateSession();
+        // Auto-retry ONLY what is safe to run twice. A 502 can mean the origin
+        // was never reached OR that it died after accepting the request, and
+        // those are indistinguishable from here - so a turn is handed back to
+        // the user instead of being silently replayed.
+        if((opts.idempotent||isHandshake) && attempt.gateway<1){
+          attempt.gateway++;
+          await this._pause(2500);
+          return this._rpc(method, params, opts, attempt);
+        }
+        throw transportError("unavailable",
+          "your universe was restarting just then (HTTP "+resp.status+")", false);
       }
       if(resp.status>=500){
-        throw new Error("your universe is restarting or briefly unavailable (HTTP "+resp.status+") — try again in a moment");
+        this.invalidateSession();
+        throw transportError("unavailable",
+          "your universe is briefly unavailable (HTTP "+resp.status+")", false);
       }
-      const sid=resp.headers.get("mcp-session-id"); if(sid) this.sessionId=sid;
+      if(!resp.ok){
+        throw transportError("http_error",
+          "your universe answered with an unexpected error (HTTP "+resp.status+")", false);
+      }
+
       if(opts.expectResult===false) return null;
-      const bodyText=await resp.text();
       let rpc;
       try{ rpc=this._parse(bodyText); }
       catch(parseErr){
-        // Any other non-JSON body: report the HTTP status, never the bare parse
-        // error, so a real cause (e.g. an auth/edge page) is diagnosable.
-        if(!resp.ok) throw new Error("unexpected reply from your universe (HTTP "+resp.status+")");
-        throw parseErr;
+        // A 2xx whose body is not a JSON-RPC frame means the stream was cut
+        // before the result, or something in the path replaced the body. The
+        // session cannot be trusted afterwards - leaving it in place is exactly
+        // what used to break the page until a reload.
+        this.invalidateSession();
+        if(parseErr && parseErr.transport){
+          if(opts.idempotent && attempt.gateway<1){
+            attempt.gateway++;
+            await this._pause(1500);
+            return this._rpc(method, params, opts, attempt);
+          }
+          throw parseErr;
+        }
+        throw transportError("bad_frame",
+          "your universe sent a reply this app couldn\u2019t read", false);
       }
       if(rpc.error){ const e=new Error(rpc.error.message||"MCP error"); e.rpc=rpc.error; throw e; }
       return rpc.result;
@@ -668,28 +785,33 @@
       // initialize handshake, or the second's session orphans the first's.
       if(this._initing){ await this._initing; return; }
       this._initing=(async()=>{
+        // The handshake carries no user intent, so it is always safe to repeat.
         await this._rpc("initialize",{protocolVersion:"2024-11-05",capabilities:{},
-          clientInfo:{name:"tinyassets-onboarding-app",version:"1.0"}});
-        await this._rpc("notifications/initialized",{},{expectResult:false});
+          clientInfo:{name:"tinyassets-onboarding-app",version:"1.0"}},{idempotent:true});
+        await this._rpc("notifications/initialized",{},
+          {expectResult:false, idempotent:true});
       })();
       try{ await this._initing; } finally { this._initing=null; }
     },
-    async callTool(name,args){
+    // `opts.idempotent` marks a read that may safely be run twice. It is opt-IN:
+    // an unmarked tool call is treated as state-changing and is never replayed
+    // on an ambiguous failure.
+    async callTool(name,args,opts){
       await this.ensureInit();
-      const r=await this._rpc("tools/call",{name,arguments:args||{}});
+      const r=await this._rpc("tools/call",{name,arguments:args||{}},opts);
       if(r&&typeof r.structuredContent==="object"&&r.structuredContent) return r.structuredContent;
       const block=(r&&r.content||[]).find(c=>c&&c.type==="text"&&typeof c.text==="string");
       if(block){ try{ return JSON.parse(block.text); }catch(_e){ return {reply:block.text}; } }
       return {};
     },
     converse(message){ return this.callTool("converse",{message}); },
-    getStatus(){ return this.callTool("get_status",{}); },
+    getStatus(){ return this.callTool("get_status",{},{idempotent:true}); },
     // The shared cross-surface thread. The app rendered ONLY what was appended
     // during the current page life, so any refresh — including the automatic
     // one on a new build — emptied the conversation even though the server had
     // it all along (founder, 2026-08-28).
     getConversation(){
-      return this.callTool("get_status",{include_conversation:true});
+      return this.callTool("get_status",{include_conversation:true},{idempotent:true});
     },
     connectLLM(service,materialB64){
       return this.callTool("write_graph",{target:"connection",operation:"connect_llm",
@@ -773,11 +895,14 @@
     catch(_e){ return null; }
   }
 
-  async function sendTurn(message, display){
+  async function sendTurn(message, display, opts){
+    opts=opts||{};
     // `display` is what the founder sees in their bubble (compact when a file is
     // attached); `message` is the full text sent to the universe (file content
     // embedded verbatim). They differ only when an attachment rode along.
-    appendMessage("founder", display || message);
+    // `opts.echoed` says the bubble is ALREADY on screen (a resend, or a message
+    // restored after a reload) - drawing it twice would read as two sends.
+    if(!opts.echoed) appendMessage("founder", display || message);
     rememberInflight(message, display);
     const input=$("composer-input"); input.value=""; input.style.height="auto";
     $("btn-send").disabled=true; setStatusLine("Your universe is thinking...");
@@ -786,10 +911,35 @@
       forgetInflight();
     }catch(err){
       if(err.authRequired){ setStatusLine(""); $("composer-input").value=message; return sessionExpired(); }
-      appendMessage("system","Couldn't reach your universe: "+err.message); setStatusLine("");
+      setStatusLine("");
+      // A transport failure is not a dead end: the session has already been
+      // dropped, so the next attempt rebuilds it. Say what actually went wrong
+      // and put the retry one click away, instead of leaving the user staring
+      // at a parser string with nothing to do (founder, 2026-08-28).
+      offerResend(message, display, err);
       // Deliberately NOT forgotten: the send failed, so the message is still the
       // user's to resend.
     }finally{ $("btn-send").disabled=false; }
+  }
+
+  // Explain a failed turn in the user's own terms and hand back a working
+  // button. Transport failures carry `err.transport`; anything else is a real
+  // reply from the universe and is reported as it came.
+  function offerResend(message, display, err){
+    const note=document.createElement("div");
+    note.className="msg msg--system";
+    note.textContent=(err&&err.transport)
+      ? "That didn\u2019t get through \u2014 "+err.message+". Your message is safe."
+      : "Couldn\u2019t reach your universe: "+((err&&err.message)||"unknown error");
+    note.appendChild(document.createTextNode(" "));
+    const again=document.createElement("button");
+    again.className="btn btn--link"; again.textContent="Send it again";
+    again.addEventListener("click", ()=>{
+      note.remove(); sendTurn(message, display, {echoed:true});
+    });
+    note.appendChild(again);
+    const thread=$("thread");
+    thread.appendChild(note); thread.scrollTop=thread.scrollHeight;
   }
 
   async function pollStatus(){
@@ -802,7 +952,16 @@
       if(name) $("universe-name").textContent=name;
     }catch(err){
       if(err.authRequired) return sessionExpired();
-      const dot=$("dot"); dot.className="dot dot--err"; dot.title="status unavailable";
+      // The heartbeat doubles as the healer. A transport failure means the
+      // session may be dead, so drop it here too: the next poll (30s) or the
+      // user's next turn - whichever comes first - rebuilds it instead of
+      // reusing a handle that has already failed once. A JSON-RPC error is a
+      // HEALTHY session reporting an application fault, so that one is left
+      // alone rather than churning a good session every 30 seconds.
+      if(err && err.transport) MCP.invalidateSession();
+      const dot=$("dot"); dot.className="dot dot--err";
+      dot.title=(err&&err.transport) ? ("status unavailable \u2014 "+err.message)
+                                     : "status unavailable";
     }
   }
   function startHeartbeat(){ pollStatus(); clearInterval(statusTimer); statusTimer=setInterval(pollStatus,30000); }
@@ -1707,7 +1866,9 @@
     const again = document.createElement("button");
     again.className = "btn btn--link"; again.textContent = "Send it again";
     again.addEventListener("click", ()=>{
-      note.remove(); forgetInflight(); sendTurn(pending.message, pending.display);
+      // The bubble is already drawn above, so do not echo it a second time.
+      note.remove(); forgetInflight();
+      sendTurn(pending.message, pending.display, {echoed:true});
     });
     note.appendChild(again);
     $("thread").appendChild(note);
