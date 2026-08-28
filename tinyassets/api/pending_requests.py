@@ -354,8 +354,64 @@ def _grant_sentence(row: dict[str, Any]) -> str:
     )
 
 
+#: The one ask the platform raises itself. Everything else comes from the agent —
+#: but the agent cannot ask for the thing it needs in order to think at all, so
+#: this one is synthesized (founder, 2026-08-27).
+_LLM_REQUEST_ID = "sys_connect_llm"
+
+
+def _serving_llm_bound(base_path, universe_id: str, actor: str) -> bool:
+    """Whether anything is currently serving this universe's turns."""
+    from tinyassets.provider_serving_binding import resolve_serving_agent_binding
+
+    try:
+        selected = resolve_serving_agent_binding(
+            base_path, universe_id=universe_id, owner_user_id=actor
+        )
+    except Exception:  # noqa: BLE001 - "cannot resolve one" IS "none is bound"
+        return False
+    return bool(selected and selected.get("agent_binding_id"))
+
+
+def _connect_llm_request() -> dict[str, object]:
+    """The sticky tab shown while no model is connected.
+
+    ``sticky`` means the rail renders it expanded and offers no dismiss: this is
+    a precondition, not a request the user can decline and still have a working
+    universe. It disappears by being satisfied, which is the only honest way for
+    a blocking ask to go away.
+    """
+    return {
+        "request_id": _LLM_REQUEST_ID,
+        "kind": "LLM",
+        "title": "Connect the model your universe runs on",
+        "body": (
+            "Your universe thinks on your own Claude or OpenAI subscription - it "
+            "never runs on anyone else's account. Connect one and it starts "
+            "speaking on the very next turn."
+        ),
+        "fields": [],
+        "action": {"type": "connect_llm"},
+        "status": "pending",
+        "sticky": True,
+        "created_at": 0.0,
+        "resolved_at": None,
+        "answer": None,
+        "feedback": None,
+        "dedupe_key": _LLM_REQUEST_ID,
+        "grant_sentence": "",
+    }
+
+
 def list_requests(*, universe_id: str = "", limit: int = 10) -> dict[str, Any]:
-    """What the app's left rail renders, and what the phone reads too."""
+    """What the app's rail renders, and what the phone reads too.
+
+    Carries the agent's asks, plus the one the platform raises for itself: while
+    no model is connected the universe cannot ask for anything, so that request
+    is synthesized rather than stored.
+    """
+    from tinyassets.api import permissions
+    from tinyassets.api.helpers import _base_path
     from tinyassets.storage.pending_requests import (
         list_pending,
         list_resolved,
@@ -367,6 +423,11 @@ def list_requests(*, universe_id: str = "", limit: int = 10) -> dict[str, Any]:
     if denied is not None:
         return denied
     rows = list_pending(udir, limit=limit)
+    # Prepended, not stored: it is derived from whether a model is bound, so it
+    # cannot go stale, cannot be dismissed into a state where the universe is
+    # mute with no way back, and needs no migration.
+    if not _serving_llm_bound(_base_path(), uid, permissions.current_actor_id().strip()):
+        rows = [_connect_llm_request(), *rows]
     return {
         "universe_id": uid,
         "pending": [{**r, "grant_sentence": _grant_sentence(r)} for r in rows],
@@ -428,6 +489,17 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
         return _bad(str(exc))
 
     request_id = str(document.get("request_id") or "").strip()
+    if request_id == _LLM_REQUEST_ID:
+        # Synthesized, not stored. It is satisfied by connecting a model, and it
+        # disappears because the check that raises it stops being true — there is
+        # nothing here to answer or dismiss.
+        return {
+            "error": "not_answerable",
+            "detail": (
+                "connect a model to clear this; it is not a question with an "
+                "answer, it is the thing your universe needs in order to think"
+            ),
+        }
     row = get_request(udir, request_id) if request_id else None
     if row is None:
         return {"error": "not_found", "resource": "pending_request"}

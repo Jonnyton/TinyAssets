@@ -151,7 +151,6 @@
         </div>
         <nav class="chat-actions">
           <button id="btn-plan" class="btn btn--link" hidden>Plan</button>
-          <button id="btn-connect" class="btn btn--link">Connect / add API connection</button>
           <button id="btn-signout" class="btn btn--link">Sign out</button>
         </nav>
       </header>
@@ -165,6 +164,7 @@
         <aside id="request-rail" class="rail" hidden>
           <div class="rail-head">Waiting on you</div>
           <div id="rail-items"></div>
+          <button id="btn-rail-add" class="btn btn--link">Add a key yourself</button>
         </aside>
       </div>
       <div id="attachments" class="attachments" hidden></div>
@@ -1521,7 +1521,7 @@
     const input=$("composer-input");
     input.addEventListener("input",()=>autoGrow(input));
     input.addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("composer").requestSubmit(); } });
-    $("btn-connect").addEventListener("click",()=>showConnect(false));
+    $("btn-rail-add").addEventListener("click",()=>showConnect(false));
     $("btn-connect-back").addEventListener("click",()=>{ showView("chat"); startHeartbeat(); loadPlan(); });
     $("btn-signout").addEventListener("click",async()=>{ sessionStorage.setItem("ta_force_login","1"); await endServerSession(); enterSignedOut(); });
     $("btn-deposit").addEventListener("click",async()=>{
@@ -1792,7 +1792,10 @@
     const rail = $("request-rail"), host = $("rail-items");
     if(!rail || !host) return;
     host.textContent = "";
-    rail.hidden = railCache.length === 0;
+    // Keep the rail present even with nothing waiting: with the nav button gone
+    // it is the only route to adding a key yourself, and a surface that vanishes
+    // is a surface a user cannot find.
+    rail.hidden = false;
     railCache.forEach(req=>{
       const tab = document.createElement("div"); tab.className = "rtab";
       const btn = document.createElement("button");
@@ -1807,7 +1810,12 @@
         renderRail(railCache);
       });
       tab.appendChild(btn);
-      if(railOpen === req.request_id) tab.appendChild(railBody(req));
+      // A sticky ask is a PRECONDITION, not a question: it opens itself and has
+      // no dismiss, because a universe with no model cannot be asked to accept
+      // having no model.
+      const open = req.sticky ? (railOpen !== "closed:" + req.request_id)
+                              : (railOpen === req.request_id);
+      if(open) tab.appendChild(railBody(req));
       host.appendChild(tab);
     });
   }
@@ -1824,6 +1832,13 @@
       const g = document.createElement("p");
       g.className = "rtab-grant"; g.textContent = req.grant_sentence;
       box.appendChild(g);
+    }
+    if(req.action && req.action.type === "connect_llm"){
+      const go = document.createElement("button");
+      go.className = "btn btn--primary"; go.textContent = "Connect a model";
+      go.addEventListener("click",()=>showConnect(false));
+      box.appendChild(go);
+      return box;   // no fields, no feedback, no dismiss — it is not a question
     }
     (req.fields||[]).forEach(f=>{
       const lab = document.createElement("label");
