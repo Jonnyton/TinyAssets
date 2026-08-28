@@ -30,9 +30,20 @@ _TIER_KEY = "tier"
 _EVENT_AT_KEY = "tier_event_at"
 _CHECKOUT_CLAIM_KEY = "checkout_claim_at"
 
-#: Must equal the Stripe idempotency bucket in the adapter, or a session can
-#: outlive the mutual exclusion guarding it and a second one can be created.
-CHECKOUT_WINDOW_SECONDS = 900.0
+#: How long a Checkout Session we create stays completable. Stripe's floor for
+#: ``expires_at`` is 30 minutes; the extra minute absorbs clock skew between the
+#: anchor we compute it from and Stripe's own validation of it.
+CHECKOUT_SESSION_SECONDS = 1860.0
+
+#: How long the claim guarding that session is held. It must be LONGER than the
+#: session, because the claim's whole job is to be the only completable checkout.
+#:
+#: The previous value was 900s with no ``expires_at`` sent at all -- so Stripe applied
+#: its 24-hour default and the session outlived its guard by nearly a day. After 15
+#: minutes a second session could be created while the first was still completable,
+#: and completing both billed one universe twice: exactly the outcome the claim exists
+#: to prevent (Codex, 2026-08-28).
+CHECKOUT_WINDOW_SECONDS = CHECKOUT_SESSION_SECONDS + 120.0
 
 
 def state_db_path(universe_dir: str | Path) -> Path:
@@ -129,8 +140,15 @@ def claim_checkout(
     *,
     now: float,
     ttl_seconds: float = CHECKOUT_WINDOW_SECONDS,
-) -> bool:
+) -> float | None:
     """Exclusive, expiring claim on starting a checkout for this universe.
+
+    Returns the claim's ANCHOR -- the timestamp it was taken at -- or ``None`` when
+    another claim already holds. The anchor identifies this attempt, and both the
+    session's expiry and its Stripe idempotency key are derived from it, so a retry
+    of the same attempt is deduplicated while a genuinely new attempt is not. Keying
+    those on a wall-clock bucket instead made a resubscribe inside the same bucket
+    replay the ORIGINAL completed session (Codex, 2026-08-28).
 
     Asking Stripe whether a subscription exists and then creating a session is
     check-then-act: two concurrent clicks can both see "none" and both create
@@ -138,7 +156,9 @@ def claim_checkout(
     close that for us, because a pending Checkout Session is not yet a subscription,
     so the mutual exclusion lives here.
 
-    The claim expires so an abandoned checkout cannot lock a universe out forever.
+    The claim expires so an abandoned checkout cannot lock a universe out forever --
+    but never BEFORE the session it guards, or the lockout is traded for a second
+    completable session.
     """
     with _connect(universe_dir) as conn:
         conn.executescript(_SCHEMA)
@@ -155,14 +175,14 @@ def claim_checkout(
                     held_since = 0.0
                 if now - held_since < ttl_seconds:
                     conn.execute("ROLLBACK")
-                    return False
+                    return None
             conn.execute(
                 "INSERT INTO subscription_meta (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (_CHECKOUT_CLAIM_KEY, str(now)),
             )
             conn.execute("COMMIT")
-            return True
+            return now
         except Exception:
             conn.execute("ROLLBACK")
             raise
