@@ -740,6 +740,79 @@
     showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus();
     loadPlan();
   }
+  // ---- plan / subscription -------------------------------------------
+  // Reflects server-side tier and starts the two transitions. Cancellation does
+  // NOT flip the label locally: the webhook is the single authority on
+  // entitlement, so the UI re-reads rather than guessing and cannot disagree
+  // with Stripe.
+  let PLAN = null;
+
+  async function billingFetch(path, method){
+    // Same bearer discipline as every other authenticated call here: refresh
+    // first, because the token rotates about every five minutes.
+    await ensureFreshToken();
+    const headers = {};
+    const tk = token(); if(tk) headers["Authorization"] = "Bearer " + tk;
+    return fetch(path, {method, headers, credentials:"same-origin"});
+  }
+
+  async function loadPlan(){
+    try{
+      const r = await billingFetch("/mcp/app/billing/status", "GET");
+      if(!r || !r.ok) return;
+      PLAN = await r.json();
+      renderPlan();
+    }catch(_e){ /* the plan chip is never load-bearing for chat */ }
+  }
+
+  function renderPlan(){
+    const b = $("btn-plan");
+    if(!b || !PLAN) return;
+    b.hidden = false;
+    b.textContent = PLAN.tier === "paid" ? "Paid plan" : "Upgrade";
+    b.title = PLAN.billing_enabled
+      ? (PLAN.tier === "paid" ? "Manage your plan" : "Subscribe for $20/month")
+      : "Billing is not configured on this deployment";
+  }
+
+  async function startSubscribe(){
+    const r = await billingFetch("/mcp/app/billing/checkout", "POST");
+    const out = r ? await r.json() : null;
+    if(out && out.url){ location.href = out.url; return; }
+    if(out && out.error === "already_subscribed"){
+      appendMessage("system", "You already have an active subscription.");
+      loadPlan(); return;
+    }
+    appendMessage("system", out && out.detail
+      ? ("Billing unavailable: " + out.detail)
+      : "Billing is not available right now.");
+  }
+
+  async function startCancel(){
+    const r = await billingFetch("/mcp/app/billing/cancel", "POST");
+    const out = r ? await r.json() : null;
+    if(out && out.cancelled){
+      appendMessage("system", "Your subscription will end at the close of the "
+        + "current period. You keep the paid tier until then.");
+    }else if(out && out.reason === "no_active_subscription"){
+      appendMessage("system", "No active subscription to cancel.");
+    }else{
+      appendMessage("system", out && out.detail
+        ? ("Could not cancel: " + out.detail) : "Could not cancel right now.");
+    }
+    loadPlan();
+  }
+
+  function onPlanClick(){
+    if(!PLAN) return;
+    if(PLAN.tier === "paid"){
+      if(confirm("Cancel your subscription? You keep the paid tier until the "
+                 + "end of the current period.")) startCancel();
+    }else{
+      startSubscribe();
+    }
+  }
+
   // Proactively establish the MCP session the moment chat opens, so the user's FIRST
   // message runs on an already-warm session instead of racing the inline ensureInit +
   // the fire-and-forget notifications/initialized on cold load. That race is what made
@@ -749,7 +822,7 @@
   function onEngineConnected(){
     engineConnected = true;
     $("btn-connect-back").textContent = "Go to your universe";
-    setTimeout(()=>{ showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus(); }, 1200);
+    setTimeout(()=>{ showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus(); loadPlan(); }, 1200);
   }
   function enterSignedOut(){ clearInterval(statusTimer); MCP.sessionId=null;
     sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(EXP_KEY); cancelOpenAIFlow(); resetOpenAIUI(); showView("signin"); }
@@ -1016,79 +1089,6 @@
   }
 
   function wire(){
-    // ---- plan / subscription -------------------------------------------
-    // Reflects server-side tier and starts the two transitions. Cancellation does
-    // NOT flip the label locally: the webhook is the single authority on
-    // entitlement, so the UI re-reads rather than guessing and cannot disagree
-    // with Stripe.
-    let PLAN = null;
-
-    async function billingFetch(path, method){
-      // Same bearer discipline as every other authenticated call here: refresh
-      // first, because the token rotates about every five minutes.
-      await ensureFreshToken();
-      const headers = {};
-      const tk = token(); if(tk) headers["Authorization"] = "Bearer " + tk;
-      return fetch(path, {method, headers, credentials:"same-origin"});
-    }
-
-    async function loadPlan(){
-      try{
-        const r = await billingFetch("/mcp/app/billing/status", "GET");
-        if(!r || !r.ok) return;
-        PLAN = await r.json();
-        renderPlan();
-      }catch(_e){ /* the plan chip is never load-bearing for chat */ }
-    }
-
-    function renderPlan(){
-      const b = $("btn-plan");
-      if(!b || !PLAN) return;
-      b.hidden = false;
-      b.textContent = PLAN.tier === "paid" ? "Paid plan" : "Upgrade";
-      b.title = PLAN.billing_enabled
-        ? (PLAN.tier === "paid" ? "Manage your plan" : "Subscribe for $20/month")
-        : "Billing is not configured on this deployment";
-    }
-
-    async function startSubscribe(){
-      const r = await billingFetch("/mcp/app/billing/checkout", "POST");
-      const out = r ? await r.json() : null;
-      if(out && out.url){ location.href = out.url; return; }
-      if(out && out.error === "already_subscribed"){
-        appendMessage("system", "You already have an active subscription.");
-        loadPlan(); return;
-      }
-      appendMessage("system", out && out.detail
-        ? ("Billing unavailable: " + out.detail)
-        : "Billing is not available right now.");
-    }
-
-    async function startCancel(){
-      const r = await billingFetch("/mcp/app/billing/cancel", "POST");
-      const out = r ? await r.json() : null;
-      if(out && out.cancelled){
-        appendMessage("system", "Your subscription will end at the close of the "
-          + "current period. You keep the paid tier until then.");
-      }else if(out && out.reason === "no_active_subscription"){
-        appendMessage("system", "No active subscription to cancel.");
-      }else{
-        appendMessage("system", out && out.detail
-          ? ("Could not cancel: " + out.detail) : "Could not cancel right now.");
-      }
-      loadPlan();
-    }
-
-    function onPlanClick(){
-      if(!PLAN) return;
-      if(PLAN.tier === "paid"){
-        if(confirm("Cancel your subscription? You keep the paid tier until the "
-                   + "end of the current period.")) startCancel();
-      }else{
-        startSubscribe();
-      }
-    }
-
     $("btn-plan").addEventListener("click", onPlanClick);
     $("btn-openai-connect").addEventListener("click",connectOpenAI);
     $("btn-openai-code").addEventListener("click",async()=>{ await cancelOpenAIFlow(); showOpenAISetup(); });
@@ -1149,7 +1149,7 @@
     input.addEventListener("input",()=>autoGrow(input));
     input.addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("composer").requestSubmit(); } });
     $("btn-connect").addEventListener("click",()=>showConnect(false));
-    $("btn-connect-back").addEventListener("click",()=>{ showView("chat"); startHeartbeat(); });
+    $("btn-connect-back").addEventListener("click",()=>{ showView("chat"); startHeartbeat(); loadPlan(); });
     $("btn-signout").addEventListener("click",async()=>{ sessionStorage.setItem("ta_force_login","1"); await endServerSession(); enterSignedOut(); });
     $("btn-deposit").addEventListener("click",async()=>{
       const service=$("connect-service").value, out=$("connect-result");
