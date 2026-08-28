@@ -553,7 +553,11 @@
         if(!doc.access_token) return false;
         storeAccessToken(doc.access_token, doc.expires_in);
         storeSessionRef(doc.session_ref);   // handle is stable, but re-store defensively
-        MCP.sessionId = null;   // the MCP session was bound to the old bearer
+        // Bump the GENERATION, do not just null the field: a slow call already in
+        // flight captured the old generation, and if this only cleared the id
+        // that call's late 2xx would re-adopt the session it was sent on and
+        // orphan the one built after the refresh.
+        MCP.invalidateSession();   // the MCP session was bound to the old bearer
         return true;
       }catch(_e){ return false; }
       finally{ refreshing = null; }
@@ -660,8 +664,15 @@
       // replay of a state-changing call.
       let doc;
       try{ doc=JSON.parse(String(bodyText||"")); }catch(_e){ return false; }
-      const msg = doc && doc.error && doc.error.message;
-      return typeof msg==="string" && /session/i.test(msg);
+      // It must be a JSON-RPC error FRAME, not merely an object carrying a
+      // message that happens to say "session". A plain
+      // {"error":{"message":"browser session expired"}} from some other layer is
+      // not the MCP transport disowning us, and treating it as such replays a
+      // state-changing call.
+      if(!doc || doc.jsonrpc!=="2.0") return false;
+      const err=doc.error;
+      if(!err || typeof err.code!=="number") return false;
+      return typeof err.message==="string" && /session/i.test(err.message);
     },
     _parse(text){
       const t=(text||"").trim();
@@ -767,49 +778,57 @@
       // Session gone. This is provably PRE-DISPATCH - the transport rejected the
       // envelope, so the tool never ran - which makes replaying safe even for a
       // state-changing turn. Re-initialize once and run it for real.
-      if(!isHandshake && attempt.session<1 && this._isSessionGone(resp, bodyText)){
-        attempt.session++;
-        // Only the FIRST arrival tears the dead session down. Several calls can
-        // be in flight against one session (the poll runs every 30s, a turn can
-        // take minutes), and their 404s come back one after another; if each one
-        // invalidated, every late arrival would discard the session the previous
-        // one had just built and mint another. `_retire` is a no-op once the
-        // generation has moved, so the stragglers simply re-run on the session
-        // that is now live.
+      if(!isHandshake && this._isSessionGone(resp, bodyText)){
+        // Retire FIRST, and unconditionally. The server has just disowned this
+        // handle, so keeping it is never right - not even when the retry budget
+        // is spent. That ordering used to be inside the budget check, so a
+        // second rejection in one call left the dead session armed and the page
+        // back in the state this whole change exists to prevent.
         this._retire(gen, isHandshake);
+        if(attempt.session>=1){
+          throw transportError("session_lost",
+            "your universe kept dropping this connection", false);
+        }
+        attempt.session++;
+        // `_retire` above is a no-op once the generation has moved, so only the
+        // FIRST arrival tears a dead session down. Several calls can be in
+        // flight against one session (the poll runs every 30s, a turn can take
+        // minutes) and their 404s come back one after another; without that,
+        // every late arrival would discard the session the previous one had just
+        // built and mint another.
         await this.ensureInit();
         return this._rpc(method, params, opts, attempt);
       }
 
-      if(resp.status===502||resp.status===503||resp.status===504){
-        // Deploy window: the daemon restarts (~90s) and the tunnel answers with
-        // an error page. No session survives that restart, so drop ours or the
-        // retry just 404s on a dead handle.
-        this._retire(gen, isHandshake);
-        // 502 and 503 mean the origin never took the request - unreachable, or
-        // down - so replaying it cannot duplicate anything, and the user should
-        // not have to click through a deploy blip. 504 is the opposite: the
-        // gateway timed out WAITING on the origin, so the request was delivered
-        // and the turn may be running right now. Replaying that would double-
-        // send, so a state-changing call stops and asks.
-        const neverArrived = (resp.status!==504);
-        if((neverArrived||opts.idempotent||isHandshake) && attempt.gateway<1){
-          attempt.gateway++;
-          await this._pause(2500);
-          return this._rpc(method, params, opts, attempt);
-        }
-        throw transportError("unavailable",
-          "your universe was restarting just then (HTTP "+resp.status+")", false);
-      }
       if(resp.status>=500){
+        // Deploy window: the daemon is recreated (deploy/deploy_fail_safe.sh)
+        // and the tunnel answers with an error. No session survives that, so
+        // drop ours or the retry just 404s on a dead handle.
         this._retire(gen, isHandshake);
+        // NOTHING here proves a state-changing call never ran, so nothing here
+        // replays one.
+        //
+        // A previous version replayed 502 and 503 on the theory that they mean
+        // "the origin was never reached". They do not. The deploy recreates the
+        // container mid-flight, so a `converse` that was ACCEPTED can do minutes
+        // of work and then have its connection die - emitting exactly that 502.
+        // The edge cannot tell those apart either: the Worker marks an
+        // origin-authored 5xx with X-TA-Origin-Status
+        // (deploy/cloudflare-worker/worker.js:214), but its absence only means
+        // the body was not JSON, not that the app never saw the request.
+        //
+        // So a turn stops and asks. That costs a click during a deploy, which is
+        // a real cost and was raised as a regression - but a duplicate turn is
+        // worse than a click, and this is the founder's own primary surface.
+        // Removing the dilemma needs an idempotency key on `converse` so a
+        // replay is provably free; until then, ambiguity means ask.
         if((opts.idempotent||isHandshake) && attempt.gateway<1){
           attempt.gateway++;
           await this._pause(2500);
           return this._rpc(method, params, opts, attempt);
         }
         throw transportError("unavailable",
-          "your universe is briefly unavailable (HTTP "+resp.status+")", false);
+          "your universe was restarting just then (HTTP "+resp.status+")", false);
       }
       if(!resp.ok){
         throw transportError("http_error",
@@ -855,7 +874,15 @@
           // it is already inside, and the client wedges for good.
           if(!err || !(err.authRequired || err.transport)) throw err;
           this.sessionId=null;
-          await this._handshake();
+          try{ await this._handshake(); }
+          catch(again){
+            // Two evictions in a row. `_retire` is disabled during a handshake
+            // (it would destroy the session `initialize` just produced), so
+            // nothing else disarms the second attempt's session - and it has
+            // been disowned exactly like the first. Drop it explicitly.
+            this.invalidateSession();
+            throw again;
+          }
         }
       })();
       try{ await this._initing; } finally { this._initing=null; }
