@@ -1205,16 +1205,29 @@ def test_a_forgotten_name_is_free_again(base: Path) -> None:
     assert [e["path_template"] for e in again["allowed_endpoints"]] == ["/v1/messages"]
 
 
-def test_forgetting_is_idempotent(base: Path) -> None:
-    """A retry after a partial failure must complete, not wedge."""
-    _make_universe(base, "u-idem", admin="founder")
+def test_a_second_forget_refuses_rather_than_deleting_whatever_is_there_now(
+    base: Path,
+) -> None:
+    """Codex 2026-08-27: the first version claimed "idempotent, safe to retry",
+    and it was destructive. Fail between the row deletion and the secret
+    deletion, let the owner re-deposit, retry — and the retry deleted the NEW
+    credential. Nothing in a stateless "forget destination X" call distinguishes
+    a retry from a fresh request, and ids are deterministic so even the
+    connection id matches. So a forget with no connection present is a refusal."""
+    udir = _make_universe(base, "u-idem", admin="founder")
     _login("founder")
     _connect("u-idem", secret="sk-v1")
 
     assert _forget("u-idem")["secret_removed"] is True
-    second = _forget("u-idem")
-    assert second["status"] == "forgotten"
-    assert second["secret_removed"] is False
+    assert _forget("u-idem") == {"error": "not_found", "resource": "connection"}
+
+    # The case that actually matters: a re-deposit after a forget must survive a
+    # stale retry of that forget.
+    assert _connect("u-idem", secret="sk-NEW")["status"] == "provisioned"
+    assert _forget("u-idem")["secret_removed"] is True  # deliberate, not stale
+    _connect("u-idem", secret="sk-NEWER")
+    recs = _http_records(udir)
+    assert len(recs) == 1 and recs[0]["token"] == "sk-NEWER"
 
 
 def test_a_co_admin_cannot_forget_another_principals_credential(base: Path) -> None:
@@ -1257,3 +1270,56 @@ def test_forget_routes_through_write_graph(base: Path) -> None:
         assert _http_records(udir) == []
     finally:
         importlib.reload(us)
+
+
+def test_an_orphaned_secret_cannot_be_deleted_by_a_co_admin(base: Path) -> None:
+    """Codex reproduction: orphan a credential (vault write succeeds, connection
+    creation fails), then have a co-admin call forget. With no connection row
+    there is no proof of ownership, so the first version deleted another
+    principal's secret. An absent row is a refusal, not a licence."""
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.daemon_server import grant_universe_access
+
+    udir = _make_universe(base, "u-orph", admin="founder")
+    grant_universe_access(base, universe_id="u-orph", actor_id="coadmin",
+                          permission="admin", granted_by="founder")
+    # An orphan: vault record with no connection row.
+    write_credential_vault(
+        udir,
+        [{"credential_type": "http", "service": "webhook:acme",
+          "destination": "webhook:acme", "token": "sk-ORPHAN"}],
+        owner_user_id="founder", universe_id="u-orph",
+    )
+    assert len(_http_records(udir)) == 1
+
+    _login("coadmin")
+    assert _forget("u-orph") == {"error": "not_found", "resource": "connection"}
+    assert _http_records(udir)[0]["token"] == "sk-ORPHAN", "the orphan survived"
+
+
+def test_the_ledger_delete_uses_the_verified_principal_not_an_argument(base: Path) -> None:
+    """Codex: with verifier identity `mallory`, passing owner_user_id="alice"
+    deleted Alice's rows. The owner now comes from the trusted verifier, so the
+    invariant holds regardless of who calls it."""
+    import inspect
+
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    for name in ("delete_connection", "delete_grant"):
+        sig = inspect.signature(getattr(ConnectionLedger, name))
+        assert "owner_user_id" not in sig.parameters, name
+        src = inspect.getsource(getattr(ConnectionLedger, name))
+        assert "require_authenticated_principal_id()" in src, name
+
+    _make_universe(base, "u-verif", admin="founder")
+    _login("founder")
+    _connect("u-verif", secret="sk-v1")
+    from tinyassets.api.http_connection import _ids
+
+    conn_id, grant_id = _ids(universe_id="u-verif", destination="webhook:acme")
+    # A ledger whose verifier says "mallory" cannot delete founder's rows.
+    mallory = ConnectionLedger(base / "outbound.db",
+                               verify_authenticated_principal=lambda: "mallory")
+    assert mallory.delete_grant(grant_id=grant_id) is False
+    assert mallory.delete_connection(connection_id=conn_id) is False
+    assert _ledger(base, "founder")._get_connection_resource(conn_id) is not None

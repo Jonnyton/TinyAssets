@@ -542,7 +542,7 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
         import json as _json
 
         try:
-            ledger.extend_http_connection_endpoints(
+            widened = ledger.extend_http_connection_endpoints(
                 connection_id=connection_id,
                 endpoints=requested_endpoints,
                 scopes=http_scopes,
@@ -552,6 +552,13 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
             )
         except SsrfValidationError as exc:
             return {"error": "endpoint_not_permitted", "detail": str(exc)}
+        if not widened:
+            # The CAS lost: a concurrent deposit moved the policy after we read
+            # it. Reporting "provisioned" here would tell the caller their new
+            # endpoint is usable when it is not (Codex 2026-08-27 — the return
+            # value was discarded, so two extensions could both claim success
+            # while one silently vanished).
+            return {"error": "connection_conflict", "resource": "connection"}
         resource = ledger._get_connection_resource(connection_id)
 
     return _project(resource, grant)
@@ -566,9 +573,17 @@ def forget_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     exists to avoid.
 
     Order is deliberate: grant first (so nothing can authorize a call while the
-    rest is torn down), then the connection row, then the vault record. Each step
-    is idempotent, so a retry after a partial failure completes rather than
-    wedging.
+    rest is torn down), then the connection row, then the vault record.
+
+    It is NOT safe to blind-retry, and the first version claimed it was. Codex
+    (2026-08-27) failed the call between the row deletion and the secret
+    deletion, let the owner re-deposit, then retried — and the retry destroyed
+    the NEW credential. Nothing in a stateless "forget destination X" request
+    distinguishes a retry from a fresh request against whatever exists now, and
+    ids are deterministic so even the connection id is identical. A partial
+    failure leaves an orphaned secret that a re-deposit reclaims; that is the
+    honest cost, and it is better than a retry that silently deletes a
+    credential the user has since replaced.
 
     The row is DELETED, not tombstoned. ``revoke_connection`` stamps
     ``revoked_at`` and leaves the row, and ids are deterministic on (universe,
@@ -613,12 +628,18 @@ def forget_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
         verify_authenticated_principal=lambda: actor,
     )
     resource = ledger._get_connection_resource(connection_id)
-    if resource is not None and resource.owner_user_id != actor:
+    if resource is None:
+        # No connection means no proof of who owns the secret. The first version
+        # went on to delete the vault record anyway, and Codex (2026-08-27) used
+        # exactly that path: orphan Alice's credential, then have co-admin Bob
+        # call forget and remove it. An absent row is a refusal, not a licence.
+        return dict(_NOT_FOUND)
+    if resource.owner_user_id != actor:
         # Someone else's credential, in a universe this actor also administers.
         return dict(_NOT_FOUND)
 
-    ledger.delete_grant(grant_id=grant_id, owner_user_id=actor)
-    ledger.delete_connection(connection_id=connection_id, owner_user_id=actor)
+    ledger.delete_grant(grant_id=grant_id)
+    ledger.delete_connection(connection_id=connection_id)
     udir = _universe_dir(uid)
     forgotten = forget_credential(
         udir, credential_type="http", service=destination, universe_id=uid

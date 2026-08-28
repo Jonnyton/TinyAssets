@@ -2872,8 +2872,8 @@ class ConnectionLedger:
                 (json.dumps(list(new_scopes)), connection_id, json.dumps(["http"])),
             )
 
-    def delete_connection(self, *, connection_id: str, owner_user_id: str) -> bool:
-        """Remove a connection row outright, owner-guarded.
+    def delete_connection(self, *, connection_id: str) -> bool:
+        """Remove a connection row outright, scoped to the VERIFIED principal.
 
         ``revoke_connection`` stamps ``revoked_at`` and leaves the row. That is a
         tombstone, and connection ids are DETERMINISTIC on (universe,
@@ -2881,24 +2881,31 @@ class ConnectionLedger:
         deposit of it trips the revoked-row conflict. Removal has to actually
         delete, or "remove it and add it again" is impossible.
 
-        Owner-guarded in the WHERE clause so a co-admin cannot delete another
-        principal's connection. Returns True when a row went.
+        The owner comes from ``require_authenticated_principal_id`` — the trusted
+        daemon verifier — NOT from a caller argument. Codex (2026-08-27) showed
+        the first version trusted a caller-supplied ``owner_user_id``: with the
+        verifier identity ``mallory``, passing ``owner_user_id="alice"`` deleted
+        Alice's connection. The only caller happened to pass its own actor, so it
+        was not exploitable, but the invariant the docstring claimed was false —
+        and an invariant that holds only because of who calls it is not one.
         """
+        owner = self.require_authenticated_principal_id()
         with self._connect() as connection:
             cursor = connection.execute(
                 "DELETE FROM outbound_connections "
                 "WHERE connection_id = ? AND owner_user_id = ?",
-                (connection_id, owner_user_id),
+                (connection_id, owner),
             )
             return cursor.rowcount > 0
 
-    def delete_grant(self, *, grant_id: str, owner_user_id: str) -> bool:
-        """Remove a grant row outright, owner-guarded. Same reasoning."""
+    def delete_grant(self, *, grant_id: str) -> bool:
+        """Remove a grant row outright, scoped to the VERIFIED principal."""
+        owner = self.require_authenticated_principal_id()
         with self._connect() as connection:
             cursor = connection.execute(
                 "DELETE FROM outbound_connection_grants "
                 "WHERE grant_id = ? AND owner_user_id = ?",
-                (grant_id, owner_user_id),
+                (grant_id, owner),
             )
             return cursor.rowcount > 0
 
