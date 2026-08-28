@@ -12,6 +12,55 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Capacity for 1,000 users
+
+### The droplet is 1 vCPU / 2 GB. One decision unblocks the rest: resize to 4 vCPU / 8 GB
+
+*Measured on the live box 2026-08-28. Full numbers:
+`docs/design-notes/2026-08-28-capacity-measured-for-1000-users.md`.*
+
+You asked whether we are ready for 1,000 users with many simultaneous. **We are not**,
+and the gap is hardware before it is code. Two independent ceilings, both measured:
+
+| Ceiling | Measured | Binds |
+|---|---|---|
+| Reads | saturates at **~13 req/s** at 25 concurrent; 95% of one core, load 4.94 | **CPU** |
+| Real turns | **~77 MB PSS / ~189 MB RSS** per concurrent run, floor | **MEMORY** |
+
+The second one is the important correction. I initially argued the 4-worker run pool was
+conservative because a run mostly waits on the user's own LLM rather than our CPU — true
+of CPU, and wrong about what binds. Four concurrent runs already peak the container at
+**1.1 GB of 2 GB**, and that is with no prompt, no history and no inference loaded. A
+waiting run holds its runtime resident the whole time it waits.
+
+**So this is not "buy cores", it is buy RAM, and the same tier gives both.**
+
+| Tier | $/mo | Buys |
+|---|---:|---|
+| 1 vCPU / 2 GB (today) | 12 | ~13 req/s, 4 concurrent runs at the edge |
+| 2 vCPU / 4 GB | 24 | ~2× reads, ~10 concurrent runs |
+| **4 vCPU / 8 GB** | **48** | ~4× reads, ~25 concurrent runs — **the recommendation** |
+| 8 vCPU / 16 GB | 96 | ~8× reads, ~50 concurrent runs |
+
+At $20/user, the $48 tier is paid for by **three** subscribers. This is the cheapest
+large move available and it needs no code — but it is spend, so it is yours.
+
+**Say "resize to 4/8" and I will:** take a snapshot first, resize (DigitalOcean resizes
+need a brief power-off), bring the stack back, verify with the canary + `deployed_sha`,
+re-run the load probe to confirm the new ceiling, then raise the run pool to match the
+RAM and prove it.
+
+### Related, and free: the container has no memory limit
+
+`docker inspect` reports `mem_limit=0`, so the daemon may consume the whole host. With
+the run pool already peaking at 1.1 GB of 2 GB, an overshoot OOMs the *host* and takes
+`tinyassets-tunnel` with it — a total public outage, where a container limit would have
+been a restart (`restart=unless-stopped`). No OOM has happened; the margin is thin. I can
+add the limit with the resize, where there is headroom for it to be generous rather than
+a new way to fail.
+
+---
+
 ## Taking real money
 
 ### Stripe is LIVE and ready — WorkOS is still the STAGING environment
