@@ -31,9 +31,12 @@ _EVENT_AT_KEY = "tier_event_at"
 _CHECKOUT_CLAIM_KEY = "checkout_claim_at"
 
 #: How long a Checkout Session we create stays completable. Stripe's floor for
-#: ``expires_at`` is 30 minutes; the extra minute absorbs clock skew between the
-#: anchor we compute it from and Stripe's own validation of it.
-CHECKOUT_SESSION_SECONDS = 1860.0
+#: ``expires_at`` is 30 minutes MEASURED FROM WHEN STRIPE CREATES THE SESSION, not
+#: from our anchor -- and between the two we make up to two Stripe GETs (subscription
+#: search, price lookup) that can each take 20 seconds. The surplus over 1800 is that
+#: gap. It is a budget, not a guess: `create_checkout_session` refuses loudly if the
+#: preflight overran it rather than sending Stripe an expiry it will reject.
+CHECKOUT_SESSION_SECONDS = 2100.0
 
 #: How long the claim guarding that session is held. It must be LONGER than the
 #: session, because the claim's whole job is to be the only completable checkout.

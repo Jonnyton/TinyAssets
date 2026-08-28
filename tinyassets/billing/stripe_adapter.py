@@ -17,6 +17,7 @@ import hmac
 import json
 import logging
 import os
+import time as _time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -256,6 +257,15 @@ def create_checkout_session(
         raise ValueError("attempt_anchor is required")
     price_id = resolve_price_id()
     claim = _entitlement_claim(universe_id, price_id)
+    # Stripe measures the 30-minute floor from ITS creation time, not our anchor, and
+    # the calls above can take tens of seconds. If they overran the budget, say so
+    # instead of sending an expiry Stripe will reject with a generic 400.
+    expires_at = int(attempt_anchor + CHECKOUT_SESSION_SECONDS)
+    if expires_at < _time.time() + 1800:
+        raise BillingUnavailable(
+            "checkout preflight exceeded its budget; the session could not be "
+            "given a valid expiry"
+        )
     session = _post(
         "checkout/sessions",
         [
@@ -267,7 +277,7 @@ def create_checkout_session(
             # billed one universe twice (Codex, 2026-08-28). Derived from the attempt
             # anchor, not the clock, so a retry sends byte-identical parameters under
             # the same idempotency key.
-            ("expires_at", str(int(attempt_anchor + CHECKOUT_SESSION_SECONDS))),
+            ("expires_at", str(expires_at)),
             ("line_items[0][price]", price_id),
             ("line_items[0][quantity]", "1"),
             ("success_url", success_url),
@@ -283,12 +293,16 @@ def create_checkout_session(
                 claim,
             ),
         ],
-        # Keyed on the ATTEMPT, so a retry after a lost response returns the same
-        # session and a new attempt gets a new one. A wall-clock bucket did neither
-        # reliably: resubscribing inside the same bucket replayed the original
-        # COMPLETED session (Stripe keeps idempotency results ~24h), handing the user
-        # a dead checkout URL, while two attempts straddling a boundary each got
-        # their own still-completable session.
+        # Keyed on the ATTEMPT, so a new attempt cannot replay an old session. A
+        # wall-clock bucket did the opposite: resubscribing inside the same bucket
+        # replayed the original COMPLETED session (Stripe keeps idempotency results
+        # ~24h) and handed the user a dead checkout URL.
+        #
+        # NOT claimed: that a lost response is safely retried. The route releases the
+        # claim on any BillingUnavailable, so the retry arrives with a NEW anchor and
+        # therefore a new key, and Stripe creates a second session. Closing that needs
+        # the claim to remember its session id -- see
+        # docs/concerns/2026-08-28-the-checkout-claim-is-not-tied-to-its-session.md.
         idempotency_key=(
             "checkout:"
             + hashlib.sha256(
