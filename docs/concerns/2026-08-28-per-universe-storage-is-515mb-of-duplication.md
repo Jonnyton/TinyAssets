@@ -89,10 +89,16 @@ Expected effect: per-universe storage falls from ~515 MB to well under 20 MB, wh
 an invariant the directory no longer satisfies. Confirm nothing auth-bearing is landing there.
 
 ## Open
+
+1. **Share the npm cache** (see Root cause) — the ~10x lever, no isolation cost.
 2. **Bound `checkpoints.db`.** `concordance` reached 8.6 GB unbounded. `storage_utilization`
    already reports `subsystem_caps.checkpoints.status = "unbounded"` — it knows, and nothing
-   acts on it.
+   acts on it. That single file is a third of the data volume.
 3. **Fix the reported number.** Until `api/status.py` attributes the large directories, the
    storage dimension of any tier is unenforceable and the founder cannot see the truth.
-4. **Reclaim 13.4 GB of stale images** — needs a host decision; it is a production mutation,
-   low-risk and reversible (images re-pull), but not mine to run unasked.
+
+## Done
+
+- **Reclaimed the stale images, 2026-08-28** (host-authorized). Kept the running `be4f2b67`
+  image and the `44c4e205` rollback target; removed nine older ones. Disk **69% → 50%**,
+  images 13.56 GB → 3.995 GB. Daemon healthy and public canary green afterwards.
