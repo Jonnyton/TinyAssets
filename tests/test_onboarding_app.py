@@ -406,3 +406,48 @@ def test_request_tab_text_colour_is_one_named_variable():
     html, _csp = render_app_html()
     assert "--request-text:" in html
     assert "color:var(--request-text)" in html
+
+
+def test_the_request_colour_lives_in_a_file_an_agent_can_reproduce():
+    """Codex, 2026-08-27: the GitHub Contents API replaces a WHOLE file and has
+    no patch parameter, and app.html is ~98KB — no prompt reproduces that
+    byte-for-byte. So the founder's "change the colour and ship it live" goal was
+    unreachable through the substrate the agent actually has. The colour moved to
+    a few-line file, which is reachable."""
+    import json
+    from pathlib import Path
+
+    from tinyassets import onboarding
+    from tinyassets.onboarding import render_app_html, request_theme
+
+    theme_path = Path(onboarding.__file__).with_name("request_theme.json")
+    assert theme_path.is_file()
+    assert theme_path.stat().st_size < 1000, "the point is that it is small"
+    assert json.loads(theme_path.read_text("utf-8"))["request_text"].startswith("#")
+
+    html, _csp = render_app_html()
+    assert "__TA_REQUEST_TEXT__" not in html, "the placeholder must be substituted"
+    assert f"--request-text:{request_theme()['request_text']}" in html
+
+
+def test_a_bad_theme_value_never_reaches_the_page(tmp_path, monkeypatch):
+    """The file is editable by an agent through a pull request, so it is input,
+    not trusted CSS. A non-colour value falls back rather than being injected."""
+    from tinyassets import onboarding
+
+    bad = tmp_path / "request_theme.json"
+    bad.write_text('{"request_text": "red; } body{display:none} :root{"}', "utf-8")
+    monkeypatch.setattr(
+        onboarding.Path, "__truediv__", onboarding.Path.__truediv__, raising=False
+    )
+    monkeypatch.setattr(
+        onboarding, "_DEFAULT_REQUEST_TEXT", "#eef0ff", raising=False
+    )
+    # Point the reader at the hostile file.
+    real_with_name = onboarding.Path.with_name
+
+    def _fake_with_name(self, name):
+        return bad if name == "request_theme.json" else real_with_name(self, name)
+
+    monkeypatch.setattr(onboarding.Path, "with_name", _fake_with_name, raising=False)
+    assert onboarding.request_theme()["request_text"] == "#eef0ff"

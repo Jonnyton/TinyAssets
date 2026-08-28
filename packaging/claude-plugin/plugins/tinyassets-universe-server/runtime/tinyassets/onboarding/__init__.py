@@ -31,6 +31,10 @@ from urllib.parse import urlsplit
 
 _HTML_PATH = Path(__file__).parent / "app.html"
 _CONFIG_PLACEHOLDER = "__TA_ONBOARDING_CONFIG__"
+_REQUEST_TEXT_PLACEHOLDER = "__TA_REQUEST_TEXT__"
+#: A CSS colour literal. Anything else is not substituted into the page.
+_COLOUR_RE = _re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+_DEFAULT_REQUEST_TEXT = "#eef0ff"
 _NONCE_PLACEHOLDER = "__TA_NONCE__"
 
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -224,8 +228,43 @@ def render_app_html() -> tuple[str, str]:
         _HTML_PATH.read_text("utf-8")
         .replace(_NONCE_PLACEHOLDER, nonce)
         .replace(_CONFIG_PLACEHOLDER, blob)
+        .replace(_REQUEST_TEXT_PLACEHOLDER, request_theme()["request_text"])
     )
     return html, _csp(nonce, cfg["issuer"])
+
+
+def request_theme() -> dict[str, str]:
+    """The request-rail colours, read from a deliberately TINY file.
+
+    Why it is its own file: the GitHub Contents API replaces a WHOLE file and
+    has no patch parameter, so a universe can only ship a change to a file it
+    can reproduce byte-for-byte. ``app.html`` is ~98KB — no prompt reproduces
+    that exactly, which made the founder's "change the colour and ship it"
+    goal unreachable through the substrate the agent actually has (Codex,
+    2026-08-27). A few lines is reachable.
+
+    The value is validated as a colour literal before it reaches the page: this
+    file is editable by an agent through a pull request, so it is treated as
+    input, not as trusted CSS. A malformed or missing theme falls back to the
+    default rather than breaking the app.
+    """
+    import json
+    import logging
+
+    value = _DEFAULT_REQUEST_TEXT
+    try:
+        raw = json.loads(
+            (Path(__file__).with_name("request_theme.json")).read_text("utf-8")
+        )
+        candidate = str(raw.get("request_text") or "").strip()
+        if _COLOUR_RE.match(candidate):
+            value = candidate
+    except Exception:  # noqa: BLE001 - a bad theme must never break the app
+        logging.getLogger(__name__).warning(
+            "onboarding: request_theme unreadable; using the default",
+            exc_info=True,
+        )
+    return {"request_text": value}
 
 
 def build_sha() -> str:
