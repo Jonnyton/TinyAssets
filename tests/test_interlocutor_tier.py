@@ -577,3 +577,71 @@ class TestEntrypointBindsTier:
         out = json.loads(us.converse(message="hi", graph_id="u-own"))
         assert "reply" not in out
         assert out.get("auth_scope_required") is True
+
+
+# --- write is a collaborator, not the founder --------------------------------
+#
+# This distinction was documented the other way ("a write/admin grant") and no test
+# exercised it: every case above grants `admin`, including the one named
+# `test_founder_with_write_grant_is_t2`. With exactly one founder the two sets are
+# identical, so nothing showed. They diverge the moment a universe has collaborators.
+
+
+class TestWriteGrantIsNotFounder:
+    def test_a_write_only_collaborator_is_t1_not_t2(self, base):
+        from tinyassets.api import interlocutor
+
+        _make_universe(base, "u-own", level="private")
+        grant_universe_access(
+            base, universe_id="u-own", actor_id="owner-1", permission="admin"
+        )
+        grant_universe_access(
+            base, universe_id="u-own", actor_id="helper-1", permission="write"
+        )
+        _authenticate("helper-1")
+        who = interlocutor.resolve_interlocutor_tier("u-own")
+        assert who.tier == interlocutor.T1, (
+            "a write grant lets someone change the universe's work; it must not hand "
+            "them the founder's private grounding"
+        )
+
+    def test_the_admin_owner_is_still_t2(self, base):
+        from tinyassets.api import interlocutor
+
+        _make_universe(base, "u-own", level="private")
+        grant_universe_access(
+            base, universe_id="u-own", actor_id="owner-1", permission="admin"
+        )
+        _authenticate("owner-1")
+        assert interlocutor.resolve_interlocutor_tier("u-own").tier == interlocutor.T2
+
+    def test_an_unreadable_acl_does_not_confer_founder_authority(self, monkeypatch):
+        from tinyassets.api import interlocutor
+
+        def _boom(*_a, **_kw):
+            raise OSError("acl store unavailable")
+
+        monkeypatch.setattr(
+            "tinyassets.daemon_server.universe_access_permission", _boom
+        )
+        assert interlocutor._holds_admin_grant("u-own", "someone") is False
+
+    def test_the_founder_notion_agrees_with_the_ownership_signal_elsewhere(self):
+        """`source_channel.universe_owner_actor` calls admin the canonical ownership
+        signal and excludes write. Two notions of "owner" in one codebase was the
+        actual defect; this asserts they now say the same thing."""
+        import pathlib as _p
+
+        from tinyassets.api import interlocutor
+
+        src = _p.Path(interlocutor.__file__).read_text(encoding="utf-8")
+        body = src.split("def _holds_admin_grant(")[1].split("\ndef ")[0]
+        assert '== "admin"' in body
+        # Strip the docstring before looking for the permissive helper: the prose
+        # deliberately MENTIONS `write=True` to explain why it is not used, and an
+        # earlier version of this assertion failed on its own explanation.
+        code = body.split('"""')[-1]
+        assert "universe_access_allows" not in code, (
+            "the permissive helper accepts write OR admin, which is the conflation "
+            "this exists to undo"
+        )

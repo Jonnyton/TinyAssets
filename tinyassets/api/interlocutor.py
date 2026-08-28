@@ -14,9 +14,11 @@ answers"*:
     "unauthenticated reader" principal of the ``universe-visibility`` capability;
     they denote the same caller.
   * ``T1`` — a durable host/OAuth subject that is not the universe's founder.
-  * ``T2`` — a verified founder, evidenced by a ``write``/``admin``
-    ``universe_acl`` grant on *that* universe. Tier is per-universe: the same
-    subject is ``T2`` on their own universe and ``T1`` on someone else's.
+  * ``T2`` — a verified founder, evidenced by an ``admin`` ``universe_acl`` grant on
+    *that* universe. A ``write`` grant is a collaborator, not the founder: it may
+    change the universe's work without being handed the founder's private grounding.
+    Tier is per-universe: the same subject is ``T2`` on their own universe and ``T1``
+    on someone else's.
 
 Four invariants, each with a test in ``tests/test_interlocutor_tier.py``:
 
@@ -110,6 +112,29 @@ class ConversationAuthorization:
     refusal: str = ""
 
 
+def _holds_admin_grant(universe_id: str, actor_id: str) -> bool:
+    """Whether ``actor_id`` holds the ``admin`` grant on ``universe_id``.
+
+    Deliberately not `universe_access_allows(..., write=True)`: that accepts write
+    OR admin, and the whole point here is that those are different people once a
+    universe has collaborators. Fail-closed on any storage error -- an unreadable ACL
+    must not confer founder authority.
+    """
+    from tinyassets.api.permissions import _base_path
+    from tinyassets.daemon_server import universe_access_permission
+
+    uid = (universe_id or "").strip()
+    aid = (actor_id or "").strip()
+    if not uid or not aid:
+        return False
+    try:
+        return universe_access_permission(
+            _base_path(), universe_id=uid, actor_id=aid
+        ) == "admin"
+    except Exception:  # noqa: BLE001 -- fail closed, same as universe_owner_actor
+        return False
+
+
 def resolve_interlocutor_tier(universe_id: str) -> Interlocutor:
     """Bind the current caller to a tier for ``universe_id``.
 
@@ -123,10 +148,18 @@ def resolve_interlocutor_tier(universe_id: str) -> Interlocutor:
     actor = permissions.current_request_actor_id()
     if not actor or actor == "anonymous":
         return Interlocutor(tier=T0, actor_id="anonymous", universe_id=uid)
-    # Founder authority is the write/admin grant on THIS universe — the same
-    # authority the landed `converse` gate already requires. A read grant is a
-    # reader, not the founder.
-    if uid and permissions.universe_access_allows(uid, write=True):
+    # Founder authority is the ADMIN grant on THIS universe, not merely write.
+    #
+    # This used to accept write, and with exactly one founder the two were the same
+    # set, so nothing showed. They diverge the moment a collaborator is granted write:
+    # that collaborator became T2 and received founder-tier disclosure -- the
+    # universe's private grounding -- and could persist learning into it.
+    #
+    # `admin` is already the canonical ownership signal elsewhere in the codebase:
+    # `source_channel.universe_owner_actor` documents it as such and explicitly
+    # excludes read/write holders. Two different notions of "owner" in one codebase is
+    # the actual defect; this makes them agree (Codex, 2026-08-28).
+    if uid and _holds_admin_grant(uid, actor):
         return Interlocutor(tier=T2, actor_id=actor, universe_id=uid)
     return Interlocutor(tier=T1, actor_id=actor, universe_id=uid)
 
