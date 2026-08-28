@@ -434,6 +434,44 @@ def _invoke_reserved_effect(
 ) -> dict[str, Any]:
     """Invoke only after the caller atomically acquired the pending journal."""
     preserved = dict(base_evidence or {})
+
+    # Quota gate lives HERE, at the single choke point every invoke path passes
+    # through, rather than at each call site. Placing it per-caller is how the
+    # confirmed-hold path (execute_capped_action -> try_activate_confirmed_hold)
+    # ended up firing with no quota admission at all: it reaches the destination
+    # without going through execute_replay_safe_effect, so a gate added there
+    # simply does not see it. Gating the choke point makes that class of bypass
+    # structurally impossible instead of a thing to remember.
+    #
+    # Reservation is idempotent on the settlement key, so a caller that already
+    # reserved (the ordinary path) finds its own row and consumes nothing extra.
+    refusal = reserve_effect_quota(
+        universe_dir,
+        sink=sink,
+        effect_key=effect_key,
+        tier=get_tier(universe_dir),
+    )
+    if refusal is not None:
+        evidence = {
+            **preserved,
+            "status": STATUS_FAILED,
+            "terminal": True,
+            "reason": "usage_limit_reached",
+            "dimension": refusal.dimension,
+            "tier": refusal.tier,
+            "detail": refusal.message(),
+            "replay": False,
+        }
+        finalize_receipt(
+            universe_dir,
+            idempotency_hint=effect_key,
+            sink=sink,
+            evidence=evidence,
+            run_id=run_id,
+            status=STATUS_FAILED,
+        )
+        return evidence
+
     try:
         destination_result = invoke()
     except AmbiguousEffectOutcome:

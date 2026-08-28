@@ -147,3 +147,54 @@ def test_quota_never_widens_authority(tmp_path, monkeypatch, tier):
         invoke=invoke,
     )
     assert result["status"] == STATUS_FAILED
+
+
+def test_every_invoke_path_is_gated_not_just_the_ordinary_one(tmp_path, monkeypatch):
+    """The choke point, not the call site.
+
+    `execute_capped_action`'s confirmed-hold branch reaches the destination via
+    `_invoke_reserved_effect` WITHOUT passing through `execute_replay_safe_effect`,
+    so a gate placed only in the latter never sees it — which is exactly how that
+    path fired with no quota admission. Gating the shared helper closes the class.
+    """
+    from tinyassets.effectors.outbound_boundary import _invoke_reserved_effect
+    from tinyassets.storage.external_write_receipts import try_reserve_receipt
+
+    monkeypatch.setenv("TINYASSETS_FREE_EFFECTS_PER_WINDOW", "1")
+    universe = tmp_path / "universe"
+    calls: list[str] = []
+
+    # Spend the single slot.
+    _fire(universe, "first", calls)
+    assert calls == ["first"]
+
+    # Now drive the helper directly, as the confirmed-hold path does.
+    try_reserve_receipt(
+        universe, idempotency_hint="held-one", sink="test_sink", run_id="run-2"
+    )
+    result = _invoke_reserved_effect(
+        universe_dir=universe,
+        effect_key="held-one",
+        sink="test_sink",
+        run_id="run-2",
+        invoke=lambda: calls.append("held-one") or {"ok": True},
+        reconcile=None,
+    )
+
+    assert result["reason"] == "usage_limit_reached"
+    assert calls == ["first"], "the held effect must not reach the destination"
+
+
+def test_the_ordinary_path_does_not_double_consume_through_the_choke_point(
+    tmp_path, monkeypatch
+):
+    """Reserve is idempotent per key, so gating both places costs nothing."""
+    monkeypatch.setenv("TINYASSETS_FREE_EFFECTS_PER_WINDOW", "2")
+    universe = tmp_path / "universe"
+    calls: list[str] = []
+
+    assert _fire(universe, "a", calls)["status"] == STATUS_SUCCEEDED
+    assert _fire(universe, "b", calls)["status"] == STATUS_SUCCEEDED
+
+    summary = usage_summary(universe, window_seconds=86_400.0)
+    assert summary["effects_committed"] == 2.0, "two effects, two charges"
