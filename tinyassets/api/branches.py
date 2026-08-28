@@ -524,6 +524,22 @@ def _resolve_readable_version(
     return version_id, version.to_dict()
 
 
+def resolve_branch_id_for_read(bid_or_name: str, base_path: str) -> str | None:
+    """The branch id, or None when the subject may not read it.
+
+    `_resolve_branch_id` deliberately passes an unresolvable selector THROUGH, so the
+    caller's KeyError handler can report "not found". That is right for a branch that
+    does not exist and wrong for one that does but is private: the raw load then
+    succeeds and the caller proceeds on someone else's content.
+
+    Callers that are about to LOAD the branch -- rather than merely name it -- must use
+    this and refuse on None. "Unreadable" and "absent" are different answers and only
+    one of them is safe to paper over.
+    """
+    resolved = _resolve_readable_branch(bid_or_name, base_path)
+    return resolved[0] if resolved is not None else None
+
+
 def _resolve_branch_id(bid_or_name: str, base_path: str) -> str:
     """Return branch_def_id for either a branch_def_id or a branch name.
 

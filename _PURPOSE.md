@@ -1,16 +1,16 @@
 # Worktree purpose
 
-Purpose: universe-create-gate
+Purpose: branch-run-read-check
 Provider: claude-code
-Branch: claude/universe-create-gate
+Branch: claude/branch-run-read-check
 Base ref: origin/main
-Issue/PR: founder rule 2026-08-28 — no universe may exist unbound to a WorkOS user
-PLAN refs: authority / billing
-Ship condition: signup gets one universe free; additional ones require a paid tier;
-  anonymous and unreadable-state both fail closed
+Issue/PR: blocker #3 from the 2026-08-28 Codex multi-user review
+PLAN refs: authority / runs
+Ship condition: running a branch requires read access to it; an unreadable branch is
+  reported as absent
 Abandon condition: n/a
-Pickup hints: gated at the PUBLIC surface, not in _action_create_universe — that
-  primitive has 23 legitimate internal callers with no authenticated subject
-Memory refs: every-user-is-founder-of-own-universe
-Related implications: gives the paid tier its first concrete capability
+Pickup hints: the permissive `_resolve_branch_id` is unchanged on purpose — passing an
+  unresolvable selector through is right for NAMING, wrong for LOADING
+Memory refs: permissive-helper-used-as-restrictive
+Related implications: #2629 (source approval gate), #2627 (session credential source)
 Idea feed refs: (none)
