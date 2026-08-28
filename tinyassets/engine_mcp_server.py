@@ -185,6 +185,10 @@ def _bind_founder_identity(capabilities=_READ_CAPABILITIES):
 _PINNED_READ_TARGETS = frozenset({
     "status", "graph", "branches", "branch", "runs", "run",
     "compute", "connections",
+    # What you have asked your user for and what came back. Read-only and
+    # carries no credential material — the answer to a credential ask goes to
+    # the vault, never into this read.
+    "pending_requests",
 })
 
 
@@ -774,18 +778,37 @@ def write_graph(
     ``effects: ["authenticated_external_call"]`` fires ONE outbound HTTP call after
     the run, reading its instruction from one of its ``output_keys``. Prereqs, done
     once (they carry secrets, so NOT through this chat): the owner deposits the
-    credential IN THE APP. Tell them: tap "Connect / add API connection" at the
-    top of this app (that is the button's CURRENT label - if you remember an
-    older name for it from an earlier conversation, that memory is stale), fill
-    "Deposit API connection" (name, host, path, method; choose how it
-    authenticates: "OAuth 1.0a - 4 keys" for X/Twitter, which shows FOUR
-    LABELLED BOXES - API Key, API Key Secret, Access Token, Access Token Secret,
-    one value per box, never all four in one field - or a bearer token for most
-    APIs), then come back and say it's done. NEVER send the user to a separate/external "browser
-    flow": the form is in this same app, one tap away. That deposit is
-    ``connect_http``: it stores the connection + grant and pins the
-    host/path/method allow-list. Then ``source_channel operation=approve`` grants
-    the destination consent (you can do that part). The node's
+    credential IN THE APP. **ASK THEM FOR IT — do not send them hunting for a
+    form.** You know the exact endpoints you are about to call, so state them:
+
+        write_graph target="pending_request" operation="ask" payload_json={
+          "kind": "API",                      # the tab header they will see
+          "title": "GitHub key so I can open your pull request",
+          "body":  "why you need it, in one or two sentences",
+          "action": {"type": "connect_http", "destination": "github",
+                     "auth_scheme": "bearer",
+                     "endpoints": [{"host": "api.github.com",
+                                    "path_template": "/repos/o/r/pulls",
+                                    "methods": ["POST"]}, ...]}}
+
+    That opens a tab in their app with the exact grant spelled out; they paste
+    the key there and it goes straight to the vault under those endpoints. List
+    EVERY call the flow needs in ONE ask so they paste once (a GitHub pull
+    request needs the main ref, a branch ref, the file contents, and the pull).
+    Read ``read_graph target="pending_requests"`` to see what is still waiting
+    and what they answered. You cannot answer your own ask, and you should not
+    try: that is theirs.
+
+    Use ``{"type":"answer"}`` with your own ``fields`` for anything that is not a
+    credential - an approval, a choice, a missing detail. The tab is a general
+    way to ask, not a credential form.
+
+    (They can still deposit by hand: "Connect / add API connection" at the top of
+    this app. Prefer asking - a hand deposit makes them author an endpoint policy
+    you already know.) That deposit is ``connect_http``: it stores the connection
+    + grant and pins the host/path/method allow-list. Then
+    ``source_channel operation=approve`` grants the destination consent (you can
+    do that part). The node's
     delivery node MUST use ``prompt_template`` (NOT ``source_code`` — see the
     warning below) and MUST produce, under one of its ``output_keys``, a
     ``json.dumps`` string of a packet of EXACTLY this shape (the effector rejects
@@ -852,11 +875,43 @@ def write_graph(
     # publish carry provider-authority, version, and secret paths that stay off
     # this surface (build a branch here; everything else via the browser flow).
     t = (target or "").strip().lower()
+    if t == "pending_request":
+        # A deliberate, narrow carve-out in the branch-only confinement. ASKING
+        # your user for something writes NO credential and grants nothing: it
+        # creates a pending tab in their app and waits for them. That is the one
+        # connection-adjacent thing that is safe from here, and without it the
+        # agent has no way to say "I need a key" except to send the user hunting
+        # for a form — which is what this replaces.
+        #
+        # ANSWERING is NOT here, and must not be: the agent runs as the user's
+        # own principal, so an exposed answer_request would let it satisfy its
+        # own ask, and an exposed unmute_request would let it lift a mute the
+        # user set. Those stay on the surface a person drives.
+        op = (operation or "ask").strip().lower()
+        if op not in {"ask", "request_from_user"}:
+            return json.dumps({
+                "error": (
+                    "target='pending_request' supports operation='ask' only. "
+                    "Answering a request, and lifting a mute, belong to the "
+                    "person you asked - not to you."
+                ),
+            })
+        from tinyassets.api.pending_requests import request_from_user
+        from tinyassets.auth.middleware import _current_identity
+
+        token = _bind_founder_identity()
+        try:
+            return json.dumps(
+                request_from_user(universe_id=_GRAPH_ID, payload=payload_json)
+            )
+        finally:
+            _current_identity.reset(token)
     if t != "branch":
         return json.dumps({
             "error": (
                 "write_graph on the served surface builds workflow SHAPES only: "
-                f"target must be 'branch' (got '{target or '(empty)'}'). "
+                f"target must be 'branch' or 'pending_request' "
+                f"(got '{target or '(empty)'}'). "
                 "Automations, connections, credentials, agents, and goals are "
                 "not built here."
             ),
