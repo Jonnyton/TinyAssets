@@ -15,6 +15,7 @@ from tinyassets.billing.stripe_adapter import (
     billing_enabled,
     cancel_subscription,
     create_checkout_session,
+    event_mode_matches_key,
     subscription_end_from_event,
     subscription_state_from_event,
 )
@@ -25,5 +26,6 @@ __all__ = [
     "cancel_subscription",
     "create_checkout_session",
     "subscription_end_from_event",
+    "event_mode_matches_key",
     "subscription_state_from_event",
 ]

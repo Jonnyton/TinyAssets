@@ -362,6 +362,33 @@ def find_active_subscription(universe_id: str) -> str | None:
 
 
 
+def key_is_live() -> bool:
+    """Whether the configured key transacts real money."""
+    return _secret_key().startswith("sk_live")
+
+
+def event_mode_matches_key(event: dict) -> bool:
+    """Whether an event was produced in the same Stripe mode as our key.
+
+    Cheap, and it only matters once: at the test -> live switch. Stripe stamps every
+    object with ``livemode``, and an endpoint's signing secret is per-endpoint and
+    per-mode, so a mode mismatch means one of two things has gone wrong -- a test
+    endpoint's secret is still configured on a live deployment, or someone has
+    replayed a body from the other mode against a secret that somehow verifies it.
+
+    Neither should entitle anybody. Refusing is the whole point: a leftover test
+    secret would otherwise let TEST-mode subscriptions -- which anyone can create for
+    free with card 4242 -- grant the paid tier on a live deployment.
+
+    Absent ``livemode`` is treated as a mismatch rather than a pass. Stripe always
+    sends it; something that does not is not something to guess about.
+    """
+    livemode = event.get("livemode")
+    if not isinstance(livemode, bool):
+        return False
+    return livemode == key_is_live()
+
+
 def verify_webhook_signature(
     payload: bytes, signature_header: str, *, now: float, secret: str = ""
 ) -> bool:

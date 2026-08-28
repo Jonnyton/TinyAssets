@@ -121,9 +121,20 @@ def _subscription_object(
 
 
 def _subscription_event(
-    status: str = "active", *, kind: str = "customer.subscription.updated", **kwargs
+    status: str = "active",
+    *,
+    kind: str = "customer.subscription.updated",
+    livemode: bool = False,
+    **kwargs,
 ) -> dict:
-    return {"type": kind, "data": {"object": _subscription_object(status=status, **kwargs)}}
+    # Real Stripe events always carry `livemode`, and the webhook refuses one whose
+    # mode does not match the configured key. Test mode is the default here because
+    # the suite runs with an sk_test key.
+    return {
+        "type": kind,
+        "livemode": livemode,
+        "data": {"object": _subscription_object(status=status, **kwargs)},
+    }
 
 
 def _sign(payload: bytes, timestamp: int, secret: str = SECRET) -> str:
@@ -1177,3 +1188,99 @@ def test_the_page_shows_the_end_date_and_stops_offering_a_second_cancel():
     assert "already cancelled" in click, (
         "clicking an already-cancelled plan must not offer to cancel again"
     )
+
+
+
+# --- the test -> live switch -------------------------------------------------
+#
+# The one guard that only matters once, and matters absolutely then: a TEST-mode
+# subscription is free for anyone to create with card 4242. If a test endpoint's
+# signing secret were left configured on a live deployment, those would entitle.
+
+
+def test_an_event_from_the_wrong_stripe_mode_is_refused(tmp_path, monkeypatch):
+    import asyncio
+    import json as _json
+
+    import tinyassets.api.helpers as helpers
+    from tinyassets import onboarding
+    from tinyassets.storage.subscription_state import get_tier
+
+    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
+    monkeypatch.setattr(helpers, "_universe_dir", lambda u: tmp_path / u)
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", SECRET)
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
+
+    universe = "u-mode"
+    (tmp_path / universe).mkdir()
+    # A LIVE-mode event arriving at a TEST-mode deployment.
+    event = _subscription_event(universe_id=universe, livemode=True)
+    payload = _json.dumps(event).encode()
+
+    class _Request:
+        headers = {
+            "content-length": str(len(payload)),
+            "stripe-signature": _sign(payload, int(time.time())),
+        }
+
+        async def stream(self):
+            yield payload
+
+    response = asyncio.run(onboarding._handle_billing_webhook(_Request()))
+    assert response.status_code == 400
+    assert get_tier(tmp_path / universe) == "free", "no cross-mode entitlement"
+
+
+def test_a_test_mode_event_cannot_entitle_a_live_deployment(tmp_path, monkeypatch):
+    """The direction that actually costs money."""
+    import asyncio
+    import json as _json
+
+    import tinyassets.api.helpers as helpers
+    from tinyassets import onboarding
+    from tinyassets.storage.subscription_state import get_tier
+
+    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
+    monkeypatch.setattr(helpers, "_universe_dir", lambda u: tmp_path / u)
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", SECRET)
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_live_pretend")
+
+    universe = "u-livemode"
+    (tmp_path / universe).mkdir()
+    event = _subscription_event(universe_id=universe, livemode=False)
+    payload = _json.dumps(event).encode()
+
+    class _Request:
+        headers = {
+            "content-length": str(len(payload)),
+            "stripe-signature": _sign(payload, int(time.time())),
+        }
+
+        async def stream(self):
+            yield payload
+
+    assert asyncio.run(
+        onboarding._handle_billing_webhook(_Request())
+    ).status_code == 400
+    assert get_tier(tmp_path / universe) == "free"
+
+
+@pytest.mark.parametrize("livemode", [None, "true", 1, "", {}])
+def test_a_missing_or_non_boolean_livemode_is_a_mismatch(livemode, monkeypatch):
+    """Stripe always sends a real boolean. Anything else is not something to guess."""
+    from tinyassets.billing import event_mode_matches_key
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
+    event = {"type": "customer.subscription.updated"}
+    if livemode is not None:
+        event["livemode"] = livemode
+    assert event_mode_matches_key(event) is False
+
+
+def test_matching_modes_pass(monkeypatch):
+    from tinyassets.billing import event_mode_matches_key
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_x")
+    assert event_mode_matches_key({"livemode": False}) is True
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_live_x")
+    assert event_mode_matches_key({"livemode": True}) is True
