@@ -175,6 +175,38 @@ limit would convert that into a container restart (`restart=unless-stopped`) wit
 tunnel surviving. No OOM has happened yet, which is why this is a hardening item and not
 an incident — but the margin is thin and every added worker eats it.
 
+## Turning slots into users — the formula, and the one number we do not have
+
+Concurrent-turn capacity is `slots / turn_duration` turns per second. Slots are now
+known and bounded (`TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS`, default 6; ~25 after the
+approved resize). **Turn duration is not measured**, and I tried: `run_events` in
+`.runs.db` has `started_at`/`finished_at`, but they sit microseconds apart with one event
+per run — bookkeeping records, not execution spans. So the platform does not currently
+record how long a real turn takes.
+
+The sensitivity, so the decision does not wait on it:
+
+| slots | 10 s turn | 30 s turn | 60 s turn |
+|---:|---:|---:|---:|
+| 6 (today) | 0.60 /s | 0.20 /s | 0.10 /s |
+| 25 (after resize) | 2.50 /s | 0.83 /s | 0.42 /s |
+
+1,000 users at ~10 turns/day is ~10,000 turns/day, which is **0.12 /s averaged over a
+24 h day** and roughly **0.7 /s at a 5× peak in a 12 h active window**. Read against the
+table: today's 6 slots carry the average comfortably at any plausible turn length and
+miss the peak unless turns are fast; 25 slots carry the peak except at the slow end.
+
+**So the honest answer is that the resize plus the admission bound very likely covers
+1,000 users at ordinary intensity, and I cannot prove the peak without measuring turn
+duration.** That measurement needs instrumentation the code does not have — a real
+`started_at`/`finished_at` around the provider call — and it should land before anyone
+claims a users-per-box number rather than a slots number.
+
+What the admission bound changes regardless of that unknown: exceeding capacity now
+queues briefly and then refuses honestly, instead of spawning until the host OOMs and
+takes the tunnel down. Being *under-provisioned* is a product problem; being *unbounded*
+was an outage.
+
 ## What would change it, cheapest first
 
 0. **Done, partially free: less CPU on the status path** (above). Worth having, but
