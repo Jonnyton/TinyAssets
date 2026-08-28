@@ -55,10 +55,26 @@ this is **CPU-bound, not memory-bound**, on the read path.
 saturation was 13 req/s. **The model and the measurement agree**, which is the reason to
 trust the extrapolation below.
 
-In-process, one status read costs ~48 ms and issues ~71 file opens, 23 SQL statements,
-6 fresh SQLite connections and ~140 `stat` calls. The one component that *grows with the
-platform* was the recursive storage walk (~3,300 `stat`s); it is now memoized, which is
-19% of the request today and much more later. The rest is diffuse — no second smoking gun.
+In-process, one status read cost ~73 ms and issued ~71 file opens, 23 SQL statements,
+6 fresh SQLite connections and thousands of `stat` calls. Two components dominated, and
+both are now memoized. Interleaved A/B on the live box, so page-cache drift hits every
+arm equally:
+
+| | p50 | vs baseline |
+|---|---:|---:|
+| baseline | 73.2 ms | — |
+| + storage walk memoized | 30.8 ms | **-58%** |
+| + supervisor liveness memoized | 15.3 ms | **-79%** |
+
+**A 4.8× cut in the CPU each request costs is 4.8× the requests one core can serve**, and
+unlike buying cores it is free. Both were O(n) in something that grows: the storage walk
+sums every subsystem directory (~3,300 `stat`s), and liveness reads ~59 per-worker files.
+
+*A correction worth keeping.* I first reported the storage walk as 19%, measured
+sequentially on an unusually warm page cache; cProfile separately inflated it to 59%
+because it distorts syscall-heavy code. Only the interleaved A/B is trustworthy. That the
+figure swings from 19% to 58% with cache state is itself the point: under memory pressure,
+when the walk is most expensive, is exactly when the box can least afford it.
 
 ## What this means for 1,000 users
 
@@ -73,9 +89,13 @@ Average load is not the problem. 1,000 users × ~20 calls/day is 0.23 req/s, com
 
 ## What would change it, cheapest first
 
-1. **Buy cores.** 1 → 4 vCPU is $12 → $48/mo and should be roughly 4× the read ceiling.
-   At $20/user this is paid for by *three* subscribers. This is the single highest-value
-   action and it needs no code.
+0. **Done, and free: 4.8× less CPU per request** (above). On its own this should take the
+   read ceiling from ~13 req/s toward ~60 req/s on the *same* box — to be confirmed
+   against the live endpoint once deployed, because the measurement above is in-process
+   and excludes transport.
+1. **Buy cores.** 1 → 4 vCPU is $12 → $48/mo and should be roughly 4× the read ceiling
+   again, compounding with the above. At $20/user this is paid for by *three*
+   subscribers. This is the highest-value remaining action and it needs no code.
 2. **Raise the run pool once cores exist.** 4 workers is conservative given that a run is
    mostly *waiting* on the user's own LLM subscription rather than burning our CPU — but
    the per-subprocess RSS is still unmeasured, and 2 GB is not much room. Measure before
