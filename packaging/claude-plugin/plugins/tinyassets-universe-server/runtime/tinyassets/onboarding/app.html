@@ -1366,8 +1366,12 @@
         if(!r||!r.resolved){
           // The paste was cleared before the request (hygiene), so say so —
           // otherwise the user finds an empty box and no explanation.
-          out.textContent=(r&&r.reason?r.reason:"Couldn't work out what this is.")+
-            " Fill in the fields below and paste the credential again there.";
+          // The reason is a sentence fragment from the server; punctuate before
+          // appending, or it reads as one run-on line (seen live 2026-08-27:
+          // "could not identify this service Fill in the fields below").
+          const why=(r&&r.reason)?String(r.reason).trim():"Couldn't work out what this is";
+          out.textContent=why.replace(/[.\s]*$/,"")+
+            ". Fill in the fields below and paste the credential again there.";
           openManual(); return;
         }
         const secret=pickSecret(r.auth_scheme,values);
