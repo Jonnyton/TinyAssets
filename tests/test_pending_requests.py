@@ -321,7 +321,9 @@ def test_feedback_and_dont_ask_again_ride_the_answer(base):
                  fields=[{"name": "ok", "label": "Go ahead?", "type": "choice",
                           "options": ["yes", "no"]}])
 
-    out = _answer("u-1", request_id=asked["request_id"], values={"ok": "no"},
+    # A user who thinks it is too promotional clicks "Not now" — the system
+    # knows Send vs Not now, and cannot read intent out of a field value.
+    out = _answer("u-1", request_id=asked["request_id"], dismiss=True,
                   feedback="too promotional", dont_ask_again=True)
 
     assert out["suppressed"] is True
@@ -329,12 +331,15 @@ def test_feedback_and_dont_ask_again_ride_the_answer(base):
     # The agent can read back WHY, not just that it was refused.
     assert _rail("u-1")["recently_answered"][0]["feedback"] == "too promotional"
 
-    # Asking the identical thing again is refused, with the reason attached.
+    # Asking the identical thing again returns the STANDING DECISION, with the
+    # reason attached — not a bare refusal.
     again = _ask("u-1", kind="Approval", title="Post this to X?",
                  action={"type": "answer"},
                  fields=[{"name": "ok", "label": "Go ahead?", "type": "choice",
                           "options": ["yes", "no"]}])
-    assert again["error"] == "suppressed"
+    assert again["status"] == "settled"
+    assert again["decision"] == "declined"
+    assert again["may_proceed"] is False
     assert again["feedback"] == "too promotional"
     assert _rail("u-1")["count"] == 0
 
@@ -347,7 +352,8 @@ def test_a_dismissal_can_also_mute(base):
     out = _answer("u-1", request_id=asked["request_id"], dismiss=True,
                   feedback="I will do this myself", dont_ask_again=True)
     assert out["suppressed"] is True
-    assert _ask("u-1")["error"] == "suppressed"
+    settled = _ask("u-1")
+    assert settled["status"] == "settled" and settled["may_proceed"] is False
 
 
 def test_muting_is_visible_and_undoable(base):
@@ -366,6 +372,53 @@ def test_muting_is_visible_and_undoable(base):
                             payload=json.dumps({"dedupe_key": muted[0]["dedupe_key"]}))
     assert lifted["status"] == "unmuted"
     assert _ask("u-1")["status"] == "pending"
+
+
+def test_a_standing_yes_lets_the_agent_proceed_without_asking_again(base):
+    """Founder 2026-08-27: "it might know from past interaction what it is
+    allowed and what needs approval".
+
+    "Don't ask me this again" on an approval usually means *yes, and stop
+    asking*. The first cut only ever produced a standing refusal, so a remembered
+    decision could only ever block — the opposite of what the user meant.
+    """
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    asked = _ask("u-1", kind="Approval", title="Post the weekly summary?",
+                 action={"type": "answer"},
+                 fields=[{"name": "ok", "label": "Go ahead?", "type": "text"}])
+
+    _answer("u-1", request_id=asked["request_id"], values={"ok": "yes"},
+            feedback="always fine for the weekly one", dont_ask_again=True)
+
+    again = _ask("u-1", kind="Approval", title="Post the weekly summary?",
+                 action={"type": "answer"},
+                 fields=[{"name": "ok", "label": "Go ahead?", "type": "text"}])
+
+    assert again["status"] == "settled"
+    assert again["decision"] == "allowed"
+    assert again["may_proceed"] is True, "a standing yes must let it proceed"
+    assert again["answer"] == {"ok": "yes"}
+    assert again["feedback"] == "always fine for the weekly one"
+    # And it costs the user nothing: no new tab appears.
+    assert _rail("u-1")["count"] == 0
+
+
+def test_the_rail_shows_what_was_decided_not_just_that_it_was_muted(base):
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    yes = _ask("u-1", kind="Approval", title="Allowed thing",
+               action={"type": "answer"},
+               fields=[{"name": "ok", "label": "OK?", "type": "text"}])
+    _answer("u-1", request_id=yes["request_id"], values={"ok": "y"},
+            dont_ask_again=True)
+    no = _ask("u-1", kind="Approval", title="Refused thing",
+              action={"type": "answer"},
+              fields=[{"name": "ok", "label": "OK?", "type": "text"}])
+    _answer("u-1", request_id=no["request_id"], dismiss=True, dont_ask_again=True)
+
+    decisions = {m["title"]: m["decision"] for m in _rail("u-1")["muted"]}
+    assert decisions == {"Allowed thing": "allowed", "Refused thing": "declined"}
 
 
 def test_muting_one_ask_does_not_mute_a_different_one(base):
@@ -678,3 +731,18 @@ def test_an_extend_request_cannot_carry_a_secret_field(base):
                fields=[{"name": "secret", "label": "Key", "type": "secret"}])
     assert out["error"] == "request_invalid"
     assert "only allowed on a connect_http request" in out["detail"]
+
+def test_the_prompt_says_credentials_are_asked_for_once_not_per_action():
+    """Founder 2026-08-27: a credential is added "one or as they expire as
+    needed, not for each action with that credential". The earlier row pushed the
+    opposite way — it framed the tab as the way to get permission to act."""
+    import inspect
+
+    from tinyassets.api import prompts
+
+    src = inspect.getsource(prompts)
+    assert "ONCE per" in src and "never once per action" in src
+    # An action is a conversation by default; the tab is optional.
+    assert "ask in the conversation" in src
+    # And a standing yes must be acted on, not re-asked.
+    assert "may_proceed=true" in src

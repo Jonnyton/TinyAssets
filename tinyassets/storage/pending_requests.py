@@ -64,12 +64,18 @@ CREATE TABLE IF NOT EXISTS pending_requests (
 -- "don't ask me this again" (founder 2026-08-27). Keyed on the request's own
 -- dedupe key, so it suppresses THIS ask rather than a whole category the user
 -- never meant to silence.
+-- A STANDING DECISION, not merely a mute. `decision` is what the user settled
+-- on: "allowed" means go ahead without asking again; "declined" means do not do
+-- this and do not ask again. Storing only the silence lost the answer, which
+-- made every remembered decision a refusal.
 CREATE TABLE IF NOT EXISTS request_suppressions (
-    dedupe_key TEXT PRIMARY KEY,
-    kind       TEXT NOT NULL,
-    title      TEXT NOT NULL,
-    feedback   TEXT,
-    created_at REAL NOT NULL
+    dedupe_key  TEXT PRIMARY KEY,
+    kind        TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    feedback    TEXT,
+    decision    TEXT NOT NULL DEFAULT 'declined',
+    answer_json TEXT,
+    created_at  REAL NOT NULL
 );
 -- A lifted mute is recorded, not just applied: the agent runs as the user's
 -- own principal, so "who lifted this" cannot be decided at the gate.
@@ -114,12 +120,21 @@ def create_request(
             # A user who said "don't ask me this again" must not be asked again.
             # The agent is TOLD, rather than silently ignored, so it can stop
             # trying and say so instead of looping.
-            suppressed = conn.execute(
-                "SELECT feedback FROM request_suppressions WHERE dedupe_key = ?",
+            settled = conn.execute(
+                "SELECT feedback, decision, answer_json FROM request_suppressions "
+                "WHERE dedupe_key = ?",
                 (dedupe_key,),
             ).fetchone()
-            if suppressed:
-                return {"error": "suppressed", "feedback": suppressed[0] or ""}
+            if settled:
+                # The user already settled this. Hand back WHAT they decided so
+                # the agent can act on a standing yes, instead of only learning
+                # that it may not ask.
+                return {
+                    "settled": True,
+                    "decision": settled[1] or "declined",
+                    "feedback": settled[0] or "",
+                    "answer": json.loads(settled[2]) if settled[2] else None,
+                }
             existing = conn.execute(
                 "SELECT request_id FROM pending_requests "
                 "WHERE status = 'pending' AND dedupe_key = ? LIMIT 1",
@@ -211,6 +226,7 @@ def resolve_request(
     answer: dict[str, Any] | None = None,
     feedback: str = "",
     dont_ask_again: bool = False,
+    decision: str = "",
 ) -> bool:
     """Close a request. Only a PENDING row moves, so one answer counts once.
 
@@ -244,9 +260,15 @@ def resolve_request(
                 if row:
                     conn.execute(
                         "INSERT OR REPLACE INTO request_suppressions "
-                        "(dedupe_key, kind, title, feedback, created_at) "
-                        "VALUES (?,?,?,?,?)",
-                        (row[2], row[0], row[1], feedback or None, time.time()),
+                        "(dedupe_key, kind, title, feedback, decision, "
+                        "answer_json, created_at) VALUES (?,?,?,?,?,?,?)",
+                        (
+                            row[2], row[0], row[1], feedback or None,
+                            decision or ("allowed" if status == "answered"
+                                         else "declined"),
+                            json.dumps(answer) if answer else None,
+                            time.time(),
+                        ),
                     )
             return True
     except Exception:  # noqa: BLE001
@@ -300,12 +322,12 @@ def list_suppressions(universe_dir: Path) -> list[dict[str, Any]]:
     try:
         with _db(universe_dir) as conn:
             rows = conn.execute(
-                "SELECT dedupe_key, kind, title, feedback, created_at "
+                "SELECT dedupe_key, kind, title, feedback, decision, created_at "
                 "FROM request_suppressions ORDER BY created_at DESC LIMIT 50"
             ).fetchall()
         return [
             {"dedupe_key": r[0], "kind": r[1], "title": r[2],
-             "feedback": r[3], "created_at": r[4]}
+             "feedback": r[3], "decision": r[4], "created_at": r[5]}
             for r in rows
         ]
     except Exception:  # noqa: BLE001
