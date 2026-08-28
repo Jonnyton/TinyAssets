@@ -451,3 +451,43 @@ def test_a_bad_theme_value_never_reaches_the_page(tmp_path, monkeypatch):
 
     monkeypatch.setattr(onboarding.Path, "with_name", _fake_with_name, raising=False)
     assert onboarding.request_theme()["request_text"] == "#eef0ff"
+
+def test_the_app_restores_the_conversation_on_load():
+    """Founder, 2026-08-28: "the webapp seems to clear the conversation if you
+    refresh". It was worse than that — the app rendered ONLY what the current
+    page instance had appended, so EVERY refresh emptied the thread, finished
+    reply or not. The conversation was intact server-side the whole time; the
+    app simply never asked for it, including after its own automatic reload on a
+    new build."""
+    from tinyassets.onboarding import render_app_html
+
+    html, _csp = render_app_html()
+    assert "include_conversation:true" in html
+    assert "function loadHistory()" in html
+    assert "loadHistory();" in html
+    # Oldest-first render: the founder peek returns newest-first.
+    assert "turns.slice().reverse()" in html
+    # It must never block the chat on a history failure.
+    assert "history is a convenience; never block the chat on it" in html
+
+def test_an_unconfirmed_message_survives_a_reload_and_says_so():
+    """Founder, 2026-08-28: "you still need to fix it all, webapp is a promary
+    surface". Restoring recorded history was not enough — a turn is recorded only
+    when the exchange COMPLETES, so a reload mid-reply had nothing to restore and
+    the message vanished.
+
+    It is kept locally now, and shown with its REAL state: a 503 during a deploy
+    ate one of these while the bubble sat there looking delivered, so an
+    unconfirmed message must not be drawn as a normal sent one."""
+    from tinyassets.onboarding import render_app_html
+
+    html, _csp = render_app_html()
+    assert "ta_inflight_turn" in html
+    assert "rememberInflight(message, display)" in html
+    # Cleared on success, KEPT on failure — a failed send is still the user's.
+    assert "forgetInflight();" in html
+    assert "the send failed, so the message is still the" in html
+    # Restored only when history does not already contain it.
+    assert "function restoreInflight(turns)" in html
+    assert "This message was never confirmed" in html
+    assert "Send it again" in html
