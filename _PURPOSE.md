@@ -1,16 +1,16 @@
 # Worktree purpose
 
-Purpose: checkout-session-lease
+Purpose: checkout-lease-build
 Provider: claude-code
-Branch: claude/checkout-session-lease
-Base ref: origin/main
-Issue/PR: toward "ready to activate Stripe for real users"
+Branch: claude/checkout-lease-build
+Base ref: claude/checkout-session-lease (stacked on #2616)
+Issue/PR: resolves docs/concerns/2026-08-28-the-checkout-claim-is-not-tied-to-its-session.md
 PLAN refs: billing
-Ship condition: `scripts/stripe_go_live.py --check` names every remaining blocker and
-  none of them is ours; no cross-mode entitlement is possible
+Ship condition: the three money races are closed and mutation-checked; live activation
+  is no longer gated on this
 Abandon condition: n/a
-Pickup hints: the checkout-lease redesign (the double-billing races) is NOT in this
-  commit — it is awaiting a Codex design verdict and lands separately
-Memory refs: automerge-can-land-a-stale-head (every commit independently safe)
-Related implications: docs/concerns/2026-08-28-the-checkout-claim-is-not-tied-to-its-session.md
+Pickup hints: start-over is DEFERRED by design — resuming the open session closes the
+  lockout without adding a race around expiring a session the user may have just paid in
+Memory refs: two-authorities-for-one-fact; never-game-the-gate-with-xfail
+Related implications: stacked on #2616; retarget to main once that lands
 Idea feed refs: (none)

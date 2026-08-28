@@ -11,6 +11,7 @@ is one less state to drift out of sync with Stripe.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -188,63 +189,217 @@ def apply_tier_event(
             raise
 
 
-def claim_checkout(
+# --- the checkout attempt ----------------------------------------------------
+#
+# A bare timestamp lock could not say WHICH Stripe Checkout Session it guarded, and
+# three separate defects reduced to that one gap: a lost response created a second
+# session, a delayed event for an old subscription released a live claim, and an
+# abandoned checkout locked the user out for the whole lease. A lease has to name the
+# thing it is a lease on.
+#
+# ONE JSON record, not a spread of key/value rows, so an attempt is written and read
+# atomically -- a half-updated attempt is a second payable session waiting to happen.
+#
+#     attempt_id   random, and the identity everything else keys on
+#     created_at   when it began
+#     expires_at   ABSOLUTE, derived from the session's own expiry rather than
+#                  recomputed, so the lease can never end before the session does
+#     mode         "test" | "live" -- a test attempt must never be resumed live
+#     params       the EXACT creation inputs, stored rather than hashed
+#     session_id   None until Stripe answers
+#     url          None until Stripe answers
+#
+# `params` holds the inputs themselves because Stripe replays an idempotent request
+# only for IDENTICAL parameters, and ours are not stable across calls: return URLs come
+# from the request Origin, the price id is re-resolved per call, and the entitlement
+# claim depends on the current key. A hash would detect drift but could not reconstruct
+# the request, and reconstructing it is the entire point.
+
+_ATTEMPT_KEY = "checkout_attempt_v1"
+
+#: Returned in place of an attempt when the stored record cannot be parsed. It blocks
+#: like a live attempt, because whatever it was may still be payable and starting a
+#: second checkout beside it is exactly the failure this record exists to prevent.
+_CORRUPT = {"__corrupt__": True}
+
+
+def _read_attempt(conn: sqlite3.Connection, now: float) -> dict | None:
+    row = conn.execute(
+        "SELECT value FROM subscription_meta WHERE key = ?", (_ATTEMPT_KEY,)
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        attempt = json.loads(row[0])
+        expires_at = float(attempt["expires_at"])
+    except (TypeError, ValueError, KeyError):
+        return dict(_CORRUPT)
+    if now >= expires_at:
+        return None
+    return attempt
+
+
+def current_checkout_attempt(universe_dir: str | Path, *, now: float) -> dict | None:
+    """The live attempt for this universe, or None if there is none."""
+    try:
+        with _connect(universe_dir) as conn:
+            conn.executescript(_SCHEMA)
+            return _read_attempt(conn, now)
+    except sqlite3.Error:
+        return None
+
+
+def begin_checkout_attempt(
     universe_dir: str | Path,
     *,
     now: float,
-    ttl_seconds: float = CHECKOUT_WINDOW_SECONDS,
-) -> float | None:
-    """Exclusive, expiring claim on starting a checkout for this universe.
+    attempt_id: str,
+    mode: str,
+    params: dict,
+    lease_seconds: float,
+) -> dict | None:
+    """Start an attempt, or None if one already holds this universe.
 
-    Returns the claim's ANCHOR -- the timestamp it was taken at -- or ``None`` when
-    another claim already holds. The anchor identifies this attempt, and both the
-    session's expiry and its Stripe idempotency key are derived from it, so a retry
-    of the same attempt is deduplicated while a genuinely new attempt is not. Keying
-    those on a wall-clock bucket instead made a resubscribe inside the same bucket
-    replay the ORIGINAL completed session (Codex, 2026-08-28).
+    Atomic, so two concurrent clicks cannot both begin. That is the mutual exclusion
+    the record exists for: Stripe cannot close it for us, because a pending Checkout
+    Session is not yet a subscription for `AlreadySubscribed` to refuse.
 
-    Asking Stripe whether a subscription exists and then creating a session is
-    check-then-act: two concurrent clicks can both see "none" and both create
-    sessions that become two subscriptions billing one universe twice. Stripe cannot
-    close that for us, because a pending Checkout Session is not yet a subscription,
-    so the mutual exclusion lives here.
+    Also migrates the legacy `checkout_claim_at`. A fresh legacy claim keeps blocking
+    until its ORIGINAL expiry -- ignoring it on deploy would allow a second payable
+    session beside one still open. It is deliberately NOT converted into a resumable
+    attempt: its creation inputs were never stored, so an identical replay to Stripe
+    cannot be guaranteed. A one-time lockout beats a second subscription.
+    """
+    attempt = {
+        "attempt_id": attempt_id,
+        "created_at": now,
+        "expires_at": now + lease_seconds,
+        "mode": mode,
+        "params": params,
+        "session_id": None,
+        "url": None,
+    }
+    with _connect(universe_dir) as conn:
+        conn.executescript(_SCHEMA)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if _read_attempt(conn, now) is not None:
+                conn.execute("ROLLBACK")
+                return None
+            legacy = conn.execute(
+                "SELECT value FROM subscription_meta WHERE key = ?",
+                (_CHECKOUT_CLAIM_KEY,),
+            ).fetchone()
+            if legacy is not None:
+                try:
+                    held_since = float(legacy[0])
+                except (TypeError, ValueError):
+                    conn.execute("ROLLBACK")
+                    return None
+                if now - held_since < CHECKOUT_WINDOW_SECONDS:
+                    conn.execute("ROLLBACK")
+                    return None
+                conn.execute(
+                    "DELETE FROM subscription_meta WHERE key = ?",
+                    (_CHECKOUT_CLAIM_KEY,),
+                )
+            conn.execute(
+                "INSERT INTO subscription_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (_ATTEMPT_KEY, json.dumps(attempt)),
+            )
+            conn.execute("COMMIT")
+            return attempt
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
-    The claim expires so an abandoned checkout cannot lock a universe out forever --
-    but never BEFORE the session it guards, or the lockout is traded for a second
-    completable session.
+
+def record_checkout_session(
+    universe_dir: str | Path, *, attempt_id: str, session_id: str, url: str
+) -> bool:
+    """Attach Stripe's answer to the attempt that asked for it.
+
+    Compare-and-set on ``attempt_id``: if the attempt was settled or replaced while the
+    Stripe call was in flight, this writes nothing rather than reviving it.
     """
     with _connect(universe_dir) as conn:
         conn.executescript(_SCHEMA)
         conn.execute("BEGIN IMMEDIATE")
         try:
             row = conn.execute(
-                "SELECT value FROM subscription_meta WHERE key = ?",
-                (_CHECKOUT_CLAIM_KEY,),
+                "SELECT value FROM subscription_meta WHERE key = ?", (_ATTEMPT_KEY,)
             ).fetchone()
-            if row is not None:
-                try:
-                    held_since = float(row[0])
-                except (TypeError, ValueError):
-                    held_since = 0.0
-                if now - held_since < ttl_seconds:
-                    conn.execute("ROLLBACK")
-                    return None
+            if row is None:
+                conn.execute("ROLLBACK")
+                return False
+            try:
+                attempt = json.loads(row[0])
+            except ValueError:
+                conn.execute("ROLLBACK")
+                return False
+            if attempt.get("attempt_id") != attempt_id:
+                conn.execute("ROLLBACK")
+                return False
+            attempt["session_id"] = session_id
+            attempt["url"] = url
             conn.execute(
-                "INSERT INTO subscription_meta (key, value) VALUES (?, ?) "
-                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (_CHECKOUT_CLAIM_KEY, str(now)),
+                "UPDATE subscription_meta SET value = ? WHERE key = ?",
+                (json.dumps(attempt), _ATTEMPT_KEY),
             )
             conn.execute("COMMIT")
-            return now
+            return True
         except Exception:
             conn.execute("ROLLBACK")
             raise
 
 
-def release_checkout_claim(universe_dir: str | Path) -> None:
-    """Drop the claim after a failed start, so a retry is not made to wait."""
+def settle_checkout_attempt(
+    universe_dir: str | Path,
+    *,
+    session_id: str = "",
+    attempt_id: str = "",
+) -> bool:
+    """Release the lease -- but ONLY the one identified.
+
+    Compare-and-delete, never an unconditional DELETE. An unconditional one is how a
+    delayed event for an OLD subscription could erase the lease protecting a session
+    pending right now, letting a second session be created beside it.
+
+    Matching on either identifier closes the window where Stripe's terminal event
+    arrives before we managed to record the session id.
+    """
+    if not session_id and not attempt_id:
+        raise ValueError("settle needs a session_id or an attempt_id")
     with _connect(universe_dir) as conn:
         conn.executescript(_SCHEMA)
-        conn.execute(
-            "DELETE FROM subscription_meta WHERE key = ?", (_CHECKOUT_CLAIM_KEY,)
-        )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT value FROM subscription_meta WHERE key = ?", (_ATTEMPT_KEY,)
+            ).fetchone()
+            if row is None:
+                conn.execute("ROLLBACK")
+                return False
+            try:
+                attempt = json.loads(row[0])
+            except ValueError:
+                # Unreadable, therefore unmatchable. Clearing is safe only because the
+                # caller reached here holding a real Stripe identifier.
+                conn.execute(
+                    "DELETE FROM subscription_meta WHERE key = ?", (_ATTEMPT_KEY,)
+                )
+                conn.execute("COMMIT")
+                return True
+            matches = (
+                session_id and attempt.get("session_id") == session_id
+            ) or (attempt_id and attempt.get("attempt_id") == attempt_id)
+            if not matches:
+                conn.execute("ROLLBACK")
+                return False
+            conn.execute("DELETE FROM subscription_meta WHERE key = ?", (_ATTEMPT_KEY,))
+            conn.execute("COMMIT")
+            return True
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
