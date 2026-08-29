@@ -619,8 +619,16 @@ class TestStartupGate:
 # 13. Creation-time declaration — no universe is born undeclared
 # --------------------------------------------------------------------------- #
 class TestCreationDeclaration:
+    """These once called `_anonymous()` and asserted a universe was created.
+
+    That encoded the contract the founder removed on 2026-08-28: a universe must
+    belong to a WorkOS person. Creation now refuses without an authenticated owner,
+    so these authenticate — their real subject is visibility-at-birth, never
+    anonymity. `TestCreationRequiresAnOwner` below covers the refusal itself.
+    """
+
     def test_create_declares_default_level(self, base):
-        _anonymous()
+        _authenticate("user_01OWNER")
         out = json.loads(us._action_create_universe(universe_id="u1", text="hi"))
         assert out.get("status") == "created"
         assert out["visibility"] == vis.DEFAULT_CREATE_VISIBILITY
@@ -628,7 +636,7 @@ class TestCreationDeclaration:
         assert vis.universe_visibility("u1") is vis.LEVELS[vis.DEFAULT_CREATE_VISIBILITY]
 
     def test_create_honors_explicit_visibility(self, base):
-        _anonymous()
+        _authenticate("user_01OWNER")
         out = json.loads(
             us._action_create_universe(universe_id="u2", text="hi", visibility="private")
         )
@@ -643,3 +651,48 @@ class TestCreationDeclaration:
         )
         assert "error" in out
         assert not (base / "u3").exists()  # rejected before mkdir; no partial create
+
+
+class TestCreationRequiresAnOwner:
+    """No unowned universe, ever (founder rule 2026-08-28).
+
+    `_action_create_universe` used to fall through to `founder_id: ""` — it created
+    the universe, granted nobody, bound nobody, and reported success. Nothing in
+    production reached that branch, which made it latent rather than live; "no caller
+    does that today" is exactly the reasoning that has been wrong twice in this repo.
+    """
+
+    def test_an_anonymous_caller_cannot_create_a_universe(self, base):
+        _anonymous()
+        out = json.loads(us._action_create_universe(universe_id="u-orphan", text="hi"))
+        assert "error" in out, f"anonymous create was allowed: {out}"
+        assert "belong to someone" in out["error"]
+        assert out.get("status") != "created"
+
+    def test_the_refusal_leaves_no_partial_universe_behind(self, base):
+        """A bare directory reads as a LIVING home to `get_status` and would announce
+        a broken universe — so the rollback matters as much as the refusal."""
+        _anonymous()
+        json.loads(us._action_create_universe(universe_id="u-orphan2", text="hi"))
+        assert not (base / "u-orphan2").exists()
+
+    def test_no_acl_row_or_home_binding_is_left_for_a_refused_create(self, base):
+        """The refusal must not half-register the universe either."""
+        from tinyassets.daemon_server import list_universe_acl
+
+        _anonymous()
+        json.loads(us._action_create_universe(universe_id="u-orphan3", text="hi"))
+        assert list_universe_acl(base, universe_id="u-orphan3") == []
+
+    def test_an_authenticated_caller_still_gets_an_owner_and_a_home(self, base):
+        _authenticate("user_01REAL")
+        out = json.loads(us._action_create_universe(universe_id="u-owned", text="hi"))
+        assert out["founder_id"] == "user_01REAL", (
+            "the accept direction: a gate that refuses everyone is not a gate"
+        )
+        from tinyassets.daemon_server import get_founder_home, universe_access_permission
+
+        assert universe_access_permission(
+            base, universe_id="u-owned", actor_id="user_01REAL"
+        ) == "admin"
+        assert get_founder_home(base, "user_01REAL") == "u-owned"

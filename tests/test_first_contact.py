@@ -111,6 +111,52 @@ def _capture_universe_reply(monkeypatch, reply: str) -> dict:
     return captured
 
 
+
+def _own_universes_as(actor_id: str = "user_01TESTOWNER") -> None:
+    """Authenticate, because a universe must now belong to someone.
+
+    Creation used to succeed for an anonymous caller and return `founder_id: ""` —
+    a universe nobody owned. The founder's rule (2026-08-28) forbids that state, and
+    it is enforced in `_action_create_universe` since 2026-08-29, so a test that
+    creates a universe has to say who it belongs to.
+    """
+    from tinyassets.auth.middleware import auth_middleware, set_provider
+    from tinyassets.auth.provider import AuthProvider, Identity
+
+    identity = Identity(
+        user_id=actor_id,
+        username=actor_id,
+        capabilities=[
+            "tinyassets.universe.read",
+            "tinyassets.universe.write",
+            "tinyassets.universe.admin",
+            "tinyassets.universe.create",
+            # create_universe is a COSTLY action — it provisions storage — so the
+            # scope gate wants this one too. Omitting it produced a confusing
+            # "Missing OAuth scope" rather than an ownership refusal.
+            "tinyassets.universe.costly",
+        ],
+    )
+
+    class _Static(AuthProvider):
+        def resolve_token(self, token: str):
+            return identity if token == "ok" else None
+
+        def is_auth_required(self) -> bool:
+            return True
+
+        def register_client(self, metadata: dict) -> dict:
+            return {"client_id": "test-client", **metadata}
+
+        def create_authorization(self, *_a, **_kw) -> str:
+            raise NotImplementedError
+
+        def exchange_code(self, *_a, **_kw) -> dict:
+            raise NotImplementedError
+
+    set_provider(_Static())
+    auth_middleware("ok")
+
 def test_get_status_without_home_is_repeatable_and_side_effect_free(data_dir):
     from tinyassets.api.status import get_status
     from tinyassets.daemon_server import get_founder_home
@@ -712,6 +758,7 @@ def test_public_create_universe_rejects_caller_selected_id(data_dir, monkeypatch
 
 def test_public_create_universe_without_id_self_serializes(data_dir, monkeypatch):
     """The public path with no id assigns exactly one opaque serial root."""
+    _own_universes_as()
     from tinyassets.api import universe as universe_api
 
     monkeypatch.setattr(universe_api, "_base_path", lambda: data_dir)
@@ -736,6 +783,7 @@ def test_write_graph_universe_rejects_caller_selected_graph_id(data_dir, monkeyp
 
 def test_internal_named_id_is_accepted(data_dir, monkeypatch):
     """The internal-trust flag lets migration/first-contact supply a serial."""
+    _own_universes_as()
     from tinyassets.api import universe as universe_api
     from tinyassets.ids import new_universe_id
 

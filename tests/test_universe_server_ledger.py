@@ -105,6 +105,72 @@ def _ledger(uid: str) -> list[dict]:
     return data
 
 
+
+
+@pytest.fixture(autouse=True)
+def _restore_auth_provider():
+    """Put the auth provider back after every test in this module.
+
+    `_own_universes_as` installs a static authenticated provider through the real
+    middleware, and process-global auth state does not unwind itself — it leaked into
+    `test_actor_defaults_to_anonymous_without_env`, which asserts the anonymous default
+    and passed in isolation while failing in a full run.
+    """
+    from tinyassets.auth.middleware import auth_middleware, set_provider
+    from tinyassets.auth.provider import DevAuthProvider
+
+    set_provider(DevAuthProvider())
+    auth_middleware(None)
+    yield
+    set_provider(DevAuthProvider())
+    auth_middleware(None)
+
+
+def _own_universes_as(actor_id: str = "user_01TESTOWNER") -> None:
+    """Authenticate, because a universe must now belong to someone.
+
+    Creation used to succeed for an anonymous caller and return `founder_id: ""` —
+    a universe nobody owned. The founder's rule (2026-08-28) forbids that state, and
+    it is enforced in `_action_create_universe` since 2026-08-29, so a test that
+    creates a universe has to say who it belongs to.
+    """
+    from tinyassets.auth.middleware import auth_middleware, set_provider
+    from tinyassets.auth.provider import AuthProvider, Identity
+
+    identity = Identity(
+        user_id=actor_id,
+        username=actor_id,
+        capabilities=[
+            "tinyassets.universe.read",
+            "tinyassets.universe.write",
+            "tinyassets.universe.admin",
+            "tinyassets.universe.create",
+            # create_universe is a COSTLY action — it provisions storage — so the
+            # scope gate wants this one too. Omitting it produced a confusing
+            # "Missing OAuth scope" rather than an ownership refusal.
+            "tinyassets.universe.costly",
+        ],
+    )
+
+    class _Static(AuthProvider):
+        def resolve_token(self, token: str):
+            return identity if token == "ok" else None
+
+        def is_auth_required(self) -> bool:
+            return True
+
+        def register_client(self, metadata: dict) -> dict:
+            return {"client_id": "test-client", **metadata}
+
+        def create_authorization(self, *_a, **_kw) -> str:
+            raise NotImplementedError
+
+        def exchange_code(self, *_a, **_kw) -> dict:
+            raise NotImplementedError
+
+    set_provider(_Static())
+    auth_middleware("ok")
+
 def test_write_actions_table_is_exhaustive() -> None:
     """Regression guard: if someone adds a new write action, they must
     declare it in WRITE_ACTIONS — otherwise the wrapper passes the result
@@ -282,6 +348,7 @@ def test_switch_universe_appends_ledger(universe: str) -> None:
 
 
 def test_create_universe_appends_ledger_to_new_universe(universe: str) -> None:
+    _own_universes_as()
     out = _call("create_universe", universe_id="fresh-uni", text="A seedling kingdom.")
     assert out["status"] == "created"
 
@@ -296,6 +363,7 @@ def test_create_universe_appends_ledger_to_new_universe(universe: str) -> None:
 def test_create_universe_surfaces_synthesis_first_run_checklist(
     universe: str,
 ) -> None:
+    _own_universes_as()
     out = _call("create_universe", universe_id="checklist-uni", text="A seed.")
 
     checklist = out["first_run_checklist"]
