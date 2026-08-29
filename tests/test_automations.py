@@ -11,6 +11,7 @@ import json
 import os
 import sqlite3
 from concurrent.futures import Future
+from contextlib import contextmanager
 from dataclasses import fields, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -21,9 +22,11 @@ import tinyassets.automations as automations_module
 from tests.test_background_budget_finalization_e2e import _seed_serving_assignment
 from tinyassets.automations import (
     MAX_ACTIVE_PER_UNIVERSE,
+    MAX_CONSECUTIVE_FAILURES,
     Automation,
     AutomationStore,
     AutomationUnavailable,
+    cron_min_gap_seconds,
     due_automations,
     register_automation,
     run_due_automation,
@@ -42,6 +45,20 @@ UNIVERSE = "universe_alice"
 BRANCH = "branch_automation_demo"
 
 NOW = datetime(2026, 8, 29, 12, 0, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _pin_data_dir(tmp_path: Path, monkeypatch):
+    """Every test's data root is its own tmp_path.
+
+    `_engine_run_admit` resolves its rolling-cap ledger from
+    `TINYASSETS_DATA_DIR` and falls back to `"."` -- the REPO ROOT -- when it is
+    unset (engine_mcp_server.py:104). Without this, running these tests wrote
+    `.engine_run_admissions.db` into the working tree AND shared one 20/hour cap
+    across every test in the file, so later tests were rate-limited by earlier
+    ones. Both were observed; this pins the root the way the daemon does.
+    """
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
 
 # -- Seeds --------------------------------------------------------------------
@@ -197,6 +214,10 @@ class _FakeOutcome:
         self.status = status
         self.output: dict[str, object] = {}
         self.error = ""
+
+    def with_error(self, error: str) -> "_FakeOutcome":
+        self.error = error
+        return self
 
 
 class _SeamRecorder:
@@ -563,13 +584,14 @@ def test_a_cron_registration_is_stored_and_comes_due_on_its_minute(
     _seed_branch(tmp_path)
     automation = register_automation(
         tmp_path,
-        **_registration_kwargs(interval_seconds=0, cron_expr="* * * * *"),
+        **_registration_kwargs(interval_seconds=0, cron_expr="*/5 * * * *"),
     )
     assert automation.trigger_kind == "cron"
 
-    # `* * * * *` matches every local minute, so the bucket itself is the proof.
+    # `*/5` matches minute 0 of every hour, so NOW's bucket is a match in any
+    # timezone -- the assertion does not depend on the runner's clock offset.
     local = _time.localtime(NOW.timestamp())
-    assert local is not None
+    assert local.tm_min == 0
     due = due_automations(tmp_path, universe_id=UNIVERSE, now=NOW + timedelta(seconds=30))
 
     assert [pair[1] for pair in due] == ["2026-08-29T12:00:00+00:00"]
@@ -1007,6 +1029,711 @@ def test_a_dark_consumer_scans_no_automations_at_all(
 
     assert scanned == []
     assert inline.submissions == []
+
+
+# -- Codex ADAPT 2026-08-29 folds ---------------------------------------------
+
+
+@contextmanager
+def _real_providers(**providers):
+    """Install a router of fake providers for a REAL run through the session."""
+    import tinyassets.providers.call as provider_call_module
+    from tinyassets.providers.router import ProviderRouter
+
+    previous_router = provider_call_module.get_provider_router()
+    previous_force_mock = provider_call_module.is_force_mock()
+    provider_call_module.set_provider_router(ProviderRouter(dict(providers)))
+    provider_call_module.set_force_mock(False)
+    try:
+        yield
+    finally:
+        provider_call_module.set_provider_router(previous_router)
+        provider_call_module.set_force_mock(previous_force_mock)
+
+
+def _receipt_provider(tmp_path: Path, run_id: str) -> tuple[str, int]:
+    """The provider + assignment generation the REAL admission recorded."""
+    from tinyassets.storage.provider_work_authority import (
+        SQLiteProviderWorkAuthorityStore,
+    )
+
+    store = SQLiteProviderWorkAuthorityStore(tmp_path)
+    with store.connection() as conn:
+        row = conn.execute(
+            "SELECT record_json FROM provider_work_receipts WHERE work_item_id = ?",
+            (run_id,),
+        ).fetchone()
+    assert row is not None, f"no provider work receipt for run {run_id}"
+    record = json.loads(row[0])
+    return str(record["provider"]), int(record["assignment_generation"])
+
+
+# §5 -- the ACL race
+
+
+def test_admin_revoked_between_precheck_and_launch_never_reaches_a_provider(
+    tmp_path: Path,
+    registered: Automation,
+    monkeypatch,
+) -> None:
+    """Codex's exact repro, folded as a test.
+
+    Revoking admin AFTER `_runtime_authority_reason` returns and BEFORE the
+    launch used to yield `ok:ran` with one real provider call. The per-node
+    authority guard now re-checks before every node body, so the run dies before
+    reaching a provider and the automation pauses.
+
+    No seam: the real `_execute`, the real foreground session, a real router.
+    """
+    from tests.test_background_budget_finalization_e2e import _CountingProvider
+    from tinyassets.daemon_server import grant_universe_access
+
+    real_check = automations_module._runtime_authority_reason
+    checks: list[str] = []
+
+    def racing(base, automation):
+        verdict = real_check(base, automation)
+        checks.append(verdict)
+        if len(checks) == 1:
+            # The window: precheck has passed, the run has not launched.
+            grant_universe_access(
+                tmp_path,
+                universe_id=UNIVERSE,
+                actor_id=OWNER,
+                permission="read",
+                granted_by="acct_someone_else",
+            )
+        return verdict
+
+    monkeypatch.setattr(automations_module, "_runtime_authority_reason", racing)
+    fake = _CountingProvider()
+
+    with _real_providers(codex=fake):
+        reason = run_due_automation(
+            tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW
+        )
+
+    assert checks[0] == ""  # the precheck really did pass
+    assert len(checks) > 1  # ...and the guard really did re-check
+    assert fake.calls == []  # the whole point: zero provider calls
+    assert reason == "run_failed:cancelled"
+    paused = AutomationStore(tmp_path).get(registered.automation_id)
+    assert paused is not None
+    assert paused.desired_state == "paused"
+    assert paused.pause_reason == "owner_lost_admin"
+
+
+# §6 -- registration refuses what admission refuses
+
+
+def test_registration_refuses_a_branch_the_owner_does_not_author(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Codex registered a public Bob-authored branch for Alice; every run then
+    failed before the provider, forever, with the row still active."""
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+    _seed_serving_assignment(tmp_path)
+    _seed_owner(tmp_path)
+    _seed_branch(
+        tmp_path,
+        branch_def_id="branch_bob_public",
+        author="acct_bob",
+        visibility="public",
+    )
+
+    with pytest.raises(AutomationUnavailable) as caught:
+        register_automation(
+            tmp_path, **_registration_kwargs(branch_def_id="branch_bob_public")
+        )
+
+    assert caught.value.reason == "branch_not_owned"
+    assert AutomationStore(tmp_path).list(universe_id=UNIVERSE) == []
+
+
+def test_registration_refuses_an_open_provider_assignment(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Foreground admission rejects open providers outright, so a "ready"
+    api_key_http assignment would store a row that can never fire."""
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+    _seed_serving_assignment(tmp_path)
+    _seed_owner(tmp_path)
+    _seed_branch(tmp_path)
+    _switch_assignment_provider(
+        tmp_path, universe_id=UNIVERSE, provider="api_key_http:def_openrouter"
+    )
+
+    with pytest.raises(AutomationUnavailable) as caught:
+        register_automation(tmp_path, **_registration_kwargs())
+
+    assert caught.value.reason == "no_serving_assignment"
+
+
+def test_an_admission_failure_pauses_instead_of_looping_every_period(
+    tmp_path: Path,
+    registered: Automation,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        automations_module,
+        "_execute",
+        lambda *_a, **_k: _FakeOutcome(
+            run_id="run_x",
+            status="failed",
+        ).with_error("Provider authority admission failed: ProviderAuthorityHeldError"),
+    )
+
+    reason = run_due_automation(
+        tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW
+    )
+
+    assert reason == "run_failed:failed"
+    row = AutomationStore(tmp_path).get(registered.automation_id)
+    assert row is not None
+    assert row.desired_state == "paused"
+    assert row.pause_reason == "run_admission_refused"
+    assert (
+        _refusal_rows(tmp_path)[f"automation:{registered.automation_id}"]
+        == "run_admission_refused"
+    )
+
+
+def test_a_failure_while_authority_is_gone_pauses_on_the_first_attempt(
+    tmp_path: Path,
+    registered: Automation,
+    monkeypatch,
+) -> None:
+    """Authority loss beats the failure counter.
+
+    The per-node guard names the cause in the run error when it fires, but it
+    only fires if a node starts. A run that dies EARLIER -- compile error, a
+    branch with no prompt node, an admission blip -- carries no such marker,
+    and retrying it three times while the owner no longer holds admin would
+    spend a subscription they no longer control. So the pause path re-reads
+    live authority before it consults the counter.
+    """
+    from tinyassets.daemon_server import grant_universe_access
+
+    monkeypatch.setattr(
+        automations_module,
+        "_execute",
+        lambda *_a, **_k: _FakeOutcome(run_id="run_x", status="failed").with_error(
+            "the model was briefly unreachable"
+        ),
+    )
+    real_check = automations_module._runtime_authority_reason
+    calls: list[str] = []
+
+    def racing(base, automation):
+        verdict = real_check(base, automation)
+        calls.append(verdict)
+        if len(calls) == 1:
+            grant_universe_access(
+                tmp_path,
+                universe_id=UNIVERSE,
+                actor_id=OWNER,
+                permission="read",
+                granted_by="acct_someone_else",
+            )
+        return verdict
+
+    monkeypatch.setattr(automations_module, "_runtime_authority_reason", racing)
+
+    run_due_automation(tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW)
+
+    row = AutomationStore(tmp_path).get(registered.automation_id)
+    assert row is not None
+    assert row.consecutive_failures == 1  # nowhere near the counter
+    assert row.desired_state == "paused"
+    assert row.pause_reason == "owner_lost_admin"
+
+
+def test_three_consecutive_ordinary_failures_pause_the_automation(
+    tmp_path: Path,
+    registered: Automation,
+    monkeypatch,
+) -> None:
+    """A transient failure must not retire an automation; a permanent one must."""
+    monkeypatch.setattr(
+        automations_module,
+        "_execute",
+        lambda *_a, **_k: _FakeOutcome(run_id="run_x", status="failed").with_error(
+            "the model was briefly unreachable"
+        ),
+    )
+    store = AutomationStore(tmp_path)
+    states = []
+    for index in range(MAX_CONSECUTIVE_FAILURES):
+        run_due_automation(
+            tmp_path,
+            registered,
+            f"2026-08-29T12:{10 + index}:00+00:00",
+            now=NOW,
+        )
+        row = store.get(registered.automation_id)
+        assert row is not None
+        states.append((row.desired_state, row.consecutive_failures))
+
+    assert states[0] == ("active", 1)
+    assert states[1] == ("active", 2)
+    assert states[2] == ("paused", 3)
+    assert store.get(registered.automation_id).pause_reason == "repeated_failures"
+
+
+def test_a_success_resets_the_consecutive_failure_counter(
+    tmp_path: Path,
+    registered: Automation,
+    monkeypatch,
+) -> None:
+    outcomes = [
+        _FakeOutcome(run_id="run_a", status="failed").with_error("transient"),
+        _FakeOutcome(run_id="run_b", status="completed"),
+    ]
+    monkeypatch.setattr(
+        automations_module, "_execute", lambda *_a, **_k: outcomes.pop(0)
+    )
+    store = AutomationStore(tmp_path)
+
+    run_due_automation(tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW)
+    assert store.get(registered.automation_id).consecutive_failures == 1
+    reason = run_due_automation(
+        tmp_path, registered, "2026-08-29T12:20:00+00:00", now=NOW
+    )
+
+    row = store.get(registered.automation_id)
+    assert reason == "ok:ran:run_b"
+    assert row.consecutive_failures == 0
+    assert row.desired_state == "active"
+    # The ROW reads a plain owner-legible `ok`; the ledger keeps the convention.
+    assert row.last_reason == "ok"
+    assert row.last_run_id == "run_b"
+    assert (
+        _refusal_rows(tmp_path)[f"automation:{registered.automation_id}"]
+        == "ok:ran:run_b"
+    )
+
+
+# §7 -- engine admission and the cron cadence floor
+
+
+def test_an_automation_pays_the_same_engine_run_budget_as_a_foreground_run(
+    tmp_path: Path,
+    registered: Automation,
+    monkeypatch,
+) -> None:
+    """Pre-exhaust the real rolling cap; the automation must not launch, must
+    record why, and must NOT pause -- the budget refills."""
+    import tinyassets.engine_mcp_server as ems
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    seam = _SeamRecorder()
+    monkeypatch.setattr(automations_module, "_execute", seam)
+    for _ in range(ems._RUN_GRAPH_RATE_MAX):
+        assert ems._engine_run_admit(universe_id=UNIVERSE) is True
+
+    reason = run_due_automation(
+        tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW
+    )
+
+    assert reason == "run_rate_limited"
+    assert seam.calls == []
+    row = AutomationStore(tmp_path).get(registered.automation_id)
+    assert row is not None
+    assert row.desired_state == "active"  # refills; not a permanent condition
+    assert (
+        _refusal_rows(tmp_path)[f"automation:{registered.automation_id}"]
+        == "run_rate_limited"
+    )
+
+
+def test_one_universes_run_budget_is_not_spent_by_another_universe(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import tinyassets.engine_mcp_server as ems
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    for _ in range(ems._RUN_GRAPH_RATE_MAX):
+        assert ems._engine_run_admit(universe_id="universe_alice") is True
+
+    assert ems._engine_run_admit(universe_id="universe_alice") is False
+    assert ems._engine_run_admit(universe_id="universe_bob") is True
+
+
+@pytest.mark.parametrize("expr", ["* * * * *", "*/2 * * * *", "0,3 * * * *"])
+def test_a_cron_cadence_below_the_floor_is_refused(
+    tmp_path: Path, monkeypatch, expr: str
+) -> None:
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+    _seed_serving_assignment(tmp_path)
+    _seed_owner(tmp_path)
+    _seed_branch(tmp_path)
+
+    with pytest.raises(AutomationUnavailable) as caught:
+        register_automation(
+            tmp_path, **_registration_kwargs(interval_seconds=0, cron_expr=expr)
+        )
+
+    assert caught.value.reason == "trigger_invalid"
+    assert AutomationStore(tmp_path).list(universe_id=UNIVERSE) == []
+
+
+@pytest.mark.parametrize("expr", ["0,5 * * * *", "*/5 * * * *"])
+def test_a_cron_cadence_at_the_floor_is_accepted(
+    tmp_path: Path, monkeypatch, expr: str
+) -> None:
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+    _seed_serving_assignment(tmp_path)
+    _seed_owner(tmp_path)
+    _seed_branch(tmp_path)
+
+    automation = register_automation(
+        tmp_path, **_registration_kwargs(interval_seconds=0, cron_expr=expr)
+    )
+
+    assert automation.cron_expr == expr
+
+
+def test_cron_min_gap_measures_the_smallest_gap_including_the_wrap() -> None:
+    """`0,3 * * * *` looks hourly until you measure INSIDE the hour."""
+    assert cron_min_gap_seconds("* * * * *") == 60
+    assert cron_min_gap_seconds("0,3 * * * *") == 180
+    assert cron_min_gap_seconds("*/5 * * * *") == 300
+    assert cron_min_gap_seconds("0 * * * *") == 3600
+    assert cron_min_gap_seconds("0 0 * * *") == 86400
+    # The wrap term is load-bearing, not decoration. Sunday+Monday at midnight
+    # sits 6 days apart INSIDE a Monday-origin week and 1 day apart across its
+    # boundary. Measuring only consecutive matches reports 518400 here. A brute
+    # force over 1,350 expressions found 30 of this shape; none of them are near
+    # the 300s floor, so only this assertion can catch dropping the wrap.
+    assert cron_min_gap_seconds("0 0 * * 0,1") == 86400
+
+
+# §8 / §1 -- the shared universe lease, pause, timeout and stop
+
+
+def test_a_universe_lease_held_by_a_live_holder_blocks_a_second_process(
+    tmp_path: Path,
+    registered: Automation,
+    monkeypatch,
+) -> None:
+    """The cross-process fence `_active` cannot be: an old process still working
+    a universe blocks a restarted one, whose `_active` map is empty."""
+    ran: list[str] = []
+    monkeypatch.setattr(
+        automations_module,
+        "run_due_automation",
+        lambda *_a, **_k: ran.append("ran") or "ok:ran:run_1",
+    )
+    store = AutomationStore(tmp_path)
+    assert store.acquire_universe_lease(
+        UNIVERSE,
+        holder="worker_assigned_old_process",
+        now=datetime.now(timezone.utc),
+        ttl_seconds=3600,
+    ) is True
+    consumer, _inline = _consumer_with_inline_executor(tmp_path)
+
+    try:
+        consumer._run_automations(UNIVERSE, [(registered, "2026-08-29T12:10:00+00:00")])
+    finally:
+        consumer.stop()
+
+    assert ran == []
+    assert _refusal_rows(tmp_path)[f"universe:{UNIVERSE}:automations"] == (
+        "universe_busy:worker_assigned_old_process"
+    )
+
+
+def test_an_expired_universe_lease_does_not_wedge_the_universe(
+    tmp_path: Path,
+    registered: Automation,
+    monkeypatch,
+) -> None:
+    """A process that died mid-run must not hold its universe forever."""
+    ran: list[str] = []
+    monkeypatch.setattr(
+        automations_module,
+        "run_due_automation",
+        lambda *_a, **_k: ran.append("ran") or "ok:ran:run_1",
+    )
+    store = AutomationStore(tmp_path)
+    store.acquire_universe_lease(
+        UNIVERSE,
+        holder="worker_assigned_dead",
+        now=datetime.now(timezone.utc) - timedelta(hours=4),
+        ttl_seconds=60,
+    )
+    assert store.universe_lease_holder(UNIVERSE, now=datetime.now(timezone.utc)) == ""
+    consumer, _inline = _consumer_with_inline_executor(tmp_path)
+
+    try:
+        consumer._run_automations(UNIVERSE, [(registered, "2026-08-29T12:10:00+00:00")])
+    finally:
+        consumer.stop()
+
+    assert ran == ["ran"]
+
+
+def test_the_lease_is_released_when_the_batch_finishes(
+    tmp_path: Path,
+    registered: Automation,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        automations_module, "run_due_automation", lambda *_a, **_k: "ok:ran:run_1"
+    )
+    consumer, _inline = _consumer_with_inline_executor(tmp_path)
+
+    try:
+        consumer._run_automations(UNIVERSE, [(registered, "2026-08-29T12:10:00+00:00")])
+    finally:
+        consumer.stop()
+
+    holder = AutomationStore(tmp_path).universe_lease_holder(
+        UNIVERSE, now=datetime.now(timezone.utc)
+    )
+    assert holder == ""
+
+
+def test_pausing_mid_batch_stops_the_remaining_rows(
+    tmp_path: Path,
+    registered: Automation,
+    monkeypatch,
+) -> None:
+    _seed_branch(tmp_path, branch_def_id="branch_second")
+    second = register_automation(
+        tmp_path,
+        **_registration_kwargs(name="second", branch_def_id="branch_second"),
+    )
+    ran: list[str] = []
+
+    def running(base, automation, due_at, **_kwargs):
+        ran.append(automation.automation_id)
+        (tmp_path / UNIVERSE / ".pause").write_text("owner", encoding="utf-8")
+        return "ok:ran:run_1"
+
+    monkeypatch.setattr(automations_module, "run_due_automation", running)
+    consumer, _inline = _consumer_with_inline_executor(tmp_path)
+
+    try:
+        consumer._run_automations(
+            UNIVERSE,
+            [
+                (registered, "2026-08-29T12:10:00+00:00"),
+                (second, "2026-08-29T12:10:00+00:00"),
+            ],
+        )
+    finally:
+        consumer.stop()
+
+    assert ran == [registered.automation_id]
+    assert _refusal_rows(tmp_path)[f"universe:{UNIVERSE}:automations"] == "paused"
+
+
+def test_a_run_that_outlives_its_timeout_is_cancelled_not_abandoned(
+    tmp_path: Path,
+    registered: Automation,
+    monkeypatch,
+) -> None:
+    """An unbounded wait holds the worker AND its provider authority claim."""
+    from tests.test_background_budget_finalization_e2e import _CountingProvider
+    from tinyassets.runs import is_cancel_requested
+
+    started: list[str] = []
+    waited: list[float | None] = []
+    monkeypatch.setenv("AUTOMATION_RUN_TIMEOUT_SECONDS", "1234")
+
+    def timing_out(run_id, timeout=None):
+        started.append(run_id)
+        waited.append(timeout)
+        raise TimeoutError("graph never finished")
+
+    monkeypatch.setattr("tinyassets.runs.wait_for", timing_out)
+    fake = _CountingProvider()
+
+    with _real_providers(codex=fake):
+        reason = run_due_automation(
+            tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW
+        )
+
+    assert reason == "run_timeout"
+    assert len(started) == 1
+    # The wait is actually BOUNDED, and by the configured value -- a `wait_for`
+    # with no timeout would block this consumer slot forever.
+    assert waited == [1234.0]
+    assert is_cancel_requested(tmp_path, started[0]) is True
+    assert (
+        _refusal_rows(tmp_path)[f"automation:{registered.automation_id}"]
+        == "run_timeout"
+    )
+    # The fence row stays: this instant was attempted and must not relaunch.
+    assert run_due_automation(
+        tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW
+    ) == "attempt_exists"
+
+
+def test_stop_cancels_an_in_flight_automation_run(tmp_path: Path) -> None:
+    from tinyassets.runs import is_cancel_requested
+
+    consumer, _inline = _consumer_with_inline_executor(tmp_path)
+    consumer._note_automation_run("run_in_flight")
+
+    consumer.stop()
+
+    assert is_cancel_requested(tmp_path, "run_in_flight") is True
+
+
+# §6 -- no silent skips
+
+
+def test_an_already_claimed_instant_is_recorded_not_silently_skipped(
+    tmp_path: Path,
+    registered: Automation,
+    monkeypatch,
+) -> None:
+    seam = _SeamRecorder()
+    monkeypatch.setattr(automations_module, "_execute", seam)
+    AutomationStore(tmp_path).claim_attempt(
+        registered.automation_id, "2026-08-29T12:10:00+00:00", now=NOW
+    )
+
+    reason = run_due_automation(
+        tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW
+    )
+
+    assert reason == "attempt_exists"
+    assert seam.calls == []
+    assert (
+        _refusal_rows(tmp_path)[f"automation:{registered.automation_id}"]
+        == "attempt_exists"
+    )
+
+
+def test_a_fence_write_failure_is_recorded_as_claim_error(
+    tmp_path: Path,
+    registered: Automation,
+    monkeypatch,
+) -> None:
+    """A SQLite failure in the claim used to escape with no row and no reason."""
+    seam = _SeamRecorder()
+    monkeypatch.setattr(automations_module, "_execute", seam)
+
+    def exploding(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(AutomationStore, "claim_attempt", exploding)
+
+    reason = run_due_automation(
+        tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW
+    )
+
+    assert reason.startswith("claim_error:OperationalError")
+    assert seam.calls == []
+    assert (
+        _refusal_rows(tmp_path)[f"automation:{registered.automation_id}"] == reason
+    )
+
+
+# §9 -- tests that exercise the real thing
+
+
+def test_the_real_admission_records_the_current_assignment_on_the_receipt(
+    tmp_path: Path,
+    registered: Automation,
+    monkeypatch,
+) -> None:
+    """The no-pin property, through the REAL session and its real receipt.
+
+    The previous version replaced `_execute` and observed a monkeypatched
+    session factory, so it could not see admission or custody at all (Codex §9).
+    This one runs the real path and reads what admission ACTUALLY wrote, then
+    takes the live assignment away and shows the automation cannot run without
+    it.
+
+    Deliberately NOT a provider flip. Rewriting `provider` on the assignment row
+    is not a rebind: `_current_serving_authority` re-derives the agent binding
+    and credential custody, which a hand-edited row no longer matches, so the
+    run fails on the binding rather than on the property under test. A real flip
+    needs a second deposited subscription, which this fixture has no way to
+    seed. What IS provable here is the same claim from the other side -- the
+    receipt carries the assignment that was live at run time, and with no live
+    assignment there is nothing stored anywhere to run from.
+    """
+    from tests.test_background_budget_finalization_e2e import _CountingProvider
+    from tinyassets.provider_assignment import load_provider_assignment
+
+    live = load_provider_assignment(tmp_path, universe_id=UNIVERSE)
+    assert live is not None
+    fake = _CountingProvider()
+
+    with _real_providers(codex=fake):
+        first = run_due_automation(
+            tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW
+        )
+    assert first.startswith("ok:ran:"), first
+    provider, generation = _receipt_provider(tmp_path, first.split("ok:ran:", 1)[1])
+
+    # What admission recorded is what the ASSIGNMENT said, not what the
+    # automation said -- the automation says nothing about a provider.
+    assert provider == live.provider == "codex"
+    assert generation == live.generation
+    assert len(fake.calls) == 1
+
+    # Take the assignment away. A row carrying a pin would still run.
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            "DELETE FROM provider_assignments WHERE universe_id = ?", (UNIVERSE,)
+        )
+        conn.commit()
+
+    with _real_providers(codex=fake):
+        second = run_due_automation(
+            tmp_path, registered, "2026-08-29T12:20:00+00:00", now=NOW
+        )
+
+    assert second == "no_serving_assignment"
+    assert len(fake.calls) == 1  # unchanged: nothing ran from a pin
+
+
+def test_a_restart_into_a_new_period_cannot_overlap_the_old_process(
+    tmp_path: Path,
+    registered: Automation,
+    monkeypatch,
+) -> None:
+    """Codex §2: a restart after a period boundary derives a NEW due_at, which
+    the attempt fence does not cover. The universe lease does."""
+    ran: list[str] = []
+    monkeypatch.setattr(
+        automations_module,
+        "run_due_automation",
+        lambda base, automation, due_at, **_k: ran.append(due_at) or "ok:ran:run_1",
+    )
+    first_period = NOW + timedelta(seconds=900)
+    second_period = NOW + timedelta(seconds=1500)
+    due_one = due_automations(tmp_path, universe_id=UNIVERSE, now=first_period)
+    due_two = due_automations(tmp_path, universe_id=UNIVERSE, now=second_period)
+    assert due_one[0][1] != due_two[0][1]  # genuinely different periods
+
+    old_consumer, _old_inline = _consumer_with_inline_executor(tmp_path)
+    new_consumer, _new_inline = _consumer_with_inline_executor(tmp_path)
+    assert old_consumer.consumer_id != new_consumer.consumer_id
+    try:
+        # The old process is mid-batch: it holds the universe lease.
+        AutomationStore(tmp_path).acquire_universe_lease(
+            UNIVERSE,
+            holder=old_consumer.consumer_id,
+            now=datetime.now(timezone.utc),
+            ttl_seconds=3600,
+        )
+        new_consumer._run_automations(UNIVERSE, due_two)
+    finally:
+        old_consumer.stop()
+        new_consumer.stop()
+
+    assert ran == []
+    assert _refusal_rows(tmp_path)[f"universe:{UNIVERSE}:automations"].startswith(
+        "universe_busy:"
+    )
 
 
 # -- Liveness is not activity -------------------------------------------------

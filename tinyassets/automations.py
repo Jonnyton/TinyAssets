@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import time
 import uuid
@@ -74,6 +75,26 @@ STATE_PAUSED = "paused"
 #: surface, which read the reason back out of ``assigned_queue_refusals``.
 REFUSAL_KEY_PREFIX = "automation:"
 
+#: Consecutive failed attempts before the automation pauses itself. A cadence
+#: that fails every period is an endless spend loop on the owner's subscription
+#: (Codex ADAPT 2026-08-29 §6: a foreign-authored branch registered, then failed
+#: forever while staying active). Reset by any successful run.
+MAX_CONSECUTIVE_FAILURES = 3
+
+#: Default ceiling on one automation run. Not a policy on how long work may
+#: take -- a served turn runs until it is finished -- but a bound on how long a
+#: consumer slot and a universe lease may be held by a run nothing will ever
+#: finish. On expiry the run is CANCELLED through the runs API, not abandoned.
+DEFAULT_RUN_TIMEOUT_SECONDS = 10800
+
+#: How often a held universe lease is re-stamped while its run is in flight.
+LEASE_REFRESH_SECONDS = 60
+
+#: Cadence floor for cron, in seconds. Same floor the interval trigger uses:
+#: `* * * * *` across 20 automations declares 1,200 launches/hour against a
+#: foreground `run_graph` budget of 20 (Codex ADAPT 2026-08-29 §7).
+MIN_CRON_GAP_SECONDS = 300
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS automations (
     automation_id      TEXT PRIMARY KEY,
@@ -100,6 +121,18 @@ CREATE TABLE IF NOT EXISTS automations (
 CREATE INDEX IF NOT EXISTS idx_automations_universe
     ON automations(universe_id, retired_at, created_at);
 
+-- One row per universe with an automation in flight. The consumer's `_active`
+-- map is process-local, so a restarted process (empty map) could launch an
+-- automation for a universe an OLD process is still working (Codex ADAPT
+-- 2026-08-29 §8). This lease is the shared fence: it lives in the database
+-- both processes read, and it fences ALL automation work for the universe,
+-- not just one `(automation_id, due_at)` pair.
+CREATE TABLE IF NOT EXISTS universe_leases (
+    universe_id TEXT PRIMARY KEY,
+    holder      TEXT NOT NULL,
+    expires_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS automation_attempts (
     automation_id TEXT NOT NULL,
     due_at        TEXT NOT NULL,
@@ -111,6 +144,59 @@ CREATE TABLE IF NOT EXISTS automation_attempts (
     PRIMARY KEY (automation_id, due_at)
 );
 """
+
+#: Columns added after the first shipped schema. Applied by probe on every
+#: connect so a database written by the previous build keeps working.
+_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+    ("automations", "consecutive_failures", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+
+def run_timeout_seconds() -> float:
+    """Ceiling on one automation run (``AUTOMATION_RUN_TIMEOUT_SECONDS``)."""
+    raw = os.environ.get("AUTOMATION_RUN_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return float(DEFAULT_RUN_TIMEOUT_SECONDS)
+    value = float(raw)
+    if value <= 0:
+        raise ValueError("AUTOMATION_RUN_TIMEOUT_SECONDS must be positive")
+    return value
+
+
+class AutomationRunTimeout(Exception):
+    """The run outlived ``run_timeout_seconds()`` and was cancelled."""
+
+
+def cron_min_gap_seconds(expr: str) -> int:
+    """Smallest gap, in seconds, between two minutes this cron expression fires.
+
+    Walks one week of minute buckets, which is enough to see every
+    minute/hour/day-of-month/month/day-of-week interaction the parser supports,
+    and measures the smallest distance between consecutive matches INCLUDING
+    the wrap from the last match back to the first. A single match in the whole
+    week has no gap to measure and is reported as a week.
+
+    The schedules lane imports this after merge -- keep the signature stable.
+    """
+    from tinyassets.scheduler import CronSchedule
+
+    schedule = CronSchedule.parse(expr)
+    week_minutes = 7 * 24 * 60
+    # A Monday 00:00 origin, so every day-of-week is visited exactly once.
+    origin = datetime(2026, 1, 5, tzinfo=timezone.utc)
+    matches = [
+        minute
+        for minute in range(week_minutes)
+        if schedule.matches((origin + timedelta(minutes=minute)).timetuple())
+    ]
+    if len(matches) < 2:
+        return week_minutes * 60
+    gaps = [
+        (later - earlier) * 60
+        for earlier, later in zip(matches, matches[1:])
+    ]
+    gaps.append((matches[0] + week_minutes - matches[-1]) * 60)
+    return min(gaps)
 
 
 class AutomationUnavailable(Exception):
@@ -148,6 +234,7 @@ class Automation:
     last_run_id: str
     last_reason: str
     last_finished_at: str
+    consecutive_failures: int = 0
 
 
 # -- Time helpers -------------------------------------------------------------
@@ -212,6 +299,7 @@ def _from_row(row: sqlite3.Row) -> Automation:
         last_run_id=str(row["last_run_id"] or ""),
         last_reason=str(row["last_reason"] or ""),
         last_finished_at=str(row["last_finished_at"] or ""),
+        consecutive_failures=int(row["consecutive_failures"] or 0),
     )
 
 
@@ -241,6 +329,12 @@ class AutomationStore:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA busy_timeout = 30000")
         conn.executescript(_SCHEMA)
+        for table, column, decl in _MIGRATIONS:
+            existing = {
+                str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")
+            }
+            if column not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
         return conn
 
     def get(self, automation_id: str) -> Automation | None:
@@ -359,12 +453,23 @@ class AutomationStore:
         status: str,
         reason: str,
         now: datetime,
+        row_reason: str | None = None,
+        succeeded: bool | None = None,
     ) -> None:
         """Close the attempt and roll its outcome onto the automation row.
 
         Both writes share one transaction: an attempt whose outcome never
         reached its automation would recompute the same ``due_at`` forever,
         claim it, and skip -- an automation stuck silent with no reason.
+
+        ``row_reason`` lets the owner-facing row differ from the refusal-ledger
+        text: the ledger keeps the consumer's ``ok:ran:<run_id>`` convention
+        while the row reads a plain ``ok`` (Codex ADAPT §6 -- a success written
+        only into a table named "refusals" is not an owner-legible receipt).
+
+        ``succeeded`` drives the consecutive-failure counter: True resets it,
+        False increments it, None leaves it (a skip that never ran, such as a
+        rate-limited attempt, is neither a success nor a failure of the work).
         """
         stamp = _iso(now)
         conn = self._connect(create=True)
@@ -379,11 +484,26 @@ class AutomationStore:
                     "WHERE automation_id = ? AND due_at = ?",
                     (run_id, status, reason, stamp, automation_id, due_at),
                 )
+                if succeeded is True:
+                    failures_sql = "consecutive_failures = 0, "
+                elif succeeded is False:
+                    failures_sql = (
+                        "consecutive_failures = consecutive_failures + 1, "
+                    )
+                else:
+                    failures_sql = ""
                 conn.execute(
                     "UPDATE automations SET last_due_at = ?, last_run_id = ?, "
-                    "last_reason = ?, last_finished_at = ?, updated_at = ? "
-                    "WHERE automation_id = ?",
-                    (due_at, run_id, reason, stamp, stamp, automation_id),
+                    f"last_reason = ?, last_finished_at = ?, {failures_sql}"
+                    "updated_at = ? WHERE automation_id = ?",
+                    (
+                        due_at,
+                        run_id,
+                        reason if row_reason is None else row_reason,
+                        stamp,
+                        stamp,
+                        automation_id,
+                    ),
                 )
                 conn.execute("COMMIT")
             except BaseException:
@@ -391,6 +511,114 @@ class AutomationStore:
                 raise
         finally:
             conn.close()
+
+    # -- Cross-process per-universe lease ----------------------------------
+
+    def acquire_universe_lease(
+        self,
+        universe_id: str,
+        *,
+        holder: str,
+        now: datetime,
+        ttl_seconds: float,
+    ) -> bool:
+        """Take the universe's automation lease, or report who already holds it.
+
+        `_active[universe_id]` in the consumer is process-local: a restarted
+        process starts with an EMPTY map and would happily launch an automation
+        for a universe the old process is still working (Codex ADAPT §8). This
+        lease is shared state, so both processes see it.
+
+        An EXPIRED lease is stealable -- a process that died mid-run must not
+        wedge its universe forever. TTL is the run timeout, and the holder
+        re-stamps it while it works, so expiry means "nobody is refreshing".
+        """
+        deadline = _iso(now + timedelta(seconds=ttl_seconds))
+        moment = _as_utc(now)
+        conn = self._connect(create=True)
+        if conn is None:  # pragma: no cover - create=True always connects
+            raise RuntimeError("automation store connection is unavailable")
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT holder, expires_at FROM universe_leases "
+                    "WHERE universe_id = ?",
+                    (universe_id,),
+                ).fetchone()
+                if row is not None and str(row["holder"]) != holder:
+                    expires = _parse(str(row["expires_at"]))
+                    if expires is not None and expires > moment:
+                        conn.execute("ROLLBACK")
+                        return False
+                conn.execute(
+                    "INSERT INTO universe_leases (universe_id, holder, expires_at) "
+                    "VALUES (?, ?, ?) ON CONFLICT(universe_id) DO UPDATE SET "
+                    "holder = excluded.holder, expires_at = excluded.expires_at",
+                    (universe_id, holder, deadline),
+                )
+                conn.execute("COMMIT")
+                return True
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+        finally:
+            conn.close()
+
+    def refresh_universe_lease(
+        self,
+        universe_id: str,
+        *,
+        holder: str,
+        now: datetime,
+        ttl_seconds: float,
+    ) -> bool:
+        """Re-stamp a lease this holder still owns. False once it has been lost."""
+        deadline = _iso(now + timedelta(seconds=ttl_seconds))
+        conn = self._connect(create=True)
+        if conn is None:  # pragma: no cover
+            raise RuntimeError("automation store connection is unavailable")
+        try:
+            cursor = conn.execute(
+                "UPDATE universe_leases SET expires_at = ? "
+                "WHERE universe_id = ? AND holder = ?",
+                (deadline, universe_id, holder),
+            )
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def release_universe_lease(self, universe_id: str, *, holder: str) -> None:
+        """Drop a lease this holder owns. Never steals another holder's row."""
+        conn = self._connect(create=False)
+        if conn is None:
+            return
+        try:
+            conn.execute(
+                "DELETE FROM universe_leases WHERE universe_id = ? AND holder = ?",
+                (universe_id, holder),
+            )
+        finally:
+            conn.close()
+
+    def universe_lease_holder(self, universe_id: str, *, now: datetime) -> str:
+        """The live holder of this universe's lease, or '' if unheld/expired."""
+        conn = self._connect(create=False)
+        if conn is None:
+            return ""
+        try:
+            row = conn.execute(
+                "SELECT holder, expires_at FROM universe_leases WHERE universe_id = ?",
+                (universe_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return ""
+        expires = _parse(str(row["expires_at"]))
+        if expires is None or expires <= _as_utc(now):
+            return ""
+        return str(row["holder"])
 
     def set_desired_state(
         self,
@@ -535,6 +763,13 @@ def _validated_trigger(interval_seconds: Any, cron_expr: Any) -> tuple[str, int,
         CronSchedule.parse(expr)
     except CronParseError as exc:
         raise AutomationUnavailable("trigger_invalid") from exc
+    # The interval floor was meaningless while cron could express `* * * * *`:
+    # 20 rows x 60/hour is 1,200 launches against a foreground budget of 20
+    # (Codex ADAPT §7). The floor is on the SMALLEST gap the expression can
+    # produce, including the wrap past the end of its cycle -- `0,3 * * * *`
+    # looks hourly until you notice the three-minute gap inside each hour.
+    if cron_min_gap_seconds(expr) < MIN_CRON_GAP_SECONDS:
+        raise AutomationUnavailable("trigger_invalid")
     return TRIGGER_CRON, 0, expr
 
 
@@ -559,6 +794,7 @@ def register_automation(
     from tinyassets.api.branches import _resolve_readable_branch
     from tinyassets.daemon_server import get_founder_home, universe_access_permission
     from tinyassets.provider_assignment import load_provider_assignment
+    from tinyassets.provider_serving_binding import _is_open_provider
     from tinyassets.runtime.assigned_queue_consumer import (
         assigned_queue_consumer_enabled,
     )
@@ -578,9 +814,23 @@ def register_automation(
     assignment = load_provider_assignment(base, universe_id=uid)
     if assignment is None or assignment.state != "ready":
         raise AutomationUnavailable("no_serving_assignment")
+    # A "ready" OPEN (api_key_http) assignment is still unusable here: foreground
+    # admission refuses open providers outright (foreground_run_provider.py:247).
+    # Registration must refuse exactly what admission refuses, or the row is
+    # stored and fails every period forever (Codex ADAPT §6).
+    if _is_open_provider(str(assignment.provider or "")):
+        raise AutomationUnavailable("no_serving_assignment")
     resolved = _resolve_readable_branch(str(branch_def_id or "").strip(), str(base))
     if resolved is None:
         raise AutomationUnavailable("branch_not_readable")
+    # READABLE is not RUNNABLE. `_resolve_readable_branch` admits any public
+    # branch, but foreground admission requires `branch.author == principal`
+    # (foreground_run_provider.py:211-213). Codex registered a public
+    # Bob-authored branch for Alice and every run then failed before reaching a
+    # provider, leaving the automation active -- an endless cadence-driven
+    # failure loop. Refuse it where the owner can read the reason.
+    if str(resolved[1].get("author") or "").strip() != owner:
+        raise AutomationUnavailable("branch_not_owned")
     trigger_kind, seconds, expr = _validated_trigger(interval_seconds, cron_expr)
 
     store = AutomationStore(base)
@@ -739,6 +989,61 @@ def _load_branch(base_path: Path, automation: Automation) -> Any:
     return branch
 
 
+#: Text the graph records when a run died because the owner's authority went
+#: away mid-run. Matched by `_failure_pause_reason` to pause rather than retry.
+AUTHORITY_LOST_MARKER = "automation_owner_lost_admin"
+
+
+def _authority_guard(base_path: Path, automation: Automation):
+    """A per-node re-check of the owner's live authority (Codex ADAPT §5).
+
+    Codex's repro: revoke the owner's admin AFTER `_runtime_authority_reason`
+    returns and BEFORE the launch, and the run still reaches the provider once.
+    The window is real because the foreground session re-checks founder home
+    and branch authorship on every attempt but NOT the admin ACL
+    (foreground_run_provider.py:114-145, 206-246).
+
+    This closes it from the caller's side, without editing that authority
+    module. The compiler emits ``phase="starting"`` BEFORE a prompt node's
+    provider call (graph_compiler.py:1187-1199), which reaches this callback via
+    `runs._emit_node_status`.
+
+    It must raise a CANCEL-shaped exception, and that is not a stylistic choice.
+    The compiler wraps the seam in ``except Exception`` and re-raises only what
+    `_is_cancel_exception` matches -- a NAME match on ``RunCancelledError``
+    (graph_compiler.py:296-304). A `RunExecutionAuthorityLost` raised here is
+    logged and SWALLOWED, and the provider is then called anyway: measured, one
+    real provider call still reached the fake in Codex's repro. So the guard
+    raises the runner's own cancel error, the graph unwinds before the call, and
+    `run_due_automation` re-reads live authority when the run comes back
+    non-completed.
+
+    Two shapes were considered and rejected, both for evidence rather than
+    taste:
+      * Wrapping the BOUND provider_call: `_locate_session` requires the session
+        at chain depth exactly 1, so any outer wrapper makes
+        `prepare_foreground_run_provider` raise and every run fail
+        (foreground_run_provider.py:666-676, 730-742).
+      * Wrapping the INNER `call_provider` handed to the session: the session
+        routes any callable whose `__module__` is not
+        `tinyassets.providers.call` down its unarmed STUB path, skipping
+        `_ensure_admitted()` and `_authorize_attempt` entirely
+        (foreground_run_provider.py:537-557). That would have silently disabled
+        foreground admission for every automation -- a far worse hole than the
+        one being closed.
+    """
+    from tinyassets.runs import NODE_STATUS_RUNNING, RunCancelledError
+
+    def guard(node_id: str, status: str) -> None:
+        if status != NODE_STATUS_RUNNING:
+            return
+        lost = _runtime_authority_reason(base_path, automation)
+        if lost:
+            raise RunCancelledError(f"{AUTHORITY_LOST_MARKER}:{lost}")
+
+    return guard
+
+
 def _execute(
     base_path: Path,
     automation: Automation,
@@ -761,10 +1066,20 @@ def _execute(
     does, then block this consumer thread until the run is terminal so the
     attempt records the outcome rather than "queued", and the universe's one
     active slot stays held for as long as its automation is really running.
+
+    The wait is bounded by ``run_timeout_seconds()``. On expiry the run is
+    CANCELLED through the runs API rather than abandoned, so the worker and its
+    provider authority claim unwind instead of leaking (Codex ADAPT §1).
     """
     from dataclasses import replace as _replace
 
-    from tinyassets.runs import RUN_STATUS_FAILED, execute_branch_async, get_run, wait_for
+    from tinyassets.runs import (
+        RUN_STATUS_FAILED,
+        execute_branch_async,
+        get_run,
+        request_cancel,
+        wait_for,
+    )
 
     outcome = execute_branch_async(
         base_path,
@@ -773,15 +1088,20 @@ def _execute(
         run_name=f"automation:{automation.automation_id[:8]}",
         actor=f"universe:{automation.universe_id}",
         provider_call=provider_call,
+        on_node_status=_authority_guard(base_path, automation),
         _enqueue_universe_id=automation.universe_id,
     )
     run_id = str(getattr(outcome, "run_id", "") or "")
     if not run_id or outcome.status == RUN_STATUS_FAILED:
         # Admission already refused this run; there is no worker to wait on.
         return outcome
-    # No wall-clock cap: a run stops when it is finished or genuinely fails,
-    # and the graph owns its own per-node timeouts.
-    wait_for(run_id)
+    try:
+        wait_for(run_id, timeout=run_timeout_seconds())
+    except TimeoutError as exc:
+        request_cancel(base_path, run_id)
+        raise AutomationRunTimeout(
+            f"automation run {run_id} exceeded {run_timeout_seconds()}s; cancelled"
+        ) from exc
     record = get_run(base_path, run_id) or {}
     return _replace(
         outcome,
@@ -832,6 +1152,27 @@ def _append_run_ledger(automation: Automation, run_id: str, due_at: str) -> None
         logger.warning("automation run ledger write failed: %s", exc)
 
 
+#: Error text that means the run never got past admission, so retrying it next
+#: period would fail identically. Pausing beats looping (Codex ADAPT §6).
+_ADMISSION_REFUSED_MARKERS = (
+    "ProviderAuthorityHeldError",
+    "PermissionError",
+    "Provider authority admission failed",
+    "provider authority",
+)
+
+
+def _failure_pause_reason(error_text: str) -> str:
+    """Why a failed run should pause the automation, or '' to retry next period."""
+    text = error_text or ""
+    if AUTHORITY_LOST_MARKER in text:
+        return "owner_lost_admin"
+    lowered = text.lower()
+    if any(marker.lower() in lowered for marker in _ADMISSION_REFUSED_MARKERS):
+        return "run_admission_refused"
+    return ""
+
+
 def run_due_automation(
     base_path: str | Path,
     automation: Automation,
@@ -839,11 +1180,16 @@ def run_due_automation(
     *,
     now: datetime | None = None,
     consumer_id: str = "",
+    on_run_started: Any = None,
 ) -> str:
     """Run one due automation and return the reason recorded for it.
 
     Never raises: the caller is a pump across every universe, and one owner's
-    broken automation must not stop another owner's working one.
+    broken automation must not stop another owner's working one. Every exit
+    records a reason -- there is no silent return (Codex ADAPT §6).
+
+    ``on_run_started`` receives the run id as soon as one exists, so the
+    consumer can cancel an in-flight automation on shutdown.
     """
     # _error_reason is the consumer's bounded, path/secret-stripped formatter.
     # Imported rather than duplicated so both halves of the pump sanitise
@@ -854,9 +1200,25 @@ def run_due_automation(
     moment = _as_utc(now or datetime.now(timezone.utc))
     store = AutomationStore(base)
 
-    if not store.claim_attempt(automation.automation_id, due_at, now=moment):
-        # Another poller, or this daemon before its restart, owns this instant.
+    # The claim is INSIDE the guarded region: a SQLite failure here used to
+    # escape with no attempt row and no refusal, so the owner saw nothing at all.
+    try:
+        claimed = store.claim_attempt(automation.automation_id, due_at, now=moment)
+    except Exception as exc:  # noqa: BLE001 - a fence failure is still an outcome
+        reason = _error_reason("claim_error", exc)
+        logger.exception(
+            "automation claim failed automation=%s due_at=%s",
+            automation.automation_id,
+            due_at,
+        )
+        _record_refusal(base, automation, reason, moment, consumer_id)
+        return reason
+    if not claimed:
+        # Only reachable when a restart re-derives an instant an older process
+        # already owns. Rare, and previously invisible -- record it.
+        _record_refusal(base, automation, "attempt_exists", moment, consumer_id)
         return "attempt_exists"
+
     try:
         blocked = _runtime_authority_reason(base, automation)
         if blocked:
@@ -876,6 +1238,24 @@ def run_due_automation(
             _record_refusal(base, automation, blocked, moment, consumer_id)
             return blocked
 
+        # The same rolling 20/hour engine budget a foreground `run_graph` pays
+        # (Codex ADAPT §7). Counted against THIS universe, so one owner's
+        # cadence cannot exhaust another's. A refusal is NOT a pause: the
+        # budget refills, so the next period simply tries again.
+        from tinyassets.engine_mcp_server import _engine_run_admit
+
+        if not _engine_run_admit(universe_id=automation.universe_id):
+            store.finish_attempt(
+                automation.automation_id,
+                due_at,
+                run_id="",
+                status="refused",
+                reason="run_rate_limited",
+                now=moment,
+            )
+            _record_refusal(base, automation, "run_rate_limited", moment, consumer_id)
+            return "run_rate_limited"
+
         branch = _load_branch(base, automation)
         provider_call = _bind_automation_provider_call(base, automation)
         outcome = _execute(
@@ -885,11 +1265,10 @@ def run_due_automation(
 
         run_id = str(getattr(outcome, "run_id", "") or "")
         status = str(getattr(outcome, "status", "") or "unknown")
-        reason = (
-            f"ok:ran:{run_id}"
-            if status == RUN_STATUS_COMPLETED
-            else f"run_failed:{status}"
-        )
+        if callable(on_run_started) and run_id:
+            on_run_started(run_id)
+        succeeded = status == RUN_STATUS_COMPLETED
+        reason = f"ok:ran:{run_id}" if succeeded else f"run_failed:{status}"
         store.finish_attempt(
             automation.automation_id,
             due_at,
@@ -897,9 +1276,34 @@ def run_due_automation(
             status=status,
             reason=reason,
             now=moment,
+            # The ledger keeps the consumer's `ok:ran:<id>` convention; the ROW
+            # reads a plain `ok`, so an owner surface reads success from the
+            # automation rather than from a table called "refusals".
+            row_reason="ok" if succeeded else reason,
+            succeeded=succeeded,
         )
         _record_refusal(base, automation, reason, moment, consumer_id)
         _append_run_ledger(automation, run_id, due_at)
+        if not succeeded:
+            _pause_if_hopeless(
+                base,
+                store,
+                automation,
+                str(getattr(outcome, "error", "") or ""),
+                moment,
+                consumer_id,
+            )
+        return reason
+    except AutomationRunTimeout as exc:
+        # The fence row STAYS: this instant was attempted and must not be
+        # re-launched by the next poll. The run itself has been cancelled.
+        reason = "run_timeout"
+        logger.warning("automation run timed out: %s", exc)
+        _close_attempt_quietly(
+            store, automation, due_at, status="timeout", reason=reason, now=moment
+        )
+        _record_refusal(base, automation, reason, moment, consumer_id)
+        _pause_if_hopeless(base, store, automation, "", moment, consumer_id)
         return reason
     except Exception as exc:  # noqa: BLE001 - the pump continues; the row says why
         reason = _error_reason("automation_error", exc)
@@ -908,33 +1312,94 @@ def run_due_automation(
             automation.automation_id,
             due_at,
         )
-        try:
-            store.finish_attempt(
-                automation.automation_id,
-                due_at,
-                run_id="",
-                status="error",
-                reason=reason,
-                now=moment,
-            )
-        except Exception:  # noqa: BLE001 - the refusal below is still owed
-            logger.exception(
-                "automation attempt close failed automation=%s",
-                automation.automation_id,
-            )
+        _close_attempt_quietly(
+            store, automation, due_at, status="error", reason=reason, now=moment
+        )
         _record_refusal(base, automation, reason, moment, consumer_id)
+        _pause_if_hopeless(base, store, automation, str(exc), moment, consumer_id)
         return reason
 
 
+def _close_attempt_quietly(
+    store: AutomationStore,
+    automation: Automation,
+    due_at: str,
+    *,
+    status: str,
+    reason: str,
+    now: datetime,
+) -> None:
+    try:
+        store.finish_attempt(
+            automation.automation_id,
+            due_at,
+            run_id="",
+            status=status,
+            reason=reason,
+            now=now,
+            succeeded=False,
+        )
+    except Exception:  # noqa: BLE001 - the refusal record is still owed
+        logger.exception(
+            "automation attempt close failed automation=%s",
+            automation.automation_id,
+        )
+
+
+def _pause_if_hopeless(
+    base_path: Path,
+    store: AutomationStore,
+    automation: Automation,
+    error_text: str,
+    now: datetime,
+    consumer_id: str,
+) -> None:
+    """Stop a cadence that cannot succeed, instead of paying for it hourly.
+
+    Three triggers, in order. Live authority loss wins: whatever ended the run,
+    an owner who no longer holds admin over their own home must not be retried
+    next period -- and the per-node guard cancels the run rather than failing
+    it, so the reason is not in the error text to read. Then a deterministic
+    admission/authority failure, which pauses on the first occurrence because
+    the next period fails identically. Everything else gets
+    `MAX_CONSECUTIVE_FAILURES` tries, because a transient provider or network
+    failure should not retire an owner's automation.
+    """
+    reason = _runtime_authority_reason(base_path, automation)
+    if not reason:
+        reason = _failure_pause_reason(error_text)
+    if not reason:
+        current = store.get(automation.automation_id)
+        failures = 0 if current is None else current.consecutive_failures
+        if failures < MAX_CONSECUTIVE_FAILURES:
+            return
+        reason = "repeated_failures"
+    try:
+        store.pause_for_reason(automation.automation_id, reason=reason, now=now)
+    except Exception:  # noqa: BLE001 - the run outcome is already recorded
+        logger.exception(
+            "automation auto-pause failed automation=%s", automation.automation_id
+        )
+        return
+    _record_refusal(base_path, automation, reason, now, consumer_id)
+
+
 __all__ = [
+    "DEFAULT_RUN_TIMEOUT_SECONDS",
+    "LEASE_REFRESH_SECONDS",
     "MAX_ACTIVE_PER_UNIVERSE",
+    "MAX_CONSECUTIVE_FAILURES",
+    "MIN_CRON_GAP_SECONDS",
     "MIN_INTERVAL_SECONDS",
     "REFUSAL_KEY_PREFIX",
     "Automation",
+    "AutomationRunTimeout",
     "AutomationStore",
     "AutomationUnavailable",
     "automations_db_path",
+    "cron_min_gap_seconds",
     "due_automations",
     "register_automation",
     "run_due_automation",
+    "run_timeout_seconds",
 ]

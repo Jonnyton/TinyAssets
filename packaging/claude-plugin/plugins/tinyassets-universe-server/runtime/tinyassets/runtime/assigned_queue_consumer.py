@@ -190,6 +190,7 @@ class AssignedQueueConsumer:
         self._lock = threading.Lock()
         self._active: dict[str, Future[Any]] = {}
         self._runtimes: dict[tuple[str, str, str], dict[str, Any]] = {}
+        self._automation_runs: set[str] = set()
         self._recorded: dict[str, tuple[str, float]] = {}
 
     def start(self) -> None:
@@ -222,9 +223,28 @@ class AssignedQueueConsumer:
 
     def stop(self, timeout: float = 5.0) -> None:
         self._stop.set()
+        # Cancel in-flight automation runs BEFORE tearing the executor down.
+        # `shutdown(cancel_futures=True)` cancels only futures that have not
+        # STARTED; an automation blocked in `wait_for` keeps its worker and its
+        # provider authority claim (Codex ADAPT 2026-08-29 §1). The runs cancel
+        # flag is cooperative and is checked between nodes, so the graph unwinds
+        # and the foreground session releases its claim.
+        self._cancel_automation_runs()
         if self._thread is not None:
             self._thread.join(timeout=max(0.0, timeout))
         self._executor.shutdown(wait=False, cancel_futures=True)
+
+    def _cancel_automation_runs(self) -> None:
+        from tinyassets.runs import request_cancel
+
+        with self._lock:
+            run_ids = sorted(self._automation_runs)
+            self._automation_runs.clear()
+        for run_id in run_ids:
+            try:
+                request_cancel(self.base_path, run_id)
+            except Exception:  # noqa: BLE001 - shutdown must not raise
+                logger.exception("automation run cancel failed run=%s", run_id)
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -429,23 +449,120 @@ class AssignedQueueConsumer:
         universe_id: str,
         due: list[tuple[Any, str]],
     ) -> None:
-        """Run one universe's due automations sequentially on the executor thread."""
-        from tinyassets.automations import run_due_automation
+        """Run one universe's due automations sequentially on the executor thread.
 
-        for automation, due_at in due:
+        Fenced by a DATABASE lease, not by `self._active`. That map is
+        process-local: a restarted daemon starts with an empty one and would
+        launch an automation for a universe the previous process is still
+        working (Codex ADAPT 2026-08-29 §8). The lease is shared state, so both
+        processes see it, and it is refreshed while the run is in flight so a
+        dead holder's lease expires instead of wedging the universe forever.
+        """
+        from datetime import datetime as _dt
+
+        from tinyassets.automations import (
+            AutomationStore,
+            run_due_automation,
+            run_timeout_seconds,
+        )
+        from tinyassets.storage.assigned_queue_refusals import (
+            AssignedQueueRefusalStore,
+        )
+
+        store = AutomationStore(self.base_path)
+        refusal_store = AssignedQueueRefusalStore(self.base_path)
+        ttl = run_timeout_seconds()
+        if not store.acquire_universe_lease(
+            universe_id,
+            holder=self.consumer_id,
+            now=_dt.now(timezone.utc),
+            ttl_seconds=ttl,
+        ):
+            holder = store.universe_lease_holder(
+                universe_id, now=_dt.now(timezone.utc)
+            )
+            self._record_reason(
+                refusal_store,
+                f"universe:{universe_id}:automations",
+                universe_id,
+                f"universe_busy:{holder or 'unknown'}",
+            )
+            return
+        stop_refresh = threading.Event()
+        refresher = threading.Thread(
+            target=self._refresh_lease,
+            args=(store, universe_id, ttl, stop_refresh),
+            name=f"automation-lease-{universe_id}",
+            daemon=True,
+        )
+        refresher.start()
+        try:
+            for automation, due_at in due:
+                # Re-read `.pause` BETWEEN rows: an owner who pauses mid-batch
+                # expects the batch to stop, not to finish the queue first.
+                if self._paused(universe_id):
+                    self._record_reason(
+                        refusal_store,
+                        f"universe:{universe_id}:automations",
+                        universe_id,
+                        "paused",
+                    )
+                    break
+                try:
+                    run_due_automation(
+                        self.base_path,
+                        automation,
+                        due_at,
+                        consumer_id=self.consumer_id,
+                        on_run_started=self._note_automation_run,
+                    )
+                except Exception:  # noqa: BLE001 - the next automation is owed a try
+                    logger.exception(
+                        "automation run raised universe=%s automation=%s",
+                        universe_id,
+                        getattr(automation, "automation_id", ""),
+                    )
+        finally:
+            stop_refresh.set()
+            refresher.join(timeout=5.0)
             try:
-                run_due_automation(
-                    self.base_path,
-                    automation,
-                    due_at,
-                    consumer_id=self.consumer_id,
+                store.release_universe_lease(
+                    universe_id, holder=self.consumer_id
                 )
-            except Exception:  # noqa: BLE001 - the next automation is still owed a try
+            except Exception:  # noqa: BLE001 - an unreleased lease expires on its own
                 logger.exception(
-                    "automation run raised universe=%s automation=%s",
-                    universe_id,
-                    getattr(automation, "automation_id", ""),
+                    "automation lease release failed universe=%s", universe_id
                 )
+
+    def _refresh_lease(
+        self,
+        store: Any,
+        universe_id: str,
+        ttl: float,
+        stop_refresh: threading.Event,
+    ) -> None:
+        """Re-stamp the universe lease while its batch is in flight."""
+        from datetime import datetime as _dt
+
+        from tinyassets.automations import LEASE_REFRESH_SECONDS
+
+        while not stop_refresh.wait(LEASE_REFRESH_SECONDS):
+            try:
+                store.refresh_universe_lease(
+                    universe_id,
+                    holder=self.consumer_id,
+                    now=_dt.now(timezone.utc),
+                    ttl_seconds=ttl,
+                )
+            except Exception:  # noqa: BLE001 - a missed beat re-stamps next round
+                logger.exception(
+                    "automation lease refresh failed universe=%s", universe_id
+                )
+
+    def _note_automation_run(self, run_id: str) -> None:
+        """Remember an in-flight automation run so `stop()` can cancel it."""
+        with self._lock:
+            self._automation_runs.add(run_id)
 
     def _paused(self, universe_id: str) -> bool:
         return (self.base_path / universe_id / ".pause").exists()
