@@ -131,8 +131,8 @@ def test_the_default_fits_the_box_it_runs_on(monkeypatch):
     # verified-overlap points, (874-403)/(25-13) = 39 MB — not the 786/25 = 31 MB
     # AVERAGE I first mistook it for. The average understates, because the observed
     # per-process cost ROSE with concurrency rather than falling.
-    MEASURED_AVAILABLE_MB = 1189
-    MARGINAL_MB_PER_PROCESS = 39
+    MEASURED_AVAILABLE_MB = 6907  # 4 vCPU / 8 GB box, measured 2026-08-29
+    MARGINAL_MB_PER_PROCESS = 30  # flat across 5 points: 13.2, 30.1, 28.1, 21.8
     REAL_TURN_MULTIPLIER = 3  # `--version` loads no prompt, no history, no MCP child
 
     # "Fits" is not "safe". Merely staying under the available figure admitted a limit

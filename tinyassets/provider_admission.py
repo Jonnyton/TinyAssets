@@ -40,39 +40,39 @@ from contextlib import asynccontextmanager, contextmanager
 
 _log = logging.getLogger(__name__)
 
-#: Concurrent provider subprocesses permitted. **Stays at 6 until a real turn's
-#: high-water is measured**, and the story of why is worth keeping.
+#: Concurrent provider subprocesses permitted. Raised to 25 on the 4 vCPU / 8 GB box.
 #:
-#: I first derived 6 from "~77 MB PSS each", taken from four concurrent processes and
-#: extrapolated linearly. Suspecting that was too conservative, I re-measured with
-#: verified overlap and proposed raising it to 10. Cross-family review refuted that too,
-#: and my arithmetic was the problem:
+#: Sized from FIVE measured points with verified overlap (live PID counts, not launch
+#: counts), because my two previous attempts at this number were both wrong and the
+#: second one was wrong because two points cannot show a trend:
 #:
-#:     verified overlap 13 -> MemAvailable 874 MB
-#:     verified overlap 25 -> MemAvailable 403 MB
+#:     overlap  5 ->  182 MB used
+#:     overlap  9 ->  235 MB
+#:     overlap 17 ->  476 MB
+#:     overlap 25 ->  701 MB
+#:     overlap 33 ->  875 MB   (MemAvailable still 6032 MB of 6907 baseline)
 #:
-#:   * I called 786/25 = 31 MB the "marginal" cost. It is the AVERAGE. The marginal
-#:     slope between the two points is (874-403)/(25-13) = **39 MB**.
-#:   * Per-process cost therefore ROSE with concurrency (24 MB/process at 13, 39 MB
-#:     marginal from 13 to 25). My claim that page sharing improves with concurrency was
-#:     the opposite of what my own two points said. I fitted a story to two data points
-#:     and got the sign wrong.
-#:   * My headroom check used 2048 MB total, but the probe's real baseline was 1189 MB
-#:     AVAILABLE. The missing 859 MB is roughly 390 MB of daemon plus ~469 MB of kernel,
-#:     Docker, tunnel and other services — none of it spendable. Against the right
-#:     baseline, 10 x 39 x 3 leaves about 19 MB (12 MB on the unrounded 39.25 slope).
-#:     Either way it is not headroom.
+#: Marginal cost between CONSECUTIVE points: 13.2, 30.1, 28.1, 21.8 MB. So it is roughly
+#: flat at ~30 MB rather than rising — which is what my earlier "sharing gets worse"
+#: reading of two points got wrong in the other direction.
 #:
-#: And `--version` is not the production process tree: a real turn runs `claude -p` with
-#: a system prompt, streaming state and tool policy, and when engine MCP is enabled it
-#: starts a SECOND Python/FastMCP process. So the floor I measured is not one process.
+#: 25 concurrent at the measured 30 MB marginal is ~750 MB. The measurement is a FLOOR
+#: (`--version` loads no prompt, no history, no tool policy, and no engine-MCP child), so
+#: the arithmetic below is carried at a 3x real-turn multiplier — and it survives far
+#: worse assumptions than that:
 #:
-#: The honest position: 6 is not proven optimal, it is proven not-yet-refuted. The number
-#: moves when `get_status.provider_admission` has real turns in it — `refused` rising
-#: while `peak_concurrent` sits at the limit is the evidence that would justify raising
-#: it, and nothing else should.
+#:     3x  -> 25 * 90 MB  = 2250 MB, leaving ~4650 MB
+#:     5x  -> 25 * 150 MB = 3750 MB, leaving ~3150 MB
+#:     10x -> 25 * 300 MB = 7500 MB — the first multiplier that does NOT fit
+#:
+#: That is the real justification: 25 holds unless a real turn costs nearly ten times its
+#: floor. On the old 2 GB box the same arithmetic gave 6, and every attempt to argue it
+#: higher there was refuted.
+#:
+#: Still not a throughput claim. `get_status.provider_admission` reports `refused` and
+#: `peak_concurrent`; those, not this comment, are what should move the number next.
 _LIMIT_VAR = "TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS"
-_DEFAULT_LIMIT = 6
+_DEFAULT_LIMIT = 25
 
 #: How long a caller waits for a slot before being told no. Long enough to ride out a
 #: brief burst, short enough that a queued user gets an answer rather than a hang.
