@@ -2680,6 +2680,8 @@ def _invoke_graph(
     _eff_universe_hint = ""
     if enqueue_context is not None and getattr(enqueue_context, "universe_id", ""):
         _eff_universe_hint = str(enqueue_context.universe_id).strip()
+    # Empty unless a declared effect failed; see _external_write_error_summary.
+    effect_error = ""
     external_write_evidence = _run_external_write_effectors(
         branch,
         output,
@@ -2697,6 +2699,11 @@ def _invoke_graph(
         errors = _collect_external_write_errors(external_write_evidence)
         if errors:
             output["external_write_errors"] = errors
+            # Hard Rule 8. The failure was already collected here and then
+            # thrown away by an unconditional error="" below, so the caller
+            # that launched the run - usually the universe itself - was told
+            # it succeeded.
+            effect_error = _external_write_error_summary(errors)
 
     update_run_status(
         base_path, run_id,
@@ -2705,10 +2712,11 @@ def _invoke_graph(
         finished_at=_now(),
         provider_used=provider_tracker["last"],
         model=provider_tracker["model"],
+        error=effect_error,
     )
     return RunOutcome(
         run_id=run_id, status=RUN_STATUS_COMPLETED,
-        output=output, error="",
+        output=output, error=effect_error,
     )
 
 
@@ -2824,6 +2832,33 @@ def _run_external_write_effectors(
     except Exception:  # pragma: no cover — effectors are no-raise
         logger.exception("external-write effector dispatch crashed")
         return {}
+
+
+def _external_write_error_summary(errors: list[dict[str, Any]]) -> str:
+    """One line naming what failed, for the run's ``error`` field.
+
+    A run's ``error`` is what every observer reads first - the agent that
+    launched it included. Leaving it empty while the failure sits in
+    ``output["external_write_errors"]`` is why a universe could launch a
+    PR-opening run, be told ``completed`` with no error, and have nothing
+    whatsoever happen: its node declared ``github_pull_request``, a sink that is
+    not in the registry, so the dispatcher recorded ``unknown effect sink`` and
+    the run reported success anyway (observed live 2026-08-29, run
+    cf350418157949cd).
+
+    Deliberately does NOT change the run's STATUS. The graph really did run, and
+    flipping completed->failed changes a contract other callers may depend on;
+    that is a bigger call than this fix. Naming the failure in ``error`` is the
+    smallest change that stops the silence, and it is the field the agent reads.
+    """
+    parts = []
+    for row in errors[:5]:
+        node = row.get("node_id") or "?"
+        sink = row.get("sink") or "?"
+        detail = row.get("error") or row.get("error_kind") or "failed"
+        parts.append(f"{node}/{sink}: {detail}")
+    more = "" if len(errors) <= 5 else f" (+{len(errors) - 5} more)"
+    return "external write failed - " + "; ".join(parts) + more
 
 
 def _collect_external_write_errors(
@@ -3813,6 +3848,8 @@ def _invoke_graph_resume(
     # completion so a re-run that finishes via resume_run still emits
     # declared PR sinks. Same no-raise contract as the primary path.
     _quarantine_branch_authored_external_write_keys(output)
+    # Empty unless a declared effect failed; see _external_write_error_summary.
+    effect_error = ""
     external_write_evidence = _run_external_write_effectors(
         branch,
         output,
@@ -3827,6 +3864,7 @@ def _invoke_graph_resume(
         errors = _collect_external_write_errors(external_write_evidence)
         if errors:
             output["external_write_errors"] = errors
+            effect_error = _external_write_error_summary(errors)
     update_run_status(
         base_path, run_id,
         status=RUN_STATUS_COMPLETED,
@@ -3834,10 +3872,11 @@ def _invoke_graph_resume(
         finished_at=_now(),
         provider_used=provider_tracker["last"],
         model=provider_tracker["model"],
+        error=effect_error,
     )
     return RunOutcome(
         run_id=run_id, status=RUN_STATUS_COMPLETED,
-        output=output, error="",
+        output=output, error=effect_error,
     )
 
 
