@@ -14,8 +14,12 @@ unchanged by this requirement.
 - **THEN** the result is `{"untrusted": true, "source": "commons:<id>", "notice": ..., "content": <the shape>}`
 
 #### Scenario: Reading the founder's own branch
-- **WHEN** the served agent calls `read_graph target="branch"` on a branch its own founder authored and did not remix
+- **WHEN** the served agent calls `read_graph target="branch"` or `read_commons_shape` on a branch its own founder authored, or remixed from the founder's own version
 - **THEN** the result is returned bare, without an envelope
+
+#### Scenario: A listing that mixes the founder's rows with other users'
+- **WHEN** the served agent calls `browse_commons` and the published scope includes rows the founder authored
+- **THEN** other users' rows are under `content` and the founder's rows under a sibling `own` key outside the envelope
 
 #### Scenario: The daemon's own refusal
 - **WHEN** an enveloped read path returns an error the daemon produced (a not-found, an argument refusal)

@@ -46,3 +46,14 @@ tier) and is now named in the design.
 
 A review verdict about an evaluator's honesty is not a product decision. When a reviewer's fix
 removes a capability the founder named as the point, stop and ask — do not run another round.
+
+## Shape review of the narrow change (one round, 2026-08-29)
+
+Codex on `served-agent-user-boundary` (`b0e9872e`): ADAPT on truthfulness only. (1) AGREE -- no
+server-side consumer parses the four enveloped results. (2) `author == _ACTOR_ID` is the right
+identity comparison, but an own-to-own remix was enveloped: fixed, the fork source's author is
+resolved. (3) AGREE -- on `main` the engine tools and post-turn learning are founder-only; no
+Slack, scheduled-run or custom-agent bypass. (4) The persona line is correctly qualified, but
+`read_commons_shape` enveloped the founder's own shape and `browse_commons` their own rows:
+fixed, own shapes come back bare and own rows sit beside the envelope under `own`. No further
+round -- the founder's rule is "largely you shouldn't be changing how that works".

@@ -82,21 +82,49 @@ def test_write_brain_still_writes_the_universes_own_brain(monkeypatch, tmp_path)
 
 
 def test_read_commons_shape_returns_the_untrusted_envelope(monkeypatch, tmp_path):
-    """Another user's shape arrives marked, sourced, and noticed."""
+    """Another user's shape arrives marked, sourced, and noticed; the founder's
+    own shape comes back bare (the notice must be TRUE -- Codex shape review)."""
+    import tinyassets.api.branches as branches
+    import tinyassets.custom_agents as agents
     import tinyassets.universe_server as us
 
     _seed(tmp_path)
     s = _bind_engine(monkeypatch)
     payload = {"branch": {"name": "Nightly digest", "nodes": []}}
     monkeypatch.setattr(us, "read_graph", lambda **_kw: json.dumps(payload))
+    monkeypatch.setattr(
+        branches, "_resolve_readable_branch",
+        lambda *_a, **_k: ("foreign-branch", {"author": "someone-else"}),
+    )
 
     out = json.loads(s.read_commons_shape(branch_id="foreign-branch"))
 
     assert out["untrusted"] is True
-    assert out["source"] == "commons:foreign-branch"
+    assert out["source"] == "commons:foreign-branch by someone-else"
     assert out["notice"] == s.UNTRUSTED_NOTICE
     assert "another party" in out["notice"] and "never" in out["notice"]
     assert out["content"] == payload  # the previous payload, unchanged
+
+    # The founder's own published shape is their own work: no envelope.
+    monkeypatch.setattr(
+        branches, "_resolve_readable_branch",
+        lambda *_a, **_k: ("own-branch", {"author": FOUNDER}),
+    )
+    own = json.loads(s.read_commons_shape(branch_id="own-branch"))
+    assert "untrusted" not in own and own == payload
+
+    # Same rule for agent definitions, keyed on author_id.
+    agent_payload = {"agent": {"name": "Digest bot"}}
+    monkeypatch.setattr(us, "read_graph", lambda **_kw: json.dumps(agent_payload))
+    monkeypatch.setattr(
+        agents, "get_definition", lambda _base, _aid: {"author_id": "someone-else"}
+    )
+    foreign_agent = json.loads(s.read_commons_shape(agent_definition_id="a-1"))
+    assert foreign_agent["untrusted"] is True
+    assert foreign_agent["source"] == "commons:a-1 by someone-else"
+    monkeypatch.setattr(agents, "get_definition", lambda _base, _aid: {"author_id": FOUNDER})
+    own_agent = json.loads(s.read_commons_shape(agent_definition_id="a-1"))
+    assert "untrusted" not in own_agent and own_agent == agent_payload
 
 
 def test_browse_commons_is_enveloped_too(monkeypatch, tmp_path):
@@ -107,14 +135,24 @@ def test_browse_commons_is_enveloped_too(monkeypatch, tmp_path):
     s = _bind_engine(monkeypatch)
     monkeypatch.setattr(
         ext, "_extensions_impl",
-        lambda **_kw: json.dumps({"branches": [{"name": "someone else's shape"}]}),
+        lambda **_kw: json.dumps({
+            "branches": [
+                {"name": "someone else's shape", "author": "someone-else"},
+                {"name": "my own shape", "author": FOUNDER},
+            ],
+            "count": 2,
+        }),
     )
 
     out = json.loads(s.browse_commons(kind="branches"))
 
     assert out["untrusted"] is True
     assert out["source"] == "commons:browse:branches"
-    assert out["content"]["branches"][0]["name"] == "someone else's shape"
+    # Only OTHER users' rows sit under the notice; the founder's own published
+    # rows come back beside it, so the envelope's claim is true.
+    assert [r["name"] for r in out["content"]["branches"]] == ["someone else's shape"]
+    assert out["content"]["count"] == 1
+    assert [r["name"] for r in out["own"]["branches"]] == ["my own shape"]
 
 
 def test_read_graph_branch_is_enveloped_only_when_foreign(monkeypatch, tmp_path):
@@ -146,14 +184,30 @@ def test_read_graph_branch_is_enveloped_only_when_foreign(monkeypatch, tmp_path)
     assert "untrusted" not in own
     assert own["branch"]["name"] == "Digest"
 
-    # A branch the founder authored but REMIXED still carries copied text.
+    # A branch the founder authored but REMIXED from ANOTHER author still
+    # carries that author's text; a remix of the founder's own version is
+    # their own work (Codex shape review: fork_from may point at one's own).
+    import tinyassets.branch_versions as versions
+
+    class _Version:
+        branch_def_id = "b0"
+
+    monkeypatch.setattr(versions, "get_branch_version", lambda _base, _vid: _Version())
+    records = {
+        "b1": {"author": FOUNDER, "fork_from": "v-other"},
+        "b0": {"author": "someone-else"},
+    }
     monkeypatch.setattr(
-        branches, "_resolve_readable_branch",
-        lambda *_a, **_k: ("b1", {"author": FOUNDER, "fork_from": "v-other"}),
+        branches, "_resolve_readable_branch", lambda bid, _base: (bid, records[bid])
     )
     remixed = json.loads(s.read_graph(target="branch", branch_id="b1"))
     assert remixed["untrusted"] is True
-    assert "remixed from v-other" in remixed["source"]
+    assert remixed["source"] == "branch:b1 remixed from v-other by someone-else"
+
+    records["b0"] = {"author": FOUNDER}
+    own_remix = json.loads(s.read_graph(target="branch", branch_id="b1"))
+    assert "untrusted" not in own_remix
+    assert own_remix["branch"]["name"] == "Digest"
 
 
 def test_run_output_is_enveloped(monkeypatch, tmp_path):

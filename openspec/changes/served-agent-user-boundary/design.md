@@ -38,12 +38,19 @@ published and treat it as if the founder had said it.
   on changes shape underneath it. Covered: `read_commons_shape` (`commons:<id>`), `browse_commons`
   (`commons:browse:<kind>` -- every row is another universe's authored name/description),
   `read_graph target="branch"` when the branch's author is not this universe's founder or the
-  branch was remixed from off-universe (`branch:<id> by <author>` / `branch:<id> remixed from
-  <version>`, resolved from the branch RECORD because some read paths strip `author`), and
+  branch was remixed from ANOTHER author's version (`branch:<id> by <author>` / `branch:<id>
+  remixed from <version> by <author>`, resolved from the branch RECORD and the fork source's
+  record because some read paths strip `author`; a remix of the founder's own version is their
+  own work and comes back bare -- Codex shape review), and
   `read_graph target="run"` + `run_graph` results (`run:<id>` -- generated text plus whatever the
   nodes fetched). Our own refusals and not-founds stay plain errors: an error we authored is not
   another party's content, and an envelope that said otherwise would be false on the one surface
   whose job is saying who wrote what.
+  The same truthfulness rule shapes the commons paths: `read_commons_shape` on the founder's
+  OWN shape (branch or agent definition, keyed on `author` / `author_id`) is returned bare, and
+  `browse_commons` -- whose `published` scope includes the founder's own rows -- partitions
+  each listed collection on the bound founder id: other users' rows sit under `content`,
+  the founder's under a sibling `own` key outside the envelope.
 - **D2 -- One fixed notice, one prompt line.** `UNTRUSTED_NOTICE` is a module constant so no call
   site can weaken it; `_UNTRUSTED_ENVELOPE_RULE` is the matching line in the persona prompt. The
   rule names the boundary as being about OTHER users -- "never my founder speaking, never
