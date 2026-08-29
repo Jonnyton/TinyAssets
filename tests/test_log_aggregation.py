@@ -131,7 +131,9 @@ def test_vector_classifies_forwarded_runtime_tags():
     source = transform.get("source", "")
     assert "tinyassets-daemon" in source
     assert "tinyassets-tunnel" in source
-    assert "tinyassets-worker" in source
+    # The host-run worker fleet was deleted 2026-08-29; a `worker` role that no
+    # container can carry would be a stale classification, not coverage.
+    assert "tinyassets-worker" not in source
 
 
 def test_vector_has_stdout_sink():
@@ -226,17 +228,20 @@ def test_ship_logs_script_exists():
     assert SHIP_LOGS.exists(), "deploy/ship-logs.sh must exist"
 
 
-def test_ship_logs_default_covers_complete_production_fleet():
+def test_ship_logs_default_covers_the_production_containers():
+    """The default set is exactly what compose runs: every name here is
+    REQUIRED (a missing one aborts the archive), so a retired container in
+    the default would make the hourly shipper exit 1 forever."""
     text = SHIP_LOGS.read_text(encoding="utf-8")
-    for container in (
-        "tinyassets-daemon",
-        "tinyassets-tunnel",
-        "tinyassets-worker",
-        "tinyassets-worker-codex-2",
-        "tinyassets-worker-claude-1",
-        "tinyassets-worker-claude-2",
-        ):
-        assert container in text
+    default_line = next(
+        line for line in text.splitlines() if line.startswith("LOG_CONTAINERS=")
+    )
+    for container in ("tinyassets-daemon", "tinyassets-tunnel"):
+        assert container in default_line
+    assert "tinyassets-worker" not in default_line, (
+        "the host-run worker fleet was deleted 2026-08-29; a required container "
+        "that never exists makes ship-logs.sh fail on every run"
+    )
 
 
 def test_ship_logs_requires_a_complete_readable_fleet_archive():
