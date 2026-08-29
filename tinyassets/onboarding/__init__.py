@@ -29,6 +29,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from tinyassets.onboarding import session_store as _session_store
+
 _HTML_PATH = Path(__file__).parent / "app.html"
 _CONFIG_PLACEHOLDER = "__TA_ONBOARDING_CONFIG__"
 _REQUEST_TEXT_PLACEHOLDER = "__TA_REQUEST_TEXT__"
@@ -47,120 +49,49 @@ _REFRESH_COOKIE_PATH = "/mcp/app/token"
 _REFRESH_COOKIE_MAX_AGE = 7 * 24 * 3600
 _NO_STORE = {"Cache-Control": "no-store"}
 
-# Session handle (server-side refresh store). The HttpOnly cookie above is the
-# web path, but the Android WebView does NOT persist a `Secure; SameSite=Strict;
-# HttpOnly` cookie set from a `fetch()` response across the OAuth external-tab
-# round-trip / process death (proven live 2026-08-22: 0 cookies in the jar,
-# refresh → `no_refresh_token`, forcing a re-login every ~5 min). So the app also
-# gets an opaque HANDLE it keeps in localStorage (which the WebView DOES persist)
-# and sends in the refresh body. The handle is a bearer to the AuthKit refresh
-# token, which is stored ONLY server-side and never reaches JS — strictly better
-# than putting the refresh token itself in a readable cookie, and it survives the
-# WebView. A `secrets.token_urlsafe(32)` handle is 43 url-safe chars.
-_REFRESH_SESSION_TTL = 7 * 24 * 3600
-_HANDLE_RE = _re.compile(r"^[A-Za-z0-9_-]{43}$")
+# Session handle (sealed server-side refresh store -- `session_store.py`). The
+# HttpOnly cookie above is the web path, but the Android WebView does NOT persist
+# a `Secure; SameSite=Strict; HttpOnly` cookie set from a `fetch()` response
+# across the OAuth external-tab round-trip / process death (proven live
+# 2026-08-22: 0 cookies in the jar, refresh -> `no_refresh_token`, forcing a
+# re-login every ~5 min). So the app also gets an opaque HANDLE it keeps in
+# localStorage (which the WebView DOES persist) and sends in the refresh body.
+# The handle is a bearer to the AuthKit refresh token, which is stored ONLY
+# server-side, sealed, and never reaches JS. The handle ROTATES on every refresh;
+# the page already stores whatever `session_ref` comes back, so this needs no app
+# change.
+_REFRESH_SESSION_TTL = _session_store.REFRESH_SESSION_TTL
 
 
 def _refresh_store_dir() -> Path:
-    from tinyassets.storage import data_dir
-
-    d = data_dir() / "app_refresh_sessions"
-    d.mkdir(parents=True, exist_ok=True)
-    # These files hold RAW WorkOS refresh tokens. Written with only `os.replace`
-    # they landed at the process umask -- observed 0644 on production, world
-    # -readable inside the container. Narrow the directory too, so a file created
-    # before this change is no longer reachable by a non-owner.
-    try:
-        d.chmod(0o700)
-    except OSError:
-        pass
-    return d
+    return _session_store.store_dir()
 
 
 def _valid_handle(handle: str) -> bool:
-    return bool(_HANDLE_RE.match(handle or ""))
+    return _session_store.valid_handle(handle)
 
 
 def _handle_path_key(handle: str) -> str:
-    """The on-disk name for a handle -- a digest of it, never the handle itself.
-
-    The handle IS a bearer credential: presenting it renews someone's session. Using
-    it as the filename published every live credential to anything that can list the
-    directory, so encrypting file CONTENTS would have changed nothing -- an attacker
-    reads the basename and submits it (Codex, 2026-08-28).
-
-    Keyed with the entitlement key when one is configured, so a directory listing is
-    not merely one `sha256()` away from the handle. Unkeyed is still strictly better
-    than publishing the credential outright, so an unconfigured deployment degrades
-    rather than breaking.
-    """
-    import hashlib
-    import hmac as _hmac
-
-    key = (os.environ.get("TINYASSETS_BILLING_ENTITLEMENT_KEY") or "").strip()
-    if key:
-        return _hmac.new(
-            key.encode("utf-8"), handle.encode("utf-8"), hashlib.sha256
-        ).hexdigest()
-    return hashlib.sha256(("ta-session:" + handle).encode("utf-8")).hexdigest()
+    return _session_store._handle_path_key(handle)
 
 
-def _write_refresh_session(handle: str, refresh_token: str) -> None:
-    """Persist (or rotate, same handle) the AuthKit refresh token, atomically."""
-    import json
-    import time
-
-    if not _valid_handle(handle) or not refresh_token:
-        return
-    path = _refresh_store_dir() / f"{_handle_path_key(handle)}.json"
-    tmp = path.with_suffix(".tmp")
-    payload = {"rt": refresh_token, "exp": int(time.time()) + _REFRESH_SESSION_TTL}
-    tmp.write_text(json.dumps(payload), encoding="utf-8")
-    # Before the swap, not after: the file must never exist at the umask default,
-    # even briefly, because what it holds is a bearer credential for someone's
-    # whole account.
-    try:
-        os.chmod(tmp, 0o600)
-    except OSError:
-        pass
-    os.replace(tmp, path)  # atomic swap so a concurrent read never sees a partial
+# There is deliberately NO write-under-a-caller-supplied-handle primitive. The
+# store mints its own handles and rotates to new ones; a function that writes a
+# token under a handle the request chose is the session-fixation bug itself, so
+# it must not exist for a future caller to reach for.
 
 
 def _mint_refresh_session(refresh_token: str) -> str:
-    handle = secrets.token_urlsafe(32)
-    _write_refresh_session(handle, refresh_token)
-    return handle
+    return _session_store.mint(refresh_token)
 
 
 def _read_refresh_session(handle: str) -> str:
-    """The stored refresh token for a valid, unexpired handle, else ""."""
-    import json
-    import time
-
-    if not _valid_handle(handle):
-        return ""
-    path = _refresh_store_dir() / f"{_handle_path_key(handle)}.json"
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return ""
-    if int(data.get("exp", 0) or 0) < int(time.time()):
-        try:
-            path.unlink()
-        except OSError:
-            pass
-        return ""
-    rt = str(data.get("rt", ""))
-    return rt if 0 < len(rt) <= 4096 else ""
+    """The stored refresh token for a live handle, else "" (handle discarded)."""
+    return _session_store.read(handle)[0]
 
 
 def _drop_refresh_session(handle: str) -> None:
-    if not _valid_handle(handle):
-        return
-    try:
-        (_refresh_store_dir() / f"{_handle_path_key(handle)}.json").unlink()
-    except OSError:
-        pass
+    _session_store.drop(handle)
 
 
 def _same_origin_json(request: Any, public_resource: str = "") -> bool:
@@ -380,6 +311,10 @@ async def _handle_token(request: Any) -> Any:
     # False unless a presented handle is what actually unlocked the refresh below.
     # An authorization_code exchange can never set it: there is nothing to prove.
     refresh_came_from_handle = False
+    # The handle the store says the session CURRENTLY lives under -- not the one
+    # the caller sent. During a rotation grace they differ, and rotating from the
+    # caller's value would re-file the session under an identifier they chose.
+    current_handle = ""
     # The opaque server-side session handle (WebView path). Validated; a bad
     # value is simply ignored so the cookie path still applies.
     session_ref = str(data.get("session_ref", "")).strip()
@@ -400,7 +335,9 @@ async def _handle_token(request: Any) -> Any:
         # server-side store keyed by the localStorage handle. Web browser: from
         # the HttpOnly cookie. The handle wins when present (the WebView cookie is
         # unreliable — see _REFRESH_SESSION_TTL note).
-        refresh = _read_refresh_session(session_ref) if session_ref else ""
+        refresh, current_handle = (
+            _session_store.read(session_ref) if session_ref else ("", "")
+        )
         # WHICH credential actually worked is the only thing that licenses reusing
         # the handle later. Gating on the grant NAME was not enough: a caller can
         # present a valid-shaped handle that resolves to nothing, fall through to
@@ -489,7 +426,7 @@ async def _handle_token(request: Any) -> Any:
     # or the refresh token itself — the page only ever sees the access token and
     # the opaque handle, never the AuthKit refresh token.
     handle = ""
-    # A caller-supplied handle may be REUSED only when THAT HANDLE supplied the
+    # A session may be CARRIED FORWARD only when a presented handle supplied the
     # credential the exchange actually succeeded with. Not "the grant was a refresh"
     # -- a refresh can succeed off the HttpOnly cookie while the presented handle
     # resolved to nothing, and filing the rotated token under that handle hands the
@@ -499,12 +436,17 @@ async def _handle_token(request: Any) -> Any:
     # in a victim's localStorage; the victim signs in; the victim's refresh token
     # is written under the attacker's handle; the attacker renews with it and holds
     # the victim's session. Minting unconditionally on a new sign-in is what closes
-    # it -- the handle the page gets back is one only the server has seen.
-    may_reuse_handle = bool(session_ref) and refresh_came_from_handle
+    # it -- the handle the page gets back is one only the server has seen. Even when
+    # carrying forward, the store rotates to a fresh handle; nothing is ever written
+    # under a value that arrived in the request body.
+    may_reuse_handle = bool(current_handle) and refresh_came_from_handle
     if refresh_token and len(refresh_token) <= 4096:
         if may_reuse_handle:
-            _write_refresh_session(session_ref, refresh_token)  # rotate in place
-            handle = session_ref
+            # Rotate to a NEW handle rather than rewriting the presented one. The
+            # old handle keeps resolving for a short grace (multi-tab race), so a
+            # captured handle dies about one rotation after capture instead of
+            # lasting the 7-day TTL. The page stores whatever comes back.
+            handle = _session_store.rotate(current_handle, refresh_token)
         else:
             if session_ref:
                 # Someone signed in while presenting a handle. Whatever it was, it
@@ -513,9 +455,9 @@ async def _handle_token(request: Any) -> Any:
                 _drop_refresh_session(session_ref)
             handle = _mint_refresh_session(refresh_token)
     elif may_reuse_handle:
-        # AuthKit rotated without returning a new token (rare): keep the existing
-        # server-side token under the same handle so the app can renew again.
-        handle = session_ref
+        # AuthKit rotated without returning a new token (rare): nothing to store,
+        # so hand back the handle the token already lives under. No write.
+        handle = current_handle
     body: dict[str, Any] = {"access_token": access, "expires_in": expires_in or None}
     if handle:
         body["session_ref"] = handle
