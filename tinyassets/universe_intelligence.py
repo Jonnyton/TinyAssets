@@ -196,6 +196,26 @@ def _engine_mcp_enabled() -> bool:
     )
 
 
+#: Founder rule 2026-08-29 - see _sandboxed_config. A served turn's absolute
+#: cap is a runaway backstop until a user Stop exists, not a deadline. 3600s: a
+#: five-step GitHub job at ~60-90s per round-trip fits with room to spare; a
+#: turn still emitting protocol events at an hour is the runaway case.
+_SERVED_ABSOLUTE_CAP_S = 3600.0
+
+
+def _served_knob(ctx, name: str, default):
+    """A positive per-universe override for a watchdog knob, else ``default``.
+
+    Nonsense (a string, zero, negative) falls back to the default rather than
+    disabling a bound - the same hardening the profile resolver applies.
+    """
+    try:
+        value = float(getattr(ctx.config, name, None) or 0)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
 def _sandboxed_config(
     ctx: UniverseContext,
     *,
@@ -228,6 +248,16 @@ def _sandboxed_config(
         timeout = int(getattr(ctx.config, "timeout", 300) or 300)
     except (TypeError, ValueError):
         timeout = 300
+    # Founder rule 2026-08-29: "a turn should continue till finished unless
+    # interrupted by the user or should stop for some other reason." The legacy
+    # ``timeout`` above is no longer a wall-clock deadline on the streamed
+    # served path (codex + claude both read their stream under the idle
+    # watchdog now); it survives only for non-streaming callers. What bounds a
+    # served turn is: the 30s idle watchdog (a hung provider), and a GENEROUS
+    # absolute cap as a runaway backstop until a user Stop exists. The 600s
+    # library default fit three GitHub round-trips and killed the fourth.
+    absolute_cap_s = _served_knob(ctx, "absolute_cap_s", _SERVED_ABSOLUTE_CAP_S)
+    idle_timeout_s = _served_knob(ctx, "idle_timeout_s", None)
     engine_mcp = bool(
         granted and founder_principal and universe_id and _engine_mcp_enabled()
     )
@@ -239,6 +269,8 @@ def _sandboxed_config(
         disallowed = _ENGINE_DISALLOWED_TOOLS
     return ModelConfig(
         timeout=timeout,
+        absolute_cap_s=absolute_cap_s,
+        idle_timeout_s=idle_timeout_s,
         sandbox_workspace=True,
         sandbox_chat=True,
         allowed_tools=allowed,

@@ -1,0 +1,234 @@
+"""The codex reader streams under the idle-watchdog profile - parity with claude.
+
+Founder rule 2026-08-29: *"a turn should continue till finished unless
+interrupted by the user or should stop for some other reason."*
+
+What happened: the universe was three clean GitHub round-trips into a five-step
+job - main ref, create branch, read ``README.md`` for its blob sha - when the
+served turn hit ``timeout=300`` in ``asyncio.wait_for(proc.communicate(...))``.
+The generic ``ProviderTimeoutError`` put the provider on a 120s cooldown and the
+user read *"Served provider 'codex' exhausted"* - a timer reported as a quota.
+
+Claude's reader had already moved past this (``claude_provider._read_stream``):
+an idle watchdog is the hang control, the absolute cap is a backstop, and
+neither cools the provider. These tests hold codex to the same profile, plus the
+one thing claude's reader does NOT yet do: a turn waiting on its own tool is not
+idle (``run_graph`` took 42s live; a 30s idle budget would have killed it).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import time
+import types
+
+import pytest
+
+from tinyassets.exceptions import (
+    InteractiveDeadlineError,
+    ProviderIdleTimeoutError,
+    ProviderTimeoutError,
+)
+from tinyassets.providers.base import ModelConfig
+from tinyassets.providers.codex_provider import _stream_codex_exec
+
+
+class FakeProc:
+    """Replays NDJSON stdout; ``(delay_s, bytes)`` items sleep before arriving."""
+
+    def __init__(self, items, *, stderr: bytes = b"", returncode: int = 0):
+        self._items = list(items)
+        self._idx = 0
+        # A RUNNING process has returncode None; ``_terminate`` only kills in
+        # that state (a finished one raises ProcessLookupError). The exit code
+        # is what ``wait()`` reveals, exactly like a real subprocess.
+        self._exit = returncode
+        self.returncode = None
+        self.killed = False
+        self.stdout = self._Stdout(self)
+        self.stderr = self._Stderr(stderr)
+        self.stdin = self._Stdin()
+
+    class _Stdout:
+        def __init__(self, p):
+            self._p = p
+
+        async def readline(self):
+            p = self._p
+            if p._idx >= len(p._items):
+                return b""
+            item = p._items[p._idx]
+            p._idx += 1
+            if isinstance(item, tuple):
+                delay, data = item
+                if delay:
+                    await asyncio.sleep(delay)
+                return data
+            return item
+
+    class _Stderr:
+        def __init__(self, data):
+            self._data, self._sent = data, False
+
+        async def read(self, _n):
+            if self._sent:
+                return b""
+            self._sent = True
+            return self._data
+
+    class _Stdin:
+        def write(self, _b): ...
+        async def drain(self): ...
+        def close(self): ...
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+    async def wait(self):
+        return self.returncode
+
+
+def _ev(etype: str, **fields) -> bytes:
+    return (json.dumps({"type": etype, **fields}) + "\n").encode()
+
+
+def _tool(etype: str, item_id: str = "call_1", kind: str = "mcp_tool_call") -> bytes:
+    return _ev(etype, item={"id": item_id, "type": kind})
+
+
+_PROFILE = dict(init_timeout_s=1.0, first_progress_s=1.0, idle_timeout_s=0.25,
+                soft_slo_s=60.0, absolute_cap_s=5.0)
+
+
+def _run(proc, **overrides):
+    config = ModelConfig(timeout=300, **{**_PROFILE, **overrides})
+    return asyncio.run(
+        _stream_codex_exec(proc, b"prompt", config, start=time.monotonic())
+    )
+
+
+# --- a turn waiting on its own tool is not idle -------------------------------
+
+
+def test_a_tool_call_longer_than_the_idle_budget_does_not_kill_the_turn():
+    """The case that would have made the new reader WORSE than the 300s cap."""
+    proc = FakeProc([
+        _ev("thread.started"),
+        _tool("item.started"),                 # run_graph begins...
+        (0.7, _tool("item.completed")),        # ...answers after 0.7s > idle 0.25
+        _ev("item.completed", item={"type": "agent_message", "text": "done"}),
+        _ev("turn.completed", usage={"input_tokens": 1, "output_tokens": 1}),
+    ])
+    out, _err = _run(proc)
+    assert b"turn.completed" in out
+    assert proc.killed is False
+
+
+def test_idle_with_no_tool_in_flight_fires_the_watchdog():
+    proc = FakeProc([
+        _ev("thread.started"),
+        (0.7, _ev("turn.completed")),          # silence with nothing running
+    ])
+    with pytest.raises(ProviderIdleTimeoutError) as info:
+        _run(proc)
+    assert proc.killed is True
+    assert info.value.failure_class == "provider_idle_timeout"
+    assert info.value.attempt_telemetry["tool_phase"] is None
+
+
+def test_the_idle_watchdog_resumes_once_the_tool_completes():
+    """Tool-wait suspends idle; it must not disable it for the rest of the turn."""
+    proc = FakeProc([
+        _ev("thread.started"),
+        _tool("item.started"),
+        (0.4, _tool("item.completed")),        # tool done
+        (0.7, _ev("turn.completed")),          # then a real hang
+    ])
+    with pytest.raises(ProviderIdleTimeoutError):
+        _run(proc)
+
+
+# --- the cap is a backstop, and it is classified honestly ---------------------
+
+
+def test_progressing_past_the_absolute_cap_is_an_interactive_deadline():
+    """Still working, out of runway: NOT the generic timeout the router cools on."""
+    proc = FakeProc([(0.1, _ev("item.started", item={"type": "agent_message"}))
+                     for _ in range(20)])
+    with pytest.raises(InteractiveDeadlineError) as info:
+        _run(proc, absolute_cap_s=0.45)
+    assert info.value.failure_class == "interactive_deadline"
+    assert isinstance(info.value, ProviderTimeoutError), (
+        "must stay a ProviderTimeoutError subclass for legacy except clauses"
+    )
+    assert proc.killed is True
+
+
+def test_a_finished_turn_returns_stdout_and_stderr_unchanged():
+    """Downstream parsing (agent_message / usage) must see exactly what codex wrote."""
+    lines = [
+        _ev("thread.started"),
+        b"\n",                                  # blank lines are not events
+        _ev("item.completed", item={"type": "agent_message", "text": "hi"}),
+        _ev("turn.completed", usage={"input_tokens": 3, "output_tokens": 2}),
+    ]
+    proc = FakeProc(lines, stderr=b"warning: something")
+    out, err = _run(proc)
+    assert out == b"".join(lines)
+    assert err == b"warning: something"
+    assert proc.killed is False
+
+
+def test_non_json_output_keeps_the_process_but_not_the_clock():
+    """Chatter proves the process is alive, not that it is making progress."""
+    proc = FakeProc([
+        _ev("thread.started"),
+        (0.15, b"not json\n"),
+        (0.15, b"still not json\n"),           # 0.3s since the last real event
+        (0.15, _ev("turn.completed")),         # never reached: idle at 0.25
+    ])
+    with pytest.raises(ProviderIdleTimeoutError):
+        _run(proc)
+
+
+# --- the served turn gets the generous cap, not the library default -----------
+
+
+def test_the_served_turn_is_bounded_by_a_generous_backstop_not_a_deadline():
+    from tinyassets.universe_intelligence import (
+        _SERVED_ABSOLUTE_CAP_S,
+        _sandboxed_config,
+    )
+
+    ctx = types.SimpleNamespace(config=types.SimpleNamespace(timeout=300))
+    cfg = _sandboxed_config(ctx)
+    profile = cfg.stream_timeout_profile()
+    assert _SERVED_ABSOLUTE_CAP_S >= 3600, "a five-step GitHub job must fit"
+    assert profile.absolute_cap_s == _SERVED_ABSOLUTE_CAP_S
+    assert profile.idle_s == 30.0, "the hang control stays fast"
+
+
+def test_a_universe_may_override_its_own_knobs():
+    from tinyassets.universe_intelligence import _sandboxed_config
+
+    ctx = types.SimpleNamespace(
+        config=types.SimpleNamespace(timeout=300, absolute_cap_s=120, idle_timeout_s=10)
+    )
+    profile = _sandboxed_config(ctx).stream_timeout_profile()
+    assert profile.absolute_cap_s == 120.0
+    assert profile.idle_s == 10.0
+
+
+def test_a_nonsense_override_falls_back_rather_than_disabling_the_cap():
+    from tinyassets.universe_intelligence import (
+        _SERVED_ABSOLUTE_CAP_S,
+        _sandboxed_config,
+    )
+
+    ctx = types.SimpleNamespace(
+        config=types.SimpleNamespace(timeout=300, absolute_cap_s="forever")
+    )
+    profile = _sandboxed_config(ctx).stream_timeout_profile()
+    assert profile.absolute_cap_s == _SERVED_ABSOLUTE_CAP_S

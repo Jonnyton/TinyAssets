@@ -187,6 +187,19 @@ class FakeStreamProcess:
         return self.returncode
 
 
+def _codex_fake(pair, *, returncode=0):
+    """Stand-in for the streamed codex reader (2026-08-29).
+
+    Takes exactly what ``communicate()`` used to return - ``(stdout, stderr)`` -
+    and serves it as a line stream, so each test keeps its original bytes and
+    only the transport changes: the provider now reads ``codex exec --json``
+    incrementally under the idle watchdog instead of buffering under a wall
+    clock.
+    """
+    out, err = pair
+    return FakeStreamProcess([out] if out else [], stderr=err, returncode=returncode)
+
+
 def _run_stream(proc: FakeStreamProcess, config: ModelConfig) -> ProviderResponse:
     """Drive ClaudeProvider._read_stream against a fake process."""
     provider = ClaudeProvider()
@@ -667,15 +680,11 @@ class TestInteractiveNoSleep:
 class TestBackwardSafeNonStreaming:
     @pytest.mark.asyncio
     async def test_other_provider_still_returns_terminal_response(self):
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import patch
 
         from tinyassets.providers.codex_provider import CodexProvider
 
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"codex output", b""))
-        mock_proc.returncode = 0
-        mock_proc.kill = AsyncMock()
-        mock_proc.wait = AsyncMock()
+        mock_proc = _codex_fake((b"codex output", b""), returncode=0)
 
         with (
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
