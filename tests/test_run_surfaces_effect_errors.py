@@ -103,3 +103,60 @@ def test_the_error_field_is_wired_at_both_call_sites():
     assert 'output=output, error="",' not in source, (
         "a call site still hardcodes an empty error, which is the original bug"
     )
+
+
+# --- a dead sink must say what to use instead --------------------------------
+
+
+def test_an_unknown_sink_names_the_supported_sinks():
+    """"Unknown effect sink" alone is not actionable.
+
+    A branch stored before a per-channel sink was retired keeps naming it every
+    run, and the node silently does nothing. The live case was a stored
+    "Docs Touch PR" branch still declaring `github_pull_request`. The platform
+    ships exactly two sinks on purpose, so the remedy is always the same shape
+    and the error can just say it.
+    """
+    from tinyassets.effectors import run_effects_for_branch
+
+    class _Node:
+        node_id = "open_pr"
+        effects = ["github_pull_request"]
+        output_keys = ["delivery_receipt"]
+
+    class _Branch:
+        node_defs = [_Node()]
+
+    evidence = run_effects_for_branch(
+        branch=_Branch(), run_state={}, base_path=None, run_id="r1"
+    )
+    row = evidence["open_pr"]["github_pull_request"]
+
+    assert row["error_kind"] == "unknown_sink"
+    assert row["supported_sinks"] == [
+        "authenticated_external_call",
+        "wiki_write_back",
+    ]
+    assert "does nothing" in row["error"], "must say the node is a no-op"
+    assert "Rebuild" in row["error"], "must say what to do about it"
+    assert "authenticated_external_call" in row["error"]
+    assert "external_write_packet" in row["error"], "must name the packet shape"
+
+
+def test_a_known_sink_is_untouched_by_the_unknown_sink_path():
+    """The guard must not change behaviour for a sink that exists."""
+    from tinyassets.effectors import run_effects_for_branch
+
+    class _Node:
+        node_id = "call"
+        effects = ["authenticated_external_call"]
+        output_keys = []
+
+    class _Branch:
+        node_defs = [_Node()]
+
+    evidence = run_effects_for_branch(
+        branch=_Branch(), run_state={}, base_path=None, run_id="r1"
+    )
+    row = evidence["call"]["authenticated_external_call"]
+    assert row.get("error_kind") != "unknown_sink"
