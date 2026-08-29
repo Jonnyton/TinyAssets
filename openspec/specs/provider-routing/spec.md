@@ -476,9 +476,11 @@ interactive-deadline outcome, not as provider unavailability.
 - **GIVEN** a codex-served completion (`codex exec --json`), which emits NO
   reasoning or assistant-text deltas — between one protocol event and the next
   there is one whole model round-trip of silence (31s live on 2026-08-29;
-  ~100s per round-trip observed), and whose `thread.started` / `turn.started` /
-  `item.started` are delivered best-effort (dropped under backpressure; only
-  `turn.completed` and `item.completed` are lossless in codex-cli 0.146.0)
+  ~100s per round-trip observed), and whose `turn.started` / `item.started` /
+  `item.completed` are delivered best-effort (the in-process queue of
+  codex-cli 0.146.0 guarantees only `TurnCompleted`, projected as
+  `turn.completed` / `turn.failed`; `thread.started` is printed by exec itself
+  before the turn is requested)
 - **WHEN** any protocol event has been read and no terminal turn event
   (`turn.completed` / `turn.failed`) has arrived yet
 - **THEN** the turn is running (`codex exec` runs exactly one) and silence is
@@ -487,13 +489,22 @@ interactive-deadline outcome, not as provider unavailability.
   and "generating" are not reliably distinguishable); the profile's idle
   interval guards only the launch edge (no event at all within `init_s`)
 - **NOTE (as-built boundary):** for codex the idle boundary inside a turn IS
-  900s — the CLI offers no finer liveness signal to judge progress by. The
-  claude reader does not honor a tool wait; its `tool_phase` is telemetry only
-  (`docs/concerns/2026-08-29-claude-reader-tool-wait-idle-gap.md`)
+  900s — the CLI offers no finer liveness signal to judge progress by. Two
+  signal-less windows share that bound rather than a shorter one: a stall
+  between `thread.started` and the `turn/start` request (an in-process RPC,
+  never a model wait), and a shutdown that stalls after
+  `TurnCompleted(Interrupted)`, which projects no terminal JSONL event (only
+  SIGINT interrupts an exec turn; the daemon never sends one). A finished
+  stream whose `agent_message` item was dropped under backpressure fails loud
+  in `complete()` ("omitted result or usage") —
+  `docs/concerns/2026-08-29-codex-agent-message-can-be-dropped-under-backpressure.md`.
+  The claude reader does not honor a tool wait; its `tool_phase` is telemetry
+  only (`docs/concerns/2026-08-29-claude-reader-tool-wait-idle-gap.md`)
 
 #### Scenario: A completed codex turn is never failed by its own shutdown
 
-- **GIVEN** the reader has read the lossless `turn.completed` (or `turn.failed`)
+- **GIVEN** the reader has read `turn.completed` (or `turn.failed`) — the
+  projections of the one guaranteed notification, `TurnCompleted`
 - **WHEN** the child has not exited `_TAIL_WAIT_S` (60s) later — codex exec
   unsubscribes the thread and awaits `client.shutdown()`, bounded at 45s in
   0.146.0
@@ -559,8 +570,10 @@ assistant response unless a terminal provider result was produced.
   "quota"; every other failure keeps the exception text verbatim
 - **AND** the web app keeps the message resendable (the in-flight record is not
   forgotten on a served `error`), shows the server's sentence, and does not
-  reload for a new build while a send is in flight (bounded at 65 minutes, the
-  server's 3600s cap plus margin) or a failed message is younger than 20 minutes
+  reload for a new build while a send is in flight (bounded at 3 hours — past
+  the default 3600s cap and any plausible per-universe `absolute_cap_s`; a
+  fetch that truly never settles is cut by the proxy long before) or a failed
+  message is younger than 20 minutes
 
 #### Scenario: A timeout is described honestly
 

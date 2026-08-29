@@ -503,6 +503,9 @@ def _js_function(html: str, name: str) -> str:
                 return html[m.start(): j + 1]
         j += 1
     raise AssertionError(f"unbalanced braces in {name}")
+    # No regex-literal or nested-template lexing (Codex round 2, P2): the
+    # functions extracted today contain neither, and a mis-cut span is a
+    # syntax error that crashes the node harness - loud, never a silent pass.
 
 
 # The real send/resend/build-check code, run in Node against a DOM shim. A
@@ -543,9 +546,12 @@ function setStatusLine(t){ els["status-line"].textContent=t||""; }
 function sessionExpired(){ messages.push({role:"session-expired"}); }
 function showConnect(){ messages.push({role:"connect"}); }
 const SCENARIO=__SCENARIO__;
+const converseCalls=[];
 const MCP={ converse: async m => {
+  converseCalls.push(m);
   if(SCENARIO.transportError){ const e=new Error("offline"); e.transport=true; throw e; }
-  return SCENARIO.payload;
+  const payloads=SCENARIO.payloads||[SCENARIO.payload];
+  return payloads[Math.min(converseCalls.length-1, payloads.length-1)];
 }};
 const CFG={build: SCENARIO.build||"b1"};
 let reloaded=false; const location={reload:()=>{ reloaded=true; }};
@@ -556,6 +562,13 @@ __APP_FUNCTIONS__
   const out={};
   if(SCENARIO.kind==="send"){
     await sendTurn(SCENARIO.message);
+    if(SCENARIO.clickResend){
+      const btn=els.thread.children.flatMap(n=>n.children).find(c=>c.tagName==="BUTTON");
+      btn.click();                                   // the listener fires sendTurn (async)
+      await new Promise(r=>setTimeout(r, 20));
+    }
+    out.converseCalls=converseCalls;
+    out.notesRemoved=els.thread.children.filter(n=>n.removed).length;
     out.inflight=JSON.parse(localStorage.getItem(INFLIGHT_KEY)||"null");
     out.messages=messages;
     out.notes=els.thread.children.map(n=>({cls:n.className,
@@ -629,6 +642,22 @@ def test_a_served_error_keeps_the_message_resendable_with_the_servers_sentence(t
     assert out["sendDisabled"] is False and out["status"] == ""
 
 
+def test_send_it_again_resends_the_same_message_once_without_a_second_bubble(tmp_path):
+    """Codex round 2 (P2): the button was rendered but never pressed. Press it:
+    the SAME text goes to the universe again, the founder bubble is not drawn
+    twice (`echoed`), the note is gone, and a delivered reply then clears the
+    in-flight record."""
+    out = _run_app(tmp_path, {
+        "kind": "send", "message": "hi", "clickResend": True,
+        "payloads": [{"error": "Your universe went quiet mid-turn."}, {"reply": "hello"}],
+    })
+    assert out["converseCalls"] == ["hi", "hi"]
+    assert [m["role"] for m in out["messages"]] == ["founder", "universe"]
+    assert out["notesRemoved"] == 1
+    assert out["inflight"] is None
+    assert out["sendDisabled"] is False
+
+
 def test_a_delivered_reply_forgets_the_in_flight_record(tmp_path):
     out = _run_app(tmp_path, {"kind": "send", "message": "hi",
                               "payload": {"reply": "hello"}})
@@ -647,7 +676,8 @@ def test_a_transport_failure_still_offers_the_resend(tmp_path):
     ({}, True),                                   # nothing in flight: update
     ({"liveBuild": "b1"}, False),                 # same build: nothing to do
     ({"inflightAgeMin": 1}, False),               # a turn being served: hold
-    ({"inflightAgeMin": 70}, True),               # past the server cap: a dead fetch; reload
+    ({"inflightAgeMin": 70}, False),              # a raised per-universe cap: still hold
+    ({"inflightAgeMin": 200}, True),              # past any cap: a dead fetch; reload
     ({"pendingAgeMin": 5}, False),                # a failed message waiting: hold
     ({"pendingAgeMin": 25}, True),                # abandoned: update
 ])

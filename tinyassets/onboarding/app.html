@@ -2040,12 +2040,15 @@
     // a failed message is waiting to be resent, throws away what the user is
     // looking at. On 2026-08-29 the 10-minute tick fired seconds after a served
     // error and the thread jumped back to history. Both holds are BOUNDED, so
-    // one wedged request can never freeze updates for good (Codex round 1, P1):
-    // the server caps a served turn at 3600s, so a send still unsettled 65
-    // minutes on is a dead fetch and a reload IS the recovery - the message
+    // one wedged request can never freeze updates for good (Codex round 1, P1).
+    // The in-flight hold is three hours: the default served cap is 3600s and a
+    // universe may raise its own `absolute_cap_s` (Codex round 2, P2 - a valid
+    // 7200s turn must not be reloaded over), while a fetch that truly never
+    // settles is cut by the proxy long before that, so the bound only has to
+    // exist, not be tight. Past it a reload IS the recovery - the message
     // survives in the in-flight record and is offered back after it. A failed
     // message holds the update ~20 minutes (plus at most one 10-minute tick).
-    if($("btn-send").disabled && (Date.now()-turnStartedAt) < 65*60*1000) return;
+    if($("btn-send").disabled && (Date.now()-turnStartedAt) < 3*60*60*1000) return;
     const pending=readInflight();
     if(!$("btn-send").disabled && pending && (Date.now()-(pending.ts||0)) < 20*60*1000) return;
     try{

@@ -354,17 +354,31 @@ _TOOL_WAIT_S = 900.0
 #: killed as "idle" at the 30s interval. The turn was healthy.
 #:
 #: "Inside the turn" begins at the FIRST protocol event, not at ``turn.started``:
-#: codex 0.146 delivers ``thread.started`` / ``turn.started`` / ``item.started``
-#: best-effort (dropped under backpressure; only ``turn.completed`` and
-#: ``item.completed`` are lossless - ``server_notification_requires_delivery``
-#: in app-server-client/src/lib.rs), and ``codex exec`` runs exactly one turn,
-#: so any event at all means that turn is running (Codex round 1, P1). Same
-#: bound as a tool wait: with ``item.started`` equally droppable, "in a tool"
-#: and "generating" are not reliably distinguishable, and no evidence supports
-#: a tighter round-trip bound (31s live; ~100s per round-trip observed).
+#: codex 0.146 delivers ``turn.started`` / ``item.started`` / ``item.completed``
+#: best-effort - the in-process app-server queue guarantees only
+#: ``TurnCompleted`` (app-server/src/in_process.rs) - so there is NO reliable
+#: signal for the turn's start, and ``codex exec`` runs exactly one turn.
+#: Two windows are therefore read as generation although nothing is
+#: generating, and are bounded by this constant rather than detected sooner
+#: (Codex round 2, P1s; accepted):
+#:
+#: * ``thread.started`` is printed by exec itself BEFORE it requests
+#:   ``turn/start`` (exec/src/lib.rs). A stall between the two is an
+#:   in-process RPC hanging, never a model wait; guarding it with the short
+#:   init budget would re-kill every first generation whose ``turn.started``
+#:   was dropped - the round-1 P1.
+#: * ``TurnCompleted(Interrupted)`` projects no ``turn.completed`` /
+#:   ``turn.failed`` (event_processor_with_jsonl_output.rs), so a shutdown
+#:   that stalls after an interruption keeps this bound, not the tail grace.
+#:   Only SIGINT interrupts an exec turn, and the daemon never sends one.
+#:
+#: Same bound as a tool wait: with ``item.started`` droppable, "in a tool" and
+#: "generating" are not reliably distinguishable, and no evidence supports a
+#: tighter round-trip bound (31s live; ~100s per round-trip observed).
 _TURN_WAIT_S = _TOOL_WAIT_S
-#: After the (lossless) ``turn.completed`` / ``turn.failed`` the result is in
-#: hand; what remains is codex's own shutdown, which 0.146 bounds at 45s
+#: After ``turn.completed`` / ``turn.failed`` - both projections of the one
+#: guaranteed notification, ``TurnCompleted`` - the result is in hand; what
+#: remains is codex's own shutdown, which 0.146 bounds at 45s
 #: (``IN_PROCESS_SHUTDOWN_TIMEOUT``: exec unsubscribes the thread, then awaits
 #: ``client.shutdown()``). A stalled shutdown is not the turn's failure: past
 #: this bound the reader ends the child and RETURNS the finished stream
@@ -382,8 +396,13 @@ _STDOUT_READER_LIMIT = 32 * 1024 * 1024
 def _codex_turn_completed(stdout: bytes) -> bool:
     """True when the ``--json`` stream carries codex's own ``turn.completed``.
 
-    That event is lossless in codex 0.146 and is the protocol's word that the
-    turn finished; the exit code describes the PROCESS. When the turn
+    ``TurnCompleted`` is the one notification codex 0.146 guarantees end to
+    end (the in-process queue drops ``item.*`` under backpressure and backfills
+    completions only for items it saw start - so a finished turn can even lack
+    its ``agent_message``; ``complete()`` then fails loud, see
+    ``docs/concerns/2026-08-29-codex-agent-message-can-be-dropped-under-backpressure.md``).
+    It is the protocol's word that the turn finished; the exit code describes
+    the PROCESS. When the turn
     completed, a non-zero exit afterwards - the reader ending a stalled
     shutdown (``_TAIL_WAIT_S``), or codex failing in its own teardown - is
     logged, never raised: raising would discard a finished, healthy turn.
@@ -591,9 +610,10 @@ async def _stream_codex_exec(
                 last_progress = time.monotonic()
                 in_turn = True
             if etype == "turn.completed" or etype in _CODEX_TERMINAL_FAILURE_TYPES:
-                # Both lossless. Nothing the turn started is still coming back;
-                # the tail rule above already outranks an open tool (Codex
-                # round 1, P1), and clearing keeps tool_phase telemetry honest.
+                # Both projections of the guaranteed TurnCompleted. Nothing the
+                # turn started is still coming back; the tail rule above already
+                # outranks an open tool (Codex round 1, P1), and clearing keeps
+                # tool_phase telemetry honest.
                 turn_done = True
                 tools_in_flight.clear()
             item = obj.get("item")
