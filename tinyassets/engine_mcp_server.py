@@ -829,11 +829,16 @@ def write_graph(
     you do not know which files a change touches until you have read the code,
     and every new file would cost the user another approval.
 
-    So scope a grant to the work: to patch a repo, ask for ``contents/{path+}``
-    plus the git-data calls a real commit needs (``git/blobs``, ``git/trees``,
-    ``git/commits``, and ``PATCH git/refs/heads/{branch+}``) — not one file at a
-    time. Prefer the narrowest PATTERN that covers the job over a list of exact
-    paths that cannot.
+    So scope a grant to the work — not one file at a time. One ask may cover at
+    most six endpoints with two methods each. To patch a repo that is FOUR: the
+    main ref (``GET git/ref/heads/main``), a branch (``POST git/refs``),
+    ``contents/{path+}`` with ``GET``+``PUT``, and ``POST pulls``. Each ``PUT``
+    to contents is its own commit on the branch, so the git-data calls
+    (``git/blobs`` / ``git/trees`` / ``git/commits`` / ``PATCH
+    git/refs/heads/{branch+}``) are only needed when one atomic multi-file
+    commit truly matters — ask for those separately, and only then. Prefer the
+    narrowest PATTERN that covers the job over a list of exact paths that
+    cannot.
     Read ``read_graph target="pending_requests"`` to see what is still waiting
     and what they answered. You cannot answer your own ask, and you should not
     try: that is theirs.
