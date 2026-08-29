@@ -243,6 +243,47 @@ queues briefly and then refuses honestly, instead of spawning until the host OOM
 takes the tunnel down. Being *under-provisioned* is a product problem; being *unbounded*
 was an outage.
 
+## ANSWERED, on the resized box — with the condition that decides it
+
+Droplet resized to 4 vCPU / 8 GB on 2026-08-29 (~2.5 min outage). Then the two numbers
+that had been guesses all along were measured with **real turns**, not `--version`:
+
+| concurrent real turns | memory / turn | p50 duration |
+|---:|---:|---:|
+| 1 | 149 MB | 4.7 s |
+| 4 | **134 MB** marginal | **4.8 s** — no degradation |
+
+Against the cgroup budget (`4096 - 646 at-rest - 300 floor = 3150 MB`), 23 real turns
+fit; the limit is **15**, using 2010 MB and leaving 1140 MB spare.
+
+**Capacity: 15 / 4.8 s = 3.12 turns/second.** Demand for 1,000 users at 10 turns/day,
+by how tightly the day peaks:
+
+| peak shape | demand | headroom |
+|---|---:|---:|
+| spread over 24h | 0.12 /s | 27x |
+| 12h active window | 0.23 /s | 13.5x |
+| 4h peak | 0.69 /s | 4.5x |
+| 2h peak | 1.39 /s | **2.2x** |
+| 1h spike | 2.78 /s | 1.1x |
+
+**So 15 concurrent carries 1,000 daily users with many simultaneous — provided the
+average turn stays under about 11 seconds.** That is the break-even for the 2h-peak case,
+and it is the whole answer.
+
+### The condition, stated plainly
+
+A measured turn here is **4.8 s for a single-shot completion**. A TinyAssets turn is
+usually not that: it is agentic, it runs a graph, it calls tools, and it can take far
+longer. At 30 s per turn the same limit yields 0.5 turns/s and the 2h peak needs 1.39 —
+**short by 2.8x**.
+
+So the honest statement is conditional, and `get_status.provider_admission` is what
+resolves it: `attempt_seconds.p50` from production traffic decides which row above
+applies. Under ~11 s, this box carries the target. Over it, the next move is a higher
+limit (23 fit the cgroup) or a bigger box — and that decision should come from that
+field, not from another estimate.
+
 ## What would change it, cheapest first
 
 0. **Done, partially free: less CPU on the status path** (above). Worth having, but
