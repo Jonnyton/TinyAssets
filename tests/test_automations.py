@@ -7,6 +7,8 @@ message for this slice.
 
 from __future__ import annotations
 
+import json
+import os
 import sqlite3
 from concurrent.futures import Future
 from dataclasses import fields, replace
@@ -1005,6 +1007,110 @@ def test_a_dark_consumer_scans_no_automations_at_all(
 
     assert scanned == []
     assert inline.submissions == []
+
+
+# -- Liveness is not activity -------------------------------------------------
+
+
+def test_a_poll_beats_for_a_serving_universe_with_no_runtime_at_all(
+    tmp_path: Path,
+    registered: Automation,
+    monkeypatch,
+) -> None:
+    """The watchdog asks "is the daemon alive", not "does it have a runtime".
+
+    Verified on the droplet 2026-08-29: every runtime row is fleet-era, so
+    `_serving_runtime` returns None for every universe and the beat file stopped
+    being written. `deploy/daemon-watchdog.sh` restarts on a beat older than
+    900s, so its timer had to stay disabled and the host-services installer
+    refuses to run while it is.
+
+    Note on what is asserted: the watchdog measures the file's MTIME
+    (`stat -c %Y`, daemon-watchdog.sh:78), not the `ts` field, so the
+    load-bearing property is that every poll REWRITES the file. That is checked
+    by backdating it and polling again. `ts` is asserted too because that is the
+    field human readers and `_classify_epoch2_workers` consume.
+    """
+    from tinyassets.runtime.assigned_queue_consumer import (
+        supervisor_heartbeat_filename,
+    )
+
+    monkeypatch.setattr(
+        "tinyassets.provider_serving_binding.list_serving_universes",
+        lambda _base: [UNIVERSE],
+    )
+    monkeypatch.setattr(
+        AssignedQueueConsumer, "_serving_runtime", lambda self, *a, **k: None
+    )
+    monkeypatch.setattr(
+        automations_module,
+        "run_due_automation",
+        lambda *_args, **_kwargs: "ok:ran:run_1",
+    )
+    consumer, _inline = _consumer_with_inline_executor(tmp_path)
+    before = datetime.now(timezone.utc).replace(microsecond=0)
+    beat_path = tmp_path / UNIVERSE / supervisor_heartbeat_filename(
+        consumer.consumer_id
+    )
+
+    try:
+        consumer.poll_once()
+        assert beat_path.is_file()
+        # Every poll REWRITES the beat -- the property the watchdog actually
+        # measures. Backdate it an hour; the next poll must lift it back.
+        stale = datetime.now(timezone.utc).timestamp() - 3600
+        os.utime(beat_path, (stale, stale))
+        assert beat_path.stat().st_mtime <= stale + 1
+        consumer.poll_once()
+        age = datetime.now(timezone.utc).timestamp() - beat_path.stat().st_mtime
+    finally:
+        consumer.stop()
+
+    assert age < 60
+    beat = json.loads(beat_path.read_text(encoding="utf-8"))
+    assert beat["worker_id"] == consumer.consumer_id
+    assert beat["universe_id"] == UNIVERSE
+    assert beat["subprocess_pid"] == os.getpid()
+    stamped = datetime.strptime(beat["ts"], "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=timezone.utc
+    )
+    assert before - timedelta(seconds=5) <= stamped
+    assert stamped <= datetime.now(timezone.utc) + timedelta(seconds=5)
+    # No runtime means no audience and no invented executor identity...
+    assert beat["runtime_instance_id"] == ""
+    # ...and the caller still says why it did no executor-bound work.
+    assert _refusal_rows(tmp_path)[f"universe:{UNIVERSE}:-"] == "no_serving_runtime"
+
+
+def test_a_paused_universe_still_beats(
+    tmp_path: Path,
+    registered: Automation,
+    monkeypatch,
+) -> None:
+    """Skipping the beat while paused turns the P0 pause repair into a restart
+    loop: a restart preserves `.pause`, so the daemon would never beat again."""
+    from tinyassets.runtime.assigned_queue_consumer import (
+        supervisor_heartbeat_filename,
+    )
+
+    monkeypatch.setattr(
+        "tinyassets.provider_serving_binding.list_serving_universes",
+        lambda _base: [UNIVERSE],
+    )
+    monkeypatch.setattr(
+        AssignedQueueConsumer, "_serving_runtime", lambda self, *a, **k: None
+    )
+    (tmp_path / UNIVERSE / ".pause").write_text("owner paused", encoding="utf-8")
+    consumer, _inline = _consumer_with_inline_executor(tmp_path)
+
+    try:
+        consumer.poll_once()
+    finally:
+        consumer.stop()
+
+    assert (
+        tmp_path / UNIVERSE / supervisor_heartbeat_filename(consumer.consumer_id)
+    ).is_file()
 
 
 # -- 7. The real path ---------------------------------------------------------

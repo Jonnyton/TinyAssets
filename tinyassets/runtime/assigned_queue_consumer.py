@@ -593,12 +593,20 @@ class AssignedQueueConsumer:
             QUEUE_PROTOCOL_VERSION,
         )
 
+        # The BEAT is unconditional; only the descriptor write and the returned
+        # audience need a runtime. Liveness is not activity (verified on the
+        # droplet 2026-08-29): `_serving_runtime` returns None for every universe
+        # now that the runtime rows are fleet-era, so an early return here left
+        # production with no `.worker_supervisor*.json` newer than 16 hours.
+        # `deploy/daemon-watchdog.sh` restarts the daemon when the freshest beat
+        # is older than 900s, so its timer had to stay disabled -- and the
+        # host-services installer refuses to run while it is. A daemon that is
+        # polling is alive whether or not it has anything to execute, and the
+        # watchdog asks only that question.
         context = self._serving_runtime(universe_id)
-        if context is None:
-            return None
-        daemon, runtime = context
+        daemon = None if context is None else context[0]
         now = datetime.now(timezone.utc)
-        runtime_id = str(runtime["runtime_instance_id"])
+        runtime_id = "" if context is None else str(context[1]["runtime_instance_id"])
         build_sha = os.environ.get("TINYASSETS_BUILD_SHA", "").strip().lower()
         if not _is_hex_sha(build_sha):
             build_sha = _release_build_sha()
@@ -618,12 +626,16 @@ class AssignedQueueConsumer:
                 now + timedelta(seconds=DESCRIPTOR_VALIDITY_SECONDS)
             ).isoformat(),
         }
-        set_worker_queue_descriptor(
-            self.base_path,
-            runtime_instance_id=runtime_id,
-            descriptor=descriptor,
-            expected_worker_id=self.consumer_id,
-        )
+        if runtime_id:
+            # A descriptor is a CLAIM on a runtime row; with no runtime there is
+            # nothing to claim, and writing one keyed on "" would invent an
+            # executor identity. The beat below still goes out.
+            set_worker_queue_descriptor(
+                self.base_path,
+                runtime_instance_id=runtime_id,
+                descriptor=descriptor,
+                expected_worker_id=self.consumer_id,
+            )
         beat = {
             "ts": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "phase": "polling",
@@ -640,11 +652,16 @@ class AssignedQueueConsumer:
             **descriptor,
         }
         universe = self.base_path / universe_id
+        universe.mkdir(parents=True, exist_ok=True)
         filename = supervisor_heartbeat_filename(self.consumer_id)
         target = universe / filename
         temporary = universe / f"{filename}.tmp"
         temporary.write_text(json.dumps(beat), encoding="utf-8")
         temporary.replace(target)
+        if daemon is None:
+            # Beat published, no audience: the caller records `no_serving_runtime`
+            # and skips the work that genuinely needs an executor identity.
+            return None
         return BackgroundBranchExecutorAudience(
             executor_class=BackgroundBranchExecutorClass.CLOUD,
             daemon_id=str(daemon["daemon_id"]),
