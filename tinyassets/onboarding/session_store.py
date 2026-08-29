@@ -82,6 +82,10 @@ REFRESH_SESSION_TTL = 7 * 24 * 3600
 #: How long a superseded handle keeps resolving. Covers a multi-tab rotation
 #: race; short enough that a stolen handle dies about a rotation after capture.
 GRACE_SECONDS = 120
+#: Expired records (tombstones past grace, sessions past TTL) are swept on any
+#: store use at most this often, so a rotated-away handle leaves the disk within
+#: a minute of its grace ending -- not only at the next restart.
+_SWEEP_INTERVAL = 60
 #: ``secrets.token_urlsafe(32)`` is 43 url-safe characters.
 _HANDLE_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 #: Strictly base64url (32 bytes = 43 chars, optional single pad) or hex. NOT
@@ -97,6 +101,7 @@ _KIND_TOMBSTONE = "tombstone"
 
 _key: bytes | None = None
 _initialised: set[str] = set()
+_last_sweep: float = 0.0
 
 
 class SessionStoreUnavailable(RuntimeError):
@@ -116,8 +121,9 @@ def _reset_for_tests() -> None:
     the first test's key would seal records the next test cannot open, and the
     one-time legacy discard would be skipped for every directory after the first.
     """
-    global _key
+    global _key, _last_sweep
     _key = None
+    _last_sweep = 0.0
     _initialised.clear()
 
 
@@ -223,6 +229,12 @@ def store_dir() -> Path:
         _discard_legacy_store(root)
         _sweep_expired(directory)
         _initialised.add(marker)
+    else:
+        global _last_sweep
+        now = time.time()
+        if now - _last_sweep >= _SWEEP_INTERVAL:
+            _last_sweep = now
+            _sweep_expired(directory)
     return directory
 
 
@@ -289,7 +301,11 @@ def _sweep_expired(directory: Path) -> None:
         if path.suffix != ".json":
             continue
         record = _read_json(path)
-        if record is None or int(record.get("exp") or 0) < now:
+        if record is None:
+            _unlink(path)
+            continue
+        outer = _int(record.get("exp"))
+        if outer is None or outer < now:
             _unlink(path)
 
 
@@ -337,6 +353,16 @@ def _unb64(text: object) -> bytes | None:
         return None
 
 
+def _int(value: object) -> int | None:
+    """A JSON integer, or None. ``bool`` is not an int here, nor is a float or a
+    numeric string: metadata that is not exactly what we wrote is not ours, and a
+    record whose metadata we cannot read fails CLOSED (deleted) instead of raising
+    into the request and turning one bad file into a standing 500."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
 def _aad(handle: str, kind: str) -> bytes:
     """Authenticated-but-public context: the handle AND the record kind.
 
@@ -347,23 +373,36 @@ def _aad(handle: str, kind: str) -> bytes:
     return f"{kind}\x00{handle}".encode("utf-8")
 
 
-def _seal(handle: str, kind: str, plaintext: bytes, ttl: int) -> dict:
+def _seal(handle: str, kind: str, payload: dict, ttl: int) -> dict:
+    """Seal ``payload`` (a JSON object) with its deadline INSIDE the ciphertext.
+
+    The authenticated deadline is ``until``, sealed with the payload; the outer
+    ``exp`` is a copy kept in plaintext ONLY so the sweep can age records out
+    after a restart that lost an ephemeral key, when nothing decrypts. Readers
+    enforce both, so editing the plaintext ``exp`` cannot extend a session or a
+    tombstone (Codex, round 3): the deadline that admits a record is the one the
+    key signed.
+    """
+    until = int(time.time()) + ttl
+    body = dict(payload)
+    body["until"] = until
     nonce = secrets.token_bytes(12)
-    ciphertext = AESGCM(seal_key()).encrypt(nonce, plaintext, _aad(handle, kind))
+    ciphertext = AESGCM(seal_key()).encrypt(
+        nonce, json.dumps(body).encode("utf-8"), _aad(handle, kind)
+    )
     return {
         "v": _RECORD_VERSION,
         "kind": kind,
         "nonce": _b64(nonce),
         "ct": _b64(ciphertext),
-        # Outside the seal on purpose: the sweep must be able to age records out
-        # after a restart that lost an ephemeral key, when nothing decrypts.
-        "exp": int(time.time()) + ttl,
+        "exp": until,
     }
 
 
-def _open(handle: str, record: dict) -> bytes | None:
-    """The sealed payload, or None if this record is not this handle's."""
-    if int(record.get("v") or 0) != _RECORD_VERSION:
+def _open(handle: str, record: dict, now: int | None = None) -> dict | None:
+    """The sealed payload, or None if this record is not this handle's or its
+    authenticated deadline has passed (when ``now`` is given)."""
+    if _int(record.get("v")) != _RECORD_VERSION:
         return None
     kind = record.get("kind")
     if kind not in (_KIND_SESSION, _KIND_TOMBSTONE):
@@ -373,33 +412,37 @@ def _open(handle: str, record: dict) -> bytes | None:
     if nonce is None or ciphertext is None or len(nonce) != 12:
         return None
     try:
-        return AESGCM(seal_key()).decrypt(nonce, ciphertext, _aad(handle, kind))
+        plaintext = AESGCM(seal_key()).decrypt(nonce, ciphertext, _aad(handle, kind))
     except (InvalidTag, ValueError):
         return None
-
-
-def _open_token(handle: str, record: dict) -> str:
-    """The refresh token in a session record, or ""."""
-    payload = _open(handle, record)
-    if payload is None:
-        return ""
     try:
-        token = payload.decode("utf-8")
-    except UnicodeDecodeError:
+        decoded = json.loads(plaintext.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    until = _int(decoded.get("until"))
+    if until is None or (now is not None and until < now):
+        return None
+    return decoded
+
+
+def _open_token(handle: str, record: dict, now: int) -> str:
+    """The refresh token in a live session record, or ""."""
+    decoded = _open(handle, record, now)
+    if decoded is None:
+        return ""
+    token = decoded.get("rt")
+    if not isinstance(token, str):
         return ""
     return token if 0 < len(token) <= _MAX_TOKEN else ""
 
 
-def _open_successor(handle: str, record: dict) -> str:
-    """The successor handle in a tombstone, or ""."""
-    payload = _open(handle, record)
-    if payload is None:
-        return ""
-    try:
-        decoded = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        return ""
-    if not isinstance(decoded, dict):
+def _open_successor(handle: str, record: dict, now: int | None = None) -> str:
+    """The successor handle in a tombstone, or "". ``now=None`` skips the
+    deadline: logout must find the successor even after grace."""
+    decoded = _open(handle, record, now)
+    if decoded is None:
         return ""
     successor = decoded.get("succ")
     if not isinstance(successor, str) or not valid_handle(successor):
@@ -421,12 +464,7 @@ def mint(refresh_token: str) -> str:
     handle = secrets.token_urlsafe(32)
     _write_record(
         handle,
-        _seal(
-            handle,
-            _KIND_SESSION,
-            refresh_token.encode("utf-8"),
-            REFRESH_SESSION_TTL,
-        ),
+        _seal(handle, _KIND_SESSION, {"rt": refresh_token}, REFRESH_SESSION_TTL),
     )
     return handle
 
@@ -448,19 +486,21 @@ def read(handle: str) -> tuple[str, str]:
         _unlink(path)
         return ("", "")
     now = int(time.time())
-    if int(record.get("exp") or 0) < now:
-        # For a tombstone this IS the end of the grace window.
+    outer = _int(record.get("exp"))
+    if outer is None or outer < now:
+        # Malformed metadata is not ours; an expired outer deadline is the sweep
+        # hint agreeing with the sealed one. Either way the record goes.
         _unlink(path)
         return ("", "")
 
     if record.get("kind") == _KIND_TOMBSTONE:
-        successor = _open_successor(handle, record)
+        successor = _open_successor(handle, record, now)
         if not successor:
             _unlink(path)
             return ("", "")
         return _read_successor(successor, now)
 
-    token = _open_token(handle, record)
+    token = _open_token(handle, record, now)
     if not token:
         _unlink(path)
         return ("", "")
@@ -473,7 +513,8 @@ def _read_successor(successor: str, now: int) -> tuple[str, str]:
     record = _read_json(path)
     if record is None:
         return ("", "")
-    if int(record.get("exp") or 0) < now:
+    outer = _int(record.get("exp"))
+    if outer is None or outer < now:
         _unlink(path)
         return ("", "")
     if record.get("kind") != _KIND_SESSION:
@@ -481,7 +522,7 @@ def _read_successor(successor: str, now: int) -> tuple[str, str]:
         # a token AuthKit has already retired and the caller would 401 with no
         # way back; failing closed lets it fall through to the cookie instead.
         return ("", "")
-    token = _open_token(successor, record)
+    token = _open_token(successor, record, now)
     if not token:
         _unlink(path)
         return ("", "")
@@ -505,12 +546,7 @@ def rotate(current_handle: str, new_refresh_token: str) -> str:
         return new_handle  # nothing there to supersede
     _write_record(
         current_handle,
-        _seal(
-            current_handle,
-            _KIND_TOMBSTONE,
-            json.dumps({"succ": new_handle}).encode("utf-8"),
-            GRACE_SECONDS,
-        ),
+        _seal(current_handle, _KIND_TOMBSTONE, {"succ": new_handle}, GRACE_SECONDS),
     )
     return new_handle
 

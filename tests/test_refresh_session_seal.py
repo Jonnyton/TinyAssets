@@ -759,3 +759,89 @@ def test_the_onboarding_package_cannot_be_imported_without_arming():
         "arm() must be the last module-level statement, so importing the module "
         "loads the key and scrubs the environment"
     )
+
+
+# --- 9. authenticated deadlines, malformed metadata, continuous sweep (round 3) --
+
+
+def test_editing_the_outer_exp_cannot_extend_a_session(monkeypatch):
+    """The plaintext `exp` is a sweep hint. The deadline that admits a record is
+    sealed with it; pushing the hint ten years out buys an attacker with write
+    access to the data dir nothing once the sealed deadline has passed."""
+    handle = session_store.mint("RT-live")
+    path = session_store._record_path(handle)
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["exp"] = int(time.time()) + 10 * 365 * 24 * 3600
+    path.write_text(json.dumps(record), encoding="utf-8")
+    later = time.time() + session_store.REFRESH_SESSION_TTL + 1
+    monkeypatch.setattr(session_store.time, "time", lambda: later)
+    assert session_store.read(handle) == ("", "")
+    assert not path.exists()
+
+
+def test_editing_the_outer_exp_cannot_extend_a_tombstone(monkeypatch):
+    old = session_store.mint("RT-1")
+    new = session_store.rotate(old, "RT-2")
+    path = session_store._record_path(old)
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert record["kind"] == "tombstone"
+    record["exp"] = int(time.time()) + 10 * 365 * 24 * 3600
+    path.write_text(json.dumps(record), encoding="utf-8")
+    later = time.time() + session_store.GRACE_SECONDS + 1
+    monkeypatch.setattr(session_store.time, "time", lambda: later)
+    assert session_store.read(old) == ("", "")
+    assert session_store.read(new) == ("RT-2", new)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("exp", "not-an-int"), ("exp", None), ("exp", 1.5), ("exp", True), ("v", "1"), ("v", None)],
+)
+def test_malformed_metadata_fails_closed_instead_of_raising(field, value):
+    """A record whose metadata is not exactly what we wrote is not ours: it is
+    deleted and the read returns nothing -- never a ValueError that turns one bad
+    file into a standing 500 on the token endpoint."""
+    handle = session_store.mint("RT-m")
+    path = session_store._record_path(handle)
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record[field] = value
+    path.write_text(json.dumps(record), encoding="utf-8")
+    assert session_store.read(handle) == ("", "")
+    assert not path.exists()
+
+
+def test_expired_tombstones_are_swept_without_a_restart(monkeypatch):
+    old = session_store.mint("RT-1")
+    session_store.rotate(old, "RT-2")
+    tomb = session_store._record_path(old)
+    assert tomb.exists()
+    later = time.time() + session_store.GRACE_SECONDS + session_store._SWEEP_INTERVAL + 1
+    monkeypatch.setattr(session_store.time, "time", lambda: later)
+    session_store.mint("RT-3")  # any store use after the interval sweeps
+    assert not tomb.exists()
+
+
+def test_a_real_child_process_does_not_inherit_the_key(monkeypatch):
+    """Not a dictionary inspection: an actual child process, spawned with the env
+    the provider layer would hand it, reports the key absent."""
+    import subprocess
+    import sys
+
+    monkeypatch.setenv(
+        session_store.SEAL_KEY_ENV,
+        base64.urlsafe_b64encode(secrets.token_bytes(32)).decode(),
+    )
+    session_store._reset_for_tests()
+    session_store.arm()
+    from tinyassets.providers import base as provider_base
+
+    env = provider_base.subprocess_env_without_api_keys() or os.environ.copy()
+    out = subprocess.run(
+        [sys.executable, "-c", "import os; print('TINYASSETS_SESSION_SEAL_KEY' in os.environ)"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert out.stdout.strip() == "False", out
