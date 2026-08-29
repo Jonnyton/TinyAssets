@@ -1,14 +1,3 @@
-# Worktree purpose
-
-Purpose: host-actions-google-published
-Provider: claude-code
-Branch: claude/host-actions-google-published
-Base ref: origin/main
-Issue/PR: TODO — link the issue, PR, or openspec/changes/ dir
-PLAN refs: TODO — relevant PLAN.md module(s)
-Ship condition: TODO — what must be true to merge
-Abandon condition: TODO — when to sweep this lane
-Pickup hints: TODO — where to resume
-Memory refs: TODO — prior-provider memory/artifact paths
-Related implications: TODO — linked concerns / research artifacts
-Idea feed refs: (none yet)
+# Purpose
+Record the founder principle (2026-08-29): nothing runs unless it lives inside a user's
+universe under that user's control. Decides the fleet prune and the background-loop fix.

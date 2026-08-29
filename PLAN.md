@@ -260,6 +260,20 @@ always-loaded set grew from 17.6 KB to 62 KB — and **a check-adding commit mus
 own tests as its gate**, since the `#46 c880f94` regression shipped when the mojibake hook protected
 downstream commits but not itself, stacking 4 commits on red main.
 
+**Nothing runs unless it lives inside a user's universe, under that user's control** (founder,
+2026-08-29). Every execution — a chat turn, a branch run, a background automation, a schedule
+firing — belongs to exactly one universe and to the person who owns it, and that person can see
+it, pause it, and delete it from their own surface. The platform never supplies an LLM and never
+runs an actor of its own: no host-run worker fleet, no platform-level agent container, no
+"host user" acting inside universes. Corollaries: (1) a registration that can never fire (a
+schedule whose scheduler is dark, an automation whose executor cannot activate) must refuse
+loudly at registration, never sit silently; (2) re-issuing execution authority under a new
+identity goes through the user's surface, never a server-side mint on their behalf; (3)
+infrastructure processes (canary, reconciler, log shipper) are not universe work — they may
+run, but they never invoke an LLM or act as a universe. Stated while deciding the fate of the
+retired cloud-worker fleet still declared in `deploy/compose.yml`; the fleet is out, the
+user-owned background loop stays.
+
 **Cleanup operations against scene-attributed data must scope across all DBs that hold scene-attributed rows.** Generalizes the Fix E lesson (task #49): a cleanup path that prunes one DB but not its sibling leaves orphan derivatives that masquerade as canon on the next retrieval cycle. When a new DELETE or mutation operates on rows keyed to scene_id (or any cross-store attribution), scope it against both `knowledge.db` and `story.db` from the start, or explicitly document the opt-out with reason. Per the migration-audit follow-up at `docs/audits/2026-04-19-schema-migration-followups.md`.
 
 ---
