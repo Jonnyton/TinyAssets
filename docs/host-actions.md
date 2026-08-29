@@ -183,6 +183,22 @@ Recovered 2026-08-27 from PR #2463, which carried it on the retired board and ha
 
 ---
 
+### Decide whether Claude may serve turns in production (`TINYASSETS_ALLOW_CLAUDE_SERVING`)
+
+**The whole ask: yes or no.** The flag is an operator opt-in that gates *creating* a
+`claude-code` serving binding (`tinyassets/provider_assignment.py`,
+`tinyassets/provider_serving_binding.py`); it is unset in production, so every universe serves on
+codex or an api-key provider. It was the last open task of the streamed-attempts change
+(`openspec/changes/archive/2026-08-29-stream-and-classify-provider-attempts`, task 6.4) and is a
+decision, not a build.
+
+Two facts bear on it: Anthropic does not permit third-party use of a consumer subscription
+through OAuth, so the only legitimate Claude route is the user's own CLI on their own machine
+(client inference); and the claude reader still idle-kills a turn waiting on its own tool
+(`docs/concerns/2026-08-29-claude-reader-tool-wait-idle-gap.md`), which would need fixing before
+any Claude-served universe runs a multi-step job. If the answer is no, delete the flag and this
+row; if yes, the concern above is the prerequisite.
+
 ## Credentials and accounts
 
 ### Mint the PAT that unblocks the deploy chain

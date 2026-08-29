@@ -244,3 +244,4 @@ rejected 2026-08-04 as redundant with `run_graph` and as more pre-built
 complexity. The gap is the missing primitive, not a missing convenience.
 
 Needs promotion to an OpenSpec change before any build.
+- [2026-08-29] (source: #2674 follow-up, owner: engineering, status: captured) Served absolute cap as a user-set budget: the per-universe `absolute_cap_s` / `idle_timeout_s` knobs exist (`_served_knob`); expose them as a user setting through the app/MCP instead of the 3600s constant, alongside a Stop control (`docs/concerns/2026-08-29-no-user-stop-for-a-running-turn.md`).
