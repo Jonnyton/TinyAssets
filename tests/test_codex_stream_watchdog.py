@@ -313,9 +313,27 @@ def test_a_wedged_tool_is_bounded_by_the_tool_wait_not_the_cap(monkeypatch):
     assert proc.killed is True
 
 
+def test_a_recoverable_error_event_does_not_clear_an_open_tool():
+    """Codex round 3 (P1): codex 0.146 emits a top-level `error` for a
+    notification whose will_retry is true - the JSONL projection drops the
+    flag - while the turn stays Running and the tool is still coming back.
+    Clearing the tool on it re-armed idle mid-retry and killed a healthy turn."""
+    proc = FakeProc([
+        _ev("thread.started"),
+        _tool("item.started"),
+        _ev("error", message="transient upstream hiccup"),
+        (0.7, _tool("item.completed")),         # retry succeeds after 0.7s
+        _ev("turn.completed", usage={"input_tokens": 1, "output_tokens": 1}),
+    ])
+    out, _ = _run(proc)                          # idle is 0.25; must survive
+    assert b"turn.completed" in out
+    assert proc.killed is False
+
+
 def test_a_terminal_failure_event_rearms_the_idle_watchdog():
-    """`turn.failed` / `error` while a tool is open: the tool is not coming
-    back, so idle resumes instead of waiting out the tool allowance."""
+    """`turn.failed` while a tool is open: the tool is not coming back, so
+    idle resumes instead of waiting out the tool allowance. (Only turn.failed:
+    see the recoverable `error` test above.)"""
     proc = FakeProc([
         _ev("thread.started"),
         _tool("item.started"),
@@ -409,3 +427,46 @@ def test_only_the_json_path_streams_and_the_legacy_path_is_verbatim():
     assert "await _stream_codex_exec(" in call_site
     assert "proc.communicate(input=full_input.encode" in call_site
     assert "timeout=config.timeout," in call_site
+
+
+# --- round 3: a caller's cancellation must survive the cleanup -----------------
+
+
+def test_a_callers_cancellation_propagates_through_the_reap():
+    """Codex round 3 (P1): `suppress(BaseException)` around the bounded reap
+    swallowed a CancelledError delivered during the gather, so the caller got
+    `(b'', b'')` back instead of its cancellation. Reproduced with an stderr
+    drain that resists its first cancel, so the reap is still in progress when
+    the caller cancels."""
+
+    class _ResistantStderr:
+        def __init__(self):
+            self.resisted = False
+
+        async def read(self, _n):
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                if not self.resisted:
+                    self.resisted = True
+                    await asyncio.sleep(3600)   # ignore the first cancel
+                raise
+            return b""
+
+    async def go():
+        proc = FakeProc([_ev("thread.started"), _ev("turn.completed")])
+        proc.stderr = _ResistantStderr()
+        task = asyncio.create_task(_stream_codex_exec(
+            proc, b"", ModelConfig(timeout=30, **_PROFILE), start=time.monotonic(),
+        ))
+        # EOF is immediate; the 2s stderr grace then the reap follow. Cancel
+        # while the reap's bounded gather is in flight.
+        await asyncio.sleep(2.6)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            return "cancelled"
+        return "returned"
+
+    assert asyncio.run(go()) == "cancelled"

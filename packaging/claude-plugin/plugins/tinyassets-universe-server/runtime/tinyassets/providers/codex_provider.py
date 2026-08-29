@@ -334,7 +334,12 @@ _CODEX_LIVENESS_PREFIXES = ("thread.", "turn.", "item.", "error")
 #: Terminal-failure events. They still prove the process is alive, but a tool
 #: that was open when the turn failed is not coming back, so the idle watchdog
 #: re-arms rather than waiting out the tool allowance (Codex round 2, P1).
-_CODEX_TERMINAL_FAILURE_TYPES = frozenset({"turn.failed", "error"})
+#: ONLY ``turn.failed``: codex 0.146 also emits a top-level ``error`` for a
+#: notification whose ``will_retry`` is true - the JSONL projection drops that
+#: flag - while the turn stays Running and the open tool is still coming back.
+#: Treating it as terminal re-armed idle mid-retry and killed a healthy turn
+#: (Codex round 3, P1, reproduced). ``error`` remains plain liveness.
+_CODEX_TERMINAL_FAILURE_TYPES = frozenset({"turn.failed"})
 #: How long a turn may wait on ONE open tool before that wait counts as idle.
 #: The tool-in-flight rule exists because a 30s idle budget killed healthy
 #: 42s tool calls; but "not idle until the absolute cap" turned a wedged tool
@@ -515,21 +520,28 @@ async def _stream_codex_exec(
                     tools_in_flight.add(key)
                 elif etype in ("item.completed", "item.failed"):
                     tools_in_flight.discard(key)
+        # NORMAL exit only (we fell out of the loop on EOF): let the stderr
+        # drain FINISH before the reap below cancels it. On a clean EOF the
+        # child's stderr is usually a few bytes still in flight, and cancelling
+        # first returned b"" for stderr the caller then parsed for auth / bwrap
+        # signals. Bounded, so a child holding fd 2 open cannot hang us. This
+        # sits INSIDE the try on purpose: an exceptional or cancelled exit must
+        # not be held for it (Codex round 3, P2 - the grace delayed a caller's
+        # cancellation by 2-7s).
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(asyncio.shield(stderr_task), timeout=2)
     finally:
         # Every exit path - EOF, a classified raise, a reader exception, or
         # CALLER CANCELLATION - reaps BOTH helper tasks, bounded, so neither
         # drain leaks (Codex round 2, P2; same ownership the claude reader
         # settled on). ``_terminate`` is idempotent and only kills a process
         # that is still running, so a clean exit keeps its real returncode.
+        # suppress(Exception), NOT BaseException: a CancelledError delivered to
+        # the caller during this bounded gather must propagate, or the caller's
+        # cancellation is silently lost (Codex round 3, P1, reproduced).
         stdin_task.cancel()
-        # Let the stderr drain FINISH before cancelling it: on a clean EOF the
-        # child's stderr is usually a few bytes still in flight, and cancelling
-        # first returned b"" for stderr the caller then parsed for auth /
-        # bwrap signals. Bounded, so a child holding fd 2 open cannot hang us.
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(asyncio.shield(stderr_task), timeout=2)
         stderr_task.cancel()
-        with contextlib.suppress(BaseException):
+        with contextlib.suppress(Exception):
             await asyncio.wait_for(
                 asyncio.gather(stdin_task, stderr_task, return_exceptions=True),
                 timeout=5,
