@@ -52,7 +52,6 @@ def test_authority_core_cannot_import_operational_adapters() -> None:
         "tinyassets.api",
         "tinyassets.bid",
         "tinyassets.branch_tasks",
-        "tinyassets.cloud_worker",
         "tinyassets.credentials",
         "tinyassets.daemon_registry",
         "tinyassets.effectors",
@@ -78,7 +77,7 @@ import importlib, json, sys
 targets = [
     "tinyassets.api.runs",
     "tinyassets.runs",
-    "tinyassets.cloud_worker",
+    "tinyassets.runtime.assigned_queue_consumer",
     "tinyassets.branch_tasks_v2",
 ]
 for target in targets:

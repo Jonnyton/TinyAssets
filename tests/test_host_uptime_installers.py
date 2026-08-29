@@ -1382,7 +1382,7 @@ def test_host_mutation_workflow_shell_blocks_parse():
             "Repair — disk full (docker prune + journalctl vacuum)",
             "Repair — image pull failure (release-state rollback target)",
             "Repair — watchdog hot-loop (stop + sleep 60 + start)",
-            "Repair — provider_exhaustion (stop worker + .pause)",
+            "Repair — provider_exhaustion (.pause every universe)",
             "Attempt compose restart",
         ),
     }

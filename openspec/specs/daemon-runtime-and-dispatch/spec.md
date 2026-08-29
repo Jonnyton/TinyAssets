@@ -4,7 +4,7 @@
 
 ## Purpose
 
-The 24/7 uptime engine: stateless dispatcher selection, file-locked lease claims, supervisor with backoff and healthcheck, host singleton lock, persisted scheduler, fleet idle-cycle single-flight, and the durable work-target registry.
+The 24/7 uptime engine: stateless dispatcher selection, file-locked lease claims, the daemon's own assigned-queue consumer, host singleton lock, persisted scheduler, same-data-dir idle-cycle single-flight, and the durable work-target registry. The host-run worker fleet (supervisor, worker healthcheck) was deleted 2026-08-29: nothing runs outside a user's universe.
 ## Requirements
 ### Requirement: Dispatcher selection is a stateless deterministic function invoked at cycle boundaries
 The branch-task dispatcher (`tinyassets.dispatcher`) SHALL select the next task with a pure, stateless function that reads the persisted queue, keeps only `pending` tasks whose trigger-source tier is enabled, scores each by a deterministic `tier_weight + recency_decay + user_boost` formula, and returns the single highest-scoring task (ties broken by oldest `queued_at`) or `None` when nothing is eligible. It SHALL be invoked exactly at graph-cycle boundaries — once at daemon startup and once between cycle-wrapper returns — and SHALL NOT run its own timer or continuous polling loop. The selector SHALL only read the queue and SHALL never claim or mutate it, and deferred market and goal-affinity terms SHALL contribute zero until their coefficients are configured, without re-shaping the score.
@@ -53,43 +53,8 @@ At daemon startup the runtime (`fantasy_daemon.__main__` dispatcher-startup hook
 - **WHEN** the worker id is blank or equal to the shared host default
 - **THEN** `reclaim_predecessor_tasks` reclaims nothing and the lease TTL remains the only fallback
 
-### Requirement: The supervisor keeps one daemon subprocess alive with backoff, producer restart, auth quarantine, and graceful drain
-The cloud-worker supervisor (`tinyassets.cloud_worker` run-supervisor loop) SHALL spawn the daemon subprocess, wait for its exit, and respawn it with exponential backoff — a shorter idle backoff after clean (no-work) exits and a longer crash backoff after non-zero exits — until a SIGTERM/SIGINT stop is requested. While a subprocess runs it SHALL poll for newly-queued branch tasks and restart the child so pending work is picked up, SHALL write a phase-tagged heartbeat file, and SHALL quarantine itself (skip the spawn, beat, back off, re-check) when the writer provider is unauthenticated so a dead-auth worker never claims-and-fails tasks. On a stop signal, once the child's death is CONFIRMED, it SHALL release that worker's own orphaned leases so a live peer can pick the work up immediately rather than waiting out the lease TTL.
-
-#### Scenario: backoff differs by exit kind
-- **WHEN** the subprocess exits cleanly versus crashing
-- **THEN** the supervisor sleeps an idle backoff after the clean exit and a crash backoff after the crash
-- **AND** consecutive exits of the same kind grow the backoff up to its ceiling
-
-#### Scenario: newly queued work restarts the child
-- **WHEN** a pending branch task appears while the subprocess is running and no branch task is already running
-- **THEN** the supervisor restarts the subprocess so the pending task is claimed on the next spawn
-
-#### Scenario: an unauthenticated writer quarantines the worker
-- **WHEN** the writer provider reports `not_logged_in` before a spawn
-- **THEN** the supervisor skips the spawn, writes an `auth_quarantined` heartbeat, and backs off without claiming any task
-
-#### Scenario: confirmed child death releases its leases
-- **WHEN** a stop signal terminates the child and its exit is confirmed
-- **THEN** the supervisor releases that worker's own orphaned leases during graceful drain
-
-### Requirement: The container healthcheck asserts liveness, not mere process existence
-The container healthcheck (`tinyassets.cloud_worker_healthcheck`) SHALL report healthy only when the supervisor heartbeat file exists, is parseable, and is fresh relative to the supervisor's own declared backoff sleep bounded by a hard staleness floor, AND no pickable branch task has been waiting past the pickable-staleness bound. It SHALL exit 0 when healthy and exit 1 with a one-line reason otherwise, so a wedged-but-running worker (a stale heartbeat or pickable work stuck unpicked) is reported unhealthy and self-heals via container restart rather than passing a naive process-alive check.
-
-#### Scenario: a missing or stale heartbeat is unhealthy
-- **WHEN** the supervisor heartbeat file is absent, unreadable, or older than its allowed staleness
-- **THEN** the healthcheck reports unhealthy and exits 1 with a one-line reason
-
-#### Scenario: stuck pickable work is unhealthy
-- **WHEN** a pickable branch task has been waiting past the pickable-staleness bound while the heartbeat is stale
-- **THEN** the healthcheck reports unhealthy
-
-#### Scenario: a beating supervisor with no stuck work is healthy
-- **WHEN** the heartbeat is fresh and no pickable work is waiting past the bound
-- **THEN** the healthcheck reports healthy and exits 0
-
-### Requirement: Host-singleton and fleet idle-cycle coordination fail safe
-Two file-lock coordination primitives SHALL keep the runtime safe under concurrency. `tinyassets.singleton_lock` SHALL enforce a single host daemon instance via an OS-exclusive file lock that is the ground truth, with a PID sidecar as a human-readable breadcrumb; a PID sidecar without a held OS lock SHALL be treated as stale and overwritten on acquisition. `tinyassets.idle_cycle` SHALL dedupe the no-work heartbeat cycle across a fleet with a run lock plus a freshness stamp, skipping when another worker is mid-cycle or has a fresh stamp, and SHALL fail OPEN — degrading to a possibly-duplicate cycle, never a stalled heartbeat — when its lock or stamp I/O fails.
+### Requirement: Host-singleton and same-data-dir idle-cycle coordination fail safe
+Two file-lock coordination primitives SHALL keep the runtime safe under concurrency. `tinyassets.singleton_lock` SHALL enforce a single host daemon instance via an OS-exclusive file lock that is the ground truth, with a PID sidecar as a human-readable breadcrumb; a PID sidecar without a held OS lock SHALL be treated as stale and overwritten on acquisition. `tinyassets.idle_cycle` SHALL dedupe the no-work heartbeat cycle across any daemon processes sharing one data directory with a run lock plus a freshness stamp, skipping when another process is mid-cycle or has a fresh stamp, and SHALL fail OPEN — degrading to a possibly-duplicate cycle, never a stalled heartbeat — when its lock or stamp I/O fails. As-built note (2026-08-29): the host-run worker fleet this originally coordinated is deleted; the daemon is the only executor and the primitive stays in `fantasy_daemon` for whatever processes share the directory.
 
 #### Scenario: a second host instance cannot acquire the lock
 - **WHEN** a second process attempts to acquire the singleton lock while another live process holds it
@@ -100,7 +65,7 @@ Two file-lock coordination primitives SHALL keep the runtime safe under concurre
 - **THEN** acquisition succeeds and the sidecar is overwritten with the new PID
 
 #### Scenario: a fresh foreign idle-cycle stamp is skipped
-- **WHEN** a worker attempts the idle cycle while a different worker's stamp is within the freshness window
+- **WHEN** a daemon process attempts the idle cycle while a different process's stamp is within the freshness window
 - **THEN** it declines the slot and does not run a duplicate no-work cycle
 
 #### Scenario: idle-cycle coordination I/O failure fails open

@@ -1,7 +1,7 @@
 ## 1. Retire the fleet
 
-- [ ] 1.1 Remove the four `worker*` services and fleet env from `deploy/compose.yml`; fetch the droplet's live compose, reconcile, and only then let `deploy-prod.yml` ship the file. Verify: `docker compose config --services` on the droplet lists daemon/cloudflared/logs only; `deployed_sha` green.
-- [ ] 1.2 Delete `tinyassets/cloud_worker.py`, `cloud_worker_healthcheck.py`, `.github/workflows/reconcile-stale-fleet.yml`, the `DEFAULT_HOST_USER` import in `fantasy_daemon/__main__.py`; relocate `_worker_model_for_provider` and `supervisor_heartbeat_filename`; update the named tests and `scripts/check_background_authority_inventory.py`, `scripts/retire_cheat_loop_deploy_fence.py`; rebuild the plugin mirror; sync the REMOVED requirements into `daemon-runtime-and-dispatch`. Verify: full pytest + `mirror-parity` green.
+- [ ] 1.1 (repo half landed 2026-08-29; droplet reconcile pending) Remove the four `worker*` services and fleet env from `deploy/compose.yml`; fetch the droplet's live compose, reconcile, and only then let `deploy-prod.yml` ship the file. Verify: `docker compose config --services` on the droplet lists daemon/cloudflared/logs only; `deployed_sha` green.
+- [x] 1.2 Delete `tinyassets/cloud_worker.py`, `cloud_worker_healthcheck.py`, `.github/workflows/reconcile-stale-fleet.yml`, the `DEFAULT_HOST_USER` import in `fantasy_daemon/__main__.py`; relocate `_worker_model_for_provider` and `supervisor_heartbeat_filename`; update the named tests and `scripts/check_background_authority_inventory.py`, `scripts/retire_cheat_loop_deploy_fence.py`; rebuild the plugin mirror; sync the REMOVED requirements into `daemon-runtime-and-dispatch`. Verify: full pytest + `mirror-parity` green.
 
 ## 2. Schedules obey the rule
 

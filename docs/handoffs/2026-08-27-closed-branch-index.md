@@ -56,7 +56,7 @@ or the most risk of being re-done:
 | PR | Finding |
 |---|---|
 | **#2427** fail-safe deploy | **Superseded.** `deploy-prod.yml` already routes through `deploy/deploy_fail_safe.sh` (7 references), and the swap+canary+rollback chain was verified end-to-end live on 2026-08-23. Nothing to resume. |
-| **#2411** retire cloud-worker fleet | **Genuinely unlanded.** `tinyassets/cloud_worker.py` still exists, so the fleet is not retired. 100 files of real work. Reopen this one if fleet retirement is wanted. |
+| **#2411** retire cloud-worker fleet | **Landed by other means, 2026-08-29.** The fleet was deleted from `main` under `openspec/changes/user-owned-automations` tasks 1.1/1.2 (`tinyassets/cloud_worker.py`, the healthcheck, the four compose `worker*` services, `reconcile-stale-fleet.yml`). Do not resume the #2411 diff. |
 | **#2413** Slack serving-binding routing | **Target file is gone** — `tinyassets/app_channel_routing.py` no longer exists on `main`, so this cannot merge as written. It also carried a Codex ADAPT verdict (`>=` violates exact-revision authority). Re-derive from the current code rather than resuming the diff. |
 | Lane 2, `claude/fleet-slice1-reconciler` | **Already landed.** `tinyassets/runtime_reconcile.py` carries `build_stale_fleet_plan`, and `reconcile-stale-retired-fleet-artifacts` is archived complete. The 2026-08-26 handoff guessed this; it is confirmed. The branch is redundant. |
 
