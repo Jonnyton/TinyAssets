@@ -25,7 +25,7 @@ QUEUED_STATUSES = ("pending", "dev-ready")
 HOST_STATUSES = ("host-action", "host-decision", "host-review", "monitoring")
 TASK_CEILING = 12
 CEILING_REVIEW_DATE = "2026-08-11"
-BROAD_COLLISION_ATOMS = {"REFLECTION.md", ".agents/worktrees.md"}
+BROAD_COLLISION_ATOMS = {"REFLECTION.md"}
 
 
 def _task_counts_text(text: str) -> tuple[int, int]:

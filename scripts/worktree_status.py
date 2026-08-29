@@ -27,7 +27,7 @@ REQUIRED_PURPOSE_FIELDS = (
     "Provider:",
     "Branch:",
     "Base ref:",
-    "STATUS/Issue/PR:",
+    "Issue/PR:",   # wt.py's scaffold; a legacy "STATUS/Issue/PR:" still matches
     "PLAN refs:",
     "Ship condition:",
     "Abandon condition:",
@@ -514,7 +514,7 @@ def _action_for_state(
             return prefix
         return "STATUS-backed parked lane; confirm PR before foldback."
     if state == "READY_TO_REMOVE":
-        return "Log remove/sweep in .agents/worktrees.md after ideas are extracted."
+        return "Extract ideas, then `python scripts/wt.py done` (the PR is the record)."
     if live_safety == "LIVE_MAIN":
         return "Main worktree; production-impacting changes require live gates."
     return "Inspect before pickup."
@@ -620,7 +620,7 @@ def main(argv: list[str]) -> int:
         print("\n# Dry-run orphan/removable sweep commands")
         for command in sweep_commands(statuses):
             print(command)
-        print("# Log any removal in .agents/worktrees.md before running it.")
+        print("# Prefer `python scripts/wt.py done`; the PR is the record of the lane.")
     return 0
 
 
