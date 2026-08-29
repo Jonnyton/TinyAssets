@@ -773,6 +773,9 @@ def test_append_one_line_chains_a_fetch_effect_into_the_write_in_one_run(tmp_pat
     from tinyassets import effectors as effectors_pkg
 
     original = "# Title\n\n**Bold** para with `code`, an email a.b@c.d and \\Scripts\\path.\n"
+    original += "".join(
+        f"line {i} of a file longer than the evidence preview\n" for i in range(200)
+    )
     new_line = "Patches by this universe are opened through the request rail.\n"
     monkeypatch.setenv(_HTTP_FLAG, "1")
     data_root, universe_dir, db_path = _setup(tmp_path, scopes=("GET", "PUT"), endpoints=[
@@ -818,6 +821,11 @@ def test_append_one_line_chains_a_fetch_effect_into_the_write_in_one_run(tmp_pat
     assert sent["sha"] == "blob-sha-1"
     assert _b64.b64decode(sent["content"]).decode() == original + new_line   # exact bytes
     assert "$ta." not in loop.recorded[1]["body"].decode()
+    # The PERSISTED fetch evidence is a bounded preview (what read_graph shows
+    # a model later), while the chain above saw the full body (Codex round 2).
+    persisted = evidence["fetch"][sink]["response"]
+    assert persisted["body_truncated"] is True and len(persisted["body"]) == 4096
+    assert persisted["body_chars"] > 4096 and len(persisted["body_sha256"]) == 64
 
 
 def test_effect_reference_sees_only_earlier_nodes(tmp_path, monkeypatch):
@@ -926,3 +934,75 @@ def test_depth_and_size_bounds_are_stated_and_enforced():
     assert err and "the bound is" in err
     small = apply_body_transforms({"content": {"$ta.base64": "ok"}}, {})
     assert small == ({"content": _b64.b64encode(b"ok").decode()}, None)
+
+
+def test_effect_references_cannot_reach_headers(tmp_path, monkeypatch):
+    """Codex round 2 (P0): the worker returns every response header; a
+    `set-cookie` must not be forwardable through `$ta.effect`."""
+    prior = {"fetch": {"delivered": True, "response": {
+        "status": 200, "headers": {"set-cookie": "session=rotated-secret"},
+        "body": json.dumps({"sha": "s", "content": "aGk="}),
+    }}}
+    out, err = apply_body_transforms(
+        {"c": {"$ta.effect": "fetch.response.headers.set-cookie"}}, {}, prior_effects=prior,
+    )
+    assert out is None and "only response.body and response.status" in err
+    assert "rotated-secret" not in err
+    ok = apply_body_transforms(
+        {"s": {"$ta.effect": "fetch.response.status"},
+         "h": {"$ta.effect": "fetch.response.body.sha"}},
+        {}, prior_effects=prior,
+    )
+    assert ok == ({"s": 200, "h": "s"}, None)
+    _out, err = apply_body_transforms(
+        {"d": {"$ta.effect": "fetch.delivered"}}, {}, prior_effects=prior,
+    )
+    assert err and "only response.body and response.status" in err
+
+
+def test_unknown_reserved_spellings_are_refused_not_sent():
+    out, err = apply_body_transforms({"content": {"$ta.bas64": "typo"}}, {})
+    assert out is None and "unknown transform '$ta.bas64'" in err
+    # ...even when buried and even without any real transform present
+    out, err = apply_body_transforms({"a": [{"b": {"$ta.nope": 1}}]}, {})
+    assert out is None and "unknown transform" in err
+
+
+def test_deep_plain_bodies_are_refused_not_crashed():
+    """Codex round 2 (P1): 1,100 nested plain dicts used to raise RecursionError
+    in the scan, surfacing as effector_crashed instead of a refusal."""
+    body = {"leaf": 1}
+    for _ in range(1100):
+        body = {"wrap": body}
+    out, err = apply_body_transforms(body, {})
+    assert out is None and "nested deeper than 32" in err
+
+
+def test_the_working_set_budget_refuses_a_repeated_reference_early(monkeypatch):
+    """Codex round 2 (P0): a hundred references to a 5 MiB blob allocated
+    ~1 GiB before the old size check. Charged as produced, the second copy
+    is refused. Scaled: budget 1000 chars, blob 400 chars, referenced 3x."""
+    from tinyassets.effectors import authenticated_external_call as mod
+
+    monkeypatch.setattr(mod, "_MAX_TRANSFORM_WORK_BYTES", 1000)
+    blob = "x" * 400
+    prior = {"fetch": {"response": {"status": 200, "body": json.dumps({"content": blob})}}}
+    one = {"$ta.effect": "fetch.response.body.content"}
+    out, err = apply_body_transforms(
+        {"c": {"$ta.concat": [one, one, one]}}, {}, prior_effects=prior,
+    )
+    assert out is None and "more than 1000 characters" in err
+    out, err = apply_body_transforms({"c": {"$ta.concat": [one, "!"]}}, {}, prior_effects=prior)
+    assert out == {"c": blob + "!"} and err is None
+
+
+def test_bounded_evidence_previews_only_long_bodies():
+    from tinyassets.effectors.authenticated_external_call import bounded_evidence
+
+    short = {"delivered": True, "response": {"status": 200, "body": "hi"}}
+    assert bounded_evidence(short) is short
+    long = {"delivered": True, "response": {"status": 200, "body": "y" * 5000, "headers": {}}}
+    b = bounded_evidence(long)
+    assert b["response"]["body"] == "y" * 4096 and b["response"]["body_truncated"] is True
+    assert b["response"]["body_chars"] == 5000 and b["response"]["status"] == 200
+    assert long["response"]["body"] == "y" * 5000          # the original is untouched

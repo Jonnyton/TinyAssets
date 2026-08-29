@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from tinyassets.effectors.authenticated_external_call import (
     EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+    bounded_evidence,
     run_authenticated_external_call_effector,
 )
 from tinyassets.effectors.wiki_write_back import (
@@ -97,27 +98,29 @@ def run_effects_for_branch(
     """
     del cloud_effect_session  # no per-channel cloud session; kept for call-site compat
     evidence_map: dict[str, dict] = {}
+    # Full generic-call results, kept in memory for THIS dispatch only: later
+    # nodes' packets may reference an earlier node's response.body/status
+    # (`$ta.effect`). What is persisted is `bounded_evidence(...)`, so a
+    # fetched file never re-enters a model through read_graph.
+    chain: dict[str, dict] = {}
     schema_defaulted = _schema_defaulted_keys(getattr(branch, "state_schema", None))
+    # Effects fire in the order nodes are STORED in the branch (write_graph
+    # appends in the order given). That is the "earlier node" contract for
+    # `$ta.effect` — storage order, deliberately not graph execution order,
+    # which effects (all fired after the run) do not observe.
     for node in getattr(branch, "node_defs", None) or []:
         effects = list(getattr(node, "effects", None) or [])
         if not effects:
             continue
         node_id = getattr(node, "node_id", "")
         output_keys = list(getattr(node, "output_keys", None) or [])
-        # A packet may read ONLY what its node was allowed to see (the
-        # compiler's strict-isolation rule: declared input_keys plus
-        # state_schema-defaulted keys) and its own output keys - never the
-        # whole final state (Codex round 1, P0). It may also read the evidence
-        # of EARLIER nodes' generic-call effects in this run, which is how a
-        # fetched file reaches a write packet without passing through a model.
-        allowed_state_keys = (
-            set(getattr(node, "input_keys", None) or []) | schema_defaulted | set(output_keys)
-        )
-        prior_effects = {
-            nid: per[EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL]
-            for nid, per in evidence_map.items()
-            if EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL in per
-        }
+        # A packet may read ONLY the node's declared input_keys plus the
+        # state_schema-defaulted keys - never the whole final state (Codex
+        # round 1, P0). This is NARROWER than the compiler's render view
+        # (which shows everything when isolation is off or no inputs are
+        # declared) on purpose: an effect reads less, never more.
+        allowed_state_keys = set(getattr(node, "input_keys", None) or []) | schema_defaulted
+        prior_effects = dict(chain)
         per_node = evidence_map.setdefault(node_id, {})
         for sink in effects:
             adapter = _EFFECTORS.get(sink)
@@ -164,6 +167,9 @@ def run_effects_for_branch(
                     "error": f"effector crashed: {exc}",
                     "error_kind": "effector_crashed",
                 }
+            if sink == EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL and isinstance(result, dict):
+                chain[node_id] = result
+                result = bounded_evidence(result)
             per_node[sink] = result
     return evidence_map
 

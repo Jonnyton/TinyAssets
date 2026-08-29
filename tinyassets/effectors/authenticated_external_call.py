@@ -41,26 +41,38 @@ request leaves - so a node writes TEXT and references BYTES, and never
 hand-produces base64 or re-types a file (live 2026-08-29: model-generated
 base64 came back ``422 not valid Base64``, then as valid base64 of a
 transcribed file that lost 87 lines, then a "repair" that re-typed the file
-with 36 differences). The names are namespaced so a user's own API payload
-that happens to use ``$ref`` (JSON Schema) or ``$set`` is never hijacked:
+with 36 differences). The ``$ta.`` namespace is RESERVED: a user's own API
+keys (``$ref`` of JSON Schema, ``$set``) are never interpreted, and an unknown
+``$ta.*`` spelling is refused rather than sent as payload.
 
     {"$ta.base64": X}         the base64 of X's UTF-8 bytes
-    {"$ta.from_base64": X}    the UTF-8 text of base64 X (whitespace-tolerant)
-    {"$ta.ref": "key.a.0.b"}  a value from the run's state - the root ``key``
+    {"$ta.from_base64": X}    the UTF-8 text of base64 X (whitespace-tolerant;
+                              bytes that are not UTF-8 text are refused - this
+                              is for text files)
+    {"$ta.ref": "key.a.0.b"}  a value from the run's state; the root ``key``
                               MUST be one of the emitting node's declared
-                              ``input_keys`` (or a state_schema-defaulted key,
-                              or the node's own output key); JSON-encoded
-                              strings are traversed, lists by index
+                              ``input_keys`` or a state_schema-defaulted key
+                              (narrower than the compiler's render view on
+                              purpose: an effect reads less, never more);
+                              JSON-encoded strings are traversed, lists by index
     {"$ta.effect": "node.response.body.x"}
-                              a value from the evidence of an EARLIER node's
-                              effect in the SAME run (effects fire in node
-                              order); ``response.body`` is the sanitized text
-                              the worker returned, traversed as JSON
+                              from the evidence of an EARLIER node's effect in
+                              the SAME run - only ``response.body`` (the
+                              sanitized text the worker returned, traversed
+                              as JSON) and ``response.status``; never headers.
+                              "Earlier" is the order nodes are STORED in the
+                              branch (``write_graph`` appends in the order
+                              given), which is the order effects fire in
     {"$ta.concat": [X, ...]}  the texts joined
 
-X may itself be a transform (nesting is bounded at 32). So "append one line
-to a fetched file" is a two-node branch: ``fetch`` emits a GET packet;
-``write`` emits
+X may itself be a transform. Bounds, all refused as ``invalid_body_transform``
+before anything is sent: nesting deeper than 32 anywhere in the body; a
+cumulative working set over ``_MAX_TRANSFORM_WORK_BYTES`` (charged as each
+value is produced, so a reference repeated a hundred times is refused at the
+second copy, not after allocating them all); a transformed body over
+``_MAX_TRANSFORMED_BODY_BYTES``. So "append one line to a fetched text file"
+is a two-node branch: ``fetch`` (stored first) emits a GET packet; ``write``
+emits
 
     {"sha":     {"$ta.effect": "fetch.response.body.sha"},
      "content": {"$ta.base64": {"$ta.concat": [
@@ -69,10 +81,10 @@ to a fetched file" is a two-node branch: ``fetch`` emits a GET packet;
 
 and the model authored only the line - in ONE run, so the fetched bytes never
 pass through a model or a second ``run_graph``. Refusals are whole: a wrong
-type, an unresolvable or unfenced path, bytes that are not text, or a
-transformed body over ``_MAX_TRANSFORMED_BODY_BYTES`` return the secret-free
-``invalid_body_transform`` error and nothing is sent. A body with no transform
-is sent byte-for-byte as before (including any ``$``-keyed objects of its own).
+type, an unfenced or unresolvable path, or any bound above returns the
+secret-free ``invalid_body_transform`` error and nothing is sent. A body with
+no ``$ta.*`` transform is sent byte-for-byte as before (its own ``$``-keys
+included).
 
 CREDENTIAL-BLINDNESS. This effector NEVER resolves or sees the credential. It
 resolves an exact scoped proxy under the universe's own authority and hands the
@@ -158,6 +170,7 @@ def _str_field(source: dict[str, Any], key: str) -> str:
 # --------------------------------------------------------------------------- #
 # Body transforms - one encoding and the run's own data, applied before the wire
 # --------------------------------------------------------------------------- #
+_OP_PREFIX = "$ta."
 _OP_BASE64 = "$ta.base64"
 _OP_FROM_BASE64 = "$ta.from_base64"
 _OP_REF = "$ta.ref"
@@ -165,10 +178,21 @@ _OP_EFFECT = "$ta.effect"
 _OP_CONCAT = "$ta.concat"
 _TRANSFORM_OPS = (_OP_BASE64, _OP_FROM_BASE64, _OP_REF, _OP_EFFECT, _OP_CONCAT)
 _MAX_TRANSFORM_DEPTH = 32
-#: A transformed body is serialized in-process before the worker frames it
-#: (the frame itself is bounded at 16 MiB downstream); bound it here so a
-#: reference to a large blob fails predictably instead of allocating first.
+#: The transformed body is serialized in-process before the worker frames it
+#: (the frame itself is bounded at 16 MiB downstream).
 _MAX_TRANSFORMED_BODY_BYTES = 8 * 1024 * 1024
+#: Every value a transform PRODUCES is charged (in characters) against this
+#: working-set budget BEFORE the next allocation, so a body that references a
+#: large fetched blob many times is refused at the second copy instead of
+#: after materialising them all (Codex round 2, P0). A legitimate append to a
+#: 3.6 MiB text file (the largest a 5 MiB wrapped response can carry) costs
+#: about 13 MiB of working set: reference + decode + join + encode.
+_MAX_TRANSFORM_WORK_BYTES = 32 * 1024 * 1024
+#: The evidence that is PERSISTED (and later shown to a model through
+#: ``read_graph target="run"``) keeps only this much of a response body; the
+#: full body is still available to later nodes' transforms in the same run.
+_EVIDENCE_BODY_PREVIEW_CHARS = 4096
+_EFFECT_READABLE = ("response.body", "response.status")
 
 
 class _TransformError(ValueError):
@@ -181,6 +205,36 @@ def _is_transform(value: Any) -> bool:
         and len(value) == 1
         and next(iter(value)) in _TRANSFORM_OPS
     )
+
+
+def _is_reserved_unknown(value: Any) -> bool:
+    """A one-key object in the reserved namespace that names no operator."""
+    if not isinstance(value, dict) or len(value) != 1:
+        return False
+    key = next(iter(value))
+    return isinstance(key, str) and key.startswith(_OP_PREFIX) and key not in _TRANSFORM_OPS
+
+
+def _scan_body(body: Any) -> bool:
+    """True when a transform is present anywhere. Iterative (no recursion
+    limit to trip) and depth-bounded: a body nested deeper than
+    ``_MAX_TRANSFORM_DEPTH`` is refused whether or not it holds a transform,
+    and a reserved-but-unknown ``$ta.*`` key is refused here too."""
+    found = False
+    stack: list[tuple[Any, int]] = [(body, 0)]
+    while stack:
+        value, depth = stack.pop()
+        if depth > _MAX_TRANSFORM_DEPTH:
+            raise _TransformError(f"body nested deeper than {_MAX_TRANSFORM_DEPTH}")
+        if _is_reserved_unknown(value):
+            raise _TransformError(f"unknown transform {next(iter(value))!r}")
+        if _is_transform(value):
+            found = True
+        if isinstance(value, dict):
+            stack.extend((item, depth + 1) for item in value.values())
+        elif isinstance(value, list):
+            stack.extend((item, depth + 1) for item in value)
+    return found
 
 
 def _walk(path: str, root: Any, *, label: str) -> Any:
@@ -227,14 +281,28 @@ def _split_root(path: Any, label: str) -> tuple[str, str]:
 
 
 class _TransformContext:
-    """What a packet may read: its node's fenced state view and earlier effects."""
+    """What a packet may read, and how much work it may cause."""
 
-    __slots__ = ("run_state", "allowed_state_keys", "prior_effects")
+    __slots__ = ("run_state", "allowed_state_keys", "prior_effects", "work")
 
     def __init__(self, run_state, allowed_state_keys, prior_effects):
         self.run_state = run_state or {}
         self.allowed_state_keys = None if allowed_state_keys is None else set(allowed_state_keys)
         self.prior_effects = prior_effects or {}
+        self.work = 0
+
+    def charge(self, chars: int) -> None:
+        self.work += max(int(chars), 0)
+        if self.work > _MAX_TRANSFORM_WORK_BYTES:
+            raise _TransformError(
+                f"transforms would produce more than {_MAX_TRANSFORM_WORK_BYTES} "
+                "characters in total"
+            )
+
+    def produced(self, value: Any) -> Any:
+        if isinstance(value, str):
+            self.charge(len(value))
+        return value
 
     def ref(self, path: Any) -> Any:
         root, rest = _split_root(path, _OP_REF)
@@ -250,7 +318,7 @@ class _TransformContext:
         if root not in self.run_state:
             raise _TransformError(f"{_OP_REF} {path!r}: {root!r} is not in the run's state")
         value = self.run_state[root]
-        return _walk(rest, value, label=_OP_REF) if rest else value
+        return self.produced(_walk(rest, value, label=_OP_REF) if rest else value)
 
     def effect(self, path: Any) -> Any:
         root, rest = _split_root(path, _OP_EFFECT)
@@ -259,8 +327,13 @@ class _TransformContext:
                 f"{_OP_EFFECT} {path!r}: no earlier node {root!r} with an "
                 f"{EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL} effect in this run"
             )
-        value = self.prior_effects[root]
-        return _walk(rest, value, label=_OP_EFFECT) if rest else value
+        readable = rest in ("response.status", "response.body") or rest.startswith("response.body.")
+        if not readable:
+            raise _TransformError(
+                f"{_OP_EFFECT} {path!r}: only {' and '.join(_EFFECT_READABLE)} of an "
+                "earlier effect may be referenced"
+            )
+        return self.produced(_walk(rest, self.prior_effects[root], label=_OP_EFFECT))
 
 
 def _as_text(value: Any, what: str) -> str:
@@ -281,12 +354,15 @@ def _apply_transforms(value: Any, ctx: _TransformContext, depth: int = 0) -> Any
         if op == _OP_CONCAT:
             if not isinstance(arg, list):
                 raise _TransformError(f"{_OP_CONCAT} takes a list")
-            return "".join(
+            parts = [
                 _as_text(_apply_transforms(part, ctx, depth + 1), f"{_OP_CONCAT} part")
                 for part in arg
-            )
+            ]
+            ctx.charge(sum(len(part) for part in parts))    # the join, before it exists
+            return "".join(parts)
         if op == _OP_FROM_BASE64:
             text = _as_text(_apply_transforms(arg, ctx, depth + 1), _OP_FROM_BASE64)
+            ctx.charge(len(text))                           # decoded size <= input size
             try:
                 raw = base64.b64decode("".join(text.split()), validate=True)
             except (binascii.Error, ValueError) as exc:
@@ -294,24 +370,17 @@ def _apply_transforms(value: Any, ctx: _TransformContext, depth: int = 0) -> Any
             try:
                 return raw.decode("utf-8")
             except UnicodeDecodeError as exc:
-                raise _TransformError(f"{_OP_FROM_BASE64}: bytes are not UTF-8 text") from exc
+                raise _TransformError(
+                    f"{_OP_FROM_BASE64}: bytes are not UTF-8 text (text files only)"
+                ) from exc
         text = _as_text(_apply_transforms(arg, ctx, depth + 1), _OP_BASE64)
+        ctx.charge((len(text) * 4 + 2) // 3 + len(text))    # UTF-8 bytes + the encoding
         return base64.b64encode(text.encode("utf-8")).decode("ascii")
     if isinstance(value, dict):
         return {key: _apply_transforms(item, ctx, depth + 1) for key, item in value.items()}
     if isinstance(value, list):
         return [_apply_transforms(item, ctx, depth + 1) for item in value]
     return value
-
-
-def _has_transform(value: Any) -> bool:
-    if _is_transform(value):
-        return True
-    if isinstance(value, dict):
-        return any(_has_transform(v) for v in value.values())
-    if isinstance(value, list):
-        return any(_has_transform(v) for v in value)
-    return False
 
 
 def apply_body_transforms(
@@ -327,10 +396,10 @@ def apply_body_transforms(
     ``allowed_state_keys`` fences ``$ta.ref`` (``None`` = nothing readable);
     ``prior_effects`` maps earlier node ids to their effect evidence.
     """
-    if not _has_transform(body):
-        return body, None
-    ctx = _TransformContext(run_state, allowed_state_keys, prior_effects)
     try:
+        if not _scan_body(body):
+            return body, None
+        ctx = _TransformContext(run_state, allowed_state_keys, prior_effects)
         transformed = _apply_transforms(body, ctx)
         serialized = transformed if isinstance(transformed, str) else json.dumps(transformed)
         size = len(serialized.encode("utf-8"))
@@ -342,6 +411,29 @@ def apply_body_transforms(
         return transformed, None
     except _TransformError as exc:
         return None, str(exc)
+
+
+def bounded_evidence(result: dict[str, Any]) -> dict[str, Any]:
+    """The copy of an effect result that is PERSISTED and later shown to a
+    model: a response body longer than ``_EVIDENCE_BODY_PREVIEW_CHARS`` is
+    replaced by a preview plus its size and digest. The full result stays
+    in memory for later nodes' ``$ta.effect`` in the same run (Codex round
+    2, P1: a fetched file must not re-enter a model through read_graph)."""
+    response = result.get("response") if isinstance(result, dict) else None
+    body = response.get("body") if isinstance(response, dict) else None
+    if not isinstance(body, str) or len(body) <= _EVIDENCE_BODY_PREVIEW_CHARS:
+        return result
+    import hashlib
+
+    bounded = dict(result)
+    bounded["response"] = {
+        **response,
+        "body": body[:_EVIDENCE_BODY_PREVIEW_CHARS],
+        "body_truncated": True,
+        "body_chars": len(body),
+        "body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+    }
+    return bounded
 
 
 # --------------------------------------------------------------------------- #
@@ -753,5 +845,6 @@ def _run(
 __all__ = [
     "EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL",
     "apply_body_transforms",
+    "bounded_evidence",
     "run_authenticated_external_call_effector",
 ]

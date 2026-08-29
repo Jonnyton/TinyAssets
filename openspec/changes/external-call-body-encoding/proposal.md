@@ -16,29 +16,43 @@ pushing real PRs from the app — because every file write goes through it.
 
 ## What Changes
 
-One additive, channel-blind body transform in the outbound effector's packet
-contract: a JSON value of the form `{"$base64": "<utf-8 text>"}` anywhere in
-`request.body` is replaced, inside the credential-blind worker, by the base64
-of that text before the request is sent. The inverse for reads,
-`{"$utf8_of_base64": ...}`, is out of scope here: responses already arrive as
-evidence and a text node can decode them; the corruption happens on the write.
+Five additive, channel-blind body transforms in the outbound effector's packet
+contract, applied in the effector process before `proxy.request` (the text
+is not a secret; the worker stays credential-blind and unchanged). Anywhere
+in `request.body`, a one-key object in the reserved `$ta.` namespace:
 
-- The platform still knows nothing about GitHub or any channel; it knows one
-  encoding. The packet stays fully user-specified.
-- No behaviour changes for packets that do not use the sentinel.
-- The sentinel is refused (secret-free error, never a raise) when the value
-  is not a string, so a malformed packet cannot send a half-transformed body.
+- `{"$ta.base64": X}` — base64 of X's UTF-8 bytes; `{"$ta.from_base64": X}` —
+  the UTF-8 text of base64 X (text files only); `{"$ta.concat": [X, …]}`.
+- `{"$ta.ref": "key.a.0.b"}` — a value from the run's state, fenced to the
+  emitting node's declared `input_keys` and state_schema-defaulted keys
+  (narrower than the compiler's render view, deliberately).
+- `{"$ta.effect": "node.response.body.x"}` — `response.body` or
+  `response.status` from the evidence of an EARLIER node's generic-call effect
+  in the same run ("earlier" = stored earlier in the branch, the order effects
+  fire in). This is what removes the model from the byte path: a `fetch` node
+  and a `write` node in ONE run, the model authoring only the new line. The
+  first cut (a bare `$base64`) still needed the model to carry the fetched
+  bytes; the live "repair" showed why that fails — bytes through a model are
+  transcribed, not copied.
+
+Bounds refuse the whole call before anything is sent: nesting > 32, a
+cumulative working set > 32 MiB (charged as values are produced), a
+transformed body > 8 MiB, an unknown `$ta.*` spelling, a reference outside
+the fence, bytes that are not UTF-8 text. The persisted effect evidence keeps
+a 4 KiB body preview (size + sha256), so a fetched file does not re-enter a
+model through `read_graph target="run"`; the full body is available only to
+later nodes in the same dispatch. A body with no `$ta.*` transform is sent
+byte-for-byte, its own `$`-keys included.
 
 ## Impact
 
-- `tinyassets/effectors/authenticated_external_call.py` (packet doc + the
-  transform applied to `wire_request["body"]` before `proxy.request`), the
-  broker worker if the transform must run inside it (it need not: the text is
-  not a secret), tests beside the effector's.
-- Spec: the outbound-channel capability's packet-shape requirement gains the
-  transform (delta in `specs/`).
-- The `control_station` prompt / node-authoring guidance should say: write
-  file content as text with `{"$base64": ...}`; never generate base64.
-- Not a migration, not money, not authority: the surface is additive. Public
-  effector contract, so it is specified here before code (AGENTS.md: spec what
-  is hard to reverse).
+- `tinyassets/effectors/authenticated_external_call.py` (transforms, fence,
+  bounds, `bounded_evidence`), `tinyassets/effectors/__init__.py` (per-node
+  fence, in-run chain, storage-order contract), `tinyassets/engine_mcp_server.py`
+  (`write_graph` docs the SERVED agent reads), `tinyassets/api/prompts.py`.
+- Spec: `external-effect-adapters` gains the transform requirement (delta in
+  `specs/`).
+- Authority: this is a **read-authority** change, kept strictly narrower than
+  what the node already had — an effect packet may read its node's declared
+  inputs and earlier effects' body/status, and nothing else. Public effector
+  contract, so it is specified here (AGENTS.md: spec what is hard to reverse).

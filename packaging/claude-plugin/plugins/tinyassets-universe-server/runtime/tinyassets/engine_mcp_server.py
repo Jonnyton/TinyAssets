@@ -916,10 +916,12 @@ def write_graph(
                         {"$ta.from_base64": {"$ta.effect": "fetch.response.body.content"}},
                         "<the new line>\n"]}}}
 
-    ``$ta.effect`` reads an EARLIER node's response in the same run (effects
-    fire in node order); ``$ta.ref`` reads one of the node's own declared
+    ``$ta.effect`` reads an EARLIER node's ``response.body`` / ``response.status``
+    in the same run - "earlier" means listed earlier in the branch, so store
+    ``fetch`` before ``write``; ``$ta.ref`` reads one of the node's own declared
     ``input_keys`` from state; ``$ta.from_base64`` / ``$ta.base64`` decode and
-    encode; ``$ta.concat`` joins. The model writes only the new line.
+    encode (UTF-8 text files); ``$ta.concat`` joins. The model writes only the
+    new line.
 
     ``connection_id`` and ``grant_id`` are REQUIRED and must be the exact ids from
     connect_http; ``verb`` is the HTTP method (it is matched against the connection's
