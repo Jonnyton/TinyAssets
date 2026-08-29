@@ -13,7 +13,7 @@ import threading
 import time
 import types
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -825,19 +825,6 @@ class _FakeClaudeProc:
         return self.returncode
 
 
-def _codex_fake(pair, *, returncode=0):
-    """Stand-in for the streamed codex reader (2026-08-29).
-
-    Takes exactly what ``communicate()`` used to return - ``(stdout, stderr)`` -
-    and serves it as a line stream, so each test keeps its original bytes and
-    only the transport changes: the provider now reads ``codex exec --json``
-    incrementally under the idle watchdog instead of buffering under a wall
-    clock.
-    """
-    out, err = pair
-    return _FakeClaudeProc([(0, out)] if out else [], stderr=err, returncode=returncode)
-
-
 def _cl(obj) -> bytes:
     import json as _json
 
@@ -919,7 +906,11 @@ class TestCodexProvider:
     async def test_success(self):
         from tinyassets.providers.codex_provider import CodexProvider
 
-        mock_proc = _codex_fake((b"codex output", b""), returncode=0)
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"codex output", b""))
+        mock_proc.returncode = 0
+        mock_proc.kill = AsyncMock()
+        mock_proc.wait = AsyncMock()
 
         with (
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
@@ -937,7 +928,11 @@ class TestCodexProvider:
     async def test_error_raises_provider_error(self):
         from tinyassets.providers.codex_provider import CodexProvider
 
-        mock_proc = _codex_fake((b"", b"bad"), returncode=2)
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"", b"bad"))
+        mock_proc.returncode = 2
+        mock_proc.kill = AsyncMock()
+        mock_proc.wait = AsyncMock()
 
         with (
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
@@ -953,7 +948,11 @@ class TestCodexProvider:
         """Empty stdout with exit 0 must raise ProviderError, not return ''."""
         from tinyassets.providers.codex_provider import CodexProvider
 
-        mock_proc = _codex_fake((b"", b""), returncode=0)
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+        mock_proc.returncode = 0
+        mock_proc.kill = AsyncMock()
+        mock_proc.wait = AsyncMock()
 
         with (
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
@@ -969,10 +968,14 @@ class TestCodexProvider:
         """codex v0.122 exits 0 on 401 but emits Unauthorized in stderr."""
         from tinyassets.providers.codex_provider import CodexProvider
 
-        mock_proc = _codex_fake((
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(
             b"",
             b"Error: 401 Unauthorized - Reconnecting...",
-        ), returncode=0)
+        ))
+        mock_proc.returncode = 0
+        mock_proc.kill = AsyncMock()
+        mock_proc.wait = AsyncMock()
 
         with (
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
@@ -989,7 +992,11 @@ class TestCodexProvider:
         from tinyassets.providers.codex_provider import CodexProvider
 
         captured_cmd = []
-        mock_proc = _codex_fake((b"hello", b""), returncode=0)
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"hello", b""))
+        mock_proc.returncode = 0
+        mock_proc.kill = AsyncMock()
+        mock_proc.wait = AsyncMock()
 
         async def _fake_exec(*args, **kwargs):
             captured_cmd.extend(args)
@@ -1022,7 +1029,11 @@ class TestCodexProvider:
         from tinyassets.providers.codex_provider import CodexProvider
 
         captured_cmd = []
-        mock_proc = _codex_fake((b"hello", b""), returncode=0)
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"hello", b""))
+        mock_proc.returncode = 0
+        mock_proc.kill = AsyncMock()
+        mock_proc.wait = AsyncMock()
 
         async def _fake_exec(*args, **kwargs):
             captured_cmd.extend(args)
@@ -1048,7 +1059,11 @@ class TestCodexProvider:
         from tinyassets.providers.codex_provider import CodexProvider
 
         captured_cmd = []
-        mock_proc = _codex_fake((b"hello", b""), returncode=0)
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"hello", b""))
+        mock_proc.returncode = 0
+        mock_proc.kill = AsyncMock()
+        mock_proc.wait = AsyncMock()
 
         async def _fake_exec(*args, **kwargs):
             captured_cmd.extend(args)
@@ -1073,7 +1088,11 @@ class TestCodexProvider:
         from tinyassets.providers.codex_provider import CodexProvider
 
         captured_cmd = []
-        mock_proc = _codex_fake((b"hello", b""), returncode=0)
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"hello", b""))
+        mock_proc.returncode = 0
+        mock_proc.kill = AsyncMock()
+        mock_proc.wait = AsyncMock()
 
         async def _fake_exec(*args, **kwargs):
             captured_cmd.extend(args)

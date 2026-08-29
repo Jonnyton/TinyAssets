@@ -87,6 +87,12 @@ class FakeProc:
         self.returncode = -9
 
     async def wait(self):
+        # Like a real process: once stdout is exhausted the child has exited,
+        # and wait() reveals its exit code. Without this the reader's
+        # "closed stdout but did not exit" grace saw None and terminated a
+        # child that had in fact finished.
+        if self.returncode is None:
+            self.returncode = self._exit
         return self.returncode
 
 
@@ -203,7 +209,7 @@ def test_the_served_turn_is_bounded_by_a_generous_backstop_not_a_deadline():
     )
 
     ctx = types.SimpleNamespace(config=types.SimpleNamespace(timeout=300))
-    cfg = _sandboxed_config(ctx)
+    cfg = _sandboxed_config(ctx, granted=True)
     profile = cfg.stream_timeout_profile()
     assert _SERVED_ABSOLUTE_CAP_S >= 3600, "a five-step GitHub job must fit"
     assert profile.absolute_cap_s == _SERVED_ABSOLUTE_CAP_S
@@ -216,7 +222,7 @@ def test_a_universe_may_override_its_own_knobs():
     ctx = types.SimpleNamespace(
         config=types.SimpleNamespace(timeout=300, absolute_cap_s=120, idle_timeout_s=10)
     )
-    profile = _sandboxed_config(ctx).stream_timeout_profile()
+    profile = _sandboxed_config(ctx, granted=True).stream_timeout_profile()
     assert profile.absolute_cap_s == 120.0
     assert profile.idle_s == 10.0
 
@@ -230,7 +236,7 @@ def test_a_nonsense_override_falls_back_rather_than_disabling_the_cap():
     ctx = types.SimpleNamespace(
         config=types.SimpleNamespace(timeout=300, absolute_cap_s="forever")
     )
-    profile = _sandboxed_config(ctx).stream_timeout_profile()
+    profile = _sandboxed_config(ctx, granted=True).stream_timeout_profile()
     assert profile.absolute_cap_s == _SERVED_ABSOLUTE_CAP_S
 
 
@@ -276,3 +282,130 @@ def test_a_tool_that_never_completes_is_still_bounded_by_the_cap():
     with pytest.raises(InteractiveDeadlineError):
         _run(proc, absolute_cap_s=0.5)
     assert proc.killed is True
+
+
+def test_an_ungranted_turn_keeps_the_library_cap():
+    """Codex round 2 (P1): the synchronous learning extractor calls
+    _sandboxed_config with the defaults and runs BEFORE the reply is returned,
+    so a generous cap there could withhold an already-generated reply."""
+    from tinyassets.providers.base import DEFAULT_ABSOLUTE_CAP_S
+    from tinyassets.universe_intelligence import _sandboxed_config
+
+    ctx = types.SimpleNamespace(config=types.SimpleNamespace(timeout=300))
+    profile = _sandboxed_config(ctx).stream_timeout_profile()
+    assert profile.absolute_cap_s == DEFAULT_ABSOLUTE_CAP_S
+
+
+# --- round-2 findings on the tool rule -----------------------------------------
+
+
+def test_a_wedged_tool_is_bounded_by_the_tool_wait_not_the_cap(monkeypatch):
+    """Codex round 2 (P1): "not idle until the absolute cap" turned a silent
+    wedge into an hour-long wait. The tool allowance is now bounded."""
+    from tinyassets.providers import codex_provider
+
+    monkeypatch.setattr(codex_provider, "_TOOL_WAIT_S", 0.3)
+    ev = _real_codex_events()
+    proc = FakeProc(ev[:4] + [(5.0, ev[6])])   # tool opens, then silence
+    with pytest.raises(ProviderIdleTimeoutError) as info:
+        _run(proc, absolute_cap_s=60.0)         # the cap is NOT what fires
+    assert info.value.attempt_telemetry["tool_phase"] == "in_tool"
+    assert proc.killed is True
+
+
+def test_a_terminal_failure_event_rearms_the_idle_watchdog():
+    """`turn.failed` / `error` while a tool is open: the tool is not coming
+    back, so idle resumes instead of waiting out the tool allowance."""
+    proc = FakeProc([
+        _ev("thread.started"),
+        _tool("item.started"),
+        _ev("turn.failed", error={"message": "boom"}),
+        (0.7, _ev("turn.completed")),           # idle (0.25) fires first
+    ])
+    with pytest.raises(ProviderIdleTimeoutError):
+        _run(proc)
+
+
+# --- round-2 findings that need a REAL subprocess ------------------------------
+
+
+def _child(code: str):
+    """A real asyncio subprocess running `python -c code`, with the reader limit."""
+    import sys
+
+    from tinyassets.providers.codex_provider import _STDOUT_READER_LIMIT
+
+    return asyncio.create_subprocess_exec(
+        sys.executable, "-c", code,
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE, limit=_STDOUT_READER_LIMIT,
+    )
+
+
+def test_a_single_event_longer_than_64k_streams_intact():
+    """Codex round 2 (P1): asyncio's default 64 KiB line limit raised on one
+    70,000-char event. A GET /contents result is the base64 of a whole file."""
+    big = "x" * 70_000
+    # Built INSIDE the child: a 70 KB `python -c` argv is over the Windows
+    # command-line limit (WinError 206), which is a test artefact, not the bug.
+    code = (
+        "import json,sys;"
+        "sys.stdout.write(json.dumps({'type':'item.completed','item':{'id':'i',"
+        "'type':'agent_message','text':'x'*70000}})+'\\n');"
+        "sys.stdout.write(json.dumps({'type':'turn.completed','usage':{}})+'\\n');"
+        "sys.stdout.flush()"
+    )
+
+    async def go():
+        proc = await _child(code)
+        return await _stream_codex_exec(
+            proc, b"", ModelConfig(timeout=30, **_PROFILE), start=time.monotonic(),
+        )
+    out, _ = asyncio.run(go())
+    assert big.encode() in out
+    assert b"turn.completed" in out
+
+
+def test_stdout_eof_with_a_live_child_ends_the_child_and_leaks_no_task():
+    """Codex round 2 (P1): a child that closes fd 1 and keeps running used to
+    leave returncode=None, a live orphan and a pending stderr task."""
+    code = (
+        "import sys,os,time,json;"
+        "sys.stdout.write(json.dumps({'type':'thread.started'})+'\\n');sys.stdout.flush();"
+        "os.close(1);time.sleep(30)"
+    )
+
+    async def go():
+        proc = await _child(code)
+        t0 = time.monotonic()
+        out, _ = await _stream_codex_exec(
+            proc, b"", ModelConfig(timeout=30, **_PROFILE), start=t0,
+        )
+        pending = [t for t in asyncio.all_tasks()
+                   if t is not asyncio.current_task() and not t.done()]
+        return out, proc.returncode, time.monotonic() - t0, pending
+    out, rc, elapsed, pending = asyncio.run(go())
+    assert b"thread.started" in out
+    assert rc is not None, "child left running behind a returned reader"
+    assert elapsed < 15, f"took {elapsed:.1f}s; EOF grace is bounded"
+    assert pending == [], f"leaked tasks: {pending}"
+
+
+# --- the P0: only the JSON path streams ----------------------------------------
+
+
+def test_only_the_json_path_streams_and_the_legacy_path_is_verbatim():
+    """Codex round 2 (P0): `--json` is added only when sandbox_workspace is set,
+    so a plain-text call has no events to reset a watchdog on; streaming it
+    killed every long non-served call on the 10s init budget. Structural pin:
+    the stream reader sits under the machine_accounting branch and the legacy
+    communicate()+wait_for(config.timeout) survives beside it."""
+    import inspect
+
+    from tinyassets.providers import codex_provider
+
+    src = inspect.getsource(codex_provider)
+    call_site = src.split("if machine_accounting:\n", 1)[1][:1600]
+    assert "await _stream_codex_exec(" in call_site
+    assert "proc.communicate(input=full_input.encode" in call_site
+    assert "timeout=config.timeout," in call_site

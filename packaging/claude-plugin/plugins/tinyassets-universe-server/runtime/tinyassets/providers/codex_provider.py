@@ -23,6 +23,8 @@ from tinyassets.exceptions import (
     InteractiveDeadlineError,
     ProviderError,
     ProviderIdleTimeoutError,
+    ProviderProtocolError,
+    ProviderTimeoutError,
     ProviderUnavailableError,
 )
 from tinyassets.providers.base import (
@@ -329,6 +331,23 @@ _CODEX_TOOL_ITEM_TYPES = frozenset({
 })
 #: Event types that count as liveness: the CLI talking in its protocol.
 _CODEX_LIVENESS_PREFIXES = ("thread.", "turn.", "item.", "error")
+#: Terminal-failure events. They still prove the process is alive, but a tool
+#: that was open when the turn failed is not coming back, so the idle watchdog
+#: re-arms rather than waiting out the tool allowance (Codex round 2, P1).
+_CODEX_TERMINAL_FAILURE_TYPES = frozenset({"turn.failed", "error"})
+#: How long a turn may wait on ONE open tool before that wait counts as idle.
+#: The tool-in-flight rule exists because a 30s idle budget killed healthy
+#: 42s tool calls; but "not idle until the absolute cap" turned a wedged tool
+#: into an hour-long wait (Codex round 2, P1). Fifteen minutes covers any run a
+#: served tool call launches today and still ends a silent wedge.
+_TOOL_WAIT_S = 900.0
+#: asyncio's default 64 KiB stream limit raises on one long JSON line. A
+#: single ``item.completed`` carrying an MCP result - a GET /contents reply is
+#: the base64 of a whole file - can exceed it (Codex round 2, P1: a 70,000-char
+#: event raised ``Separator is found, but chunk is longer than limit``). Same
+#: bound the claude reader uses; an over-long line is still a protocol error,
+#: not a hang.
+_STDOUT_READER_LIMIT = 32 * 1024 * 1024
 
 
 async def _stream_codex_exec(
@@ -437,7 +456,7 @@ async def _stream_codex_exec(
         while True:
             now = time.monotonic()
             if tools_in_flight:
-                allow = profile.absolute_cap_s
+                allow = min(profile.absolute_cap_s, _TOOL_WAIT_S)
             elif not seen_init:
                 allow = profile.init_s
             elif not seen_progress:
@@ -460,6 +479,14 @@ async def _stream_codex_exec(
                 line = await asyncio.wait_for(proc.stdout.readline(), timeout=budget)
             except asyncio.TimeoutError:
                 await _raise_timeout(bound_is_absolute, allow)
+            except (ValueError, asyncio.LimitOverrunError):
+                _terminate(proc)
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                await _finish_stderr()
+                raise _attach(ProviderProtocolError(
+                    "codex exec stream line exceeded the reader buffer limit"
+                ))
             if not line:
                 break
             out_chunks.append(line)
@@ -479,6 +506,8 @@ async def _stream_codex_exec(
                 last_progress = time.monotonic()
                 seen_init = True
                 seen_progress = True
+            if etype in _CODEX_TERMINAL_FAILURE_TYPES:
+                tools_in_flight.clear()
             item = obj.get("item")
             if isinstance(item, dict) and item.get("type") in _CODEX_TOOL_ITEM_TYPES:
                 key = str(item.get("id") or item.get("type"))
@@ -487,13 +516,36 @@ async def _stream_codex_exec(
                 elif etype in ("item.completed", "item.failed"):
                     tools_in_flight.discard(key)
     finally:
+        # Every exit path - EOF, a classified raise, a reader exception, or
+        # CALLER CANCELLATION - reaps BOTH helper tasks, bounded, so neither
+        # drain leaks (Codex round 2, P2; same ownership the claude reader
+        # settled on). ``_terminate`` is idempotent and only kills a process
+        # that is still running, so a clean exit keeps its real returncode.
         stdin_task.cancel()
+        # Let the stderr drain FINISH before cancelling it: on a clean EOF the
+        # child's stderr is usually a few bytes still in flight, and cancelling
+        # first returned b"" for stderr the caller then parsed for auth /
+        # bwrap signals. Bounded, so a child holding fd 2 open cannot hang us.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(asyncio.shield(stderr_task), timeout=2)
+        stderr_task.cancel()
         with contextlib.suppress(BaseException):
-            await stdin_task
+            await asyncio.wait_for(
+                asyncio.gather(stdin_task, stderr_task, return_exceptions=True),
+                timeout=5,
+            )
 
+    # stdout EOF is NOT process exit (Codex round 2, P1): a child can close fd 1
+    # and keep running. Give it a bounded grace to exit on its own, then end it,
+    # so the caller never gets returncode=None with a live orphan behind it.
     with contextlib.suppress(Exception):
         await asyncio.wait_for(proc.wait(), timeout=5)
-    return b"".join(out_chunks), await _finish_stderr()
+    if proc.returncode is None:
+        logger.warning("codex exec closed stdout but did not exit; terminating")
+        _terminate(proc)
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(proc.wait(), timeout=5)
+    return b"".join(out_chunks), b"".join(err_chunks)
 
 
 class CodexProvider(BaseProvider):
@@ -687,6 +739,7 @@ class CodexProvider(BaseProvider):
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                limit=_STDOUT_READER_LIMIT,
                 env=proc_env,
                 **win_kw,
             )
@@ -696,6 +749,7 @@ class CodexProvider(BaseProvider):
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                limit=_STDOUT_READER_LIMIT,
                 env=proc_env,
                 **win_kw,
             )
@@ -703,12 +757,28 @@ class CodexProvider(BaseProvider):
         start = time.monotonic()
 
         try:
-            # Streamed under the idle-watchdog profile, like claude: a turn that
-            # is progressing is never killed by a wall clock, and a hung one is
-            # ended in ~30s. See _stream_codex_exec for the founder rule and
-            # the two genuine stop reasons.
-            stdout, stderr = await _stream_codex_exec(
-                proc, full_input.encode("utf-8"), config, start=start,
+            if machine_accounting:
+                # `--json` is on this path only, so ONLY this path has protocol
+                # events to watch. Streamed under the idle-watchdog profile,
+                # like claude: a progressing turn is never killed by a wall
+                # clock, a hung one ends in ~30s. See _stream_codex_exec.
+                stdout, stderr = await _stream_codex_exec(
+                    proc, full_input.encode("utf-8"), config, start=start,
+                )
+            else:
+                # Plain-text stdout, no events to reset a watchdog on: the
+                # legacy total timeout stays exactly as it was. Streaming this
+                # path killed every long non-served call on the 10s init
+                # budget (Codex round 2, P0 - reproduced against the real CLI).
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(input=full_input.encode("utf-8")),
+                    timeout=config.timeout,
+                )
+        except asyncio.TimeoutError:
+            _terminate(proc)
+            await proc.wait()
+            raise ProviderTimeoutError(
+                f"codex exec exceeded {config.timeout}s timeout"
             )
         except BaseException:
             # Every OTHER way out — cancellation, shutdown, an unexpected error in

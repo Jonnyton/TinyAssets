@@ -196,10 +196,10 @@ def _engine_mcp_enabled() -> bool:
     )
 
 
-#: Founder rule 2026-08-29 - see _sandboxed_config. A served turn's absolute
-#: cap is a runaway backstop until a user Stop exists, not a deadline. 3600s: a
-#: five-step GitHub job at ~60-90s per round-trip fits with room to spare; a
-#: turn still emitting protocol events at an hour is the runaway case.
+#: Founder rule 2026-08-29 - see _sandboxed_config. The GRANTED founder turn's
+#: absolute cap is a runaway backstop until a user Stop exists, not a deadline.
+#: 3600s: a five-step GitHub job at ~100s per round-trip fits with room; a turn
+#: still emitting protocol events at an hour is the runaway case.
 _SERVED_ABSOLUTE_CAP_S = 3600.0
 
 
@@ -252,11 +252,22 @@ def _sandboxed_config(
     # interrupted by the user or should stop for some other reason." The legacy
     # ``timeout`` above is no longer a wall-clock deadline on the streamed
     # served path (codex + claude both read their stream under the idle
-    # watchdog now); it survives only for non-streaming callers. What bounds a
-    # served turn is: the 30s idle watchdog (a hung provider), and a GENEROUS
-    # absolute cap as a runaway backstop until a user Stop exists. The 600s
-    # library default fit three GitHub round-trips and killed the fourth.
-    absolute_cap_s = _served_knob(ctx, "absolute_cap_s", _SERVED_ABSOLUTE_CAP_S)
+    # watchdog now); it survives for the non-streaming callers. What bounds a
+    # streamed turn is the 30s idle watchdog (a hung provider) plus an absolute
+    # cap as a runaway backstop.
+    #
+    # The generous cap applies ONLY to the granted founder turn. The live
+    # failure was the 300s communicate() timeout, not the 600s stream default
+    # (Codex round 2 corrected an earlier claim here) - but 600s is borderline
+    # for the five ~100s round-trips that job needed, and the founder's rule is
+    # "finish", so the granted turn gets 3600s until a user Stop exists. The
+    # synchronous learning extractor and non-founder turns keep the library
+    # default: the extractor runs BEFORE the reply is returned, so a generous
+    # cap there could withhold an already-generated reply (Codex round 2, P1).
+    absolute_cap_s = (
+        _served_knob(ctx, "absolute_cap_s", _SERVED_ABSOLUTE_CAP_S)
+        if granted else None
+    )
     idle_timeout_s = _served_knob(ctx, "idle_timeout_s", None)
     engine_mcp = bool(
         granted and founder_principal and universe_id and _engine_mcp_enabled()
