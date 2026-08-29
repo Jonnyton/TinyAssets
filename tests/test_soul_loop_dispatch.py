@@ -39,6 +39,11 @@ def _patch_common(monkeypatch, tmp_path, *, loop_dispatch, captured):
     )
     monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path)
     monkeypatch.setattr("tinyassets.branches.BranchDefinition", _FakeBranch)
+    # `tinyassets.runs` binds BranchDefinition at import time (runs.py:40), so a
+    # test that runs AFTER this one and executes a real branch would otherwise
+    # build a _FakeBranch and die on `.branch_def_id` (order-dependent failure,
+    # Codex round 3 on the fleet prune).
+    monkeypatch.setattr("tinyassets.runs.BranchDefinition", _FakeBranch, raising=False)
 
     def _exec(base_path, **kwargs):
         captured.append(kwargs)
