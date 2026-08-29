@@ -53,6 +53,16 @@ from typing import Any
 
 DEFAULT_URL = "https://tinyassets.io/mcp"
 DEFAULT_TIMEOUT = 10.0
+#: The AuthKit authorization server the public resource document must advertise.
+#:
+#: Still STAGING. A move to the WorkOS production environment was attempted on
+#: 2026-08-29 and rolled back the same night — see
+#: docs/concerns/2026-08-29-workos-production-needs-a-public-client.md. When it
+#: succeeds this becomes "https://unassuming-environment-16.authkit.app".
+#:
+#: Pinned deliberately. This value drifting is exactly the failure worth paging on: it
+#: means the daemon is pointed at an authorization server nobody intended, and every
+#: token it accepts was minted by that server.
 EXPECTED_AUTHORIZATION_SERVERS = (
     "https://inventive-van-62-staging.authkit.app",
 )
