@@ -30,6 +30,7 @@ from tests.test_automations import (
     UNIVERSE,
     _seed_branch,
     _seed_owner,
+    _switch_assignment_provider,
 )
 from tests.test_background_budget_finalization_e2e import _seed_serving_assignment
 from tinyassets.automations import REFUSAL_KEY_PREFIX, AutomationStore
@@ -305,6 +306,29 @@ def test_automating_someone_elses_workflow_is_refused_with_an_actionable_reason(
     assert result["error"] == "automation_unavailable"
     assert result["reason"] == "branch_not_owned"
     assert "you authored" in result["detail"]
+    assert AutomationStore(tmp_path).list(universe_id=UNIVERSE) == []
+
+
+def test_an_open_compute_provider_cannot_carry_an_automation(
+    tmp_path: Path,
+    env,
+) -> None:
+    """`no_serving_assignment` covers two causes -- no ready assignment, and a
+    ready one on an open api_key_http provider that admission refuses anyway.
+    The sentence has to be true of both, or an owner who DID connect an api-key
+    provider reads it as false and has nowhere to go."""
+    _switch_assignment_provider(
+        tmp_path,
+        universe_id=UNIVERSE,
+        provider="api_key_http:kimi",
+    )
+
+    result = _create()
+
+    assert result["error"] == "automation_unavailable"
+    assert result["reason"] == "no_serving_assignment"
+    assert "subscription" in result["detail"]
+    assert "API-key" in result["detail"]
     assert AutomationStore(tmp_path).list(universe_id=UNIVERSE) == []
 
 
