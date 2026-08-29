@@ -1,6 +1,9 @@
 """A sign-in must never adopt a handle the caller chose.
 
-The store holds RAW WorkOS refresh tokens. Two properties matter, and both were broken:
+The store no longer holds RAW WorkOS refresh tokens (they are sealed --
+test_refresh_session_seal.py), but the file modes and the no-adoption rule still
+have to hold, so these keep running against the sealed store. Two properties
+matter, and both were broken:
 
 1. The `authorization_code` grant wrote the NEW user's refresh token under whatever
    `session_ref` arrived in the request body, validated for SHAPE only. Plant a handle in
@@ -18,12 +21,17 @@ import stat
 import pytest
 
 from tinyassets import onboarding
+from tinyassets.onboarding import session_store
 
 
 @pytest.fixture(autouse=True)
 def _data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    return tmp_path
+    # The seal key is a process singleton: without the reset, a key minted for a
+    # previous tmp dir seals records this test cannot open.
+    session_store._reset_for_tests()
+    yield tmp_path
+    session_store._reset_for_tests()
 
 
 @pytest.mark.skipif(
@@ -36,11 +44,8 @@ def test_a_stored_session_is_not_readable_by_anyone_else():
     # Resolve the file the way the code does. This test was written when the handle
     # WAS the filename; the digest rename left it pointing at a path that no longer
     # exists, and because it skips on Windows the local run never noticed. CI on
-    # Linux did.
-    path = (
-        onboarding._refresh_store_dir()
-        / f"{onboarding._handle_path_key(handle)}.json"
-    )
+    # Linux did. Ask the store for the path now, so the next rename cannot repeat it.
+    path = session_store._record_path(handle)
     assert path.exists(), "the store did not write where the code reads"
     mode = stat.S_IMODE(path.stat().st_mode)
     assert mode & (stat.S_IRGRP | stat.S_IROTH) == 0, (
@@ -59,11 +64,16 @@ def test_the_store_directory_is_not_traversable_by_anyone_else():
 
 
 def test_the_token_is_written_before_the_file_is_ever_world_readable(tmp_path):
-    """Not 'chmod after replace' -- the window in between is the whole problem."""
+    """Not 'chmod after replace' -- the window in between is the whole problem.
+
+    The write moved into the sealed store, and `_write_refresh_session` (a write
+    under a CALLER-supplied handle) was deleted rather than moved, so this reads
+    the one remaining writer.
+    """
     src = (
-        __import__("pathlib").Path(onboarding.__file__).read_text(encoding="utf-8")
+        __import__("pathlib").Path(session_store.__file__).read_text(encoding="utf-8")
     )
-    body = src.split("def _write_refresh_session")[1].split("\ndef ")[0]
+    body = src.split("def _write_record")[1].split("\ndef ")[0]
     chmod_at = body.index("chmod")
     replace_at = body.index("os.replace")
     assert chmod_at < replace_at, (
@@ -113,10 +123,9 @@ def test_an_expired_session_yields_nothing_and_is_removed():
     handle = onboarding._mint_refresh_session("rt_abc")
     # The filename is a keyed digest now, not the handle -- the handle is a bearer
     # credential and must not be published by a directory listing.
-    path = (
-        onboarding._refresh_store_dir()
-        / f"{onboarding._handle_path_key(handle)}.json"
-    )
-    path.write_text(json.dumps({"rt": "rt_abc", "exp": int(time.time()) - 1}))
+    path = session_store._record_path(handle)
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["exp"] = int(time.time()) - 1
+    path.write_text(json.dumps(record), encoding="utf-8")
     assert onboarding._read_refresh_session(handle) == ""
     assert not path.exists()

@@ -164,14 +164,19 @@ def test_handle_path_survives_without_the_cookie(monkeypatch, tmp_path):
     )
     assert status == 200 and doc["access_token"] == "a2"
     assert seen["rt"] == "RT1"          # used the STORED refresh token, not a cookie
-    assert doc["session_ref"] == handle  # handle is stable across rotation
+    # The handle ROTATES with the token now (it used to be stable, which meant one
+    # capture lasted the whole 7-day TTL). The page stores whatever comes back, and
+    # the old handle still resolves for a short grace -- see
+    # tests/test_refresh_session_seal.py.
+    assert len(doc["session_ref"]) == 43 and doc["session_ref"] != handle
     assert "RT2" not in json.dumps(doc)  # rotated token stays server-side
 
 
-def test_handle_is_rotated_in_place_then_reusable(monkeypatch, tmp_path):
-    """A second refresh must use the ROTATED token (RT2), proving the store was
-    updated in place under the same handle — this is what broke live (rotation
-    not persisting → works once then forces re-login)."""
+def test_the_old_handle_still_renews_with_the_rotated_token(monkeypatch, tmp_path):
+    """A second refresh must use the ROTATED token (RT2), proving the store kept
+    the rotation — this is what broke live (rotation not persisting → works once
+    then forces re-login). The handle now rotates too, so the second refresh
+    exercises the grace hop from the OLD handle onto the live record."""
     dd = str(tmp_path)
     _drive(
         {"code": "c", "code_verifier": "v", "redirect_uri": "https://tinyassets.io/mcp/app"},
