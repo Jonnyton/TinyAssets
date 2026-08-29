@@ -39,37 +39,34 @@ a new way to fail.
 
 ## Taking real money
 
-### WorkOS is on PRODUCTION — one account migrated, one to go, then publish the Google consent screen
-
-*Root cause of the "session expired" loop, found and fixed 2026-08-29: production AuthKit
-minted tokens with an environment-default `aud`, and our validator (correctly) requires
-`aud == https://tinyassets.io/mcp`. WorkOS docs: "if you don't configure any Resource
-Indicators … a default aud value unique to your WorkOS Environment will be used instead,
-with the resource parameter then ignored." Staging had the resource indicator registered
-under Connect → Configuration; production did not. Registered. Sign-in verified working.*
-
+### WorkOS is on PRODUCTION — migration done; two things left, both yours
 
 *Switched 2026-08-29. The daemon is on the production key, domain
-`unassuming-environment-16.authkit.app`, and Connect client
-`client_01M15YZXW7G7X6X1YQ4TG87Q00`. "Continue with Google" renders on the production
-sign-in page; the canary is green against it. $0 — AuthKit is free to 1M MAU, and the $99
-custom domain is optional and skipped.*
+`unassuming-environment-16.authkit.app`, Connect client `client_01M15YZXW7G7X6X1YQ4TG87Q00`,
+resource indicator `https://tinyassets.io/mcp` registered (that was the "session expired"
+loop). $0 — AuthKit is free to 1M MAU; the $99 custom domain is skipped.*
 
-**Two things left, both yours, both quick:**
+*Both accounts signed in and migrated 2026-08-29 ~06:10Z. Verified live through
+`tinyassets.io/mcp/app` as the founder: home universe resolves, the 400-turn thread is
+back, and the universe answers on the founder's own subscription and recalls the last
+piece of work. What moved, what was rebuilt, and what was deliberately left as history
+is in `docs/reviews/2026-08-29-codex-subject-migration-boundary.md`; the structural
+finding is `docs/concerns/2026-08-29-subject-ids-scattered-across-stores.md`.*
 
-1. **Sign in once from each account** (`jonathan.m.farnsworth@gmail.com` and
-   `simkalholdingsllc@gmail.com`) at `https://tinyassets.io/mcp/app` → Continue with
-   Google. Production has 0 users; each sign-in mints the new `user_…` id. Both are
-   registered as Google test users so this works before publishing. Tell me when done and
-   I re-point every universe (`u-01kxm1vszd8hwp7em418asq8h9`, `u-tiny`, `paper-notes`,
-   `u-01ky3zh1arr8qth8jee7zx63pq`) from the staging ids to the new ones — the script is
-   written and dry-runs first.
-
-2. **Publish the Google consent screen.** Until then only the two test users can sign in
+1. **Publish the Google consent screen.** Until then only the two test users can sign in
    with Google. Google Cloud → project `tinyassets` → Google Auth Platform → **Audience** →
    **Publish app**. (I clicked toward it and was stopped: publishing is a public-facing
    state change, and rightly your call.) A stale "configuration incomplete" banner may
    still show — Branding is saved; the button is enabled.
+
+2. **Reconnect GitHub for your universe.** The GitHub PR-writer connection was a WorkOS
+   *Pipes* credential (`workos-pipes://github/<staging user>`), vended by the staging
+   environment; production WorkOS has no such connection and cannot transfer one. The two
+   old rows were left under the staging id (invisible and unusable, nothing forged). When
+   you want PRs from the universe again: check production WorkOS → Pipes has the GitHub
+   integration configured (it was configured in staging only), then run the connect
+   gesture from the app; the universe's own `http:github` key-based connection did migrate
+   and still works for the narrow allow-list.
 
 Google OAuth client: `1041012102732-sbdm1t0qdh8pqu4d9ljl882led8h6plm.apps.googleusercontent.com`
 in GCP project `tinyassets`, redirect
