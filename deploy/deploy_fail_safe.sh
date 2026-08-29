@@ -143,10 +143,11 @@ accept() {  # daemon healthy AND running the requested image AND tunnel up
 # Converge the production services onto TINYASSETS_IMAGE. Drives docker
 # compose DIRECTLY (root, proven in the 2026-08-21 recovery) so the deploy
 # never depends on the systemd unit being startable; the unit is then asked to
-# track the new state best-effort so `systemctl status` stays truthful. Only
-# the three production services are named: compose.yml also defines
-# unprofiled worker services that an unqualified `up -d` would start. `up -d`
-# recreates only the services whose image changed (the tunnel keeps running).
+# track the new state best-effort so `systemctl status` stays truthful. The
+# three production services are named explicitly: the worker fleet is gone
+# (2026-08-29) but `slack-agent` sits behind a profile, and naming them keeps
+# a future service from starting by accident. `up -d` recreates only the
+# services whose image or config changed (the tunnel keeps running).
 restart_stack() {
   systemctl reset-failed "$UNIT" 2>/dev/null || true
   if ! docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d daemon cloudflared logs; then

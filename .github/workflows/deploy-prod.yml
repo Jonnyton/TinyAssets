@@ -177,16 +177,55 @@ jobs:
           echo "prev_image=${prev}" >> "$GITHUB_OUTPUT"
           echo "current prod image (running, digest): ${prev:-<none>}"
 
-      - name: Install the daemon systemd unit from this checkout
-        # The unit is part of the deploy, not a one-time bootstrap: a stale or
-        # broken installed unit is exactly how 2026-08-21's false-green deploys
-        # happened. Reload only; the fail-safe script converges the stack.
+      - name: Sync runtime deploy files
+        # compose.yml, the vector configs and the systemd unit are part of the
+        # deploy, not a one-time bootstrap. PR #2442 dropped this sync and every
+        # compose-level change went silently inert in production for nine days
+        # (docs/concerns/2026-08-27-deploy-drops-compose-sync.md, resolved 2026-08-29
+        # after the droplet's live copy was diffed against the repo: identical
+        # daemon/cloudflared/logs directives, drift only in comments, two env keys
+        # the env file also carries, and vector.yaml's retired worker role).
+        #
+        # Fail closed: the repo copy is installed only after `docker compose config`
+        # on the droplet parses it WITH the production env file and lists exactly
+        # the three production services — the 2026-08 502 came from converging a
+        # partial file. Reload only; the fail-safe script converges the stack.
         run: |
           set -euo pipefail
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes deploy/tinyassets-daemon.service \
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/compose.yml \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-compose.yml"
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/vector.yaml \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-vector.yaml"
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/vector-betterstack.yaml \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-vector-betterstack.yaml"
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/vector-entrypoint.sh \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-vector-entrypoint.sh"
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/tinyassets-daemon.service \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-daemon.service"
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo install -m 0644 -o root -g root /tmp/tinyassets-daemon.service /etc/systemd/system/tinyassets-daemon.service && sudo systemctl daemon-reload && echo 'unit installed + reloaded'"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" 'sudo bash -s' <<'SH'
+          set -euo pipefail
+          services="$(docker compose --env-file /etc/tinyassets/env -f /tmp/tinyassets-compose.yml config --services | sort | tr '\n' ' ')"
+          if [ "${services}" != "cloudflared daemon logs " ]; then
+            echo "refusing to install compose.yml: services='${services}' (expected exactly: cloudflared daemon logs)" >&2
+            exit 1
+          fi
+          mkdir -p /opt/tinyassets/deploy
+          cp -a /opt/tinyassets/compose.yml "/opt/tinyassets/compose.yml.bak-$(date -u +%Y%m%dT%H%M%SZ)" 2>/dev/null || true
+          install -m 0644 -o tinyassets -g tinyassets /tmp/tinyassets-compose.yml /opt/tinyassets/compose.yml
+          install -m 0644 -o tinyassets -g tinyassets /tmp/tinyassets-compose.yml /opt/tinyassets/deploy/compose.yml
+          install -m 0644 -o tinyassets -g tinyassets /tmp/tinyassets-vector.yaml /opt/tinyassets/deploy/vector.yaml
+          install -m 0644 -o tinyassets -g tinyassets /tmp/tinyassets-vector-betterstack.yaml /opt/tinyassets/deploy/vector-betterstack.yaml
+          install -m 0755 -o tinyassets -g tinyassets /tmp/tinyassets-vector-entrypoint.sh /opt/tinyassets/deploy/vector-entrypoint.sh
+          install -m 0644 -o root -g root /tmp/tinyassets-daemon.service /etc/systemd/system/tinyassets-daemon.service
+          systemctl daemon-reload
+          echo 'runtime deploy files synced + unit reloaded'
+          SH
 
       - name: Prepare codex auth persistent volume
         run: |
