@@ -37,6 +37,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -158,6 +159,48 @@ def _cron_matches(expr: str, t: time.struct_time) -> bool:
         return False
 
 
+def min_cron_interval_seconds(expr: str) -> float:
+    """Shortest gap, in seconds, between two firings of ``expr``.
+
+    The interval floor was only ever applied to ``interval_seconds``, so
+    ``* * * * *`` sailed through and fired every minute on the owner's own
+    subscription — the exact spend runaway the floor exists to stop (Codex ADAPT
+    on 44caf369, `cron_every_minute_accepts=True`).
+
+    Only the minute and hour fields can shorten the gap; day/month/weekday can
+    only make a schedule fire on fewer days, never more often within one. So the
+    answer is the smallest distance between consecutive matching minutes:
+
+    * within an hour — sorted differences of the matching-minute set;
+    * across the hour boundary — ``60 - max + min``, but ONLY when two matching
+      hours are actually adjacent (mod 24). ``0,59 12 * * *`` fires at 12:00 and
+      12:59 and is a legitimate 59-minute cadence; counting a wrap for it would
+      refuse a schedule that never fires twice inside five minutes.
+
+    A single matching minute in a single hour cannot repeat inside a day, so the
+    floor is one day. Raises ``CronParseError`` on an unparseable expression.
+    """
+    schedule = CronSchedule.parse(expr)
+    minutes = sorted(schedule.minutes)
+    hours = sorted(schedule.hours)
+    if not minutes or not hours:
+        # No minute or no hour can ever match: it never fires. Not a floor breach.
+        return float("inf")
+    gaps = [b - a for a, b in zip(minutes, minutes[1:])]
+    hours_adjacent = any((h + 1) % 24 in schedule.hours for h in hours)
+    if hours_adjacent:
+        gaps.append(60 - minutes[-1] + minutes[0])
+    elif len(hours) > 1:
+        # Non-adjacent hours: the shortest cross-hour gap is the smallest hour
+        # distance, minus the span the minute set can claw back.
+        hour_gaps = [b - a for a, b in zip(hours, hours[1:])]
+        hour_gaps.append(24 - hours[-1] + hours[0])
+        gaps.append(min(hour_gaps) * 60 - minutes[-1] + minutes[0])
+    if not gaps:
+        return 24 * 3600.0  # one matching minute, one matching hour → daily
+    return min(gaps) * 60.0
+
+
 # ─── Rate limits ──────────────────────────────────────────────────────────────
 
 MAX_SCHEDULES_PER_OWNER = 20
@@ -172,6 +215,18 @@ MAX_SUBSCRIPTIONS_PER_OWNER = 20
 #: (``_action_schedule_branch``); the library entry point stays unfloored so
 #: internal callers and tests can drive the tick loop deterministically.
 MIN_SCHEDULE_INTERVAL_S = 300.0
+
+#: Refusal-ledger key prefix for a schedule. The assigned-queue refusal store is
+#: keyed by an opaque task id; namespacing keeps schedule refusals from colliding
+#: with the consumer's branch-task rows while both stay readable from one place
+#: (D5 — recorded refusals, one table).
+REFUSAL_KEY_PREFIX = "schedule:"
+
+#: How long an UNCHANGED refusal reason is left alone before being re-recorded.
+#: The store upserts, so re-recording never grows the table, but it does cost a
+#: write per tick per refused schedule; the owner's surface only needs the row to
+#: look fresh. Mirrors the consumer's write-amplification guard.
+_REFUSAL_REWRITE_SECONDS = 60.0
 
 # Supported event types
 VALID_EVENT_TYPES = frozenset({
@@ -211,6 +266,7 @@ CREATE TABLE IF NOT EXISTS branch_schedules (
     skip_if_running      INTEGER NOT NULL DEFAULT 0,
     active               INTEGER NOT NULL DEFAULT 1,
     paused               INTEGER NOT NULL DEFAULT 0,
+    pause_reason         TEXT NOT NULL DEFAULT '',
     created_at           REAL NOT NULL,
     last_fired_at        REAL
 );
@@ -387,17 +443,46 @@ def unregister_schedule(
     return True
 
 
+def legacy_owner_actors_for(universe_id: str, principals: tuple[str, ...] = ()) -> set[str]:
+    """``owner_actor`` values a migrated legacy row may carry for ``universe_id``.
+
+    A migrated row has ``universe_id=''`` — the column did not exist when it was
+    written — so a universe-scoped list would never show it and its owner could
+    neither see nor delete it. What it DOES carry is the pre-2.1 ``owner_actor``,
+    which was either the universe (``universe:<id>``, written by the event-source
+    path) or a bare principal. Recovering the universe from that is what makes a
+    migrated row addressable again.
+    """
+    uid = (universe_id or "").strip()
+    recovered = {f"universe:{uid}"} if uid else set()
+    return recovered | {p.strip() for p in principals if p and p.strip()}
+
+
 def list_schedules(
     base_path: str | Path,
     *,
     owner_actor: str = "",
     universe_id: str = "",
+    legacy_owner_actors: tuple[str, ...] = (),
+    include_orphaned_legacy: bool = False,
     active_only: bool = True,
 ) -> list[dict[str, Any]]:
     """List schedules, optionally filtered by owner and/or universe.
 
     Each row carries a ``legacy`` flag so a caller's surface can say WHY a
     schedule is listed but never fires (:func:`schedule_is_legacy`).
+
+    ``universe_id`` scoping also admits MIGRATED legacy rows (``universe_id=''``)
+    whose ``owner_actor`` is ``universe:<universe_id>`` or one of
+    ``legacy_owner_actors`` — see :func:`legacy_owner_actors_for`. Without that,
+    every row an existing install already has would be invisible to the only
+    people entitled to delete it.
+
+    ``include_orphaned_legacy`` additionally returns legacy rows whose universe
+    cannot be recovered from ``owner_actor`` at all. **Nothing calls this today.**
+    It exists so an operator cleanup path has a way to see them without the
+    owner-scoped surface leaking one universe's rows into another's list; the
+    request surface never sets it.
     """
     db = _runs_db(base_path)
     with _connect(db) as conn:
@@ -410,8 +495,21 @@ def list_schedules(
             clauses.append("owner_actor=?")
             params.append(owner_actor)
         if universe_id:
-            clauses.append("universe_id=?")
-            params.append(universe_id)
+            if include_orphaned_legacy:
+                # Every legacy row, addressable or not, alongside this universe's.
+                clauses.append("(universe_id=? OR universe_id='')")
+                params.append(universe_id)
+            else:
+                recoverable = sorted(
+                    legacy_owner_actors_for(universe_id, legacy_owner_actors)
+                )
+                placeholders = ",".join("?" for _ in recoverable)
+                clauses.append(
+                    f"(universe_id=? OR (universe_id='' "
+                    f"AND owner_actor IN ({placeholders})))"
+                )
+                params.append(universe_id)
+                params.extend(recoverable)
         if clauses:
             q += " WHERE " + " AND ".join(clauses)
         rows = conn.execute(q, params).fetchall()
@@ -446,7 +544,10 @@ def pause_schedule(
                 f"{requesting_actor!r} is not the owner of schedule {schedule_id!r}"
             )
         conn.execute(
-            "UPDATE branch_schedules SET paused=1 WHERE schedule_id=?",
+            # An owner pausing by hand records no reason; only the tick's
+            # auto-pause writes one, so a reason on the row always means "the
+            # daemon stopped this, and here is why".
+            "UPDATE branch_schedules SET paused=1, pause_reason='' WHERE schedule_id=?",
             (schedule_id,),
         )
     return True
@@ -477,7 +578,10 @@ def unpause_schedule(
                 f"{requesting_actor!r} is not the owner of schedule {schedule_id!r}"
             )
         conn.execute(
-            "UPDATE branch_schedules SET paused=0 WHERE schedule_id=?",
+            # Resuming clears the auto-pause reason: the owner has answered it.
+            # If the cause is still live the next tick refuses and re-pauses,
+            # which is the loud, readable outcome rather than a silent no-op.
+            "UPDATE branch_schedules SET paused=0, pause_reason='' WHERE schedule_id=?",
             (schedule_id,),
         )
     return True
@@ -670,6 +774,12 @@ class Scheduler:
         #: schedule ids already reported as legacy, so the refusal is one log
         #: line per schedule per process rather than one every tick.
         self._legacy_reported: set[str] = set()
+        #: refusal-ledger key -> (reason, monotonic time it was last written).
+        self._recorded_refusals: dict[str, tuple[str, float]] = {}
+        #: Identity of THIS ticker in the refusal ledger. Deliberately not a
+        #: stable/host identity — it names which loop observed the refusal, and
+        #: nothing derives authority from it (D1: no executor-identity pin).
+        self._ticker_id = f"scheduler-{uuid.uuid4().hex[:12]}"
 
     # ── Lifecycle ──
 
@@ -743,10 +853,13 @@ class Scheduler:
         local_now: time.struct_time,
     ) -> None:
         schedule_id = row["schedule_id"]
+        universe_id = str(row.get("universe_id") or "").strip()
+
         if schedule_is_legacy(row):
             # Never fire a row whose owner cannot be named. Firing it would have to
             # invent an identity for the run, which is the whole defect 2.1 closes.
-            # One line per schedule per process, not one per tick.
+            # One log line per schedule per process; the refusal row is the durable
+            # record, and it upserts, so it does not grow.
             if schedule_id not in self._legacy_reported:
                 self._legacy_reported.add(schedule_id)
                 logger.warning(
@@ -757,6 +870,7 @@ class Scheduler:
                     row.get("owner_principal_id"),
                     row.get("owner_actor"),
                 )
+            self._record_refusal(schedule_id, universe_id, "legacy_row")
             return
 
         last_fired = row["last_fired_at"] or 0.0
@@ -775,6 +889,8 @@ class Scheduler:
                 should_fire = True
 
         if not should_fire:
+            # Not due is not a skip. Recording it would drown the ledger the owner
+            # reads in rows saying nothing happened, every ten seconds.
             return
 
         if row["skip_if_running"]:
@@ -782,17 +898,27 @@ class Scheduler:
                 logger.debug(
                     "scheduler: skip_if_running — skipping schedule %s", schedule_id
                 )
+                self._record_refusal(schedule_id, universe_id, "skip_if_running")
                 return
 
-        inputs = json.loads(row["inputs_template_json"] or "{}")
-        # The run actor is the OWNING UNIVERSE (``universe:<id>``), recorded on the
-        # row at registration. It used to be ``scheduler:<schedule_id>``, which the
-        # run function rejects as a non-universe actor — so every schedule that ever
-        # came due was refused. The owner principal rides alongside it because the
-        # tick thread has no request identity for the provider session to bind to.
+        # D3 — authority is checked HERE, at the tick, not only at registration.
+        # An owner who lost admin, moved home, or has no serving assignment must
+        # not run: `_validate_founder_home` downstream checks home only, so a
+        # revoked admin with an unchanged home would otherwise still fire.
+        denial = self._authorization_denial(row)
+        if denial:
+            # D5 — one recorded refusal, and the row auto-pauses with a reason the
+            # owner can read. `last_fired_at` is deliberately NOT advanced: nothing
+            # ran, so the schedule has not fired.
+            self._record_refusal(schedule_id, universe_id, denial)
+            self._pause_for_reason(schedule_id, denial)
+            logger.warning(
+                "scheduler: schedule %s refused (%s) and paused", schedule_id, denial
+            )
+            return
+
         actor = str(row["owner_actor"])
         principal_id = str(row["owner_principal_id"] or "").strip()
-        run_name = f"scheduled:{schedule_id[:8]}"
         if not self._run_fn_takes_principal:
             logger.error(
                 "scheduler: run_fn %r does not accept principal_id; refusing to fire "
@@ -800,30 +926,145 @@ class Scheduler:
                 getattr(self._run_fn, "__name__", self._run_fn),
                 schedule_id,
             )
+            self._record_refusal(schedule_id, universe_id, "run_fn_incompatible")
             return
+
+        # Claim the due row BEFORE firing, compare-and-swap on the `last_fired_at`
+        # this tick read. Two daemons sharing one data root each run a tick loop
+        # (the singleton is per process, not per data root), and without the claim
+        # both would enqueue before either wrote the timestamp back.
+        if not self._claim_due(schedule_id, last_fired=row["last_fired_at"], now=now):
+            logger.debug(
+                "scheduler: schedule %s already claimed by another ticker", schedule_id
+            )
+            return
+
+        inputs = json.loads(row["inputs_template_json"] or "{}")
+        run_name = f"scheduled:{schedule_id[:8]}"
         try:
             self._run_fn(
                 row["branch_def_id"], actor, inputs, run_name, principal_id=principal_id
             )
-            logger.info(
-                "scheduler: fired schedule %s → branch %s as %s",
-                schedule_id,
-                row["branch_def_id"],
-                actor,
-            )
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - one failure must not kill the loop
             logger.exception("scheduler: run_fn failed for schedule %s", schedule_id)
+            # The claim stands: the attempt happened, and re-firing immediately
+            # would spin against whatever rejected it. The refusal names the cause.
+            self._record_refusal(
+                schedule_id, universe_id, f"enqueue_error:{type(exc).__name__}"
+            )
             return
+        logger.info(
+            "scheduler: fired schedule %s → branch %s as %s",
+            schedule_id,
+            row["branch_def_id"],
+            actor,
+        )
 
-        db = _runs_db(self._base_path)
+    # ── Tick-time authority, refusals, and the due-row claim ──
+
+    def _authorization_denial(self, row: dict[str, Any]) -> str:
+        """The reason this row may not run right now, or '' when it may.
+
+        Checked synchronously on the tick so a refusal is recorded instead of a
+        run being enqueued and failing later — by which point the scheduler has
+        already treated the enqueue as a fire.
+        """
+        universe_id = str(row.get("universe_id") or "").strip()
+        principal_id = str(row.get("owner_principal_id") or "").strip()
+        base = self._base_path
         try:
-            with _connect(db) as conn:
+            from tinyassets.daemon_server import (
+                get_founder_home,
+                universe_access_permission,
+            )
+            from tinyassets.provider_assignment import load_provider_assignment
+
+            if universe_access_permission(
+                base, universe_id=universe_id, actor_id=principal_id
+            ) != "admin":
+                return "owner_lost_admin"
+            if get_founder_home(base, principal_id) != universe_id:
+                return "not_owner_home"
+            assignment = load_provider_assignment(base, universe_id=universe_id)
+            if assignment is None or str(assignment.state) != "ready":
+                return "no_serving_assignment"
+        except Exception as exc:  # noqa: BLE001 - fail CLOSED, and say why
+            logger.exception(
+                "scheduler: authorization check failed for schedule %s",
+                row.get("schedule_id"),
+            )
+            return f"authorization_error:{type(exc).__name__}"
+        return ""
+
+    def _record_refusal(self, schedule_id: str, universe_id: str, reason: str) -> None:
+        """Write ONE refusal row for this schedule, keyed ``schedule:<id>``.
+
+        Same ledger the assigned-queue consumer writes to, so the owner's surface
+        reads every skipped attempt from one place (D5). The store upserts on the
+        key, so a repeating reason keeps one row rather than growing the table;
+        an unchanged reason is re-recorded at most once per window, mirroring the
+        consumer's write-amplification guard.
+        """
+        key = f"{REFUSAL_KEY_PREFIX}{schedule_id}"
+        previous = self._recorded_refusals.get(key)
+        elapsed = time.monotonic()
+        if (
+            previous is not None
+            and previous[0] == reason
+            and elapsed - previous[1] < _REFUSAL_REWRITE_SECONDS
+        ):
+            return
+        try:
+            from tinyassets.storage.assigned_queue_refusals import (
+                AssignedQueueRefusalStore,
+            )
+
+            AssignedQueueRefusalStore(self._base_path).record(
+                branch_task_id=key,
+                universe_id=universe_id,
+                reason=reason,
+                observed_at=datetime.now(timezone.utc).isoformat(),
+                consumer_id=self._ticker_id,
+            )
+        except Exception:  # noqa: BLE001 - losing the ledger row must not kill the tick
+            logger.exception(
+                "scheduler: failed to record refusal %s for schedule %s",
+                reason,
+                schedule_id,
+            )
+            return
+        self._recorded_refusals[key] = (reason, elapsed)
+
+    def _pause_for_reason(self, schedule_id: str, reason: str) -> None:
+        """Auto-pause a row the tick refused, recording the reason on it (D3)."""
+        try:
+            with _connect(_runs_db(self._base_path)) as conn:
                 conn.execute(
-                    "UPDATE branch_schedules SET last_fired_at=? WHERE schedule_id=?",
-                    (now, schedule_id),
+                    "UPDATE branch_schedules SET paused=1, pause_reason=? "
+                    "WHERE schedule_id=?",
+                    (reason, schedule_id),
                 )
         except sqlite3.Error:
-            logger.exception("scheduler: failed to update last_fired_at for %s", schedule_id)
+            logger.exception("scheduler: failed to pause schedule %s", schedule_id)
+
+    def _claim_due(self, schedule_id: str, *, last_fired: Any, now: float) -> bool:
+        """Compare-and-swap the due row. True when THIS ticker won the claim.
+
+        ``IS`` rather than ``=`` because ``last_fired_at`` is NULL until the first
+        fire, and ``NULL = NULL`` is never true in SQL — an equality comparison
+        would make every never-fired schedule unclaimable.
+        """
+        try:
+            with _connect(_runs_db(self._base_path)) as conn:
+                cursor = conn.execute(
+                    "UPDATE branch_schedules SET last_fired_at=? "
+                    "WHERE schedule_id=? AND last_fired_at IS ?",
+                    (now, schedule_id, last_fired),
+                )
+                return cursor.rowcount == 1
+        except sqlite3.Error:
+            logger.exception("scheduler: failed to claim schedule %s", schedule_id)
+            return False
 
     def _has_running_run(self, branch_def_id: str) -> bool:
         db = _runs_db(self._base_path)
@@ -973,20 +1214,61 @@ def _runs_db(base_path: str | Path) -> Path:
 
 #: Columns added to ``branch_schedules`` after its initial schema, with the DDL
 #: fragment that adds each one. SQLite has no ``ADD COLUMN IF NOT EXISTS``, so
-#: ``_connect`` probes ``PRAGMA table_info`` and adds whatever is missing — the
-#: migration is idempotent and runs on an existing DB without a rebuild.
+#: the migration probes ``PRAGMA table_info`` and adds whatever is missing.
 #:
 #: ``universe_id`` / ``owner_principal_id`` carry the two identities a run needs
 #: (user-owned-automations 2.1): which universe executes the branch, and which
 #: authenticated principal authorised it. A row predating them keeps '' for both
 #: and is LEGACY — it never fires, because a run with no owner would have to fall
 #: back to an ambient identity, which is exactly what the founder principle
-#: forbids.
+#: forbids. ``pause_reason`` carries why the tick auto-paused a row (D3/D5), so
+#: the owner can read the cause on their own surface.
 _SCHEDULE_COLUMN_MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("paused", "INTEGER NOT NULL DEFAULT 0"),
     ("universe_id", "TEXT NOT NULL DEFAULT ''"),
     ("owner_principal_id", "TEXT NOT NULL DEFAULT ''"),
+    ("pause_reason", "TEXT NOT NULL DEFAULT ''"),
 )
+
+
+def migrate_scheduler_schema(conn: sqlite3.Connection) -> None:
+    """Add every post-initial ``branch_schedules`` column. Idempotent, concurrency-safe.
+
+    **This MUST run before ``SCHEDULER_SCHEMA`` is executed**, not after.
+    ``SCHEDULER_SCHEMA`` contains ``CREATE INDEX ... branch_schedules(universe_id)``;
+    on an existing install that index names a column the old table does not have
+    yet, so ``initialize_runs_db`` died with ``OperationalError: no such column:
+    universe_id`` before any migration could run. Ordering the migration first is
+    the whole fix — a migration that runs after the thing it enables is not a
+    migration (Codex ADAPT on 44caf369, reproduced against an old-schema DB).
+
+    The probe and the ALTERs run inside one ``BEGIN IMMEDIATE`` so two connections
+    opening the same DB cannot both observe a missing column and both try to add
+    it; the duplicate-column error is still caught, because the write lock is
+    only held per connection and a process that lost a race must treat the column
+    as already present rather than crash.
+    """
+    if not {row[1] for row in conn.execute("PRAGMA table_info(branch_schedules)")}:
+        # Table not laid down yet: CREATE TABLE brings every column with it.
+        return
+    conn.commit()  # close any implicit transaction so BEGIN IMMEDIATE can take the lock
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # Re-probe INSIDE the write lock: the check and the ALTER have to be one
+        # atomic step, or the check is just a guess made before the lock.
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(branch_schedules)")}
+        for col, ddl in _SCHEDULE_COLUMN_MIGRATIONS:
+            if col in cols:
+                continue
+            try:
+                conn.execute(f"ALTER TABLE branch_schedules ADD COLUMN {col} {ddl}")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -995,13 +1277,7 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(branch_schedules)")}
-    if cols:  # table exists — an empty pragma means the schema has not been laid down yet
-        missing = [(c, ddl) for c, ddl in _SCHEDULE_COLUMN_MIGRATIONS if c not in cols]
-        if missing:
-            for col, ddl in missing:
-                conn.execute(f"ALTER TABLE branch_schedules ADD COLUMN {col} {ddl}")
-            conn.commit()
+    migrate_scheduler_schema(conn)
     return conn
 
 
@@ -1037,11 +1313,15 @@ __all__ = [
     "MAX_SCHEDULES_PER_OWNER",
     "MAX_SUBSCRIPTIONS_PER_OWNER",
     "MIN_SCHEDULE_INTERVAL_S",
+    "REFUSAL_KEY_PREFIX",
     "emit_event",
     "get_or_create_scheduler",
     "get_schedule",
     "is_running",
+    "legacy_owner_actors_for",
     "list_schedules",
+    "migrate_scheduler_schema",
+    "min_cron_interval_seconds",
     "list_scheduler_subscriptions",
     "pause_schedule",
     "register_schedule",

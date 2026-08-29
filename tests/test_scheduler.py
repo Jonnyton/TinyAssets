@@ -279,6 +279,19 @@ def _owned(**overrides):
 
 
 class TestSchedulerTick:
+    @pytest.fixture(autouse=True)
+    def _authorized(self, base_path):
+        """Give `_UID` the three facts the tick re-checks before every fire.
+
+        These tests are about WHEN a schedule is due — cron matching, interval
+        arithmetic, skip_if_running. Without a real admin grant, founder home and
+        ready serving assignment the tick refuses on authority (D3) and every one
+        of them would pass or fail for a reason it is not testing.
+        """
+        from tests.test_scheduler_owner import seed_ready_universe
+
+        seed_ready_universe(base_path, universe_id=_UID, principal="founder-tick")
+
     def _make_scheduler(self, base_path, run_calls):
         def run_fn(branch_def_id, actor, inputs, run_name, *, principal_id=""):
             run_calls.append((branch_def_id, actor, inputs, run_name, principal_id))

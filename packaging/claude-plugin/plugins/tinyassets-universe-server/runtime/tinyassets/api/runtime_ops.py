@@ -373,10 +373,16 @@ def _schedule_request_owner(kwargs: dict[str, Any]) -> tuple[str, str, str | Non
     """Return ``(actor, universe_id, error_json)`` for a schedule request.
 
     ``error_json`` is non-None when the request may not act on schedules at all:
-    unauthenticated, or without an admin ACL on the universe it is scoped to.
+    unauthenticated, without a current admin ACL on the universe it is scoped to,
+    or scoped to a universe that is not the caller's own home.
+
+    All three gates apply to CREATE and to LIST alike. They were not: list checked
+    admin but not home, so an admin could name another universe and read its
+    schedules — which branch runs, how often, when they last fired. Registration
+    and reading a universe's automations are the same authority.
     """
     from tinyassets.api import permissions
-    from tinyassets.daemon_server import universe_access_permission
+    from tinyassets.daemon_server import get_founder_home, universe_access_permission
 
     if not permissions.is_authenticated_request():
         return "", "", json.dumps({
@@ -395,16 +401,25 @@ def _schedule_request_owner(kwargs: dict[str, Any]) -> tuple[str, str, str | Non
             "error": "owner_not_admin",
             "universe_id": universe_id,
         })
+    # An admin ACL says they may act on it; the home binding says the runs are
+    # billed to their own subscription, which is the only place a background run
+    # may draw from.
+    if get_founder_home(base, actor) != universe_id:
+        return actor, universe_id, json.dumps({
+            "error": "not_owner_home",
+            "universe_id": universe_id,
+            "note": "Schedules run on your own universe's subscription.",
+        })
     return actor, universe_id, None
 
 
 def _action_schedule_branch(kwargs: dict[str, Any]) -> str:
-    from tinyassets.daemon_server import get_founder_home
     from tinyassets.runs import initialize_runs_db
     from tinyassets.scheduler import (
         MIN_SCHEDULE_INTERVAL_S,
         CronParseError,
         is_running,
+        min_cron_interval_seconds,
         register_schedule,
     )
 
@@ -420,7 +435,9 @@ def _action_schedule_branch(kwargs: dict[str, Any]) -> str:
     if not cron_expr and interval_seconds <= 0:
         return json.dumps({"error": "one of cron_expr or interval_seconds must be provided."})
     # Cadence floor: a scheduled run spends the OWNER's subscription, so a
-    # sub-floor interval is a way to drain them. Refuse rather than store it.
+    # sub-floor cadence is a way to drain them. Refuse rather than store it.
+    # BOTH trigger kinds: the floor used to apply only to interval_seconds, so
+    # `* * * * *` walked past it and fired every minute.
     if not cron_expr and interval_seconds < MIN_SCHEDULE_INTERVAL_S:
         return json.dumps({
             "error": "trigger_invalid",
@@ -428,21 +445,25 @@ def _action_schedule_branch(kwargs: dict[str, Any]) -> str:
             "interval_seconds": interval_seconds,
             "minimum_interval_seconds": MIN_SCHEDULE_INTERVAL_S,
         })
+    if cron_expr:
+        try:
+            cron_gap = min_cron_interval_seconds(cron_expr)
+        except CronParseError as exc:
+            return json.dumps({"error": f"Invalid cron_expr: {exc}"})
+        if cron_gap < MIN_SCHEDULE_INTERVAL_S:
+            return json.dumps({
+                "error": "trigger_invalid",
+                "reason": "cron_below_floor",
+                "cron_expr": cron_expr,
+                "minimum_interval_seconds": MIN_SCHEDULE_INTERVAL_S,
+                "shortest_gap_seconds": cron_gap,
+            })
 
     actor, universe_id, error = _schedule_request_owner(kwargs)
     if error is not None:
         return error
 
     base = _base_path()
-    # The universe must be the requester's OWN home. An admin ACL says they may
-    # act on it; the home binding says the runs will be billed to their own
-    # subscription, which is the only place a background run may draw from.
-    if get_founder_home(base, actor) != universe_id:
-        return json.dumps({
-            "error": "not_owner_home",
-            "universe_id": universe_id,
-            "note": "Schedules run on your own universe's subscription.",
-        })
     # D4 — fail loud at registration. A row stored while the tick loop is down is
     # a promise the daemon cannot keep; that silent storage is the defect this
     # change removes, so refuse instead of accepting it.
@@ -485,32 +506,74 @@ def _action_schedule_branch(kwargs: dict[str, Any]) -> str:
     })
 
 
-def _schedule_control_context(schedule_id: str) -> tuple[dict[str, Any], str, bool, str | None]:
-    """Resolve ``(row, actor, admin, error_json)`` for a pause/resume/delete request.
+def _schedule_row_universe(row: dict[str, Any], request_universe: str, actor: str) -> str:
+    """The universe whose admins may control ``row``, or '' when none can.
 
-    The requester is the authenticated principal. They may act when they are the
-    row's ``owner_principal_id``, or when they hold an admin ACL on the row's OWN
-    universe — not on whatever universe the request happens to be scoped to,
-    which a caller controls.
+    A derived row carries its own ``universe_id``. A MIGRATED row does not — the
+    column did not exist when it was written — so its universe is recovered from
+    the pre-2.1 ``owner_actor``: either ``universe:<id>`` or the bare principal
+    whose home this is. Recovery is scoped to the universe the request is already
+    entitled to, so it can never widen a caller's reach; it only makes rows an
+    install already has controllable by the people who own them.
+
+    A legacy row whose ``owner_actor`` matches neither is ORPHANED: no universe
+    claims it, so no admin can act on it. Losing that row is the correct outcome
+    of not being able to say whose it is — inventing an owner is the thing this
+    change exists to stop.
+    """
+    from tinyassets.scheduler import legacy_owner_actors_for
+
+    own = str(row.get("universe_id") or "").strip()
+    if own:
+        return own
+    if not request_universe:
+        return ""
+    owner_actor = str(row.get("owner_actor") or "").strip()
+    if owner_actor in legacy_owner_actors_for(request_universe, (actor,)):
+        return request_universe
+    return ""
+
+
+def _schedule_control_context(
+    schedule_id: str, kwargs: dict[str, Any]
+) -> tuple[dict[str, Any], str, str, str | None]:
+    """Resolve ``(row, actor, row_universe, error_json)`` for pause/resume/delete.
+
+    Authority is a CURRENT admin ACL on the row's own universe — not on whatever
+    universe the request happens to name, which a caller controls. The stored
+    ``owner_principal_id`` alone is not enough: a revoked owner could otherwise
+    still pause and delete a row by id while being unable to list it, which is
+    the inconsistency Codex found. A revoked owner learns why from the refusal
+    the tick records, not from retaining control.
     """
     from tinyassets.api import permissions
     from tinyassets.daemon_server import universe_access_permission
     from tinyassets.scheduler import get_schedule
 
     if not permissions.is_authenticated_request():
-        return {}, "", False, json.dumps({"error": "authentication_required"})
+        return {}, "", "", json.dumps({"error": "authentication_required"})
     actor = permissions.current_actor_id()
     base = _base_path()
     row = get_schedule(base, schedule_id)
     if row is None:
-        return {}, actor, False, json.dumps(
+        return {}, actor, "", json.dumps(
             {"error": f"schedule_id '{schedule_id}' not found."}
         )
-    row_universe = str(row.get("universe_id") or "").strip()
-    admin = bool(row_universe) and universe_access_permission(
+    row_universe = _schedule_row_universe(
+        row, _schedule_request_universe(kwargs), actor
+    )
+    if not row_universe or universe_access_permission(
         base, universe_id=row_universe, actor_id=actor
-    ) == "admin"
-    return row, actor, admin, None
+    ) != "admin":
+        return row, actor, row_universe, json.dumps({
+            "error": "owner_not_admin",
+            "schedule_id": schedule_id,
+            "note": (
+                "Controlling a schedule needs a current admin grant on the "
+                "universe that owns it."
+            ),
+        })
+    return row, actor, row_universe, None
 
 
 def _action_unschedule_branch(kwargs: dict[str, Any]) -> str:
@@ -519,13 +582,17 @@ def _action_unschedule_branch(kwargs: dict[str, Any]) -> str:
     schedule_id = (kwargs.get("schedule_id") or "").strip()
     if not schedule_id:
         return json.dumps({"error": "schedule_id is required."})
-    _row, actor, admin, error = _schedule_control_context(schedule_id)
+    _row, actor, _uid, error = _schedule_control_context(schedule_id, kwargs)
     if error is not None:
         return error
     base = _base_path()
     try:
+        # admin=True: `_schedule_control_context` has already proven a CURRENT
+        # admin grant on the row's own universe, which is the authority. The
+        # library's stored-owner comparison would additionally pass a revoked
+        # owner, which is exactly what this surface must not do.
         removed = unregister_schedule(
-            base, schedule_id, requesting_actor=actor, admin=admin
+            base, schedule_id, requesting_actor=actor, admin=True
         )
     except PermissionError as exc:
         return json.dumps({"error": str(exc)})
@@ -548,6 +615,7 @@ _SCHEDULE_SUMMARY_FIELDS = (
     "skip_if_running",
     "active",
     "paused",
+    "pause_reason",
     "legacy",
     "created_at",
     "last_fired_at",
@@ -561,7 +629,7 @@ def _action_list_schedules(kwargs: dict[str, Any]) -> str:
     # Owner-scoped read: a schedule discloses which branch runs, how often, and
     # when it last fired. That is the owner's operational picture, so listing
     # takes the same authenticated-admin gate registration does.
-    _actor, universe_id, error = _schedule_request_owner(kwargs)
+    actor, universe_id, error = _schedule_request_owner(kwargs)
     if error is not None:
         return error
     active_only = bool(kwargs.get("active_only", True))
@@ -569,7 +637,15 @@ def _action_list_schedules(kwargs: dict[str, Any]) -> str:
     initialize_runs_db(base)
     # Owner-scoped: a request lists the schedules of ITS OWN universe. The old
     # unfiltered listing disclosed every universe's schedules to any caller.
-    rows = list_schedules(base, universe_id=universe_id, active_only=active_only)
+    # MIGRATED legacy rows carry universe_id='' and would be invisible to the
+    # only people who may delete them, so they are recovered by owner_actor —
+    # `universe:<id>`, or this caller's own principal.
+    rows = list_schedules(
+        base,
+        universe_id=universe_id,
+        legacy_owner_actors=(actor,),
+        active_only=active_only,
+    )
     summaries = [
         {field: row.get(field) for field in _SCHEDULE_SUMMARY_FIELDS} for row in rows
     ]
@@ -638,12 +714,14 @@ def _action_pause_schedule(kwargs: dict[str, Any]) -> str:
     schedule_id = (kwargs.get("schedule_id") or "").strip()
     if not schedule_id:
         return json.dumps({"error": "schedule_id is required."})
-    _row, actor, admin, error = _schedule_control_context(schedule_id)
+    _row, actor, _uid, error = _schedule_control_context(schedule_id, kwargs)
     if error is not None:
         return error
     base = _base_path()
     try:
-        found = pause_schedule(base, schedule_id, requesting_actor=actor, admin=admin)
+        # admin=True: the context has already proven a CURRENT admin grant on the
+        # row's own universe. See _action_unschedule_branch.
+        found = pause_schedule(base, schedule_id, requesting_actor=actor, admin=True)
     except PermissionError as exc:
         return json.dumps({"error": str(exc)})
     if not found:
@@ -657,12 +735,14 @@ def _action_unpause_schedule(kwargs: dict[str, Any]) -> str:
     schedule_id = (kwargs.get("schedule_id") or "").strip()
     if not schedule_id:
         return json.dumps({"error": "schedule_id is required."})
-    _row, actor, admin, error = _schedule_control_context(schedule_id)
+    _row, actor, _uid, error = _schedule_control_context(schedule_id, kwargs)
     if error is not None:
         return error
     base = _base_path()
     try:
-        found = unpause_schedule(base, schedule_id, requesting_actor=actor, admin=admin)
+        # admin=True: the context has already proven a CURRENT admin grant on the
+        # row's own universe. See _action_unschedule_branch.
+        found = unpause_schedule(base, schedule_id, requesting_actor=actor, admin=True)
     except PermissionError as exc:
         return json.dumps({"error": str(exc)})
     if not found:
