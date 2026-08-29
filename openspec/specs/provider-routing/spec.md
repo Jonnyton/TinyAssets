@@ -471,23 +471,55 @@ interactive-deadline outcome, not as provider unavailability.
   interval
 - **THEN** the attempt is ended and classified `provider_idle_timeout`
 
-#### Scenario: A turn waiting on its own tool call is not idle (codex)
+#### Scenario: Silence inside a codex turn is the model generating, not idle
 
-- **GIVEN** a codex-served completion (`codex exec --json`) that has reported a
-  tool or command start (`item.started`) whose completion has not arrived
-- **WHEN** no other event arrives for longer than the idle interval
-- **THEN** the attempt continues; the allowance while a tool is in flight is
-  `min(absolute cap, 900s)` (`_TOOL_WAIT_S`), and it re-arms to the idle interval
-  once the tool completes or the turn reports `turn.failed`
-- **NOTE (as-built boundary):** the claude reader does not yet honor this; its
-  `tool_phase` is telemetry only (`docs/concerns/2026-08-29-claude-reader-tool-wait-idle-gap.md`)
+- **GIVEN** a codex-served completion (`codex exec --json`), which emits NO
+  reasoning or assistant-text deltas — between one protocol event and the next
+  there is one whole model round-trip of silence (31s live on 2026-08-29;
+  ~100s per round-trip observed), and whose `turn.started` / `item.started` /
+  `item.completed` are delivered best-effort (the in-process queue of
+  codex-cli 0.146.0 guarantees only `TurnCompleted`, projected as
+  `turn.completed` / `turn.failed`; `thread.started` is printed by exec itself
+  before the turn is requested)
+- **WHEN** any protocol event has been read and no terminal turn event
+  (`turn.completed` / `turn.failed`) has arrived yet
+- **THEN** the turn is running (`codex exec` runs exactly one) and silence is
+  allowed for `min(absolute cap, 900s)` (`_TURN_WAIT_S`, the same bound as a
+  tool wait `_TOOL_WAIT_S` — with `item.started` equally droppable, "in a tool"
+  and "generating" are not reliably distinguishable); the profile's idle
+  interval guards only the launch edge (no event at all within `init_s`)
+- **NOTE (as-built boundary):** for codex the idle boundary inside a turn IS
+  900s — the CLI offers no finer liveness signal to judge progress by. Two
+  signal-less windows share that bound rather than a shorter one: a stall
+  between `thread.started` and the `turn/start` request (an in-process RPC,
+  never a model wait), and a shutdown that stalls after
+  `TurnCompleted(Interrupted)`, which projects no terminal JSONL event (only
+  SIGINT interrupts an exec turn; the daemon never sends one). A finished
+  stream whose `agent_message` item was dropped under backpressure fails loud
+  in `complete()` ("omitted result or usage") —
+  `docs/concerns/2026-08-29-codex-agent-message-can-be-dropped-under-backpressure.md`.
+  The claude reader does not honor a tool wait; its `tool_phase` is telemetry
+  only (`docs/concerns/2026-08-29-claude-reader-tool-wait-idle-gap.md`)
+
+#### Scenario: A completed codex turn is never failed by its own shutdown
+
+- **GIVEN** the reader has read `turn.completed` (or `turn.failed`) — the
+  projections of the one guaranteed notification, `TurnCompleted`
+- **WHEN** the child has not exited `_TAIL_WAIT_S` (60s) later — codex exec
+  unsubscribes the thread and awaits `client.shutdown()`, bounded at 45s in
+  0.146.0
+- **THEN** the reader ends the child and RETURNS the finished stream; any tool
+  left open is closed with the turn; and the caller treats a non-zero exit code
+  after a stream that carries `turn.completed` as process trivia (logged, never
+  raised — the protocol's word beats the exit code)
 
 #### Scenario: A provider `error` event that may retry is liveness, not termination
 
 - **WHEN** codex emits a top-level `error` event (its `will_retry` flag is not
   projected into the JSONL) while a tool is in flight
 - **THEN** the tool stays in flight and the watchdog treats the event as liveness;
-  only `turn.failed` clears in-flight tools (verified on codex-cli 0.146.0)
+  only the terminal `turn.completed` / `turn.failed` close the turn and its
+  in-flight tools (verified on codex-cli 0.146.0)
 
 #### Scenario: The served absolute cap is a runaway backstop with per-universe overrides
 
@@ -527,6 +559,21 @@ The failure notice delivered to the user SHALL be derived from the structured
 `failure_class`. A timeout or interactive-deadline outcome SHALL NOT be presented as
 "model capacity" or a rate limit. A completion SHALL NOT be recorded as a completed
 assistant response unless a terminal provider result was produced.
+
+#### Scenario: An ended turn is described as ended, and the resend as a repeat
+
+- **WHEN** a served turn ends with `provider_idle_timeout` or `interactive_deadline`
+- **THEN** the user notice (`_served_failure_notice`) says the turn was ended and
+  that what it finished stands, states that sending again repeats the whole
+  request (the turn may already have acted) and that asking it to continue is
+  usually better, and never contains "exhausted", "fallback", "capacity" or
+  "quota"; every other failure keeps the exception text verbatim
+- **AND** the web app keeps the message resendable (the in-flight record is not
+  forgotten on a served `error`), shows the server's sentence, and does not
+  reload for a new build while a send is in flight (bounded at 3 hours — past
+  the default 3600s cap and any plausible per-universe `absolute_cap_s`; a
+  fetch that truly never settles is cut by the proxy long before) or a failed
+  message is younger than 20 minutes
 
 #### Scenario: A timeout is described honestly
 

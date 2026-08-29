@@ -346,6 +346,44 @@ _CODEX_TERMINAL_FAILURE_TYPES = frozenset({"turn.failed"})
 #: into an hour-long wait (Codex round 2, P1). Fifteen minutes covers any run a
 #: served tool call launches today and still ends a silent wedge.
 _TOOL_WAIT_S = 900.0
+
+#: Silence INSIDE the turn is the model generating. ``codex exec --json`` emits
+#: no deltas at all - not for reasoning, not for the assistant message - so the
+#: gap between one event and the next is one full model round-trip, and on
+#: 2026-08-29 (deployed #2674) a 31s gap between two engine tool calls was
+#: killed as "idle" at the 30s interval. The turn was healthy.
+#:
+#: "Inside the turn" begins at the FIRST protocol event, not at ``turn.started``:
+#: codex 0.146 delivers ``turn.started`` / ``item.started`` / ``item.completed``
+#: best-effort - the in-process app-server queue guarantees only
+#: ``TurnCompleted`` (app-server/src/in_process.rs) - so there is NO reliable
+#: signal for the turn's start, and ``codex exec`` runs exactly one turn.
+#: Two windows are therefore read as generation although nothing is
+#: generating, and are bounded by this constant rather than detected sooner
+#: (Codex round 2, P1s; accepted):
+#:
+#: * ``thread.started`` is printed by exec itself BEFORE it requests
+#:   ``turn/start`` (exec/src/lib.rs). A stall between the two is an
+#:   in-process RPC hanging, never a model wait; guarding it with the short
+#:   init budget would re-kill every first generation whose ``turn.started``
+#:   was dropped - the round-1 P1.
+#: * ``TurnCompleted(Interrupted)`` projects no ``turn.completed`` /
+#:   ``turn.failed`` (event_processor_with_jsonl_output.rs), so a shutdown
+#:   that stalls after an interruption keeps this bound, not the tail grace.
+#:   Only SIGINT interrupts an exec turn, and the daemon never sends one.
+#:
+#: Same bound as a tool wait: with ``item.started`` droppable, "in a tool" and
+#: "generating" are not reliably distinguishable, and no evidence supports a
+#: tighter round-trip bound (31s live; ~100s per round-trip observed).
+_TURN_WAIT_S = _TOOL_WAIT_S
+#: After ``turn.completed`` / ``turn.failed`` - both projections of the one
+#: guaranteed notification, ``TurnCompleted`` - the result is in hand; what
+#: remains is codex's own shutdown, which 0.146 bounds at 45s
+#: (``IN_PROCESS_SHUTDOWN_TIMEOUT``: exec unsubscribes the thread, then awaits
+#: ``client.shutdown()``). A stalled shutdown is not the turn's failure: past
+#: this bound the reader ends the child and RETURNS the finished stream
+#: (Codex round 1, P1: a 30s idle here discarded a completed, healthy turn).
+_TAIL_WAIT_S = 60.0
 #: asyncio's default 64 KiB stream limit raises on one long JSON line. A
 #: single ``item.completed`` carrying an MCP result - a GET /contents reply is
 #: the base64 of a whole file - can exceed it (Codex round 2, P1: a 70,000-char
@@ -353,6 +391,34 @@ _TOOL_WAIT_S = 900.0
 #: bound the claude reader uses; an over-long line is still a protocol error,
 #: not a hang.
 _STDOUT_READER_LIMIT = 32 * 1024 * 1024
+
+
+def _codex_turn_completed(stdout: bytes) -> bool:
+    """True when the ``--json`` stream carries codex's own ``turn.completed``.
+
+    ``TurnCompleted`` is the one notification codex 0.146 guarantees end to
+    end (the in-process queue drops ``item.*`` under backpressure and backfills
+    completions only for items it saw start - so a finished turn can even lack
+    its ``agent_message``; ``complete()`` then fails loud, see
+    ``docs/concerns/2026-08-29-codex-agent-message-can-be-dropped-under-backpressure.md``).
+    It is the protocol's word that the turn finished; the exit code describes
+    the PROCESS. When the turn
+    completed, a non-zero exit afterwards - the reader ending a stalled
+    shutdown (``_TAIL_WAIT_S``), or codex failing in its own teardown - is
+    logged, never raised: raising would discard a finished, healthy turn.
+    """
+    if b"turn.completed" not in stdout:
+        return False
+    for line in stdout.splitlines():
+        if b"turn.completed" not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "turn.completed":
+            return True
+    return False
 
 
 async def _stream_codex_exec(
@@ -371,8 +437,13 @@ async def _stream_codex_exec(
 
     The genuine stop reasons, and what each raises:
 
-    * **idle** - no protocol event for ``profile.idle_s`` while NOT inside a
-      tool call -> :class:`ProviderIdleTimeoutError` (no provider cooldown);
+    * **idle** - no protocol event for ``profile.init_s`` before the first one
+      (launch), or none for ``_TURN_WAIT_S`` / ``_TOOL_WAIT_S`` inside the turn
+      (silence there is the model generating - codex emits no deltas; see the
+      constants) -> :class:`ProviderIdleTimeoutError` (no provider cooldown);
+    * **tail** - after ``turn.completed`` / ``turn.failed`` the stream is
+      complete. A child that has not exited ``_TAIL_WAIT_S`` later is ended and
+      the finished stream is RETURNED - a slow shutdown is never a failure;
     * **cap** - still progressing past ``profile.absolute_cap_s`` ->
       :class:`InteractiveDeadlineError` (no cooldown; a runaway backstop, not
       a deadline - see ``universe_intelligence._sandboxed_config``).
@@ -380,9 +451,9 @@ async def _stream_codex_exec(
     A turn waiting on its OWN tool is not idle. ``run_graph`` took 42s live on
     2026-08-29; a 30s idle budget would have killed a healthy turn mid-call,
     which is worse than the cap it replaces. So while an ``item.started`` tool
-    item has no matching ``item.completed``, the idle allowance is the absolute
-    cap. (Claude's reader does not do this - its ``tool_phase`` is telemetry
-    only. Tracked separately; not widened here.)
+    item has no matching ``item.completed``, the allowance is ``_TOOL_WAIT_S``
+    and ``tool_phase`` telemetry says ``in_tool``. (Claude's reader does not do
+    this - its ``tool_phase`` is telemetry only. Tracked separately.)
 
     Returns ``(stdout_bytes, stderr_bytes)`` exactly as ``communicate()`` did,
     so every downstream parse is unchanged.
@@ -391,8 +462,8 @@ async def _stream_codex_exec(
     out_chunks: list[bytes] = []
     err_chunks: list[bytes] = []
     last_progress = start
-    seen_init = False
-    seen_progress = False
+    in_turn = False      # any protocol event seen: the one turn is running
+    turn_done = False    # turn.completed / turn.failed seen: only exit remains
     tools_in_flight: set[str] = set()
     soft_slo_logged = False
 
@@ -431,10 +502,12 @@ async def _stream_codex_exec(
         exc.attempt_telemetry = {
             "provider": "codex",
             "failure_class": getattr(exc, "failure_class", None),
-            "phase": (
-                "streaming" if seen_progress else "init" if seen_init else "launch"
+            "phase": "streaming" if in_turn else "launch",
+            "tool_phase": (
+                "in_tool" if tools_in_flight
+                else "in_turn" if in_turn and not turn_done
+                else None
             ),
-            "tool_phase": "in_tool" if tools_in_flight else None,
             "last_progress_age_ms": (time.monotonic() - last_progress) * 1000,
             "exit_code": proc.returncode,
         }
@@ -457,22 +530,45 @@ async def _stream_codex_exec(
             "(idle watchdog fired; no provider cooldown)"
         ))
 
+    async def _cut_tail() -> None:
+        # The turn is complete (its guaranteed terminal event was read); only
+        # codex's own shutdown is outstanding and it has overrun its 45s bound.
+        # End the child and keep the finished stream. The exit code this leaves
+        # is process trivia: the caller reads past it when ``turn.completed`` is
+        # in the stream (``_codex_turn_completed``).
+        logger.warning(
+            "codex exec completed its turn but did not exit within %.0fs; "
+            "ending it and keeping the finished stream",
+            _TAIL_WAIT_S,
+        )
+        _terminate(proc)
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(proc.wait(), timeout=5)
+
     try:
         while True:
             now = time.monotonic()
-            if tools_in_flight:
-                allow = min(profile.absolute_cap_s, _TOOL_WAIT_S)
-            elif not seen_init:
-                allow = profile.init_s
-            elif not seen_progress:
-                allow = profile.first_progress_s
+            if turn_done:
+                # The cap bounds a RUNNING turn; this one has finished, so the
+                # only clock left is the tail grace for codex's own exit.
+                allow = _TAIL_WAIT_S
+                budget = last_progress + allow - now
+                bound_is_absolute = False
             else:
-                allow = profile.idle_s
-            idle_deadline = last_progress + allow
-            abs_deadline = start + profile.absolute_cap_s
-            budget = min(idle_deadline, abs_deadline) - now
-            bound_is_absolute = abs_deadline <= idle_deadline
+                if tools_in_flight:
+                    allow = min(profile.absolute_cap_s, _TOOL_WAIT_S)
+                elif in_turn:
+                    allow = min(profile.absolute_cap_s, _TURN_WAIT_S)
+                else:
+                    allow = profile.init_s
+                idle_deadline = last_progress + allow
+                abs_deadline = start + profile.absolute_cap_s
+                budget = min(idle_deadline, abs_deadline) - now
+                bound_is_absolute = abs_deadline <= idle_deadline
             if budget <= 0:
+                if turn_done:
+                    await _cut_tail()
+                    break
                 await _raise_timeout(bound_is_absolute, allow)
             if not soft_slo_logged and now - start >= profile.soft_slo_s:
                 soft_slo_logged = True
@@ -483,6 +579,9 @@ async def _stream_codex_exec(
             try:
                 line = await asyncio.wait_for(proc.stdout.readline(), timeout=budget)
             except asyncio.TimeoutError:
+                if turn_done:
+                    await _cut_tail()
+                    break
                 await _raise_timeout(bound_is_absolute, allow)
             except (ValueError, asyncio.LimitOverrunError):
                 _terminate(proc)
@@ -509,9 +608,13 @@ async def _stream_codex_exec(
             etype = obj["type"]
             if etype.startswith(_CODEX_LIVENESS_PREFIXES):
                 last_progress = time.monotonic()
-                seen_init = True
-                seen_progress = True
-            if etype in _CODEX_TERMINAL_FAILURE_TYPES:
+                in_turn = True
+            if etype == "turn.completed" or etype in _CODEX_TERMINAL_FAILURE_TYPES:
+                # Both projections of the guaranteed TurnCompleted. Nothing the
+                # turn started is still coming back; the tail rule above already
+                # outranks an open tool (Codex round 1, P1), and clearing keeps
+                # tool_phase telemetry honest.
+                turn_done = True
                 tools_in_flight.clear()
             item = obj.get("item")
             if isinstance(item, dict) and item.get("type") in _CODEX_TOOL_ITEM_TYPES:
@@ -815,17 +918,23 @@ class CodexProvider(BaseProvider):
         # provider outage, and must surface as such instead of being folded
         # into a "likely unavailable" cooldown (how the 2026-08-21 outage hid).
         check_bwrap_failure(stderr_text)
+        # The protocol's word beats the exit code: a stream that carries
+        # ``turn.completed`` is a finished turn whatever the process did in its
+        # teardown (see _codex_turn_completed). Only the --json path has it.
+        if machine_accounting and proc.returncode != 0 and _codex_turn_completed(stdout):
+            logger.warning(
+                "codex exec exit %s after turn.completed; keeping the finished turn",
+                proc.returncode,
+            )
         # Quick exit-code-1 => provider unavailable (same heuristic as claude).
         # Carry a REDACTED excerpt of codex's own words so the real cause is
         # visible; never raw stderr (it can carry token material).
-        if proc.returncode == 1 and elapsed_ms < 5000:
+        elif proc.returncode == 1 and elapsed_ms < 5000:
             raise ProviderUnavailableError(
                 "codex exec returned exit code 1 quickly -- likely unavailable: "
                 + _redacted_stderr_excerpt(stderr_text)
             )
-
-
-        if proc.returncode != 0:
+        elif proc.returncode != 0:
             raise ProviderError(
                 f"codex exec exit {proc.returncode}: {stderr_text}"
             )

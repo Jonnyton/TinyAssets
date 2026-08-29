@@ -465,10 +465,291 @@ def test_the_app_restores_the_conversation_on_load():
     assert "include_conversation:true" in html
     assert "function loadHistory()" in html
     assert "loadHistory();" in html
-    # Oldest-first render: the founder peek returns newest-first.
-    assert "turns.slice().reverse()" in html
+    # Oldest-first render by each turn's OWN ts, never by assuming the peek's
+    # order: `load_recent_readonly` returns oldest-first (it reverses its DESC
+    # page), and a blind reverse drew the thread upside down after every reload
+    # ("the conversation is reset to the past" — founder, 2026-08-29).
+    assert "turns.slice().sort((a,b)=>a.ts-b.ts)" in html
+    assert "turns.slice().reverse()" not in html
     # It must never block the chat on a history failure.
     assert "history is a convenience; never block the chat on it" in html
+
+def _js_function(html: str, name: str) -> str:
+    """Source of ``function NAME(`` / ``async function NAME(`` from the app's
+    script, by brace matching that skips strings and comments."""
+    import re
+
+    m = re.search(r"(?:async\s+)?function\s+" + re.escape(name) + r"\s*\(", html)
+    assert m, f"app.html has no function {name}"
+    i = html.index("{", m.end())
+    depth, j, n = 0, i, len(html)
+    while j < n:
+        c = html[j]
+        if c in "\"'`":
+            j += 1
+            while j < n and html[j] != c:
+                if html[j] == "\\":
+                    j += 1
+                j += 1
+        elif html.startswith("//", j):
+            j = html.index("\n", j)
+        elif html.startswith("/*", j):
+            j = html.index("*/", j) + 1
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return html[m.start(): j + 1]
+        j += 1
+    raise AssertionError(f"unbalanced braces in {name}")
+    # No regex-literal or nested-template lexing (Codex round 2, P2): the
+    # functions extracted today contain neither, and a mis-cut span is a
+    # syntax error that crashes the node harness - loud, never a silent pass.
+
+
+# The real send/resend/build-check code, run in Node against a DOM shim. A
+# string assertion could not tell "the in-flight record is kept" from "kept,
+# then forgotten one line later" (Codex round 1, P2: that mutation passed the
+# old test); this drives the functions and reads the state they leave behind.
+_APP_SHIM = r"""
+const store={};
+const localStorage={
+  getItem:k=>(k in store?store[k]:null),
+  setItem:(k,v)=>{store[k]=String(v);},
+  removeItem:k=>{delete store[k];},
+};
+class El{
+  constructor(tag){
+    this.tagName=tag.toUpperCase(); this.children=[]; this.className="";
+    this.textContent=""; this.value=""; this.style={}; this.disabled=false;
+    this.listeners={}; this.scrollTop=0; this.scrollHeight=0;
+  }
+  appendChild(c){ this.children.push(c); return c; }
+  remove(){ this.removed=true; }
+  addEventListener(n,f){ this.listeners[n]=f; }
+  click(){ (this.listeners.click||(()=>{}))(); }
+}
+const document={
+  createElement:t=>new El(t),
+  createTextNode:t=>{const e=new El("#text"); e.textContent=t; return e;},
+  activeElement:null,
+};
+const els={
+  "composer-input":new El("textarea"), "btn-send":new El("button"),
+  "thread":new El("div"), "status-line":new El("div"),
+};
+const $=id=>els[id];
+const messages=[];
+function appendMessage(role,text,extra){ messages.push({role,text}); }
+function setStatusLine(t){ els["status-line"].textContent=t||""; }
+function sessionExpired(){ messages.push({role:"session-expired"}); }
+function showConnect(){ messages.push({role:"connect"}); }
+const SCENARIO=__SCENARIO__;
+const converseCalls=[];
+const MCP={ converse: async m => {
+  converseCalls.push(m);
+  if(SCENARIO.transportError){ const e=new Error("offline"); e.transport=true; throw e; }
+  const payloads=SCENARIO.payloads||[SCENARIO.payload];
+  return payloads[Math.min(converseCalls.length-1, payloads.length-1)];
+}};
+const CFG={build: SCENARIO.build||"b1"};
+const token=()=>"t";
+MCP.getConversation=async()=>{
+  if(SCENARIO.historyError) throw new Error("peek failed");
+  return {recent_conversation:{turns: SCENARIO.history||[]}};
+};
+let reloaded=false; const location={reload:()=>{ reloaded=true; }};
+let fetched=0;
+async function fetch(){ fetched++; return {headers:{get:()=>SCENARIO.liveBuild||null}}; }
+__APP_FUNCTIONS__
+(async()=>{
+  const out={};
+  if(SCENARIO.kind==="send"){
+    await sendTurn(SCENARIO.message);
+    if(SCENARIO.clickResend){
+      const btn=els.thread.children.flatMap(n=>n.children).find(c=>c.tagName==="BUTTON");
+      btn.click();                                   // the listener fires sendTurn (async)
+      await new Promise(r=>setTimeout(r, 20));
+    }
+    out.converseCalls=converseCalls;
+    out.notesRemoved=els.thread.children.filter(n=>n.removed).length;
+    out.inflight=JSON.parse(localStorage.getItem(INFLIGHT_KEY)||"null");
+    out.messages=messages;
+    out.notes=els.thread.children.map(n=>({cls:n.className,
+      text:n.textContent+n.children.map(c=>c.textContent).join(""),
+      buttons:n.children.filter(c=>c.tagName==="BUTTON").map(b=>b.textContent)}));
+    out.sendDisabled=els["btn-send"].disabled;
+    out.status=els["status-line"].textContent;
+  }else if(SCENARIO.kind==="restore"){
+    localStorage.setItem(INFLIGHT_KEY, JSON.stringify({
+      message:SCENARIO.pending, display:SCENARIO.pending,
+      ts: Date.now()-(SCENARIO.pendingAgeS||0)*1000}));
+    await loadHistory();
+    await loadHistory();                                 // a second pass must not double-restore
+    out.inflight=JSON.parse(localStorage.getItem(INFLIGHT_KEY)||"null");
+    out.messages=messages;
+    out.notes=els.thread.children.map(n=>({cls:n.className, text:n.textContent,
+      buttons:n.children.filter(c=>c.tagName==="BUTTON").map(b=>b.textContent)}));
+  }else{
+    const min=60*1000;
+    if(SCENARIO.pendingAgeMin!=null){
+      localStorage.setItem(INFLIGHT_KEY, JSON.stringify(
+        {message:"m", display:"m", ts: Date.now()-SCENARIO.pendingAgeMin*min}));
+    }
+    if(SCENARIO.inflightAgeMin!=null){
+      els["btn-send"].disabled=true; turnStartedAt=Date.now()-SCENARIO.inflightAgeMin*min;
+    }
+    await checkForNewBuild();
+    out.reloaded=reloaded; out.fetched=fetched;
+  }
+  console.log(JSON.stringify(out));
+})().catch(e=>{ console.error(e&&e.stack||e); process.exit(1); });
+"""
+
+
+def _run_app(tmp_path, scenario: dict) -> dict:
+    import json
+    import os
+    import re
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:  # pragma: no cover - environment dependent
+        if os.environ.get("TINYASSETS_SKIP_JS_PROBE_TESTS"):
+            pytest.skip("node absent; skip explicitly requested via env")
+        pytest.fail("node executable not found - the app's send/resend behaviour is "
+                    "JavaScript; install Node or set TINYASSETS_SKIP_JS_PROBE_TESTS=1")
+    html, _csp = onboarding.render_app_html()
+    decls = "\n".join(
+        re.search(pat, html).group(0)
+        for pat in (r"const INFLIGHT_KEY=[^\n]*;", r"let turnStartedAt=[^\n]*;",
+                    r"let historyLoaded = [^\n]*;", r"let inflightRestored = [^\n]*;")
+    )
+    funcs = "\n".join(_js_function(html, f) for f in (
+        "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
+        "offerResend", "sendTurn", "checkForNewBuild", "loadHistory", "restoreInflight",
+    ))
+    program = (_APP_SHIM
+               .replace("__SCENARIO__", json.dumps(scenario))
+               .replace("__APP_FUNCTIONS__", decls + "\n" + funcs))
+    script = tmp_path / "app_case.js"
+    script.write_text(program, encoding="utf-8")
+    proc = subprocess.run([node, str(script)], capture_output=True, text=True,
+                          encoding="utf-8", timeout=60)
+    assert proc.returncode == 0, f"app harness crashed:\n{proc.stderr}"
+    return json.loads(proc.stdout)
+
+
+def test_a_served_error_keeps_the_message_resendable_with_the_servers_sentence(tmp_path):
+    """The universe never answered, so the message stays the user's: the
+    in-flight record survives, the note is the server's own sentence, and
+    "Send it again" is one click away. (2026-08-29: the app drew the error as
+    a finished turn, forgot the message, and a reload wiped both.)"""
+    sentence = "Your universe went quiet mid-turn, so the turn was ended."
+    out = _run_app(tmp_path, {"kind": "send", "message": "hi",
+                              "payload": {"error": sentence}})
+    assert out["inflight"] and out["inflight"]["message"] == "hi"
+    assert [m["role"] for m in out["messages"]] == ["founder"]      # no fake reply
+    notes = [n for n in out["notes"] if "msg--system" in n["cls"]]
+    assert len(notes) == 1 and notes[0]["text"].startswith(sentence)
+    assert notes[0]["buttons"] == ["Send it again"]
+    assert out["sendDisabled"] is False and out["status"] == ""
+
+
+def test_send_it_again_resends_the_same_message_once_without_a_second_bubble(tmp_path):
+    """Codex round 2 (P2): the button was rendered but never pressed. Press it:
+    the SAME text goes to the universe again, the founder bubble is not drawn
+    twice (`echoed`), the note is gone, and a delivered reply then clears the
+    in-flight record."""
+    out = _run_app(tmp_path, {
+        "kind": "send", "message": "hi", "clickResend": True,
+        "payloads": [{"error": "Your universe went quiet mid-turn."}, {"reply": "hello"}],
+    })
+    assert out["converseCalls"] == ["hi", "hi"]
+    assert [m["role"] for m in out["messages"]] == ["founder", "universe"]
+    assert out["notesRemoved"] == 1
+    assert out["inflight"] is None
+    assert out["sendDisabled"] is False
+
+
+def test_a_delivered_reply_forgets_the_in_flight_record(tmp_path):
+    out = _run_app(tmp_path, {"kind": "send", "message": "hi",
+                              "payload": {"reply": "hello"}})
+    assert out["inflight"] is None
+    assert [m["role"] for m in out["messages"]] == ["founder", "universe"]
+    assert out["sendDisabled"] is False
+
+
+def test_a_transport_failure_still_offers_the_resend(tmp_path):
+    out = _run_app(tmp_path, {"kind": "send", "message": "hi", "transportError": True})
+    assert out["inflight"]["message"] == "hi"
+    assert any("didn’t get through" in n["text"] for n in out["notes"])
+
+
+def _turn(speaker, text, age_s):
+    """A history turn as the peek sends it: epoch SECONDS, oldest first."""
+    import time
+
+    return {"speaker": speaker, "text": text, "ts": time.time() - age_s, "truncated": False}
+
+
+def test_a_held_message_is_restored_on_an_empty_thread(tmp_path):
+    """Codex round 3 (P1): `loadHistory` returned before `restoreInflight` when
+    history was empty, so the FIRST message a user ever sent, if it failed,
+    vanished on reload."""
+    out = _run_app(tmp_path, {"kind": "restore", "pending": "hello there", "history": []})
+    assert out["inflight"]["message"] == "hello there"
+    assert [m["role"] for m in out["messages"]] == ["founder"]          # once, not twice
+    notes = [n for n in out["notes"] if "msg--system" in n["cls"]]
+    assert len(notes) == 1 and "never confirmed" in notes[0]["text"]
+    assert notes[0]["buttons"] == ["Send it again"]
+
+
+def test_a_held_message_is_restored_when_the_peek_fails(tmp_path):
+    out = _run_app(tmp_path, {"kind": "restore", "pending": "hello", "historyError": True})
+    assert out["inflight"]["message"] == "hello"
+    assert [m["role"] for m in out["messages"]] == ["founder"]
+
+
+def test_an_older_identical_prompt_does_not_count_as_delivery(tmp_path):
+    """Codex round 3 (P1): "continue" sent ten minutes ago and answered must
+    not make a NEW failed "continue" look delivered."""
+    out = _run_app(tmp_path, {
+        "kind": "restore", "pending": "continue", "pendingAgeS": 30,
+        "history": [_turn("founder", "continue", 600), _turn("universe", "ok", 600)],
+    })
+    assert out["inflight"]["message"] == "continue"
+    assert [m["role"] for m in out["messages"]] == ["you", "universe", "founder"]
+
+
+def test_a_message_delivered_while_away_is_not_restored(tmp_path):
+    """The newest founder turn IS the held message and is stamped after the
+    send: the reply landed, the local copy is stale and is dropped."""
+    out = _run_app(tmp_path, {
+        "kind": "restore", "pending": "continue", "pendingAgeS": 120,
+        "history": [_turn("founder", "continue", 60), _turn("universe", "done", 60)],
+    })
+    assert out["inflight"] is None
+    assert [m["role"] for m in out["messages"]] == ["you", "universe"]
+
+
+@pytest.mark.parametrize("scenario, reloads", [
+    ({}, True),                                   # nothing in flight: update
+    ({"liveBuild": "b1"}, False),                 # same build: nothing to do
+    ({"inflightAgeMin": 1}, False),               # a turn being served: hold
+    ({"inflightAgeMin": 70}, False),              # a raised per-universe cap: still hold
+    ({"inflightAgeMin": 200}, True),              # past any cap: a dead fetch; reload
+    ({"pendingAgeMin": 5}, False),                # a failed message waiting: hold
+    ({"pendingAgeMin": 25}, True),                # abandoned: update
+])
+def test_the_build_check_holds_for_a_live_turn_but_never_forever(tmp_path, scenario, reloads):
+    """Codex round 1 (P1): a never-settling send used to hold updates for good."""
+    case = {"kind": "build", "liveBuild": "b2", **scenario}
+    out = _run_app(tmp_path, case)
+    assert out["reloaded"] is reloads, case
+
 
 def test_an_unconfirmed_message_survives_a_reload_and_says_so():
     """Founder, 2026-08-28: "you still need to fix it all, webapp is a promary
