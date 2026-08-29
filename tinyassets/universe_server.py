@@ -41,8 +41,8 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 from starlette.applications import Starlette
 
+from tinyassets.api.automations import automations as _automations_impl
 from tinyassets.api.branches import _branch_design_guide_prompt
-from tinyassets.api.cloud_automations import cloud_automations as _cloud_automations_impl
 from tinyassets.api.cloud_connections import cloud_connections as _cloud_connections_impl
 from tinyassets.api.custom_agents import custom_agents as _custom_agents_impl
 from tinyassets.api.engine_helpers import _warn_if_no_upload_whitelist
@@ -488,11 +488,9 @@ def read_graph(
             Falls back to graph_id when omitted.
         branch_id: Branch definition identifier for target=branch (read a
             branch's full graph + node configs). Falls back to graph_id.
-        automation_id: Private cloud automation identifier for
-            target=automation controls. On create, this is only a caller label:
-            the server returns the canonical identity derived from the
-            authenticated owner, universe, repository, accepted-spec reference,
-            and Branch lineage. Use that returned identity for later controls.
+        automation_id: Identifier of one of this universe's automations, for
+            target=automation. The server assigns it on create and returns it
+            in the response; use that value for later reads and controls.
         agent_definition_id: Public agent definition identifier for
             target=agent. Falls back to graph_id.
         agent_binding_id: Private universe binding identifier for
@@ -549,8 +547,12 @@ def read_graph(
         # deprecated 'extensions' tool; this only makes it first-class.
         return _extensions_impl(action="get_branch", branch_def_id=(branch_id or graph_id))
     if normalized in {"automations", "automation"}:
+        # The owner's own recurring runs (user-owned-automations 3.1). The read
+        # path carries no payload, so `list` here always hides retired rows;
+        # an owner who wants the deleted ones asks through the write handle
+        # with payload_json {"include_retired": true}.
         return json.dumps(
-            _cloud_automations_impl(
+            _automations_impl(
                 action=("list" if normalized == "automations" else "get"),
                 universe_id=graph_id,
                 automation_id=automation_id,
@@ -754,10 +756,10 @@ def write_graph(
         operation: With target=goal, set_canonical. With target=agent,
             publish/remix/import/stage_import/publish_stage/convert_export.
             With target=agent_binding, bind/update/bind_serving_provider/set_serving.
-            With target=automation, bind_provider/reconcile_provider/create/pause/
-            rebind/resume/stop. Rebind a stopped automation to a published
-            immutable Branch version; binding
-            an earlier version rolls back without mutating either version.
+            With target=automation, create/list/get/pause/resume/delete — one
+            recurring run of one of YOUR workflows, owned by you, in your own
+            universe. It runs on whichever provider that universe is serving on
+            at the time, so rebinding the provider needs no change here.
             With target=branch, create/remix/patch/publish. Create and remix
             consume a complete Branch spec in payload_json; remix uses its
             fork_from field. Publish freezes the named branch_id.
@@ -789,8 +791,8 @@ def write_graph(
         request_type: TinyAssets request type.
         branch_id: Target branch identifier; with target=branch it is the
             branch_def_id to patch.
-        automation_id: Private cloud automation identifier for
-            target=automation.
+        automation_id: The automation to control with target=automation
+            operation=get/pause/resume/delete, as returned by create/list.
         idempotency_key: Required 16-128 character request idempotency key.
         pickup_incentive: Optional requester pickup incentive terms.
         directed_daemon_id: Optional requester-owned daemon target.
@@ -850,17 +852,15 @@ def write_graph(
             "claude-code"}. Owner-only, registration ONLY — NO secret here (deposit the
             api key out of band via the secure browser form / connect_http first).
             For target=automation operation=create, pass
-            {"definition": {"repository": "owner/repository",
-            "accepted_spec_ref": "openspec/specs/capability/spec.md",
-            "branch_version_id": "branch_id@version"},
-            "accepted_spec_content": "<exact accepted spec text>",
-            "cadence_seconds": 300, "operator": {"display_name": "...",
-            "soul_text": "user-authored operating principles"}}. The server
-            derives ownership, immutable digests, policy, provider binding,
-            and destination grant from authenticated server-held state;
-            caller-supplied derived values are assertions and grant no
-            authority. Provider and destination references must already be
-            requester-owned and active.
+            {"name": "Nightly digest", "branch_def_id": "<one of YOUR
+            workflows>", "interval_seconds": 3600, "inputs": {...}} — or
+            "cron_expr": "0 7 * * *" instead of interval_seconds (exactly one
+            of the two; the minimum interval is 300 seconds). Ownership is the
+            authenticated caller, who must hold an admin grant on their own
+            home universe; the universe must already be serving on a provider.
+            A registration that could not fire is REFUSED with a named reason
+            rather than stored. For operation=list, an optional
+            {"include_retired": true} also returns deleted rows.
             For target=agent operation=publish or remix, pass schema_version=1,
             a non-empty name, description, tags, and components. For a remix,
             lineage is keyed by each child component key; each value is a
@@ -1044,8 +1044,13 @@ def write_graph(
             }
         )
     if normalized == "automation":
+        # create/list/get/pause/resume/delete on the owner's own automation
+        # rows. The fleet-era operations (bind_provider/reconcile_provider/
+        # rebind/stop) are gone with the fleet: they configured an executor
+        # identity that no longer exists, so leaving them reachable would offer
+        # the owner a control that cannot take effect.
         return json.dumps(
-            _cloud_automations_impl(
+            _automations_impl(
                 action=operation,
                 universe_id=graph_id,
                 automation_id=automation_id,
