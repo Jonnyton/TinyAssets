@@ -112,3 +112,47 @@ def test_a_rest_placeholder_without_a_pattern_is_refused():
                 }
             ]
         )
+
+
+# --- the ask path must not strip the pattern that makes a job-scoped grant valid
+
+
+def test_an_extend_ask_for_a_job_scoped_grant_keeps_its_param_patterns():
+    """Found 2026-08-29 before the live test: `_validated_endpoint_list` rebuilt
+    each endpoint with only host/path/methods, so the exact request the agent is
+    taught to raise was refused at ask time with "param_patterns must declare
+    exactly the path placeholders". The verb, the enforcement and the teaching
+    all existed; the request pipe dropped the one field that made it valid."""
+    from tinyassets.api.pending_requests import _validated_action
+
+    out = _validated_action({
+        "type": "extend_http", "destination": "github",
+        "endpoints": [{
+            "host": "api.github.com",
+            "path_template": f"{_REPO}/contents/{{path+}}",
+            "methods": ["GET", "PUT"],
+            "param_patterns": {"path": _PATH_RE},
+        }, {
+            "host": "api.github.com",
+            "path_template": f"{_REPO}/git/refs/heads/{{branch+}}",
+            "methods": ["PATCH"],
+            "param_patterns": {"branch": r"[A-Za-z0-9._\-/]{1,120}"},
+        }],
+    })
+    assert out["type"] == "extend_http"
+    kept = {e["path_template"]: e.get("param_patterns") for e in out["endpoints"]}
+    assert kept[f"{_REPO}/contents/{{path+}}"] == {"path": _PATH_RE}
+    assert kept[f"{_REPO}/git/refs/heads/{{branch+}}"] == {"branch": r"[A-Za-z0-9._\-/]{1,120}"}
+
+
+def test_an_ask_with_a_placeholder_and_no_pattern_is_still_refused():
+    """Forwarding is not trusting: the deposit parser still validates."""
+    from tinyassets.api.pending_requests import _validated_action
+
+    with pytest.raises(Exception):
+        _validated_action({
+            "type": "extend_http", "destination": "github",
+            "endpoints": [{"host": "api.github.com",
+                           "path_template": f"{_REPO}/contents/{{path+}}",
+                           "methods": ["GET"]}],
+        })
