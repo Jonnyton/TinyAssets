@@ -5801,35 +5801,52 @@ def _action_create_universe(
         result["visibility"] = create_level
 
         founder = permissions.current_actor_id()
-        if permissions.is_authenticated_request():
-            from tinyassets.daemon_server import grant_universe_access, set_founder_home
-
-            grant_universe_access(
-                base,
-                universe_id=uid,
-                actor_id=founder,
-                permission="admin",
-                granted_by=founder,
+        # NO UNOWNED UNIVERSE, EVER (founder rule 2026-08-28; enforced here
+        # 2026-08-29). This used to fall through to `founder_id: ""` — it created
+        # the universe, granted nobody, bound nobody, and returned success. The
+        # question "whose is this?" then had no answer, and that question is what
+        # every multi-tenant guarantee is built on.
+        #
+        # The public MCP surface already refuses at the door (`_universe_birth_refusal`),
+        # and `ensure_founder_home` needs `create_universe` scope, so no production
+        # path reaches here unauthenticated today. That made this a LATENT hole rather
+        # than a live one — and "no caller does that today" is precisely the reasoning
+        # that has been wrong twice already in this repo. An invariant the founder
+        # states should be structurally true, not true by luck.
+        #
+        # Raising rolls back the partial create through the outer handler, so a
+        # refusal never leaves a bare directory behind.
+        if not permissions.is_authenticated_request() or not (founder or "").strip():
+            raise PermissionError(
+                "a universe must belong to someone: refusing to create one with no "
+                "authenticated owner"
             )
-            # Bind this as the founder's home when they don't already have a
-            # LIVING one — no binding, or a binding to a removed/incomplete dir.
-            # "Living" means COMPLETE (soul.md present), not a bare/partial dir,
-            # so a broken home rebinds to this fresh one (Codex 2026-07-15).
-            # Explicit later creates by a founder with a living home do NOT
-            # reassign home.
-            from tinyassets.daemon_server import get_founder_home
+        from tinyassets.daemon_server import grant_universe_access, set_founder_home
 
-            _home = get_founder_home(base, founder)
-            if not _home or not (base / _home / "soul.md").is_file():
-                set_founder_home(
-                    base,
-                    founder_sub=founder,
-                    universe_id=uid,
-                    platform_generated=id_is_platform_generated,
-                )
-            result["founder_id"] = founder
-        else:
-            result["founder_id"] = ""
+        grant_universe_access(
+            base,
+            universe_id=uid,
+            actor_id=founder,
+            permission="admin",
+            granted_by=founder,
+        )
+        # Bind this as the founder's home when they don't already have a
+        # LIVING one — no binding, or a binding to a removed/incomplete dir.
+        # "Living" means COMPLETE (soul.md present), not a bare/partial dir,
+        # so a broken home rebinds to this fresh one (Codex 2026-07-15).
+        # Explicit later creates by a founder with a living home do NOT
+        # reassign home.
+        from tinyassets.daemon_server import get_founder_home
+
+        _home = get_founder_home(base, founder)
+        if not _home or not (base / _home / "soul.md").is_file():
+            set_founder_home(
+                base,
+                founder_sub=founder,
+                universe_id=uid,
+                platform_generated=id_is_platform_generated,
+            )
+        result["founder_id"] = founder
 
         return json.dumps(result)
     except Exception as exc:  # noqa: BLE001 - roll back a partial create
