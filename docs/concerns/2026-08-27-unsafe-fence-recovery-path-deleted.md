@@ -1,108 +1,45 @@
-# The recovery path for a live production fence state was deleted with the fence still armed
+# The stop-writer fence is armed by nothing and guarded by three workflows — finish retiring it
 
-**Filed:** 2026-08-27
-**Severity:** P1 — the state it recovers from has occurred in production, fences
-all five containers, and now has no documented way out
-**Verified:** 2026-08-27 against `814b4f06`
+**Filed:** 2026-08-27 (as "recovery path deleted with the fence still armed") · **Re-scoped:** 2026-08-29
+**Severity:** P3 — no longer an outage class; it is dead machinery with three live call sites
 
-## The finding
+## What changed on 2026-08-29
 
-PR #2442 deleted the `recover-unsafe` job from `deploy-prod.yml`. That job was
-the **only** way to recover a droplet stuck at `phase=unsafe_fenced`. The fence
-that produces that state is still armed.
+The droplet's fence state `/var/lib/tinyassets-deploy/retire-cheat-loop-task-2-1-fence.json`
+had sat at `phase: unsafe_fenced` (run `32420885315-1`, last written 2026-08-20 21:46 — the day
+#2442 deleted the recovery job) while production was deployed many times through
+`deploy/deploy_fail_safe.sh`, which never consults the fence. `guard-host-mutation` refused on
+that stale phase, so `install-host-services.yml` failed on every run since.
 
-**The fence is live.** `scripts/retire_cheat_loop_deploy_fence.py` is staged to
-the droplet by three workflows that all still run:
+Done (host actions, read-only inventory first — Hard Rule 13):
+- Residue check: daemon unit enabled, no masked units, every container `restart=unless-stopped`.
+- The stale state file was archived to
+  `retire-cheat-loop-task-2-1-fence.json.archived-stale-20260829T222720Z` (mode 600) and removed,
+  so the guard falls through to its own `clean_absence` residue rule.
+- `tinyassets-watchdog.timer` (public-canary watchdog, `scripts/watchdog.py`: restart after 3
+  consecutive canary reds with a restart floor) re-enabled; first tick clean.
+- `daemon-watchdog.timer` (heartbeat watchdog, `deploy/daemon-watchdog.sh`) is deliberately still
+  disabled: it restarts the daemon when the freshest `<universe>/.worker_supervisor*.json` is
+  older than 900 s, and the consumer only wrote those beats while a fleet-era runtime row
+  matched (none does since the IdP subject migration; newest beat 06:00 UTC). It is re-enabled
+  once the consumer beats unconditionally (`user-owned-automations` 3.2 lands) — until then the
+  guard reports that timer as residue and the installer stays red.
 
-```
-.github/workflows/install-host-services.yml:65
-.github/workflows/p0-outage-triage.yml:78
-.github/workflows/restart-daemon.yml:64
-```
+## What remains (the actual concern now)
 
-and `deploy/compose.yml:292` still documents its behaviour ("`retire_cheat_loop_
-deploy_fence.py` deletes any container mounting …").
+Nothing arms the fence any more: no workflow calls `prepare-deploy` / `quiesce-unsafe` /
+`recover-unsafe`. Three workflows still stage the 5k-line script and call `guard-host-mutation`
+before host mutation (`install-host-services.yml`, `p0-outage-triage.yml`,
+`restart-daemon.yml`), four support files are orphaned (`deploy/recovery-restart-no.yml`,
+`deploy/tinyassets-recovery-reconcile.service`, `scripts/validate_host_runtime_hmac_pair.py`,
+`scripts/validate_agent_interchange_hmac.py`), and `tests/test_retire_cheat_loop_deploy_fence.py`
+carries 17 of the `heavy-tests` failures. Option 2 of the original concern — finish
+`retire-cheat-loop` task 2.5a — is the only coherent end state: replace `guard-host-mutation`
+at the three call sites with the residue check alone (masked units / `restart=no`), delete the
+script, the orphans, the host artifact under `/opt/tinyassets/deploy/`, and the test file, in
+one PR with a Codex refutation.
 
-**The state is real, not theoretical.** The script's own comment, `:3571`:
+## Resolving
 
-> Observed live 2026-08-05 after recovery 31048315265: `phase=unsafe_fenced`,
-> `removal_phase=removed`, all five expected containers present and Exited
-
-All five containers Exited is an outage. It happened, and it took a
-`recover-unsafe` run (`31048315265`) to get out.
-
-**Nothing can drive recovery now:**
-
-```
-$ grep -rln "unsafe_fence_source_run_id\|Recover canonical unsafe fence" .github/workflows/
-(no output)
-```
-
-## This was an accident, not a retirement
-
-The deliberate removal is specified, and it is explicitly gated on work that
-has not happened. `openspec/changes/archive/2026-08-26-retire-cheat-loop/tasks.md:145`:
-
-> - [ ] **2.5a** *After task 2.5's locked migration and final rescan succeed*,
->   delete `scripts/retire_cheat_loop_deploy_fence.py`, its product-specific
->   deploy, […] task-2.1 fence artifact or host helper. **Restore the surviving
->   workflows** to […]
-
-Tasks **2.1, 2.5 and 2.5a are all unchecked**, and the change was archived on
-2026-08-26 with them unchecked — which is sanctioned (AGENTS.md: *"a change idle
-14 days is not in flight — archive it and re-propose"*) and is **not** evidence
-the work completed.
-
-So the intended order was: run the locked migration, then delete the fence AND
-its recovery together. What happened instead was: delete the recovery, keep the
-fence.
-
-**The orphans confirm it.** Every support file `recover-unsafe` staged is still
-in the tree, referenced by nothing:
-
-| File | State |
-|---|---|
-| `deploy/recovery-restart-no.yml` | present, orphaned |
-| `deploy/tinyassets-recovery-reconcile.service` | present, orphaned |
-| `scripts/validate_host_runtime_hmac_pair.py` | present, orphaned |
-| `scripts/validate_agent_interchange_hmac.py` | present, orphaned |
-
-A deliberate retirement per 2.5a would have taken these with it. Leaving four
-support files and the fence itself, while removing only the entry point, is the
-signature of an incidental deletion inside a 2,628-line rewrite.
-
-## What the deleted job did
-
-`workflow_dispatch`, gated on `inputs.unsafe_fence_source_run_id != ''`, then:
-validate the interchange and idempotency HMACs → install a recovery SSH key →
-dump fence state read-only → validate the host HMAC pair → resolve an immutable
-recovery image and refuse a revision predating the stop-writer floor → pull it
-on the host → **"Recover canonical unsafe fence"**, staging the fence script,
-`recovery-restart-no.yml` and the reconcile unit by sha.
-
-Note the ownership gate is `source_run_id`, which is sticky and is not the same
-as the `run_id` an artifact exposes — see [[fence-recovery-source-run-id-is-sticky]].
-Whoever restores this should not assume those are interchangeable.
-
-## Resolving this
-
-Two coherent end states. Either is fine; the current one is neither.
-
-1. **Restore the recovery path** — re-add `recover-unsafe` (or an equivalent
-   dispatch-only workflow) so the armed fence has an exit. Smallest change that
-   makes the system consistent again.
-2. **Finish 2.5a properly** — run task 2.5's locked migration, then remove the
-   fence, its three workflow call sites, the four orphaned support files, the
-   host artifact, and `tests/test_retire_cheat_loop_deploy_fence.py` (17 of the
-   `heavy-tests` failures) together.
-
-**Do not** delete the 6 failing assertions that reference `recover-unsafe` until
-one of those is done. They are currently the only thing in the repo asserting
-that an armed fence has a recovery path.
-
-## How it was found
-
-Triaging the 81 failing assertions in `tests/test_deploy_prod_workflow.py`
-(see [full-tests-permanently-red](2026-08-27-full-tests-permanently-red.md)),
-which had left this as an open question for the founder — *"deliberate or
-accident?"*. It is answerable from the repo, and the answer is accident.
+Delete this file when the three call sites no longer stage the fence script and
+`tests/test_retire_cheat_loop_deploy_fence.py` is gone.
