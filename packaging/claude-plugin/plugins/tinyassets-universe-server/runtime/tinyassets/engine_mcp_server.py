@@ -38,6 +38,7 @@ Enabled per-deploy by the dark ``TINYASSETS_ENGINE_MCP_TOOLS`` flag (see
 from __future__ import annotations
 
 import os
+import re
 from contextvars import ContextVar
 
 from fastmcp import FastMCP
@@ -86,6 +87,13 @@ _RUN_GRAPH_RATE_WINDOW_S = 3600
 _RUN_GRAPH_RATE_MAX = 20
 
 
+#: A turn id becomes a FILENAME in the proposal slot, so the value taken off the
+#: wire is validated here rather than deeper in (Codex round-2 R4). A malformed
+#: suffix is treated as NO turn: authentication is unaffected (it is decided by
+#: the secret half alone), and write_brain simply refuses for want of a turn.
+_TURN_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
 def _parse_bearer(authorization_header, secret) -> tuple[bool, str]:
     """Authenticate ``Bearer <secret>[.<turn_id>]`` and return (ok, turn_id).
 
@@ -115,12 +123,63 @@ def _parse_bearer(authorization_header, secret) -> tuple[bool, str]:
     presented, _, turn_id = token.partition(".")
     if not hmac.compare_digest(presented, secret):
         return False, ""
-    return True, turn_id.strip()
+    turn_id = turn_id.strip()
+    if turn_id and not _TURN_ID_RE.match(turn_id):
+        return True, ""  # authenticated, but carrying no usable turn
+    return True, turn_id
 
 
 def _bearer_ok(authorization_header, secret) -> bool:
     """True when the header authenticates against ``secret`` (turn id ignored)."""
     return _parse_bearer(authorization_header, secret)[0]
+
+
+class BearerAuth:
+    """Reject any HTTP request lacking the exact bearer secret (401).
+
+    Only ``http`` and ``lifespan`` scopes are handled; anything else (e.g. a
+    future ``websocket`` route) is refused (Codex 2026-08-19).
+
+    On an authenticated request it binds the turn id carried on the bearer to
+    ``_REQUEST_TURN_ID`` for THAT REQUEST ONLY. The HTTP engine server is
+    long-lived and shared across turns, so a process-global would let one turn's
+    tool calls be attributed to another turn's proposal slot — and two founder
+    turns really can be in flight at once (a phone turn and a browser turn).
+    A ContextVar set inside the coroutine is per-task, which is what makes
+    concurrent requests independent.
+
+    Module-level (2026-08-29) so this is reachable from a test: it used to be
+    defined inside ``__main__``, where the concurrency it is responsible for
+    could not be exercised at all.
+    """
+
+    def __init__(self, app, secret: str):
+        self.app = app
+        self.secret = secret
+
+    async def __call__(self, scope, receive, send):
+        stype = scope.get("type")
+        reset = None
+        if stype == "http":
+            headers = dict(scope.get("headers") or [])
+            provided = headers.get(b"authorization", b"").decode("latin-1")
+            ok, turn_id = _parse_bearer(provided, self.secret)
+            if not ok:
+                await send({
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [(b"content-type", b"text/plain")],
+                })
+                await send({"type": "http.response.body", "body": b"unauthorized"})
+                return
+            reset = _REQUEST_TURN_ID.set(turn_id)
+        elif stype != "lifespan":
+            return  # refuse websocket / unknown transports
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            if reset is not None:
+                _REQUEST_TURN_ID.reset(reset)
 
 
 def _engine_run_admit(*, fail_closed: bool = False) -> bool:
@@ -1195,6 +1254,12 @@ def _untrusted(source: str, payload: str) -> str:
         content = json.loads(payload)
     except (json.JSONDecodeError, TypeError, ValueError):
         content = payload
+    # An error WE produced (a refusal, a not-found) is not another party's
+    # content, and wrapping it would make the envelope's claim false — the
+    # notice would tell the agent that our own refusal was written by someone
+    # else (Codex round-2 review).
+    if isinstance(content, dict) and content.get("error"):
+        return payload
     return json.dumps({
         "untrusted": True,
         "source": source,
@@ -1511,6 +1576,15 @@ _BRAIN_SECTIONS = {
 #: brain file is system-prompt material, so bound it rather than let one turn
 #: write an unbounded body that bloats the prompt / storage.
 _BRAIN_MAX_SECTION_BYTES = 16_384
+#: Brain files the agent may READ and may never WRITE (2026-08-29). learned.md
+#: is the verbatim founder-quote log: the conversation writer is its only author,
+#: because the whole point is that its contents are the founder's own sentences.
+#: Deliberately NOT in _BRAIN_SECTIONS — a write_brain parameter for it would
+#: re-open the hole this change closes.
+_BRAIN_READ_ONLY_SECTIONS = {
+    "learned": "learned.md",
+    "learned_archive": "learned-archive.md",
+}
 #: A learned name is a short label (goes in identity.md frontmatter), so bound it
 #: separately from section bodies (Codex brain-loop re-review 2026-08-22).
 _BRAIN_MAX_NAME_BYTES = 256
@@ -1529,6 +1603,12 @@ def read_brain() -> str:
     This is your project folder / harness. Whatever lands here from a
     ``write_brain`` proposal is what you wake up already knowing next turn — read
     it first so an edit builds on what's there instead of blanking it.
+
+    ``learned`` is the log of what your founder has actually told you, quoted in
+    their own words with the turn each sentence came from — it is read-only here
+    and to you: only the verified-founder writer appends to it. ``learned_archive``
+    holds older entries moved out of your system prompt to keep it bounded;
+    nothing is ever deleted, so read it when you need to remember further back.
 
     ``provenance`` carries, per section, WHERE that section came from: the
     ``source``, the ``turn_id`` of the conversation turn that grounded it, and
@@ -1562,7 +1642,9 @@ def read_brain() -> str:
         # brain-loop review 2026-08-22).
         brain = {}
         provenance: dict[str, dict[str, str]] = {}
-        for section, fname in _BRAIN_SECTIONS.items():
+        for section, fname in {
+            **_BRAIN_SECTIONS, **_BRAIN_READ_ONLY_SECTIONS
+        }.items():
             # A brain file symlinked out of the universe would disclose an external
             # file's contents to the agent — refuse to read through it (Codex
             # re-review); a contained regular file reads normally.
@@ -2028,50 +2110,8 @@ if __name__ == "__main__":
             )
         _inner_app = mcp.http_app()
 
-        class _BearerAuth:
-            """Reject any HTTP request lacking the exact bearer secret (401).
-
-            Only ``http`` and ``lifespan`` scopes are handled; anything else
-            (e.g. a future ``websocket`` route) is refused (Codex 2026-08-19).
-            """
-
-            def __init__(self, app):
-                self.app = app
-
-            async def __call__(self, scope, receive, send):
-                stype = scope.get("type")
-                reset = None
-                if stype == "http":
-                    headers = dict(scope.get("headers") or [])
-                    provided = headers.get(b"authorization", b"").decode(
-                        "latin-1"
-                    )
-                    ok, turn_id = _parse_bearer(provided, _secret)
-                    if not ok:
-                        await send({
-                            "type": "http.response.start",
-                            "status": 401,
-                            "headers": [(b"content-type", b"text/plain")],
-                        })
-                        await send({
-                            "type": "http.response.body",
-                            "body": b"unauthorized",
-                        })
-                        return
-                    # Bind the turn for THIS request only: the server outlives
-                    # every turn, so a process-global would let one turn's tool
-                    # calls be attributed to another's proposal slot.
-                    reset = _REQUEST_TURN_ID.set(turn_id)
-                elif stype != "lifespan":
-                    return  # refuse websocket / unknown transports
-                try:
-                    await self.app(scope, receive, send)
-                finally:
-                    if reset is not None:
-                        _REQUEST_TURN_ID.reset(reset)
-
         _uvicorn.run(
-            _BearerAuth(_inner_app),
+            BearerAuth(_inner_app, _secret),
             host="127.0.0.1",
             port=int(_http_port),
             log_level="warning",

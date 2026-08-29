@@ -15,8 +15,21 @@ from pathlib import Path
 
 import pytest
 
-from tinyassets.soul_edit import SoulEditError, apply_soul_edit
+from tinyassets.soul_edit import (
+    DirectEditProvenance,
+    SoulEditError,
+    apply_soul_edit,
+)
 from tinyassets.universe_bundle import seed_okf_bundle
+
+#: 2026-08-29: apply_soul_edit no longer takes a free-form `source` — a
+#: provenance CLAIM is authority, and the string form let any caller stamp
+#: "founder utterance <turn>" on an edit nobody verified (Codex round-2
+#: review). These tests are about the SINK, not about who is claiming, so
+#: they pass the direct-edit provenance any founder-surface edit carries.
+#: The founder-utterance form cannot be constructed here at all, by design —
+#: see test_brain_provenance.py.
+DIRECT = DirectEditProvenance("tester", "unit")
 
 
 @pytest.fixture
@@ -43,7 +56,7 @@ def test_soul_edit_updates_governed_file_and_flips_learned(universe):
     result = apply_soul_edit(
         universe,
         changes={"identity.md": "# Identity\n\nI am Orion, a universe of maps.\n"},
-        source="founder conversation",
+        provenance=DIRECT,
         context="founder named me during first contact",
     )
     assert result["updated_files"] == ["identity.md"]
@@ -54,7 +67,7 @@ def test_soul_edit_updates_governed_file_and_flips_learned(universe):
     assert _frontmatter_value(universe / "identity.md", "status") == "learned"
     assert (
         _frontmatter_value(universe / "identity.md", "learned_from")
-        == "founder conversation"
+        == "founder direct edit (tester, unit)"
     )
 
 
@@ -62,7 +75,7 @@ def test_soul_edit_sets_identity_name_frontmatter(universe):
     apply_soul_edit(
         universe,
         changes={"identity.md": "# Identity\n\nMy name is Orion.\n"},
-        source="founder",
+        provenance=DIRECT,
         context="naming",
         name="Orion",
     )
@@ -76,7 +89,7 @@ def test_soul_edit_sets_identity_name_frontmatter(universe):
 def test_soul_edit_name_only_learns_identity(universe):
     # "Your name is Orion" should be one call — no body required.
     result = apply_soul_edit(
-        universe, changes={}, source="founder", context="naming", name="Orion",
+        universe, changes={}, provenance=DIRECT, context="naming", name="Orion",
     )
     assert result["updated_files"] == ["identity.md"]
     from tinyassets.universe_self_model import read_self_model
@@ -94,7 +107,7 @@ def test_soul_edit_body_carries_projects_as_body(universe):
                 "trunk; its site, connector, and daemons are my limbs.\n"
             )
         },
-        source="founder conversation",
+        provenance=DIRECT,
         context="founder taught me my body is their projects",
     )
     from tinyassets.universe_self_model import read_self_model
@@ -109,7 +122,7 @@ def test_soul_edit_multiple_governed_files_one_edit(universe):
             "founder.md": "# Founder\n\nMy founder is Jonathan.\n",
             "origin.md": "# Origin\n\nI grew from the TinyAssets project.\n",
         },
-        source="founder conversation",
+        provenance=DIRECT,
         context="first bonding conversation",
     )
     assert sorted(result["updated_files"]) == ["founder.md", "origin.md"]
@@ -122,7 +135,7 @@ def test_soul_edit_updates_soul_md_body_preserving_frontmatter(universe):
         changes={
             "soul.md": "# Universe Soul\n\nMy purpose: bring my founder's projects to life.\n",
         },
-        source="founder",
+        provenance=DIRECT,
         context="purpose statement",
     )
     text = (universe / "soul.md").read_text(encoding="utf-8")
@@ -140,7 +153,7 @@ def test_soul_edit_rejects_non_governed_files(universe):
     for bad in ("projects.md", "goals.md", "log.md", "index.md"):
         with pytest.raises(SoulEditError):
             apply_soul_edit(
-                universe, changes={bad: "x"}, source="s", context="c",
+                universe, changes={bad: "x"}, provenance=DIRECT, context="c",
             )
 
 
@@ -148,31 +161,38 @@ def test_soul_edit_rejects_path_traversal(universe):
     for bad in ("../evil.md", "soul_versions/0001.md", "..\\evil.md", "/etc/x"):
         with pytest.raises(SoulEditError):
             apply_soul_edit(
-                universe, changes={bad: "x"}, source="s", context="c",
+                universe, changes={bad: "x"}, provenance=DIRECT, context="c",
             )
 
 
-def test_soul_edit_requires_source_and_context(universe):
+def test_soul_edit_requires_provenance_and_context(universe):
+    # A string source is REFUSED outright: that was the third sink through which
+    # an unverified edit could claim founder provenance.
     with pytest.raises(SoulEditError):
         apply_soul_edit(
-            universe, changes={"identity.md": "x"}, source="", context="c",
+            universe,
+            changes={"identity.md": "x"},
+            source="founder utterance turn_FORGED",
+            context="c",
         )
     with pytest.raises(SoulEditError):
+        apply_soul_edit(universe, changes={"identity.md": "x"}, context="c")
+    with pytest.raises(SoulEditError):
         apply_soul_edit(
-            universe, changes={"identity.md": "x"}, source="s", context="",
+            universe, changes={"identity.md": "x"}, provenance=DIRECT, context="",
         )
 
 
 def test_soul_edit_requires_some_change(universe):
     with pytest.raises(SoulEditError):
-        apply_soul_edit(universe, changes={}, source="s", context="c")
+        apply_soul_edit(universe, changes={}, provenance=DIRECT, context="c")
 
 
 def test_soul_edit_refuses_without_policy_file(universe):
     (universe / "soul.edit.md").unlink()
     with pytest.raises(SoulEditError):
         apply_soul_edit(
-            universe, changes={"identity.md": "x"}, source="s", context="c",
+            universe, changes={"identity.md": "x"}, provenance=DIRECT, context="c",
         )
 
 
@@ -213,7 +233,7 @@ def test_soul_edit_appends_log_and_writes_snapshot(universe):
     result = apply_soul_edit(
         universe,
         changes={"identity.md": "# Identity\n\nI am Orion.\n"},
-        source="founder",
+        provenance=DIRECT,
         context="naming",
         summary="founder named me Orion",
     )
@@ -229,10 +249,10 @@ def test_soul_edit_appends_log_and_writes_snapshot(universe):
 
 def test_every_edit_writes_a_new_snapshot(universe):
     r1 = apply_soul_edit(
-        universe, changes={"identity.md": "# A\n"}, source="s", context="c",
+        universe, changes={"identity.md": "# A\n"}, provenance=DIRECT, context="c",
     )
     r2 = apply_soul_edit(
-        universe, changes={"identity.md": "# A\n"}, source="s", context="c2",
+        universe, changes={"identity.md": "# A\n"}, provenance=DIRECT, context="c2",
     )
     assert r1["snapshot"] != r2["snapshot"]
 
@@ -250,7 +270,7 @@ def test_soul_edit_expected_version_mismatch_rejected(universe):
         apply_soul_edit(
             universe,
             changes={"identity.md": "# Identity\n\nstale write\n"},
-            source="s",
+            provenance=DIRECT,
             context="c",
             expected_versions={"identity.md": "0" * 64},
         )
@@ -265,7 +285,7 @@ def test_soul_edit_expected_version_match_applies(universe):
     result = apply_soul_edit(
         universe,
         changes={"identity.md": "# Identity\n\nI am Orion.\n"},
-        source="s",
+        provenance=DIRECT,
         context="c",
         expected_versions=versions,
     )
@@ -290,7 +310,7 @@ def test_soul_edit_runs_under_per_universe_lock(universe, monkeypatch):
 
     monkeypatch.setattr(se, "_soul_lock", _tracking)
     apply_soul_edit(
-        universe, changes={"identity.md": "# I\n"}, source="s", context="c",
+        universe, changes={"identity.md": "# I\n"}, provenance=DIRECT, context="c",
     )
     assert entered["n"] == 1
 
@@ -315,7 +335,7 @@ def test_soul_edit_concurrent_edits_get_distinct_snapshots(universe):
             r = apply_soul_edit(
                 universe,
                 changes={"identity.md": f"# Identity\n\nedit {i}\n"},
-                source="founder",
+                provenance=DIRECT,
                 context=f"concurrent edit {i}",
             )
             with guard:
@@ -466,7 +486,7 @@ def test_policy_absence_still_fails_closed_despite_baseline_floor(universe):
         read_governed_files(universe)
     with pytest.raises(SoulEditError):
         apply_soul_edit(
-            universe, changes={"identity.md": "x"}, source="s", context="c",
+            universe, changes={"identity.md": "x"}, provenance=DIRECT, context="c",
         )
 
 

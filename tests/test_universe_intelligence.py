@@ -228,44 +228,42 @@ def test_unnamed_newborn_prompt_is_honest(tmp_path, monkeypatch):
 # regression (identity was told to route to an unreachable save path, so nothing
 # persisted).
 #
-# 2026-08-29: "grounded" became MECHANICAL. The extractor returns SPANS of the
-# founder's message and `commit_founder_learning` re-verifies each one is
-# verbatim founder text before appending it, so these tests hand it spans that
-# really are quotes of the message they pass. `tests/test_brain_provenance.py`
-# owns the adversarial direction (a span that is NOT a quote).
+# 2026-08-29: "grounded" became MECHANICAL, then STRUCTURAL. The extractor
+# returns WHOLE SENTENCES of the founder's message under one key, `remember`,
+# and `commit_founder_learning` stores them — quoted, appended, with their turn —
+# in the single file `learned.md`. It cannot choose a section, a name, or a canon
+# page, because choosing WHERE a true sentence goes changes what it means. These
+# tests hand it sentences that really are sentences of the message they pass;
+# `tests/test_brain_provenance.py` owns every adversarial direction.
 
 
 def test_commit_learning_persists_grounded_soul(tmp_path):
     udir = _seed(tmp_path)
     result = ui.commit_founder_learning(
         udir,
-        {
-            "name": "Aetheria",
-            "soul": {"founder.md": ["Alex, an aspiring fantasy writer"]},
-        },
+        {"remember": ["I am Alex, an aspiring fantasy writer."]},
         turn_id="turn_ONE",
         founder_message=(
             "I am Alex, an aspiring fantasy writer. Call my universe Aetheria."
         ),
     )
     assert result is not None
-    assert "founder.md" in result["updated_files"]
-    founder = udir / "founder.md"
-    assert "Alex" in founder.read_text(encoding="utf-8")
-    assert _fm(founder, "status") == "learned"
-    from tinyassets.universe_self_model import read_self_model
+    assert result["updated_files"] == ["learned.md"]
+    learned = udir / "learned.md"
+    assert '"I am Alex, an aspiring fantasy writer."' in learned.read_text(
+        encoding="utf-8"
+    )
+    assert _fm(learned, "status") == "learned"
 
-    assert read_self_model(udir)["name"] == "Aetheria"
 
-
-def test_commit_learning_ignores_non_governed_and_empty_bodies(tmp_path):
+def test_commit_learning_ignores_every_key_but_remember(tmp_path):
     udir = _seed(tmp_path)
     before = (udir / "founder.md").read_text(encoding="utf-8")
     result = ui.commit_founder_learning(
         udir,
         {"soul": {"made-up-nonsense.md": ["not governed"], "founder.md": ["   "]}},
         turn_id="turn_ONE",
-        founder_message="not governed and nothing else",
+        founder_message="This is not governed and nothing else.",
     )
     assert result is None
     # governed founder.md untouched; the non-governed file was never created
@@ -276,9 +274,9 @@ def test_commit_learning_ignores_non_governed_and_empty_bodies(tmp_path):
 def test_commit_learning_returns_none_when_nothing_grounded(tmp_path):
     udir = _seed(tmp_path)
     assert ui.commit_founder_learning(
-        udir, {}, turn_id="turn_ONE", founder_message="hello there"
+        udir, {}, turn_id="turn_ONE", founder_message="Hello there, universe."
     ) is None
-    assert _fm(udir / "founder.md", "status") == "not-learned"
+    assert _fm(udir / "learned.md", "status") == "not-learned"
 
 
 def test_parse_learning_json_tolerates_code_fences():
@@ -298,10 +296,7 @@ def test_converse_persists_founder_identity_to_soul(tmp_path, monkeypatch):
                            universe_context=None, **_kw):
         if "strict JSON" in system:  # the extraction call
             return json.dumps({
-                "name": "Aetheria",
-                "soul": {
-                    "founder.md": ["Alex, an aspiring fantasy writer"],
-                },
+                "remember": ["I'm Alex, an aspiring fantasy writer."]
             })
         return "Aetheria — I like that. Tell me more about it."
 
@@ -320,11 +315,15 @@ def test_converse_persists_founder_identity_to_soul(tmp_path, monkeypatch):
     )
 
     assert "Aetheria" in reply
-    assert _fm(udir / "founder.md", "status") == "learned"
-    assert "Alex" in (udir / "founder.md").read_text(encoding="utf-8")
+    assert _fm(udir / "learned.md", "status") == "learned"
+    assert "I'm Alex, an aspiring fantasy writer." in (
+        udir / "learned.md"
+    ).read_text(encoding="utf-8")
+    # A NAME is not something an extraction can set (2026-08-29): the founder
+    # sets it directly. The sentence is remembered; the self-model is untouched.
     from tinyassets.universe_self_model import read_self_model
 
-    assert read_self_model(udir)["name"] == "Aetheria"
+    assert not read_self_model(udir).get("name")
 
 
 def test_converse_persistence_failure_does_not_break_reply(tmp_path, monkeypatch):
@@ -349,9 +348,10 @@ def test_converse_persistence_failure_does_not_break_reply(tmp_path, monkeypatch
     assert _fm(udir / "founder.md", "status") == "not-learned"
 
 
-def test_commit_learning_persists_canon_to_universe_wiki(tmp_path, monkeypatch):
-    # Worldbuilding is written into the universe's OWN private canon by the
-    # intelligence — organic (custom) category allowed (OKF growth).
+def test_extraction_can_no_longer_write_canon(tmp_path, monkeypatch):
+    # 2026-08-29: canon is NOT a destination an extraction can name. A category
+    # and a title are editorial choices about what a sentence MEANS, and the
+    # extractor no longer makes any. The founder writes canon directly.
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     udir = _seed(tmp_path)
     result = ui.commit_founder_learning(
@@ -365,35 +365,40 @@ def test_commit_learning_persists_canon_to_universe_wiki(tmp_path, monkeypatch):
                 }
             ]
         },
-        universe_id="u-test",
         turn_id="turn_ONE",
         founder_message=(
             "The Resonance links cells and bonds across Aurelith, everywhere."
         ),
     )
-    assert result is not None
-    assert result["canon"] == ["The Resonance"]
-    hits = list((udir / "wiki").rglob("the-resonance.md"))
-    assert hits, "canon page not written into the universe's own wiki"
-    assert "Aurelith" in hits[0].read_text(encoding="utf-8")
+    assert result is None
+    assert not list((udir / "wiki").rglob("*.md"))
 
 
-def test_converse_persists_worldbuilding_to_canon(tmp_path, monkeypatch):
-    # The worldbuilding half of the regression fix: sharing world facts via a
-    # converse turn persists them to the universe's own canon.
+def test_converse_never_writes_canon_or_a_name(tmp_path, monkeypatch):
+    # The extraction path cannot reach canon at all — proven by making the canon
+    # writer EXPLODE if it is ever called, and running a turn whose extraction
+    # returns a canon-shaped reply.
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    import tinyassets.api.wiki as wiki
+
     udir = _seed(tmp_path)
     _become_founder(tmp_path)
+
+    def _explode(*_a, **_kw):  # pragma: no cover - must never run
+        raise AssertionError("extraction must not be able to write canon")
+
+    monkeypatch.setattr(wiki, "write_universe_canon", _explode)
 
     def fake_call_provider(prompt, system="", *, role="writer",
                            universe_context=None, **_kw):
         if "strict JSON" in system:
             return json.dumps({
+                "name": "Aurelith",
                 "canon": [{
                     "category": "magic-systems",
                     "title": "The Resonance",
                     "spans": ["My world is Aurelith; its magic is the Resonance"],
-                }]
+                }],
             })
         return "Aurelith, and the Resonance — tell me more."
 
@@ -407,9 +412,12 @@ def test_converse_persists_worldbuilding_to_canon(tmp_path, monkeypatch):
         tier=interlocutor.FOUNDER,
     )
     assert "Resonance" in reply
-    hits = list((udir / "wiki").rglob("the-resonance.md"))
-    assert hits, "worldbuilding not persisted to the universe's canon"
-    assert "Aurelith" in hits[0].read_text(encoding="utf-8")
+    assert not list((udir / "wiki").rglob("*.md"))  # nothing written
+    from tinyassets.universe_self_model import read_self_model
+
+    assert not read_self_model(udir).get("name")
+    # and nothing was remembered either: the reply named no `remember` key
+    assert _fm(udir / "learned.md", "status") == "not-learned"
 
 
 def test_sandboxed_config_locks_down_the_engine(tmp_path):
@@ -465,25 +473,19 @@ def test_generic_identity_detector():
 
 def test_commit_learning_drops_generic_identity_boilerplate(tmp_path):
     udir = _seed(tmp_path)
-    # Both spans ARE verbatim founder wording — the boilerplate guard is a
-    # SECOND floor on top of span verification, and this proves it still fires
-    # when the founder themselves used the generic phrasing.
-    message = (
-        "You are a personified universe that starts blank and learns who you "
-        "are over time. I am Dana, a documentary filmmaker."
-    )
+    # identity.md is now written ONLY by the founder's direct edits, so this is
+    # where the boilerplate floor lives: a direct edit that is just the
+    # universe's generic self-framing is still dropped.
     proposed = {
         "soul": {
-            "identity.md": [
-                "a personified universe that starts blank and learns who you "
-                "are over time"
-            ],
-            "founder.md": ["Dana, a documentary filmmaker"],
+            "identity.md": (
+                "I am a personified universe that starts blank and learns who "
+                "I am over time."
+            ),
+            "founder.md": "My founder is Dana, a documentary filmmaker.",
         }
     }
-    ui.commit_founder_learning(
-        udir, proposed, universe_id="", turn_id="turn_ONE", founder_message=message
-    )
+    ui.commit_direct_soul_edit(udir, proposed, actor_id="dana", surface="browser")
 
     # Founder fact persisted; generic identity boilerplate dropped (not learned).
     assert _fm(udir / "founder.md", "status") == "learned"
@@ -492,21 +494,15 @@ def test_commit_learning_drops_generic_identity_boilerplate(tmp_path):
 
 def test_commit_learning_keeps_founder_grounded_identity(tmp_path):
     udir = _seed(tmp_path)
-    message = (
-        "You are Atlas, the research companion Dana built to track climate "
-        "datasets."
-    )
     proposed = {
         "soul": {
-            "identity.md": [
-                "Atlas, the research companion Dana built to track climate "
-                "datasets"
-            ],
+            "identity.md": (
+                "I am Atlas, the research companion Dana built to track climate "
+                "datasets."
+            ),
         }
     }
-    ui.commit_founder_learning(
-        udir, proposed, universe_id="", turn_id="turn_ONE", founder_message=message
-    )
+    ui.commit_direct_soul_edit(udir, proposed, actor_id="dana", surface="browser")
 
     assert _fm(udir / "identity.md", "status") == "learned"
 
@@ -554,20 +550,21 @@ def test_founder_turn_still_persists(tmp_path, monkeypatch):
     def fake_call_provider(prompt, system="", *, role="writer",
                            universe_context=None, **_kw):
         if "strict JSON" in system:
-            return json.dumps({
-                "name": "Aetheria",
-                "soul": {"founder.md": ["Alex"]},
-            })
+            return json.dumps({"remember": ["I'm Alex, and I write fantasy."]})
         return "Good to meet you."
 
     monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-test")
     monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
     monkeypatch.setattr(ui, "call_provider", fake_call_provider)
 
-    ui.converse("u-test", "I'm Alex.", tier=interlocutor.FOUNDER)
+    ui.converse(
+        "u-test", "I'm Alex, and I write fantasy.", tier=interlocutor.FOUNDER
+    )
 
-    assert _fm(udir / "founder.md", "status") == "learned"
-    assert "Alex" in (udir / "founder.md").read_text(encoding="utf-8")
+    assert _fm(udir / "learned.md", "status") == "learned"
+    assert "I'm Alex, and I write fantasy." in (udir / "learned.md").read_text(
+        encoding="utf-8"
+    )
 
 
 # -- cross-surface continuity directive (founder 2026-08-23; Codex adapt) --------

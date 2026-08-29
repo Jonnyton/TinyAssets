@@ -6551,7 +6551,7 @@ def _action_soul_edit(
     founder's universe REMEMBERS what it is taught: learned files feed the
     self-model, and the persona voices them from the next turn on.
     """
-    from tinyassets.soul_edit import SoulEditError, apply_soul_edit
+    from tinyassets.soul_edit import SoulEditError
     from tinyassets.universe_self_model import read_self_model
 
     uid = _request_universe(universe_id)
@@ -6586,15 +6586,18 @@ def _action_soul_edit(
             "error": "changes must map governed filename -> new markdown body.",
         })
 
-    # The SOURCE is derived, never taken from the caller (2026-08-29, Codex
-    # round-1 review of brain-writes-carry-founder-provenance). A caller-supplied
-    # source is a self-issued provenance claim: any client of this action could
-    # write `source="founder utterance turn_X"` and produce a section that reads
-    # as conversation-verified when it is a free-body edit nobody quoted. This is
-    # the DIRECT edit path, so it says so, and names the actor who made it. The
-    # caller's own words survive as the learning CONTEXT, which is where an
-    # explanation belongs.
+    # This surface does NOT call apply_soul_edit. It goes through
+    # commit_direct_soul_edit, the one entry point for a non-conversation edit
+    # and the only code that builds DirectEditProvenance (2026-08-29, Codex
+    # round-2 review). Two things follow. The SOURCE is derived rather than
+    # taken from the caller: a caller-supplied source is a self-issued
+    # provenance claim, and any client of this action could otherwise write
+    # `source="founder utterance turn_X"` and produce a section that reads as
+    # conversation-verified when it is a free-body edit nobody quoted. And there
+    # is no longer a callable sink that accepts one. The caller's own words
+    # survive as the learning CONTEXT, which is where an explanation belongs.
     from tinyassets.auth.middleware import current_identity
+    from tinyassets.universe_intelligence import commit_direct_soul_edit
 
     try:
         actor = (current_identity().user_id or "").strip()
@@ -6607,16 +6610,24 @@ def _action_soul_edit(
             f"caller-stated source: {claimed}"
         )
     try:
-        result = apply_soul_edit(
+        result = commit_direct_soul_edit(
             udir,
-            changes=changes,
-            source=f"founder direct edit ({actor or 'unknown actor'}, universe.soul.edit)",
-            context=context,
+            {"soul": changes, "name": str(data.get("name", ""))},
+            actor_id=actor,
+            surface="universe.soul.edit",
             summary=str(data.get("summary", "")),
-            name=str(data.get("name", "")),
+            context=context,
         )
     except SoulEditError as exc:
         return json.dumps({"error": str(exc), "policy": "soul.edit.md"})
+    if result is None:
+        return json.dumps({
+            "error": (
+                "nothing was learned — the edit was empty, or named no governed "
+                "file (governed files are listed in soul.edit.md)."
+            ),
+            "policy": "soul.edit.md",
+        })
 
     model = read_self_model(udir)
     # universe-creation task 5.3: when a governed learning event accepts a new

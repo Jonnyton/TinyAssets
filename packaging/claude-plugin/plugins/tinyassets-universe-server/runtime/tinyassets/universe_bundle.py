@@ -56,9 +56,20 @@ BASELINE_FILES: tuple[str, ...] = (
     "goals.md",
     "body.md",
     "origin.md",
+    "learned.md",
+    "learned-archive.md",
     "soul_versions/index.md",
     "soul_versions/0001.md",
 )
+
+#: The ONE file conversation-learning may write, and the file it overflows into.
+#: Everything a founder says that the universe keeps is quoted here verbatim —
+#: it is a LOG of their words, not a description of them, which is why nothing
+#: else is writable from a conversation turn (2026-08-29, Codex round-2 review:
+#: letting the extractor pick a destination let a true sentence be filed as an
+#: identity, changing what the system prompt asserts).
+LEARNED_FILENAME = "learned.md"
+LEARNED_ARCHIVE_FILENAME = "learned-archive.md"
 
 # Soul-edit-governed files (D6): only these are edited through the soul.edit
 # policy. orgchart.md joined this set 2026-08-23 so the agent can RECORD its org
@@ -67,6 +78,11 @@ BASELINE_FILES: tuple[str, ...] = (
 # learned/runtime, NOT governed.
 SOUL_EDIT_GOVERNED = (
     "soul.md", "identity.md", "founder.md", "body.md", "origin.md", "orgchart.md",
+    # learned.md + its archive joined 2026-08-29: they are the only destination
+    # the conversation writer can reach, and they are NOT in
+    # engine_mcp_server._BRAIN_SECTIONS — the served agent may read them and may
+    # never write them.
+    "learned.md", "learned-archive.md",
 )
 
 # Files that must NOT be created at baseline (D5).
@@ -107,6 +123,7 @@ def _soul_md(purpose: str, loop_branch_def_id: str) -> str:
         "- [founder](founder.md) — the oath-confirmed founder this universe is bonded to",
         "- [body](body.md) — the learned embodiment (surfaces, voice, hands, senses)",
         "- [origin](origin.md) — how and why this universe came to be",
+        "- [learned](learned.md) — verbatim sentences the founder has told me",
         "- [orgchart](orgchart.md) — the org chart; the founder is the sole "
         "member by default, always the top anchor",
         "",
@@ -316,6 +333,49 @@ into being.
     )
 
 
+#: Heading of the verbatim founder-quote log. The persona prompt renders the
+#: file under a line saying these are the founder's own words, so it must be
+#: unmistakable in the file too.
+LEARNED_HEADING = "# What my founder has told me (their words, verbatim)"
+
+
+def _learned_md() -> str:
+    body = f"""{LEARNED_HEADING}
+
+Status: nothing recorded yet.
+
+Every line below is one whole sentence my founder said, quoted exactly, with the
+conversation turn they said it in. Nothing is written here except by the
+verified-founder writer, and nothing is written except their own words — no
+summary, no paraphrase, nothing I or anything I read composed.
+"""
+    return _doc(
+        "Founder Utterance Log",
+        body,
+        title="Learned",
+        description="Verbatim sentences the founder has told this universe.",
+        status="not-learned",
+    )
+
+
+def _learned_archive_md() -> str:
+    body = f"""{LEARNED_HEADING} (archive)
+
+Status: nothing archived yet.
+
+Older entries from [learned](learned.md) are moved here when that file grows
+past its prompt budget. Nothing is deleted — this file is readable with
+`read_brain`; it is simply not injected into every turn's system prompt.
+"""
+    return _doc(
+        "Founder Utterance Log Archive",
+        body,
+        title="Learned (archive)",
+        description="Older verbatim founder sentences, kept out of the prompt.",
+        status="not-learned",
+    )
+
+
 def _index_md() -> str:
     links = "\n".join(
         f"- [{name}]({name})"
@@ -329,6 +389,8 @@ def _index_md() -> str:
             "goals.md",
             "body.md",
             "origin.md",
+            "learned.md",
+            "learned-archive.md",
             "log.md",
             "soul_versions/index.md",
         )
@@ -398,6 +460,8 @@ def seed_okf_bundle(
         "goals.md": _goals_md(),
         "body.md": _body_md(),
         "origin.md": _origin_md(),
+        "learned.md": _learned_md(),
+        "learned-archive.md": _learned_archive_md(),
         "soul_versions/index.md": _soul_versions_index_md(),
         # 0001 is a snapshot of the initial soul so version matching works.
         "soul_versions/0001.md": soul_text,

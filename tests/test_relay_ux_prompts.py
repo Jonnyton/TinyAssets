@@ -45,11 +45,18 @@ def test_learning_extraction_guards_generic_identity():
     # deterministic floor (`_is_generic_identity_boilerplate`) backs up is the
     # same one: the universe's own self-framing is not something the founder
     # taught. The floor itself is asserted in test_universe_intelligence.
-    assert "NEVER select a span about your own generic nature" in ui._LEARNING_SYSTEM
-    # identity.md is only filled when the founder explicitly says who/names it
-    assert "gave me a name" in ui._LEARNING_SYSTEM
-    # and the span contract itself, which is what makes the guard enforceable
-    assert "A SPAN IS A VERBATIM QUOTE" in ui._LEARNING_SYSTEM
+    # 2026-08-29 (round 3): the extraction cannot restate the universe's generic
+    # nature because it cannot write prose AT ALL — it returns whole sentences of
+    # the founder's message, and identity.md is not a destination it can reach.
+    # The guard is now structural rather than a prompt line, so this asserts the
+    # structure: one key, whole sentences, copied exactly.
+    assert '{"remember":' in ui._LEARNING_SYSTEM
+    assert "WHOLE SENTENCES" in ui._LEARNING_SYSTEM
+    assert "CHARACTER FOR CHARACTER" in ui._LEARNING_SYSTEM
+    assert "with no other keys" in ui._LEARNING_SYSTEM
+    # the deterministic floor that used to back the prompt line still exists for
+    # the DIRECT edit path, which is the only writer of identity.md now
+    assert ui._is_generic_identity_boilerplate("I am a personified universe")
 
 
 def test_engine_sandbox_denies_host_tools():

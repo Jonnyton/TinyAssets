@@ -224,17 +224,23 @@ def test_first_connect_existing_founder_loads_learned_home_voice(
     data_dir, monkeypatch
 ):
     from tinyassets.daemon_server import get_founder_home
-    from tinyassets.soul_edit import apply_soul_edit
+    from tinyassets.universe_intelligence import commit_direct_soul_edit
     from tinyassets.universe_server import converse
 
     _login("founder-1")
     uid = _create_via_action(data_dir, monkeypatch)
-    apply_soul_edit(
+    # A founder naming their universe is a DIRECT edit (2026-08-29): the
+    # conversation path only quotes whole sentences into learned.md, and a name
+    # is something the founder sets, never something an extraction infers.
+    commit_direct_soul_edit(
         data_dir / uid,
-        changes={"identity.md": "# Identity\n\nI am Aetheria.\n"},
-        source="founder conversation",
+        {
+            "soul": {"identity.md": "# Identity\n\nI am Aetheria.\n"},
+            "name": "Aetheria",
+        },
+        actor_id="founder-1",
+        surface="browser",
         context="The founder named the universe Aetheria.",
-        name="Aetheria",
     )
     captured = _capture_universe_reply(monkeypatch, "I am Aetheria. Welcome back.")
 

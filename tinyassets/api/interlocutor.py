@@ -90,8 +90,13 @@ FOUNDER = T2
 #: delegations, reporting lines — which is the founder's organisation, not the
 #: universe's public face. Making it readable to the universe itself must not
 #: make it readable to a visitor.
+#:
+#: ``learned.md`` / ``learned-archive.md`` joined with it and are the strongest
+#: case of all: they are a VERBATIM log of sentences the founder spoke to their
+#: own universe. Anything they ever said that was worth keeping is in there, in
+#: their own words. A visitor never sees it.
 FOUNDER_PRIVATE_GROUNDING: frozenset[str] = frozenset(
-    {"founder.md", "orgchart.md"}
+    {"founder.md", "orgchart.md", "learned.md", "learned-archive.md"}
 )
 
 

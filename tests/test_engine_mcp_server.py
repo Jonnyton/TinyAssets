@@ -390,11 +390,11 @@ def _commit_proposal(udir, turn_id=_TEST_TURN, *, founder_message=None):
     The served tool only proposes; this is the founder-only half that decides
     and persists. Tests that assert what LANDS drive both halves.
 
-    The writer persists VERBATIM SPANS of the founder's message, so with no
-    explicit message these helpers synthesise one containing exactly what was
-    proposed — i.e. they model "the founder said precisely this". A proposal the
-    founder did NOT say is the adversarial case, and it lives in
-    tests/test_brain_provenance.py.
+    The writer persists WHOLE SENTENCES of the founder's message into learned.md
+    and nothing else, so with no explicit message these helpers synthesise one
+    that IS what was proposed — i.e. they model "the founder said precisely
+    this". A proposal the founder did NOT say is the adversarial case, and it
+    lives in tests/test_brain_provenance.py.
     """
     from tinyassets import brain_proposal
     from tinyassets.universe_intelligence import commit_founder_learning
@@ -402,14 +402,14 @@ def _commit_proposal(udir, turn_id=_TEST_TURN, *, founder_message=None):
     proposal = brain_proposal.consume_proposal(udir, turn_id)
     if proposal is None:
         return None
-    spans = {k: [v] for k, v in proposal["sections"].items()}
+    sentences = [
+        v.strip() for v in proposal["sections"].values() if v and v.strip()
+    ]
     if founder_message is None:
-        founder_message = " ".join(
-            list(proposal["sections"].values()) + [proposal["name"]]
-        ).strip() or "the founder said so"
+        founder_message = "\n".join(sentences) or "the founder said so."
     return commit_founder_learning(
         udir,
-        {"name": proposal["name"], "soul": spans},
+        {"remember": sentences},
         turn_id=turn_id,
         founder_message=founder_message,
     )
@@ -421,12 +421,24 @@ def test_read_brain_returns_editable_sections(monkeypatch, tmp_path):
     _seed_brain_universe(monkeypatch, tmp_path)
     out = json.loads(s.read_brain())
     # orgchart joined the brain sections 2026-08-23 so the agent can record its org
-    # chart (previously unwritable → it re-asked every turn).
-    assert set(out["brain"]) == {"identity", "founder", "origin", "body", "orgchart"}
-    # all five are governed-editable (orgchart via the SOUL_EDIT_GOVERNED baseline).
+    # chart (previously unwritable → it re-asked every turn). learned +
+    # learned_archive joined the READ set 2026-08-29: the founder-quote log is
+    # readable by the agent and writable only by the verified-founder writer.
+    assert set(out["brain"]) == {
+        "identity", "founder", "origin", "body", "orgchart",
+        "learned", "learned_archive",
+    }
+    # only the five self-description files are governed-EDITABLE through
+    # write_brain (orgchart via the SOUL_EDIT_GOVERNED baseline); learned.md is
+    # deliberately not one of them.
     assert set(out["editable_sections"]) == {
         "identity", "founder", "origin", "body", "orgchart",
     }
+    import inspect
+    params = set(inspect.signature(
+        getattr(s.write_brain, "fn", s.write_brain)
+    ).parameters)
+    assert not params & {"learned", "learned_archive"}
     assert "self_model" in out
 
 
@@ -448,10 +460,11 @@ def test_write_brain_proposes_and_the_trusted_writer_lands_it(monkeypatch, tmp_p
     prompt = _build_persona_system_prompt(udir, universe_id="u-brain", tier="T2")
     assert "research companion" not in prompt
 
-    # The trusted writer commits it (the founder did say it), and now it is there.
+    # The trusted writer commits it (the founder did say it), and now it is
+    # there — quoted in learned.md, which the next turn reads back.
     assert _commit_proposal(udir) is not None
+    assert "research companion" in (udir / "learned.md").read_text(encoding="utf-8")
     prompt = _build_persona_system_prompt(udir, universe_id="u-brain", tier="T2")
-    assert "Aria" in prompt
     assert "research companion" in prompt
 
 
@@ -465,14 +478,15 @@ def test_brain_read_write_round_trip_does_not_nest_frontmatter(monkeypatch, tmp_
     _bind_turn(monkeypatch)
     s.write_brain(identity=marker)
     _commit_proposal(udir)
-    body1 = json.loads(s.read_brain())["brain"]["identity"]
+    # The quote lands in learned.md, and reads back as a clean body.
+    body1 = json.loads(s.read_brain())["brain"]["learned"]
     assert marker in body1
     assert "---" not in body1  # no frontmatter leaked into the body
-    # Echo the read body back; it must not accumulate frontmatter.
+    # A second turn quoting the same sentence adds nothing and nests nothing.
     _bind_turn(monkeypatch, "turn_ENGINE_TEST_2")
-    s.write_brain(identity=body1)
+    s.write_brain(identity=marker)
     _commit_proposal(udir, "turn_ENGINE_TEST_2")
-    body2 = json.loads(s.read_brain())["brain"]["identity"]
+    body2 = json.loads(s.read_brain())["brain"]["learned"]
     assert body2 == body1
 
 
@@ -509,12 +523,14 @@ def test_brain_write_refuses_hardlinked_governed_file(monkeypatch, tmp_path):
     from tinyassets import engine_mcp_server as s
 
     udir = _seed_brain_universe(monkeypatch, tmp_path)
-    identity = udir / "identity.md"
+    # Plant the alias on the file the conversation writer actually writes
+    # (learned.md since 2026-08-29): it becomes a hardlink to soul.md, whose
+    # frontmatter carries the executable loop_branch_def_id.
+    learned = udir / "learned.md"
     soul = udir / "soul.md"
     soul_before = soul.read_text(encoding="utf-8")
-    # Plant the alias: identity.md becomes a hardlink to soul.md (same inode).
-    identity.unlink()
-    os.link(soul, identity)
+    learned.unlink()
+    os.link(soul, learned)
 
     _bind_turn(monkeypatch)
     out = json.loads(s.write_brain(identity="I am Aria, the research companion."))

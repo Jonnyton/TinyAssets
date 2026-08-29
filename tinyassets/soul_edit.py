@@ -23,7 +23,8 @@ import stat
 import sys
 import tempfile
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
+from dataclasses import InitVar, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,86 @@ _LEARNED_STATUS_EXEMPT = frozenset({SOUL_FILENAME})
 
 class SoulEditError(ValueError):
     """A soul edit that violates the universe's soul.edit.md policy."""
+
+
+# ── who is claiming this edit (2026-08-29, Codex round-2 review) ────────────
+# `apply_soul_edit` used to take `source` as a free string, so it was a third
+# sink for founder provenance: any caller could write
+# `source="founder utterance turn_X"` and produce a section that reads as
+# conversation-verified. A provenance CLAIM is authority, and authority is never
+# a caller-supplied parameter (AGENTS.md / PLAN cross-cutting). So the source is
+# now derived from a small typed object, and the only object that can claim a
+# founder utterance is minted by the one writer that verified one.
+
+#: Held by :func:`mint_founder_utterance_provenance` alone. Importing it is
+#: possible — Python has no real privacy — which is why
+#: ``test_founder_provenance_has_exactly_one_minting_call_site`` greps the tree:
+#: the invariant is "one call site", enforced by a test, not by the language.
+_FOUNDER_PROVENANCE_KEY = object()
+
+
+@dataclass(frozen=True)
+class FounderUtteranceProvenance:
+    """This edit is grounded in a verified sentence of a founder's own message.
+
+    Only ``universe_intelligence.commit_founder_learning`` may mint one, because
+    it is the only code that checks a candidate against the founder's message.
+    Constructing it directly raises.
+    """
+
+    turn_id: str
+    digest: str
+    key: InitVar[object] = None
+
+    def __post_init__(self, key: object) -> None:
+        if key is not _FOUNDER_PROVENANCE_KEY:
+            raise SoulEditError(
+                "FounderUtteranceProvenance is minted by the verified-founder "
+                "writer, not constructed: a source is a claim about where words "
+                "came from, and only the code that checked them may make it"
+            )
+        if not (self.turn_id or "").strip() or not (self.digest or "").strip():
+            raise SoulEditError("founder provenance needs a turn id and a digest")
+
+    def source_label(self) -> str:
+        return f"founder utterance {self.turn_id}"
+
+    def frontmatter(self) -> dict[str, str]:
+        return {
+            "learned_turn_id": self.turn_id,
+            "learned_utterance_digest": self.digest,
+        }
+
+
+@dataclass(frozen=True)
+class DirectEditProvenance:
+    """This edit is a founder authoring their own bundle, with no utterance.
+
+    Built by ``universe_intelligence.commit_direct_soul_edit``, which is the
+    single entry point for every non-conversation edit (including the
+    ``universe action=soul.edit`` surface).
+    """
+
+    actor: str
+    surface: str
+
+    def source_label(self) -> str:
+        who = (self.actor or "").strip() or "unknown actor"
+        where = (self.surface or "").strip() or "direct"
+        return f"founder direct edit ({who}, {where})"
+
+    def frontmatter(self) -> dict[str, str]:
+        # Deliberately empty: a direct edit carries no turn and no digest, and
+        # apply_soul_edit CLEARS both, so it can never inherit the attribution
+        # of the conversation edit that came before it.
+        return {}
+
+
+def mint_founder_utterance_provenance(
+    turn_id: str, digest: str
+) -> FounderUtteranceProvenance:
+    """Mint founder provenance. ONE call site: ``commit_founder_learning``."""
+    return FounderUtteranceProvenance(turn_id, digest, _FOUNDER_PROVENANCE_KEY)
 
 
 def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -235,15 +316,16 @@ def current_soul_versions(
 def apply_soul_edit(
     universe_dir: Path,
     *,
-    changes: dict[str, str],
-    source: str,
+    changes: dict[str, str] | None = None,
+    provenance: "FounderUtteranceProvenance | DirectEditProvenance | None" = None,
     context: str,
     summary: str = "",
     name: str = "",
     expected_versions: dict[str, str] | None = None,
-    turn_id: str = "",
-    utterance_digest: str = "",
-) -> dict[str, Any]:
+    transform: "Callable[[dict[str, str]], dict[str, str]] | None" = None,
+    transform_files: tuple[str, ...] = (),
+    **_rejected: Any,
+) -> "dict[str, Any] | None":
     """Apply one governed learning event to the universe's soul bundle.
 
     ``changes`` maps governed filename → new markdown BODY (frontmatter is
@@ -257,34 +339,59 @@ def apply_soul_edit(
     rejected rather than clobbering the newer state. The whole read→write→
     snapshot section runs under a per-universe lock.
 
-    ``turn_id`` / ``utterance_digest`` record WHICH founder utterance grounded
-    the edit (2026-08-29, design D3 of
-    ``openspec/changes/brain-writes-carry-founder-provenance``). They are
-    server-minted values, never caller text, and they are written into the same
-    managed frontmatter block as ``learned_from``: recorded together with it and
-    CLEARED together with it, so an edit made without provenance can never
-    inherit the previous edit's attribution.
+    ``provenance`` is a :class:`FounderUtteranceProvenance` or
+    :class:`DirectEditProvenance` — never a string (2026-08-29, Codex round-2
+    review: a free-form ``source`` made this a third sink through which any
+    caller could stamp "founder utterance <turn>"). Its ``source_label()``
+    becomes ``learned_from`` and its ``frontmatter()`` the turn/digest keys,
+    which are recorded together with it and CLEARED together with it, so an edit
+    made without founder provenance can never inherit the previous edit's
+    attribution.
+
+    ``transform`` closes the read→modify→write race (same review). Passing
+    ``transform_files`` + a callable does the READ inside the per-universe lock
+    and hands the caller the current bodies; whatever it returns is written in
+    the same locked section. A caller that reads a file itself, appends, and
+    passes the result as ``changes`` loses a concurrent write in the window
+    between its read and its compare-and-swap capture — an append cannot be
+    expressed as a compare-and-swap without dropping one of the two appends.
+    Returns None when the transform decides there is nothing to write.
     """
+    if _rejected:
+        raise SoulEditError(
+            "apply_soul_edit does not accept "
+            f"{sorted(_rejected)}: pass a provenance object minted by the "
+            "writer that owns the claim (source/turn_id/utterance_digest as "
+            "free strings let any caller forge founder attribution)"
+        )
+    if not isinstance(provenance, (FounderUtteranceProvenance, DirectEditProvenance)):
+        raise SoulEditError(
+            "apply_soul_edit requires a provenance object "
+            "(FounderUtteranceProvenance | DirectEditProvenance), not "
+            f"{type(provenance).__name__}"
+        )
     universe_dir = Path(universe_dir)
-    source = (source or "").strip()
+    source = provenance.source_label()
+    provenance_fm = provenance.frontmatter()
     context = (context or "").strip()
     name = (name or "").strip()
-    turn_id = (turn_id or "").strip()
-    utterance_digest = (utterance_digest or "").strip()
-    if not source or not context:
+    if not context:
         raise SoulEditError(
-            "source and context are required — a soul edit is a learning "
-            "event, not a blind overwrite"
+            "context is required — a soul edit is a learning event, not a "
+            "blind overwrite"
         )
 
     governed = read_governed_files(universe_dir)
     changes = dict(changes or {})
     if name and "identity.md" not in changes:
         changes["identity.md"] = ""  # name-only: keep the existing body
-    if not changes:
+    transform_files = tuple(transform_files or ())
+    if transform is None and transform_files:
+        raise SoulEditError("transform_files given without a transform")
+    if not changes and not transform_files:
         raise SoulEditError("nothing to learn: provide changes and/or a name")
 
-    for filename in changes:
+    for filename in list(changes) + list(transform_files):
         if filename != Path(filename).name or filename.startswith("."):
             raise SoulEditError(f"invalid governed filename: {filename!r}")
         if filename not in governed:
@@ -306,7 +413,9 @@ def apply_soul_edit(
         # before any write, so a mismatch leaves the bundle untouched.
         parsed: dict[str, tuple[dict[str, Any], str]] = {}
         udir_resolved = universe_dir.resolve()
-        for filename in changes:
+        for filename in list(changes) + [
+            f for f in transform_files if f not in changes
+        ]:
             path = universe_dir / filename
             # Inode-safety (Codex brain-loop review 2026-08-22): validate the
             # resolved FILE OBJECT, not just the filename string. A governed file
@@ -354,6 +463,22 @@ def apply_soul_edit(
                         "(expected-version mismatch) — re-read and retry"
                     )
             parsed[filename] = _split_frontmatter(raw)
+
+        # The transform runs INSIDE the lock, between the read and the write, so
+        # a concurrent append cannot land in the gap. It sees the bodies just
+        # read and returns the bodies to write.
+        if transform is not None:
+            produced = transform({f: parsed[f][1] for f in transform_files}) or {}
+            for filename, body in produced.items():
+                if filename not in parsed:
+                    raise SoulEditError(
+                        f"transform returned {filename!r}, which was not in "
+                        "transform_files"
+                    )
+                changes[filename] = body
+            if not changes:
+                return None
+
         # Pass 2 — apply.
         for filename, new_body in changes.items():
             meta, old_body = parsed[filename]
@@ -362,18 +487,13 @@ def apply_soul_edit(
                 meta["status"] = "learned"
                 meta["learned_from"] = source
                 meta["learned_at"] = now
-                # Provenance travels WITH learned_from, including its absence: an
-                # edit with no turn id drops any turn/digest the previous edit
-                # recorded, so a section can never show provenance that belongs
-                # to different words than the ones now in it.
-                if turn_id:
-                    meta["learned_turn_id"] = turn_id
-                else:
-                    meta.pop("learned_turn_id", None)
-                if utterance_digest:
-                    meta["learned_utterance_digest"] = utterance_digest
-                else:
-                    meta.pop("learned_utterance_digest", None)
+                # Provenance travels WITH learned_from, including its absence: a
+                # direct edit contributes no keys and DROPS any the previous
+                # edit recorded, so a section can never show provenance that
+                # belongs to different words than the ones now in it.
+                for key in ("learned_turn_id", "learned_utterance_digest"):
+                    meta.pop(key, None)
+                meta.update(provenance_fm)
             if name and filename == "identity.md":
                 meta["name"] = name
             rendered = _render(meta, body)
@@ -390,8 +510,7 @@ def apply_soul_edit(
             context=context,
             summary=log_entry,
             stamp=now,
-            turn_id=turn_id,
-            utterance_digest=utterance_digest,
+            provenance_fm=provenance_fm,
         )
 
     result: dict[str, Any] = {
@@ -400,10 +519,9 @@ def apply_soul_edit(
         "log_entry": log_entry,
         "source": source,
     }
-    if turn_id:
-        result["turn_id"] = turn_id
-    if utterance_digest:
-        result["utterance_digest"] = utterance_digest
+    if isinstance(provenance, FounderUtteranceProvenance):
+        result["turn_id"] = provenance.turn_id
+        result["utterance_digest"] = provenance.digest
     return result
 
 
@@ -427,8 +545,7 @@ def _write_edit_snapshot(
     context: str,
     summary: str,
     stamp: str,
-    turn_id: str = "",
-    utterance_digest: str = "",
+    provenance_fm: "dict[str, str] | None" = None,
 ) -> str:
     """Write a self-describing snapshot of this edit and index it.
 
@@ -461,10 +578,8 @@ def _write_edit_snapshot(
     }
     # The snapshot is the durable per-edit record, so provenance belongs on it as
     # well as on the files — a section can be edited again, the snapshot cannot.
-    if turn_id:
-        meta["turn_id"] = turn_id
-    if utterance_digest:
-        meta["utterance_digest"] = utterance_digest
+    for key, value in (provenance_fm or {}).items():
+        meta[key.removeprefix("learned_")] = value
     body_parts = [f"# Soul Edit {next_number:04d}", "", context, ""]
     for filename in sorted(files):
         body_parts += [f"## {filename}", "", "```markdown", files[filename].rstrip(), "```", ""]
