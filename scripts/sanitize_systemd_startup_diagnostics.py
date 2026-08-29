@@ -27,6 +27,10 @@ _CONTAINER_NAME_CONFLICT_MARKERS = (
     "is already in use by container",
     "conflict. the container name",
 )
+# An ECHO allowlist, not a liveness list: only these names are ever repeated
+# into diagnostics. The four `tinyassets-worker*` names belong to the host-run
+# fleet deleted 2026-08-29 and stay so a leftover container's name conflict is
+# still named rather than redacted.
 _CANONICAL_CONTAINER_NAMES = (
     "tinyassets-daemon",
     "tinyassets-tunnel",

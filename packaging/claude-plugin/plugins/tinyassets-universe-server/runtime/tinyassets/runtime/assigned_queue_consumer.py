@@ -29,6 +29,56 @@ _TRUTHY = frozenset({"1", "true", "yes", "on"})
 _DEFAULT_GLOBAL_CONCURRENCY = 2
 _DEFAULT_POLL_SECONDS = 2.0
 
+# Supervisor heartbeat naming + writer-model defaults. These moved here from
+# the retired host-run `tinyassets.cloud_worker` fleet supervisor: the served
+# consumer is the only remaining writer of these beats, and nothing runs
+# outside a user's universe (PLAN.md, 2026-08-29).
+SUPERVISOR_HEARTBEAT_FILENAME = ".worker_supervisor.json"
+DEFAULT_WORKER_MODELS = {
+    "codex": "gpt-5",
+    "claude-code": "claude",
+}
+
+
+def _safe_worker_id(worker_id: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", worker_id.strip())
+    return safe.strip(".-") or "default"
+
+
+def supervisor_heartbeat_filename(worker_id: str | None = None) -> str:
+    """Per-consumer heartbeat filename, falling back to the shared legacy name.
+
+    A blank / unsanitizable id keeps the legacy ``.worker_supervisor.json``
+    so readers that predate per-consumer beats still find one.
+    """
+    clean = _safe_worker_id(worker_id or "")
+    if not worker_id or clean == "default":
+        return SUPERVISOR_HEARTBEAT_FILENAME
+    return f".worker_supervisor.{clean}.json"
+
+
+def _worker_model_for_provider(provider_name: str) -> str:
+    """Resolve the model label recorded on a runtime for ``provider_name``.
+
+    ``TINYASSETS_WORKER_MODEL`` overrides everything; otherwise the
+    per-provider model env var wins over the built-in default. An unknown
+    provider records its own name, which keeps the runtime row honest rather
+    than inventing a model.
+    """
+    explicit = os.environ.get("TINYASSETS_WORKER_MODEL", "").strip()
+    if explicit:
+        return explicit
+    if provider_name == "codex":
+        return (
+            os.environ.get("TINYASSETS_CODEX_MODEL", "").strip() or DEFAULT_WORKER_MODELS["codex"]
+        )
+    if provider_name == "claude-code":
+        return (
+            os.environ.get("TINYASSETS_CLAUDE_MODEL", "").strip()
+            or DEFAULT_WORKER_MODELS["claude-code"]
+        )
+    return provider_name
+
 
 def _configured_poll_seconds() -> float:
     raw = os.environ.get("TINYASSETS_ASSIGNED_QUEUE_POLL_SECONDS", "").strip()
@@ -194,10 +244,22 @@ class AssignedQueueConsumer:
             AssignedQueueRefusalStore,
         )
 
-        serving_universes = list_serving_universes(self.base_path)
         adapter = Epoch2BranchTaskAdapter(self.base_path)
         produced_universes: set[str] = set()
         prep_store = AssignedQueueRefusalStore(self.base_path)
+        # `.pause` is the universe's pause sentinel -- the owner's control and the
+        # P0 provider_exhaustion repair both write it. Every other loop honours it
+        # at its boundary (fantasy_daemon, branch_registrations); before the fleet
+        # was deleted the repair also `docker stop`ped the worker, so this consumer
+        # is now the only background executor and must halt on it too. A run
+        # already in flight finishes; nothing new is pumped or claimed.
+        #
+        # Liveness is not activity: a paused universe STILL publishes its heartbeat.
+        # deploy/daemon-watchdog.sh restarts the daemon on a stale beat, and a
+        # restart preserves `.pause` -- skipping the beat here would turn the P0
+        # repair into a restart loop (Codex round 3 on the fleet prune).
+        serving_universes = list_serving_universes(self.base_path)
+        paused_universes: set[str] = set()
         for universe_id in serving_universes:
             try:
                 audience = self._publish_heartbeat(universe_id)
@@ -206,6 +268,12 @@ class AssignedQueueConsumer:
                         prep_store, f"universe:{universe_id}:-", universe_id,
                         "no_serving_runtime",
                     )
+                if self._paused(universe_id):
+                    paused_universes.add(universe_id)
+                    self._record_reason(
+                        prep_store, f"universe:{universe_id}:-", universe_id, "paused"
+                    )
+                    continue
                 # Only a task THIS consumer could claim defers activation; a pending
                 # task it will never attempt (live: a legacy owner-queued run) must
                 # not block a resumed automation from ever producing its slice.
@@ -253,6 +321,7 @@ class AssignedQueueConsumer:
                 submitted >= capacity
                 or universe_id in busy_universes
                 or universe_id in produced_universes
+                or universe_id in paused_universes
             ):
                 continue
             candidates = adapter.list_candidates(universe_id=universe_id, limit=20)
@@ -281,6 +350,9 @@ class AssignedQueueConsumer:
                 self._active[universe_id] = future
             submitted += 1
         return submitted
+
+    def _paused(self, universe_id: str) -> bool:
+        return (self.base_path / universe_id / ".pause").exists()
 
     def _try_claim(
         self,
@@ -377,7 +449,6 @@ class AssignedQueueConsumer:
         *,
         principal_id: str = "",
     ) -> tuple[dict[str, Any], dict[str, Any]] | None:
-        from tinyassets.cloud_worker import _worker_model_for_provider
         from tinyassets.daemon_registry import (
             ensure_daemon_runtime,
             select_project_loop_daemon,
@@ -420,7 +491,6 @@ class AssignedQueueConsumer:
             BackgroundBranchExecutorAudience,
             BackgroundBranchExecutorClass,
         )
-        from tinyassets.cloud_worker import supervisor_heartbeat_filename
         from tinyassets.daemon_registry import set_worker_queue_descriptor
         from tinyassets.storage.request_admissions import (
             OPERATOR_CAPABILITY,

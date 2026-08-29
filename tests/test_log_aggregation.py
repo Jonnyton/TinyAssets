@@ -56,14 +56,18 @@ def test_logs_service_has_no_docker_socket_or_container_control():
 def test_runtime_containers_forward_logs_without_docker_socket():
     data = _load_compose()
     services = data["services"]
-    for name in (
-        "daemon",
-        "cloudflared",
-        "worker",
-        "worker-codex-2",
-        "worker-claude-1",
-        "worker-claude-2",
-    ):
+    # Derived, not listed: the four `worker*` services were deleted 2026-08-29
+    # with the host-run fleet (nothing runs outside a user's universe --
+    # PLAN.md), and deriving means a NEW long-running container inherits the
+    # forwarding requirement instead of silently escaping this test.
+    forwarding_services = [
+        name for name, service in services.items()
+        if name != "logs" and service.get("logging") is not None
+    ]
+    assert set(forwarding_services) == {"daemon", "cloudflared", "slack-agent"}, (
+        f"unexpected forwarding service set: {sorted(forwarding_services)}"
+    )
+    for name in forwarding_services:
         logging = services[name].get("logging") or {}
         assert logging.get("driver") == "fluentd", name
         options = logging.get("options") or {}

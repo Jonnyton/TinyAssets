@@ -1,7 +1,11 @@
 # Daemon Liveness / Supervisor Watchdog — substrate spec
 
 Captured: 2026-05-02 from dev-partner chat
-Status: proposal
+Status: retired 2026-08-29 — the `worker` compose service and
+`tinyassets.cloud_worker` this watchdog targeted were deleted with the
+host-run fleet (`openspec/changes/user-owned-automations` tasks 1.1/1.2);
+the daemon runs the assigned-queue consumer in-process and keeps its own
+container healthcheck. Kept as history; nothing below is implementable.
 Discovered via: BUG-050 verification probe (filed 21:24, never claimed)
 
 ## Problem statement

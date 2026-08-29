@@ -1,4 +1,3 @@
 # Purpose
-Fleet prune ops tail (split off #2677 for the scope guard cap): ship-logs.sh and vector.yaml stop
-requiring the deleted worker containers; the caller-less HMAC-rotation fleet script goes; DEPLOY.md
-stops describing the worker as live.
+openspec/changes/user-owned-automations tasks 1.1 (compose half) + 1.2: delete the host-run
+cloud-worker fleet — nothing runs unless it lives inside a user's universe (PLAN, 2026-08-29).

@@ -211,109 +211,18 @@ services:
       org.tinyassets.component: logs
       org.tinyassets.role: log-forwarder
 
-  # Cloud-side node-executor fleet. This is the small "4 runtimes up"
-  # slice: two Codex workers and two Claude workers, all serving the
-  # host's main universe first. Goal-pool/marketplace spare-capacity
-  # routing remains a PR-177 follow-on.
-  #
-  # Auth: all Codex workers share CODEX_HOME=/data/.codex, protected by
-  # the image's /usr/local/bin/codex flock wrapper; all Claude workers
-  # share CLAUDE_CONFIG_DIR=/data/.claude. Do not split auth homes per
-  # daemon unless the provider subscription model changes.
-  #
-  # Concurrency safety: branch_tasks.claim_task is file-locked. Multiple
-  # workers claiming tasks in the same universe file race for the lock;
-  # loser sees status != pending and returns None. No double-claim possible.
-  worker: &cloud_worker_base
-    image: ${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE to an immutable ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest> ref}
-    container_name: tinyassets-worker
-    restart: unless-stopped
-    logging: *tinyassets_log_forwarding
-    security_opt:
-      - seccomp=unconfined
-      - apparmor=unconfined
-    command: ["python", "-m", "tinyassets.cloud_worker", "--provider", "codex"]
-    environment: &cloud_worker_env
-      HOME: /app
-      TINYASSETS_DATA_DIR: /data
-      CODEX_HOME: /data/.codex
-      CLAUDE_CONFIG_DIR: /data/.claude
-      # Shared community-pool root on the durable volume. Load-bearing: the
-      # container has no `.git`, so `producers.goal_pool.repo_root_path()`
-      # git-detect fallback finds nothing and raises `repo_root_not_resolvable`
-      # if this is unset. Do NOT "clean this up" by dropping it. The directory
-      # need not pre-exist — `write_pool_post()` mkdirs parents on first write.
-      TINYASSETS_REPO_ROOT: /data/community-pool
-      TINYASSETS_ALLOW_API_KEY_PROVIDERS: "0"
-      TINYASSETS_CLOUD_DAEMON_SUBSCRIPTION_ONLY: "1"
-      TINYASSETS_GOAL_POOL: "off"
-      TINYASSETS_PAID_MARKET: "off"
-      TINYASSETS_WORKER_ID: codex-1
-      TINYASSETS_WORKER_MODEL: gpt-5
-      UNIVERSE_SERVER_HOST_USER: cloud-droplet-codex-1
-    env_file:
-      - /etc/tinyassets/env
-    volumes:
-      - tinyassets-data:/data
-    depends_on:
-      daemon:
-        condition: service_healthy
-    # Liveness watchdog (docs/specs/daemon-liveness-watchdog.md §1): the
-    # supervisor writes worker-specific beats; this check fails when
-    # this container's beat goes stale or pickable work sits unclaimed
-    # (the 2026-06 dormancy class: container "healthy" 37h while no
-    # claims happened). NOTE: compose does NOT restart unhealthy
-    # containers by itself — deploy/tinyassets-autoheal.timer on the host
-    # restarts any TinyAssets container that reports unhealthy.
-    healthcheck:
-      test: ["CMD", "python", "-m", "tinyassets.cloud_worker_healthcheck"]
-      interval: 60s
-      timeout: 15s
-      retries: 3
-      start_period: 120s
-    labels:
-      org.tinyassets.component: worker
-      org.tinyassets.role: node-executor
-
-  worker-codex-2:
-    <<: *cloud_worker_base
-    container_name: tinyassets-worker-codex-2
-    environment:
-      <<: *cloud_worker_env
-      TINYASSETS_WORKER_ID: codex-2
-      TINYASSETS_WORKER_MODEL: gpt-5
-      UNIVERSE_SERVER_HOST_USER: cloud-droplet-codex-2
-
-  worker-claude-1:
-    <<: *cloud_worker_base
-    container_name: tinyassets-worker-claude-1
-    command: ["python", "-m", "tinyassets.cloud_worker", "--provider", "claude-code"]
-    environment:
-      <<: *cloud_worker_env
-      TINYASSETS_WORKER_ID: claude-1
-      TINYASSETS_WORKER_MODEL: claude
-      UNIVERSE_SERVER_HOST_USER: cloud-droplet-claude-1
-
-  worker-claude-2:
-    <<: *cloud_worker_base
-    container_name: tinyassets-worker-claude-2
-    command: ["python", "-m", "tinyassets.cloud_worker", "--provider", "claude-code"]
-    environment:
-      <<: *cloud_worker_env
-      TINYASSETS_WORKER_ID: claude-2
-      TINYASSETS_WORKER_MODEL: claude
-      UNIVERSE_SERVER_HOST_USER: cloud-droplet-claude-2
-
   # Slack agents for users who have connected a workspace. Holds one outbound
   # Socket Mode connection per universe, so a user can talk to their agent in
   # Slack with no host machine online — the Forever Rule applied to this
   # surface. There is no inbound port and no public endpoint: the container
   # dials out to Slack.
   #
-  # Deliberately does NOT inherit `cloud_worker_base`. A cross-family review of
-  # the deploy plan returned CRITICAL on that: the anchor carries `env_file:
-  # /etc/tinyassets/env` (every secret on the box), unconfined seccomp and
-  # AppArmor, and no resource limits. This service handles traffic that arrives
+  # Deliberately shares nothing with the retired host-run worker fleet (deleted
+  # 2026-08-29; nothing runs outside a user's universe). A cross-family review
+  # of the deploy plan returned CRITICAL on inheriting that fleet's anchor: it
+  # carried `env_file: /etc/tinyassets/env` (every secret on the box),
+  # unconfined seccomp and AppArmor, and no resource limits. This service
+  # handles traffic that arrives
   # from the internet via Slack, so a defect in it would have had stack-wide
   # secret access and could starve the droplet. It gets only what it needs.
   #
@@ -392,7 +301,7 @@ services:
     mem_limit: 2g
     pids_limit: 512
     # No healthcheck yet, and that is a known gap rather than an oversight: the
-    # inherited cloud-worker check probes the node-claim queue this service
+    # old inherited cloud-worker check probed a node-claim queue this service
     # never touches, so it would report permanently unhealthy and the autoheal
     # timer would restart it forever. A real check has to prove the SOCKET is
     # live — an alive process with a dead socket is the failure that matters —

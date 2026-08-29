@@ -1197,8 +1197,8 @@ def _worker_liveness(
     (activity.log / .runtime_status.json mtimes) — it goes stale both
     when the worker is wedged AND when there is simply nothing to do.
     This field answers "is the worker process alive right now" from the
-    ``.worker_supervisor.json`` beat the cloud_worker supervisor writes
-    (docs/specs/daemon-liveness-watchdog.md). Consumers (the activity
+    ``.worker_supervisor.json`` beat the served `AssignedQueueConsumer`
+    writes (docs/specs/daemon-liveness-watchdog.md). Consumers (the activity
     canary) use it to page on wedge and stay quiet on idle.
     """
     legacy_path = udir / _WORKER_SUPERVISOR_FILENAME
@@ -6474,8 +6474,8 @@ def _action_declare_universe_loop(
         })
 
     # A declared loop is not yet a SERVABLE loop: without a project-loop daemon
-    # for this universe, `cloud_worker._register_worker_runtime` skips runtime
-    # registration and nothing claims the universe's work.
+    # for this universe, the served consumer's `_serving_runtime` returns None,
+    # so no runtime is registered and nothing claims the universe's work.
     #
     # This route deliberately does NOT provision that daemon. Three consecutive
     # cross-family reviews rejected doing so, and the last one showed why the

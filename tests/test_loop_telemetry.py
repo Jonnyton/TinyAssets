@@ -2,9 +2,12 @@
 
 Covers:
   - branch_tasks.reclaim_expired_leases (lease-aware reaper, BUG-011 Phase C)
-  - cloud_worker supervisor heartbeat file
-  - cloud_worker_healthcheck.check decision logic
   - api.universe._worker_liveness beat interpretation
+
+The supervisor-heartbeat WRITER and healthcheck cases were deleted on
+2026-08-29 with the host-run `tinyassets.cloud_worker` fleet -- nothing runs
+outside a user's universe (PLAN.md). The beat READER cases stay: the served
+`AssignedQueueConsumer` writes the same files.
   - last_activity_canary worker_liveness preference
   - ProviderRouter._call_meta shape + call_with_policy 3-tuple
 """
@@ -25,14 +28,10 @@ from tinyassets.branch_tasks import (
     read_queue,
     reclaim_expired_leases,
 )
-from tinyassets.cloud_worker import (
+from tinyassets.runtime.assigned_queue_consumer import (
     SUPERVISOR_HEARTBEAT_FILENAME,
-    SupervisorState,
-    run_supervisor,
     supervisor_heartbeat_filename,
-    write_supervisor_heartbeat,
 )
-from tinyassets.cloud_worker_healthcheck import check as healthcheck_check
 
 
 def _utc(offset_s: float = 0.0) -> datetime:
@@ -113,74 +112,8 @@ def test_reclaim_ignores_pending_rows(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_write_supervisor_heartbeat_atomic_shape(tmp_path):
-    state = SupervisorState()
-    state.record_exit(0)
-    write_supervisor_heartbeat(
-        tmp_path, state, iteration=3, phase="backoff", planned_sleep_s=42.0,
-    )
-    beat = json.loads(
-        (tmp_path / SUPERVISOR_HEARTBEAT_FILENAME).read_text(encoding="utf-8")
-    )
-    assert beat["phase"] == "backoff"
-    assert beat["iteration"] == 3
-    assert beat["total_spawns"] == 1
-    assert beat["planned_sleep_s"] == 42.0
-    assert beat["last_exit_rc"] == 0
-    assert not (tmp_path / (SUPERVISOR_HEARTBEAT_FILENAME + ".tmp")).exists()
-
-
-def test_write_supervisor_heartbeat_writes_worker_specific_file(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setenv("TINYASSETS_WORKER_ID", "codex-1")
-    state = SupervisorState()
-    write_supervisor_heartbeat(tmp_path, state, iteration=1, phase="spawned")
-
-    specific = tmp_path / supervisor_heartbeat_filename("codex-1")
-    legacy = tmp_path / SUPERVISOR_HEARTBEAT_FILENAME
-    assert specific.exists()
-    assert legacy.exists()
-    beat = json.loads(specific.read_text(encoding="utf-8"))
-    assert beat["worker_id"] == "codex-1"
-    assert not (tmp_path / (specific.name + ".tmp")).exists()
-
-
-class _FakeProc:
-    pid = 4242
-
-    def __init__(self) -> None:
-        self._polls = 0
-
-    def poll(self):
-        self._polls += 1
-        return 0 if self._polls >= 2 else None
-
-    def terminate(self):  # pragma: no cover - stop-signal path
-        pass
-
-    def wait(self, timeout=None):  # pragma: no cover - stop-signal path
-        return 0
-
-
-def test_run_supervisor_writes_heartbeats(tmp_path):
-    run_supervisor(
-        tmp_path,
-        max_iterations=1,
-        spawn_fn=lambda universe: _FakeProc(),
-        sleep_fn=lambda s: None,
-        producer_poll_interval=0,
-    )
-    beat = json.loads(
-        (tmp_path / SUPERVISOR_HEARTBEAT_FILENAME).read_text(encoding="utf-8")
-    )
-    assert beat["phase"] == "stopped"
-    assert beat["total_spawns"] == 1
-    assert beat["last_exit_rc"] == 0
-
-
 # ---------------------------------------------------------------------------
-# healthcheck decision logic
+# beat fixtures
 # ---------------------------------------------------------------------------
 
 
@@ -194,69 +127,6 @@ def _write_beat(universe: Path, *, age_s: float, phase: str = "polling",
     (universe / SUPERVISOR_HEARTBEAT_FILENAME).write_text(
         json.dumps(beat), encoding="utf-8",
     )
-
-
-def test_healthcheck_fails_without_beat(tmp_path):
-    healthy, reason = healthcheck_check(tmp_path)
-    assert not healthy
-    assert "no supervisor heartbeat" in reason
-
-
-def test_healthcheck_passes_on_fresh_beat(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "tinyassets.cloud_worker._has_pickable_branch_task", lambda u: False,
-    )
-    _write_beat(tmp_path, age_s=10)
-    healthy, reason = healthcheck_check(tmp_path)
-    assert healthy, reason
-
-
-def test_healthcheck_reads_worker_specific_beat(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "tinyassets.cloud_worker._has_pickable_branch_task", lambda u: False,
-    )
-    beat = {
-        "ts": _iso(_utc(-10)),
-        "phase": "polling",
-        "planned_sleep_s": 0.0,
-    }
-    (tmp_path / supervisor_heartbeat_filename("claude-1")).write_text(
-        json.dumps(beat), encoding="utf-8",
-    )
-
-    healthy, reason = healthcheck_check(tmp_path, worker_id="claude-1")
-    assert healthy, reason
-
-
-def test_healthcheck_fails_on_stale_beat(tmp_path):
-    _write_beat(tmp_path, age_s=600)
-    healthy, reason = healthcheck_check(tmp_path)
-    assert not healthy
-    assert "stale" in reason
-
-
-def test_healthcheck_honors_planned_backoff_sleep(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "tinyassets.cloud_worker._has_pickable_branch_task", lambda u: False,
-    )
-    _write_beat(tmp_path, age_s=600, phase="backoff", planned_sleep_s=900)
-    healthy, reason = healthcheck_check(tmp_path)
-    assert healthy, reason
-
-
-def test_healthcheck_fails_when_pickable_waits_through_backoff(
-    tmp_path, monkeypatch,
-):
-    # Work arrived while the supervisor sleeps a long idle backoff: the
-    # beat is within its planned-sleep allowance but pickable work is
-    # waiting — unhealthy, restart picks it up.
-    monkeypatch.setattr(
-        "tinyassets.cloud_worker._has_pickable_branch_task", lambda u: True,
-    )
-    _write_beat(tmp_path, age_s=600, phase="backoff", planned_sleep_s=900)
-    healthy, reason = healthcheck_check(tmp_path)
-    assert not healthy
-    assert "pickable" in reason
 
 
 # ---------------------------------------------------------------------------
