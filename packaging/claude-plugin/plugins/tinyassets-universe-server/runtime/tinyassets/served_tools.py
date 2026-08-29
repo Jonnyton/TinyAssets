@@ -26,8 +26,19 @@ from __future__ import annotations
 #: ``engine_mcp_server``) AND present here.
 #:
 #: Included:
-#:   read_graph, get_status, browse_commons, read_commons_shape  — read surfaces
-#:   read_brain, write_brain                                     — the universe's own brain
+#:   read_graph, get_status, browse_commons, read_commons_shape  — read surfaces.
+#:       The two commons handles return another party's content, so they wrap it
+#:       in the UNTRUSTED envelope ({"untrusted": true, "source", "notice",
+#:       "content"}) — data to evaluate, never instructions (2026-08-29, design D4
+#:       of brain-writes-carry-founder-provenance).
+#:   read_brain, write_brain                                     — the universe's own brain.
+#:       write_brain PROPOSES; it does NOT persist (design D1). It records a
+#:       bounded per-turn proposal and the founder-only post-turn writer commits
+#:       only the part the founder's own utterance supports, stamped with that
+#:       utterance's turn id + digest. Before that, an agent steered by content it
+#:       had READ could launder that content into its own system prompt
+#:       permanently (docs/concerns/2026-08-24-write-brain-prompt-injection.md).
+#:       read_brain returns that provenance per section.
 #:   connect_compute                                             — register a compute
 #:       provider (candidate-only, owner-gated, graph-pinned, secret-free; no
 #:       execution / cross-universe reach)

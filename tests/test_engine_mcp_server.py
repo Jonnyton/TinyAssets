@@ -367,6 +367,40 @@ def _seed_brain_universe(monkeypatch, tmp_path, uid="u-brain"):
     return udir
 
 
+#: The turn id these tests propose against. write_brain records a proposal for
+#: the turn the daemon opened (2026-08-29, design D1): with no open turn it
+#: refuses, so a test that wants to reach the slot has to open one — otherwise it
+#: would pass on the refusal and prove nothing.
+_TEST_TURN = "turn_ENGINE_TEST"
+
+
+def _open_turn(udir, turn_id=_TEST_TURN):
+    from tinyassets import brain_proposal
+
+    brain_proposal.open_turn(udir, turn_id)
+    return turn_id
+
+
+def _commit_proposal(udir, turn_id=_TEST_TURN, *, founder_message="the founder said so"):
+    """Run the trusted writer over the recorded proposal, as converse does.
+
+    The served tool only proposes; this is the founder-only half that decides
+    and persists. Tests that assert what LANDS drive both halves.
+    """
+    from tinyassets import brain_proposal
+    from tinyassets.universe_intelligence import commit_learning
+
+    proposal = brain_proposal.consume_proposal(udir, turn_id)
+    if proposal is None:
+        return None
+    return commit_learning(
+        udir,
+        {"name": proposal["name"], "soul": proposal["sections"]},
+        turn_id=turn_id,
+        founder_message=founder_message,
+    )
+
+
 def test_read_brain_returns_editable_sections(monkeypatch, tmp_path):
     from tinyassets import engine_mcp_server as s
 
@@ -382,19 +416,26 @@ def test_read_brain_returns_editable_sections(monkeypatch, tmp_path):
     assert "self_model" in out
 
 
-def test_write_brain_then_next_system_prompt_reflects_it(monkeypatch, tmp_path):
-    """THE loop: a write_brain edit lands in the files the NEXT turn's system
-    prompt is rebuilt from."""
+def test_write_brain_proposes_and_the_trusted_writer_lands_it(monkeypatch, tmp_path):
+    """THE loop, in its two halves (2026-08-29): write_brain PROPOSES and changes
+    nothing; the founder-only writer commits, and THAT is what the next turn's
+    system prompt is rebuilt from."""
     from tinyassets import engine_mcp_server as s
     from tinyassets.universe_intelligence import _build_persona_system_prompt
 
     udir = _seed_brain_universe(monkeypatch, tmp_path)
+    _open_turn(udir)
     marker = "I am Aria, a research companion who tracks the founder's reading list."
     res = json.loads(s.write_brain(identity=marker, name="Aria"))
-    assert res.get("ok") is True
+    assert res.get("status") == "proposed"
 
-    # Next turn: the system prompt is rebuilt from the universe's brain files.
+    # The proposal ALONE changes nothing the prompt is built from.
     # T2 = the founder disclosure tier (full grounding).
+    prompt = _build_persona_system_prompt(udir, universe_id="u-brain", tier="T2")
+    assert "research companion" not in prompt
+
+    # The trusted writer commits it (the founder did say it), and now it is there.
+    assert _commit_proposal(udir) is not None
     prompt = _build_persona_system_prompt(udir, universe_id="u-brain", tier="T2")
     assert "Aria" in prompt
     assert "research companion" in prompt
@@ -405,26 +446,35 @@ def test_brain_read_write_round_trip_does_not_nest_frontmatter(monkeypatch, tmp_
     and never nests managed frontmatter (Codex brain-loop review)."""
     from tinyassets import engine_mcp_server as s
 
-    _seed_brain_universe(monkeypatch, tmp_path)
+    udir = _seed_brain_universe(monkeypatch, tmp_path)
     marker = "I am Aria, the founder's research companion."
+    _open_turn(udir)
     s.write_brain(identity=marker)
+    _commit_proposal(udir)
     body1 = json.loads(s.read_brain())["brain"]["identity"]
     assert marker in body1
     assert "---" not in body1  # no frontmatter leaked into the body
     # Echo the read body back; it must not accumulate frontmatter.
+    _open_turn(udir, "turn_ENGINE_TEST_2")
     s.write_brain(identity=body1)
+    _commit_proposal(udir, "turn_ENGINE_TEST_2")
     body2 = json.loads(s.read_brain())["brain"]["identity"]
     assert body2 == body1
 
 
-def test_write_brain_cannot_touch_soul_md(monkeypatch, tmp_path):
+def test_brain_write_cannot_touch_soul_md(monkeypatch, tmp_path):
     """soul.md (its frontmatter carries the executable loop_branch_def_id) is not
-    an accepted section and is never written by write_brain."""
+    an accepted section and is never written through the brain loop.
+
+    Driven through BOTH halves: the tool has no soul parameter, and the writer
+    the proposal reaches leaves soul.md untouched."""
     from tinyassets import engine_mcp_server as s
 
     udir = _seed_brain_universe(monkeypatch, tmp_path)
     before = (udir / "soul.md").read_text(encoding="utf-8")
+    _open_turn(udir)
     s.write_brain(identity="I am Aria, the founder's research companion.")
+    _commit_proposal(udir)
     after = (udir / "soul.md").read_text(encoding="utf-8")
     assert before == after  # soul.md untouched
     # and there is no soul/harness-code parameter on the tool
@@ -433,9 +483,13 @@ def test_write_brain_cannot_touch_soul_md(monkeypatch, tmp_path):
     assert "soul" not in params and "source_code" not in params
 
 
-def test_write_brain_refuses_hardlinked_governed_file(monkeypatch, tmp_path):
+def test_brain_write_refuses_hardlinked_governed_file(monkeypatch, tmp_path):
     """Codex brain-loop review: if identity.md is a hardlink aliasing soul.md,
-    write_brain must NOT mutate soul.md's (executable) frontmatter through it."""
+    the brain write must NOT mutate soul.md's (executable) frontmatter through it.
+
+    The sink moved behind the proposal (2026-08-29), so this drives the writer
+    the proposal reaches — asserting it at the tool alone would now pass on the
+    proposal never being committed, which proves nothing about the sink."""
     import os
 
     from tinyassets import engine_mcp_server as s
@@ -448,12 +502,14 @@ def test_write_brain_refuses_hardlinked_governed_file(monkeypatch, tmp_path):
     identity.unlink()
     os.link(soul, identity)
 
+    _open_turn(udir)
     out = json.loads(s.write_brain(identity="I am Aria, the research companion."))
-    assert out.get("error")  # refused, not ok
+    assert out.get("status") == "proposed"  # the tool records; the sink decides
+    assert _commit_proposal(udir) is None  # refused, nothing written
     assert soul.read_text(encoding="utf-8") == soul_before  # soul.md untouched
 
 
-def test_write_brain_snapshot_sink_cannot_alias_soul(monkeypatch, tmp_path):
+def test_brain_write_snapshot_sink_cannot_alias_soul(monkeypatch, tmp_path):
     """Codex re-review BLOCKER: the SECONDARY soul-edit sinks (log/snapshot/index)
     must not write through a hardlink either. Atomic writes repoint the name to a
     fresh inode, so a soul_versions/index.md hardlinked to soul.md cannot overwrite
@@ -471,7 +527,10 @@ def test_write_brain_snapshot_sink_cannot_alias_soul(monkeypatch, tmp_path):
         index.unlink()
     os.link(soul, index)  # predictable-name sink aliased to soul.md
 
+    _open_turn(udir)
     s.write_brain(identity="I am Aria, the founder's research companion.")
+    # The snapshot only runs when the trusted writer commits, so drive it.
+    assert _commit_proposal(udir) is not None
     assert soul.read_text(encoding="utf-8") == soul_before  # soul.md untouched
 
 
@@ -485,7 +544,7 @@ def _can_symlink(tmp_path):
         return False
 
 
-def test_write_brain_refuses_parent_dir_symlink_escape(monkeypatch, tmp_path):
+def test_brain_write_refuses_parent_dir_symlink_escape(monkeypatch, tmp_path):
     """Codex re-review: soul_versions symlinked to an external dir must not let the
     snapshot write escape the universe."""
     import os
@@ -505,8 +564,10 @@ def test_write_brain_refuses_parent_dir_symlink_escape(monkeypatch, tmp_path):
         shutil.rmtree(sv)
     os.symlink(external, sv, target_is_directory=True)
 
+    _open_turn(udir)
     out = json.loads(s.write_brain(identity="I am Aria, the founder's companion."))
-    assert out.get("error")  # refused
+    assert out.get("status") == "proposed"
+    assert _commit_proposal(udir) is None  # the sink refused
     # nothing was written into the external dir
     assert not any(external.iterdir())
 
@@ -604,18 +665,23 @@ def test_read_brain_fails_closed_unbound(monkeypatch):
 
 
 def test_write_brain_uses_least_privilege_caps(monkeypatch, tmp_path):
-    """The brain write binds read/list/write only — no costly/submit (Codex #5)."""
-    import tinyassets.universe_intelligence as ui
+    """The brain write binds read/list/write only — no costly/submit (Codex #5).
+
+    Captured at the sink the tool actually reaches now (the proposal slot), not
+    at commit_learning, which this surface no longer calls."""
+    from tinyassets import brain_proposal
     from tinyassets import engine_mcp_server as s
     from tinyassets.auth import middleware
 
-    _seed_brain_universe(monkeypatch, tmp_path)
+    udir = _seed_brain_universe(monkeypatch, tmp_path)
+    _open_turn(udir)
     caps = {}
+    real = brain_proposal.record_proposal
     monkeypatch.setattr(
-        ui, "commit_learning",
-        lambda udir, proposed, **kw: (
+        brain_proposal, "record_proposal",
+        lambda *a, **kw: (
             caps.update(c=set(middleware.current_identity().capabilities)),
-            {"updated_files": ["identity.md"]},
+            real(*a, **kw),
         )[1],
     )
     s.write_brain(identity="I am Aria, the founder's research companion.")

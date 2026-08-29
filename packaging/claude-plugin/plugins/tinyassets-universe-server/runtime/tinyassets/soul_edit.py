@@ -241,6 +241,8 @@ def apply_soul_edit(
     summary: str = "",
     name: str = "",
     expected_versions: dict[str, str] | None = None,
+    turn_id: str = "",
+    utterance_digest: str = "",
 ) -> dict[str, Any]:
     """Apply one governed learning event to the universe's soul bundle.
 
@@ -254,11 +256,21 @@ def apply_soul_edit(
     compare-and-swap: if a governed file changed since it was read the edit is
     rejected rather than clobbering the newer state. The whole read→write→
     snapshot section runs under a per-universe lock.
+
+    ``turn_id`` / ``utterance_digest`` record WHICH founder utterance grounded
+    the edit (2026-08-29, design D3 of
+    ``openspec/changes/brain-writes-carry-founder-provenance``). They are
+    server-minted values, never caller text, and they are written into the same
+    managed frontmatter block as ``learned_from``: recorded together with it and
+    CLEARED together with it, so an edit made without provenance can never
+    inherit the previous edit's attribution.
     """
     universe_dir = Path(universe_dir)
     source = (source or "").strip()
     context = (context or "").strip()
     name = (name or "").strip()
+    turn_id = (turn_id or "").strip()
+    utterance_digest = (utterance_digest or "").strip()
     if not source or not context:
         raise SoulEditError(
             "source and context are required — a soul edit is a learning "
@@ -350,6 +362,18 @@ def apply_soul_edit(
                 meta["status"] = "learned"
                 meta["learned_from"] = source
                 meta["learned_at"] = now
+                # Provenance travels WITH learned_from, including its absence: an
+                # edit with no turn id drops any turn/digest the previous edit
+                # recorded, so a section can never show provenance that belongs
+                # to different words than the ones now in it.
+                if turn_id:
+                    meta["learned_turn_id"] = turn_id
+                else:
+                    meta.pop("learned_turn_id", None)
+                if utterance_digest:
+                    meta["learned_utterance_digest"] = utterance_digest
+                else:
+                    meta.pop("learned_utterance_digest", None)
             if name and filename == "identity.md":
                 meta["name"] = name
             rendered = _render(meta, body)
@@ -366,14 +390,21 @@ def apply_soul_edit(
             context=context,
             summary=log_entry,
             stamp=now,
+            turn_id=turn_id,
+            utterance_digest=utterance_digest,
         )
 
-    return {
+    result: dict[str, Any] = {
         "updated_files": sorted(updated),
         "snapshot": snapshot_rel,
         "log_entry": log_entry,
         "source": source,
     }
+    if turn_id:
+        result["turn_id"] = turn_id
+    if utterance_digest:
+        result["utterance_digest"] = utterance_digest
+    return result
 
 
 def _append_log(universe_dir: Path, line: str) -> None:
@@ -396,6 +427,8 @@ def _write_edit_snapshot(
     context: str,
     summary: str,
     stamp: str,
+    turn_id: str = "",
+    utterance_digest: str = "",
 ) -> str:
     """Write a self-describing snapshot of this edit and index it.
 
@@ -426,6 +459,12 @@ def _write_edit_snapshot(
         "learned_at": stamp,
         "files": ", ".join(sorted(files)),
     }
+    # The snapshot is the durable per-edit record, so provenance belongs on it as
+    # well as on the files — a section can be edited again, the snapshot cannot.
+    if turn_id:
+        meta["turn_id"] = turn_id
+    if utterance_digest:
+        meta["utterance_digest"] = utterance_digest
     body_parts = [f"# Soul Edit {next_number:04d}", "", context, ""]
     for filename in sorted(files):
         body_parts += [f"## {filename}", "", "```markdown", files[filename].rstrip(), "```", ""]
