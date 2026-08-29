@@ -85,9 +85,14 @@ _UNAVAILABLE_DETAIL = {
         "That workflow is not readable from here. Check the branch_def_id "
         "with read_graph target=branches."
     ),
+    "branch_not_owned": (
+        "You can only automate a workflow you authored. Remix that one into "
+        "your own branch first, then automate the remix."
+    ),
     "trigger_invalid": (
         "Give exactly one trigger: interval_seconds of at least 300, or a "
-        "cron_expr -- not both, and not neither."
+        "cron_expr that never fires more often than every 300 seconds -- not "
+        "both, and not neither."
     ),
     "too_many_automations": (
         "This universe is already at its automation limit. Delete one before "
@@ -189,6 +194,12 @@ def _projection(
         "last_run_id": automation.last_run_id,
         "last_reason": automation.last_reason,
         "last_finished_at": automation.last_finished_at,
+        # How close this automation is to auto-pausing itself. Read through
+        # getattr so the surface does not depend on which half of task 3.1
+        # lands first; a row without the counter reports a truthful zero.
+        "consecutive_failures": int(
+            getattr(automation, "consecutive_failures", 0) or 0
+        ),
         "owner": {"is_you": automation.owner_principal_id == actor},
     }
     if recent_reason:

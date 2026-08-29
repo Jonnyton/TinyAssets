@@ -287,6 +287,59 @@ def test_both_triggers_or_neither_is_refused(tmp_path: Path, env) -> None:
     assert AutomationStore(tmp_path).list(universe_id=UNIVERSE) == []
 
 
+def test_automating_someone_elses_workflow_is_refused_with_an_actionable_reason(
+    tmp_path: Path,
+    env,
+) -> None:
+    """READABLE is not RUNNABLE: a public branch someone else authored would
+    fail every run forever, so the refusal has to happen at registration."""
+    _seed_branch(
+        tmp_path,
+        branch_def_id="branch_bobs_loop",
+        author="acct_bob",
+        visibility="public",
+    )
+
+    result = _create(branch_def_id="branch_bobs_loop")
+
+    assert result["error"] == "automation_unavailable"
+    assert result["reason"] == "branch_not_owned"
+    assert "you authored" in result["detail"]
+    assert AutomationStore(tmp_path).list(universe_id=UNIVERSE) == []
+
+
+def test_the_failure_counter_is_visible_before_the_auto_pause(
+    tmp_path: Path,
+    env,
+) -> None:
+    """An owner should see an automation drifting toward its own cap, not just
+    discover it already paused."""
+    created = _create()["automation"]
+    assert created["consecutive_failures"] == 0
+
+    store = AutomationStore(tmp_path)
+    for index in range(2):
+        due_at = f"2026-08-29T1{index}:00:00+00:00"
+        assert store.claim_attempt(
+            created["automation_id"],
+            due_at,
+            now=datetime.now(timezone.utc),
+        )
+        store.finish_attempt(
+            created["automation_id"],
+            due_at,
+            run_id="",
+            status="failed",
+            reason="run_failed:failed",
+            now=datetime.now(timezone.utc),
+            succeeded=False,
+        )
+
+    listed = api.automations(action="list", universe_id=UNIVERSE)
+
+    assert listed["automations"][0]["consecutive_failures"] == 2
+
+
 def test_unknown_action_lists_the_allowed_ones(tmp_path: Path, env) -> None:
     result = api.automations(action="rebind", universe_id=UNIVERSE)
 
