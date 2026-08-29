@@ -220,19 +220,39 @@ def _title_is_scaffold(title: str, branch: str) -> bool:
     return not title or title == branch.rpartition("/")[2]
 
 
-def _existing_pr(branch: str, cwd: Path) -> tuple[int | None, str, str]:
-    """``(number, state, body)`` of the PR for ``branch``, or ``(None, "", "")``."""
-    proc = _run(["gh", "pr", "view", branch, "--json", "number,state,body"], cwd=cwd)
+class _PrLookup:
+    """What ``gh pr view`` said about a branch. ``known`` is False when the
+    answer is NOT "no PR" but "could not ask" - ``gh`` absent, unauthenticated,
+    offline - so teardown says "publication status unknown" instead of
+    recording a false "never published" (Codex round 2, P1/P2)."""
+
+    __slots__ = ("number", "state", "body", "known", "detail")
+
+    def __init__(self, number=None, state="", body="", known=True, detail=""):
+        self.number, self.state, self.body = number, state, body
+        self.known, self.detail = known, detail
+
+
+def _existing_pr(branch: str, cwd: Path) -> _PrLookup:
+    try:
+        proc = _run(["gh", "pr", "view", branch, "--json", "number,state,body"], cwd=cwd)
+    except OSError as exc:  # gh not installed / not on PATH
+        return _PrLookup(known=False, detail=f"gh unavailable: {exc.__class__.__name__}")
     if proc.returncode != 0:
-        return None, "", ""
+        err = (proc.stderr or "").strip()
+        if "no pull requests found" in err.lower():
+            return _PrLookup()                                   # a real "none"
+        return _PrLookup(known=False, detail=err.splitlines()[0] if err else "gh failed")
     try:
         data = json.loads(proc.stdout or "{}")
     except json.JSONDecodeError:
-        return None, "", ""
+        return _PrLookup(known=False, detail="gh returned no JSON")
     number = data.get("number")
-    state = str(data.get("state") or "")
-    body = str(data.get("body") or "")
-    return (int(number) if number else None), state, body
+    return _PrLookup(
+        number=int(number) if number else None,
+        state=str(data.get("state") or ""),
+        body=str(data.get("body") or ""),
+    )
 
 
 def _purpose_unpublished(text: str, pr_body: str | None) -> bool:
@@ -267,17 +287,20 @@ def cmd_pr(args: argparse.Namespace) -> int:
         )
     base = _normalize_base(args.base, args.remote)
     push = ["git", "push", "-u", args.remote, branch]
-    number, state, _body = _existing_pr(branch, wt_path)
-    if number is not None and state.upper() == "OPEN":
+    found = _existing_pr(branch, wt_path)
+    if found.number is not None and found.state.upper() == "OPEN":
         # Re-running `pr` republishes the draft instead of failing at create
-        # (Codex round 1, P1: "keep the PR body current" had no implementation).
+        # (Codex round 1, P1). Titles are stable: the PR keeps its title unless
+        # --title is given, and the log records what actually happened.
         publish = pr_update_command(
-            number=number, title=args.title, body_path=purpose,
+            number=found.number, title=args.title, body_path=purpose,
         )
+        logged_title = args.title or "(unchanged)"
     else:
         publish = pr_command(
             branch=branch, base=base, title=title, body_path=purpose, draft=args.draft,
         )
+        logged_title = title
     steps = [push, publish]
     if args.auto:
         steps.append(["gh", "pr", "merge", "--auto", "--squash", branch])
@@ -289,7 +312,7 @@ def cmd_pr(args: argparse.Namespace) -> int:
         proc = subprocess.run(step, cwd=str(wt_path), text=True)
         if proc.returncode != 0:
             raise SystemExit(f"step failed ({proc.returncode}): {' '.join(step)}")
-    log_event(repo_root(), f"PR {wt_path.name} branch={branch} title={title!r}")
+    log_event(repo_root(), f"PR {wt_path.name} branch={branch} title={logged_title!r}")
     return 0
 
 
@@ -321,16 +344,21 @@ def _archive_purpose(root: Path, wt_path: Path, branch: str, reason: str) -> str
     if not purpose.exists():
         return ""
     text = purpose.read_text(encoding="utf-8", errors="replace")
-    number, _state, body = _existing_pr(branch, wt_path)
+    found = _existing_pr(branch, wt_path)
+    pr_label = str(found.number) if found.number else ("?" if not found.known else "-")
+    # One append: header and body land together, so concurrent teardowns
+    # cannot interleave attribution (Codex round 2, P2).
     log_event(
         root,
-        f"PURPOSE-ARCHIVE {wt_path.name} branch={branch} pr={number or '-'} reason={reason!r}",
+        f"PURPOSE-ARCHIVE {wt_path.name} branch={branch} pr={pr_label} reason={reason!r}\n"
+        + "\n".join("    " + line for line in text.splitlines()),
     )
-    log_event(root, "\n".join("    " + line for line in text.splitlines()))
-    if number is None:
+    if not found.known:
+        return f"publication status unknown ({found.detail}); the draft is archived"
+    if found.number is None:
         return "no PR for this branch: its purpose was never published"
-    if _purpose_unpublished(text, body):
-        return f"local _PURPOSE.md differs from PR #{number}'s body (unpublished edits)"
+    if _purpose_unpublished(text, found.body):
+        return f"local _PURPOSE.md differs from PR #{found.number}'s body (unpublished edits)"
     return ""
 
 

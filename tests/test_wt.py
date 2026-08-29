@@ -163,3 +163,54 @@ def test_unpublished_purpose_is_detected_against_the_pr_body():
     assert wt._purpose_unpublished("a\nb\n", "a\nb") is False          # whitespace-insensitive
     assert wt._purpose_unpublished("a\nb\nc", "a\nb") is True
     assert wt._purpose_unpublished("anything", None) is False        # no PR: nothing to compare
+
+
+def test_pr_lookup_distinguishes_no_pr_from_could_not_ask(monkeypatch):
+    """`done`/`sweep` must not need gh, and a failed lookup must not be
+    recorded as "never published" (Codex round 2, P1 + P2)."""
+    import types
+
+    def fake_run(args, *, cwd=None):
+        return fake_run.result
+
+    monkeypatch.setattr(wt, "_run", fake_run)
+    fake_run.result = types.SimpleNamespace(
+        returncode=1, stdout="", stderr="no pull requests found for branch",
+    )
+    found = wt._existing_pr("claude/x", Path("."))
+    assert found.known is True and found.number is None
+
+    fake_run.result = types.SimpleNamespace(
+        returncode=1, stdout="",
+        stderr="gh: To get started with GitHub CLI, please run: gh auth login",
+    )
+    found = wt._existing_pr("claude/x", Path("."))
+    assert found.known is False and "auth" in found.detail
+
+    def missing_gh(args, *, cwd=None):
+        raise FileNotFoundError("gh")
+
+    monkeypatch.setattr(wt, "_run", missing_gh)
+    found = wt._existing_pr("claude/x", Path("."))
+    assert found.known is False and "unavailable" in found.detail
+
+    monkeypatch.setattr(wt, "_run", fake_run)
+    fake_run.result = types.SimpleNamespace(
+        returncode=0, stdout='{"number": 7, "state": "MERGED", "body": "b"}', stderr="",
+    )
+    found = wt._existing_pr("claude/x", Path("."))
+    assert (found.number, found.state, found.body, found.known) == (7, "MERGED", "b", True)
+
+
+def test_archive_writes_header_and_text_in_one_append(tmp_path, monkeypatch):
+    lane = tmp_path / "wf-x"
+    lane.mkdir()
+    (lane / "_PURPOSE.md").write_text("Purpose: keep me\nShip condition: x\n", encoding="utf-8")
+    offline = wt._PrLookup(known=False, detail="offline")
+    monkeypatch.setattr(wt, "_existing_pr", lambda branch, cwd: offline)
+    calls = []
+    monkeypatch.setattr(wt, "log_event", lambda root, line: calls.append(line))
+    note = wt._archive_purpose(tmp_path, lane, "claude/x", "testing")
+    assert len(calls) == 1 and calls[0].startswith("PURPOSE-ARCHIVE wf-x branch=claude/x pr=?")
+    assert "    Purpose: keep me" in calls[0] and "    Ship condition: x" in calls[0]
+    assert "unknown" in note and "archived" in note

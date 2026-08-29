@@ -135,15 +135,21 @@ them, promote/refactor the work into current project state:
 
 Existing worktrees are retrofit-on-next-touch: add `_PURPOSE.md` when you next
 work there. A lane opened before 2026-08-29 still tracks its own copy of the
-file; on its next `main` merge it will see one modify/delete conflict —
-resolve with `git rm _PURPOSE.md` in the branch (the file stays on disk,
-ignored) and put the purpose in the PR body. A checkout with **uncommitted
-edits to `.agents/worktrees.md`** (the primary checkout had 50 unsaved lines
-on 2026-08-29) must keep them before pulling the deletion:
-`git diff -- .agents/worktrees.md >> .git/tinyassets-worktrees.log`, then
-`git checkout -- .agents/worktrees.md` only after that copy is confirmed.
-Do not bulk rewrite another provider's active worktree metadata unless the
-owner asks for it.
+file (29 branch tips did on that day; three had uncommitted edits). **Before**
+its next `main` merge, untrack the copy without touching the disk:
+`git rm --cached _PURPOSE.md && git commit -m "worktree: purpose is a local
+draft"` — the file stays where it is and is ignored from then on. Merging
+first instead produces a modify/delete conflict AND overwrites the draft on
+disk with `main`'s copy (it happened to the lane that built this); if that
+has already happened, recover your text from `git show HEAD:_PURPOSE.md` on
+the branch before resolving. A checkout with **uncommitted edits to
+`.agents/worktrees.md`** must preserve them before the deletion lands, under
+the owner's own hand — `git diff -- .agents/worktrees.md >>
+.git/tinyassets-worktrees.log` (the primary checkout's 54 unsaved lines were
+copied there on 2026-08-29 before this landed) — and then resolve the
+modify/delete conflict with `git rm .agents/worktrees.md`. Never `git
+checkout --` a file you have not first preserved (Hard Rule 13). Do not bulk
+rewrite another provider's active worktree metadata unless the owner asks.
 
 ## Branch & worktree lifecycle automation
 
