@@ -1962,11 +1962,12 @@
   let historyLoaded = false;
   async function loadHistory(){
     if(historyLoaded || !token()) return;
+    let turns = [];
     try{
       const r = await MCP.getConversation();
       const conv = r && r.recent_conversation;
-      const turns = (conv && Array.isArray(conv.turns)) ? conv.turns : [];
-      if(!turns.length) return;
+      turns = (conv && Array.isArray(conv.turns)) ? conv.turns : [];
+      if(!turns.length){ restoreInflight(turns); return; }
       historyLoaded = true;
       // Oldest first, decided by each turn's own timestamp — NOT by assuming
       // the peek's order. It once returned newest-first and this reversed it;
@@ -1982,19 +1983,36 @@
         if(t && typeof t.text === "string" && t.text) appendMessage(who, t.text);
       });
       restoreInflight(turns);
-    }catch(_e){ /* history is a convenience; never block the chat on it */ }
+    }catch(_e){
+      // history is a convenience; never block the chat on it - but a message
+      // held only locally must not vanish because the peek failed: it is
+      // shown as unconfirmed, which is exactly what it is (Codex round 3, P1).
+      restoreInflight(turns);
+    }
   }
 
   // A message the user sent whose reply never arrived. If the turn finished
   // while they were away it is already in history and the local copy is stale;
   // otherwise show it, and say plainly that it is unconfirmed rather than
-  // drawing it as a normal delivered bubble.
+  // drawing it as a normal delivered bubble. Restored whether or not history
+  // had anything to draw - an empty thread IS the first-message case - and at
+  // most once per page.
+  let inflightRestored = false;
   function restoreInflight(turns){
     const pending = readInflight();
-    if(!pending) return;
-    const already = (turns||[]).some(t =>
-      t && t.speaker !== "universe" && t.text === pending.message);
+    if(!pending || inflightRestored) return;
+    // Delivered while the user was away? Only the NEWEST founder turn can be
+    // this message, and it must be stamped no earlier than the send. A
+    // text-only match against the whole history let an older identical prompt
+    // ("continue") delete the record of the new one (Codex round 3, P1).
+    // History stamps are epoch seconds; the record's is epoch milliseconds;
+    // a minute of slack covers clock skew without reaching an earlier send.
+    const founderTurns = (turns||[]).filter(t => t && t.speaker !== "universe");
+    const last = founderTurns[founderTurns.length-1];
+    const already = !!last && last.text === pending.message &&
+      (typeof last.ts !== "number" || last.ts*1000 >= (pending.ts||0) - 60*1000);
     if(already){ forgetInflight(); return; }
+    inflightRestored = true;
     appendMessage("founder", pending.display);
     const note = document.createElement("div");
     note.className = "msg msg--system";

@@ -554,6 +554,11 @@ const MCP={ converse: async m => {
   return payloads[Math.min(converseCalls.length-1, payloads.length-1)];
 }};
 const CFG={build: SCENARIO.build||"b1"};
+const token=()=>"t";
+MCP.getConversation=async()=>{
+  if(SCENARIO.historyError) throw new Error("peek failed");
+  return {recent_conversation:{turns: SCENARIO.history||[]}};
+};
 let reloaded=false; const location={reload:()=>{ reloaded=true; }};
 let fetched=0;
 async function fetch(){ fetched++; return {headers:{get:()=>SCENARIO.liveBuild||null}}; }
@@ -576,6 +581,16 @@ __APP_FUNCTIONS__
       buttons:n.children.filter(c=>c.tagName==="BUTTON").map(b=>b.textContent)}));
     out.sendDisabled=els["btn-send"].disabled;
     out.status=els["status-line"].textContent;
+  }else if(SCENARIO.kind==="restore"){
+    localStorage.setItem(INFLIGHT_KEY, JSON.stringify({
+      message:SCENARIO.pending, display:SCENARIO.pending,
+      ts: Date.now()-(SCENARIO.pendingAgeS||0)*1000}));
+    await loadHistory();
+    await loadHistory();                                 // a second pass must not double-restore
+    out.inflight=JSON.parse(localStorage.getItem(INFLIGHT_KEY)||"null");
+    out.messages=messages;
+    out.notes=els.thread.children.map(n=>({cls:n.className, text:n.textContent,
+      buttons:n.children.filter(c=>c.tagName==="BUTTON").map(b=>b.textContent)}));
   }else{
     const min=60*1000;
     if(SCENARIO.pendingAgeMin!=null){
@@ -609,11 +624,12 @@ def _run_app(tmp_path, scenario: dict) -> dict:
     html, _csp = onboarding.render_app_html()
     decls = "\n".join(
         re.search(pat, html).group(0)
-        for pat in (r"const INFLIGHT_KEY=[^\n]*;", r"let turnStartedAt=[^\n]*;")
+        for pat in (r"const INFLIGHT_KEY=[^\n]*;", r"let turnStartedAt=[^\n]*;",
+                    r"let historyLoaded = [^\n]*;", r"let inflightRestored = [^\n]*;")
     )
     funcs = "\n".join(_js_function(html, f) for f in (
         "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
-        "offerResend", "sendTurn", "checkForNewBuild",
+        "offerResend", "sendTurn", "checkForNewBuild", "loadHistory", "restoreInflight",
     ))
     program = (_APP_SHIM
                .replace("__SCENARIO__", json.dumps(scenario))
@@ -670,6 +686,53 @@ def test_a_transport_failure_still_offers_the_resend(tmp_path):
     out = _run_app(tmp_path, {"kind": "send", "message": "hi", "transportError": True})
     assert out["inflight"]["message"] == "hi"
     assert any("didn’t get through" in n["text"] for n in out["notes"])
+
+
+def _turn(speaker, text, age_s):
+    """A history turn as the peek sends it: epoch SECONDS, oldest first."""
+    import time
+
+    return {"speaker": speaker, "text": text, "ts": time.time() - age_s, "truncated": False}
+
+
+def test_a_held_message_is_restored_on_an_empty_thread(tmp_path):
+    """Codex round 3 (P1): `loadHistory` returned before `restoreInflight` when
+    history was empty, so the FIRST message a user ever sent, if it failed,
+    vanished on reload."""
+    out = _run_app(tmp_path, {"kind": "restore", "pending": "hello there", "history": []})
+    assert out["inflight"]["message"] == "hello there"
+    assert [m["role"] for m in out["messages"]] == ["founder"]          # once, not twice
+    notes = [n for n in out["notes"] if "msg--system" in n["cls"]]
+    assert len(notes) == 1 and "never confirmed" in notes[0]["text"]
+    assert notes[0]["buttons"] == ["Send it again"]
+
+
+def test_a_held_message_is_restored_when_the_peek_fails(tmp_path):
+    out = _run_app(tmp_path, {"kind": "restore", "pending": "hello", "historyError": True})
+    assert out["inflight"]["message"] == "hello"
+    assert [m["role"] for m in out["messages"]] == ["founder"]
+
+
+def test_an_older_identical_prompt_does_not_count_as_delivery(tmp_path):
+    """Codex round 3 (P1): "continue" sent ten minutes ago and answered must
+    not make a NEW failed "continue" look delivered."""
+    out = _run_app(tmp_path, {
+        "kind": "restore", "pending": "continue", "pendingAgeS": 30,
+        "history": [_turn("founder", "continue", 600), _turn("universe", "ok", 600)],
+    })
+    assert out["inflight"]["message"] == "continue"
+    assert [m["role"] for m in out["messages"]] == ["you", "universe", "founder"]
+
+
+def test_a_message_delivered_while_away_is_not_restored(tmp_path):
+    """The newest founder turn IS the held message and is stamped after the
+    send: the reply landed, the local copy is stale and is dropped."""
+    out = _run_app(tmp_path, {
+        "kind": "restore", "pending": "continue", "pendingAgeS": 120,
+        "history": [_turn("founder", "continue", 60), _turn("universe", "done", 60)],
+    })
+    assert out["inflight"] is None
+    assert [m["role"] for m in out["messages"]] == ["you", "universe"]
 
 
 @pytest.mark.parametrize("scenario, reloads", [

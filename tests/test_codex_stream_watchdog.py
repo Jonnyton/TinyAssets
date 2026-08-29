@@ -199,7 +199,7 @@ def test_model_generation_silence_inside_an_open_turn_is_not_idle():
 
 def test_generation_silence_with_the_best_effort_events_dropped_is_still_not_idle():
     """Codex round 1 (P1): 0.146 drops ``turn.started`` / ``item.started`` under
-    backpressure (only ``turn.completed`` / ``item.completed`` are lossless).
+    backpressure (only ``TurnCompleted`` is guaranteed end to end).
     A stream with NONE of the best-effort events must still be read as a
     running turn, or the generation rule silently reverts to the 30s kill."""
     proc = FakeProc([

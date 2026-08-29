@@ -531,7 +531,7 @@ async def _stream_codex_exec(
         ))
 
     async def _cut_tail() -> None:
-        # The turn is complete (its lossless terminal event was read); only
+        # The turn is complete (its guaranteed terminal event was read); only
         # codex's own shutdown is outstanding and it has overrun its 45s bound.
         # End the child and keep the finished stream. The exit code this leaves
         # is process trivia: the caller reads past it when ``turn.completed`` is
