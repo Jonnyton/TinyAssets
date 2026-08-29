@@ -156,6 +156,67 @@ def test_the_idle_watchdog_resumes_once_the_tool_completes():
         _run(proc)
 
 
+# --- an open turn's silence is the model generating, not a hang ----------------
+#
+# ``codex exec --json`` emits NO deltas - not for reasoning, not for the assistant
+# message - so between one event and the next there is one whole model
+# round-trip of silence. Live on 2026-08-29 (#2674 deployed) a 31s gap between
+# two engine tool calls was killed at the 30s idle interval; the turn was healthy.
+
+
+def test_model_generation_silence_inside_an_open_turn_is_not_idle():
+    proc = FakeProc([
+        _ev("thread.started"),
+        _ev("turn.started"),
+        _tool("item.started"),
+        _tool("item.completed"),                          # tool answered...
+        (0.7, _tool("item.started", item_id="call_2")),   # ...model thinks 0.7s > idle 0.25
+        _tool("item.completed", item_id="call_2"),
+        _ev("item.completed", item={"type": "agent_message", "text": "done"}),
+        _ev("turn.completed", usage={"input_tokens": 1, "output_tokens": 1}),
+    ])
+    out, _err = _run(proc)
+    assert b"turn.completed" in out
+    assert proc.killed is False
+
+
+def test_silence_after_the_turn_completes_still_fires_idle():
+    """The turn-open allowance ends with the turn: a child that finishes its turn
+    and then hangs before EOF is still caught at the idle interval."""
+    proc = FakeProc([
+        _ev("thread.started"),
+        _ev("turn.started"),
+        _ev("turn.completed"),
+        (0.7, b"{\"type\": \"straggler\"}\n"),
+    ])
+    with pytest.raises(ProviderIdleTimeoutError) as info:
+        _run(proc)
+    assert proc.killed is True
+    assert info.value.attempt_telemetry["tool_phase"] is None
+
+
+def test_a_failed_turn_rearms_idle_even_with_no_tool_open():
+    proc = FakeProc([
+        _ev("thread.started"),
+        _ev("turn.started"),
+        _ev("turn.failed", error={"message": "boom"}),
+        (0.7, _ev("turn.completed")),
+    ])
+    with pytest.raises(ProviderIdleTimeoutError):
+        _run(proc)
+
+
+def test_an_open_turn_is_still_bounded_by_the_cap():
+    proc = FakeProc([
+        _ev("thread.started"),
+        _ev("turn.started"),
+        (6.0, _ev("turn.completed")),                     # cap is 5.0
+    ])
+    with pytest.raises(InteractiveDeadlineError) as info:
+        _run(proc)
+    assert info.value.attempt_telemetry["tool_phase"] == "in_turn"
+
+
 # --- the cap is a backstop, and it is classified honestly ---------------------
 
 

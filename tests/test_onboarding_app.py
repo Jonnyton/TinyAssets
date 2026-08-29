@@ -465,10 +465,37 @@ def test_the_app_restores_the_conversation_on_load():
     assert "include_conversation:true" in html
     assert "function loadHistory()" in html
     assert "loadHistory();" in html
-    # Oldest-first render: the founder peek returns newest-first.
-    assert "turns.slice().reverse()" in html
+    # Oldest-first render by each turn's OWN ts, never by assuming the peek's
+    # order: `load_recent_readonly` returns oldest-first (it reverses its DESC
+    # page), and a blind reverse drew the thread upside down after every reload
+    # ("the conversation is reset to the past" — founder, 2026-08-29).
+    assert "turns.slice().sort((a,b)=>a.ts-b.ts)" in html
+    assert "turns.slice().reverse()" not in html
     # It must never block the chat on a history failure.
     assert "history is a convenience; never block the chat on it" in html
+
+def test_a_served_error_keeps_the_message_and_never_reloads_over_it():
+    """Founder, 2026-08-29: "there was an error in the web app, but now the
+    conversation is reset to the past". A served `error` payload was drawn as if
+    the turn had completed (the in-flight record was forgotten), and the
+    10-minute build check then reloaded the page seconds later, wiping both the
+    error and the message. The server never recorded the exchange, so the
+    message is still the user's to resend -- it must be kept, offered again with
+    the server's own sentence, and no automatic reload may run over a turn in
+    flight or a message waiting to be resent."""
+    from tinyassets.onboarding import render_app_html
+
+    html, _csp = render_app_html()
+    # A served error is raised into sendTurn's catch, not rendered as a reply.
+    assert 'const e=new Error(payload.error); e.served=true; throw e;' in html
+    assert 'appendMessage("system",payload.error)' not in html
+    # The resend note shows the server's sentence verbatim (no double prefix).
+    assert "(err&&err.served)" in html
+    # The build-change reload yields to a turn in flight / a pending resend.
+    assert 'if($("btn-send").disabled) return;' in html
+    assert "const pending=readInflight();" in html
+    assert "30*60*1000) return;" in html
+
 
 def test_an_unconfirmed_message_survives_a_reload_and_says_so():
     """Founder, 2026-08-28: "you still need to fix it all, webapp is a promary

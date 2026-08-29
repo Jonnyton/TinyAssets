@@ -346,6 +346,16 @@ _CODEX_TERMINAL_FAILURE_TYPES = frozenset({"turn.failed"})
 #: into an hour-long wait (Codex round 2, P1). Fifteen minutes covers any run a
 #: served tool call launches today and still ends a silent wedge.
 _TOOL_WAIT_S = 900.0
+
+#: Silence INSIDE an open turn (``turn.started`` seen, no ``turn.completed`` /
+#: ``turn.failed`` yet) is the model generating. ``codex exec --json`` emits no
+#: deltas at all - not for reasoning, not for the assistant message - so the
+#: gap between one ``item.completed`` and the next event is one full model
+#: round-trip, and on 2026-08-29 (deployed #2674) a 31s gap between two engine
+#: tool calls was killed as "idle" at the 30s interval. The turn was healthy.
+#: The idle interval therefore only guards the edges: before the turn starts
+#: and after it completes (waiting for EOF). Same bound as a tool wait.
+_TURN_WAIT_S = _TOOL_WAIT_S
 #: asyncio's default 64 KiB stream limit raises on one long JSON line. A
 #: single ``item.completed`` carrying an MCP result - a GET /contents reply is
 #: the base64 of a whole file - can exceed it (Codex round 2, P1: a 70,000-char
@@ -371,7 +381,10 @@ async def _stream_codex_exec(
 
     The genuine stop reasons, and what each raises:
 
-    * **idle** - no protocol event for ``profile.idle_s`` while NOT inside a
+    * **idle** - no protocol event for ``profile.idle_s`` OUTSIDE an open turn
+      (before ``turn.started`` or after ``turn.completed``); inside one, silence
+      is the model generating (codex emits no deltas) and the allowance is
+      ``_TURN_WAIT_S`` - see the constant. Also not idle while inside a
       tool call -> :class:`ProviderIdleTimeoutError` (no provider cooldown);
     * **cap** - still progressing past ``profile.absolute_cap_s`` ->
       :class:`InteractiveDeadlineError` (no cooldown; a runaway backstop, not
@@ -394,6 +407,7 @@ async def _stream_codex_exec(
     seen_init = False
     seen_progress = False
     tools_in_flight: set[str] = set()
+    turn_open = False
     soft_slo_logged = False
 
     async def _drain_stderr() -> None:
@@ -434,7 +448,7 @@ async def _stream_codex_exec(
             "phase": (
                 "streaming" if seen_progress else "init" if seen_init else "launch"
             ),
-            "tool_phase": "in_tool" if tools_in_flight else None,
+            "tool_phase": "in_tool" if tools_in_flight else ("in_turn" if turn_open else None),
             "last_progress_age_ms": (time.monotonic() - last_progress) * 1000,
             "exit_code": proc.returncode,
         }
@@ -462,6 +476,8 @@ async def _stream_codex_exec(
             now = time.monotonic()
             if tools_in_flight:
                 allow = min(profile.absolute_cap_s, _TOOL_WAIT_S)
+            elif turn_open:
+                allow = min(profile.absolute_cap_s, _TURN_WAIT_S)
             elif not seen_init:
                 allow = profile.init_s
             elif not seen_progress:
@@ -511,8 +527,13 @@ async def _stream_codex_exec(
                 last_progress = time.monotonic()
                 seen_init = True
                 seen_progress = True
+            if etype == "turn.started":
+                turn_open = True
+            elif etype == "turn.completed":
+                turn_open = False
             if etype in _CODEX_TERMINAL_FAILURE_TYPES:
                 tools_in_flight.clear()
+                turn_open = False
             item = obj.get("item")
             if isinstance(item, dict) and item.get("type") in _CODEX_TOOL_ITEM_TYPES:
                 key = str(item.get("id") or item.get("type"))

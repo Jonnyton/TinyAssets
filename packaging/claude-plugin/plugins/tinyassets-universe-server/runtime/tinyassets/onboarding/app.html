@@ -975,7 +975,12 @@
       cta.appendChild(b);
       appendMessage("universe", payload.note||"This universe has no engine yet.", cta); return;
     }
-    if(payload&&payload.error){ appendMessage("system",payload.error); return; }
+    // A served error is NOT a delivered turn: the universe never answered, and
+    // the exchange was not recorded, so the message must stay the user's to
+    // resend (and survive a reload). Raised so sendTurn's catch keeps the
+    // in-flight record; drawing it inline here forgot the message and a
+    // build-change reload then wiped both it and the error (founder, 2026-08-29).
+    if(payload&&payload.error){ const e=new Error(payload.error); e.served=true; throw e; }
     appendMessage("system","Your universe returned an unexpected response.");
   }
 
@@ -1031,7 +1036,9 @@
     note.className="msg msg--system";
     note.textContent=(err&&err.transport)
       ? "That didn\u2019t get through \u2014 "+err.message+". Your message is safe."
-      : "Couldn\u2019t reach your universe: "+((err&&err.message)||"unknown error");
+      : (err&&err.served)
+        ? err.message   // the server already wrote the user-facing sentence
+        : "Couldn\u2019t reach your universe: "+((err&&err.message)||"unknown error");
     note.appendChild(document.createTextNode(" "));
     const again=document.createElement("button");
     again.className="btn btn--link"; again.textContent="Send it again";
@@ -1956,8 +1963,16 @@
       const turns = (conv && Array.isArray(conv.turns)) ? conv.turns : [];
       if(!turns.length) return;
       historyLoaded = true;
-      // Oldest first: the peek returns newest-first.
-      turns.slice().reverse().forEach(t=>{
+      // Oldest first, decided by each turn's own timestamp — NOT by assuming
+      // the peek's order. It once returned newest-first and this reversed it;
+      // the store now returns oldest-first (`load_recent_readonly` reverses its
+      // DESC page) and the reverse drew the thread upside down: after a reload
+      // the bottom of the chat was the oldest turn ("the conversation is reset
+      // to the past" — founder, 2026-08-29). Turns without a usable ts keep
+      // their given order.
+      const stamped = turns.every(t=>t && typeof t.ts==="number");
+      const ordered = stamped ? turns.slice().sort((a,b)=>a.ts-b.ts) : turns.slice();
+      ordered.forEach(t=>{
         const who = (t && t.speaker === "universe") ? "universe" : "you";
         if(t && typeof t.text === "string" && t.text) appendMessage(who, t.text);
       });
@@ -2016,6 +2031,14 @@
     if(!CFG.build) return;
     const active=document.activeElement;
     if(active && (active.tagName==="INPUT"||active.tagName==="TEXTAREA") && active.value) return;
+    // Never mid-turn either: a reload while the universe is answering, or while
+    // a failed message is waiting to be resent, throws away what the user is
+    // looking at. On 2026-08-29 the 10-minute tick fired seconds after a served
+    // error and the thread jumped back to history. A stale in-flight record
+    // (abandoned for half an hour) no longer holds the update back.
+    if($("btn-send").disabled) return;
+    const pending=readInflight();
+    if(pending && (Date.now()-(pending.ts||0)) < 30*60*1000) return;
     try{
       const r=await fetch("/mcp/app",{method:"HEAD",cache:"no-store",credentials:"omit"});
       const live=r.headers.get("X-TinyAssets-Build");

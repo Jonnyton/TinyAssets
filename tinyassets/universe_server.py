@@ -1685,6 +1685,34 @@ _mcp_write_page = _register_structured_tool(
 )
 
 
+#: Streamed-attempt outcomes that are the TURN ending, not the provider being
+#: unavailable. The router's exhaustion message for a served writer reads
+#: "exhausted; universe authority forbids fallback widening", which a user
+#: reads as capacity/quota. On 2026-08-29 a healthy turn ended on the idle
+#: watchdog and the founder saw exactly that. The spec (provider-routing,
+#: "the user notice reflects the true failure class") forbids the mislabel.
+_TURN_ENDED_FAILURE_CLASSES = {
+    "provider_idle_timeout": (
+        "Your universe went quiet mid-turn, so the turn was ended. Anything it "
+        "finished before that stands; send again to continue."
+    ),
+    "interactive_deadline": (
+        "Your universe ran past the interactive time limit, so the turn was "
+        "ended. Anything it finished before that stands; send again to continue."
+    ),
+}
+
+
+def _served_failure_notice(exc: BaseException) -> str:
+    """The user-facing sentence for a failed served turn, keyed on the streamed
+    ``failure_class`` when the exception carries one; the verbatim exception
+    otherwise (a credentialed universe's real outage still surfaces as-is)."""
+    notice = _TURN_ENDED_FAILURE_CLASSES.get(getattr(exc, "failure_class", None))
+    if notice is not None:
+        return notice
+    return f"Your universe couldn't be reached right now: {exc}"
+
+
 def converse(message: str = "", graph_id: str = "") -> str:
     """Relay a message to your universe's intelligence and return its reply.
 
@@ -1829,9 +1857,7 @@ def converse(message: str = "", graph_id: str = "") -> str:
         held = engine_setup_required_payload(uid, exc)
         if held is not None:
             return json.dumps(held)
-        return json.dumps({
-            "error": f"Your universe couldn't be reached right now: {exc}",
-        })
+        return json.dumps({"error": _served_failure_notice(exc)})
     try:
         from tinyassets.conversation_store import record_exchange
 
