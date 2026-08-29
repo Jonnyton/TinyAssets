@@ -243,7 +243,8 @@ def _real_codex_events():
     return [
         _ev("thread.started", thread_id="thr_abc"),
         _ev("turn.started"),
-        _ev("item.completed", item={"id": "item_0", "type": "agent_message", "text": "Running it."}),
+        _ev("item.completed",
+            item={"id": "item_0", "type": "agent_message", "text": "Running it."}),
         _ev("item.started",
             item={"id": "item_1", "type": "command_execution", "command": "echo hi"}),
         _ev("item.completed",
