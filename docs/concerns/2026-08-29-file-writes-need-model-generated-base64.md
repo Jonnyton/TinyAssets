@@ -54,6 +54,16 @@ stays fully user-specified. Spec home: the outbound-channel capability's
 `openspec/changes/external-call-body-encoding/`). Append-a-line then becomes:
 read (decode server-side), edit as text, write `{"content": {"$base64": text}}`.
 
+## Reached once, at high cost (2026-08-29 23:07Z)
+
+PR #2691 (`auto/tiny-docs-touch-20260829d`, `README.md +1/-0`, draft, body
+honest) was opened by the founder's universe from the live app after THREE
+write attempts (422, then +2/-87, then a re-typed +22/-14), one approval for
+a blob-read endpoint, one reset-to-main run, and an 18-minute wait for the
+20-runs/hour cap. The naive flow reaches the goal; the fix in this change
+makes it one run with the model authoring only the new line. This file
+resolves on that proof, not on #2691.
+
 ## How to resolve this file
 
 Delete it when a naive "append one line to README and open a PR" through the
