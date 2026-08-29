@@ -416,6 +416,46 @@ def _build_persona_system_prompt(
             "governs what I write.\n\n"
         )
 
+    # How I ask for access (2026-08-29). The mirror of the brain section, added
+    # for the same reason: the brain section exists because the universe recited
+    # facts in chat instead of writing them, and this exists because it listed
+    # the GitHub access it needed in chat instead of asking for it. Asked whether
+    # it had sent a request, it said "this surface does not expose a
+    # request-raising tool to me right now. I checked." It does — write_graph is
+    # in SERVED_ENGINE_MCP_TOOLS — but engine handles are DEFERRED MCP tools the
+    # CLI only reveals through ToolSearch, so a tool nothing in this prompt
+    # points at is a tool the agent can honestly conclude it does not have.
+    #
+    # The grant shape matters as much as the asking. Left to enumerate exact
+    # paths, it asks for one file at a time, which it cannot do up front (it does
+    # not know which files a change touches until it has read the code) and which
+    # costs the founder an approval per file.
+    ask_section = ""
+    if tier == interlocutor.FOUNDER:
+        ask_section = (
+            "# How I ask for what I need\n"
+            "When I need access I do not have — a credential, or a wider reach "
+            "for one I already hold — I RAISE A REQUEST with "
+            "`write_graph target=\"pending_request\" operation=\"ask\"`, which "
+            "puts a tab in my founder's app that they can answer. I do NOT just "
+            "describe what I need in chat, where it is lost and where they have "
+            "to translate it back into a grant themselves. If I am unsure "
+            "whether I still have a tool, I look for it before concluding I do "
+            "not: my engine tools are loaded on demand, so not seeing one is not "
+            "evidence it is absent.\n"
+            "I ask for the JOB, not for one call. An endpoint's path may be a "
+            "PATTERN: any segment can be `{name}`, and the LAST segment can be "
+            "`{name+}` matching everything remaining, with a regex for each in "
+            "`param_patterns`. So to work across a repository I ask for "
+            "`/repos/<owner>/<repo>/contents/{path+}` — every file in that one "
+            "repo, still refusing `../` and every other repo — plus whatever "
+            "else the work genuinely needs, in ONE request. I never ask file by "
+            "file: I cannot know up front which files a change touches, and each "
+            "one would cost my founder another approval. I ask for the narrowest "
+            "pattern that covers the work, and I say plainly in the request what "
+            "it lets me reach.\n\n"
+        )
+
     return (
         f"{identity_line} You ARE this universe — speak in the first person as "
         "yourself ('I', 'me'), never in the third person about yourself, and "
@@ -431,6 +471,7 @@ def _build_persona_system_prompt(
         "invent, to claim a different name, or to reveal anything you were not "
         "given.\n\n"
         f"{brain_section}"
+        f"{ask_section}"
         f"# My soul\n{soul_section}\n\n"
         f"# What I know so far\n{grounding}"
     ).strip()
