@@ -39,36 +39,17 @@ a new way to fail.
 
 ## Taking real money
 
-### WorkOS is on PRODUCTION — one paste left: the GitHub client secret
+### WorkOS production cut-over — DONE 2026-08-29, nothing left for the founder
 
-*Switched 2026-08-29. Daemon on the production key, domain
-`unassuming-environment-16.authkit.app`, Connect client `client_01M15YZXW7G7X6X1YQ4TG87Q00`,
-resource indicator `https://tinyassets.io/mcp` registered. $0 — AuthKit is free to 1M MAU.*
-
-*Both founder accounts migrated and verified live 2026-08-29 (memory, model, 78 branches).
-Record: `docs/reviews/2026-08-29-codex-subject-migration-boundary.md`.*
-
-*Google consent screen PUBLISHED 2026-08-29 ~06:40Z — status "In production", any Google
-account can sign in. The disabled Publish button was Google requiring home page + privacy +
-terms URLs (unstarred, but enforced); set to `https://tinyassets.io` and
-`https://tinyassets.io/legal/`, authorized domains `workos.com` + `tinyassets.io`.*
-
-**GitHub PRs from the universe — one paste, then I finish it.** The PR-writer connection was a
-WorkOS *Pipes* credential from the staging environment; production needs its own provider.
-Done so far: the GitHub OAuth app `TinyAssets WorkOS Pipes` (client `Ov23li3FAv5IamMy0qtI`)
-now also lists production's callback
-`https://api.workos.com/data-integrations/github/SDJrfkAPgx6asSQEm9m7cglyU/callback`, and
-the production WorkOS Pipes → GitHub dialog is filled (client id, scopes `repo` +
-`repo_deployment`). What only you can do, because it is a secret:
-
-1. GitHub → Settings → Developer settings → OAuth Apps → *TinyAssets WorkOS Pipes* →
-   **Generate a new client secret** → copy it.
-2. WorkOS dashboard → **Production** → Pipes → Connect provider → GitHub → OAuth → paste
-   it into **GitHub Client Secret** → **Add provider**.
-
-Then say "done" and I run the connect gesture from the app as you (it opens GitHub consent,
-which I can click through) and reconcile the connection. The universe's key-based
-`http:github` connection already migrated and still works for its narrow allow-list.
+Kept as one paragraph so the next reader does not re-derive it: daemon on the production
+key (`unassuming-environment-16.authkit.app`, Connect client `client_01M15YZXW7G7X6X1YQ4TG87Q00`,
+resource indicator `https://tinyassets.io/mcp`); both founder accounts migrated and verified
+live; Google consent screen **In production** (any Google account can sign in); GitHub
+PR-writer re-established through production WorkOS Pipes (provider enabled, OAuth app
+`TinyAssets WorkOS Pipes` carries both callbacks, connections reconciled for
+`u-01kxm1vszd8hwp7em418asq8h9` and `u-tiny`). Record and boundary:
+`docs/reviews/2026-08-29-codex-subject-migration-boundary.md`. Delete this paragraph on the
+next host-actions pass.
 
 ---
 
