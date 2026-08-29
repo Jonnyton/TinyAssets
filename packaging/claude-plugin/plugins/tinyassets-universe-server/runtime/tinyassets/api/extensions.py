@@ -746,9 +746,18 @@ def _extensions_impl(
     if scheduler_handler is not None:
         sched_kwargs: dict[str, Any] = {
             "branch_def_id": branch_def_id,
+            # The SCHEDULE actions derive their owner from the authenticated
+            # request and ignore ``owner_actor`` entirely — it was a self-issued
+            # authority claim. It is still forwarded for the event-SUBSCRIPTION
+            # actions, which have not been converted yet.
+            "owner_actor": owner_actor,
+            # Scope, resolved by the shared MCP resolver like every sibling
+            # action: explicit id wins, omitted means the founder's own home.
+            # Whether the request MAY act on it is decided by the ACL and
+            # founder-home gates in runtime_ops, not by naming it here.
+            "universe_id": universe_id,
             "cron_expr": cron_expr,
             "interval_seconds": interval_seconds,
-            "owner_actor": owner_actor,  # empty = "all" for list; write handlers default to anon
             "inputs_template_json": inputs_template_json,
             "skip_if_running": skip_if_running,
             "schedule_id": schedule_id,

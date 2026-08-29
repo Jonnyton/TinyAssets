@@ -260,30 +260,51 @@ class TestUnregisterSubscription:
 
 # ─── Scheduler tick loop (fake clock) ────────────────────────────────────────
 
+#: The universe a tick-loop test's schedules belong to. A schedule that names no
+#: universe and no principal is LEGACY and deliberately never fires
+#: (user-owned-automations 2.1), so a test about WHEN a schedule fires has to
+#: register an owned one.
+_UID = "u-tick-owner"
+
+
+def _owned(**overrides):
+    """Registration kwargs for a schedule owned by ``_UID``'s founder."""
+    owned = {
+        "owner_actor": f"universe:{_UID}",
+        "universe_id": _UID,
+        "owner_principal_id": "founder-tick",
+    }
+    owned.update(overrides)
+    return owned
+
+
 class TestSchedulerTick:
     def _make_scheduler(self, base_path, run_calls):
-        def run_fn(branch_def_id, actor, inputs, run_name):
-            run_calls.append((branch_def_id, actor, inputs, run_name))
+        def run_fn(branch_def_id, actor, inputs, run_name, *, principal_id=""):
+            run_calls.append((branch_def_id, actor, inputs, run_name, principal_id))
 
         return Scheduler(base_path, run_fn)
 
     def test_interval_fires(self, base_path):
         run_calls: list = []
-        sid = register_schedule(
-            base_path, branch_def_id="b1", owner_actor="alice", interval_seconds=1.0
+        register_schedule(
+            base_path, branch_def_id="b1", interval_seconds=1.0, **_owned()
         )
         s = self._make_scheduler(base_path, run_calls)
         # Manually call _fire_due_schedules — no real thread needed for unit test.
         s._fire_due_schedules()
         assert len(run_calls) == 1
-        branch_id, actor, inputs, run_name = run_calls[0]
+        branch_id, actor, inputs, run_name, principal_id = run_calls[0]
         assert branch_id == "b1"
-        assert actor == f"scheduler:{sid}"
+        # The run actor is the OWNING UNIVERSE. It used to be `scheduler:<id>`,
+        # which the run function rejects as a non-universe actor.
+        assert actor == f"universe:{_UID}"
+        assert principal_id == "founder-tick"
 
     def test_interval_not_fired_twice_too_soon(self, base_path):
         run_calls: list = []
         register_schedule(
-            base_path, branch_def_id="b1", owner_actor="alice", interval_seconds=3600.0
+            base_path, branch_def_id="b1", interval_seconds=3600.0, **_owned()
         )
         s = self._make_scheduler(base_path, run_calls)
         s._fire_due_schedules()
@@ -293,7 +314,7 @@ class TestSchedulerTick:
     def test_cron_fires_on_matching_minute(self, base_path):
         run_calls: list = []
         register_schedule(
-            base_path, branch_def_id="b1", owner_actor="alice", cron_expr="30 12 * * *"
+            base_path, branch_def_id="b1", cron_expr="30 12 * * *", **_owned()
         )
         s = self._make_scheduler(base_path, run_calls)
         matching = time.strptime("2026-04-24 12:30:00", "%Y-%m-%d %H:%M:%S")
@@ -306,7 +327,7 @@ class TestSchedulerTick:
     def test_cron_does_not_fire_on_non_matching_minute(self, base_path):
         run_calls: list = []
         register_schedule(
-            base_path, branch_def_id="b1", owner_actor="alice", cron_expr="30 12 * * *"
+            base_path, branch_def_id="b1", cron_expr="30 12 * * *", **_owned()
         )
         s = self._make_scheduler(base_path, run_calls)
         non_matching = time.strptime("2026-04-24 12:31:00", "%Y-%m-%d %H:%M:%S")
@@ -323,9 +344,9 @@ class TestSchedulerTick:
         register_schedule(
             base_path,
             branch_def_id="b1",
-            owner_actor="alice",
             interval_seconds=1.0,
             skip_if_running=True,
+            **_owned(),
         )
         # Insert a fake RUNNING run.
         db = base_path / ".runs.db"
@@ -346,13 +367,22 @@ class TestSchedulerTick:
         register_schedule(
             base_path,
             branch_def_id="b1",
-            owner_actor="alice",
             interval_seconds=1.0,
             inputs_template={"key": "value"},
+            **_owned(),
         )
         s = self._make_scheduler(base_path, run_calls)
         s._fire_due_schedules()
         assert run_calls[0][2] == {"key": "value"}
+
+    def test_a_schedule_with_no_owner_never_fires(self, base_path):
+        """A legacy row (no universe, no principal) has no identity to run as."""
+        run_calls: list = []
+        register_schedule(
+            base_path, branch_def_id="b1", owner_actor="alice", interval_seconds=1.0
+        )
+        self._make_scheduler(base_path, run_calls)._fire_due_schedules()
+        assert run_calls == []
 
 
 # ─── Scheduler event loop ─────────────────────────────────────────────────────

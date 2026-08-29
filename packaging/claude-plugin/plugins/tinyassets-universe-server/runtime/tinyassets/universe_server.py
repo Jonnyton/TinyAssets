@@ -1249,13 +1249,23 @@ _mcp_write_graph = _register_structured_tool(
 
 
 def _inbound_event_run_fn(
-    branch_def_id: str, actor: str, inputs: dict, run_name: str,
+    branch_def_id: str,
+    actor: str,
+    inputs: dict,
+    run_name: str,
+    *,
+    principal_id: str = "",
 ) -> None:
-    """Scheduler run_fn for inbound (Source-node) events. Fires the bound branch as the
-    universe carried by the subscription's owner_actor. FAILS CLOSED on a non-universe
-    actor so an event can never run a branch under an ambient/host identity. Links the
-    in-flight reservation (reserved atomically in handle_hook) to the run, so it is released
-    on run completion; releases it if the run cannot be created (Codex round-2 #5)."""
+    """Scheduler run_fn for inbound (Source-node) events AND due schedules. Fires the
+    bound branch as the universe carried by the row's owner_actor. FAILS CLOSED on a
+    non-universe actor so a trigger can never run a branch under an ambient/host
+    identity. Links the in-flight reservation (reserved atomically in handle_hook) to
+    the run, so it is released on run completion; releases it if the run cannot be
+    created (Codex round-2 #5).
+
+    ``principal_id`` is the owner the run acts for. A SCHEDULE passes it, because the
+    tick thread has no request identity for the provider session to bind to. An EVENT
+    omits it and the request identity is used, exactly as before."""
     from tinyassets.storage import data_dir, webhook_hooks
     from tinyassets.webhook_inbound import RESERVATION_INPUT_KEY
 
@@ -1288,12 +1298,48 @@ def _inbound_event_run_fn(
             branch_def_id=branch_def_id,
             inputs=inputs,
             run_name=run_name,
+            principal_id=principal_id,
         )
         if reservation_id:
             webhook_hooks.link_dispatch(base, reservation_id=reservation_id, run_id=str(run_id))
     except Exception:  # noqa: BLE001 - a single failed event must not kill the loop
         logger.exception("event bus: failed to fire branch %s for %s", branch_def_id, actor)
         _release()
+
+
+def start_scheduler_for_serving() -> bool:
+    """Start the process scheduler because the daemon is now serving.
+
+    UNCONDITIONAL — it does not consult ``TINYASSETS_INBOUND_ENABLED``. That flag
+    gates the inbound HTTP surface (the ``/hooks/*`` route and publishing Source
+    events onto the bus); it never had anything to say about whether a user's own
+    schedules tick. While the two were fused, the flag being off meant registration
+    stored rows that nothing ever read — the silent-storage failure user-owned-
+    automations 2.2 splits apart.
+
+    Returns whether the scheduler is running afterwards. A scheduler fault must not
+    block boot, so a failure is logged and reported, never raised.
+    """
+    from tinyassets.scheduler import get_or_create_scheduler
+    from tinyassets.storage import data_dir
+
+    try:
+        get_or_create_scheduler(data_dir(), _inbound_event_run_fn)
+    except Exception:  # noqa: BLE001 - a scheduler fault must not block boot
+        logger.exception("scheduler failed to start")
+        return False
+    logger.info("scheduler started (schedule ticks + event bus)")
+    return True
+
+
+def stop_scheduler_for_serving() -> None:
+    """Stop the process scheduler on daemon teardown. Never masks a teardown error."""
+    from tinyassets.scheduler import shutdown_scheduler
+
+    try:
+        shutdown_scheduler()
+    except Exception:  # noqa: BLE001 - shutdown fault must not mask teardown
+        logger.exception("scheduler shutdown failed")
 
 
 _WEBHOOK_OP_ACTIONS = {
@@ -3180,21 +3226,13 @@ def create_streamable_http_app() -> Starlette:
         # Raises loudly (fail-fast boot) on an undeclared remainder.
         from tinyassets.api.visibility import run_visibility_startup_gate
 
-        # Channel-agnostic inbound (Floor 1/3): ONE master switch,
-        # ``TINYASSETS_INBOUND_ENABLED``, gates the entire inbound path (Codex #2) — it
-        # both keeps the `/hooks/*` route unmounted (below) and keeps the event bus stopped
-        # here. DARK by default; tests drive the Scheduler + handle_hook directly.
-        from tinyassets.webhook_inbound import inbound_enabled
-
-        _event_bus_on = inbound_enabled()
-        if _event_bus_on:
-            try:
-                from tinyassets.scheduler import get_or_create_scheduler
-
-                get_or_create_scheduler(data_dir(), _inbound_event_run_fn)
-                logger.info("inbound event bus started")
-            except Exception:  # noqa: BLE001 - a scheduler fault must not block boot
-                logger.exception("inbound event bus failed to start")
+        # The scheduler starts whenever the daemon serves — schedules are a user's
+        # own automations and do not belong to the inbound channel surface
+        # (user-owned-automations 2.2). ``TINYASSETS_INBOUND_ENABLED`` still gates
+        # the entire inbound HTTP path (Codex #2): it keeps the `/hooks/*` route
+        # unmounted below, and `_emit_source_event` refuses when the bus is down.
+        # DARK by default there; tests drive the Scheduler + handle_hook directly.
+        start_scheduler_for_serving()
 
         try:
             run_visibility_startup_gate()
@@ -3204,13 +3242,7 @@ def create_streamable_http_app() -> Starlette:
                 )
                 yield
         finally:
-            if _event_bus_on:
-                try:
-                    from tinyassets.scheduler import shutdown_scheduler
-
-                    shutdown_scheduler()
-                except Exception:  # noqa: BLE001 - shutdown fault must not mask teardown
-                    logger.exception("inbound event bus shutdown failed")
+            stop_scheduler_for_serving()
             writer_barrier.release()
 
     # OAuth discovery (RFC 9728 / 8414) — mounted FIRST so the well-known paths

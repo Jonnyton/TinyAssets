@@ -345,11 +345,68 @@ _MESSAGING_ACTIONS: dict[str, Any] = {
 
 
 # ── Scheduler MCP actions ─────────────────────────────────────────────────
+#
+# Ownership of a schedule is DERIVED from the authenticated request, never read
+# from a caller field. ``owner_actor`` used to arrive in kwargs and default to
+# "anonymous", which made registration an unauthenticated self-issued authority
+# claim: anyone could schedule a branch and name whoever they liked as its owner.
+# The five schedule actions below ignore that kwarg entirely (it survives on the
+# ``extensions()`` signature only for the event-SUBSCRIPTION actions, a separate
+# lane). Event subscriptions are not in scope for user-owned-automations 2.1.
+
+
+def _schedule_request_universe(kwargs: dict[str, Any]) -> str:
+    """The universe a schedule request is scoped to — the shared MCP resolver.
+
+    An explicit ``universe_id`` wins, exactly as it does for every sibling action;
+    an omitted one resolves to the authenticated founder's own home. Either way it
+    is only a SCOPE: the admin-ACL and founder-home gates decide whether the
+    request may act on it, so a caller naming someone else's universe is refused
+    rather than obeyed.
+    """
+    from tinyassets.api.helpers import _request_universe
+
+    return _request_universe(str(kwargs.get("universe_id") or ""))
+
+
+def _schedule_request_owner(kwargs: dict[str, Any]) -> tuple[str, str, str | None]:
+    """Return ``(actor, universe_id, error_json)`` for a schedule request.
+
+    ``error_json`` is non-None when the request may not act on schedules at all:
+    unauthenticated, or without an admin ACL on the universe it is scoped to.
+    """
+    from tinyassets.api import permissions
+    from tinyassets.daemon_server import universe_access_permission
+
+    if not permissions.is_authenticated_request():
+        return "", "", json.dumps({
+            "error": "authentication_required",
+            "note": "A schedule belongs to a person. Sign in to register or change one.",
+        })
+    actor = permissions.current_actor_id()
+    universe_id = _schedule_request_universe(kwargs)
+    if not universe_id:
+        return actor, "", json.dumps({"error": "universe_required"})
+    base = _base_path()
+    if universe_access_permission(
+        base, universe_id=universe_id, actor_id=actor
+    ) != "admin":
+        return actor, universe_id, json.dumps({
+            "error": "owner_not_admin",
+            "universe_id": universe_id,
+        })
+    return actor, universe_id, None
 
 
 def _action_schedule_branch(kwargs: dict[str, Any]) -> str:
+    from tinyassets.daemon_server import get_founder_home
     from tinyassets.runs import initialize_runs_db
-    from tinyassets.scheduler import CronParseError, register_schedule
+    from tinyassets.scheduler import (
+        MIN_SCHEDULE_INTERVAL_S,
+        CronParseError,
+        is_running,
+        register_schedule,
+    )
 
     branch_def_id = (kwargs.get("branch_def_id") or "").strip()
     if not branch_def_id:
@@ -362,20 +419,53 @@ def _action_schedule_branch(kwargs: dict[str, Any]) -> str:
         interval_seconds = 0.0
     if not cron_expr and interval_seconds <= 0:
         return json.dumps({"error": "one of cron_expr or interval_seconds must be provided."})
-    owner_actor = (kwargs.get("owner_actor") or "").strip() or "anonymous"
+    # Cadence floor: a scheduled run spends the OWNER's subscription, so a
+    # sub-floor interval is a way to drain them. Refuse rather than store it.
+    if not cron_expr and interval_seconds < MIN_SCHEDULE_INTERVAL_S:
+        return json.dumps({
+            "error": "trigger_invalid",
+            "reason": "interval_below_floor",
+            "interval_seconds": interval_seconds,
+            "minimum_interval_seconds": MIN_SCHEDULE_INTERVAL_S,
+        })
+
+    actor, universe_id, error = _schedule_request_owner(kwargs)
+    if error is not None:
+        return error
+
+    base = _base_path()
+    # The universe must be the requester's OWN home. An admin ACL says they may
+    # act on it; the home binding says the runs will be billed to their own
+    # subscription, which is the only place a background run may draw from.
+    if get_founder_home(base, actor) != universe_id:
+        return json.dumps({
+            "error": "not_owner_home",
+            "universe_id": universe_id,
+            "note": "Schedules run on your own universe's subscription.",
+        })
+    # D4 — fail loud at registration. A row stored while the tick loop is down is
+    # a promise the daemon cannot keep; that silent storage is the defect this
+    # change removes, so refuse instead of accepting it.
+    if not is_running():
+        return json.dumps({
+            "error": "scheduler_unavailable",
+            "reason": "scheduler_not_running",
+        })
+
     raw_inputs = kwargs.get("inputs_template_json") or "{}"
     try:
         inputs_template = json.loads(raw_inputs) if isinstance(raw_inputs, str) else raw_inputs
     except (json.JSONDecodeError, TypeError):
         inputs_template = {}
     skip_if_running = bool(kwargs.get("skip_if_running", False))
-    base = _base_path()
     initialize_runs_db(base)
     try:
         schedule_id = register_schedule(
             base,
             branch_def_id=branch_def_id,
-            owner_actor=owner_actor,
+            owner_actor=f"universe:{universe_id}",
+            universe_id=universe_id,
+            owner_principal_id=actor,
             cron_expr=cron_expr,
             interval_seconds=interval_seconds,
             inputs_template=inputs_template,
@@ -389,9 +479,38 @@ def _action_schedule_branch(kwargs: dict[str, Any]) -> str:
         "status": "scheduled",
         "schedule_id": schedule_id,
         "branch_def_id": branch_def_id,
+        "universe_id": universe_id,
         "cron_expr": cron_expr,
         "interval_seconds": interval_seconds,
     })
+
+
+def _schedule_control_context(schedule_id: str) -> tuple[dict[str, Any], str, bool, str | None]:
+    """Resolve ``(row, actor, admin, error_json)`` for a pause/resume/delete request.
+
+    The requester is the authenticated principal. They may act when they are the
+    row's ``owner_principal_id``, or when they hold an admin ACL on the row's OWN
+    universe — not on whatever universe the request happens to be scoped to,
+    which a caller controls.
+    """
+    from tinyassets.api import permissions
+    from tinyassets.daemon_server import universe_access_permission
+    from tinyassets.scheduler import get_schedule
+
+    if not permissions.is_authenticated_request():
+        return {}, "", False, json.dumps({"error": "authentication_required"})
+    actor = permissions.current_actor_id()
+    base = _base_path()
+    row = get_schedule(base, schedule_id)
+    if row is None:
+        return {}, actor, False, json.dumps(
+            {"error": f"schedule_id '{schedule_id}' not found."}
+        )
+    row_universe = str(row.get("universe_id") or "").strip()
+    admin = bool(row_universe) and universe_access_permission(
+        base, universe_id=row_universe, actor_id=actor
+    ) == "admin"
+    return row, actor, admin, None
 
 
 def _action_unschedule_branch(kwargs: dict[str, Any]) -> str:
@@ -400,10 +519,14 @@ def _action_unschedule_branch(kwargs: dict[str, Any]) -> str:
     schedule_id = (kwargs.get("schedule_id") or "").strip()
     if not schedule_id:
         return json.dumps({"error": "schedule_id is required."})
-    owner_actor = (kwargs.get("owner_actor") or "").strip() or "anonymous"
+    _row, actor, admin, error = _schedule_control_context(schedule_id)
+    if error is not None:
+        return error
     base = _base_path()
     try:
-        removed = unregister_schedule(base, schedule_id, requesting_actor=owner_actor)
+        removed = unregister_schedule(
+            base, schedule_id, requesting_actor=actor, admin=admin
+        )
     except PermissionError as exc:
         return json.dumps({"error": str(exc)})
     if not removed:
@@ -411,16 +534,50 @@ def _action_unschedule_branch(kwargs: dict[str, Any]) -> str:
     return json.dumps({"status": "unscheduled", "schedule_id": schedule_id})
 
 
+#: Fields a schedule's owner sees on their own surface. The raw row also carries
+#: the inputs template and the owner principal; the summary keeps what the owner
+#: needs to answer "is this on, and did it run?" — including ``legacy``, which is
+#: why a listed schedule can be active and still never fire.
+_SCHEDULE_SUMMARY_FIELDS = (
+    "schedule_id",
+    "branch_def_id",
+    "universe_id",
+    "owner_actor",
+    "cron_expr",
+    "interval_seconds",
+    "skip_if_running",
+    "active",
+    "paused",
+    "legacy",
+    "created_at",
+    "last_fired_at",
+)
+
+
 def _action_list_schedules(kwargs: dict[str, Any]) -> str:
     from tinyassets.runs import initialize_runs_db
     from tinyassets.scheduler import list_schedules
 
-    owner_actor = (kwargs.get("owner_actor") or "").strip()
+    # Owner-scoped read: a schedule discloses which branch runs, how often, and
+    # when it last fired. That is the owner's operational picture, so listing
+    # takes the same authenticated-admin gate registration does.
+    _actor, universe_id, error = _schedule_request_owner(kwargs)
+    if error is not None:
+        return error
     active_only = bool(kwargs.get("active_only", True))
     base = _base_path()
     initialize_runs_db(base)
-    rows = list_schedules(base, owner_actor=owner_actor, active_only=active_only)
-    return json.dumps({"schedules": rows, "count": len(rows)})
+    # Owner-scoped: a request lists the schedules of ITS OWN universe. The old
+    # unfiltered listing disclosed every universe's schedules to any caller.
+    rows = list_schedules(base, universe_id=universe_id, active_only=active_only)
+    summaries = [
+        {field: row.get(field) for field in _SCHEDULE_SUMMARY_FIELDS} for row in rows
+    ]
+    return json.dumps({
+        "universe_id": universe_id,
+        "schedules": summaries,
+        "count": len(summaries),
+    })
 
 
 def _action_subscribe_branch(kwargs: dict[str, Any]) -> str:
@@ -481,10 +638,12 @@ def _action_pause_schedule(kwargs: dict[str, Any]) -> str:
     schedule_id = (kwargs.get("schedule_id") or "").strip()
     if not schedule_id:
         return json.dumps({"error": "schedule_id is required."})
-    owner_actor = (kwargs.get("owner_actor") or "").strip() or "anonymous"
+    _row, actor, admin, error = _schedule_control_context(schedule_id)
+    if error is not None:
+        return error
     base = _base_path()
     try:
-        found = pause_schedule(base, schedule_id, requesting_actor=owner_actor)
+        found = pause_schedule(base, schedule_id, requesting_actor=actor, admin=admin)
     except PermissionError as exc:
         return json.dumps({"error": str(exc)})
     if not found:
@@ -498,10 +657,12 @@ def _action_unpause_schedule(kwargs: dict[str, Any]) -> str:
     schedule_id = (kwargs.get("schedule_id") or "").strip()
     if not schedule_id:
         return json.dumps({"error": "schedule_id is required."})
-    owner_actor = (kwargs.get("owner_actor") or "").strip() or "anonymous"
+    _row, actor, admin, error = _schedule_control_context(schedule_id)
+    if error is not None:
+        return error
     base = _base_path()
     try:
-        found = unpause_schedule(base, schedule_id, requesting_actor=owner_actor)
+        found = unpause_schedule(base, schedule_id, requesting_actor=actor, admin=admin)
     except PermissionError as exc:
         return json.dumps({"error": str(exc)})
     if not found:

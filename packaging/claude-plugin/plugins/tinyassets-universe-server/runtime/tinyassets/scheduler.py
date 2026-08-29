@@ -14,8 +14,12 @@ The ``Scheduler`` singleton drives two loops:
   * _event_loop — drains the in-process event queue and fires matching subscriptions.
 
 Multi-tenant invariants (from spec):
-  * schedule/subscription rows carry ``owner_actor``; removal gated to owner or admin.
-  * Scheduled runs tag ``actor=scheduler:<schedule_id>`` with ``owner_actor`` in detail.
+  * schedule rows carry ``universe_id`` + ``owner_principal_id``, both DERIVED from
+    the authenticated request at registration; removal gated to that principal or a
+    universe admin. Subscription rows still carry ``owner_actor`` only.
+  * Scheduled runs tag ``actor=universe:<universe_id>`` — the owning universe, never a
+    synthetic ``scheduler:`` identity, which the run function rejects. A row without a
+    universe and a principal is LEGACY and never fires.
   * Rate-limit: 20 active schedules + 20 subscriptions per owner (configurable).
   * skip_if_running: when True, skip tick if a run for this schedule is still RUNNING.
   * Events fire exactly once per event_id (idempotency via delivered_events table).
@@ -24,6 +28,7 @@ Multi-tenant invariants (from spec):
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import queue
@@ -158,6 +163,16 @@ def _cron_matches(expr: str, t: time.struct_time) -> bool:
 MAX_SCHEDULES_PER_OWNER = 20
 MAX_SUBSCRIPTIONS_PER_OWNER = 20
 
+#: Floor on how often a schedule may fire, in seconds (5 minutes).
+#:
+#: A scheduled run spends the OWNER's own subscription (design D7 — there is no
+#: separate background budget), so a one-second cadence is a way to drain the
+#: person who registered it. Registration refuses below the floor instead of
+#: storing a row that bills them forever. Enforced on the request surface
+#: (``_action_schedule_branch``); the library entry point stays unfloored so
+#: internal callers and tests can drive the tick loop deterministically.
+MIN_SCHEDULE_INTERVAL_S = 300.0
+
 # Supported event types
 VALID_EVENT_TYPES = frozenset({
     "canon_change",
@@ -188,6 +203,8 @@ CREATE TABLE IF NOT EXISTS branch_schedules (
     schedule_id          TEXT PRIMARY KEY,
     branch_def_id        TEXT NOT NULL,
     owner_actor          TEXT NOT NULL,
+    universe_id          TEXT NOT NULL DEFAULT '',
+    owner_principal_id   TEXT NOT NULL DEFAULT '',
     cron_expr            TEXT NOT NULL DEFAULT '',
     interval_seconds     REAL NOT NULL DEFAULT 0,
     inputs_template_json TEXT NOT NULL DEFAULT '{}',
@@ -202,6 +219,8 @@ CREATE INDEX IF NOT EXISTS idx_schedules_owner
     ON branch_schedules(owner_actor);
 CREATE INDEX IF NOT EXISTS idx_schedules_active
     ON branch_schedules(active);
+CREATE INDEX IF NOT EXISTS idx_schedules_universe
+    ON branch_schedules(universe_id);
 
 CREATE TABLE IF NOT EXISTS branch_subscriptions (
     subscription_id      TEXT PRIMARY KEY,
@@ -234,6 +253,8 @@ def register_schedule(
     *,
     branch_def_id: str,
     owner_actor: str,
+    universe_id: str = "",
+    owner_principal_id: str = "",
     cron_expr: str = "",
     interval_seconds: float = 0.0,
     inputs_template: dict[str, Any] | None = None,
@@ -243,6 +264,13 @@ def register_schedule(
 
     One of cron_expr or interval_seconds must be set.
     Rate-limited to MAX_SCHEDULES_PER_OWNER active schedules per owner.
+
+    ``universe_id`` is the universe whose serving assignment executes the branch
+    and ``owner_principal_id`` the authenticated principal that authorised it;
+    ``owner_actor`` is the run actor, ``universe:<universe_id>``. All three are
+    DERIVED by the caller from the request identity — never taken from a caller
+    field (see ``_action_schedule_branch``). A row missing the universe or the
+    principal is legacy and never fires (:func:`schedule_is_legacy`).
     """
     if not cron_expr and interval_seconds <= 0:
         raise ValueError("one of cron_expr or interval_seconds must be provided")
@@ -264,14 +292,17 @@ def register_schedule(
         conn.execute(
             """
             INSERT INTO branch_schedules
-                (schedule_id, branch_def_id, owner_actor, cron_expr,
+                (schedule_id, branch_def_id, owner_actor, universe_id,
+                 owner_principal_id, cron_expr,
                  interval_seconds, inputs_template_json, skip_if_running, active, created_at)
-            VALUES (?,?,?,?,?,?,?,1,?)
+            VALUES (?,?,?,?,?,?,?,?,?,1,?)
             """,
             (
                 schedule_id,
                 branch_def_id,
                 owner_actor,
+                (universe_id or "").strip(),
+                (owner_principal_id or "").strip(),
                 cron_expr,
                 interval_seconds,
                 json.dumps(inputs_template or {}),
@@ -280,6 +311,52 @@ def register_schedule(
             ),
         )
     return schedule_id
+
+
+def schedule_is_legacy(row: dict[str, Any]) -> bool:
+    """Whether a schedule row predates owner derivation and can never fire.
+
+    A fireable row carries all three of: a universe, the authenticated principal
+    that registered it, and a run actor that is exactly ``universe:<universe_id>``.
+    Anything else is a row from before user-owned-automations 2.1 (or a row whose
+    actor and universe disagree), and the tick loop refuses it rather than
+    guessing an identity to run it under — Hard Rule 8, and the founder principle
+    that nothing runs outside a user's universe.
+    """
+    universe_id = str(row.get("universe_id") or "").strip()
+    principal_id = str(row.get("owner_principal_id") or "").strip()
+    actor = str(row.get("owner_actor") or "").strip()
+    return not (universe_id and principal_id and actor == f"universe:{universe_id}")
+
+
+def _schedule_owner_principal(row: Any) -> str:
+    """The identity allowed to pause/resume/delete a schedule row.
+
+    Derived rows are owned by their ``owner_principal_id``. A legacy row has none,
+    so it keeps its original ``owner_actor`` as owner — otherwise nobody could
+    delete the dead rows that 2.1 leaves behind.
+    """
+    principal = str(row["owner_principal_id"] or "").strip()
+    return principal or str(row["owner_actor"] or "")
+
+
+def get_schedule(base_path: str | Path, schedule_id: str) -> dict[str, Any] | None:
+    """Return one schedule row (active or not), or None.
+
+    The owner-control actions read the row BEFORE acting so they can check the
+    requester against the row's own universe and principal.
+    """
+    db = _runs_db(base_path)
+    with _connect(db) as conn:
+        row = conn.execute(
+            "SELECT * FROM branch_schedules WHERE schedule_id=?",
+            (schedule_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    record = dict(row)
+    record["legacy"] = schedule_is_legacy(record)
+    return record
 
 
 def unregister_schedule(
@@ -293,12 +370,13 @@ def unregister_schedule(
     db = _runs_db(base_path)
     with _connect(db) as conn:
         row = conn.execute(
-            "SELECT owner_actor FROM branch_schedules WHERE schedule_id=?",
+            "SELECT owner_actor, owner_principal_id FROM branch_schedules "
+            "WHERE schedule_id=?",
             (schedule_id,),
         ).fetchone()
         if not row:
             return False
-        if not admin and row["owner_actor"] != requesting_actor:
+        if not admin and _schedule_owner_principal(row) != requesting_actor:
             raise PermissionError(
                 f"{requesting_actor!r} is not the owner of schedule {schedule_id!r}"
             )
@@ -313,9 +391,14 @@ def list_schedules(
     base_path: str | Path,
     *,
     owner_actor: str = "",
+    universe_id: str = "",
     active_only: bool = True,
 ) -> list[dict[str, Any]]:
-    """List schedules, optionally filtered by owner."""
+    """List schedules, optionally filtered by owner and/or universe.
+
+    Each row carries a ``legacy`` flag so a caller's surface can say WHY a
+    schedule is listed but never fires (:func:`schedule_is_legacy`).
+    """
     db = _runs_db(base_path)
     with _connect(db) as conn:
         q = "SELECT * FROM branch_schedules"
@@ -326,10 +409,16 @@ def list_schedules(
         if owner_actor:
             clauses.append("owner_actor=?")
             params.append(owner_actor)
+        if universe_id:
+            clauses.append("universe_id=?")
+            params.append(universe_id)
         if clauses:
             q += " WHERE " + " AND ".join(clauses)
         rows = conn.execute(q, params).fetchall()
-    return [dict(r) for r in rows]
+    records = [dict(r) for r in rows]
+    for record in records:
+        record["legacy"] = schedule_is_legacy(record)
+    return records
 
 
 def pause_schedule(
@@ -346,12 +435,13 @@ def pause_schedule(
     db = _runs_db(base_path)
     with _connect(db) as conn:
         row = conn.execute(
-            "SELECT owner_actor FROM branch_schedules WHERE schedule_id=? AND active=1",
+            "SELECT owner_actor, owner_principal_id FROM branch_schedules "
+            "WHERE schedule_id=? AND active=1",
             (schedule_id,),
         ).fetchone()
         if not row:
             return False
-        if not admin and row["owner_actor"] != requesting_actor:
+        if not admin and _schedule_owner_principal(row) != requesting_actor:
             raise PermissionError(
                 f"{requesting_actor!r} is not the owner of schedule {schedule_id!r}"
             )
@@ -376,12 +466,13 @@ def unpause_schedule(
     db = _runs_db(base_path)
     with _connect(db) as conn:
         row = conn.execute(
-            "SELECT owner_actor FROM branch_schedules WHERE schedule_id=? AND active=1",
+            "SELECT owner_actor, owner_principal_id FROM branch_schedules "
+            "WHERE schedule_id=? AND active=1",
             (schedule_id,),
         ).fetchone()
         if not row:
             return False
-        if not admin and row["owner_actor"] != requesting_actor:
+        if not admin and _schedule_owner_principal(row) != requesting_actor:
             raise PermissionError(
                 f"{requesting_actor!r} is not the owner of schedule {schedule_id!r}"
             )
@@ -510,13 +601,47 @@ def emit_event(event: SchedulerEvent) -> None:
 
 
 def is_running() -> bool:
-    """Whether the global event bus is up (a Source delivery can be published)."""
-    return _SINGLETON is not None
+    """Whether the global scheduler is up and its loops are alive.
+
+    Two callers depend on this: a Source delivery may only be published onto a
+    live event queue, and schedule registration REFUSES when the tick loop is not
+    running (design D4 — a stored row that can never fire is the silent failure
+    this change exists to remove). Both need thread liveness, not merely the
+    presence of a singleton object: a Scheduler that was constructed but never
+    started, or whose loops died, would otherwise read as available.
+    """
+    s = _SINGLETON
+    return s is not None and s.is_alive()
 
 
 # ─── Scheduler singleton ──────────────────────────────────────────────────────
 
 TICK_INTERVAL_S = 10.0  # how often the tick loop wakes
+
+
+def _accepts_principal_id(run_fn: Callable[..., None]) -> bool:
+    """Whether ``run_fn`` accepts the ``principal_id`` keyword.
+
+    The run_fn contract is ``run_fn(branch_def_id, actor, inputs, run_name, *,
+    principal_id="")``. The four positional arguments are unchanged, so a
+    pre-existing four-argument callable still serves the EVENT path, which
+    carries no principal (a webhook authorises itself with its token). A
+    SCHEDULE must convey its owner principal or the run would fall back to the
+    request identity — empty on the tick thread — so ``_maybe_fire_schedule``
+    refuses instead of firing without it.
+    """
+    try:
+        params = inspect.signature(run_fn).parameters.values()
+    except (TypeError, ValueError):  # builtins / C callables expose no signature
+        return False
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params):
+        return True
+    return any(
+        p.name == "principal_id"
+        and p.kind
+        in (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        for p in params
+    )
 
 
 class Scheduler:
@@ -525,20 +650,26 @@ class Scheduler:
     def __init__(
         self,
         base_path: str | Path,
-        run_fn: Callable[[str, str, dict[str, Any], str], None],
+        run_fn: Callable[..., None],
     ) -> None:
         """
         Args:
             base_path: universe directory (contains .runs.db).
-            run_fn:    callable(branch_def_id, actor, inputs, run_name) — fires a branch run.
-                       Called in a separate thread; must be thread-safe.
+            run_fn:    callable(branch_def_id, actor, inputs, run_name, *,
+                       principal_id="") — fires a branch run. Called in a separate
+                       thread; must be thread-safe. ``principal_id`` is passed only
+                       for schedule firings, and only when the callable accepts it.
         """
         self._base_path = Path(base_path)
         self._run_fn = run_fn
+        self._run_fn_takes_principal = _accepts_principal_id(run_fn)
         self._event_queue: queue.Queue[SchedulerEvent] = queue.Queue()
         self._stop = threading.Event()
         self._tick_thread: threading.Thread | None = None
         self._event_thread: threading.Thread | None = None
+        #: schedule ids already reported as legacy, so the refusal is one log
+        #: line per schedule per process rather than one every tick.
+        self._legacy_reported: set[str] = set()
 
     # ── Lifecycle ──
 
@@ -556,6 +687,15 @@ class Scheduler:
         self._tick_thread.start()
         self._event_thread.start()
         logger.info("Scheduler started (base=%s)", self._base_path)
+
+    def is_alive(self) -> bool:
+        """Whether both loops are running right now."""
+        return bool(
+            self._tick_thread
+            and self._tick_thread.is_alive()
+            and self._event_thread
+            and self._event_thread.is_alive()
+        )
 
     def stop(self, timeout: float = 5.0) -> None:
         """Signal loops to stop and wait for them to exit."""
@@ -603,6 +743,22 @@ class Scheduler:
         local_now: time.struct_time,
     ) -> None:
         schedule_id = row["schedule_id"]
+        if schedule_is_legacy(row):
+            # Never fire a row whose owner cannot be named. Firing it would have to
+            # invent an identity for the run, which is the whole defect 2.1 closes.
+            # One line per schedule per process, not one per tick.
+            if schedule_id not in self._legacy_reported:
+                self._legacy_reported.add(schedule_id)
+                logger.warning(
+                    "scheduler: schedule %s is legacy (universe=%r principal=%r "
+                    "actor=%r) — never fired; the owner must re-register it",
+                    schedule_id,
+                    row.get("universe_id"),
+                    row.get("owner_principal_id"),
+                    row.get("owner_actor"),
+                )
+            return
+
         last_fired = row["last_fired_at"] or 0.0
         should_fire = False
 
@@ -629,14 +785,31 @@ class Scheduler:
                 return
 
         inputs = json.loads(row["inputs_template_json"] or "{}")
-        actor = f"scheduler:{schedule_id}"
+        # The run actor is the OWNING UNIVERSE (``universe:<id>``), recorded on the
+        # row at registration. It used to be ``scheduler:<schedule_id>``, which the
+        # run function rejects as a non-universe actor — so every schedule that ever
+        # came due was refused. The owner principal rides alongside it because the
+        # tick thread has no request identity for the provider session to bind to.
+        actor = str(row["owner_actor"])
+        principal_id = str(row["owner_principal_id"] or "").strip()
         run_name = f"scheduled:{schedule_id[:8]}"
+        if not self._run_fn_takes_principal:
+            logger.error(
+                "scheduler: run_fn %r does not accept principal_id; refusing to fire "
+                "schedule %s without its owner principal",
+                getattr(self._run_fn, "__name__", self._run_fn),
+                schedule_id,
+            )
+            return
         try:
-            self._run_fn(row["branch_def_id"], actor, inputs, run_name)
+            self._run_fn(
+                row["branch_def_id"], actor, inputs, run_name, principal_id=principal_id
+            )
             logger.info(
-                "scheduler: fired schedule %s → branch %s",
+                "scheduler: fired schedule %s → branch %s as %s",
                 schedule_id,
                 row["branch_def_id"],
+                actor,
             )
         except Exception:
             logger.exception("scheduler: run_fn failed for schedule %s", schedule_id)
@@ -798,25 +971,43 @@ def _runs_db(base_path: str | Path) -> Path:
     return Path(base_path) / ".runs.db"
 
 
+#: Columns added to ``branch_schedules`` after its initial schema, with the DDL
+#: fragment that adds each one. SQLite has no ``ADD COLUMN IF NOT EXISTS``, so
+#: ``_connect`` probes ``PRAGMA table_info`` and adds whatever is missing — the
+#: migration is idempotent and runs on an existing DB without a rebuild.
+#:
+#: ``universe_id`` / ``owner_principal_id`` carry the two identities a run needs
+#: (user-owned-automations 2.1): which universe executes the branch, and which
+#: authenticated principal authorised it. A row predating them keeps '' for both
+#: and is LEGACY — it never fires, because a run with no owner would have to fall
+#: back to an ambient identity, which is exactly what the founder principle
+#: forbids.
+_SCHEDULE_COLUMN_MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ("paused", "INTEGER NOT NULL DEFAULT 0"),
+    ("universe_id", "TEXT NOT NULL DEFAULT ''"),
+    ("owner_principal_id", "TEXT NOT NULL DEFAULT ''"),
+)
+
+
 def _connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")
-    # Migrate: add paused column if not present (introduced after initial schema)
     cols = {row[1] for row in conn.execute("PRAGMA table_info(branch_schedules)")}
-    if "paused" not in cols:
-        conn.execute(
-            "ALTER TABLE branch_schedules ADD COLUMN paused INTEGER NOT NULL DEFAULT 0"
-        )
-        conn.commit()
+    if cols:  # table exists — an empty pragma means the schema has not been laid down yet
+        missing = [(c, ddl) for c, ddl in _SCHEDULE_COLUMN_MIGRATIONS if c not in cols]
+        if missing:
+            for col, ddl in missing:
+                conn.execute(f"ALTER TABLE branch_schedules ADD COLUMN {col} {ddl}")
+            conn.commit()
     return conn
 
 
 def get_or_create_scheduler(
     base_path: str | Path,
-    run_fn: Callable[[str, str, dict[str, Any], str], None],
+    run_fn: Callable[..., None],
 ) -> Scheduler:
     """Return the process-global Scheduler, creating it if needed."""
     global _SINGLETON
@@ -845,13 +1036,17 @@ __all__ = [
     "VALID_EVENT_TYPES",
     "MAX_SCHEDULES_PER_OWNER",
     "MAX_SUBSCRIPTIONS_PER_OWNER",
+    "MIN_SCHEDULE_INTERVAL_S",
     "emit_event",
     "get_or_create_scheduler",
+    "get_schedule",
+    "is_running",
     "list_schedules",
     "list_scheduler_subscriptions",
     "pause_schedule",
     "register_schedule",
     "register_subscription",
+    "schedule_is_legacy",
     "shutdown_scheduler",
     "unpause_schedule",
     "unregister_schedule",
