@@ -93,9 +93,30 @@ def run_effects_for_branch(
         for sink in effects:
             adapter = _EFFECTORS.get(sink)
             if adapter is None:
+                # Say what to do instead, not just what is wrong. A branch stored
+                # before a per-channel sink was retired keeps naming it forever,
+                # and the node then does NOTHING every run. Observed live
+                # 2026-08-29: a stored "Docs Touch PR" branch still declared
+                # `github_pull_request`, so the universe's PR-opening run reported
+                # completed with no PR, no branch and no HTTP call — and the bare
+                # "unknown effect sink" told it nothing it could act on.
+                #
+                # The remedy is always the same shape, because the platform ships
+                # exactly two sinks on purpose (channels are user-built graph
+                # nodes over the generic call, never hard-coded effectors): the
+                # branch must be rebuilt against a supported sink.
+                supported = ", ".join(sorted(_EFFECTORS))
                 per_node[sink] = {
-                    "error": f"unknown effect sink: {sink}",
+                    "error": (
+                        f"unknown effect sink: {sink} - this branch names a sink "
+                        f"that no longer exists, so this node does nothing. "
+                        f"Rebuild the node against one of: {supported}. For "
+                        f"outbound HTTP, that is "
+                        f"'{EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL}' with an "
+                        f"external_write_packet in its output_keys."
+                    ),
                     "error_kind": "unknown_sink",
+                    "supported_sinks": sorted(_EFFECTORS),
                 }
                 continue
             try:
