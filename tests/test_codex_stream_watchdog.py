@@ -232,3 +232,46 @@ def test_a_nonsense_override_falls_back_rather_than_disabling_the_cap():
     )
     profile = _sandboxed_config(ctx).stream_timeout_profile()
     assert profile.absolute_cap_s == _SERVED_ABSOLUTE_CAP_S
+
+
+# --- the real vocabulary, recorded from codex-cli 0.146.0 on 2026-08-29 -------
+
+
+def _real_codex_events():
+    """Exactly the event shapes `codex exec --json` emitted for a prompt that ran
+    `echo hi` then replied "done" (timings 0.46s .. 8.93s, progressive)."""
+    return [
+        _ev("thread.started", thread_id="thr_abc"),
+        _ev("turn.started"),
+        _ev("item.completed", item={"id": "item_0", "type": "agent_message", "text": "Running it."}),
+        _ev("item.started",
+            item={"id": "item_1", "type": "command_execution", "command": "echo hi"}),
+        _ev("item.completed",
+            item={"id": "item_1", "type": "command_execution", "exit_code": 0}),
+        _ev("item.completed", item={"id": "item_2", "type": "agent_message", "text": "done"}),
+        _ev("turn.completed", usage={"input_tokens": 10, "output_tokens": 4}),
+    ]
+
+
+def test_the_real_codex_vocabulary_streams_through_and_the_tool_key_matches():
+    """Guards the one P0 a wrong event name would cause: if the reader did not
+    recognise codex's real events as liveness, `first_progress_s` would kill
+    EVERY served turn. Recorded from the installed CLI, not from memory."""
+    ev = _real_codex_events()
+    # Put the whole tool call beyond the idle budget; it must survive because
+    # item_1's started/completed share an id and the wait is a tool wait.
+    items = ev[:3] + [ev[3], (0.6, ev[4])] + ev[5:]
+    proc = FakeProc(items)
+    out, _ = _run(proc)
+    assert out == b"".join(ev)
+    assert proc.killed is False
+
+
+def test_a_tool_that_never_completes_is_still_bounded_by_the_cap():
+    """The known cost of the tool-in-flight rule: a wedged tool waits for the
+    absolute cap, not the idle budget. Acceptable interim; must stay bounded."""
+    ev = _real_codex_events()
+    proc = FakeProc(ev[:4] + [(5.0, ev[6])])   # item_1 never completes, then silence
+    with pytest.raises(InteractiveDeadlineError):
+        _run(proc, absolute_cap_s=0.5)
+    assert proc.killed is True
