@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import fantasy_daemon.__main__ as dm
 import tinyassets.runs as _runs  # noqa: F401 - bind runs.BranchDefinition to the REAL class
+
 # before any test below installs _FakeBranch: `tinyassets.runs` imports BranchDefinition
 # at module level (runs.py:40), and a first import made DURING a patched test would keep
 # the fake forever (order-dependent failure named by Codex on the fleet prune).
