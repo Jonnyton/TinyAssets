@@ -57,3 +57,14 @@ fix. Two of today's live tests died this way before producing a result.
 Delete it when a served turn in flight across a production deploy either
 finishes or leaves the user a truthful notice — observed once on the live
 surface, not inferred from a test.
+
+## Also the likely cause of the 2026-08-28 "truncated stream" errors
+
+`docs/concerns/2026-08-28-converse-sse-stream-has-no-keepalive.md` (resolved
+2026-08-29) suspected an intermediary cutting a silent SSE response. It is not
+silent: the MCP SDK answers every tool call with `sse_starlette.EventSourceResponse`,
+which writes a `: ping` comment every 15s while the tool runs -
+`tests/test_mcp_sse_keepalive.py` proves it against the production app
+(`python -m pytest tests/test_mcp_sse_keepalive.py`, 2026-08-29, local). A 200
+whose body stops mid-frame is what a client sees when THIS happens: the
+container is recreated under the open response.
