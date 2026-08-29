@@ -40,39 +40,43 @@ from contextlib import asynccontextmanager, contextmanager
 
 _log = logging.getLogger(__name__)
 
-#: Concurrent provider subprocesses permitted. Raised to 25 on the 4 vCPU / 8 GB box.
+#: Concurrent provider subprocesses permitted. 15 on the 4 vCPU / 8 GB box.
 #:
 #: Sized from FIVE measured points with verified overlap (live PID counts, not launch
-#: counts), because my two previous attempts at this number were both wrong and the
-#: second one was wrong because two points cannot show a trend:
+#: counts) — my first two attempts at this number were both refuted, the second because
+#: two points cannot show a trend:
 #:
-#:     overlap  5 ->  182 MB used
-#:     overlap  9 ->  235 MB
-#:     overlap 17 ->  476 MB
-#:     overlap 25 ->  701 MB
-#:     overlap 33 ->  875 MB   (MemAvailable still 6032 MB of 6907 baseline)
+#:     overlap  5 -> 182 MB used     overlap 25 -> 701 MB
+#:     overlap  9 -> 235 MB          overlap 33 -> 875 MB
+#:     overlap 17 -> 476 MB
 #:
-#: Marginal cost between CONSECUTIVE points: 13.2, 30.1, 28.1, 21.8 MB. So it is roughly
-#: flat at ~30 MB rather than rising — which is what my earlier "sharing gets worse"
-#: reading of two points got wrong in the other direction.
+#: Consecutive marginals: 13.25, 30.125, 28.125, 21.75 MB. Carry **31 MB** — the maximum
+#: observed segment rounded up, not the mean (25.9) and not my earlier "flat ~30". The
+#: 13.25 segment is warm-cache noise, and calling the series flat was another story
+#: fitted to too little data.
 #:
-#: 25 concurrent at the measured 30 MB marginal is ~750 MB. The measurement is a FLOOR
-#: (`--version` loads no prompt, no history, no tool policy, and no engine-MCP child), so
-#: the arithmetic below is carried at a 3x real-turn multiplier — and it survives far
-#: worse assumptions than that:
+#: **The ceiling is the CGROUP, not the host.** This is the error that survived into a
+#: third attempt: the box has 6907 MB available, but `deploy/compose.yml` caps this
+#: daemon at 4 GiB and provider + engine-MCP children live INSIDE that cgroup. Sizing
+#: against host memory would have been correct only until the compose file shipped, and
+#: then silently wrong. Against the committed contract, with the observed 1411.8 MiB
+#: cgroup peak and the test's 300 MiB floor:
 #:
-#:     3x  -> 25 * 90 MB  = 2250 MB, leaving ~4650 MB
-#:     5x  -> 25 * 150 MB = 3750 MB, leaving ~3150 MB
-#:     10x -> 25 * 300 MB = 7500 MB — the first multiplier that does NOT fit
+#:     4096 - 1411.8 - 300 = 2384 MiB available for turns
+#:     15 x 31 x 5 = 2325 MiB    -> holds at a 5x real-turn multiplier
+#:     25 x 31 x 4 = 3100 MiB    -> 25 fails at 4x
 #:
-#: That is the real justification: 25 holds unless a real turn costs nearly ten times its
-#: floor. On the old 2 GB box the same arithmetic gave 6, and every attempt to argue it
-#: higher there was refuted.
+#: And sensitivity is not an upper bound: "10x is the first failure" only matters if a
+#: real turn is known to stay under 10x, and it is not measured. The old 77 MB PSS
+#: observation was already ~2.5x this floor before counting the MCP process tree.
+#:
+#: A separate startup limiter is the missing piece (25 simultaneous CLI launches contend
+#: across 4 cores and hurt startup p99); until one exists, 15 is the safer herd size.
 #:
 #: Still not a throughput claim. `get_status.provider_admission` reports `refused` and
-#: `peak_concurrent`; those, not this comment, are what should move the number next.
+#: `peak_concurrent`; those, not this comment, should move the number next.
 _LIMIT_VAR = "TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS"
-_DEFAULT_LIMIT = 25
+_DEFAULT_LIMIT = 15
 
 #: How long a caller waits for a slot before being told no. Long enough to ride out a
 #: brief burst, short enough that a queued user gets an answer rather than a hang.
@@ -136,7 +140,7 @@ _refused = 0
 #: at the point it is needed. Arbitrary deeper recursion would still need propagated
 #: depth — this covers the served-root -> child topology that is actually reachable.
 _NESTED_RESERVE_VAR = "TINYASSETS_PROVIDER_NESTED_RESERVE"
-_DEFAULT_NESTED_RESERVE = 1
+_DEFAULT_NESTED_RESERVE = 3
 
 
 def _effective_limit(nested: bool) -> int:

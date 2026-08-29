@@ -131,9 +131,16 @@ def test_the_default_fits_the_box_it_runs_on(monkeypatch):
     # verified-overlap points, (874-403)/(25-13) = 39 MB — not the 786/25 = 31 MB
     # AVERAGE I first mistook it for. The average understates, because the observed
     # per-process cost ROSE with concurrency rather than falling.
-    MEASURED_AVAILABLE_MB = 6907  # 4 vCPU / 8 GB box, measured 2026-08-29
-    MARGINAL_MB_PER_PROCESS = 30  # flat across 5 points: 13.2, 30.1, 28.1, 21.8
-    REAL_TURN_MULTIPLIER = 3  # `--version` loads no prompt, no history, no MCP child
+    # The CGROUP is the ceiling, not the host. The box has 6907 MB available, but
+    # deploy/compose.yml caps this daemon at 4 GiB and the provider and engine-MCP
+    # children live inside that cgroup. Budgeting against host memory would be right
+    # only until the compose file ships, then silently wrong — the third time this
+    # sizing used the wrong baseline.
+    CGROUP_LIMIT_MB = 4096
+    OBSERVED_CGROUP_PEAK_MB = 1412  # measured on the live cgroup
+    MEASURED_AVAILABLE_MB = CGROUP_LIMIT_MB - OBSERVED_CGROUP_PEAK_MB
+    MARGINAL_MB_PER_PROCESS = 31  # MAX observed segment, not the mean (25.9)
+    REAL_TURN_MULTIPLIER = 5  # unmeasured; carry 5x, not the 3x that flattered 25
 
     # "Fits" is not "safe". Merely staying under the available figure admitted a limit
     # of 10, which the module's own comment calls no headroom at all (~19 MB left) — the
@@ -212,6 +219,11 @@ class TestTurnDurationInstrumentation:
     def test_peak_concurrency_is_observed_not_assumed(self, monkeypatch):
         """Whether the bound actually binds is a fact about production, not a setting."""
         monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "4")
+        # Pin the reserve rather than inherit it: this test is about the observed peak,
+        # and it silently broke when the default reserve rose from 1 to 3 (outer
+        # allowance 4-3 = 1, so three workers could never overlap). A test whose subject
+        # is concurrency must not depend on an unrelated default.
+        monkeypatch.setenv("TINYASSETS_PROVIDER_NESTED_RESERVE", "1")
         monkeypatch.setenv("TINYASSETS_PROVIDER_ADMISSION_WAIT_S", "10")
         start = threading.Barrier(3)
 

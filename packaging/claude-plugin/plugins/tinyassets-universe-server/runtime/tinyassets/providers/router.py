@@ -268,7 +268,7 @@ _CHAIN_DRAIN_EMPTY_THRESHOLD: int = 2
 # unlock concurrency would raise memory pressure with nothing reporting it — I proposed
 # exactly that and the arithmetic behind it was wrong, so it stays where it is until a
 # real turn's high-water is measured.
-_SYNC_CALL_MAX_WORKERS: int = 32
+_SYNC_CALL_MAX_WORKERS: int = 16
 
 # NOTE: `_provider_slot` (imported above) bounds concurrent provider SUBPROCESSES.
 # _SYNC_CALL_MAX_WORKERS bounds threads, which are cheap; a subprocess is ~77 MB.
