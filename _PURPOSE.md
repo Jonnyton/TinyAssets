@@ -1,4 +1,3 @@
 # Purpose
-Two Codex carry-overs from the fleet prune: the soul-loop test no longer leaks _FakeBranch into
-tinyassets.runs (order-dependent failure), and the deploy test asserting the deleted HMAC-rotation
-fleet proof step is removed (its script went with #2678).
+Re-scope the fence concern after the host actions of 2026-08-29 (stale state archived, canary watchdog
+re-enabled): what remains is finishing retire-cheat-loop 2.5a.
