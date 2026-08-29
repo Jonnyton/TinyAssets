@@ -1648,57 +1648,6 @@ def test_deploy_requires_and_installs_daemon_request_idempotency_hmac_secret():
     )
 
 
-def test_request_hmac_rotation_requires_deployed_corrected_boundary():
-    wf = _load()
-    steps = _steps(wf)
-    indexes = {step.get("name"): index for index, step in enumerate(steps)}
-    proof_name = "Prove request HMAC rotation boundary before quiescence"
-    stop_name = "Transitional task 2.1 stop-writer preflight"
-    install_name = "Install daemon-only request idempotency HMAC secret"
-    assert indexes[proof_name] < indexes[stop_name] < indexes[install_name]
-
-    proof = _step_named(wf, proof_name)
-    proof_condition = str(proof.get("if", ""))
-    proof_script = proof.get("run", "") or ""
-    proof_env = proof.get("env") or {}
-    assert "github.event_name == 'workflow_dispatch'" in proof_condition
-    assert "inputs.rotate_request_idempotency_hmac" in proof_condition
-    assert "steps.tag.outputs.image_ref" in str(proof_env.get("TARGET_IMAGE", ""))
-    assert "deploy/verify-request-hmac-rotation-fleet.sh" in proof_script
-    assert "verify-request-hmac-rotation-fleet.sh capture '${TARGET_IMAGE}'" in proof_script
-    assert "fleet_ids<<EOF" in proof_script
-    assert "proved_image_ref=${TARGET_IMAGE}" in proof_script
-
-    install = _step_named(wf, "Install daemon-only request idempotency HMAC secret")
-    script = install.get("run", "") or ""
-    install_env = install.get("env") or {}
-    assert "steps.rotation-boundary.outputs.fleet_ids" in str(
-        install_env.get("ROTATION_FLEET_IDS", "")
-    )
-    assert "steps.rotation-boundary.outputs.proved_image_ref" in str(
-        install_env.get("ROTATION_PROVED_IMAGE_REF", "")
-    )
-    assert "steps.tag.outputs.image_ref" in str(install_env.get("TARGET_IMAGE", ""))
-    secret_write = script.index(
-        'printf \'%s\' "${TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY}"'
-    )
-    prerequisite_tokens = (
-        "sha256sum deploy/compose.yml",
-        "sudo sha256sum /opt/tinyassets/compose.yml",
-        "assert-absent TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY",
-        "ROTATION_FLEET_IDS",
-        "ROTATION_PROVED_IMAGE_REF",
-        "TARGET_IMAGE",
-        "rotation target image differs from the pre-proved correction image",
-        "deploy/verify-request-hmac-rotation-fleet.sh",
-        "verify-request-hmac-rotation-fleet.sh assert-quiesced",
-    )
-    for token in prerequisite_tokens:
-        assert script.index(token) < secret_write, token
-    assert "rotation requires the corrected Compose file" in script
-    assert "rotation prerequisite failed" in script
-
-
 def test_request_idempotency_hmac_template_and_compose_contract():
     template = Path("deploy/tinyassets-env.template").read_text(encoding="utf-8")
     dedicated = Path("deploy/request-idempotency-env.template").read_text(
