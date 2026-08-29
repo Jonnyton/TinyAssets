@@ -15,10 +15,10 @@ into the consumer module. No data migration -- there are no worker rows to prese
 worker containers. The daemon container keeps its own healthcheck.
 **Migration**: Delete `tinyassets/cloud_worker_healthcheck.py` with the compose services.
 
-### Requirement: Host-singleton and fleet idle-cycle coordination fail safe
-**Reason**: Fleet idle-cycle coordination has no fleet to coordinate.
-**Migration**: None; the daemon is the only executor.
-
+<!-- The four reconciliation requirements below sync with task 3.3, not 1.2: the
+workflow that scheduled them is deleted, but `python -m tinyassets.runtime_reconcile
+stale-fleet` still exists as the operator CLI that retires the old rows. Synced
+2026-08-29 with 1.2: the two deletions above and the MODIFIED requirement below. -->
 ### Requirement: Stale retired-fleet reconciliation is dry-run first
 **Reason**: `reconcile-stale-fleet.yml` reconciled rows written by the fleet; with the fleet
 deleted nothing writes them.
@@ -36,6 +36,19 @@ deleted nothing writes them.
 ### Requirement: Only stale unowned cloud-worker runtimes are retired
 **Reason**: Part of the retired-fleet reconciliation workflow above.
 **Migration**: Deleted with it.
+
+## MODIFIED Requirements
+
+### Requirement: Host-singleton and same-data-dir idle-cycle coordination fail safe
+Two file-lock coordination primitives SHALL keep the runtime safe under concurrency. `tinyassets.singleton_lock` SHALL enforce a single host daemon instance via an OS-exclusive file lock that is the ground truth, with a PID sidecar as a human-readable breadcrumb; a PID sidecar without a held OS lock SHALL be treated as stale and overwritten on acquisition. `tinyassets.idle_cycle` SHALL dedupe the no-work heartbeat cycle across any daemon processes sharing one data directory with a run lock plus a freshness stamp, skipping when another process is mid-cycle or has a fresh stamp, and SHALL fail OPEN — degrading to a possibly-duplicate cycle, never a stalled heartbeat — when its lock or stamp I/O fails. As-built note (2026-08-29): the host-run worker fleet this originally coordinated is deleted; the daemon is the only executor and the primitive stays in `fantasy_daemon` for whatever processes share the directory.
+
+#### Scenario: a second host instance cannot acquire the lock
+- **WHEN** a second process attempts to acquire the singleton lock while another live process holds it
+- **THEN** acquisition fails and reports the holding PID from the sidecar
+
+#### Scenario: a stale PID sidecar is overwritten
+- **WHEN** a PID sidecar exists but no process holds the paired OS lock
+- **THEN** acquisition succeeds and the sidecar is overwritten with the new PID
 
 ## ADDED Requirements
 

@@ -247,6 +247,75 @@ def test_poll_once_respects_global_concurrency_cap(tmp_path: Path, monkeypatch) 
     consumer.stop()
 
 
+def test_poll_once_halts_on_the_universe_pause_sentinel(tmp_path: Path, monkeypatch) -> None:
+    """`.pause` must stop background claims and pumping for that universe.
+
+    The P0 provider_exhaustion repair writes `.pause` into every universe; until the
+    host-run fleet was deleted it also `docker stop`ped the worker. The daemon-owned
+    consumer is now the only background executor, so it has to honour the sentinel
+    itself -- and removing the file must resume the universe without a restart.
+    Mutation: drop `_paused` from `poll_once` and the first assertion goes red.
+    """
+    task = Epoch2BranchTask(
+        branch_task_id="bt2_" + "p" * 32,
+        branch_def_id="branch-p",
+        universe_id="universe-p",
+        automation_id="automation-p",
+        automation_executor_class="cloud",
+        automation_branch_version="version-p",
+    )
+    claims: list[str] = []
+
+    class _Adapter:
+        def __init__(self, _base_path):
+            pass
+
+        def recover_expired(self, **_kwargs):
+            return []
+
+        def list_candidates(self, *, universe_id, limit):
+            return [task]
+
+        def claim_assigned(self, candidate, *, consumer_lease, authority_claim=None):
+            claims.append(consumer_lease.consumer_id)
+            return candidate
+
+    class _Executor:
+        def submit(self, *_args):
+            return Future()
+
+        def shutdown(self, **_kwargs):
+            pass
+
+    import tinyassets.provider_serving_binding as serving_module
+    from tinyassets.storage.assigned_queue_refusals import AssignedQueueRefusalStore
+
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "on")
+    monkeypatch.setattr(consumer_module, "Epoch2BranchTaskAdapter", _Adapter)
+    monkeypatch.setattr(
+        serving_module, "list_serving_universes", lambda _base_path: ["universe-p"]
+    )
+    universe = tmp_path / "universe-p"
+    universe.mkdir()
+    pause = universe / ".pause"
+    pause.write_text("", encoding="utf-8")
+    consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
+    consumer._executor.shutdown(wait=False, cancel_futures=True)
+    consumer._executor = _Executor()
+
+    assert consumer.poll_once() == 0
+    assert claims == []
+    reasons = AssignedQueueRefusalStore(tmp_path).fresh_reasons(
+        universe_id="universe-p", max_age_seconds=60
+    )
+    assert reasons == {"universe:universe-p:-": "paused"}
+
+    pause.unlink()
+    assert consumer.poll_once() == 1
+    assert claims == [consumer.consumer_id]
+    consumer.stop()
+
+
 def test_task_exception_is_terminalized_without_escaping_daemon_boundary(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -132,7 +132,8 @@ jobs:
       #   disk_full            — docker system prune -af
       #   image_pull_failure   — roll back to release-state rollback_target
       #   watchdog_hotloop     — stop → sleep 60 → start (reset limit)
-      #   provider_exhaustion  — stop worker + write .pause sentinel;
+      #   provider_exhaustion  — write .pause into every universe (the daemon
+      #                          loops and its queue consumer honour it);
       #                          page host priority=2 (Lane 4b)
       #   unknown              — generic compose restart (legacy behavior)
       - name: Classify outage

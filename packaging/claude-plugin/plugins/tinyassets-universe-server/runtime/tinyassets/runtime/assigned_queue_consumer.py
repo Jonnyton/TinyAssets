@@ -244,10 +244,23 @@ class AssignedQueueConsumer:
             AssignedQueueRefusalStore,
         )
 
-        serving_universes = list_serving_universes(self.base_path)
         adapter = Epoch2BranchTaskAdapter(self.base_path)
         produced_universes: set[str] = set()
         prep_store = AssignedQueueRefusalStore(self.base_path)
+        # `.pause` is the universe's pause sentinel -- the owner's control and the
+        # P0 provider_exhaustion repair both write it. Every other loop honours it
+        # at its boundary (fantasy_daemon, branch_registrations); before the fleet
+        # was deleted the repair also `docker stop`ped the worker, so this consumer
+        # is now the only background executor and must halt on it too. A run
+        # already in flight finishes; nothing new is pumped or claimed.
+        serving_universes = []
+        for universe_id in list_serving_universes(self.base_path):
+            if self._paused(universe_id):
+                self._record_reason(
+                    prep_store, f"universe:{universe_id}:-", universe_id, "paused"
+                )
+                continue
+            serving_universes.append(universe_id)
         for universe_id in serving_universes:
             try:
                 audience = self._publish_heartbeat(universe_id)
@@ -331,6 +344,9 @@ class AssignedQueueConsumer:
                 self._active[universe_id] = future
             submitted += 1
         return submitted
+
+    def _paused(self, universe_id: str) -> bool:
+        return (self.base_path / universe_id / ".pause").exists()
 
     def _try_claim(
         self,
