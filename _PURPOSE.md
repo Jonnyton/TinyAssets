@@ -1,2 +1,3 @@
 # Purpose
-Tick user-owned-automations task 1.1 with the droplet verification stamp (fleet services absent live).
+Close out served-agent-user-boundary: sync its delta into openspec/specs/universe-custom-agents/spec.md,
+tick 2.1 with the live proof, archive the change.
