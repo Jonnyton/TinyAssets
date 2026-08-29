@@ -271,12 +271,48 @@ by how tightly the day peaks:
 average turn stays under about 11 seconds.** That is the break-even for the 2h-peak case,
 and it is the whole answer.
 
+### Agentic turns, and the trap in measuring them
+
+A single-shot completion is not the workload. Measured with a prompt that forces the tool
+loop (write a file, read it back, delete it):
+
+| | duration | memory/turn |
+|---|---:|---:|
+| 1 agentic turn | **12.5 s** | 155 MB |
+| 3 concurrent | p50 **23.5 s**, max 39.2 s | 147 MB |
+
+Latency nearly doubling at three concurrent looks damning, and I nearly reported it that
+way. It is an artifact of how I tested.
+
+During that run the box was **not** busy: peak CPU 81% of one sample, **loadavg 0.39 of
+four cores**, and the three durations came out 10.7 / 20.5 / 33.6 s — roughly ten seconds
+apart. That is a queue, not contention. All three turns were hitting **one Claude
+subscription** — mine — and the provider serialized them.
+
+**That is precisely what BYO-LLM makes irrelevant at scale.** Every universe runs on its
+own user's subscription, so user A's turn does not queue behind user B's. Three
+simultaneous turns on one account serialize; three users' turns do not. Testing
+concurrency through a single account measures the account, not the platform.
+
+So the per-box figure to carry is the SOLO agentic turn: **12.5 s**, 155 MB.
+
+| limit | capacity | vs 2h-peak demand (1.39 /s) |
+|---:|---:|---|
+| 15 (current) | 1.20 /s | 0.86x — **slightly short** |
+| 23 (cgroup fit) | 1.84 /s | 1.3x — clears |
+
+Two things follow, and neither is a licence to change the number today. Memory permits 23;
+CPU is nowhere near saturated at 3 concurrent, so the headroom is probably real. But the
+per-subscription serialization means I **cannot** measure 15 genuinely-concurrent agentic
+turns from one account, so the extrapolation from 3 to 15 is unverified — and this note
+already carries three sizing errors made by extrapolating past the data.
+
 ### The condition, stated plainly
 
-A measured turn here is **4.8 s for a single-shot completion**. A TinyAssets turn is
-usually not that: it is agentic, it runs a graph, it calls tools, and it can take far
-longer. At 30 s per turn the same limit yields 0.5 turns/s and the 2h peak needs 1.39 —
-**short by 2.8x**.
+A solo agentic turn measures **12.5 s**. At the current limit of 15 that is 1.20 turns/s
+against a 1.39 turns/s two-hour peak — **short by about 14%**, and comfortable against
+any peak spread over four hours or more. The cgroup permits 23, which would clear the
+two-hour peak at 1.84 turns/s.
 
 So the honest statement is conditional, and `get_status.provider_admission` is what
 resolves it: `attempt_seconds.p50` from production traffic decides which row above
