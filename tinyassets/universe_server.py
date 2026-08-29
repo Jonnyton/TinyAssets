@@ -3251,6 +3251,19 @@ def main(
         transport: MCP transport protocol. "streamable-http" for remote
             connections (default), "sse" for legacy, "stdio" for local.
     """
+    # FIRST statement, before any thread, subprocess or app build: load the app
+    # session seal key and scrub TINYASSETS_SESSION_SEAL_KEY out of os.environ.
+    # Provider children are spawned with a wholesale copy of this environment
+    # (tinyassets/providers/base.py), so any window between process start and
+    # the scrub is a window in which `claude -p` / `codex exec` inherit the key
+    # that opens every user's session. Importing the module is what arms it; the
+    # explicit call is here because the onboarding routes are flag-gated
+    # (TINYASSETS_ONBOARDING_APP) and a dark route must not leave the key in the
+    # environment.
+    from tinyassets.onboarding import session_store as _session_seal
+
+    _session_seal.arm()
+
     logger.info(
         "Starting TinyAssets Server on %s:%d (transport=%s)",
         host, port, transport,

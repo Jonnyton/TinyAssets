@@ -307,6 +307,18 @@ async def _handle_token(request: Any) -> Any:
     if not isinstance(data, dict):
         return JSONResponse({"error": "invalid_json"}, status_code=400)
 
+    # Every grant below touches the sealed store, so bring it to a safe state
+    # ONCE, here, instead of failing partway through a grant. The one failure
+    # this raises on is a legacy PLAINTEXT store that could not be deleted --
+    # serving over it would silently continue the disclosure the seal exists to
+    # end, so refuse and retry on the next request.
+    try:
+        _session_store.ensure_available()
+    except _session_store.SessionStoreUnavailable:
+        return JSONResponse(
+            {"error": "session_store_unavailable"}, status_code=503, headers=_NO_STORE
+        )
+
     grant = str(data.get("grant_type", "authorization_code")).strip()
     # False unless a presented handle is what actually unlocked the refresh below.
     # An authorization_code exchange can never set it: there is nothing to prove.
@@ -315,8 +327,12 @@ async def _handle_token(request: Any) -> Any:
     # the caller sent. During a rotation grace they differ, and rotating from the
     # caller's value would re-file the session under an identifier they chose.
     current_handle = ""
-    # The opaque server-side session handle (WebView path). Validated; a bad
-    # value is simply ignored so the cookie path still applies.
+    # The opaque server-side session handle (WebView path), as PRESENTED by the
+    # caller. Shape-validated only; a bad value is discarded so the cookie path
+    # still applies. Nothing is ever written under this value -- it is used to
+    # LOOK UP a session, and on a code exchange it is dropped (below), so a
+    # fixation probe's own handle dies rather than lingering as a live
+    # identifier a third party knows.
     session_ref = str(data.get("session_ref", "")).strip()
     if not _valid_handle(session_ref):
         session_ref = ""
