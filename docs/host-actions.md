@@ -39,7 +39,15 @@ a new way to fail.
 
 ## Taking real money
 
-### WorkOS is on PRODUCTION — sign in once per account, then publish the Google consent screen
+### WorkOS is on PRODUCTION — one account migrated, one to go, then publish the Google consent screen
+
+*Root cause of the "session expired" loop, found and fixed 2026-08-29: production AuthKit
+minted tokens with an environment-default `aud`, and our validator (correctly) requires
+`aud == https://tinyassets.io/mcp`. WorkOS docs: "if you don't configure any Resource
+Indicators … a default aud value unique to your WorkOS Environment will be used instead,
+with the resource parameter then ignored." Staging had the resource indicator registered
+under Connect → Configuration; production did not. Registered. Sign-in verified working.*
+
 
 *Switched 2026-08-29. The daemon is on the production key, domain
 `unassuming-environment-16.authkit.app`, and Connect client
