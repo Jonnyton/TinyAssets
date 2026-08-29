@@ -969,7 +969,7 @@ def _codex_refresh_viability(
     an MCP request must never block on a probe subprocess): it serves the
     freshness fast path and any cached verdict, and reports stale creds as
     "ok" with a probe-deferred detail instead of probing inline. The
-    quarantine decision itself lives in the cloud_worker gate, which always
+    quarantine decision itself lives in the claim gate, which always
     probes.
     """
     import time as _time
@@ -1036,8 +1036,8 @@ def _codex_refresh_viability(
 # and failing every one, poisoning the queue for ~3 weeks undetected.
 # ``is_available()`` only checks the binary is on PATH (``shutil.which``); it
 # does NOT check login state. This helper checks login state so workers can
-# self-quarantine (cloud_worker) and get_status can surface dead writer auth
-# instead of leaving it buried in worker logs.
+# self-quarantine before claiming, and get_status can surface dead writer
+# auth instead of leaving it buried in logs.
 #
 # Returns ``{"provider", "status", "detail"}`` where status is one of:
 #   "ok"            — subscription credentials are present (and, for codex,

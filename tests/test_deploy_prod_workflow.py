@@ -193,17 +193,26 @@ def test_manual_unsafe_fence_recovery_is_separate_and_source_bound():
 
 
 def test_recovery_override_fences_writers_and_fixed_name_sidecars():
+    """The override must fence every default-profile service, and only those.
+
+    The four `worker*` entries were dropped 2026-08-29 with the host-run fleet
+    (nothing runs outside a user's universe -- PLAN.md). Compared AGAINST
+    compose.yml rather than a hardcoded list: an override naming a service the
+    base file does not define would declare an imageless service and fail the
+    whole project on `-f compose.yml -f override`.
+    """
     override = yaml.safe_load(_RECOVERY_OVERRIDE.read_text(encoding="utf-8"))
     services = override["services"]
-    assert set(services) == {
-        "daemon",
-        "worker",
-        "worker-codex-2",
-        "worker-claude-1",
-        "worker-claude-2",
-        "cloudflared",
-        "logs",
+    compose = yaml.safe_load((_REPO / "deploy" / "compose.yml").read_text(encoding="utf-8"))
+    default_profile = {
+        name
+        for name, service in compose["services"].items()
+        if not service.get("profiles")
     }
+    assert set(services) == default_profile, (
+        "recovery override must fence exactly the default-profile services"
+    )
+    assert set(services) == {"daemon", "cloudflared", "logs"}
     assert all(service.get("restart") == "no" for service in services.values())
 
 
@@ -744,39 +753,15 @@ def test_deploy_preserves_host_owned_log_destination():
     assert "LOG_DEST" not in run_script
 
 
-def test_deploy_verifies_cloud_worker_running():
-    wf = _load()
-    worker_step = next(
-        (s for s in _steps(wf) if s.get("name") == "Verify cloud worker is running"),
-        None,
-    )
-    assert worker_step is not None, "deploy must verify cloud workers are running"
-    run_script = worker_step.get("run", "") or ""
-    for name in (
-        "tinyassets-worker",
-        "tinyassets-worker-codex-2",
-        "tinyassets-worker-claude-1",
-        "tinyassets-worker-claude-2",
-    ):
-        assert name in run_script
-    assert "docker inspect" in run_script
-    assert "State.Running" in run_script
-    assert "for i in $(seq 1 30)" in run_script
-    assert "sleep 2" in run_script
-    assert "docker compose --env-file /etc/tinyassets/env" in run_script
-    assert "exit 1" in run_script
-
-
-def test_deploy_proves_running_workers_lack_request_hmac():
-    wf = _load()
-    worker_step = _step_named(wf, "Verify cloud worker is running")
-    run_script = worker_step.get("run", "") or ""
-    step_env = worker_step.get("env") or {}
-
-    assert "steps.tag.outputs.image_ref" in str(step_env.get("TARGET_IMAGE", ""))
-    assert "verify-request-hmac-rotation-fleet.sh capture '${TARGET_IMAGE}'" in run_script
-    assert "docker exec ${container} python -c" not in run_script
-    assert "in os.environ" not in run_script
+# Three fleet-only cases were deleted here on 2026-08-29:
+# `test_deploy_verifies_cloud_worker_running`,
+# `test_deploy_proves_running_workers_lack_request_hmac`, and
+# `test_deploy_rejects_cloud_worker_workflow_universe_override`. All three
+# asserted a "Verify cloud worker is running" step over the four
+# `tinyassets-worker*` containers. Those containers are gone with the host-run
+# fleet (nothing runs outside a user's universe -- PLAN.md), and the step they
+# asserted had already been removed from deploy-prod.yml, so all three were
+# already red at b9225243 before this change touched anything.
 
 
 def test_deploy_retires_legacy_workflow_service_before_restart():
@@ -810,19 +795,6 @@ def test_deploy_retires_legacy_workflow_service_before_restart():
     assert "docker rm -f" in run_script
     assert 'rm -f "$unit_file"' in run_script
     assert "systemctl mask workflow-daemon.service" in run_script
-
-
-def test_deploy_rejects_cloud_worker_workflow_universe_override():
-    wf = _load()
-    worker_step = next(
-        (s for s in _steps(wf) if s.get("name") == "Verify cloud worker is running"),
-        None,
-    )
-    assert worker_step is not None
-    run_script = worker_step.get("run", "") or ""
-    assert "grep -q '^TINYASSETS_UNIVERSE='" in run_script
-    assert "stdio-only override" in run_script
-    assert "_resolve_universe_path" in run_script
 
 
 def test_deploy_verifies_llm_binding_when_codex_auth_is_synced():
@@ -1376,45 +1348,33 @@ def test_codex_volume_step_repairs_volume_root_for_auth_db():
     assert "unable to open database file" in run_script
 
 
-def test_codex_volume_step_migrates_from_running_container_once():
-    """First deploy after CODEX_HOME migration onto a live droplet must copy the
-    rotated auth.json out of the running tinyassets-worker into the
-    persistent volume. Subsequent deploys skip (auth.json already
-    present). No-op when no live source container exists.
+# `test_codex_volume_step_migrates_from_running_container_once` lived here. It
+# asserted the deploy copies auth.json OUT of a running `tinyassets-worker`.
+# Deleted 2026-08-29 with the host-run fleet: nothing runs outside a user's
+# universe (PLAN.md), so there is no such container to migrate from. The
+# volume-preparation half of that step is still covered below.
+
+
+def test_subscription_volume_step_prepares_auth_dirs_without_a_worker_container():
+    """The step still creates + locks down both auth dirs on the volume.
+
+    The `docker cp ... tinyassets-worker:` migration assertions were deleted
+    2026-08-29 with the host-run fleet (PLAN.md). Their inverse is asserted:
+    the step must not reach into a fleet container that no longer exists.
     """
     wf = _load()
     step = _codex_volume_step(wf)
     run_script = step.get("run", "") or ""
-    assert 'if [ ! -f "$CODEX_DIR/auth.json" ]' in run_script, (
-        "migration branch must be guarded so it fires exactly once"
-    )
-    assert "docker inspect tinyassets-worker" in run_script, (
-        "migration must check tinyassets-worker presence before docker cp"
-    )
-    assert "docker exec tinyassets-worker test -f /data/.codex/auth.json" in run_script, (
-        "migration must check the new CODEX_HOME path before copying"
-    )
-    assert "docker exec tinyassets-worker test -f /app/.codex/auth.json" in run_script, (
-        "migration must also support one-time legacy /app/.codex pickup"
-    )
-    assert "docker cp tinyassets-worker:/data/.codex/auth.json" in run_script
-    assert "docker cp tinyassets-worker:/app/.codex/auth.json" in run_script
-    assert 'chown "$TINYASSETS_UID:$TINYASSETS_GID" "$CODEX_DIR/auth.json"' in run_script
-    assert 'chmod 600 "$CODEX_DIR/auth.json"' in run_script
-
-
-def test_subscription_volume_step_prepares_claude_config_dir():
-    wf = _load()
-    step = _codex_volume_step(wf)
-    run_script = step.get("run", "") or ""
+    assert 'CODEX_DIR="$VOLUME_DIR/.codex"' in run_script
+    assert 'chown "$TINYASSETS_UID:$TINYASSETS_GID" "$CODEX_DIR"' in run_script
+    assert 'chmod 700 "$CODEX_DIR"' in run_script
     assert 'CLAUDE_DIR="$VOLUME_DIR/.claude"' in run_script
     assert 'mkdir -p "$CLAUDE_DIR"' in run_script
     assert 'chown -R "$TINYASSETS_UID:$TINYASSETS_GID" "$CLAUDE_DIR"' in run_script
     assert 'chmod 700 "$CLAUDE_DIR"' in run_script
-    assert "docker exec tinyassets-worker test -d /data/.claude" in run_script
-    assert "docker exec tinyassets-worker test -d /app/.claude" in run_script
-    assert "docker cp tinyassets-worker:/data/.claude/." in run_script
-    assert "docker cp tinyassets-worker:/app/.claude/." in run_script
+    assert "tinyassets-worker" not in run_script, (
+        "the retired host fleet has no container to migrate credentials from"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2451,15 +2411,23 @@ def test_cleanup_derives_cutover_only_from_current_run_generation():
     assert "status --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" in script
 
 
-def test_shared_fleet_workers_still_share_their_credential_roots():
-    """Accept-direction control: the shared fleet must stay shared."""
+def test_compose_declares_no_host_run_worker_fleet():
+    """The four `worker*` services must not come back.
+
+    This replaced an accept-direction control asserting "the shared fleet must
+    stay shared". Inverted 2026-08-29: nothing runs unless it lives inside a
+    user's universe under that user's control, and the platform never runs an
+    actor of its own (PLAN.md). The surviving services keep the no-universe-pin
+    assertion the old control carried.
+    """
     compose = yaml.safe_load(Path("deploy/compose.yml").read_text(encoding="utf-8"))
     for name in ("worker", "worker-codex-2", "worker-claude-1", "worker-claude-2"):
-        env = compose["services"][name]["environment"]
-        assert env["CODEX_HOME"] == "/data/.codex", name
-        assert env["CLAUDE_CONFIG_DIR"] == "/data/.claude", name
+        assert name not in compose["services"], (
+            f"host-run fleet service {name} is back"
+        )
+    for name, service in compose["services"].items():
+        env = service.get("environment") or {}
         assert "TINYASSETS_UNIVERSE" not in env, name
-
 
 
 def test_recovery_canary_waits_for_the_daemon_instead_of_probing_instantly():
@@ -2492,7 +2460,7 @@ def test_recovery_canary_waits_for_the_daemon_instead_of_probing_instantly():
 def test_active_universe_repoint_is_explicit_input_only_and_validated():
     """The marker that decides which universe the fleet serves.
 
-    `cloud_worker._resolve_universe` reads /data/.active_universe before any
+    The daemon resolves /data/.active_universe before any
     other default, and an AUTHENTICATED `switch_universe` is request-scoped by
     design and never writes it — so there is no in-band way for a user to
     repoint the fleet at their own universe. Four admissible slices sat

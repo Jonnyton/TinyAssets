@@ -288,8 +288,8 @@ jobs:
       # --- Repair branch 6: provider_exhaustion (Lane 4b) --------------
       # Daemon alive + writing, but every scene terminates as REVERT —
       # the 2026-04-23 P0 signature. Revert-loop canary fires this via
-      # the triage pipeline; auto-repair halts the generator (docker
-      # stop tinyassets-worker + .pause sentinel) and pages the host
+      # the triage pipeline; auto-repair halts the generator (a .pause
+      # sentinel in every universe) and pages the host
       # priority=2 because provider routing needs human intervention
       # (rotate API keys, bump quota, flip tier_routing_policy).
       #
@@ -317,19 +317,18 @@ jobs:
             echo "::warning::provider_exhaustion DETECTED but auto-repair gated off (TINYASSETS_REVERT_AUTO_REPAIR unset). WARN-only mode; host must act manually."
           fi
 
-      - name: Repair — provider_exhaustion (stop worker + .pause)
+      - name: Repair — provider_exhaustion (.pause every universe)
         id: repair_provider_exhaustion
         if: >
           steps.classify.outputs.class == 'provider_exhaustion' &&
           steps.repair_provider_exhaustion_gate.outputs.auto_repair_enabled == 'true'
         continue-on-error: true
         run: |
-          echo "::warning::provider_exhaustion — halting worker + pausing universe"
+          echo "::warning::provider_exhaustion — pausing every universe"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py guard-host-mutation --command-timeout 180 -- /bin/bash -se" <<'REPAIR_PROVIDER'
           set -euo pipefail
-          docker stop tinyassets-worker 2>&1 || true
           for udir in /var/lib/docker/volumes/tinyassets-data/_data/*/; do
             [ -d "$udir" ] && touch "$udir.pause" && echo "paused $udir"
           done

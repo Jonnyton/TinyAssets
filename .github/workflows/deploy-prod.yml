@@ -229,29 +229,6 @@ jobs:
           chown "$TINYASSETS_UID:$TINYASSETS_GID" "$CODEX_DIR"
           chmod 700 "$CODEX_DIR"
 
-          # Migration: if the volume is empty but a tinyassets-worker container is
-          # currently running with a Codex auth.json inside it, copy the live
-          # refresh chain into /data/.codex so the new container preserves it
-          # instead of falling back to the stale env-var secret.
-          if [ ! -f "$CODEX_DIR/auth.json" ]; then
-            tmp_dir="$(mktemp -d)"
-            trap 'rm -rf "$tmp_dir"' EXIT
-            if docker inspect tinyassets-worker >/dev/null 2>&1; then
-              if docker exec tinyassets-worker test -f /data/.codex/auth.json 2>/dev/null; then
-                echo "migrating live codex auth.json from tinyassets-worker:/data/.codex"
-                docker cp tinyassets-worker:/data/.codex/auth.json "$tmp_dir/auth.json"
-              elif docker exec tinyassets-worker test -f /app/.codex/auth.json 2>/dev/null; then
-                echo "migrating legacy codex auth.json from tinyassets-worker:/app/.codex"
-                docker cp tinyassets-worker:/app/.codex/auth.json "$tmp_dir/auth.json"
-              fi
-            fi
-            if [ -s "$tmp_dir/auth.json" ]; then
-              cp "$tmp_dir/auth.json" "$CODEX_DIR/auth.json"
-              chown "$TINYASSETS_UID:$TINYASSETS_GID" "$CODEX_DIR/auth.json"
-              chmod 600 "$CODEX_DIR/auth.json"
-            fi
-          fi
-
           # Confirm final state for the log.
           ls -la "$CODEX_DIR" || true
 
@@ -261,26 +238,6 @@ jobs:
           fi
           chown -R "$TINYASSETS_UID:$TINYASSETS_GID" "$CLAUDE_DIR"
           chmod 700 "$CLAUDE_DIR"
-
-          if ! find "$CLAUDE_DIR" -mindepth 1 -maxdepth 1 | grep -q .; then
-            tmp_claude="$(mktemp -d)"
-            if docker inspect tinyassets-worker >/dev/null 2>&1; then
-              if docker exec tinyassets-worker test -d /data/.claude 2>/dev/null; then
-                echo "migrating live Claude config from tinyassets-worker:/data/.claude"
-                docker cp tinyassets-worker:/data/.claude/. "$tmp_claude/" || true
-              elif docker exec tinyassets-worker test -d /app/.claude 2>/dev/null; then
-                echo "migrating legacy Claude config from tinyassets-worker:/app/.claude"
-                docker cp tinyassets-worker:/app/.claude/. "$tmp_claude/" || true
-              fi
-            fi
-            if find "$tmp_claude" -mindepth 1 -maxdepth 1 | grep -q .; then
-              cp -a "$tmp_claude"/. "$CLAUDE_DIR"/
-              chown -R "$TINYASSETS_UID:$TINYASSETS_GID" "$CLAUDE_DIR"
-              find "$CLAUDE_DIR" -type d -exec chmod 700 {} +
-              find "$CLAUDE_DIR" -type f -exec chmod 600 {} +
-            fi
-            rm -rf "$tmp_claude"
-          fi
 
           ls -la "$CLAUDE_DIR" || true
           SH

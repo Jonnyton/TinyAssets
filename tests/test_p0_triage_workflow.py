@@ -264,7 +264,7 @@ def test_triage_repairs_run_inside_authoritative_host_lock():
         "Repair — disk full (docker prune + journalctl vacuum)",
         "Repair — image pull failure (release-state rollback target)",
         "Repair — watchdog hot-loop (stop + sleep 60 + start)",
-        "Repair — provider_exhaustion (stop worker + .pause)",
+        "Repair — provider_exhaustion (.pause every universe)",
         "Attempt compose restart",
     )
     steps = _steps(_load())
@@ -341,9 +341,13 @@ def test_provider_exhaustion_repair_keeps_its_ssh_remote_target():
     run = _step_by_id("repair_provider_exhaustion")["run"]
 
     remote_target = '"${DO_SSH_USER}@${DO_DROPLET_HOST}"'
-    repair_command = "docker stop tinyassets-worker 2>&1 || true"
+    # Was `docker stop tinyassets-worker`. That container went away 2026-08-29
+    # with the host-run fleet (PLAN.md); the .pause sweep is now the whole
+    # repair, and it must still run on the REMOTE host, not the runner.
+    repair_command = "for udir in /var/lib/docker/volumes/tinyassets-data/_data/*/"
     assert remote_target in run
     assert run.index(remote_target) < run.index(repair_command)
+    assert "docker stop tinyassets-worker" not in run
 
 
 def test_persistent_red_escalation_fails_visibly_after_actual_reprobe():

@@ -155,7 +155,8 @@ def test_dockerfile_claude_version_smoke():
 def test_dockerfile_installs_codex_flock_wrapper():
     """Final stage must install deploy/codex-flock-wrapper.sh as /usr/local/bin/codex.
 
-    compose sets CODEX_HOME=/data/.codex across daemon + worker.
+    compose sets CODEX_HOME=/data/.codex on the daemon, and the wrapper still
+    serializes the daemon's own concurrent `codex` subprocesses.
     Codex's official CI/CD auth guide forbids sharing one
     auth.json across concurrent runners; the wrapper serializes
     invocations via an exclusive flock on CODEX_HOME/.lock.
@@ -215,7 +216,7 @@ def test_codex_flock_wrapper_script_present():
     assert text.rstrip().endswith('exec flock -x "${LOCK_FILE}" "${CODEX_BIN}" "$@"'), (
         "wrapper's final line must `exec flock -x ... codex \"$@\"` so the "
         "wrapper process is replaced (no double-fork) and signals + exit codes "
-        "propagate from codex to the daemon/worker caller"
+        "propagate from codex to the daemon caller"
     )
 
 
@@ -309,17 +310,24 @@ def test_compose_daemon_uses_env_file():
 
 
 def test_compose_requires_explicit_workflow_image_without_latest_default():
-    """daemon + worker must not silently pull mutable :latest."""
+    """Every TinyAssets-image service must not silently pull mutable :latest."""
     yaml = __import__("yaml")
     data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
 
-    for service_name in (
-        "daemon",
-        "worker",
-        "worker-codex-2",
-        "worker-claude-1",
-        "worker-claude-2",
-    ):
+    # The four `worker*` services were deleted on 2026-08-29 with the host-run
+    # fleet: nothing runs outside a user's universe (PLAN.md). Derived rather
+    # than listed, so a NEW service on the TinyAssets image inherits the pin
+    # requirement instead of silently escaping this test.
+    tinyassets_services = [
+        name
+        for name, service in data["services"].items()
+        if "TINYASSETS_IMAGE" in str(service.get("image", ""))
+    ]
+    assert set(tinyassets_services) == {"daemon", "slack-agent"}, (
+        "unexpected TinyAssets-image service set: " f"{sorted(tinyassets_services)}"
+    )
+
+    for service_name in tinyassets_services:
         image = data["services"][service_name].get("image", "")
         assert "${TINYASSETS_IMAGE:?" in image, (
             f"{service_name} image must require TINYASSETS_IMAGE instead of "
@@ -354,17 +362,16 @@ def test_compose_env_file_covers_daemon_service():
 
 
 def test_compose_codex_auth_home_is_shared_data_volume():
-    """Services that invoke codex must share one persistent CODEX_HOME."""
+    """Services that invoke codex must share one persistent CODEX_HOME.
+
+    `slack-agent` is deliberately absent: it mounts no data volume and holds no
+    provider auth. The four `worker*` services were deleted on 2026-08-29 with
+    the host-run fleet (nothing runs outside a user's universe -- PLAN.md).
+    """
     yaml = __import__("yaml")
     data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
 
-    for service_name in (
-        "daemon",
-        "worker",
-        "worker-codex-2",
-        "worker-claude-1",
-        "worker-claude-2",
-    ):
+    for service_name in ("daemon",):
         service = data["services"][service_name]
         environment = service.get("environment") or {}
         volumes = service.get("volumes") or []
@@ -379,17 +386,14 @@ def test_compose_codex_auth_home_is_shared_data_volume():
 
 
 def test_compose_claude_config_dir_is_shared_data_volume():
-    """Services that invoke claude must share one persistent CLAUDE_CONFIG_DIR."""
+    """Services that invoke claude must share one persistent CLAUDE_CONFIG_DIR.
+
+    Same service set as the CODEX_HOME case above, for the same reasons.
+    """
     yaml = __import__("yaml")
     data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
 
-    for service_name in (
-        "daemon",
-        "worker",
-        "worker-codex-2",
-        "worker-claude-1",
-        "worker-claude-2",
-    ):
+    for service_name in ("daemon",):
         service = data["services"][service_name]
         environment = service.get("environment") or {}
         volumes = service.get("volumes") or []
@@ -397,34 +401,64 @@ def test_compose_claude_config_dir_is_shared_data_volume():
         assert "tinyassets-data:/data" in volumes
 
 
-def test_compose_declares_four_pinned_cloud_workers_with_goal_pool_off():
+# The former `test_compose_declares_four_pinned_cloud_workers_with_goal_pool_off`
+# asserted the host-run fleet MUST exist. Deleted 2026-08-29: nothing runs
+# unless it lives inside a user's universe under that user's control (PLAN.md),
+# and the platform never runs an actor of its own. Its inverse is below.
+
+
+def test_compose_declares_no_host_run_cloud_worker_service():
+    """No compose service may run the host-owned fleet supervisor.
+
+    This is the founder principle made executable: the platform never runs an
+    actor of its own, so no service command may invoke `tinyassets.cloud_worker`
+    and no service may carry the fleet-only worker identity env vars.
+    """
     yaml = __import__("yaml")
     data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
-    services = data["services"]
-    expected = {
-        "worker": ("tinyassets-worker", "codex", "codex-1", "cloud-droplet-codex-1"),
-        "worker-codex-2": (
-            "tinyassets-worker-codex-2", "codex", "codex-2", "cloud-droplet-codex-2",
-        ),
-        "worker-claude-1": (
-            "tinyassets-worker-claude-1", "claude-code", "claude-1",
-            "cloud-droplet-claude-1",
-        ),
-        "worker-claude-2": (
-            "tinyassets-worker-claude-2", "claude-code", "claude-2",
-            "cloud-droplet-claude-2",
-        ),
-    }
 
-    for service_name, (container, provider, worker_id, host_user) in expected.items():
-        service = services[service_name]
+    raw = COMPOSE.read_text(encoding="utf-8")
+    assert "cloud_worker" not in raw, (
+        "deploy/compose.yml still names cloud_worker (service, anchor, or "
+        "healthcheck) — the host-run fleet is retired"
+    )
+
+    for name, service in data["services"].items():
+        command = " ".join(service.get("command") or [])
+        assert "tinyassets.cloud_worker" not in command, (
+            f"service {name} runs the retired host fleet supervisor"
+        )
+        healthcheck = " ".join((service.get("healthcheck") or {}).get("test") or [])
+        assert "cloud_worker" not in healthcheck, (
+            f"service {name} healthchecks the retired host fleet supervisor"
+        )
         environment = service.get("environment") or {}
-        command = service.get("command") or []
-        assert service["container_name"] == container
-        assert command[-2:] == ["--provider", provider]
-        assert environment.get("TINYASSETS_WORKER_ID") == worker_id
-        assert environment.get("UNIVERSE_SERVER_HOST_USER") == host_user
-        assert environment.get("TINYASSETS_GOAL_POOL") == "off"
+        for fleet_only in ("TINYASSETS_WORKER_ID", "TINYASSETS_WORKER_MODEL"):
+            assert fleet_only not in environment, (
+                f"service {name} carries fleet-only env {fleet_only}"
+            )
+
+
+def test_no_cloud_worker_module_ships_in_the_package():
+    """`tinyassets.cloud_worker` must not exist, and must not be importable.
+
+    Deleting the compose services without deleting the module would leave the
+    host fleet one `docker run` away. Asserted on the filesystem AND through the
+    import system, because a stale .pyc or an installed copy would satisfy only
+    one of the two.
+    """
+    import importlib.util
+
+    package_root = REPO_ROOT / "tinyassets"
+    for name in ("cloud_worker.py", "cloud_worker_healthcheck.py"):
+        assert not (package_root / name).exists(), (
+            f"tinyassets/{name} is back — the host-run fleet is retired"
+        )
+
+    for module in ("tinyassets.cloud_worker", "tinyassets.cloud_worker_healthcheck"):
+        assert importlib.util.find_spec(module) is None, (
+            f"{module} is importable — the host-run fleet is retired"
+        )
 
 
 # ---------------------------------------------------------------------------

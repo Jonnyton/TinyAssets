@@ -19,9 +19,11 @@ from tinyassets.api.universe import (
 )
 from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
 from tinyassets.cloud_automation_setup import prepare_cloud_automation
-from tinyassets.cloud_worker import supervisor_heartbeat_filename
 from tinyassets.providers.router import ProviderRouter
-from tinyassets.runtime.assigned_queue_consumer import AssignedQueueConsumer
+from tinyassets.runtime.assigned_queue_consumer import (
+    AssignedQueueConsumer,
+    supervisor_heartbeat_filename,
+)
 from tinyassets.storage import db_path
 from tinyassets.storage.automation_activations import AutomationActivationStore
 
