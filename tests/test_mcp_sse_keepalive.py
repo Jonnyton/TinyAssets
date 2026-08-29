@@ -1,19 +1,25 @@
-"""A minutes-long tool call is NOT a silent SSE stream: the transport pings.
+"""The origin's SSE response for a long tool call is not silent: it pings.
 
-``docs/concerns/2026-08-28-converse-sse-stream-has-no-keepalive.md`` claimed a
-``converse`` response "sends nothing at all until the result frame", and that
-an intermediary therefore cuts it. Traced on 2026-08-29: fastmcp 3 hands the
-POST to the MCP SDK's ``StreamableHTTPServerTransport``, which answers with
+``docs/concerns/2026-08-28-converse-sse-stream-has-no-keepalive.md`` was filed
+on the premise that a ``converse`` response "sends nothing at all until the
+result frame". Traced on 2026-08-29: fastmcp 3 hands the POST to the MCP SDK's
+``StreamableHTTPServerTransport``, which answers with
 ``sse_starlette.EventSourceResponse(content, data_sender_callable, headers)``
 - ``ping`` unset - and sse-starlette's default is a ``: ping`` comment every
-15 seconds, written concurrently with the tool. These tests drive the
-PRODUCTION app (``create_streamable_http_app``, its own middleware stack) with
-a tool that outlives the ping interval and read the raw SSE body back.
+15 seconds, written by a task that runs alongside the tool.
+
+What this proves, and what it does not (Codex review, 2026-08-29): it drives
+the production app CONSTRUCTION (``create_streamable_http_app``, its own
+middleware stack) under whatever package versions the run resolves
+(``fastmcp>=3.0`` floats), and reads the body Starlette's ``TestClient`` hands
+back - which is buffered to EOF. So it proves the origin emits the pings
+before the result, at the application layer. It does NOT prove delivery
+through uvicorn, cloudflared, Cloudflare or the Worker; the concern stays
+open on that question until a >3-minute live ``converse`` is captured.
 """
 
 from __future__ import annotations
 
-import inspect
 import json
 
 import anyio
@@ -95,13 +101,23 @@ def test_the_response_stream_carries_pings_while_the_tool_runs(app_with_slow_too
     assert all(p < results[-1] for p in pings), lines
 
 
-def test_production_keeps_the_pinging_sse_path():
-    """The proof above holds only while the app keeps the SDK's SSE response
-    mode (``json_response`` defaults to False - a JSON response has no stream
-    to ping) and sse-starlette keeps its 15s default."""
-    from tinyassets import universe_server as us
+def test_the_tool_call_is_answered_in_sse_mode_with_the_default_ping_interval(app_with_slow_tool):
+    """The proof above holds only in SSE response mode - ``json_response`` is
+    decided by FastMCP settings (``FASTMCP_JSON_RESPONSE``) because the app
+    omits the argument, and a JSON response has no stream to ping - and only
+    while sse-starlette keeps its 15s default. Both are asserted at runtime:
+    a source-string check would not see a settings flip."""
+    with TestClient(app_with_slow_tool) as client:
+        sid = _open_session(client)
+        r = client.post("/mcp", content=_rpc(
+            "tools/call", {"name": "slow_probe", "arguments": {"seconds": 0.0}}, 3,
+        ), headers={**_HEADERS, "mcp-session-id": sid})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/event-stream")
+    assert "no-transform" in r.headers.get("cache-control", "")
 
-    src = inspect.getsource(us.create_streamable_http_app)
-    assert 'mcp.http_app(path="/mcp", transport="streamable-http")' in src
-    assert "json_response" not in src
+
+def test_sse_starlette_default_ping_interval_is_15s():
+    """Runs WITHOUT the fixture, so the class attribute is the library's own.
+    Production sets no override; this is the interval the proof relies on."""
     assert EventSourceResponse.DEFAULT_PING_INTERVAL == 15

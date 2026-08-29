@@ -1,0 +1,62 @@
+# A long `converse` response: the origin pings every 15s; delivery through the tunnel is unproven
+
+**Filed:** 2026-08-28. **Premise corrected:** 2026-08-29.
+**Verified:** the ORIGIN side is proven (`tests/test_mcp_sse_keepalive.py`); the
+end-to-end side is not — that is the part that stays open.
+**Severity:** P2 — the client survives a cut stream (PR #2640: it invalidates
+the session, reports a sentence, offers **Send again**); this is "find out
+whether long turns are still being cut, and by what".
+
+## What was claimed, and what is actually true
+
+The original filing said a `converse` tool call is answered over an SSE stream
+that "sends nothing at all until the result frame", so an intermediary would
+cut a minutes-long turn. That premise is **false**:
+
+- fastmcp 3 hands an accepted tool call to the MCP SDK's
+  `StreamableHTTPServerTransport`, which answers with
+  `sse_starlette.EventSourceResponse(content, data_sender_callable, headers)`
+  — `ping` unset — and sse-starlette's default is a `: ping - <timestamp>`
+  comment every **15 seconds**, written by a task that runs alongside the
+  SDK's SSE writer while it waits for the tool result. The synchronous
+  `converse` runs in FastMCP's threadpool, so it does not block the ping.
+- `tests/test_mcp_sse_keepalive.py` drives `create_streamable_http_app()`
+  (the production construction, with its own pure-ASGI middleware stack) with a
+  tool that outlives the scaled ping interval and reads two or more pings
+  before the result frame. It proves the origin emits them, under the
+  packages a local run resolves (`fastmcp>=3.0` floats; production on
+  2026-08-29 ran mcp 1.29.1 / fastmcp 3.4.7 / sse-starlette 3.4.8) — it does
+  NOT prove delivery through `uvicorn` → `cloudflared` → Cloudflare → the
+  Worker → the client, because Starlette's `TestClient` buffers the body.
+- Nothing in the repo buffers the response: both `/mcp` middlewares are
+  pure-ASGI pass-throughs, and `deploy/cloudflare-worker/worker.js` returns the
+  upstream `ReadableStream` directly. Cloudflare documents that Tunnel streams
+  `text/event-stream`, Workers have no duration limit while the client stays
+  connected, and 15s is well under the 125s proxy read timeout. A live
+  `initialize` on 2026-08-29 answered `Content-Type: text/event-stream` with
+  `Cache-Control: no-cache, no-transform`. (Codex review, 2026-08-29.)
+
+## What is still open
+
+1. **Whether long turns are still being cut end to end.** Nothing above is a
+   wire capture of a >3-minute authenticated `converse` through
+   `https://tinyassets.io/mcp`. Until one exists, the 2026-08-28 "200 whose
+   body ends mid-frame" symptom has no established cause: a deploy recreating
+   the container under the open response is one candidate
+   (`docs/concerns/2026-08-29-a-deploy-kills-in-flight-turns-silently.md`),
+   an intermediary is another; PR #2640 recorded three separate observations
+   (a 503 mid-deploy, a cold-load failure, a cut stream) and said
+   contemporaneous wire evidence was still required.
+2. **`json_response` is settings-driven.** The app omits the argument, so
+   FastMCP settings (`FASTMCP_JSON_RESPONSE`) decide the mode; a JSON response
+   has no stream to ping. The test asserts the response's content type at
+   runtime; keep that guard, not a source-string one.
+
+## How to resolve this file
+
+Delete it when one authenticated `converse` longer than 3 minutes completes
+over the live connector without the client reporting `stream_truncated`, with
+the evidence stamped: date, the turn's duration, the surface it ran on, and
+(if captured) the raw response showing the `: ping` comments arriving. If such
+a turn IS cut, replace this file with the cause — the tunnel log for that
+request id and the container's `StartedAt` decide between the two candidates.
