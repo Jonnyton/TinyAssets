@@ -26,6 +26,7 @@ never be reached through it. The two together cover the whole contract.
 
 from __future__ import annotations
 
+import base64 as _b64
 import hashlib
 import http.server
 import json
@@ -38,6 +39,7 @@ from tinyassets.credential_vault import write_credential_vault
 from tinyassets.effectors import authenticated_external_call as aec
 from tinyassets.effectors.authenticated_external_call import (
     EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+    apply_body_transforms,
     run_authenticated_external_call_effector,
 )
 from tinyassets.storage import outbound_connections as _oc
@@ -661,3 +663,120 @@ def test_revoked_consent_refuses_the_call(tmp_path, monkeypatch):
         run_id="r1",
     )
     assert evidence["error_kind"] == "missing_consent"
+
+
+# --------------------------------------------------------------------------- #
+# Body transforms (openspec: external-call-body-encoding). Live 2026-08-29 a
+# model-generated base64 came back `422 not valid Base64`, then as valid base64
+# of a transcribed file (README +2/-87), then a "repair" that re-typed the file
+# (+22/-14). The effector now owns the encoding and the byte-moving: a node
+# writes text and references fetched bytes.
+# --------------------------------------------------------------------------- #
+def _packet(body):
+    return {
+        "sink": EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+        "connection_id": "conn-http",
+        "grant_id": "grant-http",
+        "verb": "POST",
+        "request": {"method": "POST", "path": "/v1/messages", "body": body},
+    }
+
+
+def _wire(tmp_path, monkeypatch, run_state):
+    """Dispatch through the REAL broker + SSRF driver to a loopback; return
+    (evidence, recorded requests)."""
+    monkeypatch.setenv(_HTTP_FLAG, "1")
+    data_root, universe_dir, db_path = _setup(tmp_path)
+    loop = _Loopback()
+    _install_loopback_driver(monkeypatch, loop.port)
+    _install_inprocess_proxy(
+        monkeypatch, db_path=db_path, universe_dir=universe_dir, grant_id="grant-http",
+        provider="http", destination="api.example.com", runtime_root=tmp_path / "rt",
+    )
+    try:
+        evidence = run_authenticated_external_call_effector(
+            node_id="n1", output_keys=["out"], run_state=run_state,
+            base_path=str(universe_dir), run_id="r1",
+        )
+    finally:
+        loop.stop()
+    return evidence, loop.recorded
+
+
+def test_base64_sentinel_is_encoded_by_the_effector_never_the_model(tmp_path, monkeypatch):
+    text = "line one\nline two \u2014 with unicode\n"
+    packet = _packet({"message": "m", "content": {"$base64": text}, "branch": "b"})
+    evidence, recorded = _wire(tmp_path, monkeypatch, {"out": json.dumps(packet)})
+    assert evidence["delivered"] is True
+    sent = json.loads(recorded[0]["body"])
+    encoded = _b64.b64encode(text.encode()).decode()
+    assert sent == {"message": "m", "content": encoded, "branch": "b"}
+    assert "$base64" not in recorded[0]["body"].decode()
+
+
+def test_append_one_line_references_the_fetched_bytes(tmp_path, monkeypatch):
+    """The model writes ONLY the new line; every other byte comes from the
+    fetched response in run state (a contents-API-shaped payload whose base64
+    is wrapped at 60 columns, as such APIs do)."""
+    original = "# Title\n\n**Bold** para with `code`, an email a.b@c.d and \\Scripts\\path.\n"
+    wrapped = _b64.b64encode(original.encode()).decode()
+    wrapped = "\n".join(wrapped[i:i + 60] for i in range(0, len(wrapped), 60)) + "\n"
+    fetched = json.dumps(
+        {"path": "README.md", "sha": "abc", "content": wrapped, "encoding": "base64"}
+    )
+    new_line = "Patches by this universe are opened through the request rail.\n"
+    packet = _packet({
+        "message": "docs: append",
+        "sha": {"$ref": "fetched.sha"},
+        "content": {"$base64": {"$concat": [
+            {"$from_base64": {"$ref": "fetched.content"}}, new_line,
+        ]}},
+    })
+    run_state = {"fetched": fetched, "out": json.dumps(packet)}
+    evidence, recorded = _wire(tmp_path, monkeypatch, run_state)
+    assert evidence["delivered"] is True, evidence
+    sent = json.loads(recorded[0]["body"])
+    assert sent["sha"] == "abc"
+    assert _b64.b64decode(sent["content"]).decode() == original + new_line   # exact bytes
+
+
+def test_malformed_transforms_are_refused_and_nothing_is_sent(tmp_path, monkeypatch):
+    cases = {
+        "not text": {"content": {"$base64": 42}},
+        "not base64": {"content": {"$from_base64": "this is not base64!!"}},
+        "missing ref": {"content": {"$ref": "fetched.missing"}},
+        "concat not list": {"content": {"$concat": "x"}},
+        "ref into text": {"content": {"$ref": "note.deeper"}},
+    }
+    for index, (label, body) in enumerate(cases.items()):
+        run_state = {
+            "fetched": json.dumps({"content": "aGk="}), "note": "plain",
+            "out": json.dumps(_packet(body)),
+        }
+        case_root = tmp_path / f"case{index}"
+        case_root.mkdir()
+        evidence, recorded = _wire(case_root, monkeypatch, run_state)
+        assert evidence.get("error_kind") == "invalid_body_transform", (label, evidence)
+        assert recorded == [], label
+        assert "aGk=" not in json.dumps(evidence), label   # no values in the error
+
+
+def test_bodies_without_transforms_are_the_same_object():
+    body = {"text": "hello", "nested": {"k": ["v", 1, None]}, "$notatransform": {"a": 1, "b": 2}}
+    out, err = apply_body_transforms(body, {})
+    assert err is None and out is body
+    assert apply_body_transforms("raw string", {}) == ("raw string", None)
+    assert apply_body_transforms(None, {}) == (None, None)
+
+
+def test_ref_traverses_json_strings_lists_and_nested_transforms():
+    state = {"resp": json.dumps({"items": [{"id": "a"}, {"id": "b"}], "content": "aGVsbG8="})}
+    assert apply_body_transforms({"$ref": "resp.items.1.id"}, state) == ("b", None)
+    decoded = apply_body_transforms({"$from_base64": {"$ref": "resp.content"}}, state)
+    assert decoded == ("hello", None)
+    assert apply_body_transforms(
+        {"$base64": {"$concat": [{"$from_base64": {"$ref": "resp.content"}}, "!"]}}, state,
+    ) == (_b64.b64encode(b"hello!").decode(), None)
+    _out, err = apply_body_transforms({"$ref": "resp.items.9.id"}, state)
+    assert err and "out of range" in err
+

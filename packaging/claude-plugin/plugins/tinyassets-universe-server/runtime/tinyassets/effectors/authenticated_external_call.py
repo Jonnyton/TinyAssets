@@ -34,6 +34,30 @@ The packet is fully user-specified; the platform validates SHAPE, not channel:
       }
     }
 
+BODY TRANSFORMS. The one thing this effector knows besides shape is ONE
+encoding. Anywhere in ``request.body`` a one-key object whose key starts with
+``$`` is a transform the effector applies before the request leaves - so a
+node writes TEXT and references BYTES, and never hand-produces base64 or
+re-types a file (live 2026-08-29: a model-generated base64 first came back
+``422 not valid Base64``, then valid base64 of a transcribed file that lost
+87 lines, then a "repair" that re-typed the file with 36 differences):
+
+    {"$base64": X}        the base64 of X's UTF-8 bytes
+    {"$from_base64": X}   the UTF-8 text of base64 X (whitespace-tolerant)
+    {"$ref": "a.b.0.c"}   the value at that dotted path in the run's state;
+                          a string that is JSON is traversed, lists by index
+    {"$concat": [X, ...]} the texts joined
+
+X may itself be a transform, so "append one line to a fetched file" is
+
+    {"content": {"$base64": {"$concat": [
+        {"$from_base64": {"$ref": "fetched.content"}}, "the new line\n"]}}}
+
+and the model authored only the line. A malformed transform (wrong type, an
+unresolvable path, bytes that are not text) refuses the whole call with a
+secret-free error - nothing half-transformed is ever sent. A body with no
+transform is sent byte-for-byte as before.
+
 CREDENTIAL-BLINDNESS. This effector NEVER resolves or sees the credential. It
 resolves an exact scoped proxy under the universe's own authority and hands the
 wire request to ``proxy.request(verb, request)``. The credential is applied
@@ -54,6 +78,8 @@ payload-supplied identity.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
 import urllib.parse
@@ -111,6 +137,124 @@ def _find_packet(
 def _str_field(source: dict[str, Any], key: str) -> str:
     value = source.get(key)
     return value.strip() if isinstance(value, str) else ""
+
+
+# --------------------------------------------------------------------------- #
+# Body transforms - the effector's one encoding, applied before the wire
+# --------------------------------------------------------------------------- #
+_TRANSFORM_OPS = ("$base64", "$from_base64", "$ref", "$concat")
+_MAX_TRANSFORM_DEPTH = 32
+
+
+class _TransformError(ValueError):
+    """A malformed transform. The message names paths and types, never values."""
+
+
+def _is_transform(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and len(value) == 1
+        and next(iter(value)) in _TRANSFORM_OPS
+    )
+
+
+def _resolve_ref(path: Any, run_state: dict[str, Any]) -> Any:
+    if not isinstance(path, str) or not path.strip():
+        raise _TransformError("$ref must be a non-empty dotted path")
+    node: Any = run_state
+    walked: list[str] = []
+    for part in path.split("."):
+        here = ".".join(walked) or "<root>"
+        if isinstance(node, str):
+            stripped = node.strip()
+            if stripped[:1] not in ("{", "["):
+                raise _TransformError(f"$ref {path!r}: value at {here} is text, not JSON")
+            try:
+                node = json.loads(stripped)
+            except ValueError as exc:
+                raise _TransformError(f"$ref {path!r}: value at {here} is not JSON") from exc
+        if isinstance(node, dict):
+            if part not in node:
+                raise _TransformError(f"$ref {path!r}: no key {part!r} at {here}")
+            node = node[part]
+        elif isinstance(node, list):
+            try:
+                index = int(part)
+            except ValueError as exc:
+                raise _TransformError(
+                    f"$ref {path!r}: {part!r} is not a list index at {here}"
+                ) from exc
+            if not -len(node) <= index < len(node):
+                raise _TransformError(f"$ref {path!r}: index {index} out of range at {here}")
+            node = node[index]
+        else:
+            raise _TransformError(
+                f"$ref {path!r}: cannot descend into {type(node).__name__} at {here}"
+            )
+        walked.append(part)
+    return node
+
+
+def _as_text(value: Any, what: str) -> str:
+    if isinstance(value, str):
+        return value
+    raise _TransformError(f"{what} must resolve to text, got {type(value).__name__}")
+
+
+def _apply_transforms(value: Any, run_state: dict[str, Any], depth: int = 0) -> Any:
+    if depth > _MAX_TRANSFORM_DEPTH:
+        raise _TransformError("body transforms nested too deeply")
+    if _is_transform(value):
+        op, arg = next(iter(value.items()))
+        if op == "$ref":
+            return _resolve_ref(arg, run_state)
+        if op == "$concat":
+            if not isinstance(arg, list):
+                raise _TransformError("$concat takes a list")
+            return "".join(
+                _as_text(_apply_transforms(part, run_state, depth + 1), "$concat part")
+                for part in arg
+            )
+        if op == "$from_base64":
+            text = _as_text(_apply_transforms(arg, run_state, depth + 1), "$from_base64")
+            try:
+                raw = base64.b64decode("".join(text.split()), validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise _TransformError("$from_base64: not valid base64") from exc
+            try:
+                return raw.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise _TransformError("$from_base64: bytes are not UTF-8 text") from exc
+        text = _as_text(_apply_transforms(arg, run_state, depth + 1), "$base64")
+        return base64.b64encode(text.encode("utf-8")).decode("ascii")
+    if isinstance(value, dict):
+        return {key: _apply_transforms(item, run_state, depth + 1) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_apply_transforms(item, run_state, depth + 1) for item in value]
+    return value
+
+
+def _has_transform(value: Any) -> bool:
+    if _is_transform(value):
+        return True
+    if isinstance(value, dict):
+        return any(_has_transform(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_has_transform(v) for v in value)
+    return False
+
+
+def apply_body_transforms(body: Any, run_state: dict[str, Any]) -> tuple[Any, str | None]:
+    """Return ``(body, None)`` with every transform applied, or ``(None, why)``.
+
+    A body without transforms is returned as the SAME object, untouched.
+    """
+    if not _has_transform(body):
+        return body, None
+    try:
+        return _apply_transforms(body, run_state), None
+    except _TransformError as exc:
+        return None, str(exc)
 
 
 # --------------------------------------------------------------------------- #
@@ -455,7 +599,16 @@ def _run(
     if headers is not None:
         wire_request["headers"] = headers
     if "body" in request:
-        wire_request["body"] = request.get("body")
+        body, transform_error = apply_body_transforms(request.get("body"), run_state)
+        if transform_error:
+            # Refused whole: a half-transformed body must never reach the wire.
+            return {
+                "error": f"body transform refused: {transform_error}",
+                "error_kind": "invalid_body_transform",
+                "matched_output_key": matched_key,
+                "connection_id": connection_id,
+            }
+        wire_request["body"] = body
     header_name = _str_field(request, "header_name")
     if header_name:
         wire_request["header_name"] = header_name
@@ -503,5 +656,6 @@ def _run(
 
 __all__ = [
     "EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL",
+    "apply_body_transforms",
     "run_authenticated_external_call_effector",
 ]

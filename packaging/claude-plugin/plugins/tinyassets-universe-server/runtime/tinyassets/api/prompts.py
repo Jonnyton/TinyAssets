@@ -265,6 +265,14 @@ infer additional callable tools from legacy action names in old conversations.
    |                                | `allowed_endpoints:[{host,path_template,methods}]`; |
    |                                | then grant effector consent + a node with |
    |                                | effect `authenticated_external_call`    |
+   | Write a file through an API    | in the packet's `request.body`, put text |
+   | that takes base64 content      | in `{"$base64": "<text>"}`; to change a |
+   |                                | fetched file, reference its bytes:      |
+   |                                | `{"$base64": {"$concat": [{"$from_base64": |
+   |                                | {"$ref": "<state key>.content"}}, "<new line>\n"]}}` |
+   |                                | — the effector decodes, joins and       |
+   |                                | encodes. NEVER generate base64 or       |
+   |                                | re-type a file: both corrupt it.        |
    | Bind requester-owned compute    | `write_graph target="automation" operation="bind_provider"` |
    |                                | with `payload_json={"provider":"codex"}` |
    | Inspect connections             | `read_graph target="connections"` |
