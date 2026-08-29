@@ -31,7 +31,8 @@ from tinyassets.effectors.wiki_write_back import (
 
 
 def _authenticated_call_adapter(
-    *, node_id, output_keys, run_state, base_path, run_id, dry_run
+    *, node_id, output_keys, run_state, base_path, run_id, dry_run,
+    allowed_state_keys=None, prior_effects=None,
 ):
     return run_authenticated_external_call_effector(
         node_id=node_id,
@@ -40,11 +41,13 @@ def _authenticated_call_adapter(
         base_path=base_path,
         run_id=run_id,
         dry_run=dry_run,
+        allowed_state_keys=allowed_state_keys,
+        prior_effects=prior_effects,
     )
 
 
 def _wiki_write_back_adapter(
-    *, node_id, output_keys, run_state, base_path, run_id, dry_run
+    *, node_id, output_keys, run_state, base_path, run_id, dry_run, **_unused
 ):
     del dry_run  # internal write-back has no dry-run gate
     return run_wiki_write_back_effector(
@@ -65,6 +68,17 @@ _EFFECTORS = {
 }
 
 
+def _schema_defaulted_keys(state_schema) -> set:
+    """The keys the compiler treats as declared for every node (BUG-085):
+    state_schema entries carrying a default. Same helper the compiler uses."""
+    try:
+        from tinyassets.graph_compiler import _state_schema_defaults
+
+        return set(_state_schema_defaults(state_schema).keys())
+    except Exception:  # noqa: BLE001 - fail CLOSED: no extra keys become readable
+        return set()
+
+
 def run_effects_for_branch(
     *,
     branch,
@@ -83,12 +97,27 @@ def run_effects_for_branch(
     """
     del cloud_effect_session  # no per-channel cloud session; kept for call-site compat
     evidence_map: dict[str, dict] = {}
+    schema_defaulted = _schema_defaulted_keys(getattr(branch, "state_schema", None))
     for node in getattr(branch, "node_defs", None) or []:
         effects = list(getattr(node, "effects", None) or [])
         if not effects:
             continue
         node_id = getattr(node, "node_id", "")
         output_keys = list(getattr(node, "output_keys", None) or [])
+        # A packet may read ONLY what its node was allowed to see (the
+        # compiler's strict-isolation rule: declared input_keys plus
+        # state_schema-defaulted keys) and its own output keys - never the
+        # whole final state (Codex round 1, P0). It may also read the evidence
+        # of EARLIER nodes' generic-call effects in this run, which is how a
+        # fetched file reaches a write packet without passing through a model.
+        allowed_state_keys = (
+            set(getattr(node, "input_keys", None) or []) | schema_defaulted | set(output_keys)
+        )
+        prior_effects = {
+            nid: per[EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL]
+            for nid, per in evidence_map.items()
+            if EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL in per
+        }
         per_node = evidence_map.setdefault(node_id, {})
         for sink in effects:
             adapter = _EFFECTORS.get(sink)
@@ -127,6 +156,8 @@ def run_effects_for_branch(
                     base_path=base_path,
                     run_id=run_id,
                     dry_run=bool(dry_run),
+                    allowed_state_keys=allowed_state_keys,
+                    prior_effects=prior_effects,
                 )
             except Exception as exc:  # defensive: never raise from completion path
                 result = {
