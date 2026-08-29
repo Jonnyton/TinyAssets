@@ -43,3 +43,31 @@ one PR with a Codex refutation.
 
 Delete this file when the three call sites no longer stage the fence script and
 `tests/test_retire_cheat_loop_deploy_fence.py` is gone.
+
+## One more reason to finish 2.5a: the dormant paths still classify consumers (2026-08-29)
+
+PR #2685 adopted production's `tinyassets-data:/data:ro` mount into
+`deploy/compose.yml`'s `slack-agent` block, and the surrounding comment claimed
+that made the service liable to be stopped or removed by
+`retire_cheat_loop_deploy_fence.py`. **That claim was wrong, and the comment has
+been corrected.** Codex checked the call graph: `install-host-services.yml:69`,
+`restart-daemon.yml:68` and `p0-outage-triage.yml:82` all invoke only
+`guard-host-mutation`, which checks unresolved fence state and `restart=no`
+residue (`retire_cheat_loop_deploy_fence.py:2114`). It neither classifies extra
+volume consumers nor stops or removes anything. The read-only mount is safe
+under every workflow that runs today.
+
+The classification and destruction live in the dormant commands instead:
+`quiesce_unsafe` inventories and stops **all** volume consumers (`:2237`,
+`:2330`), removing an extra one needs
+`recover-unsafe --retire-extra-consumer <exact-name>` (`:3169`, `:3251`), and
+canonical stopped-fleet removal happens only inside recovery (`:3556`, `:4408`).
+None of that is reachable from a workflow — but the legacy boot reconciler can
+still quiesce consumers while recovering an old non-terminal fence state.
+
+So the mount is not a live hazard; the machinery that would treat it as one is
+simply asleep with no way to be woken deliberately. That is the same defect this
+concern already describes from the other direction — an armed fence with its
+exit deleted — and it strengthens option 2 above: finishing 2.5a removes the
+classifier along with everything else, and with it the question of whether a
+read-only consumer is legitimate.

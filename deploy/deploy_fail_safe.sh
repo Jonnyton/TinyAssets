@@ -28,16 +28,24 @@
 # put config mutation OUTSIDE the transaction — a failed auth-volume step, a
 # lost lock or a bad candidate image each left the NEW config installed under
 # the OLD image, and neither rollback path restored it. So the workflow now only
-# STAGES the five files into $BUNDLE_STAGE and this script owns the transaction:
+# STAGES the five files into $BUNDLE_DIR and this script owns the transaction:
 #
-#   validate_bundle   `docker compose config` on the STAGED file with the
+#   claim_bundle      copies the stage into a private mktemp dir UNDER THE LOCK;
+#                     everything below reads that copy. The workflow populates
+#                     the stage before this lock exists, so validating one set of
+#                     bytes and installing another was a live race.
+#   validate_bundle   `docker compose config` on the CLAIMED copy with the
 #                     production env file and the candidate image; asserts the
-#                     production invariants (service set, container names,
-#                     daemon memory limit, the logs read-only mounts), not just
-#                     service names. A miss refuses with prod untouched.
+#                     production invariants — service set, container names,
+#                     restart policy, digest-pinned sidecar images, the daemon's
+#                     env_file / /data volume / healthcheck / memory limit, that
+#                     the SOURCE text interpolates ${TINYASSETS_IMAGE}, and the
+#                     logs read-only mounts. A miss refuses, prod untouched.
 #   snapshot_bundle   copies what is live into
-#                     $BUNDLE_STATE_DIR/bundle-snapshots/<UTC stamp>/ (last 5 kept)
-#   install_bundle    installs the staged files, daemon-reloads, records whether
+#                     $BUNDLE_STATE_DIR/bundle-snapshots/<UTC stamp>-XXXXXX/ with
+#                     a `manifest` recording each file's uid/gid/mode, so a
+#                     restore puts back exactly what was there
+#   install_bundle    installs the claimed files, daemon-reloads, records whether
 #                     any vector input changed
 #   <converge>        plus `up -d --force-recreate logs` when vector inputs
 #                     changed — vector-entrypoint.sh copies the mounted files
@@ -47,11 +55,23 @@
 #                     $BUNDLE_STATE_DIR/bundle-previous pointer names BEFORE
 #                     converging the previous image
 #
-# The pointer only advances after a SUCCESSFUL install, so a rollback restores
-# exactly the state that install replaced. An absent stage directory is not an
-# error: it means "image-only deploy" (a manual run, or `--restore-bundle` on a
-# box that never staged one). A PARTIAL stage directory is an error — half a
-# bundle is the 2026-08 502.
+# The pointer advances ATOMICALLY (tmp + rename) and only after a SUCCESSFUL
+# install, so a rollback restores exactly the state that install replaced.
+# Failing to advance it is fatal, not a warning: every later rollback would read
+# the PREVIOUS deploy's snapshot and restore a bundle that was never live.
+#
+# Every post-install failure is fail-loud. A restore that does not complete
+# leaves $BUNDLE_STATE_DIR/bundle-dirty behind and reports
+# `deploy_result=rollback_failed`; while that marker exists a normal deploy
+# REFUSES with `bundle_dirty`, because snapshotting a half-installed tree would
+# make the mixed state the next rollback target. `--restore-bundle` is the way
+# out, and clears it.
+#
+# An absent stage directory is not an error: it means "image-only deploy" (a
+# manual run, or `--restore-bundle` on a box that never staged one). A PARTIAL
+# stage directory is an error — half a bundle is the 2026-08 502. An image-only
+# deploy that FAILS never touches the bundle: a surviving pointer belongs to an
+# earlier deploy and names a state this run did not create.
 #
 # Serialization (Codex review #7): takes the SAME host-mutation flock the
 # watchdog/autoheal use so a manual deploy cannot race a watchdog restart.
@@ -85,11 +105,16 @@
 # (the caller verifies ancestry/provenance).
 #
 # Exit codes:
-#   0  deployed the new image (daemon healthy + cloudflared up)
-#   1  refused before any host mutation (bad args / lock / pull / import /
-#      invalid bundle) — prod untouched
+#   0  deployed the new image (daemon healthy + cloudflared + logs up)
+#   1  refused, and the box is back where it started: bad args, lock, pull,
+#      import, `bundle_invalid`, `bundle_dirty`, or a post-install failure whose
+#      restore COMPLETED (`bundle_install_failed`, `bundle_pointer_failed`,
+#      `failed_env_write`)
 #   2  new image unhealthy; rolled back to the previous image + bundle (healthy)
-#   3  rollback also unhealthy — manual intervention required (loud)
+#   3  manual intervention required — the rollback itself did not complete
+#      (`rollback_failed`, `rollback_env_write_failed`, `rollback_unhealthy`,
+#      `failed_no_rollback_target`). On `rollback_failed` the bundle-dirty
+#      marker is set and normal deploys refuse until `--restore-bundle` clears it.
 set -uo pipefail
 
 RESTORE_BUNDLE=0
@@ -115,11 +140,20 @@ RUNTIME_DIR="${RUNTIME_DIR:-/opt/tinyassets}"
 COMPOSE_FILE="${COMPOSE_FILE:-${RUNTIME_DIR}/compose.yml}"
 UNIT_FILE="${UNIT_FILE:-/etc/systemd/system/tinyassets-daemon.service}"
 # Where the workflow scp's the five runtime files. Staging only — nothing here
-# is authoritative until install_bundle copies it into place.
-BUNDLE_STAGE="${BUNDLE_STAGE:-/tmp/tinyassets-bundle}"
+# is authoritative. The workflow uses a per-run directory
+# (/tmp/tinyassets-bundle-<run id>-<attempt>) and passes it in BUNDLE_DIR; the
+# bare default is the manual-deploy path.
+BUNDLE_DIR="${BUNDLE_DIR:-/tmp/tinyassets-bundle}"
 BUNDLE_STATE_DIR="${BUNDLE_STATE_DIR:-/var/lib/tinyassets-deploy}"
 SNAPSHOT_ROOT="${BUNDLE_STATE_DIR}/bundle-snapshots"
 BUNDLE_POINTER="${BUNDLE_STATE_DIR}/bundle-previous"
+# Durable "a bundle install did not finish cleanly" flag. Written before the
+# first install byte and cleared only by a completed install or a completed
+# restore. While it exists a normal deploy REFUSES: the alternative is that the
+# next deploy snapshots the mixed state and legitimizes it as the rollback
+# target (Codex round 2, §1). `--restore-bundle` runs regardless — it is the way
+# out — and clears the marker when its restore completes.
+BUNDLE_DIRTY="${BUNDLE_STATE_DIR}/bundle-dirty"
 BUNDLE_KEEP=5
 # The pre-#2442 install contract: the systemd unit runs compose as `tinyassets`
 # (deploy/tinyassets-daemon.service), so the runtime files it reads are owned by
@@ -149,7 +183,7 @@ BUNDLE_FILES=(
 )
 
 # snapshot-relative path | live destination | mode | owner class
-# The staged source for each row is $BUNDLE_STAGE/<basename of the rel path>,
+# The claimed source for each row is $BUNDLE_WORK/<basename of the rel path>,
 # which is why both compose destinations map back to the one staged compose.yml.
 BUNDLE_MAP=(
   "compose.yml|${RUNTIME_DIR}/compose.yml|0644|runtime"
@@ -171,6 +205,8 @@ VECTOR_INPUTS=(
 
 SNAPSHOT_PATH=""         # set by snapshot_bundle
 VECTOR_CHANGED=0         # set by the install / restore stages
+INSTALLED_THIS_RUN=0     # 1 only after install_bundle has written a byte
+BUNDLE_WORK=""           # private copy of the stage, made under the lock
 
 log() { printf '%s %s\n' "[deploy-fail-safe]" "$*"; }
 err() { printf '::error::%s\n' "$*" >&2; }
@@ -237,17 +273,31 @@ running_image_matches() {
   [ -n "$want" ] && [ "$want" = "$have" ]
 }
 
-accept() {  # daemon healthy AND running the requested image AND tunnel up
+accept() {  # daemon healthy AND running the requested image AND tunnel up AND logs up
   local want="$1"
   health_ok || return 1
   if ! running_image_matches "$want"; then
     err "daemon is healthy but NOT running ${want} (running: $(docker inspect -f '{{.Config.Image}}' "$DAEMON_CONTAINER" 2>/dev/null || echo unknown))"
     return 1
   fi
-  local i
-  for i in 1 2 3 4 5 6; do tunnel_up && return 0; sleep 5; done
-  err "daemon healthy but cloudflared tunnel not running (public surface down)"
-  return 1
+  local i tunnel=0
+  for i in 1 2 3 4 5 6; do tunnel_up && { tunnel=1; break; }; sleep 5; done
+  if [ "$tunnel" = "0" ]; then
+    err "daemon healthy but cloudflared tunnel not running (public surface down)"
+    return 1
+  fi
+  # LAST, deliberately. logs_running() returns on the first 'running' sighting,
+  # and health_ok can then burn up to HEALTH_TIMEOUT seconds — long enough for a
+  # freshly recreated vector to crash on a bad config after we already saw it up
+  # (Codex round 2, §4). Re-check at the end so acceptance reflects the state we
+  # are actually accepting.
+  local logs_state
+  logs_state="$(docker inspect -f '{{.State.Status}}' "$LOGS_CONTAINER" 2>/dev/null || echo missing)"
+  if [ "$logs_state" != "running" ]; then
+    err "daemon and tunnel are up but ${LOGS_CONTAINER} is '${logs_state}' (log forwarding down)"
+    return 1
+  fi
+  return 0
 }
 
 # Converge the production services onto TINYASSETS_IMAGE. Drives docker
@@ -297,16 +347,106 @@ recreate_logs() {
 
 # --- runtime bundle transaction -------------------------------------------
 
+# The state directory holds the rollback contract; nothing outside root needs
+# to read it, and the pointer names a path an unprivileged writer must not be
+# able to redirect.
+ensure_state_dir() {
+  local previous_umask
+  previous_umask="$(umask)"
+  umask 077
+  mkdir -p "$SNAPSHOT_ROOT"
+  local rc=$?
+  umask "$previous_umask"
+  if [ "$rc" -ne 0 ]; then
+    err "cannot create ${SNAPSHOT_ROOT}"
+    return 1
+  fi
+  chmod 700 "$BUNDLE_STATE_DIR" 2>/dev/null || true
+  chmod 700 "$SNAPSHOT_ROOT" 2>/dev/null || true
+  return 0
+}
+
+# Atomic: a truncating redirect that dies half-written leaves a pointer naming
+# nothing, and the rollback that reads it restores nothing while reporting
+# success (Codex round 2, §3).
+write_pointer() {
+  local value="$1" tmp
+  tmp="$(mktemp "${BUNDLE_STATE_DIR}/.bundle-previous.XXXXXX")" || return 1
+  chmod 600 "$tmp" 2>/dev/null || true
+  printf '%s\n' "$value" >"$tmp" || { rm -f "$tmp"; return 1; }
+  # -T so a destination that is somehow a DIRECTORY is an error. Plain `mv`
+  # would happily move the temp file INSIDE it and report success, leaving the
+  # pointer unreadable and the failure invisible.
+  mv -fT "$tmp" "$BUNDLE_POINTER" || { rm -f "$tmp"; return 1; }
+  chmod 600 "$BUNDLE_POINTER" 2>/dev/null || true
+  return 0
+}
+
+read_pointer() {
+  [ -f "$BUNDLE_POINTER" ] || return 1
+  cat "$BUNDLE_POINTER" 2>/dev/null
+}
+
+# The marker NAMES the snapshot that has to go back. A bare flag would be
+# useless on the first bundle deploy a box ever runs: the install fails before
+# the pointer exists, so nothing would name the snapshot the operator needs.
+mark_dirty() {
+  printf '%s\n' "${1:-}" >"$BUNDLE_DIRTY" \
+    || { err "cannot write the dirty marker ${BUNDLE_DIRTY}"; return 1; }
+  chmod 600 "$BUNDLE_DIRTY" 2>/dev/null || true
+  return 0
+}
+
+# What a restore must put back: the interrupted run's snapshot if there is one,
+# otherwise the last successful install's. The marker wins — it names a run that
+# did NOT finish, and that is the state nothing else has accounted for.
+restore_target() {
+  if [ -s "$BUNDLE_DIRTY" ]; then
+    local marked
+    marked="$(cat "$BUNDLE_DIRTY" 2>/dev/null || true)"
+    if [ -n "$marked" ]; then printf '%s' "$marked"; return 0; fi
+  fi
+  read_pointer
+}
+
+clear_dirty() {
+  rm -f "$BUNDLE_DIRTY" || { err "cannot clear the dirty marker ${BUNDLE_DIRTY}"; return 1; }
+  return 0
+}
+
 # "absent"  no stage directory at all -> image-only deploy, not an error
 # "ready"   all five staged files present
 # "partial" the directory exists but is incomplete -> refuse
 bundle_state() {
   local f
-  if [ ! -d "$BUNDLE_STAGE" ]; then printf 'absent'; return 0; fi
+  if [ ! -d "$BUNDLE_DIR" ]; then printf 'absent'; return 0; fi
   for f in "${BUNDLE_FILES[@]}"; do
-    if [ ! -f "${BUNDLE_STAGE}/${f}" ]; then printf 'partial'; return 0; fi
+    if [ ! -f "${BUNDLE_DIR}/${f}" ]; then printf 'partial'; return 0; fi
   done
   printf 'ready'
+}
+
+# Copy the stage into a private directory this run owns, and validate/install
+# from that copy ONLY. The workflow populates the stage before the lock is even
+# requested, so between our validation and our install another actor — a second
+# deploy, a manual run, anything with write access to /tmp — could swap the
+# bytes underneath us and we would install something we never validated
+# (Codex round 2, §1). Taking our own copy under the lock closes that window.
+claim_bundle() {
+  local f
+  BUNDLE_WORK="$(mktemp -d "${BUNDLE_STATE_DIR}/.bundle-work.XXXXXX")" || {
+    err "cannot create a private bundle working directory"
+    return 1
+  }
+  chmod 700 "$BUNDLE_WORK" 2>/dev/null || true
+  for f in "${BUNDLE_FILES[@]}"; do
+    if ! cp -p "${BUNDLE_DIR}/${f}" "${BUNDLE_WORK}/${f}"; then
+      err "cannot copy staged ${f} into ${BUNDLE_WORK}"
+      return 1
+    fi
+  done
+  log "claimed the staged bundle into ${BUNDLE_WORK} (validating and installing from there)"
+  return 0
 }
 
 vector_fingerprint() {
@@ -332,24 +472,71 @@ validate_bundle() {
   local cfg rc
   cfg="$(mktemp)" || { err "cannot create a temp file for bundle validation"; return 1; }
   if ! TINYASSETS_IMAGE="$NEW_IMAGE" docker compose --env-file "$ENV_FILE" \
-        -f "${BUNDLE_STAGE}/compose.yml" config --format json >"$cfg" 2>"${cfg}.err"; then
+        -f "${BUNDLE_WORK}/compose.yml" config --format json >"$cfg" 2>"${cfg}.err"; then
     err "staged compose.yml does not parse with ${ENV_FILE}: $(head -c 800 "${cfg}.err" 2>/dev/null)"
     rm -f "$cfg" "${cfg}.err"
     return 1
   fi
-  RUNTIME_DIR="$RUNTIME_DIR" EXPECT_IMAGE="$NEW_IMAGE" python3 - "$cfg" <<'PY'
+  # argv[1] is the RENDERED config; argv[2] is the RAW source, because the
+  # rendered daemon image proves only that THIS invocation resolved to the
+  # candidate — a literal candidate ref, or a different variable that happens to
+  # resolve the same, renders identically (Codex round 2, §2).
+  RUNTIME_DIR="$RUNTIME_DIR" EXPECT_IMAGE="$NEW_IMAGE" ENV_FILE="$ENV_FILE" \
+    python3 - "$cfg" "${BUNDLE_WORK}/compose.yml" <<'PY'
 import json
 import os
+import re
 import sys
 
 runtime = os.environ["RUNTIME_DIR"]
 expect_image = os.environ["EXPECT_IMAGE"]
+env_file = os.environ["ENV_FILE"]
 
 with open(sys.argv[1], encoding="utf-8") as handle:
     config = json.load(handle)
+with open(sys.argv[2], encoding="utf-8") as handle:
+    source_lines = handle.read().splitlines()
 
 services = config.get("services") or {}
 problems = []
+
+
+def source_block(service):
+    """The raw lines of one service block, by indentation.
+
+    No YAML parser: python3 on the droplet is not guaranteed to have PyYAML,
+    and this only has to find one `image:` line inside one service.
+    """
+    header = re.compile(r"^(\s*)%s:\s*(#.*)?$" % re.escape(service))
+    for index, line in enumerate(source_lines):
+        match = header.match(line)
+        if not match:
+            continue
+        indent = len(match.group(1))
+        block = []
+        for candidate in source_lines[index + 1 :]:
+            if not candidate.strip():
+                block.append(candidate)
+                continue
+            leading = len(candidate) - len(candidate.lstrip())
+            if leading <= indent:
+                break
+            block.append(candidate)
+        return block
+    return []
+
+
+daemon_source = source_block("daemon")
+image_lines = [
+    line for line in daemon_source if re.match(r"^\s*image:\s*\S", line)
+]
+if not image_lines:
+    problems.append("no `image:` line found in the daemon block of the source file")
+elif "${TINYASSETS_IMAGE" not in image_lines[0]:
+    problems.append(
+        "daemon image line does not interpolate ${TINYASSETS_IMAGE}: %r"
+        % (image_lines[0].strip(),)
+    )
 
 expected_services = {"daemon", "cloudflared", "logs"}
 if set(services) != expected_services:
@@ -381,6 +568,70 @@ if image != expect_image:
     problems.append(
         "daemon.image resolved to %r; it must interpolate ${TINYASSETS_IMAGE} "
         "(candidate %r)" % (image, expect_image)
+    )
+
+# The sidecars carry no ${TINYASSETS_IMAGE}, so nothing above constrains them at
+# all: an arbitrary or unpinned cloudflared/vector image passed every check
+# (Codex round 2, §2). Both must be the expected upstream repo AND digest-pinned.
+for service, prefix in (
+    ("cloudflared", "cloudflare/cloudflared:"),
+    ("logs", "timberio/vector:"),
+):
+    sidecar_image = svc(service).get("image") or ""
+    if not sidecar_image.startswith(prefix):
+        problems.append(
+            "%s.image is %r, expected an image starting %r"
+            % (service, sidecar_image, prefix)
+        )
+    if "@sha256:" not in sidecar_image:
+        problems.append("%s.image %r is not digest-pinned" % (service, sidecar_image))
+
+# The daemon's own posture. A compose file that starts a daemon with no env
+# file, no data volume and no healthcheck converges "successfully" and serves
+# nothing: no secrets, an empty /data, and a container docker will never report
+# unhealthy no matter what it is doing.
+daemon_env_files = svc("daemon").get("env_file") or []
+env_file_paths = [
+    entry if isinstance(entry, str) else (entry or {}).get("path", "")
+    for entry in daemon_env_files
+]
+if env_file not in env_file_paths:
+    problems.append(
+        "daemon.env_file is %s; it must include %r or the daemon starts with no "
+        "secrets at all" % (sorted(str(p) for p in env_file_paths), env_file)
+    )
+
+daemon_data_mount = None
+for volume in svc("daemon").get("volumes") or []:
+    if isinstance(volume, str):
+        parts = volume.split(":")
+        if len(parts) >= 2 and parts[1] == "/data":
+            daemon_data_mount = parts[0]
+    elif isinstance(volume, dict) and volume.get("target") == "/data":
+        daemon_data_mount = volume.get("source")
+if daemon_data_mount != "tinyassets-data":
+    problems.append(
+        "daemon has no /data volume from 'tinyassets-data' (found %r); every "
+        "universe, both auth bundles and the OAuth db live there"
+        % (daemon_data_mount,)
+    )
+
+if not svc("daemon").get("healthcheck"):
+    problems.append(
+        "daemon has no healthcheck; this script's accept() would then wait on a "
+        "verdict docker will never produce"
+    )
+
+daemon_environment = svc("daemon").get("environment") or {}
+if isinstance(daemon_environment, list):
+    daemon_environment = dict(
+        entry.split("=", 1) for entry in daemon_environment if "=" in str(entry)
+    )
+if str(daemon_environment.get("TINYASSETS_DATA_DIR")) != "/data":
+    problems.append(
+        "daemon environment TINYASSETS_DATA_DIR is %r, expected '/data' — the "
+        "resolver would otherwise write beside the mount, not into it"
+        % (daemon_environment.get("TINYASSETS_DATA_DIR"),)
     )
 
 
@@ -491,6 +742,12 @@ snapshot_bundle() {
     err "cannot create snapshot directory ${snap}"
     return 1
   fi
+  # The manifest is what makes this an EXACT restoration. Forcing the current
+  # ownership contract on the way back would rewrite live `/opt/tinyassets/
+  # compose.yml` from root:root to tinyassets:tinyassets — a rollback that
+  # changes something (Codex round 2, §3). Record what was there; put that back.
+  : >"${snap}/manifest" || { err "snapshot: cannot create ${snap}/manifest"; return 1; }
+  chmod 600 "${snap}/manifest" 2>/dev/null || true
   for entry in "${BUNDLE_MAP[@]}"; do
     IFS='|' read -r rel dest mode owner <<<"$entry"
     if [ -f "$dest" ]; then
@@ -498,16 +755,45 @@ snapshot_bundle() {
         err "snapshot: cannot copy ${dest} into ${snap}"
         return 1
       fi
+      local meta
+      meta="$(stat -c '%u %g %a' "$dest" 2>/dev/null)" || {
+        err "snapshot: cannot stat ${dest}"
+        return 1
+      }
+      printf '%s|present|%s\n' "$rel" "$meta" >>"${snap}/manifest" || {
+        err "snapshot: cannot record ${rel} in the manifest"
+        return 1
+      }
     else
       log "snapshot: ${dest} is absent; recorded so a restore removes it"
       : >"${snap}/${rel}.absent" || { err "snapshot: cannot mark ${rel} absent"; return 1; }
+      printf '%s|absent|\n' "$rel" >>"${snap}/manifest" || {
+        err "snapshot: cannot record ${rel} in the manifest"
+        return 1
+      }
     fi
   done
   SNAPSHOT_PATH="$snap"
   log "bundle snapshot written to ${snap}"
-  # Keep the newest BUNDLE_KEEP snapshots; UTC stamps sort lexically.
+  return 0
+}
+
+# Retention runs AFTER the pointer advances, and never deletes what the pointer
+# names. Pruning before the advance meant a run of failed installs produced
+# newer snapshots while the pointer stayed put, until retention deleted the
+# rollback target out from under it (Codex round 2, §3).
+prune_snapshots() {
+  local keep old pointed
+  pointed="$(read_pointer || true)"
+  pointed="${pointed%/}"
   while IFS= read -r old; do
-    [ -n "$old" ] && rm -rf "$old"
+    [ -n "$old" ] || continue
+    old="${old%/}"
+    if [ -n "$pointed" ] && [ "$old" = "$pointed" ]; then
+      log "retention: keeping ${old} — the bundle pointer names it"
+      continue
+    fi
+    rm -rf "$old"
   done < <(ls -1d "${SNAPSHOT_ROOT}"/*/ 2>/dev/null | sort | head -n "-${BUNDLE_KEEP}")
   return 0
 }
@@ -522,9 +808,12 @@ install_bundle() {
     err "cannot create $(dirname "$UNIT_FILE")"
     return 1
   fi
+  # INSTALLED_THIS_RUN flips on the first byte, not on success: a failure after
+  # this point is what the restore and the dirty marker exist for.
+  INSTALLED_THIS_RUN=1
   for entry in "${BUNDLE_MAP[@]}"; do
     IFS='|' read -r rel dest mode owner <<<"$entry"
-    src="${BUNDLE_STAGE}/$(basename "$rel")"
+    src="${BUNDLE_WORK}/$(basename "$rel")"
     if [ "$owner" = "unit" ]; then
       file_owner="$UNIT_OWNER"; file_group="$UNIT_GROUP"
     else
@@ -537,52 +826,93 @@ install_bundle() {
     log "installed ${dest} (mode ${mode}, owner ${file_owner}:${file_group})"
   done
   if ! systemctl daemon-reload; then
-    err "note: systemctl daemon-reload failed after installing ${UNIT_FILE}"
+    err "systemctl daemon-reload failed after installing ${UNIT_FILE}"
+    return 1
   fi
   return 0
 }
 
-# Reinstall a snapshot over the live paths, with the same ownership rules the
-# forward install uses.
+# Reinstall a snapshot over the live paths, restoring the uid/gid/mode the
+# manifest recorded rather than re-asserting the forward install's contract.
+# A snapshot with no manifest is REFUSED: guessing the ownership is how a
+# rollback silently changes something.
 restore_bundle_from() {
-  local snap="$1" entry rel dest mode owner file_owner file_group rc=0
+  local snap="$1" entry rel dest mode owner rc=0 line state meta uid gid perms
+  if [ ! -f "${snap}/manifest" ]; then
+    err "restore: snapshot ${snap} has no manifest; refusing to guess ownership"
+    return 1
+  fi
   for entry in "${BUNDLE_MAP[@]}"; do
     IFS='|' read -r rel dest mode owner <<<"$entry"
-    if [ "$owner" = "unit" ]; then
-      file_owner="$UNIT_OWNER"; file_group="$UNIT_GROUP"
-    else
-      file_owner="$RUNTIME_OWNER"; file_group="$RUNTIME_GROUP"
-    fi
-    if [ -f "${snap}/${rel}" ]; then
-      if ! install -m "$mode" -o "$file_owner" -g "$file_group" "${snap}/${rel}" "$dest"; then
-        err "restore: failed to reinstall ${dest} from ${snap}"
-        rc=1
-      fi
-    elif [ -f "${snap}/${rel}.absent" ]; then
-      rm -f "$dest" || { err "restore: cannot remove ${dest}"; rc=1; }
-    else
-      err "restore: snapshot ${snap} has no entry for ${rel}"
+    line="$(grep -F "${rel}|" "${snap}/manifest" 2>/dev/null | head -1 || true)"
+    if [ -z "$line" ]; then
+      err "restore: snapshot ${snap} manifest has no row for ${rel}"
       rc=1
+      continue
     fi
+    state="$(printf '%s' "$line" | cut -d'|' -f2)"
+    meta="$(printf '%s' "$line" | cut -d'|' -f3)"
+    if [ "$state" = "absent" ]; then
+      rm -f "$dest" || { err "restore: cannot remove ${dest}"; rc=1; }
+      continue
+    fi
+    if [ ! -f "${snap}/${rel}" ]; then
+      err "restore: snapshot ${snap} claims ${rel} is present but the file is missing"
+      rc=1
+      continue
+    fi
+    uid="$(printf '%s' "$meta" | awk '{print $1}')"
+    gid="$(printf '%s' "$meta" | awk '{print $2}')"
+    perms="$(printf '%s' "$meta" | awk '{print $3}')"
+    if [ -z "$uid" ] || [ -z "$gid" ] || [ -z "$perms" ]; then
+      err "restore: manifest row for ${rel} is malformed ('${line}')"
+      rc=1
+      continue
+    fi
+    if ! install -m "$perms" -o "$uid" -g "$gid" "${snap}/${rel}" "$dest"; then
+      err "restore: failed to reinstall ${dest} from ${snap}"
+      rc=1
+      continue
+    fi
+    log "restored ${dest} (mode ${perms}, owner ${uid}:${gid})"
   done
-  systemctl daemon-reload || err "note: systemctl daemon-reload failed during bundle restore"
+  if ! systemctl daemon-reload; then
+    err "systemctl daemon-reload failed during bundle restore"
+    rc=1
+  fi
   return $rc
 }
 
+# Has this box EVER installed a bundle? Distinguishes "nothing to roll back"
+# from "the rollback contract is broken". Both look like a missing pointer.
+bundle_history_exists() {
+  [ -f "$BUNDLE_POINTER" ] && return 0
+  [ -f "$BUNDLE_DIRTY" ] && return 0
+  [ -d "$SNAPSHOT_ROOT" ] && [ -n "$(ls -A "$SNAPSHOT_ROOT" 2>/dev/null)" ] && return 0
+  return 1
+}
+
 # Restore whatever the pointer names, recording whether vector inputs moved.
-# Returns 0 when there is nothing to restore (image-only) or the restore
-# succeeded; 1 when a NAMED snapshot could not be restored. Callers keep going
-# on 1: getting prod back onto the previous image matters more than a config
-# file that is already wrong.
+#   0  restored, or this box has never installed a bundle (image-only)
+#   1  the rollback contract is broken: pointer missing while snapshots exist,
+#      pointer naming a missing snapshot, or a restore that did not complete
+# Callers treat 1 as FATAL. Previously this was best-effort and the caller kept
+# going, so a half-restored bundle could still be reported `rolled_back` /
+# `deployed` (Codex round 2, §1) — a success receipt over a mixed tree.
 restore_previous_bundle() {
   local snap before after rc
-  if [ ! -f "$BUNDLE_POINTER" ]; then
-    log "bundle: no ${BUNDLE_POINTER} pointer; image-only rollback"
+  snap="$(restore_target || true)"
+  snap="${snap%/}"
+  if [ -z "$snap" ]; then
+    if bundle_history_exists; then
+      err "bundle: no pointer and no dirty marker, but this box has bundle state; refusing to report a rollback that did not happen"
+      return 1
+    fi
+    log "bundle: no bundle has ever been installed here; image-only rollback"
     return 0
   fi
-  snap="$(cat "$BUNDLE_POINTER" 2>/dev/null || true)"
   if [ -z "$snap" ] || [ ! -d "$snap" ]; then
-    err "bundle pointer names a missing snapshot '${snap}'; image-only rollback"
+    err "bundle pointer names a missing snapshot '${snap}'; cannot restore"
     return 1
   fi
   log "restoring runtime bundle from ${snap}"
@@ -629,22 +959,62 @@ fi
 log "candidate image loads cleanly"
 
 # --- 3b. the runtime bundle: validate -> snapshot -> install ---------------
+if ! ensure_state_dir; then
+  err "cannot prepare ${BUNDLE_STATE_DIR}; refusing (prod untouched)"
+  echo "deploy_result=bundle_invalid"
+  exit 1
+fi
+
+# Restore the snapshot recorded before the failed install, and clear the dirty
+# marker only if that restore completes. Used by every post-install failure
+# path so none of them can report success over a mixed tree.
+recover_from_failed_install() {
+  local result="$1"
+  err "restoring ${SNAPSHOT_PATH} and leaving the pointer where it was"
+  if restore_bundle_from "$SNAPSHOT_PATH"; then
+    clear_dirty || true
+    echo "deploy_result=${result}"
+    exit 1
+  fi
+  err "restore from ${SNAPSHOT_PATH} ALSO failed — ${BUNDLE_DIRTY} stays, and the next normal deploy will refuse until --restore-bundle clears it"
+  echo "deploy_result=rollback_failed"
+  exit 3
+}
+
 if [ "$RESTORE_BUNDLE" = "1" ]; then
   # Undoing an install, never performing one: the staged bundle (if it is even
-  # still on the box) is exactly what this run is rolling back.
-  restore_previous_bundle || err "bundle restore incomplete; continuing with the image rollback"
+  # still on the box) is exactly what this run is rolling back. This path runs
+  # even with the dirty marker set — it is the way out of that state.
+  if ! restore_previous_bundle; then
+    err "--restore-bundle could not restore the previous bundle; refusing to converge an image over a bundle in an unknown state"
+    echo "deploy_result=rollback_failed"
+    exit 3
+  fi
+  clear_dirty || true
 else
+  if [ -f "$BUNDLE_DIRTY" ]; then
+    err "a previous bundle install did not finish and was not restored (${BUNDLE_DIRTY} exists)."
+    err "refusing: snapshotting this tree would legitimize a mixed bundle as the rollback target."
+    err "run: sudo bash $0 --restore-bundle <image ref>"
+    echo "deploy_result=bundle_dirty"
+    exit 1
+  fi
   BUNDLE_STATE="$(bundle_state)"
   case "$BUNDLE_STATE" in
     absent)
       log "bundle: absent, image-only deploy"
       ;;
     partial)
-      err "bundle: ${BUNDLE_STAGE} exists but is incomplete; refusing to install a partial bundle (prod untouched)"
+      err "bundle: ${BUNDLE_DIR} exists but is incomplete; refusing to install a partial bundle (prod untouched)"
       echo "deploy_result=bundle_invalid"
       exit 1
       ;;
     ready)
+      if ! claim_bundle; then
+        err "could not take a private copy of the staged bundle (prod untouched)"
+        echo "deploy_result=bundle_invalid"
+        exit 1
+      fi
       if ! validate_bundle; then
         err "staged bundle failed validation; refusing to install it. prod untouched"
         echo "deploy_result=bundle_invalid"
@@ -655,23 +1025,30 @@ else
         echo "deploy_result=bundle_invalid"
         exit 1
       fi
+      if ! mark_dirty "$SNAPSHOT_PATH"; then
+        err "cannot record the dirty marker; refusing to install without it (prod untouched)"
+        echo "deploy_result=bundle_invalid"
+        exit 1
+      fi
       BUNDLE_VECTOR_BEFORE="$(vector_fingerprint)"
       if ! install_bundle; then
-        err "bundle install failed part-way; restoring ${SNAPSHOT_PATH}"
-        restore_bundle_from "$SNAPSHOT_PATH" \
-          || err "bundle restore after a failed install ALSO failed — inspect ${SNAPSHOT_PATH}"
-        echo "deploy_result=bundle_install_failed"
-        exit 1
+        err "bundle install failed part-way"
+        recover_from_failed_install bundle_install_failed
       fi
       if [ "$BUNDLE_VECTOR_BEFORE" != "$(vector_fingerprint)" ]; then
         VECTOR_CHANGED=1
         log "vector inputs changed in this bundle"
       fi
       # Only NOW is the pointer allowed to move: it must name the snapshot that
-      # this install replaced, so a rollback restores exactly that.
-      if ! printf '%s\n' "$SNAPSHOT_PATH" >"$BUNDLE_POINTER"; then
-        err "could not advance ${BUNDLE_POINTER} to ${SNAPSHOT_PATH}; rollback would restore a stale bundle"
+      # this install replaced, so a rollback restores exactly that. A pointer
+      # that did not advance is FATAL — every later rollback would read the
+      # previous deploy's snapshot and restore a bundle that was never live.
+      if ! write_pointer "$SNAPSHOT_PATH"; then
+        err "could not advance ${BUNDLE_POINTER} to ${SNAPSHOT_PATH}; a rollback would restore a stale bundle"
+        recover_from_failed_install bundle_pointer_failed
       fi
+      clear_dirty || true
+      prune_snapshots
       ;;
     *)
       err "unexpected bundle state '${BUNDLE_STATE}'"
@@ -685,21 +1062,29 @@ fi
 log "swapping TINYASSETS_IMAGE and converging the stack"
 if ! set_image "$NEW_IMAGE"; then
   err "could not record TINYASSETS_IMAGE=${NEW_IMAGE} in ${ENV_FILE}"
-  if [ -n "$SNAPSHOT_PATH" ]; then
+  if [ "$INSTALLED_THIS_RUN" = "1" ]; then
     err "restoring the runtime bundle so the box is not left on a new config under the old image"
-    restore_bundle_from "$SNAPSHOT_PATH" || err "bundle restore failed — inspect ${SNAPSHOT_PATH}"
+    if ! restore_bundle_from "$SNAPSHOT_PATH"; then
+      err "bundle restore failed — inspect ${SNAPSHOT_PATH}"
+      mark_dirty "$SNAPSHOT_PATH" || true
+      echo "deploy_result=rollback_failed"
+      exit 3
+    fi
   fi
   echo "deploy_result=failed_env_write"
   exit 1
 fi
-restart_stack || true
-LOGS_OK=1
-if [ "$VECTOR_CHANGED" = "1" ]; then
-  recreate_logs || LOGS_OK=0
+# A failed converge is NOT recoverable by waiting: compose may have brought up
+# some services and not others, and accept() on a partially converged stack is
+# how a mixed state earns a success receipt (Codex round 2, §1).
+CONVERGED=1
+restart_stack || CONVERGED=0
+if [ "$CONVERGED" = "1" ] && [ "$VECTOR_CHANGED" = "1" ]; then
+  recreate_logs || CONVERGED=0
 fi
 
-# --- 5. accept the new image (healthy + RUNNING it + tunnel up) -----------
-if [ "$LOGS_OK" = "1" ] && accept "$NEW_IMAGE"; then
+# --- 5. accept the new image (healthy + RUNNING it + tunnel + logs up) -----
+if [ "$CONVERGED" = "1" ] && accept "$NEW_IMAGE"; then
   log "deploy healthy on ${NEW_IMAGE}"
   echo "deploy_result=deployed"
   echo "deployed_image=${NEW_IMAGE}"
@@ -716,16 +1101,37 @@ fi
 # Config first, then the image: converging the previous image against the NEW
 # compose file is what left 2026-08's rollbacks running a config prod had never
 # been healthy on.
+#
+# Only if THIS run installed a bundle. An image-only deploy that fails must not
+# touch a pointer left by an earlier bundle deploy — that pointer names the
+# state before THAT deploy, so restoring it here would change a bundle this run
+# never modified (Codex round 2, §1).
 VECTOR_CHANGED=0
-restore_previous_bundle || err "bundle restore incomplete; continuing with the image rollback"
+if [ "$INSTALLED_THIS_RUN" = "1" ]; then
+  if ! restore_previous_bundle; then
+    err "the runtime bundle could not be restored; refusing to report a rollback over a bundle in an unknown state"
+    mark_dirty "$(restore_target || true)" || true
+    echo "deploy_result=rollback_failed"
+    exit 3
+  fi
+  clear_dirty || true
+else
+  log "bundle: this run installed none; leaving the runtime files untouched during the image rollback"
+fi
 if ! set_image "$PREV_IMAGE"; then
   err "could not record rollback image ${PREV_IMAGE} in ${ENV_FILE} — manual intervention required"
   echo "deploy_result=rollback_env_write_failed"
   exit 3
 fi
-restart_stack || true
-if [ "$VECTOR_CHANGED" = "1" ]; then
-  recreate_logs || err "note: logs force-recreate failed during rollback; the daemon rollback continues"
+if ! restart_stack; then
+  err "the rollback converge failed — manual intervention required"
+  echo "deploy_result=rollback_failed"
+  exit 3
+fi
+if [ "$VECTOR_CHANGED" = "1" ] && ! recreate_logs; then
+  err "the restored vector config could not be brought up; log forwarding is down on the rolled-back stack"
+  echo "deploy_result=rollback_failed"
+  exit 3
 fi
 if accept "$PREV_IMAGE"; then
   log "rolled back to previous image ${PREV_IMAGE} (healthy)"

@@ -660,9 +660,10 @@ def test_deploy_syncs_runtime_compose_and_systemd_files():
         "deploy/tinyassets-daemon.service",
     ):
         assert repo_file in run_script, f"{repo_file} must be staged"
-    assert "/tmp/tinyassets-bundle" in run_script, (
-        "the five files must be staged into the bundle directory "
-        "deploy_fail_safe.sh consumes"
+    assert "/tmp/tinyassets-bundle-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" in run_script, (
+        "the stage must be PER RUN: a shared path is populated before the "
+        "script's host-mutation lock exists, so a concurrent deploy could swap "
+        "the bytes between validation and install"
     )
     assert "mkdir -p" in run_script, "the stage directory must be created first"
 
@@ -695,9 +696,45 @@ def test_deploy_bundle_is_installed_inside_the_fail_safe_transaction():
         "--force-recreate logs",
         # the entrypoint keeps its exec bit; the rest of the bundle is 0644
         "vector-entrypoint.sh|0755|runtime",
+        # round 2: the transaction is fail-loud, atomic, and race-free
+        "claim_bundle",
+        "write_pointer",
+        "bundle-dirty",
+        "prune_snapshots",
+        "manifest",
+        "mv -f",
+        "INSTALLED_THIS_RUN",
     ):
         assert marker in script, f"deploy_fail_safe.sh must own {marker!r}"
     assert "--restore-bundle" in script
+    # bundle_install_failed / bundle_pointer_failed reach the caller through
+    # `recover_from_failed_install <result>`, which restores the snapshot first.
+    for result in (
+        "deploy_result=bundle_invalid",
+        "deploy_result=bundle_dirty",
+        "deploy_result=rollback_failed",
+        "recover_from_failed_install bundle_install_failed",
+        "recover_from_failed_install bundle_pointer_failed",
+    ):
+        assert result in script, f"deploy_fail_safe.sh must be able to report {result!r}"
+
+
+def test_deploy_passes_the_per_run_stage_directory_to_the_script():
+    """The script must be told which stage to consume, not guess a shared path."""
+    wf = _load()
+    steps = _steps(wf)
+    stage_step = next(s for s in steps if s.get("name") == "Sync runtime deploy files")
+    assert stage_step.get("id") == "stage_bundle", (
+        "the stage step needs an id so the deploy step can consume its output"
+    )
+    assert 'echo "stage=${stage}" >> "$GITHUB_OUTPUT"' in (stage_step.get("run") or "")
+
+    deploy_step = next(s for s in steps if s.get("id") == "deploy")
+    assert (
+        deploy_step.get("env", {}).get("BUNDLE_DIR")
+        == "${{ steps.stage_bundle.outputs.stage }}"
+    )
+    assert "BUNDLE_DIR='${BUNDLE_DIR}'" in (deploy_step.get("run") or "")
 
 
 def test_canary_rollback_restores_the_bundle_before_the_image():

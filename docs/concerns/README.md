@@ -65,7 +65,6 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 | **P2** | [The claude reader idle-kills a turn waiting on its own tool](2026-08-29-claude-reader-tool-wait-idle-gap.md) -- `tool_phase` is telemetry only; codex got the in-flight-tool allowance in #2674, claude did not | 2026-08-29 |
 | **P2** | [No user Stop for a running turn](2026-08-29-no-user-stop-for-a-running-turn.md) -- turns now run until finished (3600s backstop); the "interrupted by the user" half of the founder's rule is unbuilt | 2026-08-29 |
 | **P2** | [A codex `agent_message` can be dropped under backpressure](2026-08-29-codex-agent-message-can-be-dropped-under-backpressure.md) -- only `TurnCompleted` is guaranteed; a finished turn with its reply item dropped fails "omitted result or usage" instead of returning the reply | 2026-08-29 |
-| **P2** | [`slack-agent` mounts the volume the fence keeps empty](2026-08-29-slack-agent-volume-mount-vs-fence.md) -- #2685 adopted production's `tinyassets-data:/data:ro` into the repo, contradicting the same file's comment; latent because the service is profile-gated, but starting it makes three fence workflows refuse | 2026-08-29 |
 | — | [Provider fallback-chain privacy](2026-04-17-provider-fallback-chain-privacy.md) — gemini/groq/grok still in the chains | 2026-04-17 |
 | — | [Cloud automation rollback refused >24h](2026-08-05-cloud-automation-rollback-refused.md) — tested, not fixed | 2026-08-05 |
 
