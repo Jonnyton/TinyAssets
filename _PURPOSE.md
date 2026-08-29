@@ -1,3 +1,4 @@
 # Purpose
-Close out served-agent-user-boundary: sync its delta into openspec/specs/universe-custom-agents/spec.md,
-tick 2.1 with the live proof, archive the change.
+Two Codex carry-overs from the fleet prune: the soul-loop test no longer leaks _FakeBranch into
+tinyassets.runs (order-dependent failure), and the deploy test asserting the deleted HMAC-rotation
+fleet proof step is removed (its script went with #2678).

@@ -15,6 +15,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import fantasy_daemon.__main__ as dm
+import tinyassets.runs as _runs  # noqa: F401 - bind runs.BranchDefinition to the REAL class
+
+# before any test below installs _FakeBranch: `tinyassets.runs` imports BranchDefinition
+# at module level (runs.py:40), and a first import made DURING a patched test would keep
+# the fake forever (order-dependent failure named by Codex on the fleet prune).
 
 LEGACY = "fantasy_author:universe_cycle_wrapper"
 
@@ -39,6 +44,11 @@ def _patch_common(monkeypatch, tmp_path, *, loop_dispatch, captured):
     )
     monkeypatch.setattr("tinyassets.storage.data_dir", lambda: tmp_path)
     monkeypatch.setattr("tinyassets.branches.BranchDefinition", _FakeBranch)
+    # `tinyassets.runs` binds BranchDefinition at import time (runs.py:40), so a
+    # test that runs AFTER this one and executes a real branch would otherwise
+    # build a _FakeBranch and die on `.branch_def_id` (order-dependent failure,
+    # Codex round 3 on the fleet prune).
+    monkeypatch.setattr("tinyassets.runs.BranchDefinition", _FakeBranch, raising=False)
 
     def _exec(base_path, **kwargs):
         captured.append(kwargs)
