@@ -46,8 +46,11 @@ Every branch/worktree must be in exactly one lane state:
   `_PURPOSE.md`. It must be promoted into `STATUS.md` and checked against
   `PLAN.md` before implementation.
 - **Abandoned/swept**: worktree removed (`python scripts/wt.py done`, or
-  `sweep`) with the reason on the closed PR. Useful ideas are extracted before
-  deletion.
+  `sweep`) with the reason on the closed PR — or, for a lane that never
+  reached `wt.py pr`, the `--reason` given to `done --force`, recorded with
+  the archived purpose text in `.git/tinyassets-worktrees.log`. Teardown
+  archives `_PURPOSE.md` there before removing anything. Useful ideas are
+  extracted before deletion.
 
 `worktree_status.py` emits more diagnostic states than the four canonical
 lane states. `ACTIVE_LANE` and `PARKED_DRAFT` map directly to canonical lane
@@ -134,8 +137,13 @@ Existing worktrees are retrofit-on-next-touch: add `_PURPOSE.md` when you next
 work there. A lane opened before 2026-08-29 still tracks its own copy of the
 file; on its next `main` merge it will see one modify/delete conflict —
 resolve with `git rm _PURPOSE.md` in the branch (the file stays on disk,
-ignored) and put the purpose in the PR body. Do not bulk rewrite another
-provider's active worktree metadata unless the owner asks for it.
+ignored) and put the purpose in the PR body. A checkout with **uncommitted
+edits to `.agents/worktrees.md`** (the primary checkout had 50 unsaved lines
+on 2026-08-29) must keep them before pulling the deletion:
+`git diff -- .agents/worktrees.md >> .git/tinyassets-worktrees.log`, then
+`git checkout -- .agents/worktrees.md` only after that copy is confirmed.
+Do not bulk rewrite another provider's active worktree metadata unless the
+owner asks for it.
 
 ## Branch & worktree lifecycle automation
 

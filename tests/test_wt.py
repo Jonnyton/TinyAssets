@@ -71,32 +71,47 @@ def test_path_contains_excludes_current_tree(tmp_path):
 # times in one afternoon (#2676, #2680 x2, #2682 x2). GitHub ignores
 # .gitattributes merge drivers, so the file simply must not be tracked.
 
-
-def _git(*args: str) -> str:
-    return subprocess.run(
-        ["git", *args], capture_output=True, text=True, encoding="utf-8",
-        cwd=str(_SCRIPTS.parent),
-    ).stdout
+_REPO = _SCRIPTS.parent
 
 
-def test_purpose_file_is_ignored_and_never_tracked():
-    assert _git("ls-files", "--", "_PURPOSE.md").strip() == "", "_PURPOSE.md is tracked again"
-    assert _git("check-ignore", "_PURPOSE.md").strip() == "_PURPOSE.md"
-    local_log = ".agents/worktrees.local.log"
-    assert _git("check-ignore", local_log).strip() == local_log
+def _git(*args: str) -> tuple[int, str]:
+    proc = subprocess.run(
+        ["git", *args], capture_output=True, text=True, encoding="utf-8", cwd=str(_REPO),
+    )
+    return proc.returncode, proc.stdout.strip()
+
+
+def test_purpose_file_is_ignored_by_this_repos_gitignore_and_never_tracked():
+    code, out = _git("ls-files", "--", "_PURPOSE.md")
+    assert code == 0 and out == "", "_PURPOSE.md is tracked again"
+    # -v names the rule's source: it must be THIS repo's .gitignore, not a
+    # global exclude that happens to be set on the machine (Codex round 1, P2).
+    code, out = _git("check-ignore", "-v", "_PURPOSE.md")
+    assert code == 0, "_PURPOSE.md is not ignored"
+    source = out.split(":", 1)[0].replace("\\", "/")
+    assert source.endswith(".gitignore") and "/" not in source.strip("./"), out
 
 
 def test_the_hand_edited_worktree_index_is_retired():
-    assert _git("ls-files", "--", ".agents/worktrees.md").strip() == ""
-    assert wt.EVENT_LOG.as_posix() == ".agents/worktrees.local.log"
+    code, out = _git("ls-files", "--", ".agents/worktrees.md")
+    assert code == 0 and out == ""
 
 
-def test_log_event_writes_the_local_log_not_a_tracked_file(tmp_path):
+def test_the_event_log_lives_inside_the_git_dir():
+    """Inside .git it is never tracked and needs no ignore rule — a primary
+    checkout behind main would not have had one (Codex round 1, P1)."""
+    path = wt._event_log_path(_REPO)
+    code, common = _git("rev-parse", "--git-common-dir")
+    assert code == 0
+    assert path.name == wt.EVENT_LOG_NAME
+    assert path.parent == Path(common if Path(common).is_absolute() else _REPO / common).resolve()
+
+
+def test_log_event_falls_back_to_a_dot_git_path_outside_a_repo(tmp_path):
     wt.log_event(tmp_path, "CREATE wf-x branch=claude/x")
-    assert (tmp_path / ".agents" / "worktrees.local.log").read_text(encoding="utf-8").endswith(
-        "CREATE wf-x branch=claude/x\n"
-    )
-    assert not (tmp_path / ".agents" / "worktrees.md").exists()
+    log = tmp_path / ".git" / wt.EVENT_LOG_NAME
+    assert log.read_text(encoding="utf-8").endswith("CREATE wf-x branch=claude/x\n")
+    assert not (tmp_path / ".agents").exists()
 
 
 def test_purpose_title_comes_from_the_purpose_line():
@@ -111,6 +126,20 @@ def test_purpose_title_refuses_a_todo_or_empty_line():
     assert wt._purpose_title("no purpose line at all\n") == ""
 
 
+def test_scaffold_title_is_refused_for_slash_and_no_slash_branches():
+    assert wt._title_is_scaffold("x", "claude/x") is True
+    assert wt._title_is_scaffold("demo", "demo") is True          # Codex round 1, P2
+    assert wt._title_is_scaffold("", "claude/x") is True
+    assert wt._title_is_scaffold("x lands cleanly", "claude/x") is False
+
+
+def test_base_normalization_strips_exactly_the_remote_prefix():
+    assert wt._normalize_base("origin/main", "origin") == "main"
+    assert wt._normalize_base("release/1.x", "origin") == "release/1.x"   # Codex round 1, P1
+    assert wt._normalize_base("origin/release/1.x", "origin") == "release/1.x"
+    assert wt._normalize_base("main", "origin") == "main"
+
+
 def test_pr_command_publishes_the_purpose_as_the_body(tmp_path):
     body = tmp_path / "_PURPOSE.md"
     cmd = wt.pr_command(branch="claude/x", base="main", title="x lands", body_path=body)
@@ -121,3 +150,16 @@ def test_pr_command_publishes_the_purpose_as_the_body(tmp_path):
     draft = wt.pr_command(branch="b", base="main", title="t", body_path=body, draft=True)
     assert draft[-1] == "--draft"
 
+
+def test_pr_update_command_republishes_an_existing_pr(tmp_path):
+    body = tmp_path / "_PURPOSE.md"
+    assert wt.pr_update_command(number=42, title=None, body_path=body) == [
+        "gh", "pr", "edit", "42", "--body-file", str(body),
+    ]
+    assert wt.pr_update_command(number=42, title="new", body_path=body)[-2:] == ["--title", "new"]
+
+
+def test_unpublished_purpose_is_detected_against_the_pr_body():
+    assert wt._purpose_unpublished("a\nb\n", "a\nb") is False          # whitespace-insensitive
+    assert wt._purpose_unpublished("a\nb\nc", "a\nb") is True
+    assert wt._purpose_unpublished("anything", None) is False        # no PR: nothing to compare

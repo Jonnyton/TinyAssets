@@ -13,15 +13,20 @@ One command for both halves of the loop so worktrees stop piling up:
 
 ``new``   fetches, creates a worktree off the base ref, scaffolds _PURPOSE.md
           (with every field worktree_status.py requires), and logs a create
-          event in the local, ignored .agents/worktrees.local.log.
+          event in ``.git/tinyassets-worktrees.log`` (inside the git dir:
+          never tracked, no ignore rule to go stale).
 ``pr``    publishes the lane: pushes the branch and opens the PR with
-          _PURPOSE.md as its body (``--auto`` also arms squash auto-merge).
+          _PURPOSE.md as its body, or updates the open PR's body when one
+          already exists (``--auto`` also arms squash auto-merge).
           _PURPOSE.md itself is a LOCAL DRAFT - ignored, never tracked - so
           the PR body is the durable, shared record and no two lanes can ever
           conflict on the file (2026-08-29: a tracked copy made every
           concurrent PR DIRTY the moment another landed; five times that day).
 ``done``  verifies the branch merged into the base ref (refuses otherwise unless
-          --force), removes the worktree, deletes the local branch, and logs a
+          --force, which needs --reason), archives the lane's _PURPOSE.md text
+          into the local log BEFORE removing anything (``git worktree remove``
+          checks ``git status --porcelain``, which never sees the ignored
+          draft), removes the worktree, deletes the local branch, and logs a
           remove event. Remote-branch cleanup is the janitor's job.
 ``sweep`` reaps *every* merged+clean worktree in one pass — the local twin of
           ``branch_janitor --apply --only-merged``. Report-first by default;
@@ -108,15 +113,28 @@ def repo_root() -> Path:
     return Path(proc.stdout.strip()).resolve()
 
 
-#: Local, git-ignored lane history. The tracked ``.agents/worktrees.md`` it
-#: replaces was edited by every lane (82 landings in 30 days, ~227 recorded
-#: conflict resolutions) and read by nothing; ``wt.py list`` derives the live
-#: inventory from git, and "who is working on what" is branches + open PRs.
-EVENT_LOG = Path(".agents") / "worktrees.local.log"
+#: Local lane history, kept INSIDE the git directory so it is never tracked
+#: and depends on no ``.gitignore`` line (a primary checkout that is behind
+#: main would not have the rule yet - Codex round 1, P1). The tracked
+#: ``.agents/worktrees.md`` it replaces was edited by every lane (82 landings
+#: in 30 days, ~227 recorded conflict resolutions) and read by nothing;
+#: ``wt.py list`` derives the live inventory from git, and "who is working on
+#: what" is branches + open PRs.
+EVENT_LOG_NAME = "tinyassets-worktrees.log"
+
+
+def _event_log_path(root: Path) -> Path:
+    common = _run(["git", "rev-parse", "--git-common-dir"], cwd=root)
+    if common.returncode == 0 and common.stdout.strip():
+        git_dir = Path(common.stdout.strip())
+        if not git_dir.is_absolute():
+            git_dir = root / git_dir
+        return git_dir.resolve() / EVENT_LOG_NAME
+    return root / ".git" / EVENT_LOG_NAME
 
 
 def log_event(root: Path, line: str) -> None:
-    path = root / EVENT_LOG
+    path = _event_log_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y-%m-%d", time.gmtime())
     with path.open("a", encoding="utf-8") as fh:
@@ -181,6 +199,53 @@ def pr_command(
     return cmd
 
 
+def pr_update_command(*, number: int, title: str | None, body_path: Path) -> list[str]:
+    """``gh pr edit`` for a lane whose PR already exists: the body is republished."""
+    cmd = ["gh", "pr", "edit", str(number), "--body-file", str(body_path)]
+    if title:
+        cmd += ["--title", title]
+    return cmd
+
+
+def _normalize_base(base: str, remote: str) -> str:
+    """``origin/main`` -> ``main``; ``release/1.x`` stays ``release/1.x``.
+    Strips exactly ``<remote>/``, never the first path component."""
+    prefix = f"{remote}/"
+    return base[len(prefix):] if base.startswith(prefix) else base
+
+
+def _title_is_scaffold(title: str, branch: str) -> bool:
+    """The scaffold's ``Purpose:`` line is the slug, i.e. the branch's last
+    path segment (``claude/x`` -> ``x``; a no-slash branch is its own slug)."""
+    return not title or title == branch.rpartition("/")[2]
+
+
+def _existing_pr(branch: str, cwd: Path) -> tuple[int | None, str, str]:
+    """``(number, state, body)`` of the PR for ``branch``, or ``(None, "", "")``."""
+    proc = _run(["gh", "pr", "view", branch, "--json", "number,state,body"], cwd=cwd)
+    if proc.returncode != 0:
+        return None, "", ""
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return None, "", ""
+    number = data.get("number")
+    state = str(data.get("state") or "")
+    body = str(data.get("body") or "")
+    return (int(number) if number else None), state, body
+
+
+def _purpose_unpublished(text: str, pr_body: str | None) -> bool:
+    """True when the local draft differs from what the PR shows."""
+    if pr_body is None:
+        return False
+
+    def norm(s: str) -> str:
+        return "\n".join(line.rstrip() for line in s.strip().splitlines())
+
+    return norm(text) != norm(pr_body)
+
+
 def cmd_pr(args: argparse.Namespace) -> int:
     top = _run(["git", "rev-parse", "--show-toplevel"])
     if top.returncode != 0:
@@ -195,17 +260,25 @@ def cmd_pr(args: argparse.Namespace) -> int:
         raise SystemExit(f"refusing to open a PR from {branch or 'a detached HEAD'}")
     text = purpose.read_text(encoding="utf-8", errors="replace")
     title = args.title or _purpose_title(text)
-    if not title or title == branch.partition("/")[2]:
+    if _title_is_scaffold(title, branch):
         raise SystemExit(
             "_PURPOSE.md has no usable `Purpose:` line (still the slug or TODO); "
             "pass --title"
         )
-    base = args.base.split("/", 1)[1] if "/" in args.base else args.base
+    base = _normalize_base(args.base, args.remote)
     push = ["git", "push", "-u", args.remote, branch]
-    create = pr_command(
-        branch=branch, base=base, title=title, body_path=purpose, draft=args.draft,
-    )
-    steps = [push, create]
+    number, state, _body = _existing_pr(branch, wt_path)
+    if number is not None and state.upper() == "OPEN":
+        # Re-running `pr` republishes the draft instead of failing at create
+        # (Codex round 1, P1: "keep the PR body current" had no implementation).
+        publish = pr_update_command(
+            number=number, title=args.title, body_path=purpose,
+        )
+    else:
+        publish = pr_command(
+            branch=branch, base=base, title=title, body_path=purpose, draft=args.draft,
+        )
+    steps = [push, publish]
     if args.auto:
         steps.append(["gh", "pr", "merge", "--auto", "--squash", branch])
     if args.dry_run:
@@ -238,22 +311,49 @@ def _branch_delete_flag(merged: bool, force: bool) -> str:
     return "-D" if (merged or force) else "-d"
 
 
+def _archive_purpose(root: Path, wt_path: Path, branch: str, reason: str) -> str:
+    """Copy the lane's ignored ``_PURPOSE.md`` into the local log BEFORE any
+    removal, and say whether it was ever published. ``git worktree remove``
+    decides cleanliness with ``git status --porcelain``, which omits ignored
+    files, so without this an unpublished draft would be deleted silently
+    (Codex round 1, P1). Returns a human note ("" when fully published)."""
+    purpose = wt_path / "_PURPOSE.md"
+    if not purpose.exists():
+        return ""
+    text = purpose.read_text(encoding="utf-8", errors="replace")
+    number, _state, body = _existing_pr(branch, wt_path)
+    log_event(
+        root,
+        f"PURPOSE-ARCHIVE {wt_path.name} branch={branch} pr={number or '-'} reason={reason!r}",
+    )
+    log_event(root, "\n".join("    " + line for line in text.splitlines()))
+    if number is None:
+        return "no PR for this branch: its purpose was never published"
+    if _purpose_unpublished(text, body):
+        return f"local _PURPOSE.md differs from PR #{number}'s body (unpublished edits)"
+    return ""
+
+
 def _remove_worktree(
-    root: Path, wt_path: Path, branch: str, *, base_ref: str, force: bool
+    root: Path, wt_path: Path, branch: str, *, base_ref: str, force: bool, reason: str = ""
 ) -> tuple[bool, str]:
     """Remove one worktree + its local branch. Returns ``(ok, human detail)``.
 
     Squash-aware merge gate; never forces unless asked, so a dirty / locked /
     in-use worktree is refused at the git layer rather than discarded. Shared by
-    ``done`` and ``sweep`` so both inherit identical safety.
+    ``done`` and ``sweep`` so both inherit identical safety. The lane's purpose
+    text is archived first, always.
     """
     merged = is_merged_into(lambda a: _run(a, cwd=root), branch, base_ref)
     if not merged and not force:
         return (
             False,
             f"branch '{branch}' is NOT merged into {base_ref}. "
-            f"Merge its PR first, or re-run with --force to discard the lane.",
+            f"Merge its PR first, or re-run with --force --reason '...' to discard the lane.",
         )
+    note = _archive_purpose(root, wt_path, branch, reason)
+    if note:
+        print(f"  note: {note}; its text is archived in {_event_log_path(root)}")
     rm = _run(
         ["git", "worktree", "remove", *(["--force"] if force else []), str(wt_path)],
         cwd=root,
@@ -262,7 +362,10 @@ def _remove_worktree(
         return (False, f"git worktree remove failed: {rm.stderr.strip()}")
     flag = _branch_delete_flag(merged, force)
     delb = _run(["git", "branch", flag, branch], cwd=root)
-    log_event(root, f"REMOVE {wt_path.name} branch={branch} merged={merged} forced={force}")
+    log_event(
+        root,
+        f"REMOVE {wt_path.name} branch={branch} merged={merged} forced={force} reason={reason!r}",
+    )
     return (True, f"branch delete: {'ok' if delb.returncode == 0 else delb.stderr.strip()}")
 
 
@@ -282,8 +385,16 @@ def cmd_done(args: argparse.Namespace) -> int:
     branch = _branch_of(wt_path)
     if not branch or branch == "HEAD":
         raise SystemExit(f"could not resolve branch for {wt_path}")
+    if args.force and not (args.reason or "").strip():
+        raise SystemExit(
+            "--force discards a lane; give --reason '...' so the archived purpose "
+            "says why (a lane abandoned before `wt.py pr` has no PR to carry it)"
+        )
 
-    ok, detail = _remove_worktree(root, wt_path, branch, base_ref=args.base_ref, force=args.force)
+    ok, detail = _remove_worktree(
+        root, wt_path, branch, base_ref=args.base_ref, force=args.force,
+        reason=args.reason or "",
+    )
     if not ok:
         raise SystemExit(detail)
     print(f"removed worktree {wt_path}")
@@ -342,7 +453,8 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             print(f"  REAP {slug}  ({branch})")
             continue
         ok, detail = _remove_worktree(
-            root, Path(s.get("path", "")), branch, base_ref=args.base_ref, force=False
+            root, Path(s.get("path", "")), branch, base_ref=args.base_ref, force=False,
+            reason="sweep: merged+clean",
         )
         if ok:
             reaped += 1
@@ -398,6 +510,7 @@ def main(argv: list[str]) -> int:
     p_done.add_argument("target", nargs="?", default=None, help="slug or path; defaults to cwd")
     p_done.add_argument("--base-ref", default="origin/main")
     p_done.add_argument("--force", action="store_true", help="discard even if unmerged/dirty")
+    p_done.add_argument("--reason", default=None, help="why (required with --force; archived)")
     p_done.set_defaults(func=cmd_done)
 
     p_sweep = sub.add_parser(
