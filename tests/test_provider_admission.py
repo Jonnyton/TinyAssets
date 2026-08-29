@@ -332,7 +332,12 @@ class TestTheLifecycleGapsCodexFound:
         from tinyassets.providers import codex_provider
 
         src = pathlib.Path(codex_provider.__file__).read_text(encoding="utf-8")
-        body = src.split("timeout=config.timeout,", 1)[1][:1400]
+        # Anchor on the streamed call (2026-08-29: `communicate()` under a
+        # wall-clock `wait_for` is gone; the invariant this guards - a
+        # BaseException exit still kills the subprocess - is unchanged).
+        # Window widened from 1400: the legacy communicate() branch now sits
+        # between the streamed call and the BaseException guard it protects.
+        body = src.split("await _stream_codex_exec(", 1)[1][:2600]
         assert "except BaseException:" in body, (
             "only asyncio.TimeoutError was cleaned up; cancellation is the case that "
             "actually happens, and CancelledError is a BaseException"

@@ -31,3 +31,10 @@
 - [ ] 6.2 ruff, targeted pytest green (Linux CI authoritative), plugin mirror parity.
 - [ ] 6.3 Land to main (own PR); sync delta + archive.
 - [ ] 6.4 Durable deploy to prod (founder decision) with `TINYASSETS_ALLOW_CLAUDE_SERVING=1`; verify the live capacity-mislabel is gone.
+
+## 7. Slice 2 — codex parity (founder 2026-08-29: "a turn should continue till finished unless interrupted by the user or should stop for some other reason")
+- [x] 7.1 `codex_provider.py`: read `codex exec --json` line-by-line under the idle-watchdog profile (`_stream_codex_exec`); no `communicate()`; raise `provider_idle_timeout` / `interactive_deadline`, never the generic timeout the router cools on. A turn waiting on its OWN tool (`item.started` without `item.completed`) is not idle.
+- [x] 7.2 `universe_intelligence._sandboxed_config`: the served absolute cap is a generous runaway backstop (3600s), not a deadline; per-universe `absolute_cap_s` / `idle_timeout_s` overrides; nonsense falls back rather than disabling the cap.
+- [x] 7.3 Tests: tool-wait longer than idle survives; idle fires with nothing running; idle resumes after the tool; cap while progressing → `interactive_deadline`; EOF returns bytes unchanged; served cap + overrides.
+- [x] 7.4 Codex cross-family review (refute, not approve); land; sync delta + archive together with slice 1.
+- [ ] 7.5 Follow-ups filed, not widened here: claude's reader has the same tool-wait idle gap (`tool_phase` is telemetry only); a user **Stop** for a running turn; the cap as a user-set budget rather than a constant.

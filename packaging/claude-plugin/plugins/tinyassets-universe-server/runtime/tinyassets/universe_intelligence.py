@@ -196,6 +196,26 @@ def _engine_mcp_enabled() -> bool:
     )
 
 
+#: Founder rule 2026-08-29 - see _sandboxed_config. The GRANTED founder turn's
+#: absolute cap is a runaway backstop until a user Stop exists, not a deadline.
+#: 3600s: a five-step GitHub job at ~100s per round-trip fits with room; a turn
+#: still emitting protocol events at an hour is the runaway case.
+_SERVED_ABSOLUTE_CAP_S = 3600.0
+
+
+def _served_knob(ctx, name: str, default):
+    """A positive per-universe override for a watchdog knob, else ``default``.
+
+    Nonsense (a string, zero, negative) falls back to the default rather than
+    disabling a bound - the same hardening the profile resolver applies.
+    """
+    try:
+        value = float(getattr(ctx.config, name, None) or 0)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
 def _sandboxed_config(
     ctx: UniverseContext,
     *,
@@ -228,6 +248,27 @@ def _sandboxed_config(
         timeout = int(getattr(ctx.config, "timeout", 300) or 300)
     except (TypeError, ValueError):
         timeout = 300
+    # Founder rule 2026-08-29: "a turn should continue till finished unless
+    # interrupted by the user or should stop for some other reason." The legacy
+    # ``timeout`` above is no longer a wall-clock deadline on the streamed
+    # served path (codex + claude both read their stream under the idle
+    # watchdog now); it survives for the non-streaming callers. What bounds a
+    # streamed turn is the 30s idle watchdog (a hung provider) plus an absolute
+    # cap as a runaway backstop.
+    #
+    # The generous cap applies ONLY to the granted founder turn. The live
+    # failure was the 300s communicate() timeout, not the 600s stream default
+    # (Codex round 2 corrected an earlier claim here) - but 600s is borderline
+    # for the five ~100s round-trips that job needed, and the founder's rule is
+    # "finish", so the granted turn gets 3600s until a user Stop exists. The
+    # synchronous learning extractor and non-founder turns keep the library
+    # default: the extractor runs BEFORE the reply is returned, so a generous
+    # cap there could withhold an already-generated reply (Codex round 2, P1).
+    absolute_cap_s = (
+        _served_knob(ctx, "absolute_cap_s", _SERVED_ABSOLUTE_CAP_S)
+        if granted else None
+    )
+    idle_timeout_s = _served_knob(ctx, "idle_timeout_s", None)
     engine_mcp = bool(
         granted and founder_principal and universe_id and _engine_mcp_enabled()
     )
@@ -239,6 +280,8 @@ def _sandboxed_config(
         disallowed = _ENGINE_DISALLOWED_TOOLS
     return ModelConfig(
         timeout=timeout,
+        absolute_cap_s=absolute_cap_s,
+        idle_timeout_s=idle_timeout_s,
         sandbox_workspace=True,
         sandbox_chat=True,
         allowed_tools=allowed,
@@ -458,7 +501,11 @@ def _build_persona_system_prompt(
             "`param_patterns`. So to work across a repository I ask for "
             "`/repos/<owner>/<repo>/contents/{path+}` — every file in that one "
             "repo, still refusing `../` and every other repo — plus whatever "
-            "else the work genuinely needs, in ONE request. I never ask file by "
+            "else the work genuinely needs, in ONE request (at most six "
+            "endpoints, two methods each). A patch needs only four: the main "
+            "ref, `git/refs` to branch, `contents/{path+}` GET+PUT, and `pulls` — "
+            "each PUT is its own commit, so I do not need blobs/trees/commits "
+            "unless one atomic multi-file commit truly matters. I never ask file by "
             "file: I cannot know up front which files a change touches, and each "
             "one would cost my founder another approval. I ask for the narrowest "
             "pattern that covers the work, and I say plainly in the request what "

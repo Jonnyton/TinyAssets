@@ -195,11 +195,24 @@ def _validated_endpoint_list(action: dict[str, Any]) -> list[dict[str, Any]]:
                 f"an endpoint may cover at most {_MAX_REQUEST_METHODS} methods; "
                 "ask for the one action you need on it"
             )
-        endpoints.append({
+        endpoint = {
             "host": str(raw.get("host") or action.get("host") or "").strip().lower(),
             "path_template": str(raw.get("path_template") or "").strip(),
             "methods": methods,
-        })
+        }
+        # Carry the pattern keys through. This rebuild used to keep only the
+        # three fields above, which silently stripped ``param_patterns`` - and
+        # a ``{name}`` / ``{name+}`` placeholder WITHOUT its pattern is refused
+        # by the deposit parser ("must declare exactly the path placeholders").
+        # So the exact job-scoped ask the agent is taught to raise
+        # (``contents/{path+}``) was rejected at ask time, and the agent was told
+        # its correctly shaped request was invalid (found 2026-08-29, before it
+        # reached a live test). The parser below still validates every one of
+        # these; nothing is trusted here, only forwarded.
+        for key in ("param_patterns", "allowed_query", "query_patterns", "required_query"):
+            if raw.get(key) is not None:
+                endpoint[key] = raw[key]
+        endpoints.append(endpoint)
     _parse_allowed_endpoints(endpoints)   # raises on anything the deposit refuses
     return endpoints
 
