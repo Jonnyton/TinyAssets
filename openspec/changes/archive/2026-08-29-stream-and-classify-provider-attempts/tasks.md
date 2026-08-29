@@ -27,14 +27,14 @@
 - [x] 5.7 Backward-safe: a non-streaming/other provider (codex, claude `complete_json`) still returns a terminal ProviderResponse.
 
 ## 6. Review + land
-- [ ] 6.1 Codex cross-family review of the implementation; resolve approve/adapt.
-- [ ] 6.2 ruff, targeted pytest green (Linux CI authoritative), plugin mirror parity.
-- [ ] 6.3 Land to main (own PR); sync delta + archive.
-- [ ] 6.4 Durable deploy to prod (founder decision) with `TINYASSETS_ALLOW_CLAUDE_SERVING=1`; verify the live capacity-mislabel is gone.
+- [x] 6.1 Codex cross-family review of the implementation; resolve approve/adapt. -- done: two Codex adversarial reviews on #2440 (first REJECT, all fixed; re-review in `REVIEW.md`)
+- [x] 6.2 ruff, targeted pytest green (Linux CI authoritative), plugin mirror parity. -- done: #2440 landed green 2026-08-19 (Linux CI)
+- [x] 6.3 Land to main (own PR); sync delta + archive. -- landed as #2440 (2026-08-19); delta synced into `openspec/specs/provider-routing/spec.md` and archived 2026-08-29 together with slice 2 (#2674)
+- [x] 6.4 Durable deploy to prod (founder decision) with `TINYASSETS_ALLOW_CLAUDE_SERVING=1`; verify the live capacity-mislabel is gone. -- not a build task: filed as a host-decision row in `docs/host-actions.md` 2026-08-29 ("Decide whether Claude may serve turns in production")
 
 ## 7. Slice 2 — codex parity (founder 2026-08-29: "a turn should continue till finished unless interrupted by the user or should stop for some other reason")
 - [x] 7.1 `codex_provider.py`: read `codex exec --json` line-by-line under the idle-watchdog profile (`_stream_codex_exec`); no `communicate()`; raise `provider_idle_timeout` / `interactive_deadline`, never the generic timeout the router cools on. A turn waiting on its OWN tool (`item.started` without `item.completed`) is not idle.
 - [x] 7.2 `universe_intelligence._sandboxed_config`: the served absolute cap is a generous runaway backstop (3600s), not a deadline; per-universe `absolute_cap_s` / `idle_timeout_s` overrides; nonsense falls back rather than disabling the cap.
 - [x] 7.3 Tests: tool-wait longer than idle survives; idle fires with nothing running; idle resumes after the tool; cap while progressing → `interactive_deadline`; EOF returns bytes unchanged; served cap + overrides.
 - [x] 7.4 Codex cross-family review (refute, not approve); land; sync delta + archive together with slice 1.
-- [ ] 7.5 Follow-ups filed, not widened here: claude's reader has the same tool-wait idle gap (`tool_phase` is telemetry only); a user **Stop** for a running turn; the cap as a user-set budget rather than a constant.
+- [x] 7.5 Follow-ups filed, not widened here: claude's reader has the same tool-wait idle gap (`tool_phase` is telemetry only); a user **Stop** for a running turn; the cap as a user-set budget rather than a constant. -- filed 2026-08-29: `docs/concerns/2026-08-29-claude-reader-tool-wait-idle-gap.md`, `docs/concerns/2026-08-29-no-user-stop-for-a-running-turn.md`, cap-as-user-budget in `ideas/INBOX.md`
