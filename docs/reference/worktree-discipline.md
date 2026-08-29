@@ -139,10 +139,12 @@ file (29 branch tips did on that day; three had uncommitted edits). **Before**
 its next `main` merge, untrack the copy without touching the disk:
 `git rm --cached _PURPOSE.md && git commit -m "worktree: purpose is a local
 draft"` — the file stays where it is and is ignored from then on. Merging
-first instead produces a modify/delete conflict AND overwrites the draft on
-disk with `main`'s copy (it happened to the lane that built this); if that
-has already happened, recover your text from `git show HEAD:_PURPOSE.md` on
-the branch before resolving. A checkout with **uncommitted edits to
+first instead produces a conflict: once the deletion is on `main`, Git
+reports modify/delete and keeps the branch's own copy on disk (resolve with
+`git rm --cached`); while `main` still *tracked* the file, its copy won and
+overwrote the draft on disk (it happened to the lane that built this). If
+your text is gone, recover it from `git show HEAD:_PURPOSE.md` on the branch
+before resolving. A checkout with **uncommitted edits to
 `.agents/worktrees.md`** must preserve them before the deletion lands, under
 the owner's own hand — `git diff -- .agents/worktrees.md >>
 .git/tinyassets-worktrees.log` (the primary checkout's 54 unsaved lines were
