@@ -39,38 +39,36 @@ a new way to fail.
 
 ## Taking real money
 
-### WorkOS is on PRODUCTION — migration done; two things left, both yours
+### WorkOS is on PRODUCTION — one paste left: the GitHub client secret
 
-*Switched 2026-08-29. The daemon is on the production key, domain
+*Switched 2026-08-29. Daemon on the production key, domain
 `unassuming-environment-16.authkit.app`, Connect client `client_01M15YZXW7G7X6X1YQ4TG87Q00`,
-resource indicator `https://tinyassets.io/mcp` registered (that was the "session expired"
-loop). $0 — AuthKit is free to 1M MAU; the $99 custom domain is skipped.*
+resource indicator `https://tinyassets.io/mcp` registered. $0 — AuthKit is free to 1M MAU.*
 
-*Both accounts signed in and migrated 2026-08-29 ~06:10Z. Verified live through
-`tinyassets.io/mcp/app` as the founder: home universe resolves, the 400-turn thread is
-back, and the universe answers on the founder's own subscription and recalls the last
-piece of work. What moved, what was rebuilt, and what was deliberately left as history
-is in `docs/reviews/2026-08-29-codex-subject-migration-boundary.md`; the structural
-finding is `docs/concerns/2026-08-29-subject-ids-scattered-across-stores.md`.*
+*Both founder accounts migrated and verified live 2026-08-29 (memory, model, 78 branches).
+Record: `docs/reviews/2026-08-29-codex-subject-migration-boundary.md`.*
 
-1. **Publish the Google consent screen.** Until then only the two test users can sign in
-   with Google. Google Cloud → project `tinyassets` → Google Auth Platform → **Audience** →
-   **Publish app**. (I clicked toward it and was stopped: publishing is a public-facing
-   state change, and rightly your call.) A stale "configuration incomplete" banner may
-   still show — Branding is saved; the button is enabled.
+*Google consent screen PUBLISHED 2026-08-29 ~06:40Z — status "In production", any Google
+account can sign in. The disabled Publish button was Google requiring home page + privacy +
+terms URLs (unstarred, but enforced); set to `https://tinyassets.io` and
+`https://tinyassets.io/legal/`, authorized domains `workos.com` + `tinyassets.io`.*
 
-2. **Reconnect GitHub for your universe.** The GitHub PR-writer connection was a WorkOS
-   *Pipes* credential (`workos-pipes://github/<staging user>`), vended by the staging
-   environment; production WorkOS has no such connection and cannot transfer one. The two
-   old rows were left under the staging id (invisible and unusable, nothing forged). When
-   you want PRs from the universe again: check production WorkOS → Pipes has the GitHub
-   integration configured (it was configured in staging only), then run the connect
-   gesture from the app; the universe's own `http:github` key-based connection did migrate
-   and still works for the narrow allow-list.
+**GitHub PRs from the universe — one paste, then I finish it.** The PR-writer connection was a
+WorkOS *Pipes* credential from the staging environment; production needs its own provider.
+Done so far: the GitHub OAuth app `TinyAssets WorkOS Pipes` (client `Ov23li3FAv5IamMy0qtI`)
+now also lists production's callback
+`https://api.workos.com/data-integrations/github/SDJrfkAPgx6asSQEm9m7cglyU/callback`, and
+the production WorkOS Pipes → GitHub dialog is filled (client id, scopes `repo` +
+`repo_deployment`). What only you can do, because it is a secret:
 
-Google OAuth client: `1041012102732-sbdm1t0qdh8pqu4d9ljl882led8h6plm.apps.googleusercontent.com`
-in GCP project `tinyassets`, redirect
-`https://auth.workos.com/sso/oauth/google/wqZmy0Vb4Qp1GEb0GSXdlrJhG/callback`.
+1. GitHub → Settings → Developer settings → OAuth Apps → *TinyAssets WorkOS Pipes* →
+   **Generate a new client secret** → copy it.
+2. WorkOS dashboard → **Production** → Pipes → Connect provider → GitHub → OAuth → paste
+   it into **GitHub Client Secret** → **Add provider**.
+
+Then say "done" and I run the connect gesture from the app as you (it opens GitHub consent,
+which I can click through) and reconcile the connection. The universe's key-based
+`http:github` connection already migrated and still works for its narrow allow-list.
 
 ---
 
