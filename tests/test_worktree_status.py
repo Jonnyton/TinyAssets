@@ -189,7 +189,7 @@ def test_ready_to_remove_action_uses_underscore_state() -> None:
         status_ref=False,
     )
 
-    assert "Log remove/sweep" in action
+    assert "wt.py done" in action
 
 
 def test_ready_to_remove_sweep_commands_remove_worktree_and_local_branch() -> None:
@@ -209,7 +209,7 @@ def test_ready_to_remove_sweep_commands_remove_worktree_and_local_branch() -> No
         purpose_missing_fields=[],
         purpose="-",
         memory_refs=[],
-        action="Log remove/sweep in .agents/worktrees.md after ideas are extracted.",
+        action="Extract ideas, then `python scripts/wt.py done` (the PR is the record).",
     )
 
     commands = worktree_status.sweep_commands([status])

@@ -181,7 +181,6 @@ def default_specs(root: Path) -> list[SourceSpec]:
         SourceSpec("CLAUDE.md", "claude", "provider-routing", False),
         SourceSpec("CODEX.md", "codex", "provider-routing", False),
         SourceSpec(".agents/activity.log", "shared", "activity-log", False),
-        SourceSpec(".agents/worktrees.md", "shared", "worktree-inventory", False),
         SourceSpec("ideas/INBOX.md", "shared", "idea-feed", False),
         SourceSpec("ideas/PIPELINE.md", "shared", "idea-pipeline", False),
         SourceSpec("pages/concepts", "shared", "brain-concept"),

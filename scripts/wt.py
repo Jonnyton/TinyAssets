@@ -6,13 +6,20 @@ Part of the branch lifecycle automation; see
 One command for both halves of the loop so worktrees stop piling up:
 
     python scripts/wt.py new <slug> [--provider claude-code] [--branch name]
+    python scripts/wt.py pr [--title ...] [--draft] [--auto] [--dry-run]
     python scripts/wt.py done [<slug-or-path>] [--force]
     python scripts/wt.py sweep [--apply]
     python scripts/wt.py list
 
 ``new``   fetches, creates a worktree off the base ref, scaffolds _PURPOSE.md
           (with every field worktree_status.py requires), and logs a create
-          event in .agents/worktrees.md.
+          event in the local, ignored .agents/worktrees.local.log.
+``pr``    publishes the lane: pushes the branch and opens the PR with
+          _PURPOSE.md as its body (``--auto`` also arms squash auto-merge).
+          _PURPOSE.md itself is a LOCAL DRAFT - ignored, never tracked - so
+          the PR body is the durable, shared record and no two lanes can ever
+          conflict on the file (2026-08-29: a tracked copy made every
+          concurrent PR DIRTY the moment another landed; five times that day).
 ``done``  verifies the branch merged into the base ref (refuses otherwise unless
           --force), removes the worktree, deletes the local branch, and logs a
           remove event. Remote-branch cleanup is the janitor's job.
@@ -101,8 +108,15 @@ def repo_root() -> Path:
     return Path(proc.stdout.strip()).resolve()
 
 
+#: Local, git-ignored lane history. The tracked ``.agents/worktrees.md`` it
+#: replaces was edited by every lane (82 landings in 30 days, ~227 recorded
+#: conflict resolutions) and read by nothing; ``wt.py list`` derives the live
+#: inventory from git, and "who is working on what" is branches + open PRs.
+EVENT_LOG = Path(".agents") / "worktrees.local.log"
+
+
 def log_event(root: Path, line: str) -> None:
-    path = root / ".agents" / "worktrees.md"
+    path = root / EVENT_LOG
     path.parent.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y-%m-%d", time.gmtime())
     with path.open("a", encoding="utf-8") as fh:
@@ -136,7 +150,73 @@ def cmd_new(args: argparse.Namespace) -> int:
         f"CREATE {wt_path.name} branch={branch} base={args.base_ref} provider={args.provider}",
     )
     print(f"created worktree {wt_path} on branch {branch}")
-    print(f"  -> edit {wt_path / '_PURPOSE.md'} (fill the TODO fields)")
+    print(f"  -> edit {wt_path / '_PURPOSE.md'} (fill the TODO fields; it stays local)")
+    print("  -> publish it with `python scripts/wt.py pr` when the lane goes public")
+    return 0
+
+
+def _purpose_title(text: str) -> str:
+    """The PR title from a purpose file: its ``Purpose:`` line, unless that is
+    still the scaffold's slug or a TODO, in which case the caller must pass
+    ``--title``. Returns "" when nothing usable is there."""
+    for line in text.splitlines():
+        stripped = line.strip(" -")
+        if stripped.lower().startswith("purpose:"):
+            value = stripped.partition(":")[2].strip()
+            if value and not value.upper().startswith("TODO"):
+                return value
+    return ""
+
+
+def pr_command(
+    *, branch: str, base: str, title: str, body_path: Path, draft: bool = False,
+) -> list[str]:
+    """The exact ``gh pr create`` argv - pure, so tests can assert it without gh."""
+    cmd = [
+        "gh", "pr", "create", "--base", base, "--head", branch,
+        "--title", title, "--body-file", str(body_path),
+    ]
+    if draft:
+        cmd.append("--draft")
+    return cmd
+
+
+def cmd_pr(args: argparse.Namespace) -> int:
+    top = _run(["git", "rev-parse", "--show-toplevel"])
+    if top.returncode != 0:
+        raise SystemExit("not inside a git worktree")
+    wt_path = Path(top.stdout.strip()).resolve()
+    purpose = wt_path / "_PURPOSE.md"
+    if not purpose.exists():
+        raise SystemExit(f"no _PURPOSE.md at {wt_path}; run `wt.py new` or write one")
+    head = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=wt_path)
+    branch = head.stdout.strip()
+    if head.returncode != 0 or branch in ("", "HEAD", "main", "master"):
+        raise SystemExit(f"refusing to open a PR from {branch or 'a detached HEAD'}")
+    text = purpose.read_text(encoding="utf-8", errors="replace")
+    title = args.title or _purpose_title(text)
+    if not title or title == branch.partition("/")[2]:
+        raise SystemExit(
+            "_PURPOSE.md has no usable `Purpose:` line (still the slug or TODO); "
+            "pass --title"
+        )
+    base = args.base.split("/", 1)[1] if "/" in args.base else args.base
+    push = ["git", "push", "-u", args.remote, branch]
+    create = pr_command(
+        branch=branch, base=base, title=title, body_path=purpose, draft=args.draft,
+    )
+    steps = [push, create]
+    if args.auto:
+        steps.append(["gh", "pr", "merge", "--auto", "--squash", branch])
+    if args.dry_run:
+        for step in steps:
+            print("$ " + " ".join(step))
+        return 0
+    for step in steps:
+        proc = subprocess.run(step, cwd=str(wt_path), text=True)
+        if proc.returncode != 0:
+            raise SystemExit(f"step failed ({proc.returncode}): {' '.join(step)}")
+    log_event(repo_root(), f"PR {wt_path.name} branch={branch} title={title!r}")
     return 0
 
 
@@ -302,6 +382,17 @@ def main(argv: list[str]) -> int:
     p_new.add_argument("--base-ref", default="origin/main")
     p_new.add_argument("--remote", default="origin")
     p_new.set_defaults(func=cmd_new)
+
+    p_pr = sub.add_parser(
+        "pr", help="push the branch and open the PR with _PURPOSE.md as its body"
+    )
+    p_pr.add_argument("--title", default=None, help="default: the `Purpose:` line")
+    p_pr.add_argument("--base", default="origin/main")
+    p_pr.add_argument("--remote", default="origin")
+    p_pr.add_argument("--draft", action="store_true")
+    p_pr.add_argument("--auto", action="store_true", help="also arm squash auto-merge")
+    p_pr.add_argument("--dry-run", action="store_true", help="print the commands only")
+    p_pr.set_defaults(func=cmd_pr)
 
     p_done = sub.add_parser("done", help="verify merged, remove worktree + branch")
     p_done.add_argument("target", nargs="?", default=None, help="slug or path; defaults to cwd")
