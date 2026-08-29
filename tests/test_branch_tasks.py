@@ -421,13 +421,19 @@ def test_dispatcher_startup_skips_shared_default_worker_id(
     tmp_path: Path, monkeypatch,
 ) -> None:
     """The shared 'cloud-droplet' fallback id is NOT predecessor-reclaimed —
-    several manually-started supervisors could share it, so reclaiming it would
-    risk stealing a live twin's task (Codex review). Falls back to TTL."""
-    from fantasy_daemon.__main__ import _dispatcher_startup
-    from tinyassets.cloud_worker import DEFAULT_HOST_USER
+    several separately-started daemons could share it, so reclaiming it would
+    risk stealing a live twin's task (Codex review). Falls back to TTL.
 
-    monkeypatch.setenv("TINYASSETS_WORKER_ID", DEFAULT_HOST_USER)
-    _claim_running(tmp_path, worker=DEFAULT_HOST_USER)  # fresh lease under default id
+    The id is a literal here on purpose: its old home, `tinyassets.cloud_worker`,
+    was deleted on 2026-08-29 (nothing runs outside a user's universe), and
+    `_dispatcher_startup` now carries its own copy. A literal on each side is
+    what makes this test able to catch the constant drifting.
+    """
+    from fantasy_daemon.__main__ import _dispatcher_startup
+
+    shared_default = "cloud-droplet"
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", shared_default)
+    _claim_running(tmp_path, worker=shared_default)  # fresh lease under default id
 
     _dispatcher_startup(tmp_path)
 

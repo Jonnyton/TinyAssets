@@ -177,6 +177,12 @@ RECOVERY_PROJECT_RE = re.compile(r"^tinyassets-recovery-[0-9a-f]{16}$")
 WRITER_PROCESS_MARKERS = (
     "tinyassets.universe_server",
     "tinyassets.daemon_server",
+    # DELIBERATELY outlives its module. `tinyassets/cloud_worker.py` was deleted
+    # on 2026-08-29 (nothing runs outside a user's universe -- PLAN.md), so no
+    # current image can start one. This is a DETECTOR, not a service list: a
+    # container left running from a pre-prune image is precisely the stray
+    # writer the prune creates, and dropping the marker would blind the fence
+    # to it. Remove only once no pre-2026-08-29 image can still be running.
     "tinyassets.cloud_worker",
     "claude-plugin",
     "mcpb",

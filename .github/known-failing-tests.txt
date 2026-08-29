@@ -39,7 +39,6 @@ tests/load/test_agent_runtime_cloud_load.py::test_cross_process_launch_has_one_p
 tests/test_anonymous_write_challenge.py::test_scoped_canary_token_is_off_when_absent_short_or_mismatched[\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800\ud800-cccccccccccccccccccccccccccccccc]
 tests/test_backup_script.py::test_local_backup_file_rejects_symlink_source
 tests/test_check_primitive_exists.py::test_action_collision_on_known_verb
-tests/test_cloud_worker.py::test_main_passes_provider_pin_to_supervised_daemon
 tests/test_community_loop_watch_workflow.py::test_alarm_sink_dispatches_only_stale_uptime_canary_workflow
 tests/test_context_guardrails.py::TestGuardrailPipeline::test_pipeline_handles_error
 tests/test_data_dir_resolver.py::test_linux_mac_default_dot_workflow_under_home
