@@ -14,42 +14,17 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ## Capacity for 1,000 users
 
-### The droplet is 1 vCPU / 2 GB. One decision unblocks the rest: resize to 4 vCPU / 8 GB
+### Apply the daemon memory limit — needs a compose sync, not a decision
 
-*Measured on the live box 2026-08-28. Full numbers:
-`docs/design-notes/2026-08-28-capacity-measured-for-1000-users.md`.*
+`deploy/compose.yml` now carries `mem_limit: 4g` + `memswap_limit: 4g` (#2658), but the
+droplet's copy at `/opt/tinyassets/compose.yml` is from 2026-08-22 and **is not shipped by
+the deploy pipeline** — image updates do not sync it. So the limit is inert and the daemon
+is still unbounded.
 
-You asked whether we are ready for 1,000 users with many simultaneous. **We are not**,
-and the gap is hardware before it is code. Two independent ceilings, both measured:
-
-| Ceiling | Measured | Binds |
-|---|---|---|
-| Reads | now **38+ req/s** after two O(n) hot spots left the request path | CPU (no longer the worry) |
-| Real turns | **6 concurrent**, bounded explicitly and observably | **MEMORY** |
-| Self-protection | daemon cgroup has peaked at **1411.8 MiB = 69% of the host** | **MEMORY** |
-
-The second one is the important correction. I initially argued the 4-worker run pool was
-conservative because a run mostly waits on the user's own LLM rather than our CPU — true
-of CPU, and wrong about what binds. Four concurrent runs already peak the container at
-**1.1 GB of 2 GB**, and that is with no prompt, no history and no inference loaded. A
-waiting run holds its runtime resident the whole time it waits.
-
-**So this is not "buy cores", it is buy RAM, and the same tier gives both.**
-
-| Tier | $/mo | Buys |
-|---|---:|---|
-| 1 vCPU / 2 GB (today) | 12 | ~13 req/s, 4 concurrent runs at the edge |
-| 2 vCPU / 4 GB | 24 | ~2× reads, ~10 concurrent runs |
-| **4 vCPU / 8 GB** | **48** | ~4× reads, ~25 concurrent runs — **the recommendation** |
-| 8 vCPU / 16 GB | 96 | ~8× reads, ~50 concurrent runs |
-
-At $20/user, the $48 tier is paid for by **three** subscribers. This is the cheapest
-large move available and it needs no code — but it is spend, so it is yours.
-
-**Say "resize to 4/8" and I will:** take a snapshot first, resize (DigitalOcean resizes
-need a brief power-off), bring the stack back, verify with the canary + `deployed_sha`,
-re-run the load probe to confirm the new ceiling, then raise the run pool to match the
-RAM and prove it.
+Much less urgent since the resize: the cgroup's observed peak of 1411.8 MiB was 69% of the
+old 2 GB host and is 18% of 8 GB. Left as a follow-up rather than a second outage tonight.
+It needs a compose sync plus a daemon recreate (brief blip), which is my job, not yours —
+this row exists so it is not forgotten.
 
 ### Related, and free: the container has no memory limit
 
@@ -208,57 +183,6 @@ Until one of those is answered, do not swap in the live key: the checkout would 
 the customer would get nothing for their money.
 
 ---
-
-### Stripe is in sandbox — no real user can subscribe
-
-*Verified live 2026-08-28 against the Stripe API from production.*
-
-The subscribe/cancel flow is proven end-to-end, but against **test mode**. Real money cannot
-move, and a real card would be declined:
-
-| fact | value |
-|---|---|
-| `STRIPE_SECRET_KEY` in production | `sk_test_…` (sandbox) |
-| `charges_enabled` | **false** |
-| `payouts_enabled` | **false** |
-| `details_submitted` | **false** — activation never started |
-| the $20 price | `livemode: false`, test mode only |
-
-`charges_enabled: false` is the decisive one. The account cannot take a real payment in any
-mode until it is activated, and only the founder can do that.
-
-**Check readiness at any time:** `python scripts/stripe_go_live.py --check` (run it on the
-daemon, where the key lives). It reports every blocker below and refuses to call a sandbox
-account ready.
-
-**Four steps. Step 1 is yours; 2 and 3 are now one command; step 4 I do once you have the key.**
-
-1. **Activate the Stripe account** — business details and a bank account, at
-   <https://dashboard.stripe.com/account/onboarding>. Stripe also asks for a business URL and
-   usually a terms/refund page. Nothing below works until `charges_enabled` is true.
-2–3. **Create the live price and webhook endpoint** — one command, once the live key is in
-   the environment: `python scripts/stripe_go_live.py --provision`. It creates the $20/month
-   price with the lookup key the code resolves by, registers the webhook endpoint with every
-   event entitlement depends on, and prints the signing secret once. Idempotent.
-4. **Place the two Stripe secrets on the droplet** — the live `sk_live_…` and that signing
-   secret into `/etc/tinyassets/env`. Hand them to me however you like; a vault path works,
-   and I will place them without echoing them.
-
-   **`TINYASSETS_BILLING_ENTITLEMENT_KEY` is already done** (2026-08-28): generated *on the
-   droplet* so it never crossed the wire, 64 chars, `root:tinyassets 0640`. It takes effect
-   on the next container **recreate** — `env_file` is read at creation, not at restart — so
-   the next deploy activates it. Until then new claims still issue as v1.
-
-   Why it exists: without it, every subscription's authority is signed with Stripe's webhook
-   secret, and rolling that secret — which Stripe tells you to do, and which you must do on
-   any leak — would permanently break every subscription already sold.
-   `docs/reference/environment-variables.md` § Billing has the detail, including that
-   rotating this key invalidates every v2 subscription.
-
-The checkout-lease redesign that used to gate this has landed: a lease now names the Stripe
-session it guards, so a lost response replays instead of creating a second session, a delayed
-event releases only its own lease, and an abandoned checkout resumes instead of locking you
-out. Double-billing is closed.
 
 ---
 
