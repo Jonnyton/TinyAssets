@@ -226,17 +226,25 @@ services:
   # from the internet via Slack, so a defect in it would have had stack-wide
   # secret access and could starve the droplet. It gets only what it needs.
   #
-  # Note what is absent: no `env_file` (every secret on the box) and, since
-  # 2026-08-06, no `tinyassets-data` mount either.
+  # Note what is absent: no `env_file` carrying every secret on the box.
   #
-  # It used to read each universe's vault off the data volume. That could not
-  # survive: `retire_cheat_loop_deploy_fence.py` deletes any container mounting
-  # that volume outside the canonical five, and it did so six times between
-  # 03:36 and 04:25 UTC on 2026-08-06 while failing two production deploys. The
-  # invariant is structural, not an allowlist gap — several fence call sites
-  # require the consumer set be EXACTLY the five and four require it be EMPTY
-  # during removal, and Docker labels are self-asserted so a label-gated
-  # allowlist is forgeable by the writer the fence exists to catch.
+  # It used to read each universe's vault off the data volume READ-WRITE, and
+  # that could not survive: `retire_cheat_loop_deploy_fence.py` deletes any
+  # container mounting that volume outside the canonical five, and it did so six
+  # times between 03:36 and 04:25 UTC on 2026-08-06 while failing two production
+  # deploys. The invariant is structural, not an allowlist gap — several fence
+  # call sites require the consumer set be EXACTLY the five and four require it
+  # be EMPTY during removal, and Docker labels are self-asserted so a
+  # label-gated allowlist is forgeable by the writer the fence exists to catch.
+  #
+  # UNRESOLVED (2026-08-29): production has since re-added the mount READ-ONLY,
+  # and this file now carries it because the deploy makes this file the durable
+  # definition. A running slack-agent is therefore still an "extra production
+  # volume consumer" to that fence, which is invoked by install-host-services /
+  # restart-daemon / p0-outage-triage (never by deploy-prod.yml, and this
+  # service is profile-gated, so the conflict is latent rather than live).
+  # docs/concerns/2026-08-29-slack-agent-volume-mount-vs-fence.md owns the
+  # decision: widen the fence's canonical set, or drop the mount from prod.
   #
   # So routing, replay admission, founder recognition, the turn and the reply
   # POST all happen on the daemon now (tinyassets/app_ingress.py), reached over
@@ -264,12 +272,20 @@ services:
     profiles: ["slack"]
     restart: unless-stopped
     logging: *tinyassets_log_forwarding
+    # `entrypoint` and the `/data:ro` volume below were captured from the live
+    # droplet's /opt/tinyassets/compose.yml on 2026-08-29 while reconciling the
+    # compose sync (PR #2685): production had drifted ahead of this file, and
+    # the deploy is about to make this file authoritative, so adopting them
+    # keeps the durable definition equal to what production ran. tini reaps the
+    # socket pump's children so a crashed turn cannot leave a zombie.
+    entrypoint: ["/usr/bin/tini", "--"]
     command: ["python", "-m", "tinyassets.slack_agent_worker"]
     environment:
       HOME: /app
-      # No TINYASSETS_DATA_DIR, deliberately. With no volume behind it, `/data`
-      # would resolve to an empty container-local directory and any residual
-      # vault read would quietly find nothing instead of failing loudly.
+      # No TINYASSETS_DATA_DIR, deliberately. The `/data` mount below is
+      # READ-ONLY, so a residual vault WRITE fails loudly at the kernel rather
+      # than half-succeeding; leaving the resolver unset keeps this service from
+      # treating that mount as its data directory at all.
       TINYASSETS_ALLOW_API_KEY_PROVIDERS: "0"
       TINYASSETS_CLOUD_DAEMON_SUBSCRIPTION_ONLY: "1"
       UNIVERSE_SERVER_HOST_USER: cloud-droplet-slack-agent-1
@@ -293,6 +309,10 @@ services:
     # does not inherit /etc/tinyassets/env the way the daemon does.
     env_file:
       - /etc/tinyassets/app-ingress.env
+    # Captured from the live droplet 2026-08-29 (see the note above): READ-ONLY,
+    # so this service can never write a universe's vault.
+    volumes:
+      - tinyassets-data:/data:ro
     depends_on:
       daemon:
         condition: service_healthy

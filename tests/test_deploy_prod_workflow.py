@@ -635,20 +635,89 @@ def test_deploy_syncs_codex_subscription_bundle_with_helper():
 
 
 def test_deploy_syncs_runtime_compose_and_systemd_files():
+    """The sync step STAGES the runtime bundle and installs nothing.
+
+    Installing here mutated production config outside the fail-safe
+    transaction: the auth-volume step, the deploy_fail_safe.sh scp, the
+    host-mutation lock and the candidate-image preflight can all fail AFTER the
+    install, leaving the new compose file live under the old image with no
+    rollback path that restores it (Codex ADAPT on PR #2685, 2026-08-29).
+    deploy_fail_safe.sh now owns validate -> snapshot -> install -> restore.
+    """
     wf = _load()
     sync_step = next(
         (s for s in _steps(wf) if s.get("name") == "Sync runtime deploy files"),
         None,
     )
-    assert sync_step is not None, "deploy must sync runtime compose files"
+    assert sync_step is not None, "deploy must stage the runtime bundle"
     run_script = sync_step.get("run", "") or ""
-    assert "deploy/compose.yml" in run_script
-    assert "/opt/tinyassets/compose.yml" in run_script
-    assert "/opt/tinyassets/deploy/compose.yml" in run_script
-    assert "deploy/tinyassets-daemon.service" in run_script
-    assert "/etc/systemd/system/tinyassets-daemon.service" in run_script
-    assert "systemctl daemon-reload" in run_script
-    assert "vector-entrypoint.sh" in run_script
+
+    for repo_file in (
+        "deploy/compose.yml",
+        "deploy/vector.yaml",
+        "deploy/vector-betterstack.yaml",
+        "deploy/vector-entrypoint.sh",
+        "deploy/tinyassets-daemon.service",
+    ):
+        assert repo_file in run_script, f"{repo_file} must be staged"
+    assert "/tmp/tinyassets-bundle" in run_script, (
+        "the five files must be staged into the bundle directory "
+        "deploy_fail_safe.sh consumes"
+    )
+    assert "mkdir -p" in run_script, "the stage directory must be created first"
+
+    # Installs nothing: no destination path and no reload belongs in this step.
+    for install_marker in (
+        "/opt/tinyassets/compose.yml",
+        "/opt/tinyassets/deploy/",
+        "/etc/systemd/system/tinyassets-daemon.service",
+        "systemctl daemon-reload",
+        "install -m",
+    ):
+        assert install_marker not in run_script, (
+            f"the sync step must stage only; {install_marker!r} installs runtime "
+            "config outside the fail-safe transaction"
+        )
+
+
+def test_deploy_bundle_is_installed_inside_the_fail_safe_transaction():
+    """The install the sync step gave up must live in deploy_fail_safe.sh."""
+    script = (_REPO / "deploy" / "deploy_fail_safe.sh").read_text(encoding="utf-8")
+    for marker in (
+        "/tmp/tinyassets-bundle",
+        "/var/lib/tinyassets-deploy",
+        "bundle-previous",
+        "bundle-snapshots",
+        "validate_bundle",
+        "snapshot_bundle",
+        "install_bundle",
+        "restore_previous_bundle",
+        "--force-recreate logs",
+        # the entrypoint keeps its exec bit; the rest of the bundle is 0644
+        "vector-entrypoint.sh|0755|runtime",
+    ):
+        assert marker in script, f"deploy_fail_safe.sh must own {marker!r}"
+    assert "--restore-bundle" in script
+
+
+def test_canary_rollback_restores_the_bundle_before_the_image():
+    """Converging PREV_IMAGE against the NEW compose file rolls back half a change."""
+    wf = _load()
+    rollback = next(
+        (
+            s
+            for s in _steps(wf)
+            if s.get("name") == "Roll back if the public canary is red"
+        ),
+        None,
+    )
+    assert rollback is not None, "the canary rollback step must exist"
+    run_script = rollback.get("run", "") or ""
+    assert "deploy_fail_safe.sh --restore-bundle" in run_script, (
+        "the canary rollback must restore the runtime bundle snapshot before "
+        "converging the previous image"
+    )
+    assert "${PREV_IMAGE}" in run_script
 
 
 # ---------------------------------------------------------------------------

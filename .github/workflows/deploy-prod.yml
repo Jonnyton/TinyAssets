@@ -186,46 +186,39 @@ jobs:
         # daemon/cloudflared/logs directives, drift only in comments, two env keys
         # the env file also carries, and vector.yaml's retired worker role).
         #
-        # Fail closed: the repo copy is installed only after `docker compose config`
-        # on the droplet parses it WITH the production env file and lists exactly
-        # the three production services — the 2026-08 502 came from converging a
-        # partial file. Reload only; the fail-safe script converges the stack.
+        # This step only STAGES. It installs nothing. A cross-family review of the
+        # first restore (Codex, 2026-08-29) showed that installing here mutates
+        # config OUTSIDE the fail-safe transaction: the auth-volume step below,
+        # the deploy_fail_safe.sh scp, the host-mutation lock and the candidate
+        # image preflight can all fail AFTER the new config is live, leaving the
+        # new compose file under the old image with no rollback path that
+        # restores it. deploy_fail_safe.sh now owns validate -> snapshot ->
+        # install -> converge -> restore for this bundle; see its header and
+        # deploy/DEPLOY.md ("Runtime bundle transaction").
         run: |
           set -euo pipefail
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" "sudo bash -s '${DO_SSH_USER}'" <<'SH'
+          set -euo pipefail
+          stage=/tmp/tinyassets-bundle
+          # Rebuilt every run: a leftover from an earlier deploy is a PARTIAL
+          # bundle risk, and deploy_fail_safe.sh refuses those.
+          rm -rf "${stage}"
+          mkdir -p "${stage}"
+          chown "$1:" "${stage}"
+          chmod 0750 "${stage}"
+          echo "staged bundle directory ${stage} (owner $1)"
+          SH
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/compose.yml \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-compose.yml"
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/vector.yaml \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-vector.yaml"
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/vector-betterstack.yaml \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-vector-betterstack.yaml"
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/vector-entrypoint.sh \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-vector-entrypoint.sh"
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/tinyassets-daemon.service \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-daemon.service"
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-bundle/"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" 'sudo bash -s' <<'SH'
-          set -euo pipefail
-          services="$(docker compose --env-file /etc/tinyassets/env -f /tmp/tinyassets-compose.yml config --services | sort | tr '\n' ' ')"
-          if [ "${services}" != "cloudflared daemon logs " ]; then
-            echo "refusing to install compose.yml: services='${services}' (expected exactly: cloudflared daemon logs)" >&2
-            exit 1
-          fi
-          mkdir -p /opt/tinyassets/deploy
-          cp -a /opt/tinyassets/compose.yml "/opt/tinyassets/compose.yml.bak-$(date -u +%Y%m%dT%H%M%SZ)" 2>/dev/null || true
-          install -m 0644 -o tinyassets -g tinyassets /tmp/tinyassets-compose.yml /opt/tinyassets/compose.yml
-          install -m 0644 -o tinyassets -g tinyassets /tmp/tinyassets-compose.yml /opt/tinyassets/deploy/compose.yml
-          install -m 0644 -o tinyassets -g tinyassets /tmp/tinyassets-vector.yaml /opt/tinyassets/deploy/vector.yaml
-          install -m 0644 -o tinyassets -g tinyassets /tmp/tinyassets-vector-betterstack.yaml /opt/tinyassets/deploy/vector-betterstack.yaml
-          install -m 0755 -o tinyassets -g tinyassets /tmp/tinyassets-vector-entrypoint.sh /opt/tinyassets/deploy/vector-entrypoint.sh
-          install -m 0644 -o root -g root /tmp/tinyassets-daemon.service /etc/systemd/system/tinyassets-daemon.service
-          systemctl daemon-reload
-          echo 'runtime deploy files synced + unit reloaded'
-          SH
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'ls -l /tmp/tinyassets-bundle/'
 
       - name: Prepare codex auth persistent volume
         run: |
@@ -326,8 +319,16 @@ jobs:
           if [ -z "${PREV_IMAGE}" ]; then
             echo "::error::no previous image captured; manual rollback required"; exit 3
           fi
+          # --restore-bundle, not a plain invocation: the forward deploy installed
+          # a new compose.yml / vector config / systemd unit inside its
+          # transaction, so converging the previous IMAGE against the new CONFIG
+          # would roll back half the change. This reinstalls the snapshot named by
+          # /var/lib/tinyassets-deploy/bundle-previous first, then converges
+          # PREV_IMAGE (and force-recreates tinyassets-logs if the restore moved a
+          # vector input). It never installs the staged bundle — that is what it
+          # is undoing.
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-            "sudo HEALTH_TIMEOUT=180 bash /tmp/deploy_fail_safe.sh '${PREV_IMAGE}'"
+            "sudo HEALTH_TIMEOUT=180 bash /tmp/deploy_fail_safe.sh --restore-bundle '${PREV_IMAGE}'"
 
       - name: Publish release-state receipt
         if: ${{ success() }}

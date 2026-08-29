@@ -416,22 +416,75 @@ python scripts/droplet.py ssh -- <cmd>   # one-off remote command
 | **New image** (code merged to `main`) | Automatic: `build-image.yml` → `deploy-prod.yml` (Row M) pins the tag, pulls, restarts, canaries, auto-rolls-back. |
 | **Config / env flag** (eval-gate flip, feature flag) | **Manual** — a config commit does NOT trigger a deploy. Apply on the droplet (below). |
 
-### Compose layout (reconciled 2026-06-26 — the old drift trap is fixed)
+### Compose layout (re-verified on the droplet 2026-08-29)
 
 systemd runs `ExecStart=docker compose -f `**`/opt/tinyassets/compose.yml`**` up`.
-That path is now a **symlink → `deploy/compose.yml`** (the tracked file), so the
-old "root copy hand-maintained + drifts from `deploy/`" trap is gone — landing a
-`deploy/compose.yml` change on the droplet updates what systemd runs. The
-`/opt/tinyassets` checkout was reconciled to clean `origin/main` (was 1608 behind +
-dirty; 2026-06-10 STATUS concern, **now resolved**). So:
 
-- A `git pull` in `/opt/tinyassets` is now **safe** — the checkout is clean, no
-  local edits to clobber. (The old "never git pull" warning is obsolete.)
-- A config commit still does **not** auto-deploy — only image builds trigger Row M.
-  Landing a compose/env change is the manual step below.
+**The symlink this section used to describe is gone.** `/opt/tinyassets/compose.yml`
+is a REGULAR file (`root:root 0644`, `stat`'d 2026-08-29), not a symlink to
+`deploy/compose.yml`. Whatever replaced it, the consequence is that editing the
+`/opt/tinyassets` checkout no longer changes what systemd runs — every deploy
+installs `compose.yml` over that path from the repo (below).
+
 - Droplet-only values (image digest pin, secrets, tunnel token) live in
   `/etc/tinyassets/env`, never in the repo. `environment:` in `deploy/compose.yml`
   overrides `env_file` for the same key.
+- A config-only commit still does **not** auto-deploy — only image builds trigger
+  Row M. But an image deploy now DOES carry the compose/vector/unit change with
+  it: see the next section. Between 2026-08-18 and 2026-08-27 it did not
+  (PR #2442 dropped the sync), and every `deploy/compose.yml` edit was inert in
+  production for nine days.
+
+### Runtime bundle transaction
+
+`deploy/{compose.yml,vector.yaml,vector-betterstack.yaml,vector-entrypoint.sh,tinyassets-daemon.service}`
+are the **runtime bundle**. `deploy-prod.yml`'s "Sync runtime deploy files" step
+only *stages* them to `/tmp/tinyassets-bundle/` on the droplet;
+`deploy/deploy_fail_safe.sh` owns the transaction, so config and image succeed or
+fail together:
+
+1. **validate** — `docker compose config` on the *staged* file with
+   `/etc/tinyassets/env` and the candidate image, asserting the production
+   invariants: the default service set is exactly `daemon`/`cloudflared`/`logs`
+   (profiles are honoured, so `slack-agent` is absent by construction), the three
+   container names, `restart: unless-stopped` on all three, a positive
+   `daemon.mem_limit`, `daemon.image` interpolating `${TINYASSETS_IMAGE}`, and the
+   `logs` service mounting exactly the three vector files read-only. Any miss →
+   `deploy_result=bundle_invalid`, exit 1, **production untouched**.
+2. **snapshot** — the *live* `/opt/tinyassets/compose.yml`,
+   `/opt/tinyassets/deploy/{compose.yml,vector.yaml,vector-betterstack.yaml,vector-entrypoint.sh}`
+   and `/etc/systemd/system/tinyassets-daemon.service` are copied into
+   `/var/lib/tinyassets-deploy/bundle-snapshots/<UTC stamp>-XXXXXX/`. The last 5
+   are kept.
+3. **install** — `tinyassets:tinyassets` `0644` (`0755` for the entrypoint script),
+   the unit `root:root 0644`, then `systemctl daemon-reload`. Only after this
+   succeeds does `/var/lib/tinyassets-deploy/bundle-previous` advance to name the
+   snapshot the install replaced. A part-way install restores its own snapshot and
+   reports `deploy_result=bundle_install_failed`.
+4. **converge** — the usual `up -d daemon cloudflared logs`, plus
+   `up -d --force-recreate logs` when any vector input changed.
+   `vector-entrypoint.sh` copies the mounted files into `/run/vector-config` only
+   at container start, so an unchanged image would otherwise keep serving the old
+   config. A `tinyassets-logs` that will not reach `running` is a deploy failure.
+5. **rollback restores config first, then the image.** Both paths — the script's
+   internal rollback on an unhealthy candidate, and
+   `deploy_fail_safe.sh --restore-bundle <previous image>`, which the workflow's
+   "Roll back if the public canary is red" step calls — reinstall the snapshot
+   `bundle-previous` names, `daemon-reload`, then converge the previous image
+   (force-recreating `logs` if the restore moved a vector input). Converging the
+   previous IMAGE against the new CONFIG would roll back half a change.
+
+An **absent** `/tmp/tinyassets-bundle/` is not an error: the script logs
+`bundle: absent, image-only deploy` and skips these stages, so a manual
+`sudo bash /tmp/deploy_fail_safe.sh <ref>` still works. A **partial** stage
+directory is refused — half a bundle is what caused the 2026-08 502.
+
+Manual restore, if you ever need it without a deploy:
+
+```bash
+cat /var/lib/tinyassets-deploy/bundle-previous     # the snapshot directory
+sudo bash /tmp/deploy_fail_safe.sh --restore-bundle "$(grep -E '^TINYASSETS_IMAGE=' /etc/tinyassets/env | cut -d= -f2-)"
+```
 
 ### Applying a config/env change to the live daemon
 
@@ -439,9 +492,13 @@ dirty; 2026-06-10 STATUS concern, **now resolved**). So:
 ssh tinyassets-droplet                       # or: python scripts/droplet.py ssh
 
 # A — a compose change already committed (e.g. a daemon env flag in
-#     deploy/compose.yml): pull it onto the now-clean checkout; the symlink means
-#     /opt/tinyassets/compose.yml reflects it immediately.
+#     deploy/compose.yml): there is NO symlink any more (see "Compose layout"),
+#     so a checkout pull does not change what systemd runs. Either let the next
+#     image deploy install it as part of the runtime bundle, or install it by
+#     hand at BOTH paths:
 cd /opt/tinyassets && git pull --ff-only origin main
+sudo install -m 0644 -o tinyassets -g tinyassets \
+  /opt/tinyassets/deploy/compose.yml /opt/tinyassets/compose.yml
 
 # B — a host-only env value (image pin, secret, quick flag): edit the env file.
 printf '\nTINYASSETS_SOME_FLAG=value\n' >> /etc/tinyassets/env
@@ -457,8 +514,9 @@ Then confirm the public surface is green (Hard Rule #11):
 Rollback: revert the edit + `systemctl restart tinyassets-daemon`.
 
 Worked example — the 2026-06-25 auto-ship enforce flip set
-`TINYASSETS_AUTO_SHIP_{RUBRIC,TRAJECTORY}_MODE=enforce` in `deploy/compose.yml`,
-now live + durable via the symlink (verified across a daemon restart).
+`TINYASSETS_AUTO_SHIP_{RUBRIC,TRAJECTORY}_MODE=enforce` in `deploy/compose.yml`.
+It was durable then via the symlink; today the same flip becomes live when the
+next image deploy installs the runtime bundle.
 
 ## Row M — CI deploy pipeline (GitHub Actions)
 
