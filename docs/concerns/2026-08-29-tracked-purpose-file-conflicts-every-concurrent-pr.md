@@ -1,9 +1,11 @@
 # The tracked `_PURPOSE.md` makes every concurrent PR `DIRTY` the moment another lands
 
 **Filed:** 2026-08-29
-**Verified:** yes — three times in one afternoon: #2676 (after #2671), #2680 and
-#2682 (after #2677/#2678), each blocked with auto-merge armed until a human
-merged `main` and re-pushed.
+**Verified:** yes — five times in one afternoon: #2676 (after #2671), then #2680
+and #2682 twice each (after #2677/#2678, then again after #2679/#2681/#2683
+landed from another session within 25 minutes), every time with all checks
+green and auto-merge armed, blocked until a human merged `main` and re-pushed.
+A merge→deploy watcher timed out on #2680 for exactly this reason.
 **Severity:** P2 — nothing breaks, but "auto-merge armed" silently becomes
 "waiting for a person" for every PR but the first, which is the opposite of
 what the worktree flow promises.
@@ -31,6 +33,12 @@ on a dirty PR. The resolution is always the same and always manual: merge
    auto-merge.
 
 Option 1 keeps the record and removes the conflict; it is the one to build.
+
+**Interim workaround (used on #2680 and #2682, 2026-08-29):** carry `main`'s
+`_PURPOSE.md` in the branch (`git show origin/main:_PURPOSE.md > _PURPOSE.md`,
+commit) so the PR has no diff on the file and nothing landing can conflict it;
+the purpose goes in the PR body, and the branch's own version stays in its
+history.
 
 ## How to resolve this file
 
