@@ -474,27 +474,188 @@ def test_the_app_restores_the_conversation_on_load():
     # It must never block the chat on a history failure.
     assert "history is a convenience; never block the chat on it" in html
 
-def test_a_served_error_keeps_the_message_and_never_reloads_over_it():
-    """Founder, 2026-08-29: "there was an error in the web app, but now the
-    conversation is reset to the past". A served `error` payload was drawn as if
-    the turn had completed (the in-flight record was forgotten), and the
-    10-minute build check then reloaded the page seconds later, wiping both the
-    error and the message. The server never recorded the exchange, so the
-    message is still the user's to resend -- it must be kept, offered again with
-    the server's own sentence, and no automatic reload may run over a turn in
-    flight or a message waiting to be resent."""
-    from tinyassets.onboarding import render_app_html
+def _js_function(html: str, name: str) -> str:
+    """Source of ``function NAME(`` / ``async function NAME(`` from the app's
+    script, by brace matching that skips strings and comments."""
+    import re
 
-    html, _csp = render_app_html()
-    # A served error is raised into sendTurn's catch, not rendered as a reply.
-    assert 'const e=new Error(payload.error); e.served=true; throw e;' in html
-    assert 'appendMessage("system",payload.error)' not in html
-    # The resend note shows the server's sentence verbatim (no double prefix).
-    assert "(err&&err.served)" in html
-    # The build-change reload yields to a turn in flight / a pending resend.
-    assert 'if($("btn-send").disabled) return;' in html
-    assert "const pending=readInflight();" in html
-    assert "30*60*1000) return;" in html
+    m = re.search(r"(?:async\s+)?function\s+" + re.escape(name) + r"\s*\(", html)
+    assert m, f"app.html has no function {name}"
+    i = html.index("{", m.end())
+    depth, j, n = 0, i, len(html)
+    while j < n:
+        c = html[j]
+        if c in "\"'`":
+            j += 1
+            while j < n and html[j] != c:
+                if html[j] == "\\":
+                    j += 1
+                j += 1
+        elif html.startswith("//", j):
+            j = html.index("\n", j)
+        elif html.startswith("/*", j):
+            j = html.index("*/", j) + 1
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return html[m.start(): j + 1]
+        j += 1
+    raise AssertionError(f"unbalanced braces in {name}")
+
+
+# The real send/resend/build-check code, run in Node against a DOM shim. A
+# string assertion could not tell "the in-flight record is kept" from "kept,
+# then forgotten one line later" (Codex round 1, P2: that mutation passed the
+# old test); this drives the functions and reads the state they leave behind.
+_APP_SHIM = r"""
+const store={};
+const localStorage={
+  getItem:k=>(k in store?store[k]:null),
+  setItem:(k,v)=>{store[k]=String(v);},
+  removeItem:k=>{delete store[k];},
+};
+class El{
+  constructor(tag){
+    this.tagName=tag.toUpperCase(); this.children=[]; this.className="";
+    this.textContent=""; this.value=""; this.style={}; this.disabled=false;
+    this.listeners={}; this.scrollTop=0; this.scrollHeight=0;
+  }
+  appendChild(c){ this.children.push(c); return c; }
+  remove(){ this.removed=true; }
+  addEventListener(n,f){ this.listeners[n]=f; }
+  click(){ (this.listeners.click||(()=>{}))(); }
+}
+const document={
+  createElement:t=>new El(t),
+  createTextNode:t=>{const e=new El("#text"); e.textContent=t; return e;},
+  activeElement:null,
+};
+const els={
+  "composer-input":new El("textarea"), "btn-send":new El("button"),
+  "thread":new El("div"), "status-line":new El("div"),
+};
+const $=id=>els[id];
+const messages=[];
+function appendMessage(role,text,extra){ messages.push({role,text}); }
+function setStatusLine(t){ els["status-line"].textContent=t||""; }
+function sessionExpired(){ messages.push({role:"session-expired"}); }
+function showConnect(){ messages.push({role:"connect"}); }
+const SCENARIO=__SCENARIO__;
+const MCP={ converse: async m => {
+  if(SCENARIO.transportError){ const e=new Error("offline"); e.transport=true; throw e; }
+  return SCENARIO.payload;
+}};
+const CFG={build: SCENARIO.build||"b1"};
+let reloaded=false; const location={reload:()=>{ reloaded=true; }};
+let fetched=0;
+async function fetch(){ fetched++; return {headers:{get:()=>SCENARIO.liveBuild||null}}; }
+__APP_FUNCTIONS__
+(async()=>{
+  const out={};
+  if(SCENARIO.kind==="send"){
+    await sendTurn(SCENARIO.message);
+    out.inflight=JSON.parse(localStorage.getItem(INFLIGHT_KEY)||"null");
+    out.messages=messages;
+    out.notes=els.thread.children.map(n=>({cls:n.className,
+      text:n.textContent+n.children.map(c=>c.textContent).join(""),
+      buttons:n.children.filter(c=>c.tagName==="BUTTON").map(b=>b.textContent)}));
+    out.sendDisabled=els["btn-send"].disabled;
+    out.status=els["status-line"].textContent;
+  }else{
+    const min=60*1000;
+    if(SCENARIO.pendingAgeMin!=null){
+      localStorage.setItem(INFLIGHT_KEY, JSON.stringify(
+        {message:"m", display:"m", ts: Date.now()-SCENARIO.pendingAgeMin*min}));
+    }
+    if(SCENARIO.inflightAgeMin!=null){
+      els["btn-send"].disabled=true; turnStartedAt=Date.now()-SCENARIO.inflightAgeMin*min;
+    }
+    await checkForNewBuild();
+    out.reloaded=reloaded; out.fetched=fetched;
+  }
+  console.log(JSON.stringify(out));
+})().catch(e=>{ console.error(e&&e.stack||e); process.exit(1); });
+"""
+
+
+def _run_app(tmp_path, scenario: dict) -> dict:
+    import json
+    import os
+    import re
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:  # pragma: no cover - environment dependent
+        if os.environ.get("TINYASSETS_SKIP_JS_PROBE_TESTS"):
+            pytest.skip("node absent; skip explicitly requested via env")
+        pytest.fail("node executable not found - the app's send/resend behaviour is "
+                    "JavaScript; install Node or set TINYASSETS_SKIP_JS_PROBE_TESTS=1")
+    html, _csp = onboarding.render_app_html()
+    decls = "\n".join(
+        re.search(pat, html).group(0)
+        for pat in (r"const INFLIGHT_KEY=[^\n]*;", r"let turnStartedAt=[^\n]*;")
+    )
+    funcs = "\n".join(_js_function(html, f) for f in (
+        "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
+        "offerResend", "sendTurn", "checkForNewBuild",
+    ))
+    program = (_APP_SHIM
+               .replace("__SCENARIO__", json.dumps(scenario))
+               .replace("__APP_FUNCTIONS__", decls + "\n" + funcs))
+    script = tmp_path / "app_case.js"
+    script.write_text(program, encoding="utf-8")
+    proc = subprocess.run([node, str(script)], capture_output=True, text=True,
+                          encoding="utf-8", timeout=60)
+    assert proc.returncode == 0, f"app harness crashed:\n{proc.stderr}"
+    return json.loads(proc.stdout)
+
+
+def test_a_served_error_keeps_the_message_resendable_with_the_servers_sentence(tmp_path):
+    """The universe never answered, so the message stays the user's: the
+    in-flight record survives, the note is the server's own sentence, and
+    "Send it again" is one click away. (2026-08-29: the app drew the error as
+    a finished turn, forgot the message, and a reload wiped both.)"""
+    sentence = "Your universe went quiet mid-turn, so the turn was ended."
+    out = _run_app(tmp_path, {"kind": "send", "message": "hi",
+                              "payload": {"error": sentence}})
+    assert out["inflight"] and out["inflight"]["message"] == "hi"
+    assert [m["role"] for m in out["messages"]] == ["founder"]      # no fake reply
+    notes = [n for n in out["notes"] if "msg--system" in n["cls"]]
+    assert len(notes) == 1 and notes[0]["text"].startswith(sentence)
+    assert notes[0]["buttons"] == ["Send it again"]
+    assert out["sendDisabled"] is False and out["status"] == ""
+
+
+def test_a_delivered_reply_forgets_the_in_flight_record(tmp_path):
+    out = _run_app(tmp_path, {"kind": "send", "message": "hi",
+                              "payload": {"reply": "hello"}})
+    assert out["inflight"] is None
+    assert [m["role"] for m in out["messages"]] == ["founder", "universe"]
+    assert out["sendDisabled"] is False
+
+
+def test_a_transport_failure_still_offers_the_resend(tmp_path):
+    out = _run_app(tmp_path, {"kind": "send", "message": "hi", "transportError": True})
+    assert out["inflight"]["message"] == "hi"
+    assert any("didn’t get through" in n["text"] for n in out["notes"])
+
+
+@pytest.mark.parametrize("scenario, reloads", [
+    ({}, True),                                   # nothing in flight: update
+    ({"liveBuild": "b1"}, False),                 # same build: nothing to do
+    ({"inflightAgeMin": 1}, False),               # a turn being served: hold
+    ({"inflightAgeMin": 70}, True),               # past the server cap: a dead fetch; reload
+    ({"pendingAgeMin": 5}, False),                # a failed message waiting: hold
+    ({"pendingAgeMin": 25}, True),                # abandoned: update
+])
+def test_the_build_check_holds_for_a_live_turn_but_never_forever(tmp_path, scenario, reloads):
+    """Codex round 1 (P1): a never-settling send used to hold updates for good."""
+    case = {"kind": "build", "liveBuild": "b2", **scenario}
+    out = _run_app(tmp_path, case)
+    assert out["reloaded"] is reloads, case
 
 
 def test_an_unconfirmed_message_survives_a_reload_and_says_so():

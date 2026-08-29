@@ -991,6 +991,10 @@
   // it had been delivered: a 503 during a deploy ate one of these today while
   // the bubble sat there looking sent.
   const INFLIGHT_KEY="ta_inflight_turn";
+  // When the send now in flight started (0 = none). Kept in memory, not
+  // storage, so the build check's hold on a running turn never depends on
+  // localStorage being writable.
+  let turnStartedAt=0;
   function rememberInflight(message, display){
     try{ localStorage.setItem(INFLIGHT_KEY, JSON.stringify(
       {message, display: display||message, ts: Date.now()})); }catch(_e){}
@@ -1011,7 +1015,8 @@
     if(!opts.echoed) appendMessage("founder", display || message);
     rememberInflight(message, display);
     const input=$("composer-input"); input.value=""; input.style.height="auto";
-    $("btn-send").disabled=true; setStatusLine("Your universe is thinking...");
+    $("btn-send").disabled=true; turnStartedAt=Date.now();
+    setStatusLine("Your universe is thinking...");
     try{
       renderConverse(await MCP.converse(message)); setStatusLine("");
       forgetInflight();
@@ -1025,7 +1030,7 @@
       offerResend(message, display, err);
       // Deliberately NOT forgotten: the send failed, so the message is still the
       // user's to resend.
-    }finally{ $("btn-send").disabled=false; }
+    }finally{ $("btn-send").disabled=false; turnStartedAt=0; }
   }
 
   // Explain a failed turn in the user's own terms and hand back a working
@@ -2034,11 +2039,15 @@
     // Never mid-turn either: a reload while the universe is answering, or while
     // a failed message is waiting to be resent, throws away what the user is
     // looking at. On 2026-08-29 the 10-minute tick fired seconds after a served
-    // error and the thread jumped back to history. A stale in-flight record
-    // (abandoned for half an hour) no longer holds the update back.
-    if($("btn-send").disabled) return;
+    // error and the thread jumped back to history. Both holds are BOUNDED, so
+    // one wedged request can never freeze updates for good (Codex round 1, P1):
+    // the server caps a served turn at 3600s, so a send still unsettled 65
+    // minutes on is a dead fetch and a reload IS the recovery - the message
+    // survives in the in-flight record and is offered back after it. A failed
+    // message holds the update ~20 minutes (plus at most one 10-minute tick).
+    if($("btn-send").disabled && (Date.now()-turnStartedAt) < 65*60*1000) return;
     const pending=readInflight();
-    if(pending && (Date.now()-(pending.ts||0)) < 30*60*1000) return;
+    if(!$("btn-send").disabled && pending && (Date.now()-(pending.ts||0)) < 20*60*1000) return;
     try{
       const r=await fetch("/mcp/app",{method:"HEAD",cache:"no-store",credentials:"omit"});
       const live=r.headers.get("X-TinyAssets-Build");

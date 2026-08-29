@@ -132,28 +132,45 @@ def test_a_tool_call_longer_than_the_idle_budget_does_not_kill_the_turn():
     assert proc.killed is False
 
 
-def test_idle_with_no_tool_in_flight_fires_the_watchdog():
+def test_silence_after_the_first_event_is_generation_not_idle():
+    """Inverted 2026-08-29 (Codex round 1, P1). This case used to assert an idle
+    kill; but ``thread.started`` is the model starting to generate, and codex
+    emits nothing until it has something to say. ``turn.started`` cannot be
+    the trigger either - 0.146 delivers it best-effort."""
     proc = FakeProc([
         _ev("thread.started"),
-        (0.7, _ev("turn.completed")),          # silence with nothing running
+        (0.7, _ev("turn.completed")),          # 0.7s > idle 0.25: generating
     ])
-    with pytest.raises(ProviderIdleTimeoutError) as info:
-        _run(proc)
-    assert proc.killed is True
-    assert info.value.failure_class == "provider_idle_timeout"
-    assert info.value.attempt_telemetry["tool_phase"] is None
+    out, _ = _run(proc, init_timeout_s=0.3)   # and > init: only the turn rule saves it
+    assert b"turn.completed" in out
+    assert proc.killed is False
 
 
-def test_the_idle_watchdog_resumes_once_the_tool_completes():
-    """Tool-wait suspends idle; it must not disable it for the rest of the turn."""
+def test_silence_after_a_tool_result_is_the_next_generation_step():
+    """THE live failure: tool result at 08:47:31, next tool call at 08:48:02,
+    killed as idle at 08:48:16. After a tool answers the model reads the result
+    and generates the next step - the same silence as before the first call."""
     proc = FakeProc([
         _ev("thread.started"),
         _tool("item.started"),
         (0.4, _tool("item.completed")),        # tool done
-        (0.7, _ev("turn.completed")),          # then a real hang
+        (0.7, _ev("turn.completed")),          # model generating the next step
     ])
-    with pytest.raises(ProviderIdleTimeoutError):
-        _run(proc)
+    out, _ = _run(proc, init_timeout_s=0.3)
+    assert b"turn.completed" in out
+    assert proc.killed is False
+
+
+def test_the_launch_edge_is_still_guarded_by_the_init_budget():
+    """Before the first protocol event nothing is generating: a child that
+    never speaks is ended on ``init_s`` (the pre-turn guard Codex asked to see
+    asserted directly, not via the generation rule)."""
+    proc = FakeProc([(5.0, _ev("thread.started"))])
+    with pytest.raises(ProviderIdleTimeoutError) as info:
+        _run(proc, init_timeout_s=0.3)
+    assert proc.killed is True
+    assert info.value.attempt_telemetry["phase"] == "launch"
+    assert info.value.attempt_telemetry["tool_phase"] is None
 
 
 # --- an open turn's silence is the model generating, not a hang ----------------
@@ -180,30 +197,85 @@ def test_model_generation_silence_inside_an_open_turn_is_not_idle():
     assert proc.killed is False
 
 
-def test_silence_after_the_turn_completes_still_fires_idle():
-    """The turn-open allowance ends with the turn: a child that finishes its turn
-    and then hangs before EOF is still caught at the idle interval."""
+def test_generation_silence_with_the_best_effort_events_dropped_is_still_not_idle():
+    """Codex round 1 (P1): 0.146 drops ``turn.started`` / ``item.started`` under
+    backpressure (only ``turn.completed`` / ``item.completed`` are lossless).
+    A stream with NONE of the best-effort events must still be read as a
+    running turn, or the generation rule silently reverts to the 30s kill."""
     proc = FakeProc([
         _ev("thread.started"),
-        _ev("turn.started"),
-        _ev("turn.completed"),
-        (0.7, b"{\"type\": \"straggler\"}\n"),
+        _tool("item.completed"),                          # its item.started was dropped
+        (0.7, _ev("item.completed", item={"type": "agent_message", "text": "done"})),
+        _ev("turn.completed", usage={"input_tokens": 1, "output_tokens": 1}),
     ])
-    with pytest.raises(ProviderIdleTimeoutError) as info:
-        _run(proc)
-    assert proc.killed is True
-    assert info.value.attempt_telemetry["tool_phase"] is None
+    out, _ = _run(proc, init_timeout_s=0.3)
+    assert b"turn.completed" in out
+    assert proc.killed is False
 
 
-def test_a_failed_turn_rearms_idle_even_with_no_tool_open():
+def test_a_stalled_exit_after_turn_completed_returns_the_finished_stream(monkeypatch):
+    """Codex round 1 (P1): after ``turn.completed`` exec unsubscribes and awaits
+    ``client.shutdown()``, bounded at 45s in 0.146. The old 30s idle here
+    raised and DISCARDED a completed turn. Now the tail is cut and the stream
+    is returned; the caller reads past the exit code (see the helper test)."""
+    from tinyassets.providers import codex_provider
+
+    monkeypatch.setattr(codex_provider, "_TAIL_WAIT_S", 0.3)
+    lines = [
+        _ev("thread.started"),
+        _ev("item.completed", item={"type": "agent_message", "text": "done"}),
+        _ev("turn.completed", usage={"input_tokens": 1, "output_tokens": 1}),
+    ]
+    proc = FakeProc(lines + [(5.0, b"{\"type\": \"straggler\"}\n")])
+    t0 = time.monotonic()
+    out, _ = _run(proc)
+    assert time.monotonic() - t0 < 2.0
+    assert out == b"".join(lines)
+    assert proc.killed is True                            # ended, not failed
+
+
+def test_the_tail_grace_outlasts_codex_own_shutdown_bound():
+    from tinyassets.providers.codex_provider import _TAIL_WAIT_S
+
+    assert _TAIL_WAIT_S > 45.0, "IN_PROCESS_SHUTDOWN_TIMEOUT is 45s in codex 0.146"
+
+
+def test_a_failed_turn_with_a_stalled_exit_is_cut_the_same_way(monkeypatch):
+    """``turn.failed`` is terminal too: nothing is generating, so the tail grace
+    applies and the stream (with the failure in it) comes back for the caller
+    to classify - not an idle timeout mislabelling a turn failure."""
+    from tinyassets.providers import codex_provider
+
+    monkeypatch.setattr(codex_provider, "_TAIL_WAIT_S", 0.3)
     proc = FakeProc([
         _ev("thread.started"),
         _ev("turn.started"),
         _ev("turn.failed", error={"message": "boom"}),
-        (0.7, _ev("turn.completed")),
+        (5.0, _ev("turn.completed")),
     ])
-    with pytest.raises(ProviderIdleTimeoutError):
-        _run(proc)
+    t0 = time.monotonic()
+    out, _ = _run(proc)
+    assert time.monotonic() - t0 < 2.0
+    assert b"turn.failed" in out and b"turn.completed" not in out
+    assert proc.killed is True
+
+
+def test_turn_completed_closes_a_tool_left_open(monkeypatch):
+    """Codex round 1 (P1): a tool whose ``item.completed`` never arrived must
+    not hold the tail on the 900s tool allowance once the turn has completed."""
+    from tinyassets.providers import codex_provider
+
+    monkeypatch.setattr(codex_provider, "_TAIL_WAIT_S", 0.3)
+    proc = FakeProc([
+        _ev("thread.started"),
+        _tool("item.started"),                            # never completes
+        _ev("turn.completed", usage={"input_tokens": 1, "output_tokens": 1}),
+        (5.0, b""),
+    ])
+    t0 = time.monotonic()
+    out, _ = _run(proc)
+    assert time.monotonic() - t0 < 2.0
+    assert b"turn.completed" in out
 
 
 def test_an_open_turn_is_still_bounded_by_the_cap():
@@ -248,16 +320,22 @@ def test_a_finished_turn_returns_stdout_and_stderr_unchanged():
     assert proc.killed is False
 
 
-def test_non_json_output_keeps_the_process_but_not_the_clock():
-    """Chatter proves the process is alive, not that it is making progress."""
+def test_non_json_output_keeps_the_process_but_not_the_clock(monkeypatch):
+    """Chatter proves the process is alive, not that it is making progress.
+    Observable only with the in-turn allowance scaled down: inside the turn the
+    bound is ``_TURN_WAIT_S``, not the profile's idle interval."""
+    from tinyassets.providers import codex_provider
+
+    monkeypatch.setattr(codex_provider, "_TURN_WAIT_S", 0.25)
     proc = FakeProc([
         _ev("thread.started"),
         (0.15, b"not json\n"),
         (0.15, b"still not json\n"),           # 0.3s since the last real event
-        (0.15, _ev("turn.completed")),         # never reached: idle at 0.25
+        (0.15, _ev("turn.completed")),         # never reached: in-turn bound 0.25
     ])
-    with pytest.raises(ProviderIdleTimeoutError):
+    with pytest.raises(ProviderIdleTimeoutError) as info:
         _run(proc)
+    assert info.value.attempt_telemetry["tool_phase"] == "in_turn"
 
 
 # --- the served turn gets the generous cap, not the library default -----------
@@ -391,18 +469,55 @@ def test_a_recoverable_error_event_does_not_clear_an_open_tool():
     assert proc.killed is False
 
 
-def test_a_terminal_failure_event_rearms_the_idle_watchdog():
-    """`turn.failed` while a tool is open: the tool is not coming back, so
-    idle resumes instead of waiting out the tool allowance. (Only turn.failed:
-    see the recoverable `error` test above.)"""
+def test_a_terminal_failure_event_closes_the_open_tool(monkeypatch):
+    """`turn.failed` while a tool is open: the tool is not coming back, so the
+    tail grace applies instead of the tool allowance. (Only turn.failed: see
+    the recoverable `error` test above.)"""
+    from tinyassets.providers import codex_provider
+
+    monkeypatch.setattr(codex_provider, "_TAIL_WAIT_S", 0.3)
     proc = FakeProc([
         _ev("thread.started"),
         _tool("item.started"),
         _ev("turn.failed", error={"message": "boom"}),
-        (0.7, _ev("turn.completed")),           # idle (0.25) fires first
+        (5.0, _ev("turn.completed")),           # tail (0.3) cuts first
     ])
-    with pytest.raises(ProviderIdleTimeoutError):
-        _run(proc)
+    t0 = time.monotonic()
+    out, _ = _run(proc)
+    assert time.monotonic() - t0 < 2.0
+    assert b"turn.failed" in out
+    assert proc.killed is True
+
+
+# --- round 1 on this change: the protocol's word beats the exit code ----------
+
+
+def test_turn_completed_in_the_stream_is_the_protocols_word():
+    from tinyassets.providers.codex_provider import _codex_turn_completed
+
+    assert _codex_turn_completed(b"".join(_real_codex_events())) is True
+    # A failed turn, plain text, or a message merely MENTIONING the event
+    # name are not completion.
+    assert _codex_turn_completed(_ev("thread.started") + _ev("turn.failed")) is False
+    assert _codex_turn_completed(b"turn.completed\n") is False
+    assert _codex_turn_completed(
+        _ev("item.completed", item={"type": "agent_message", "text": "see turn.completed"})
+    ) is False
+
+
+def test_the_caller_reads_past_a_nonzero_exit_after_turn_completed():
+    """Structural pin (the sandboxed --json path needs bwrap to drive live):
+    the exit-code raise is guarded by the protocol check, and the guard sits
+    before both exit-code classifications."""
+    import inspect
+
+    from tinyassets.providers import codex_provider
+
+    src = inspect.getsource(codex_provider.CodexProvider.complete)
+    guard = src.index("_codex_turn_completed(stdout)")
+    assert guard < src.index("codex exec returned exit code 1 quickly")
+    assert guard < src.index('f"codex exec exit {proc.returncode}: {stderr_text}"')
+    assert "keeping the finished turn" in src
 
 
 # --- round-2 findings that need a REAL subprocess ------------------------------

@@ -23,7 +23,10 @@ def _exhausted(failure_class: str | None) -> AllProvidersExhaustedError:
 def test_an_idle_timeout_is_described_as_the_turn_ending_not_capacity():
     notice = _served_failure_notice(_exhausted("provider_idle_timeout"))
     assert "went quiet" in notice
-    assert "send again" in notice.lower()
+    # A resend repeats the whole instruction, and the turn may already have
+    # acted (Codex round 1, P1 concern): the sentence must say so.
+    assert "repeats" in notice
+    assert "continue" in notice
     for mislabel in ("exhausted", "fallback", "capacity", "quota"):
         assert mislabel not in notice.lower()
 
@@ -31,6 +34,7 @@ def test_an_idle_timeout_is_described_as_the_turn_ending_not_capacity():
 def test_an_interactive_deadline_is_described_honestly():
     notice = _served_failure_notice(_exhausted("interactive_deadline"))
     assert "time limit" in notice
+    assert "repeats" in notice
     assert "exhausted" not in notice
 
 

@@ -1692,13 +1692,19 @@ _mcp_write_page = _register_structured_tool(
 #: watchdog and the founder saw exactly that. The spec (provider-routing,
 #: "the user notice reflects the true failure class") forbids the mislabel.
 _TURN_ENDED_FAILURE_CLASSES = {
+    # A served turn may have ACTED before it was ended (a branch pushed, a
+    # request raised); the app's resend repeats the whole instruction. Say so
+    # plainly instead of implying a resend merely picks up where it left off
+    # (Codex round 1 on the notice, P1 concern).
     "provider_idle_timeout": (
-        "Your universe went quiet mid-turn, so the turn was ended. Anything it "
-        "finished before that stands; send again to continue."
+        "Your universe went quiet mid-turn, so the turn was ended. Whatever it "
+        "finished before that stands. Sending again repeats the whole request; "
+        "asking it to continue is usually the better move."
     ),
     "interactive_deadline": (
         "Your universe ran past the interactive time limit, so the turn was "
-        "ended. Anything it finished before that stands; send again to continue."
+        "ended. Whatever it finished before that stands. Sending again repeats "
+        "the whole request; asking it to continue is usually the better move."
     ),
 }
 
