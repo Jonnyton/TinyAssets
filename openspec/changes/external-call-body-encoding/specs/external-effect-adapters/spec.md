@@ -29,16 +29,20 @@ service.
 Bounds SHALL refuse the whole call before anything is sent, as the effector's
 secret-free error dict (`error_kind: invalid_body_transform`; paths and types
 in the message, never values): a body nested deeper than 32 levels anywhere;
-a cumulative working set over 32 MiB, charged as each value is produced so a
-repeated reference is refused at the second copy rather than after
-materialising them all; a transformed body over 8 MiB; a wrong type; an
-unfenced, unresolvable or out-of-range path. A body containing no `$ta.*`
-transform SHALL be sent byte-for-byte as today.
+a cumulative working set over 32 MiB, charged in bytes as each value is
+produced (text as UTF-8, a referenced object as its JSON) so a repeated
+reference is refused as soon as the charges cross the budget rather than
+after materialising every copy; a transformed body over 8 MiB; a wrong type;
+a referenced value JSON cannot carry; an unfenced, unresolvable or
+out-of-range path; a `$ta.` key beside other keys. A body containing no
+`$ta.*` key SHALL be sent byte-for-byte as today.
 
 The effect evidence that is PERSISTED (and shown to a model through
 `read_graph target="run"`) SHALL keep at most a 4 KiB preview of a response
-body, with its size and sha256; the full body SHALL be available only to later
-nodes' transforms within the same dispatch.
+body, with its size and sha256, and header NAMES only — never header values,
+which the worker does not sanitize beyond exact credential echoes; the full
+response SHALL be available only to later nodes' transforms within the same
+dispatch.
 
 #### Scenario: A file write sends text, the effector encodes it
 

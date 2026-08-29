@@ -734,8 +734,7 @@ def test_a_users_own_dollar_keys_pass_through_untouched(tmp_path, monkeypatch):
 
 def test_ref_is_fenced_to_the_nodes_declared_keys():
     """A packet reads only what its node was allowed to see (P0): declared
-    input_keys (plus schema-defaulted keys and its own outputs), never the
-    whole final state."""
+    input_keys plus schema-defaulted keys, never the whole final state."""
     state = {"private": "UNDECLARED", "note": json.dumps({"k": "v"})}
     leak = {"leak": {"$ta.ref": "private"}}
     out, err = apply_body_transforms(leak, state, allowed_state_keys=["note"])
@@ -980,8 +979,9 @@ def test_deep_plain_bodies_are_refused_not_crashed():
 
 def test_the_working_set_budget_refuses_a_repeated_reference_early(monkeypatch):
     """Codex round 2 (P0): a hundred references to a 5 MiB blob allocated
-    ~1 GiB before the old size check. Charged as produced, the second copy
-    is refused. Scaled: budget 1000 chars, blob 400 chars, referenced 3x."""
+    ~1 GiB before the old size check. Charged as produced, the copies are
+    refused as soon as the charges cross the budget. Scaled: budget 1000
+    bytes, blob 400 bytes, referenced 3x -> refused at the third charge."""
     from tinyassets.effectors import authenticated_external_call as mod
 
     monkeypatch.setattr(mod, "_MAX_TRANSFORM_WORK_BYTES", 1000)
@@ -991,7 +991,7 @@ def test_the_working_set_budget_refuses_a_repeated_reference_early(monkeypatch):
     out, err = apply_body_transforms(
         {"c": {"$ta.concat": [one, one, one]}}, {}, prior_effects=prior,
     )
-    assert out is None and "more than 1000 characters" in err
+    assert out is None and "more than 1000 bytes" in err
     out, err = apply_body_transforms({"c": {"$ta.concat": [one, "!"]}}, {}, prior_effects=prior)
     assert out == {"c": blob + "!"} and err is None
 
@@ -1006,3 +1006,57 @@ def test_bounded_evidence_previews_only_long_bodies():
     assert b["response"]["body"] == "y" * 4096 and b["response"]["body_truncated"] is True
     assert b["response"]["body_chars"] == 5000 and b["response"]["status"] == 200
     assert long["response"]["body"] == "y" * 5000          # the original is untouched
+
+
+def test_the_budget_counts_bytes_and_referenced_objects(monkeypatch):
+    """Codex round 3 (P0): only strings were charged, in characters. A
+    referenced object is serialized into the body later, so it counts now;
+    multibyte text counts as its UTF-8 bytes."""
+    from tinyassets.effectors import authenticated_external_call as mod
+
+    monkeypatch.setattr(mod, "_MAX_TRANSFORM_WORK_BYTES", 300)
+    state = {"payload": {"blob": "x" * 400}}
+    _out, err = apply_body_transforms(
+        {"p": {"$ta.ref": "payload"}}, state, allowed_state_keys=["payload"],
+    )
+    assert err and "more than 300 bytes" in err
+    emoji = "\U0001F600" * 100                       # 100 chars, 400 UTF-8 bytes
+    _out, err = apply_body_transforms({"c": {"$ta.base64": emoji}}, {})
+    assert err and "more than 300 bytes" in err
+    ok = apply_body_transforms({"c": {"$ta.base64": "\U0001F600" * 30}}, {})
+    assert ok[1] is None
+
+
+def test_a_reference_to_a_value_json_cannot_carry_is_refused_not_crashed():
+    """Codex round 3 (P1): bytes in state raised TypeError at the final dump,
+    surfacing as effector_crashed."""
+    _out, err = apply_body_transforms(
+        {"b": {"$ta.ref": "raw"}}, {"raw": b"abc"}, allowed_state_keys=["raw"],
+    )
+    assert err and "cannot be sent as JSON" in err
+
+
+def test_the_reserved_namespace_is_refused_beside_other_keys():
+    """Codex round 3 (P2): `{"$ta.base64": ..., "other": 1}` used to pass
+    through untouched."""
+    _out, err = apply_body_transforms({"x": {"$ta.bas64": "typo", "other": 1}}, {})
+    assert err and "unknown transform '$ta.bas64'" in err
+    _out, err = apply_body_transforms({"x": {"$ta.base64": "t", "other": 1}}, {})
+    assert err and "must be the only key" in err
+
+
+def test_bounded_evidence_never_persists_header_values():
+    """Codex round 3 (P1): the worker returns every response header and the
+    run record is forever; a rotated cookie must not survive into it."""
+    from tinyassets.effectors.authenticated_external_call import bounded_evidence
+
+    result = {"delivered": True, "response": {
+        "status": 200, "body": "hi", "headers": {"set-cookie": "session=rotated-secret",
+                                                 "content-type": "application/json"},
+    }}
+    b = bounded_evidence(result)
+    assert "headers" not in b["response"]
+    assert b["response"]["header_names"] == ["content-type", "set-cookie"]
+    assert "rotated-secret" not in json.dumps(b)
+    # the in-memory original (what a later node's $ta.effect sees) is intact
+    assert result["response"]["headers"]["set-cookie"] == "session=rotated-secret"

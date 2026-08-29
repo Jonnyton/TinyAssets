@@ -67,9 +67,10 @@ keys (``$ref`` of JSON Schema, ``$set``) are never interpreted, and an unknown
 
 X may itself be a transform. Bounds, all refused as ``invalid_body_transform``
 before anything is sent: nesting deeper than 32 anywhere in the body; a
-cumulative working set over ``_MAX_TRANSFORM_WORK_BYTES`` (charged as each
-value is produced, so a reference repeated a hundred times is refused at the
-second copy, not after allocating them all); a transformed body over
+cumulative working set over ``_MAX_TRANSFORM_WORK_BYTES`` (charged in bytes
+as each value is produced - text as UTF-8, referenced objects as their JSON -
+so a reference repeated a hundred times is refused as soon as the charges
+cross the budget, not after allocating them all); a transformed body over
 ``_MAX_TRANSFORMED_BODY_BYTES``. So "append one line to a fetched text file"
 is a two-node branch: ``fetch`` (stored first) emits a GET packet; ``write``
 emits
@@ -189,8 +190,9 @@ _MAX_TRANSFORMED_BODY_BYTES = 8 * 1024 * 1024
 #: about 13 MiB of working set: reference + decode + join + encode.
 _MAX_TRANSFORM_WORK_BYTES = 32 * 1024 * 1024
 #: The evidence that is PERSISTED (and later shown to a model through
-#: ``read_graph target="run"``) keeps only this much of a response body; the
-#: full body is still available to later nodes' transforms in the same run.
+#: ``read_graph target="run"``) keeps only this much of a response body and
+#: no header values; the full response is still available to later nodes'
+#: transforms in the same run.
 _EVIDENCE_BODY_PREVIEW_CHARS = 4096
 _EFFECT_READABLE = ("response.body", "response.status")
 
@@ -207,12 +209,17 @@ def _is_transform(value: Any) -> bool:
     )
 
 
-def _is_reserved_unknown(value: Any) -> bool:
-    """A one-key object in the reserved namespace that names no operator."""
-    if not isinstance(value, dict) or len(value) != 1:
-        return False
-    key = next(iter(value))
-    return isinstance(key, str) and key.startswith(_OP_PREFIX) and key not in _TRANSFORM_OPS
+def _reserved_misuse(value: Any) -> str | None:
+    """The offending key when a dict uses the reserved ``$ta.`` namespace in
+    any way other than a one-key object naming an operator: an unknown name,
+    or an operator key sitting beside other keys (Codex round 3, P2)."""
+    if not isinstance(value, dict):
+        return None
+    for key in value:
+        if isinstance(key, str) and key.startswith(_OP_PREFIX):
+            if key not in _TRANSFORM_OPS or len(value) != 1:
+                return key
+    return None
 
 
 def _scan_body(body: Any) -> bool:
@@ -226,8 +233,13 @@ def _scan_body(body: Any) -> bool:
         value, depth = stack.pop()
         if depth > _MAX_TRANSFORM_DEPTH:
             raise _TransformError(f"body nested deeper than {_MAX_TRANSFORM_DEPTH}")
-        if _is_reserved_unknown(value):
-            raise _TransformError(f"unknown transform {next(iter(value))!r}")
+        misuse = _reserved_misuse(value)
+        if misuse is not None:
+            raise _TransformError(
+                f"unknown transform {misuse!r}"
+                if misuse not in _TRANSFORM_OPS
+                else f"{misuse!r} must be the only key of its object"
+            )
         if _is_transform(value):
             found = True
         if isinstance(value, dict):
@@ -291,17 +303,20 @@ class _TransformContext:
         self.prior_effects = prior_effects or {}
         self.work = 0
 
-    def charge(self, chars: int) -> None:
-        self.work += max(int(chars), 0)
+    def charge(self, nbytes: int) -> None:
+        self.work += max(int(nbytes), 0)
         if self.work > _MAX_TRANSFORM_WORK_BYTES:
             raise _TransformError(
                 f"transforms would produce more than {_MAX_TRANSFORM_WORK_BYTES} "
-                "characters in total"
+                "bytes in total"
             )
 
     def produced(self, value: Any) -> Any:
-        if isinstance(value, str):
-            self.charge(len(value))
+        """Charge a produced value by its size in BYTES: text as UTF-8, anything
+        else as its JSON encoding (a referenced object is serialized into the
+        body later, so it counts now). A value JSON cannot carry is refused
+        here, not at the final dump (Codex round 3, P0/P1)."""
+        self.charge(_byte_size(value))
         return value
 
     def ref(self, path: Any) -> Any:
@@ -336,6 +351,19 @@ class _TransformContext:
         return self.produced(_walk(rest, self.prior_effects[root], label=_OP_EFFECT))
 
 
+def _byte_size(value: Any) -> int:
+    if isinstance(value, str):
+        return len(value.encode("utf-8"))
+    if value is None or isinstance(value, (bool, int, float)):
+        return 32
+    try:
+        return len(json.dumps(value, separators=(",", ":")).encode("utf-8"))
+    except (TypeError, ValueError) as exc:
+        raise _TransformError(
+            f"a referenced value of type {type(value).__name__} cannot be sent as JSON"
+        ) from exc
+
+
 def _as_text(value: Any, what: str) -> str:
     if isinstance(value, str):
         return value
@@ -358,11 +386,11 @@ def _apply_transforms(value: Any, ctx: _TransformContext, depth: int = 0) -> Any
                 _as_text(_apply_transforms(part, ctx, depth + 1), f"{_OP_CONCAT} part")
                 for part in arg
             ]
-            ctx.charge(sum(len(part) for part in parts))    # the join, before it exists
+            ctx.charge(sum(_byte_size(part) for part in parts))   # the join, before it exists
             return "".join(parts)
         if op == _OP_FROM_BASE64:
             text = _as_text(_apply_transforms(arg, ctx, depth + 1), _OP_FROM_BASE64)
-            ctx.charge(len(text))                           # decoded size <= input size
+            ctx.charge(len(text))                           # decoded bytes <= input chars
             try:
                 raw = base64.b64decode("".join(text.split()), validate=True)
             except (binascii.Error, ValueError) as exc:
@@ -374,8 +402,9 @@ def _apply_transforms(value: Any, ctx: _TransformContext, depth: int = 0) -> Any
                     f"{_OP_FROM_BASE64}: bytes are not UTF-8 text (text files only)"
                 ) from exc
         text = _as_text(_apply_transforms(arg, ctx, depth + 1), _OP_BASE64)
-        ctx.charge((len(text) * 4 + 2) // 3 + len(text))    # UTF-8 bytes + the encoding
-        return base64.b64encode(text.encode("utf-8")).decode("ascii")
+        raw = text.encode("utf-8")
+        ctx.charge(len(raw) + (len(raw) * 4 + 2) // 3)     # the bytes + their encoding
+        return base64.b64encode(raw).decode("ascii")
     if isinstance(value, dict):
         return {key: _apply_transforms(item, ctx, depth + 1) for key, item in value.items()}
     if isinstance(value, list):
@@ -401,7 +430,12 @@ def apply_body_transforms(
             return body, None
         ctx = _TransformContext(run_state, allowed_state_keys, prior_effects)
         transformed = _apply_transforms(body, ctx)
-        serialized = transformed if isinstance(transformed, str) else json.dumps(transformed)
+        try:
+            serialized = (
+                transformed if isinstance(transformed, str) else json.dumps(transformed)
+            )
+        except (TypeError, ValueError) as exc:
+            raise _TransformError("transformed body is not JSON-serializable") from exc
         size = len(serialized.encode("utf-8"))
         if size > _MAX_TRANSFORMED_BODY_BYTES:
             raise _TransformError(
@@ -420,19 +454,31 @@ def bounded_evidence(result: dict[str, Any]) -> dict[str, Any]:
     in memory for later nodes' ``$ta.effect`` in the same run (Codex round
     2, P1: a fetched file must not re-enter a model through read_graph)."""
     response = result.get("response") if isinstance(result, dict) else None
-    body = response.get("body") if isinstance(response, dict) else None
-    if not isinstance(body, str) or len(body) <= _EVIDENCE_BODY_PREVIEW_CHARS:
+    if not isinstance(response, dict):
+        return result
+    body = response.get("body")
+    long_body = isinstance(body, str) and len(body) > _EVIDENCE_BODY_PREVIEW_CHARS
+    headers = response.get("headers")
+    if not long_body and not isinstance(headers, dict):
         return result
     import hashlib
 
     bounded = dict(result)
-    bounded["response"] = {
-        **response,
-        "body": body[:_EVIDENCE_BODY_PREVIEW_CHARS],
-        "body_truncated": True,
-        "body_chars": len(body),
-        "body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
-    }
+    persisted = dict(response)
+    if isinstance(headers, dict):
+        # The worker returns every response header and only strips exact
+        # credential echoes; a rotated cookie would otherwise sit in the run
+        # record forever (Codex round 3, P1). Names are kept, values are not.
+        persisted.pop("headers", None)
+        persisted["header_names"] = sorted(str(k) for k in headers)
+    if long_body:
+        persisted.update({
+            "body": body[:_EVIDENCE_BODY_PREVIEW_CHARS],
+            "body_truncated": True,
+            "body_chars": len(body),
+            "body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        })
+    bounded["response"] = persisted
     return bounded
 
 
