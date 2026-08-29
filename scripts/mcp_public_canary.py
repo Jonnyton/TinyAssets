@@ -55,16 +55,17 @@ DEFAULT_URL = "https://tinyassets.io/mcp"
 DEFAULT_TIMEOUT = 10.0
 #: The AuthKit authorization server the public resource document must advertise.
 #:
-#: Still STAGING. A move to the WorkOS production environment was attempted on
-#: 2026-08-29 and rolled back the same night — see
-#: docs/concerns/2026-08-29-workos-production-needs-a-public-client.md. When it
-#: succeeds this becomes "https://unassuming-environment-16.authkit.app".
+#: WorkOS PRODUCTION since 2026-08-29. Production had been signing real users in
+#: against a `-staging` environment on an `sk_test_` key. The switch took two attempts:
+#: the first failed with `application_not_found` because the app's client id is a WorkOS
+#: **Connect** OAuth application (PKCE, no secret) — a separate section from Applications
+#: — with no production equivalent until one was created.
 #:
 #: Pinned deliberately. This value drifting is exactly the failure worth paging on: it
 #: means the daemon is pointed at an authorization server nobody intended, and every
 #: token it accepts was minted by that server.
 EXPECTED_AUTHORIZATION_SERVERS = (
-    "https://inventive-van-62-staging.authkit.app",
+    "https://unassuming-environment-16.authkit.app",
 )
 
 _INIT_PAYLOAD = {

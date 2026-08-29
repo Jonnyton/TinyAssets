@@ -39,62 +39,33 @@ a new way to fail.
 
 ## Taking real money
 
-### Stripe is LIVE and ready — WorkOS is still the STAGING environment
+### WorkOS is on PRODUCTION — sign in once per account, then publish the Google consent screen
 
-*Verified on the droplet 2026-08-28. This is now the only thing between us and real
-subscriptions, and it gets more expensive every day it waits.*
+*Switched 2026-08-29. The daemon is on the production key, domain
+`unassuming-environment-16.authkit.app`, and Connect client
+`client_01M15YZXW7G7X6X1YQ4TG87Q00`. "Continue with Google" renders on the production
+sign-in page; the canary is green against it. $0 — AuthKit is free to 1M MAU, and the $99
+custom domain is optional and skipped.*
 
-**Stripe: READY.** `scripts/stripe_go_live.py --check` inside the live container is green
-on every line — live key, account can accept payments and payouts, price
-`price_1U9KBOLA6QWGlclhu642Y5Ub` at $20.00/month, webhook `we_1U9KBOLA6QWGlclhGfUr2cOh`
-enabled and subscribed to all five events entitlement depends on, entitlement key set, and
-a **live-mode signature has verified** (`/data/.billing_webhook_verified.json`,
-`livemode: true`). That last one was the final blocker; I cleared it by creating a live
-Checkout Session and immediately expiring it — a real signed `checkout.session.expired`,
-no money moved.
+**Two things left, both yours, both quick:**
 
-**WorkOS: still staging.** In the same container:
+1. **Sign in once from each account** (`jonathan.m.farnsworth@gmail.com` and
+   `simkalholdingsllc@gmail.com`) at `https://tinyassets.io/mcp/app` → Continue with
+   Google. Production has 0 users; each sign-in mints the new `user_…` id. Both are
+   registered as Google test users so this works before publishing. Tell me when done and
+   I re-point every universe (`u-01kxm1vszd8hwp7em418asq8h9`, `u-tiny`, `paper-notes`,
+   `u-01ky3zh1arr8qth8jee7zx63pq`) from the staging ids to the new ones — the script is
+   written and dry-runs first.
 
-```
-WORKOS_AUTHKIT_DOMAIN=inventive-van-62-staging.authkit.app
-WORKOS_API_KEY=sk_test_…
-```
+2. **Publish the Google consent screen.** Until then only the two test users can sign in
+   with Google. Google Cloud → project `tinyassets` → Google Auth Platform → **Audience** →
+   **Publish app**. (I clicked toward it and was stopped: publishing is a public-facing
+   state change, and rightly your call.) A stale "configuration incomplete" banner may
+   still show — Branding is saved; the button is enabled.
 
-The environment holds exactly two users — you and `simkalholdingsllc@gmail.com` — and they
-are the same two the `founder_home` table binds.
-
-**This is not an outage, and I said it too strongly the first time.** Signup and checkout
-work right now: both existing users signed up through this environment, and WorkOS
-documents no user cap on staging. A stranger could sign up and pay today. The problem is
-that it gets more expensive every time someone does.
-
-**Why it cannot just be left.** Per
-[WorkOS's own docs](https://workos.com/docs/authkit/environments), the two environments are
-*fully separate* — "API keys, organizations, connections, users, webhook endpoints, and
-branding are all scoped to a single environment and don't carry over between them." So the
-moment you move, every `user_…` id changes, **every `founder_home` binding breaks, and every
-existing universe becomes unowned** — the exact state you told me on 2026-08-28 must never
-exist, and the state PR #2638 now refuses to create. Migrating two users is a five-minute
-job. Migrating two hundred is a data-migration project.
-
-And the URL cannot be fixed in place: **custom AuthKit domains are production-only**. Until
-you move, every user signs in at `inventive-van-62-staging.authkit.app` on the page that
-asks them for $20.
-
-**What only you can do** (WorkOS dashboard):
-
-1. Switch to the **Production** environment and copy its API key and AuthKit domain.
-2. Point it at a custom auth domain (`auth.tinyassets.io`) so users never see
-   `inventive-van-62-staging.authkit.app` on a payment flow.
-3. Add the redirect URI `https://tinyassets.io/mcp/app` and the MCP resource
-   `https://tinyassets.io/mcp` in the production environment. Note production rejects
-   wildcards and query parameters in redirect URIs where staging allows them, so it must
-   be the exact literal URI.
-
-**Then I do the rest:** stage `WORKOS_API_KEY` / `WORKOS_AUTHKIT_DOMAIN`, recreate the
-container (`env_file` is read at creation, not restart), re-point the two existing
-bindings at the new production `user_…` ids once you and the other user have signed in
-once, and re-run the canary. Give me the two values and I will take it from there.
+Google OAuth client: `1041012102732-sbdm1t0qdh8pqu4d9ljl882led8h6plm.apps.googleusercontent.com`
+in GCP project `tinyassets`, redirect
+`https://auth.workos.com/sso/oauth/google/wqZmy0Vb4Qp1GEb0GSXdlrJhG/callback`.
 
 ---
 
