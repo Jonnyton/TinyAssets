@@ -795,6 +795,29 @@ def write_graph(
     the key there and it goes straight to the vault under those endpoints. List
     EVERY call the flow needs in ONE ask so they paste once (a GitHub pull
     request needs the main ref, a branch ref, the file contents, and the pull).
+
+    **A path_template can be a PATTERN, so ask for the JOB, not one file.** Any
+    segment may be a ``{name}`` placeholder, and the FINAL segment may be a
+    ``{name+}`` *rest* placeholder matching one or more remaining segments. Every
+    placeholder needs a regex in ``param_patterns``, which is what keeps the
+    grant tight::
+
+        {"host": "api.github.com",
+         "path_template": "/repos/o/r/contents/{path+}",
+         "methods": ["GET", "PUT"],
+         "param_patterns": {"path": "[A-Za-z0-9._\\-/]{1,200}"}}
+
+    That single endpoint reaches every file in that ONE repo, and still refuses
+    ``../`` traversal, another owner's repo, and any non-contents path. Without
+    it you would have to name each file up front — which you cannot do, because
+    you do not know which files a change touches until you have read the code,
+    and every new file would cost the user another approval.
+
+    So scope a grant to the work: to patch a repo, ask for ``contents/{path+}``
+    plus the git-data calls a real commit needs (``git/blobs``, ``git/trees``,
+    ``git/commits``, and ``PATCH git/refs/heads/{branch+}``) — not one file at a
+    time. Prefer the narrowest PATTERN that covers the job over a list of exact
+    paths that cannot.
     Read ``read_graph target="pending_requests"`` to see what is still waiting
     and what they answered. You cannot answer your own ask, and you should not
     try: that is theirs.

@@ -282,7 +282,16 @@ infer additional callable tools from legacy action names in old conversations.
    |                                | those endpoints. List EVERY call the    |
    |                                | flow needs in ONE request (a GitHub PR  |
    |                                | needs git/refs + contents + pulls), so  |
-   |                                | the user pastes once — or                |
+   |                                | the user pastes once. A path_template   |
+   |                                | can be a PATTERN: any segment may be    |
+   |                                | `{name}` and the LAST may be `{name+}`  |
+   |                                | (matches the rest), each with a regex   |
+   |                                | in `param_patterns`. So ask for the JOB |
+   |                                | — `contents/{path+}` reaches every file |
+   |                                | in one repo and still refuses `../` and |
+   |                                | other repos — never one file at a time, |
+   |                                | which you cannot enumerate up front and |
+   |                                | which costs an approval per file — or    |
    |                                | `action={"type":"answer"}` with         |
    |                                | `fields:[{name,label,type}]` where type |
    |                                | is text/choice for anything else.       |
