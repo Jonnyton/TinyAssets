@@ -255,6 +255,12 @@ def test_poll_once_halts_on_the_universe_pause_sentinel(tmp_path: Path, monkeypa
     consumer is now the only background executor, so it has to honour the sentinel
     itself -- and removing the file must resume the universe without a restart.
     Mutation: drop `_paused` from `poll_once` and the first assertion goes red.
+
+    Liveness is not activity: the paused universe STILL gets its heartbeat
+    published, because deploy/daemon-watchdog.sh restarts the daemon on a stale
+    beat and a restart preserves `.pause` (Codex round 3: pausing every universe
+    would otherwise become a restart loop). Mutation: check `.pause` before
+    `_publish_heartbeat` and the `beats` assertion goes red.
     """
     task = Epoch2BranchTask(
         branch_task_id="bt2_" + "p" * 32,
@@ -302,9 +308,17 @@ def test_poll_once_halts_on_the_universe_pause_sentinel(tmp_path: Path, monkeypa
     consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
     consumer._executor.shutdown(wait=False, cancel_futures=True)
     consumer._executor = _Executor()
+    beats: list[str] = []
+
+    def _beat(universe_id: str):
+        beats.append(universe_id)
+        return None
+
+    monkeypatch.setattr(consumer, "_publish_heartbeat", _beat)
 
     assert consumer.poll_once() == 0
     assert claims == []
+    assert beats == ["universe-p"], "a paused universe must still heartbeat"
     reasons = AssignedQueueRefusalStore(tmp_path).fresh_reasons(
         universe_id="universe-p", max_age_seconds=60
     )

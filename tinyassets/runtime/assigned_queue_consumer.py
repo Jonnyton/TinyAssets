@@ -253,14 +253,13 @@ class AssignedQueueConsumer:
         # was deleted the repair also `docker stop`ped the worker, so this consumer
         # is now the only background executor and must halt on it too. A run
         # already in flight finishes; nothing new is pumped or claimed.
-        serving_universes = []
-        for universe_id in list_serving_universes(self.base_path):
-            if self._paused(universe_id):
-                self._record_reason(
-                    prep_store, f"universe:{universe_id}:-", universe_id, "paused"
-                )
-                continue
-            serving_universes.append(universe_id)
+        #
+        # Liveness is not activity: a paused universe STILL publishes its heartbeat.
+        # deploy/daemon-watchdog.sh restarts the daemon on a stale beat, and a
+        # restart preserves `.pause` -- skipping the beat here would turn the P0
+        # repair into a restart loop (Codex round 3 on the fleet prune).
+        serving_universes = list_serving_universes(self.base_path)
+        paused_universes: set[str] = set()
         for universe_id in serving_universes:
             try:
                 audience = self._publish_heartbeat(universe_id)
@@ -269,6 +268,12 @@ class AssignedQueueConsumer:
                         prep_store, f"universe:{universe_id}:-", universe_id,
                         "no_serving_runtime",
                     )
+                if self._paused(universe_id):
+                    paused_universes.add(universe_id)
+                    self._record_reason(
+                        prep_store, f"universe:{universe_id}:-", universe_id, "paused"
+                    )
+                    continue
                 # Only a task THIS consumer could claim defers activation; a pending
                 # task it will never attempt (live: a legacy owner-queued run) must
                 # not block a resumed automation from ever producing its slice.
@@ -316,6 +321,7 @@ class AssignedQueueConsumer:
                 submitted >= capacity
                 or universe_id in busy_universes
                 or universe_id in produced_universes
+                or universe_id in paused_universes
             ):
                 continue
             candidates = adapter.list_candidates(universe_id=universe_id, limit=20)

@@ -37,6 +37,8 @@ transforms:
         .role = "daemon"
       } else if .tag == "tinyassets-tunnel" {
         .role = "cloudflared"
+      } else if starts_with!(.tag, "tinyassets-worker") {
+        .role = "worker"
       } else {
         .role = "other"
       }

@@ -173,19 +173,20 @@ persistent volume` step that runs on every deploy. It is idempotent:
   and creates `.codex` inside it; repairs ownership (`uid 1001:1001`)
   and mode (`700`) unconditionally every deploy so a failed earlier
   attempt gets healed back to a state uid 1001 can write.
-- The one-time migration that copied a rotated `auth.json` out of the
-  running worker container was deleted with the host-run worker fleet
-  (2026-08-29). A pre-existing droplet already holds
-  `/data/.codex/auth.json` on the volume; a fresh droplet seeds it from
-  `TINYASSETS_CODEX_AUTH_JSON_B64` (case 1 below).
-- Every deploy is otherwise a complete no-op for this section — the
-  volume + `auth.json` are already in place and the entrypoint
-  preserves the file on restart.
+- On the very first deploy onto a pre-existing live droplet, copies
+  the rotated `auth.json` out of the running `tinyassets-worker`
+  container into `/data/.codex` so the post-restart container preserves
+  the live refresh chain. It checks the new `/data/.codex/auth.json`
+  path first and then the legacy `/app/.codex/auth.json` path for the
+  one-time migration.
+- After that, every subsequent deploy is a complete no-op for this
+  section — the volume + `auth.json` are already in place and the
+  entrypoint preserves the file on restart.
 
-The auth file is used by the `tinyassets-daemon` container alone: its
-in-process executor handles `run_branch` MCP calls and its
-assigned-queue consumer runs due automations, and both call
-`codex exec`. Concurrent
+The auth file is shared across the `tinyassets-daemon` and
+`tinyassets-worker` containers (both call `codex exec`: the daemon's
+in-process executor handles `run_branch` MCP calls; the worker's
+`fantasy_daemon` subprocess handles queued BranchTasks). Concurrent
 refresh attempts are serialized by `/usr/local/bin/codex` (which is
 `deploy/codex-flock-wrapper.sh`, installed by the Dockerfile in place
 of the bare codex symlink) — it takes an exclusive `flock -x` on

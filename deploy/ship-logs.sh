@@ -13,8 +13,7 @@
 # Environment variables:
 #   LOG_DEST          rclone destination URL  (REQUIRED unless DRY_RUN=1)
 #   LOG_CONTAINERS    space-separated container names to archive
-#                     default: daemon and tunnel (the host-run worker fleet
-#                     was deleted 2026-08-29; nothing runs outside a universe)
+#                     default: daemon, tunnel, and all four cloud workers
 #   LOG_SINCE         docker logs --since window  default: 24h
 #   LOG_RETAIN_DAYS   delete remote archives older than N days  default: 30
 #   DRY_RUN           set to 1 to validate env + print plan without touching anything
@@ -32,7 +31,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 LOG_DEST="${LOG_DEST:-}"
-LOG_CONTAINERS="${LOG_CONTAINERS:-tinyassets-daemon tinyassets-tunnel}"
+LOG_CONTAINERS="${LOG_CONTAINERS:-tinyassets-daemon tinyassets-tunnel tinyassets-worker tinyassets-worker-codex-2 tinyassets-worker-claude-1 tinyassets-worker-claude-2}"
 LOG_SINCE="${LOG_SINCE:-24h}"
 LOG_RETAIN_DAYS="${LOG_RETAIN_DAYS:-30}"
 DRY_RUN="${DRY_RUN:-0}"

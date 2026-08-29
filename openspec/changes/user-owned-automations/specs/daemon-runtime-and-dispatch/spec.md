@@ -50,6 +50,14 @@ Two file-lock coordination primitives SHALL keep the runtime safe under concurre
 - **WHEN** a PID sidecar exists but no process holds the paired OS lock
 - **THEN** acquisition succeeds and the sidecar is overwritten with the new PID
 
+#### Scenario: a fresh foreign idle-cycle stamp is skipped
+- **WHEN** a daemon process attempts the idle cycle while a different process's stamp is within the freshness window
+- **THEN** it declines the slot and does not run a duplicate no-work cycle
+
+#### Scenario: idle-cycle coordination I/O failure fails open
+- **WHEN** the idle-cycle run lock or stamp I/O errors
+- **THEN** the slot is granted (fail open) so the heartbeat cannot stall
+
 ## ADDED Requirements
 
 ### Requirement: The daemon's own consumer executes due automations on the current serving assignment

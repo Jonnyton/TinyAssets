@@ -4,7 +4,7 @@
 
 ## Purpose
 
-The 24/7 uptime engine: stateless dispatcher selection, file-locked lease claims, supervisor with backoff and healthcheck, host singleton lock, persisted scheduler, fleet idle-cycle single-flight, and the durable work-target registry.
+The 24/7 uptime engine: stateless dispatcher selection, file-locked lease claims, the daemon's own assigned-queue consumer, host singleton lock, persisted scheduler, same-data-dir idle-cycle single-flight, and the durable work-target registry. The host-run worker fleet (supervisor, worker healthcheck) was deleted 2026-08-29: nothing runs outside a user's universe.
 ## Requirements
 ### Requirement: Dispatcher selection is a stateless deterministic function invoked at cycle boundaries
 The branch-task dispatcher (`tinyassets.dispatcher`) SHALL select the next task with a pure, stateless function that reads the persisted queue, keeps only `pending` tasks whose trigger-source tier is enabled, scores each by a deterministic `tier_weight + recency_decay + user_boost` formula, and returns the single highest-scoring task (ties broken by oldest `queued_at`) or `None` when nothing is eligible. It SHALL be invoked exactly at graph-cycle boundaries — once at daemon startup and once between cycle-wrapper returns — and SHALL NOT run its own timer or continuous polling loop. The selector SHALL only read the queue and SHALL never claim or mutate it, and deferred market and goal-affinity terms SHALL contribute zero until their coefficients are configured, without re-shaping the score.
@@ -65,7 +65,7 @@ Two file-lock coordination primitives SHALL keep the runtime safe under concurre
 - **THEN** acquisition succeeds and the sidecar is overwritten with the new PID
 
 #### Scenario: a fresh foreign idle-cycle stamp is skipped
-- **WHEN** a worker attempts the idle cycle while a different worker's stamp is within the freshness window
+- **WHEN** a daemon process attempts the idle cycle while a different process's stamp is within the freshness window
 - **THEN** it declines the slot and does not run a duplicate no-work cycle
 
 #### Scenario: idle-cycle coordination I/O failure fails open
