@@ -259,6 +259,14 @@ class AssignedQueueConsumer:
         # restart preserves `.pause` -- skipping the beat here would turn the P0
         # repair into a restart loop (Codex round 3 on the fleet prune).
         serving_universes = list_serving_universes(self.base_path)
+        # User-owned automations are considered FIRST, before the fleet-era pump
+        # and before the queue claim loop (user-owned-automations task 3.2). They
+        # are the only automation shape that survives the fleet retirement, so a
+        # universe's one active slot goes to its owner's automation rather than to
+        # a legacy control that can no longer authorize itself.
+        automation_submitted, automation_universes = self._submit_due_automations(
+            serving_universes, prep_store
+        )
         paused_universes: set[str] = set()
         for universe_id in serving_universes:
             try:
@@ -273,6 +281,9 @@ class AssignedQueueConsumer:
                     self._record_reason(
                         prep_store, f"universe:{universe_id}:-", universe_id, "paused"
                     )
+                    continue
+                if universe_id in automation_universes:
+                    # One active thing per universe: its automation is running.
                     continue
                 # Only a task THIS consumer could claim defers activation; a pending
                 # task it will never attempt (live: a legacy owner-queued run) must
@@ -302,18 +313,9 @@ class AssignedQueueConsumer:
                 ("assigned-consumer:", "worker_assigned_")
             )
         )
-        with self._lock:
-            finished = [uid for uid, future in self._active.items() if future.done()]
-            for uid in finished:
-                future = self._active.pop(uid)
-                try:
-                    future.result()
-                except Exception:  # noqa: BLE001 - already contained, retain diagnostics
-                    logger.exception("assigned queue task future failed")
-            capacity = self.max_concurrency - len(self._active)
-            busy_universes = set(self._active)
+        capacity, busy_universes = self._reap_finished()
         if capacity <= 0:
-            return 0
+            return automation_submitted
         submitted = 0
         refusal_store = AssignedQueueRefusalStore(self.base_path)
         for universe_id in serving_universes:
@@ -349,7 +351,101 @@ class AssignedQueueConsumer:
                     continue
                 self._active[universe_id] = future
             submitted += 1
-        return submitted
+        return automation_submitted + submitted
+
+    def _reap_finished(self) -> tuple[int, set[str]]:
+        """Drop completed futures, then report free slots and busy universes."""
+        with self._lock:
+            finished = [uid for uid, future in self._active.items() if future.done()]
+            for uid in finished:
+                future = self._active.pop(uid)
+                try:
+                    future.result()
+                except Exception:  # noqa: BLE001 - already contained, retain diagnostics
+                    logger.exception("assigned queue task future failed")
+            return self.max_concurrency - len(self._active), set(self._active)
+
+    def _submit_due_automations(
+        self,
+        serving_universes: list[str],
+        refusal_store: Any,
+    ) -> tuple[int, set[str]]:
+        """Submit each free universe's due user-owned automations.
+
+        Returns how many universes were submitted and which ones, so the legacy
+        pump and the claim loop can leave those universes alone this poll.
+
+        Nothing here decides authority: `due_automations` reads owner-declared
+        rows, and `run_due_automation` re-derives the owner's admin, home and
+        current assignment on the executor thread (D1/D3). A universe whose scan
+        raises gets a named refusal and the loop continues to the next owner.
+        """
+        from tinyassets.automations import due_automations
+
+        capacity, busy = self._reap_finished()
+        started: set[str] = set()
+        if capacity <= 0:
+            return 0, started
+        submitted = 0
+        now = datetime.now(timezone.utc)
+        for universe_id in serving_universes:
+            if submitted >= capacity or universe_id in busy:
+                continue
+            # `.pause` halts new background work for a universe; an automation is
+            # exactly that (same sentinel the claim loop and the legacy pump honour).
+            if self._paused(universe_id):
+                continue
+            try:
+                due = due_automations(
+                    self.base_path,
+                    universe_id=universe_id,
+                    now=now,
+                )
+            except Exception as exc:  # noqa: BLE001 - one owner cannot stop the pump
+                logger.exception(
+                    "automation due scan failed universe=%s", universe_id
+                )
+                self._record_reason(
+                    refusal_store,
+                    f"universe:{universe_id}:automations",
+                    universe_id,
+                    _error_reason("automation_scan_error", exc),
+                )
+                continue
+            if not due:
+                continue
+            future = self._executor.submit(self._run_automations, universe_id, due)
+            with self._lock:
+                if universe_id in self._active:
+                    future.cancel()
+                    continue
+                self._active[universe_id] = future
+            started.add(universe_id)
+            submitted += 1
+        return submitted, started
+
+    def _run_automations(
+        self,
+        universe_id: str,
+        due: list[tuple[Any, str]],
+    ) -> None:
+        """Run one universe's due automations sequentially on the executor thread."""
+        from tinyassets.automations import run_due_automation
+
+        for automation, due_at in due:
+            try:
+                run_due_automation(
+                    self.base_path,
+                    automation,
+                    due_at,
+                    consumer_id=self.consumer_id,
+                )
+            except Exception:  # noqa: BLE001 - the next automation is still owed a try
+                logger.exception(
+                    "automation run raised universe=%s automation=%s",
+                    universe_id,
+                    getattr(automation, "automation_id", ""),
+                )
 
     def _paused(self, universe_id: str) -> bool:
         return (self.base_path / universe_id / ".pause").exists()

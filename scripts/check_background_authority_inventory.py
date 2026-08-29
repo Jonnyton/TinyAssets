@@ -166,6 +166,25 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
         "enqueue_universe_branch_run",
         "execute_branch_async",
     ),
+    # Reviewed 2026-08-29 (user-owned-automations 3.2). A due automation is a
+    # background execution root, and it is registered here as one. It grants no
+    # authority of its own: the provider call it hands in is the SAME foreground
+    # session `enqueue_universe_branch_run` builds, differing only in that the
+    # principal comes off the automation row (a consumer thread carries no
+    # request identity). The async entry point is deliberate -- only it calls
+    # `prepare_foreground_run_provider`, so the session admits against this run
+    # id and re-derives the universe's current assignment and custody. Nothing
+    # about the executor, provider or runtime is pinned anywhere on the path.
+    CallSite(
+        "tinyassets/automations.py",
+        "_execute",
+        "execute_branch_async",
+    ),
+    CallSite(
+        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/automations.py",
+        "_execute",
+        "execute_branch_async",
+    ),
     CallSite(
         "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/api/runs.py",
         "_action_run_branch_version",
