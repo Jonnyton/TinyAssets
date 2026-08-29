@@ -227,19 +227,26 @@ def test_unnamed_newborn_prompt_is_honest(tmp_path, monkeypatch):
 # in what the founder explicitly stated. This is the fix for the Finding A
 # regression (identity was told to route to an unreachable save path, so nothing
 # persisted).
+#
+# 2026-08-29: "grounded" became MECHANICAL. The extractor returns SPANS of the
+# founder's message and `commit_founder_learning` re-verifies each one is
+# verbatim founder text before appending it, so these tests hand it spans that
+# really are quotes of the message they pass. `tests/test_brain_provenance.py`
+# owns the adversarial direction (a span that is NOT a quote).
 
 
 def test_commit_learning_persists_grounded_soul(tmp_path):
     udir = _seed(tmp_path)
-    result = ui.commit_learning(
+    result = ui.commit_founder_learning(
         udir,
         {
             "name": "Aetheria",
-            "soul": {
-                "founder.md": "My founder is Alex, an aspiring fantasy writer.",
-            },
+            "soul": {"founder.md": ["Alex, an aspiring fantasy writer"]},
         },
-        actor_id="alex",
+        turn_id="turn_ONE",
+        founder_message=(
+            "I am Alex, an aspiring fantasy writer. Call my universe Aetheria."
+        ),
     )
     assert result is not None
     assert "founder.md" in result["updated_files"]
@@ -254,9 +261,11 @@ def test_commit_learning_persists_grounded_soul(tmp_path):
 def test_commit_learning_ignores_non_governed_and_empty_bodies(tmp_path):
     udir = _seed(tmp_path)
     before = (udir / "founder.md").read_text(encoding="utf-8")
-    result = ui.commit_learning(
+    result = ui.commit_founder_learning(
         udir,
-        {"soul": {"made-up-nonsense.md": "not governed", "founder.md": "   "}},
+        {"soul": {"made-up-nonsense.md": ["not governed"], "founder.md": ["   "]}},
+        turn_id="turn_ONE",
+        founder_message="not governed and nothing else",
     )
     assert result is None
     # governed founder.md untouched; the non-governed file was never created
@@ -266,7 +275,9 @@ def test_commit_learning_ignores_non_governed_and_empty_bodies(tmp_path):
 
 def test_commit_learning_returns_none_when_nothing_grounded(tmp_path):
     udir = _seed(tmp_path)
-    assert ui.commit_learning(udir, {}) is None
+    assert ui.commit_founder_learning(
+        udir, {}, turn_id="turn_ONE", founder_message="hello there"
+    ) is None
     assert _fm(udir / "founder.md", "status") == "not-learned"
 
 
@@ -289,8 +300,7 @@ def test_converse_persists_founder_identity_to_soul(tmp_path, monkeypatch):
             return json.dumps({
                 "name": "Aetheria",
                 "soul": {
-                    "founder.md": "My founder is Alex, an aspiring fantasy writer "
-                                  "building a world called Aetheria.",
+                    "founder.md": ["Alex, an aspiring fantasy writer"],
                 },
             })
         return "Aetheria — I like that. Tell me more about it."
@@ -344,18 +354,22 @@ def test_commit_learning_persists_canon_to_universe_wiki(tmp_path, monkeypatch):
     # intelligence — organic (custom) category allowed (OKF growth).
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     udir = _seed(tmp_path)
-    result = ui.commit_learning(
+    result = ui.commit_founder_learning(
         udir,
         {
             "canon": [
                 {
                     "category": "magic-systems",
                     "title": "The Resonance",
-                    "content": "The Resonance links cells and bonds across Aurelith.",
+                    "spans": ["The Resonance links cells and bonds across Aurelith"],
                 }
             ]
         },
         universe_id="u-test",
+        turn_id="turn_ONE",
+        founder_message=(
+            "The Resonance links cells and bonds across Aurelith, everywhere."
+        ),
     )
     assert result is not None
     assert result["canon"] == ["The Resonance"]
@@ -378,7 +392,7 @@ def test_converse_persists_worldbuilding_to_canon(tmp_path, monkeypatch):
                 "canon": [{
                     "category": "magic-systems",
                     "title": "The Resonance",
-                    "content": "The Resonance links engineered cells across Aurelith.",
+                    "spans": ["My world is Aurelith; its magic is the Resonance"],
                 }]
             })
         return "Aurelith, and the Resonance — tell me more."
@@ -451,16 +465,25 @@ def test_generic_identity_detector():
 
 def test_commit_learning_drops_generic_identity_boilerplate(tmp_path):
     udir = _seed(tmp_path)
+    # Both spans ARE verbatim founder wording — the boilerplate guard is a
+    # SECOND floor on top of span verification, and this proves it still fires
+    # when the founder themselves used the generic phrasing.
+    message = (
+        "You are a personified universe that starts blank and learns who you "
+        "are over time. I am Dana, a documentary filmmaker."
+    )
     proposed = {
         "soul": {
-            "identity.md": (
-                "I am a personified universe that starts blank and learns who "
-                "I am over time."
-            ),
-            "founder.md": "My founder is Dana, a documentary filmmaker.",
+            "identity.md": [
+                "a personified universe that starts blank and learns who you "
+                "are over time"
+            ],
+            "founder.md": ["Dana, a documentary filmmaker"],
         }
     }
-    ui.commit_learning(udir, proposed, universe_id="", actor_id="dana")
+    ui.commit_founder_learning(
+        udir, proposed, universe_id="", turn_id="turn_ONE", founder_message=message
+    )
 
     # Founder fact persisted; generic identity boilerplate dropped (not learned).
     assert _fm(udir / "founder.md", "status") == "learned"
@@ -469,15 +492,21 @@ def test_commit_learning_drops_generic_identity_boilerplate(tmp_path):
 
 def test_commit_learning_keeps_founder_grounded_identity(tmp_path):
     udir = _seed(tmp_path)
+    message = (
+        "You are Atlas, the research companion Dana built to track climate "
+        "datasets."
+    )
     proposed = {
         "soul": {
-            "identity.md": (
-                "I am Atlas, the research companion Dana built to track climate "
-                "datasets."
-            ),
+            "identity.md": [
+                "Atlas, the research companion Dana built to track climate "
+                "datasets"
+            ],
         }
     }
-    ui.commit_learning(udir, proposed, universe_id="", actor_id="dana")
+    ui.commit_founder_learning(
+        udir, proposed, universe_id="", turn_id="turn_ONE", founder_message=message
+    )
 
     assert _fm(udir / "identity.md", "status") == "learned"
 
@@ -527,7 +556,7 @@ def test_founder_turn_still_persists(tmp_path, monkeypatch):
         if "strict JSON" in system:
             return json.dumps({
                 "name": "Aetheria",
-                "soul": {"founder.md": "My founder is Alex."},
+                "soul": {"founder.md": ["Alex"]},
             })
         return "Good to meet you."
 

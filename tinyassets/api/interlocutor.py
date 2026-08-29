@@ -84,7 +84,15 @@ FOUNDER = T2
 #: founder's private description becoming public. The universe's own governed
 #: learning path still writes ``founder.md`` freely — that is sole-writership,
 #: not a disclosure grant (see the anti-collision requirement).
-FOUNDER_PRIVATE_GROUNDING: frozenset[str] = frozenset({"founder.md"})
+#:
+#: ``orgchart.md`` joined 2026-08-29, in the same change that started reading it
+#: back into the turn: it records who works with the founder — collaborators,
+#: delegations, reporting lines — which is the founder's organisation, not the
+#: universe's public face. Making it readable to the universe itself must not
+#: make it readable to a visitor.
+FOUNDER_PRIVATE_GROUNDING: frozenset[str] = frozenset(
+    {"founder.md", "orgchart.md"}
+)
 
 
 @dataclass(frozen=True)

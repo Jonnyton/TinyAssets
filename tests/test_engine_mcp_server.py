@@ -368,34 +368,48 @@ def _seed_brain_universe(monkeypatch, tmp_path, uid="u-brain"):
 
 
 #: The turn id these tests propose against. write_brain records a proposal for
-#: the turn the daemon opened (2026-08-29, design D1): with no open turn it
-#: refuses, so a test that wants to reach the slot has to open one — otherwise it
-#: would pass on the refusal and prove nothing.
+#: the turn the DAEMON bound onto this engine surface (2026-08-29, design D1):
+#: with no turn it refuses, so a test that wants to reach the slot has to bind
+#: one — otherwise it would pass on the refusal and prove nothing. Binding it via
+#: ``_ENV_TURN_ID`` is the real stdio path (``claude_provider._engine_mcp_flags``
+#: puts it in the child's env); the HTTP path binds the same value per request
+#: from the bearer.
 _TEST_TURN = "turn_ENGINE_TEST"
 
 
-def _open_turn(udir, turn_id=_TEST_TURN):
-    from tinyassets import brain_proposal
+def _bind_turn(monkeypatch, turn_id=_TEST_TURN):
+    from tinyassets import engine_mcp_server as s
 
-    brain_proposal.open_turn(udir, turn_id)
+    monkeypatch.setattr(s, "_ENV_TURN_ID", turn_id)
     return turn_id
 
 
-def _commit_proposal(udir, turn_id=_TEST_TURN, *, founder_message="the founder said so"):
+def _commit_proposal(udir, turn_id=_TEST_TURN, *, founder_message=None):
     """Run the trusted writer over the recorded proposal, as converse does.
 
     The served tool only proposes; this is the founder-only half that decides
     and persists. Tests that assert what LANDS drive both halves.
+
+    The writer persists VERBATIM SPANS of the founder's message, so with no
+    explicit message these helpers synthesise one containing exactly what was
+    proposed — i.e. they model "the founder said precisely this". A proposal the
+    founder did NOT say is the adversarial case, and it lives in
+    tests/test_brain_provenance.py.
     """
     from tinyassets import brain_proposal
-    from tinyassets.universe_intelligence import commit_learning
+    from tinyassets.universe_intelligence import commit_founder_learning
 
     proposal = brain_proposal.consume_proposal(udir, turn_id)
     if proposal is None:
         return None
-    return commit_learning(
+    spans = {k: [v] for k, v in proposal["sections"].items()}
+    if founder_message is None:
+        founder_message = " ".join(
+            list(proposal["sections"].values()) + [proposal["name"]]
+        ).strip() or "the founder said so"
+    return commit_founder_learning(
         udir,
-        {"name": proposal["name"], "soul": proposal["sections"]},
+        {"name": proposal["name"], "soul": spans},
         turn_id=turn_id,
         founder_message=founder_message,
     )
@@ -424,7 +438,7 @@ def test_write_brain_proposes_and_the_trusted_writer_lands_it(monkeypatch, tmp_p
     from tinyassets.universe_intelligence import _build_persona_system_prompt
 
     udir = _seed_brain_universe(monkeypatch, tmp_path)
-    _open_turn(udir)
+    _bind_turn(monkeypatch)
     marker = "I am Aria, a research companion who tracks the founder's reading list."
     res = json.loads(s.write_brain(identity=marker, name="Aria"))
     assert res.get("status") == "proposed"
@@ -448,14 +462,14 @@ def test_brain_read_write_round_trip_does_not_nest_frontmatter(monkeypatch, tmp_
 
     udir = _seed_brain_universe(monkeypatch, tmp_path)
     marker = "I am Aria, the founder's research companion."
-    _open_turn(udir)
+    _bind_turn(monkeypatch)
     s.write_brain(identity=marker)
     _commit_proposal(udir)
     body1 = json.loads(s.read_brain())["brain"]["identity"]
     assert marker in body1
     assert "---" not in body1  # no frontmatter leaked into the body
     # Echo the read body back; it must not accumulate frontmatter.
-    _open_turn(udir, "turn_ENGINE_TEST_2")
+    _bind_turn(monkeypatch, "turn_ENGINE_TEST_2")
     s.write_brain(identity=body1)
     _commit_proposal(udir, "turn_ENGINE_TEST_2")
     body2 = json.loads(s.read_brain())["brain"]["identity"]
@@ -472,7 +486,7 @@ def test_brain_write_cannot_touch_soul_md(monkeypatch, tmp_path):
 
     udir = _seed_brain_universe(monkeypatch, tmp_path)
     before = (udir / "soul.md").read_text(encoding="utf-8")
-    _open_turn(udir)
+    _bind_turn(monkeypatch)
     s.write_brain(identity="I am Aria, the founder's research companion.")
     _commit_proposal(udir)
     after = (udir / "soul.md").read_text(encoding="utf-8")
@@ -502,7 +516,7 @@ def test_brain_write_refuses_hardlinked_governed_file(monkeypatch, tmp_path):
     identity.unlink()
     os.link(soul, identity)
 
-    _open_turn(udir)
+    _bind_turn(monkeypatch)
     out = json.loads(s.write_brain(identity="I am Aria, the research companion."))
     assert out.get("status") == "proposed"  # the tool records; the sink decides
     assert _commit_proposal(udir) is None  # refused, nothing written
@@ -527,7 +541,7 @@ def test_brain_write_snapshot_sink_cannot_alias_soul(monkeypatch, tmp_path):
         index.unlink()
     os.link(soul, index)  # predictable-name sink aliased to soul.md
 
-    _open_turn(udir)
+    _bind_turn(monkeypatch)
     s.write_brain(identity="I am Aria, the founder's research companion.")
     # The snapshot only runs when the trusted writer commits, so drive it.
     assert _commit_proposal(udir) is not None
@@ -564,7 +578,7 @@ def test_brain_write_refuses_parent_dir_symlink_escape(monkeypatch, tmp_path):
         shutil.rmtree(sv)
     os.symlink(external, sv, target_is_directory=True)
 
-    _open_turn(udir)
+    _bind_turn(monkeypatch)
     out = json.loads(s.write_brain(identity="I am Aria, the founder's companion."))
     assert out.get("status") == "proposed"
     assert _commit_proposal(udir) is None  # the sink refused
@@ -673,8 +687,8 @@ def test_write_brain_uses_least_privilege_caps(monkeypatch, tmp_path):
     from tinyassets import engine_mcp_server as s
     from tinyassets.auth import middleware
 
-    udir = _seed_brain_universe(monkeypatch, tmp_path)
-    _open_turn(udir)
+    _seed_brain_universe(monkeypatch, tmp_path)
+    _bind_turn(monkeypatch)
     caps = {}
     real = brain_proposal.record_proposal
     monkeypatch.setattr(

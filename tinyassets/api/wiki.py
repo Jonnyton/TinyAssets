@@ -2541,6 +2541,38 @@ def write_universe_canon(
         )
 
 
+def read_universe_canon_body(
+    universe_id: str,
+    *,
+    category: str,
+    filename: str,
+) -> str:
+    """The current markdown body of a universe canon page, or "".
+
+    The read sibling of :func:`write_universe_canon`, resolving the SAME slug and
+    the same promoted/draft precedence, so an append lands on the page a write
+    would target. First-party like the write (no ACL gate) and deliberately raw:
+    the caller is the universe's own writer appending to its own canon, and
+    ``_wiki_write`` replaces a page wholesale, so without this a multi-turn canon
+    page would be reduced to whatever the last turn quoted (2026-08-29).
+    """
+    wiki_root = _wiki_root_for_universe(universe_id)
+    with _scoped_wiki_root(wiki_root):
+        slug, slug_error = _wiki_write_slug(category, filename)
+        if slug_error:
+            return ""
+        safe_category = category if category in _WIKI_CATEGORIES else _sanitize_slug(
+            category
+        )
+        if not safe_category:
+            return ""
+        for base in (_wiki_pages_dir(), _wiki_drafts_dir()):
+            path = base / safe_category / (slug + ".md")
+            if path.is_file():
+                return _read_text(path)
+    return ""
+
+
 def _stamp_universe_id(payload: str, universe_id: str) -> str:
     if not universe_id:
         return payload

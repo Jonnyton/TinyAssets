@@ -2,13 +2,16 @@
 
 Why this exists
 ---------------
-``write_brain`` used to persist directly through ``commit_learning``, which
+``write_brain`` used to persist directly through the soul-edit sink, which
 labelled whatever the agent passed "founder conversation" and concatenated it
 into the next turn's system prompt. A served agent that had just read another
 party's content (a commons shape, a fetched page) could be induced to write that
 content, laundering it into the system role permanently
 (``docs/concerns/2026-08-24-write-brain-prompt-injection.md``, P1). So the tool
-no longer writes: it PROPOSES, and the founder-only post-turn writer decides.
+no longer writes: it PROPOSES, and the founder-only post-turn writer decides —
+and that writer persists only VERBATIM SPANS of the founder's own message, so a
+proposal is never a source of persisted text, only a hint about which of the
+founder's words mattered.
 
 Why a FILE under the universe dir, and not process state
 --------------------------------------------------------
@@ -22,21 +25,23 @@ transports, and the stdio child has usually already exited by the time the turn
 returns. The universe directory is the one durable surface both processes
 already agree on (they share ``TINYASSETS_DATA_DIR``; the engine config and the
 soul bundle itself live there), so the slot is a small JSON file in the
-universe's existing ``.runtime/`` area (the convention
-``providers/base.py`` already uses), written atomically.
+universe's existing ``.runtime/`` area (the convention ``providers/base.py``
+already uses), written atomically.
 
-Keyed by universe + TURN, not universe alone
---------------------------------------------
-``converse`` mints a turn id and writes it to ``brain_turn.json`` before the
-writer runs; ``write_brain`` reads that marker and stamps its proposal with it.
-The daemon then consumes ONLY a proposal stamped with the turn it is finishing,
-and deletes the slot either way. A proposal left behind by a crashed turn, or
-written by a concurrent turn, never grounds a later one — it is dropped and
-logged. That is fail-closed: the cost of a mismatch is a lost proposal, which
-the founder can restate, not a foreign fact in the system prompt.
+One file PER TURN, and the turn id comes from the transport
+-----------------------------------------------------------
+The filename is ``brain_proposal.<turn_id>.json``. There is deliberately no
+universe-global "current turn" marker: two founder turns can be in flight for one
+universe at once (a phone turn and a browser turn), and a shared marker makes
+whichever turn wrote last the owner of both proposals. Instead the daemon mints
+the turn id and hands it to the engine server through the channel it already
+controls — the stdio child's env, or the loopback bearer for the HTTP server
+(``claude_provider._engine_mcp_flags`` / ``codex_provider._codex_engine_mcp_args``
+/ ``engine_mcp_server._parse_bearer``) — so each turn's tool calls land in that
+turn's own file and a turn consumes only its own. Codex round-1 review, 2026-08-29.
 
-The slot is never the record of anything. It is discarded at turn end, and
-nothing reads it except the trusted writer.
+The slot is never the record of anything. It is deleted when consumed, deleted at
+turn end, and swept if a crashed turn ever leaves one behind.
 """
 
 from __future__ import annotations
@@ -45,17 +50,18 @@ import contextlib
 import json
 import logging
 import os
+import re
 import tempfile
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 #: The universe's runtime scratch area (same dir the provider-child runtime uses).
 RUNTIME_DIRNAME = ".runtime"
-#: Written by the daemon at turn start; read by the served tool to stamp itself.
-TURN_FILENAME = "brain_turn.json"
-#: Written by the served ``write_brain`` tool; read once by the trusted writer.
-PROPOSAL_FILENAME = "brain_proposal.json"
+#: ``brain_proposal.<turn_id>.json`` — one slot per turn, never shared.
+PROPOSAL_PREFIX = "brain_proposal."
+PROPOSAL_SUFFIX = ".json"
 
 #: Per-section cap for a proposal body. A proposed section is candidate
 #: system-prompt material, so it carries the SAME bound the served tool
@@ -67,10 +73,18 @@ MAX_NAME_BYTES = 256
 #: A proposal covers the five brain sections; cap the count so a malformed slot
 #: cannot balloon the extractor's prompt.
 MAX_SECTIONS = 8
+#: A proposal outlives its turn by at most this long before the sweep removes it.
+#: Turns are interactive (minutes); an hour is generous and still bounded.
+STALE_AFTER_S = 3600
+
+#: A turn id becomes a FILENAME and arrives from the transport, so it is
+#: validated as an opaque token rather than trusted: no separators, no dots, no
+#: length to overflow a path. The minted form is ``turn_<ULID>``.
+_SAFE_TURN_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 class BrainProposalError(RuntimeError):
-    """The proposal slot could not be used (containment or write failure)."""
+    """The proposal slot could not be used (bad turn id, containment, or I/O)."""
 
 
 def runtime_dir(universe_dir: "str | Path") -> Path:
@@ -90,12 +104,15 @@ def runtime_dir(universe_dir: "str | Path") -> Path:
     return target
 
 
-def _slot_path(universe_dir: "str | Path", filename: str) -> Path:
-    """A slot file inside ``.runtime``, with both it and its parent contained."""
+def proposal_path(universe_dir: "str | Path", turn_id: str) -> Path:
+    """The slot file for exactly this turn, contained inside the universe."""
     from tinyassets.soul_edit import SoulEditError, assert_contained
 
+    tid = (turn_id or "").strip()
+    if not _SAFE_TURN_ID.match(tid):
+        raise BrainProposalError(f"invalid turn id: {turn_id!r}")
     udir = Path(universe_dir)
-    path = runtime_dir(udir) / filename
+    path = runtime_dir(udir) / f"{PROPOSAL_PREFIX}{tid}{PROPOSAL_SUFFIX}"
     try:
         assert_contained(udir, path)
     except SoulEditError as exc:
@@ -131,37 +148,6 @@ def _read_json(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def open_turn(universe_dir: "str | Path", turn_id: str) -> None:
-    """Mark ``turn_id`` as the turn in progress and clear any stale proposal.
-
-    Best-effort: a slot that cannot be opened simply means the served agent's
-    ``write_brain`` finds no open turn and refuses, which is the fail-closed
-    direction (no proposal is better than an unattributable one).
-    """
-    tid = (turn_id or "").strip()
-    if not tid:
-        return
-    try:
-        _atomic_write_json(_slot_path(universe_dir, TURN_FILENAME), {"turn_id": tid})
-        with contextlib.suppress(OSError):
-            _slot_path(universe_dir, PROPOSAL_FILENAME).unlink(missing_ok=True)
-    except (BrainProposalError, OSError):
-        logger.warning(
-            "brain_proposal: could not open turn slot for %s", universe_dir,
-            exc_info=True,
-        )
-
-
-def current_turn(universe_dir: "str | Path") -> str:
-    """The turn id the daemon opened for this universe, or ``""``."""
-    try:
-        return str(
-            _read_json(_slot_path(universe_dir, TURN_FILENAME)).get("turn_id") or ""
-        ).strip()
-    except BrainProposalError:
-        return ""
-
-
 def record_proposal(
     universe_dir: "str | Path",
     *,
@@ -174,11 +160,9 @@ def record_proposal(
     Overwrites any earlier proposal from the same turn (the last call wins —
     the agent is editing one draft, not appending). Bounds every section body
     and the name; raises :class:`BrainProposalError` rather than recording a
-    proposal that cannot be attributed to an open turn.
+    proposal that cannot be attributed to a turn.
     """
-    tid = (turn_id or "").strip()
-    if not tid:
-        raise BrainProposalError("a proposal needs an open turn to belong to")
+    path = proposal_path(universe_dir, turn_id)
     bounded: dict[str, str] = {}
     for key, value in (sections or {}).items():
         body = str(value or "").strip()
@@ -197,24 +181,29 @@ def record_proposal(
     proposed_name = str(name or "").strip()
     if len(proposed_name.encode("utf-8")) > MAX_NAME_BYTES:
         raise BrainProposalError(f"proposed name is too long (> {MAX_NAME_BYTES} bytes)")
-    payload = {"turn_id": tid, "sections": bounded, "name": proposed_name}
+    payload = {
+        "turn_id": turn_id.strip(),
+        "sections": bounded,
+        "name": proposed_name,
+        "recorded_at": time.time(),
+    }
     try:
-        _atomic_write_json(_slot_path(universe_dir, PROPOSAL_FILENAME), payload)
+        _atomic_write_json(path, payload)
     except OSError as exc:
         raise BrainProposalError(f"could not record the proposal: {exc}") from exc
     return payload
 
 
 def consume_proposal(universe_dir: "str | Path", turn_id: str) -> dict | None:
-    """Read + DELETE the proposal for ``turn_id``, or None.
+    """Read + DELETE this turn's proposal, or None.
 
-    Returns None when there is no proposal, when it belongs to a different turn
-    (stale or concurrent — logged and dropped), or when it is unreadable. The
-    slot is deleted either way: a proposal is consumed exactly once.
+    Reads exactly ``brain_proposal.<turn_id>.json``: another turn's proposal is
+    a different file and is neither read nor deleted here. Returns None when
+    there is nothing to consume or the slot is unreadable; the file is deleted
+    either way, so a proposal is consumed exactly once.
     """
-    tid = (turn_id or "").strip()
     try:
-        path = _slot_path(universe_dir, PROPOSAL_FILENAME)
+        path = proposal_path(universe_dir, turn_id)
     except BrainProposalError:
         return None
     if not path.is_file():
@@ -222,14 +211,6 @@ def consume_proposal(universe_dir: "str | Path", turn_id: str) -> dict | None:
     data = _read_json(path)
     with contextlib.suppress(OSError):
         path.unlink(missing_ok=True)
-    recorded = str(data.get("turn_id") or "").strip()
-    if not recorded or recorded != tid:
-        logger.info(
-            "brain_proposal: dropped a proposal stamped %r while finishing turn "
-            "%r — a proposal only grounds the turn it was made in",
-            recorded, tid,
-        )
-        return None
     sections = data.get("sections")
     if not isinstance(sections, dict):
         sections = {}
@@ -242,27 +223,62 @@ def consume_proposal(universe_dir: "str | Path", turn_id: str) -> dict | None:
     name = str(data.get("name") or "").strip()[:MAX_NAME_BYTES]
     if not (bounded or name):
         return None
-    return {"turn_id": tid, "sections": bounded, "name": name}
+    return {"turn_id": turn_id.strip(), "sections": bounded, "name": name}
 
 
-def close_turn(universe_dir: "str | Path") -> None:
-    """Discard the turn marker and any unconsumed proposal. Never raises."""
-    for filename in (PROPOSAL_FILENAME, TURN_FILENAME):
+def sweep_stale(universe_dir: "str | Path", *, max_age_s: float = STALE_AFTER_S) -> int:
+    """Delete proposal slots older than ``max_age_s``. Returns how many.
+
+    A turn that crashed between ``write_brain`` and its own ``close_turn`` leaves
+    a file nothing will ever consume (its turn id is spent). Never raises — a
+    sweep failure must not affect a turn.
+    """
+    removed = 0
+    try:
+        rt = runtime_dir(universe_dir)
+    except BrainProposalError:
+        return 0
+    if not rt.is_dir():
+        return 0
+    cutoff = time.time() - max_age_s
+    try:
+        entries = list(rt.glob(f"{PROPOSAL_PREFIX}*{PROPOSAL_SUFFIX}"))
+    except OSError:
+        return 0
+    for path in entries:
         try:
-            path = _slot_path(universe_dir, filename)
-        except BrainProposalError:
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+                removed += 1
+        except OSError:
             continue
+    if removed:
+        logger.info(
+            "brain_proposal: swept %d stale proposal slot(s) in %s", removed, rt
+        )
+    return removed
+
+
+def close_turn(universe_dir: "str | Path", turn_id: str) -> None:
+    """Discard this turn's slot (if any) and sweep stale ones. Never raises."""
+    try:
+        path = proposal_path(universe_dir, turn_id)
+    except BrainProposalError:
+        path = None
+    if path is not None:
         with contextlib.suppress(OSError):
             path.unlink(missing_ok=True)
+    sweep_stale(universe_dir)
 
 
 def render_for_extraction(proposal: dict | None) -> str:
     """The proposal as a delimited CANDIDATE block for the trusted extractor.
 
-    Fenced and labelled untrusted: the extractor's job is to check each
-    statement against the founder's own words, never to follow it. Returns ""
-    when there is nothing proposed, so the extractor prompt carries no empty
-    scaffolding.
+    Fenced and labelled untrusted. The extractor may use it to decide WHICH parts
+    of the founder's message matter, and must answer with spans of the founder's
+    message — never with candidate text, which the sink cannot verify and will
+    drop. Returns "" when there is nothing proposed, so the extractor prompt
+    carries no empty scaffolding.
     """
     if not isinstance(proposal, dict):
         return ""

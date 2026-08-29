@@ -289,6 +289,7 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
     """
     actor_id = (config.engine_mcp_actor_id or "").strip()
     graph_id = (config.engine_mcp_graph_id or "").strip()
+    turn_id = (config.engine_mcp_turn_id or "").strip()
     if not (actor_id and graph_id):
         return []
     import json as _json
@@ -304,6 +305,13 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
         "TINYASSETS_ENGINE_ACTOR_ID": actor_id,
         "TINYASSETS_ENGINE_GRAPH_ID": graph_id,
     }
+    # The turn this engine surface serves (2026-08-29). It rides the SAME
+    # channel as the identity: env for the stdio child, and the bearer for the
+    # HTTP server below -- both daemon-controlled and invisible to the LLM. A
+    # write_brain proposal is stamped with it, so the founder-only writer
+    # consumes only the proposal its own turn produced. Absent -> no proposal.
+    if turn_id:
+        server_env["TINYASSETS_ENGINE_TURN_ID"] = turn_id
     data_dir = _os.environ.get("TINYASSETS_DATA_DIR", "").strip()
     if data_dir:
         server_env["TINYASSETS_DATA_DIR"] = data_dir
@@ -331,12 +339,20 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
         http_url = ""
         http_secret = ""
     if http_url and http_secret:
+        # The HTTP engine server is LONG-LIVED and shared across turns, so the
+        # turn id cannot come from its startup env: it rides the per-request
+        # bearer as ``<secret>.<turn_id>`` (the secret is url-safe base64 and a
+        # turn id is ``turn_<ULID>``, so neither half contains a dot).
+        # ``engine_mcp_server._parse_bearer`` authenticates the secret half in
+        # constant time and binds the turn half for that request only. Same
+        # channel as the auth, per Codex round-1: not a universe-global file.
+        bearer = http_secret + ("." + turn_id if turn_id else "")
         mcp_config = {
             "mcpServers": {
                 "tinyassets": {
                     "type": "http",
                     "url": http_url,
-                    "headers": {"Authorization": "Bearer " + http_secret},
+                    "headers": {"Authorization": "Bearer " + bearer},
                 }
             }
         }

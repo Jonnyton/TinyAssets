@@ -286,7 +286,14 @@ def _codex_engine_mcp_args(config: ModelConfig, proc_env: dict[str, str]) -> lis
     # loopback engine url never does, but refuse rather than emit broken config.
     if '"' in url:
         return args
-    proc_env[_ENGINE_MCP_BEARER_ENV] = secret
+    # The turn id rides the bearer (``<secret>.<turn_id>``), which is the only
+    # per-turn channel codex gives this server: ``bearer_token_env_var`` is read
+    # from proc_env and sent as the Authorization header, while the HTTP engine
+    # server itself is long-lived and shared across turns.
+    # ``engine_mcp_server._parse_bearer`` splits it. Absent turn id -> plain
+    # secret, and write_brain refuses for want of a turn (2026-08-29).
+    turn_id = (getattr(config, "engine_mcp_turn_id", "") or "").strip()
+    proc_env[_ENGINE_MCP_BEARER_ENV] = secret + ("." + turn_id if turn_id else "")
     enabled = ",".join(f'"{t}"' for t in _ENGINE_MCP_ENABLED_TOOLS)
     # Dotted key merges the one server into the (otherwise-empty) map.
     # default_tools_approval_mode="approve": codex MCP tools default to `auto`,

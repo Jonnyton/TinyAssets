@@ -40,9 +40,16 @@ def test_connector_does_not_do_the_universes_work():
 
 
 def test_learning_extraction_guards_generic_identity():
-    assert "NEVER restate your own generic nature" in ui._LEARNING_SYSTEM
+    # 2026-08-29: the extractor selects verbatim SPANS of the founder's message
+    # rather than writing prose, so the guard is worded for spans. The rule the
+    # deterministic floor (`_is_generic_identity_boilerplate`) backs up is the
+    # same one: the universe's own self-framing is not something the founder
+    # taught. The floor itself is asserted in test_universe_intelligence.
+    assert "NEVER select a span about your own generic nature" in ui._LEARNING_SYSTEM
     # identity.md is only filled when the founder explicitly says who/names it
     assert "gave me a name" in ui._LEARNING_SYSTEM
+    # and the span contract itself, which is what makes the guard enforceable
+    assert "A SPAN IS A VERBATIM QUOTE" in ui._LEARNING_SYSTEM
 
 
 def test_engine_sandbox_denies_host_tools():

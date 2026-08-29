@@ -210,6 +210,16 @@ class ModelConfig:
     """The universe graph_id the local engine MCP server PINS every handler call
     to. Empty disables the engine MCP wiring (fail-closed)."""
 
+    engine_mcp_turn_id: str = ""
+    """The id of the conversation turn this engine surface is serving.
+
+    Carried to the engine server over the transport the daemon already controls
+    (the stdio child's env, or the loopback bearer for the persistent HTTP
+    server) so a ``write_brain`` proposal is bound to the turn that produced it,
+    and the founder-only writer consumes only its own turn's proposal. Empty
+    means no founder turn is in progress: ``write_brain`` refuses rather than
+    record a proposal nothing could ground (2026-08-29, Codex round-1 review)."""
+
     credential_snapshot_dir: Path | None = field(
         default=None,
         repr=False,

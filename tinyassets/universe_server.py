@@ -1599,7 +1599,7 @@ def write_page(
     # relay — so the brain stays one coherent mind whether reached via app or
     # chatbot. A page write/patch that targets a universe is therefore RELAYED,
     # not written: the founder passes it to their universe via `converse`, which
-    # records it in its own canon (universe_intelligence.commit_learning).
+    # records it in its own canon (universe_intelligence.commit_founder_learning).
     # Resolve the target the way converse/soul.edit do — explicit id, or the
     # authenticated founder's home. Only a write with NO universe target
     # (anonymous/dev) is a shared COMMONS write, which the relay may still do;

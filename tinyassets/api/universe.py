@@ -6586,12 +6586,32 @@ def _action_soul_edit(
             "error": "changes must map governed filename -> new markdown body.",
         })
 
+    # The SOURCE is derived, never taken from the caller (2026-08-29, Codex
+    # round-1 review of brain-writes-carry-founder-provenance). A caller-supplied
+    # source is a self-issued provenance claim: any client of this action could
+    # write `source="founder utterance turn_X"` and produce a section that reads
+    # as conversation-verified when it is a free-body edit nobody quoted. This is
+    # the DIRECT edit path, so it says so, and names the actor who made it. The
+    # caller's own words survive as the learning CONTEXT, which is where an
+    # explanation belongs.
+    from tinyassets.auth.middleware import current_identity
+
+    try:
+        actor = (current_identity().user_id or "").strip()
+    except Exception:  # noqa: BLE001 - an unauthenticated read of identity
+        actor = ""
+    claimed = str(data.get("source", "")).strip()
+    context = str(data.get("context", "")).strip()
+    if claimed:
+        context = f"{context} (caller-stated source: {claimed})" if context else (
+            f"caller-stated source: {claimed}"
+        )
     try:
         result = apply_soul_edit(
             udir,
             changes=changes,
-            source=str(data.get("source", "")),
-            context=str(data.get("context", "")),
+            source=f"founder direct edit ({actor or 'unknown actor'}, universe.soul.edit)",
+            context=context,
             summary=str(data.get("summary", "")),
             name=str(data.get("name", "")),
         )
