@@ -118,3 +118,39 @@ def test_the_asking_section_is_founder_gated_in_source():
     ask_at = source.index("ask_section = (")
     guard = source.rindex("if tier == interlocutor.FOUNDER:", 0, ask_at)
     assert ask_at - guard < 200, "the asking section is not under a FOUNDER guard"
+
+
+# --- and must teach WHICH ask: never a re-paste for a key it already holds ----
+
+
+def test_the_prompt_teaches_extend_http_for_a_key_it_already_holds(tmp_path):
+    """Observed 2026-08-29, first naive retest after the asking fix landed.
+
+    The universe raised a request on its own - the fix worked - but it chose
+    ``connect_http`` with a "Paste the key" box for the ``github`` destination
+    whose key was already in the vault. The founder's rule is that a key is
+    given once, never per action; ``extend_http`` exists for exactly this and
+    was mentioned in ZERO agent-facing text, so the agent built the only shape
+    it had been shown.
+    """
+    prompt = _prompt(tmp_path, interlocutor.FOUNDER)
+    assert "extend_http" in prompt, "the widen-a-grant verb is not taught"
+    assert "NO secret" in prompt
+    assert 'read_graph target="connections"' in prompt, (
+        "it must be told to check for an existing key before asking"
+    )
+
+
+def test_the_engine_docstring_shows_extend_http_next_to_connect_http():
+    """The tool's own docs showed only connect_http; that is what got copied."""
+    import inspect
+
+    from tinyassets import engine_mcp_server
+
+    # write_graph is @mcp.tool-wrapped, so read the module source rather than
+    # trusting the wrapper to preserve __doc__.
+    source = inspect.getsource(engine_mcp_server)
+    assert '"type": "extend_http"' in source, (
+        "write_graph's docstring shows connect_http as the only ask shape"
+    )
+    assert "do not ask for it again" in source

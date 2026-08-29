@@ -796,6 +796,22 @@ def write_graph(
     EVERY call the flow needs in ONE ask so they paste once (a GitHub pull
     request needs the main ref, a branch ref, the file contents, and the pull).
 
+    **If you ALREADY hold a key for that destination, do not ask for it again.**
+    Check ``read_graph target="connections"`` first. To widen an existing grant
+    the action is ``extend_http`` on the same destination — new endpoints only,
+    no ``auth_scheme``, and the tab has NO paste box because the key stays in
+    the vault::
+
+        "action": {"type": "extend_http", "destination": "github",
+                   "endpoints": [{"host": "api.github.com",
+                                  "path_template": "/repos/o/r/contents/{path+}",
+                                  "methods": ["GET", "PUT"],
+                                  "param_patterns": {"path": "[A-Za-z0-9._\\-/]{1,200}"}}]}
+
+    A ``connect_http`` ask for a destination that already has a key makes the
+    user paste a secret they already gave you — the one thing they must never
+    be asked to do twice.
+
     **A path_template can be a PATTERN, so ask for the JOB, not one file.** Any
     segment may be a ``{name}`` placeholder, and the FINAL segment may be a
     ``{name+}`` *rest* placeholder matching one or more remaining segments. Every
