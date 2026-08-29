@@ -13,7 +13,7 @@ accumulated across Codex / Cursor / Claude Code / Cowork sessions. The host
 not a one-off cleanup.
 
 Root cause: the repo has rich hygiene **conventions** (`claim_check.py`,
-`worktree_status.py`, `_PURPOSE.md`, `.agents/worktrees.md`, the AGENTS.md
+`worktree_status.py`, `_PURPOSE.md`, the retired `.agents/worktrees.md`, the AGENTS.md
 "Parallel Dispatch" ritual) but **zero enforcement automation**. Every ritual
 is something a human or agent is *supposed* to run, so nothing ran. Two
 concrete gaps confirmed the diagnosis:
@@ -81,7 +81,9 @@ and commits < 7d. `report` remains available as an on-demand dry-run via
 ### Layer 2 — `wt` lifecycle wrapper (`scripts/wt.py`)
 One command for both halves of the loop so teardown stops being optional:
 - `wt new <slug>` — `fetch --prune` -> `git worktree add` off `origin/main` ->
-  scaffold `_PURPOSE.md` -> append create event to `.agents/worktrees.md`.
+  scaffold `_PURPOSE.md` (a local, ignored draft since 2026-08-29; `wt pr`
+  publishes it as the PR body) -> append a create event to the local
+  `.git/tinyassets-worktrees.log` (the tracked `.agents/worktrees.md` is retired).
 - `wt done [slug]` — verify the branch merged into `origin/main` (refuse
   otherwise unless `--force`) -> remove worktree -> delete branch -> append
   remove event.

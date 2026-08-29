@@ -4,8 +4,14 @@
 > were retired in the harness reset. Sections below that require a STATUS row or
 > a claim_check run describe machinery that no longer exists. What still holds:
 > one work item = one branch = one worktree = one PR; `_PURPOSE.md` at each lane
-> root; never switch a dirty worktree to `main`; ownership is a branch or an open
-> PR, not a table.
+> root as a **local draft** whose published form is the PR body; never switch a
+> dirty worktree to `main`; ownership is a branch or an open PR, not a table.
+>
+> **2026-08-29:** `_PURPOSE.md` is git-ignored and untracked (a tracked copy
+> made every concurrent PR `DIRTY` the moment another landed — five times in
+> one afternoon), and the hand-edited `.agents/worktrees.md` inventory is
+> retired: `python scripts/wt.py list` derives it from git, and "who is
+> working on what" is branches and open PRs (AGENTS.md).
 
 
 > **Canonical full procedure.** Moved out of `AGENTS.md` on 2026-06-25 under
@@ -22,8 +28,9 @@ not durable memory. It remembers commits, not why the branch exists, whether
 it is live-safe, what blocks it, what ideas are parked in it, who owns it, or
 whether it should merge, split, be abandoned, or become a PR. Uncommitted
 changes are weaker: they exist only in that local worktree. The durable memory
-layer is `_PURPOSE.md`, `.agents/worktrees.md`, `STATUS.md`, idea files, and
-draft PR bodies.
+layer is the **PR body** — `python scripts/wt.py pr` opens the PR with
+`_PURPOSE.md` as its body, so the lane's purpose outlives the worktree — plus
+idea files. `_PURPOSE.md` itself is the local draft of that record.
 
 Every branch/worktree must be in exactly one lane state:
 
@@ -38,9 +45,12 @@ Every branch/worktree must be in exactly one lane state:
   `ideas/PIPELINE.md`, or the bottom "Idea feed refs" section of
   `_PURPOSE.md`. It must be promoted into `STATUS.md` and checked against
   `PLAN.md` before implementation.
-- **Abandoned/swept**: worktree removed or marked abandoned in
-  `.agents/worktrees.md` with a reason. Useful ideas are extracted before
-  deletion.
+- **Abandoned/swept**: worktree removed (`python scripts/wt.py done`, or
+  `sweep`) with the reason on the closed PR — or, for a lane that never
+  reached `wt.py pr`, the `--reason` given to `done --force`, recorded with
+  the archived purpose text in `.git/tinyassets-worktrees.log`. Teardown
+  archives `_PURPOSE.md` there before removing anything. Useful ideas are
+  extracted before deletion.
 
 `worktree_status.py` emits more diagnostic states than the four canonical
 lane states. `ACTIVE_LANE` and `PARKED_DRAFT` map directly to canonical lane
@@ -65,19 +75,22 @@ When creating a worktree:
 2. Use a sibling path `../wf-<slug>` unless an existing manager names it
    differently. Avoid `TinyAssets-foo`, nested `TinyAssets/foo`, and hash-only
    names for new work.
-3. Create `_PURPOSE.md` at the worktree root, <=30 lines: purpose,
-   provider/session, branch, base ref, STATUS row / PR / issue, relevant
-   PLAN module refs, ship condition, abandon condition, pickup hints, memory
-   refs, related implication refs, and a bottom "Idea feed refs" section for
-   loose ideas that must not be forgotten but are not build authority.
-4. Append a create event to `.agents/worktrees.md`; append a remove event
-   when the PR lands or the lane is abandoned.
+3. Fill `_PURPOSE.md` at the worktree root (`wt.py new` scaffolds it),
+   <=30 lines: purpose, provider/session, branch, base ref, PR / issue /
+   openspec change, relevant PLAN module refs, ship condition, abandon
+   condition, pickup hints, memory refs, related implication refs, and a
+   bottom "Idea feed refs" section for loose ideas that must not be
+   forgotten but are not build authority. It is git-ignored: local to the
+   lane, readable by any agent or reviewer working in that worktree.
+4. Publish it: `python scripts/wt.py pr [--auto]` pushes the branch and opens
+   the PR with `_PURPOSE.md` as the body. The PR is the durable record; keep
+   it current when the ship condition or blockers change.
 5. Run `python scripts/worktree_status.py` at session start or before a
    cleanup pass to find pickup-ready, stale, orphaned, or dirty worktrees.
 
 Memory refs are required for inherited work. When a worktree continues,
-reviews, or builds on work from another provider/family, `_PURPOSE.md`,
-`.agents/worktrees.md`, the STATUS row, or the PR body must reference the
+reviews, or builds on work from another provider/family, `_PURPOSE.md` or
+the PR body must reference the
 preceding provider's durable memory/artifact paths, for example
 `.claude/agent-memory/navigator/2026-05-02-worktree-discipline-design.md`.
 Before coding, the pickup provider reads those memories plus the source
@@ -120,9 +133,25 @@ them, promote/refactor the work into current project state:
 - run `claim_check.py --check-files` before broadening Files;
 - only then claim and build in the worktree.
 
-Existing worktrees are retrofit-on-next-touch: add `_PURPOSE.md` and inventory
-events when you next work there. Do not bulk rewrite another provider's active
-worktree metadata unless the STATUS row or owner asks for it.
+Existing worktrees are retrofit-on-next-touch: add `_PURPOSE.md` when you next
+work there. A lane opened before 2026-08-29 still tracks its own copy of the
+file (29 branch tips did on that day; three had uncommitted edits). **Before**
+its next `main` merge, untrack the copy without touching the disk:
+`git rm --cached _PURPOSE.md && git commit -m "worktree: purpose is a local
+draft"` — the file stays where it is and is ignored from then on. Merging
+first instead produces a conflict: once the deletion is on `main`, Git
+reports modify/delete and keeps the branch's own copy on disk (resolve with
+`git rm --cached`); while `main` still *tracked* the file, its copy won and
+overwrote the draft on disk (it happened to the lane that built this). If
+your text is gone, recover it from `git show HEAD:_PURPOSE.md` on the branch
+before resolving. A checkout with **uncommitted edits to
+`.agents/worktrees.md`** must preserve them before the deletion lands, under
+the owner's own hand — `git diff -- .agents/worktrees.md >>
+.git/tinyassets-worktrees.log` (the primary checkout's 54 unsaved lines were
+copied there on 2026-08-29 before this landed) — and then resolve the
+modify/delete conflict with `git rm .agents/worktrees.md`. Never `git
+checkout --` a file you have not first preserved (Hard Rule 13). Do not bulk
+rewrite another provider's active worktree metadata unless the owner asks.
 
 ## Branch & worktree lifecycle automation
 
@@ -140,10 +169,12 @@ drift is automated, not a manual ritual to remember. Design note:
   Driven by `.github/workflows/branch-janitor.yml` (daily `apply-all`,
   self-maintaining; manual `workflow_dispatch` with `report` / `apply-merged`
   / `apply-all`, where `report` is an on-demand dry-run).
-- **Layer 2 — `python scripts/wt.py new|done|list`.** One command for both
-  halves of the loop: `new` creates a worktree off `origin/main` + scaffolds
-  `_PURPOSE.md`; `done` verifies the branch merged before removing the worktree
-  and branch (refuses unmerged unless `--force`). Use it instead of raw
-  `git worktree add`/`remove` so teardown stops being optional.
+- **Layer 2 — `python scripts/wt.py new|pr|done|list`.** One command for
+  each step of the loop: `new` creates a worktree off `origin/main` + scaffolds
+  the local `_PURPOSE.md`; `pr` pushes and opens the PR with that file as its
+  body (`--auto` arms squash auto-merge); `done` verifies the branch merged
+  before removing the worktree and branch (refuses unmerged unless `--force`).
+  Use it instead of raw `git worktree add`/`remove` so teardown stops being
+  optional.
 - **Layer 3 — `scripts/session_sync_gate.py`.** Session-start step 0 (fetch
   `--prune` + warn if the primary checkout is off `main` or behind origin/main).
