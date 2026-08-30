@@ -8,22 +8,24 @@ concurrent top-level runs, has no `pids_limit`, and stores `/data` on an
 ordinary named volume (no filesystem quotas). Code nodes already run in a
 bwrap jail (`node_sandbox.py`) with the authorship gate and the run's
 ContextVars; outbound HTTP already runs in a spawned credential-blind worker
-whose driver validates every resolved address and connects to the validated
+whose driver validates every resolved address and connects to a validated
 IP.
 
 Ceiling 2 (reading a codebase) and ceiling 3 (executing it) are one missing
 thing: a filesystem the universe's code can read and run against.
 
-**Review history.** Codex round 1 (design) REJECT: credential mechanism,
-provision network, aggregate limits, disk bounds, budgets. Round 2 (design +
-deltas) REJECT: the local-path fetch bridge is a confused-deputy read (a
-`.git` gitfile reproduced cross-repo), git re-resolves DNS after a preflight,
-`pip download` runs sdist build code, npm manifests admit arbitrary tarballs,
-provision consent / host-wide lock / outbox protocol / pool transaction not
-normative, one-shot helper breaks on retry, `setsid` descendants outlive the
-runner, deltas fail strict validation, `pin` inconsistent, taxonomy gaps.
-Every finding is folded below and marked *(R1)* / *(R2)*. Round 3 is the
-cap; what remains after it goes to the founder.
+**Review history (three rounds, the cap).** Codex R1 REJECT: credential
+mechanism, provision network, aggregate limits, disk bounds, budgets. R2
+REJECT: local-path fetch bridge is a confused-deputy read, DNS re-resolution,
+`pip download` runs build code, npm manifests admit arbitrary tarballs,
+consent/lock/outbox/pool not normative, one-shot helper, `setsid`
+descendants, strict validation, `pin`, taxonomy. R3 REJECT: shallow clones
+cannot cross a bundle-only bridge; permanent refresh-in-place re-opens
+user-written `.git`; outbox rename/delete windows; grammar precision; plus
+IPv6/address selection, the boundary statement, byte reservation, proposal
+drift, `discard`, the bwrap kill target. Every R3 finding is folded below,
+marked *(R3)*. Per `AGENTS.md` (three rounds, then escalate) there is no
+round 4: the fold and the residual go to the founder with the build.
 
 ## Decisions
 
@@ -33,114 +35,153 @@ Founder 2026-08-30: permanent storage (your universe's cloud space) is a
 different thing from temp storage used by one user's run and later by
 another's; a universe never needs to be bigger than the codebase it works on.
 
-- **Permanent** (`<data>/<universe>/…`): the universe itself, bounded by the
-  tier quota.
-- **Scratch**: a shared pool (`<data>/scratch/`) of **leases**, one per job.
-  A lease is a random opaque id bound server-side to `(universe, connection,
-  canonical repo, storage class, generation)`; its directory is created
-  fresh under a parent resolved without following links, with an opened
-  directory handle held for every later host-side access (bind setup,
-  manifest copy, bundle copy) *(R1, R2)*.
-- **Lease state machine, persisted in the runs database** *(R2)*:
-  `RESERVED → ACTIVE(run, universe, generation) → QUARANTINED(path) →
-  WIPING → AVAILABLE`, plus `LOST` for a wipe that failed (its bytes stay
-  charged against the pool forever, and it is reported). Reservation, the
-  20 GiB pool check, the job-lock acquisition and the `ACTIVE` transition
-  happen in **one `BEGIN IMMEDIATE` transaction** *(R2)*. The run's
-  terminal status and the lease's release entry are written in **one
-  transaction** into a `lease_outbox` table (runs database); a single
-  in-process processor thread claims entries at-least-once
-  (`claimed_by`, `claimed_at`, generation) after commit and performs
-  quarantine-rename → delete-without-following-links → verify → `AVAILABLE`;
-  a **startup sweeper runs before any new lease is admitted** (admission
-  barrier) and a periodic sweeper reclaims entries whose claimant is dead
-  *(R2)*. Startup recovery that rewrites in-flight runs to `interrupted`
-  also enqueues their leases' release. A directory is never recycled in
-  place. **No grace reuse** *(R1)*.
-- **Storage class is chosen at checkout** (`storage: "scratch"` default or
-  `"universe"`); there is **no `pin` operation** — keeping a workspace
-  across turns means checking it out again with `storage: "universe"`,
-  which is a fresh authority-checked checkout into permanent space that
-  counts against the quota *(R2)*. Permanent workspaces are never aged
-  out; only `discard` or a quota refusal removes them *(R1 P2)*.
+- **Permanent** (`<data>/<universe>/workspaces/<repo-key>/<generation>/`):
+  bounded by the tier quota. A permanent workspace is a sequence of
+  **immutable-by-host generations** *(R3)*: every `storage: "universe"`
+  checkout builds a **new** opaque generation from staging's bundle beneath
+  a no-follow universe directory handle, publishes it by atomically
+  switching the repo-key's authoritative generation pointer (a DB row), and
+  enqueues the previous generation for `discard_permanent_generation`
+  through the outbox. Host git never opens an old generation. There is no
+  `reuse` and no refresh-in-place; keeping local work across turns means
+  pushing it (a `tiny/…` branch) or leaving it in the current generation
+  until the next checkout replaces it. A quota refusal leaves the existing
+  generation untouched.
+- **Scratch**: a shared pool (`<data>/scratch/<lease_id>/`) of leases, one
+  per job. A lease is a random opaque id bound server-side to `(universe,
+  connection, canonical repo, generation)`; its directory is created fresh
+  under a parent resolved without following links, with an opened directory
+  handle held for every later host-side access (bind setup, manifest copy,
+  bundle copy) *(R1, R2)*.
+- **Admission is one transaction** *(R2)*: reservation of the lease bound
+  (or the universe quota), the pool-total check, the job-lock acquisition,
+  the **byte-ledger reservation of the operation's maximum charge** *(R3)*
+  and the `ACTIVE` transition happen in one `BEGIN IMMEDIATE` transaction in
+  the runs database; the reservation is reconciled downward to measured
+  bytes after the transfer, and an unknown or interrupted transfer keeps
+  the maximum.
+- **Terminal workspace outbox** *(R2, R3)*: a run's terminal status and its
+  outbox entries are written in one transaction into `workspace_outbox`
+  (runs database). Entries carry an action — `wipe_scratch(lease,
+  generation)`, `discard_permanent_generation(repo_key, generation)`,
+  `release_lock_only` — plus the universe and host locks to release. A
+  single in-process processor claims entries at-least-once with a claim
+  token and `claimed_at`, performs the filesystem steps **idempotently
+  against a deterministic quarantine name**
+  (`<pool>/.quarantine/<lease_id>.<generation>` or
+  `<universe>/workspaces/.quarantine/<repo_key>.<generation>`), and
+  reconciles every combination on retry: source present & quarantine
+  absent → rename; source absent & quarantine present → delete; both
+  absent → done; both present → delete quarantine, then rename. Deletion
+  never follows links. The final transaction marks the lease `AVAILABLE`
+  (or `LOST` on a failed wipe — bytes stay charged and it is reported),
+  releases both locks, and acknowledges the entry by claim-token compare.
+  This protocol **replaces both existing terminal paths coherently** — the
+  direct terminal write in `update_run_status` and the startup bulk rewrite
+  of in-flight runs (`runs.py` ~884 / ~4334) — so startup recovery enqueues
+  `wipe_scratch`/`release_lock_only` for every interrupted run in the same
+  transaction that rewrites it. **A startup sweeper runs to completion
+  before any new workspace job is admitted** (admission barrier); a
+  periodic sweeper reclaims entries whose claim expired. No directory is
+  recycled in place; **no grace reuse** *(R1)*.
+- **Storage class is chosen at checkout**; there is no `pin` operation
+  *(R2)*.
 
-### D1. Credentialed git never reads a directory user code can write — bundles, staging, pinned addresses
+### D1. Credentialed git never opens a workspace — bundles, staging, pinned addresses
 
-- **checkout**: in the outbound worker, `git clone --bare
-  --no-recurse-submodules --depth <n> <canonical https url> <staging>` with
-  the environment built from empty, the forced options below, and the
-  **address pinned in the transport**: the worker resolves the host, applies
-  the HTTP driver's classification to *every* address (public unicast
-  only), and passes `-c http.curloptResolve=<host>:443:<validated ip>` so
-  libcurl connects to that address (TLS still verifies the hostname) —
-  never a preflight that git re-resolves *(R2)*. The worker then creates a
-  **bundle** from staging (`git bundle create <file> <ref>`), deletes
-  staging, and populates the lease from the bundle into a **freshly
-  initialised** repository (`git init` + `git fetch <bundle>` + checkout)
-  so `.git/config` holds no remote, no host path, no credential *(R2 P2)*.
+**The boundary, stated exactly** *(R3)*: no credentialed git process ever
+opens a workspace or reads its `.git`; no host-side git process opens a
+workspace's `.git` after the workspace is **published** (its capability
+handed to user code); a host-side, credential-free initializer populates a
+fresh, **unpublished** generation from a verified bundle, and publication
+happens only after fetch, checkout, `fsck` and staging deletion all
+succeed.
+
+- **Full clones only** *(R3)*: a git bundle cannot represent a shallow
+  boundary, and a bundle with prerequisites cannot be imported into an
+  empty repository, so `checkout` performs a full clone (`--no-recurse-
+  submodules --single-branch` at the requested ref) and both directions use
+  **prerequisite-free** bundles, verified as such (`bundle verify` in an
+  empty repository). `depth` is not a packet field; a prerequisite protocol
+  (staging proves it holds the exact base objects before importing a thin
+  bundle) is the named follow-up for very large repositories. The API
+  size precheck and the lease bound refuse repositories that do not fit.
+- **checkout**: in the outbound worker, `git clone --bare … <canonical
+  https url> <staging>` with the environment built from empty, the forced
+  options below and the **address pinned in the transport**
+  (`http.curloptResolve`), then bundle → delete staging → `git init` +
+  fetch-from-bundle + checkout + `fsck` in the unpublished generation →
+  publish. `.git/config` holds no remote, no host path, no credential.
 - **push**: user code commits locally and calls `ws.bundle(commit_sha)`,
-  which — **inside the jail, credential-free** — creates a self-contained
-  bundle from one synthetic ref at that exact commit with
-  `core.hooksPath=/dev/null`, replacements disabled
-  (`--no-replace-objects`), alternates ignored; the worker copies the bundle
-  as a **bounded regular file through the held lease dirfd with
-  beneath/no-symlink semantics** *(R2)*, then in **credential-free staging**
-  runs `git bundle verify`, `git fetch <bundle>` (`index-pack` with
-  `transfer.fsckObjects=true`, `fetch.fsckObjects=true`) and a strict
-  `fsck`; only then does the **credentialed** push run from staging with
-  the pinned address. The workspace's `.git` (gitfiles, alternates, replace
-  refs, packed refs, config, hooks) is never traversed by a host-side git
-  process *(R2 P0)*. A crafted pack remains parser input; that is why
-  verification is credential-free and bounded.
-- **Environment and options** (credential-vault delta): `GIT_CONFIG_SYSTEM
-  =/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-  GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false HOME=<empty tmp>`, no
-  `GIT_TRACE*`, `RLIMIT_CORE=0`; `-c core.hooksPath=/dev/null -c
-  core.fsmonitor=false -c credential.helper= -c credential.helper=<broker>
-  -c credential.useHttpPath=true -c protocol.allow=never -c
-  protocol.https.allow=always -c http.followRedirects=false -c
-  submodule.recurse=false -c transfer.fsckObjects=true`; canonical URL,
-  never a stored remote *(R1)*. Raw stderr scrubbed to fixed classes.
-- **Credential broker** *(R2)*: a worker-side in-memory broker (not a
-  one-shot pipe) answers `get` for the exact `(protocol, host, path)` of the
-  grant — as many times as git asks during one operation (a 401 retry is
-  legitimate) — outputs `username` and `password`, ignores `store` and
-  `erase`, and is torn down when the operation ends; the token is never
-  persisted, never in argv, never in another process's environment.
-- **Transport policy is its own grant kind** *(R1)*: `git_read` /
-  `git_write` scopes bound to `(host, owner/repo)`; HTTPS:443 only.
-- **Crash safety** *(R1)*: intent journaled before the wire
-  `(connection, repo, remote_ref, commit_sha, expected_old_sha)`;
-  ambiguous outcomes reconciled with `ls-remote`; a repeated non-force push
-  of the same SHA to the same ref is success; checkout records the resolved
-  SHA before the lease is populated.
-- **Branch policy** *(R1)*: resolve remote `HEAD`, refuse it always; only
+  which — inside the credential-free, network-less jail — creates a
+  self-contained bundle from one synthetic ref at that exact commit with
+  `core.hooksPath` nulled and `--no-replace-objects`; the jail's own
+  reading of adversarial `.git` state is accepted residual parser input
+  because that process stays inside the jail and its output is treated as
+  hostile *(R3)*. The worker copies the bundle as a bounded regular file
+  through the held directory handle with beneath/no-symlink semantics,
+  then in **fresh credential-free staging** runs `bundle verify` (refusing
+  prerequisites), an fsck-checked `index-pack`/fetch and a strict `fsck`;
+  only then does the **credentialed** push run from staging.
+- **Address pinning** *(R2, R3)*: the worker resolves the host, applies the
+  HTTP driver's classification to **every** address (public unicast only;
+  a mixed answer is a refusal), lower-cases the host, brackets IPv6, and
+  emits one `http.curloptResolve=<host>:443:<a1>,<a2>,…` rule when the
+  runtime libcurl is ≥ 7.59 (checked once at worker start from
+  `libcurl/X.Y.Z`, fail-loud) — otherwise one validated address per whole
+  operation, with a push retry reconciling the remote ref before it sends
+  again. The rule matches exact host+port for every request of the
+  operation; TLS still verifies the hostname; `http.followRedirects=false`
+  prevents cross-host redirection.
+- **Environment and options** (credential-vault delta): environment built
+  from empty (`GIT_CONFIG_SYSTEM`/`GIT_CONFIG_GLOBAL` null device,
+  `GIT_CONFIG_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS` false,
+  empty `HOME`, no `GIT_TRACE*`, `RLIMIT_CORE=0`); options `core.hooksPath`
+  null, `core.fsmonitor=false`, `credential.helper=` then the broker,
+  `credential.useHttpPath=true`, `protocol.allow=never`,
+  `protocol.https.allow=always`, `http.followRedirects=false`,
+  `submodule.recurse=false`, `transfer.fsckObjects=true`; canonical URL,
+  never a stored remote. Raw stderr scrubbed to fixed classes.
+- **Credential broker** *(R2)*: worker-side, in-memory, answers `get` for
+  the exact `(protocol, host, path)` as many times as one operation asks,
+  outputs `username` and `password`, ignores `store`/`erase`, torn down per
+  operation; the token is never persisted, never in argv, never in any
+  process environment.
+- **Grant kinds** *(R1)*: `git_read` / `git_write` bound to `(host,
+  owner/repo)`; HTTPS:443 only.
+- **Crash safety** *(R1)*: intent journaled before the wire; ambiguous
+  outcomes reconciled with `ls-remote`; a repeated non-force push of the
+  same SHA to the same ref is success; checkout records the resolved SHA
+  before the generation is populated.
+- **Branch policy** *(R1)*: refuse the remote `HEAD` always; only
   `tiny/<universe-short>/<slug>` by exact SHA as a fast-forward refspec;
-  never force, never delete; host protection is an additional remote
-  refusal.
+  never force, never delete.
 
-### D2. A code node with `workspace: "<checkout node>"` runs inside the lease
+### D2. A code node with `workspace: "<checkout node>"` runs inside the generation
 
-- Resolved only through the run's effect chain (ancestor checkout in this
-  run) into an internal capability; never through state or `$ta.ref`
-  *(R1)*. A permanent workspace is reopened only by a fresh `checkout`
-  effect with `storage: "universe"`.
-- Exactly one extra bind (`--bind <lease>/repo /workspace --chdir
+- Resolved only through the run's effect chain into an internal capability;
+  never through state or `$ta.ref` *(R1)*.
+- Exactly one extra bind (`--bind <generation>/repo /workspace --chdir
   /workspace`) via a dedicated exact-path rule; everything else unchanged
-  (no network, cleared environment, no `/data`, authorship gate, request
-  context on RPC) *(R1)*.
+  *(R1)*.
 - `ws.run(argv, timeout=, cwd=, env=)`, `ws.read`, `ws.write`, `ws.glob`,
-  `ws.bundle(commit_sha)`; relative paths only, resolved beneath
-  `/workspace` with no-magic-link semantics; incremental bounded drains;
-  cumulative caps (64 commands, 1 MiB returned per node; persisted preview +
-  digest) *(R1)*.
-- **Whole-jail termination is a parent-side act** *(R2)*: on a command
-  timeout the runner reports and exits; the **parent** then kills the outer
-  bwrap process (the namespace's PID 1) and verifies its exit — a
-  double-forked `setsid` descendant is reaped with the PID namespace; the
+  `ws.bundle(commit_sha)`; relative beneath-only paths; bounded incremental
+  drains; cumulative caps (64 commands, 1 MiB per node) *(R1)*.
+- **Whole-jail termination** *(R2, R3)*: bwrap installs its own trivial PID
+  1 reaper and runs as a tracked supervisor with `--die-with-parent`; on a
+  command timeout the parent SIGKILLs the **tracked bwrap supervisor**,
+  confirms its exit, and relies on the `--die-with-parent` cascade to end
+  the sandbox; the existing kill helper (`_kill_process_tree`) verifies
+  only the tracked process, so the Linux integration test must prove that
+  a double-forked `setsid` sleeper no longer exists after the timeout. The
   node fails as `workspace_command_timeout`. `cgroup.kill` in the runner
-  sidecar is the named follow-up that makes this cheaper.
-- Local `git` only, commit identity `TinyAssets Universe <universe-short>
+  sidecar is the named follow-up.
+- **discard** *(R3)*: a generation-checked outbox transition
+  (`wipe_scratch` or `discard_permanent_generation`) that **immediately
+  revokes the capability**; later `ws.*` calls in the same run raise inside
+  `run()` and the node fails as `code_node_failed` naming the discard;
+  failures of the discard itself are `workspace_discard_failed`.
+- Local `git` only; commit identity `TinyAssets Universe <universe-short>
   <<universe-id>@universes.tinyassets.io>`.
 
 ### D3. Provisioning (slice B): a platform-owned resolver, an offline install, and a real grammar
@@ -149,108 +190,102 @@ No user code ever runs with both network and the checkout *(R1)*.
 `checkout` may declare `provision: {"python": "<requirements path>",
 "node": true}`:
 
-- **Manifests leave the checkout safely**: the worker reads the
-  requirements file / `package.json` + lockfile through the held lease
-  dirfd with beneath/no-symlink semantics, requires bounded regular files,
-  and binds the later offline install to their digests *(R2)*.
-- **Python**: the requirements text is parsed and **only** records of the
-  form `name[extras]==version ; marker --hash=…` are admitted — direct URLs,
-  paths, VCS references, `-r`/`-c` includes and every option line are
-  refused *(R2)*. The resolver runs `pip download --isolated --no-config
-  --only-binary=:all: --index-url https://pypi.org/simple --require-hashes
-  -r <admitted> -d <cache>` — no sdist, so no build backend ever executes
-  *(R2)*; the offline install is `python -m venv /workspace/.venv &&
-  .venv/bin/pip install --no-index --find-links <cache> …` in the jail
-  (`/opt/venv` stays read-only *(R1)*).
-- **Node**: every dependency in `package.json` and every `resolved` in the
-  lockfile is validated to be a pinned `https://registry.npmjs.org/…`
-  tarball; git/URL/file dependencies are refused *(R2)*; the resolver runs
-  `npm ci --ignore-scripts --cache <cache> --userconfig /dev/null --registry
+- **Manifests leave the checkout safely**: read through the held directory
+  handle with beneath/no-symlink semantics, bounded regular files, strict
+  UTF-8; the later offline install is bound to their digests *(R2)*.
+- **Python admission is a grammar, canonicalised by a real parser**
+  *(R3)*: pre-checks refuse option lines, includes, direct URLs, local
+  paths, VCS references and environment references with a precise reason;
+  each logical record (continuations joined) is then parsed with
+  `packaging.requirements.Requirement` and admitted only if it has no URL,
+  exactly one `==` specifier with no wildcard and a PEP 440 version, at
+  least one `--hash=sha256:<64 hex>`, and a marker (optional) using only
+  `python_version`, `python_full_version`, `sys_platform`,
+  `platform_machine`, `platform_system`, `implementation_name`, `os_name`.
+  Extras are optional. The resolver receives **only the reconstructed
+  canonical text** (`<name>[extras]==<version> ; <marker> --hash=…`,
+  sorted), never the original file, and runs `pip download --isolated
+  --no-config --only-binary=:all: --require-hashes --index-url
+  https://pypi.org/simple -r <canonical> -d <cache>` *(R2)*; the offline
+  install is `python -m venv /workspace/.venv && .venv/bin/pip install
+  --no-index --find-links <cache> …` in the jail.
+- **Node admission** *(R3)*: `package-lock.json` (v2/v3) required;
+  workspaces and `link:` entries are **refused in this slice**; every
+  installable lock entry must carry `resolved` parsing to
+  `https://registry.npmjs.org/…tgz` exactly and a `sha512-` integrity; all
+  of `dependencies`, `devDependencies`, `optionalDependencies` and
+  `peerDependencies` (top level and nested) must be semver ranges. The
+  resolver stages only the canonical JSON and runs `npm ci --ignore-scripts
+  --cache <cache> --userconfig /dev/null --registry
   https://registry.npmjs.org` (fetch only); the offline `npm ci --offline`
-  in the credential-free, network-less jail may run lifecycle scripts,
-  acceptable because whole-jail termination is real *(R2)*.
-- The resolver jail holds **no checkout**, only the admitted manifest text
-  and an empty cache; its own network namespace with userspace egress that
-  permits only the declared registry/CDN hosts after per-address
-  validation — never loopback, private, link-local or container neighbours
-  *(R1)*.
+  in the credential-free, network-less jail may run lifecycle scripts.
+- The resolver jail holds no checkout, only the canonical manifests and an
+  empty cache; its own network namespace with userspace egress that permits
+  only the declared registry hosts after per-address validation *(R1)*.
 - **Consent `workspace_provision`** per `(connection, canonical repo)` is a
-  normative clause of the sink's requirement (external-effect-adapters
-  delta) *(R2)*; a remix re-requests it.
-- Shipped toolchain only (Python, Node); runner profiles/images are the
-  named follow-up *(R1)*.
+  normative clause *(R2)*; a remix re-requests it.
+- Provisioning failures are typed *(R3)*: admission and consent →
+  `workspace_provision_refused`; resolver transport, cache-bound and
+  offline-install failures → `workspace_provision_failed`.
+- Shipped toolchain only (Python, Node) *(R1)*.
 
 ### D4. Limits are usage, and the box is shared
 
-- **Job lock** *(R2)*: a durable lock in the runs database keyed by
-  universe **and** a host-wide slot (one in this change), acquired in the
-  checkout's admission transaction, reentrant for that run's later
-  workspace nodes and its push, released only by the terminal outbox
-  processor; `workspace_busy` when unavailable (bounded wait, then fail).
-  The runner sidecar / cgroup follow-up is what lifts the host-wide slot.
-- Jail limits for workspace nodes: `RLIMIT_AS` 1.5 GiB per process,
-  `RLIMIT_NPROC` 128, `RLIMIT_NOFILE` 1024, `RLIMIT_FSIZE` 512 MiB,
-  `RLIMIT_CORE` 0; a drain-side process-tree RSS watchdog kills the outer
-  bwrap at 2 GiB *(R1)*.
-- **Disk**: per lease 4 GiB and a 20 GiB pool, enforced best-effort (API
-  size precheck, `--depth`, a clone/run watcher) with reservations in the
-  admission transaction and `LOST` bytes retained; kernel project quotas on
-  a dedicated scratch filesystem are the named follow-up *(R1, R2)*.
+- **Job lock** *(R2)*: durable, keyed by universe **and** a host-wide slot
+  (one in this change), acquired in the checkout's admission transaction,
+  reentrant for that run, released only by the outbox processor;
+  `workspace_busy` when unavailable within the node's timeout.
+- Jail limits for workspace nodes: `RLIMIT_AS` 1.5 GiB, `RLIMIT_NPROC` 128,
+  `RLIMIT_NOFILE` 1024, `RLIMIT_FSIZE` 512 MiB, `RLIMIT_CORE` 0; RSS
+  watchdog at 2 GiB *(R1)*.
+- **Disk**: 4 GiB per lease, 20 GiB pool, best-effort enforcement with
+  reservations in the admission transaction and `LOST` bytes retained;
+  kernel project quotas are the named follow-up *(R1, R2)*.
 - **Admissions**: ledger kind `workspace` (10 jobs / 20 GiB per universe-
-  hour, tier-raisable). `checkout` charges a workspace job and, as an
-  **explicit exception to the as-built rule that every non-GET sink is a
-  write** (engine-run-admissions delta, MODIFIED), settles the run's
-  external-write admission as a read; `push` is an external write;
-  `discard` is a workspace job *(R2)*.
-- **HTTP usage budgets** (companion change `run-usage-budgets`, code
-  landed as #2731): 500 dispatches / 256 MiB per root run, 5,000 / 2 GiB
-  per universe-hour, unknown sizes charged at the per-call caps.
-  **Workspace git transfers are excluded from those HTTP budgets** — they
-  are bounded by the lease, the pool and the workspace hourly bytes
-  *(R2)*.
+  hour, tier-raisable) with **pre-wire reservation of the maximum charge**
+  (lease bound for checkout, bounded bundle size for push, cache cap for
+  provisioning) reconciled downward after transfer *(R3)*. `checkout`
+  settles the run's external-write admission as a read (MODIFIED clause of
+  the as-built settlement rule); `push` is an external write.
+- **HTTP usage budgets** (`run-usage-budgets`, landed as #2731) bound
+  `authenticated_external_call` only; workspace bytes are excluded *(R2)*.
 
 ### D5. Authority and consent
 
-- Typed consents per `(connection, canonical repo)`: `workspace_checkout`,
-  `workspace_push`, `workspace_provision`; a remix re-requests all three.
-- Authorship gate unchanged; a workspace never shared across universes;
-  the model never sees a token; the jail never has a token or network.
-- No new MCP handle.
+Typed consents per `(connection, canonical repo)`: `workspace_checkout`,
+`workspace_push`, `workspace_provision`; a remix re-requests all three. The
+authorship gate is unchanged; a workspace is never shared across universes;
+the model never sees a token; the jail never has a token or network. No new
+MCP handle.
 
-### D6. Failure taxonomy — one actionable class per refusal *(R2)*
+### D6. Failure taxonomy — one actionable class per refusal
 
-`workspace_checkout_failed` (auth, transport, bundle verification),
+`workspace_checkout_failed` (auth, transport, bundle verification, fit),
 `workspace_push_refused` (default branch, non-fast-forward, host
 protection, verification), `workspace_busy` (job lock),
-`workspace_pool_busy` (pool reservation), `workspace_quota_exceeded` (lease
-or universe quota), `workspace_command_timeout`, `workspace_provision_refused`
-(manifest grammar / consent). A non-zero `ws.run` exit is data;
-`code_node_failed` for exceptions in `run()`.
+`workspace_pool_busy` (pool reservation), `workspace_quota_exceeded` (lease,
+universe or hourly bound), `workspace_command_timeout`,
+`workspace_provision_refused` (admission, consent),
+`workspace_provision_failed` (resolver/install), `workspace_discard_failed`.
+A non-zero `ws.run` exit is data; `code_node_failed` for exceptions in
+`run()`.
 
 ## Alternatives rejected
 
-- Local-path fetch from the workspace into staging: a gitfile in the
-  workspace's `.git` made staging read another repository *(R2 P0)* —
-  bundles only.
-- DNS preflight then git's own resolution: a resolver can answer
-  differently twice *(R2 P0)* — pin the address in the transport.
-- `pip download` of sdists: build backends execute *(R2 P0)* —
-  binary-only with a strict requirement grammar.
-- `GIT_ASKPASS` / `http.extraHeader` / one-shot pipe: *(R1, R2)* — an
-  in-memory broker answering bounded repeated `get`.
-- Network in the workspace jail; grace-window reuse; a `pin` operation; a
-  command node kind: rejected as before.
+- Shallow clones over the bundle bridge: bundles cannot carry the boundary
+  *(R3)* — full clones, prerequisite protocol as follow-up.
+- Refreshing a permanent workspace in place: re-opens user-written `.git`
+  *(R3)* — immutable generations switched atomically.
+- Local-path fetch from the workspace *(R2)*; DNS preflight then git's own
+  resolution *(R2)*; `pip download` of sdists *(R2)*; `GIT_ASKPASS` /
+  `http.extraHeader` / one-shot pipe *(R1, R2)*; network in the workspace
+  jail; grace-window reuse; a `pin` operation; a command node kind.
 
-## Risks the reviewer should attack (round 3, the last)
+## Residual after three rounds (for the founder, not a fourth round)
 
-1. The bundle path end to end: creation inside the jail, the dirfd copy,
-   `bundle verify` / `index-pack` / `fsck` credential-free, and whether any
-   remaining host-side git touches the lease.
-2. `http.curloptResolve` pinning: port/host matching, IPv6, redirects still
-   disabled, what happens when the host has several validated addresses.
-3. The requirement grammar and the npm lockfile validator as the only
-   admission for provisioning.
-4. The single-transaction lease admission and the outbox processor's
-   at-least-once protocol.
-5. Whether the deltas are now strict-valid and consistent with each other
-   and with the as-built specs.
+- Everything above is design; the build proves it. The Linux-only
+  integration tests (bwrap kill cascade, bundle prerequisite refusal,
+  dirfd beneath semantics) run in CI, not on the Windows dev host.
+- Disk is best-effort until the kernel-quota follow-up; the host-wide slot
+  serialises workspace jobs across universes until the runner sidecar.
+- Very large repositories wait on the prerequisite protocol.

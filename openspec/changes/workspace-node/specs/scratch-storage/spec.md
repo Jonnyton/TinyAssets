@@ -4,33 +4,40 @@
 
 The platform SHALL keep two storage classes — the universe's permanent space under its own directory, bounded by its tier quota, and a shared scratch pool of per-job leases under `<data>/scratch/` — and SHALL never charge a scratch lease to a universe's permanent quota.
 A lease SHALL be a random opaque id bound server-side to `(universe,
-connection, canonical repo, storage class, generation)`, SHALL live in a
-freshly created directory under a parent resolved without following links
-(an opened directory handle held for every later host-side access), and
-SHALL be bounded per lease (default 4 GiB) and by the pool (default 20 GiB).
-Disk bounds are enforced best-effort in this change (repository size from
-the API before cloning, `--depth`, a watcher that kills at the bound); a
-kernel quota (a dedicated scratch filesystem with project quotas) is the
-named follow-up.
+connection, canonical repo, generation)`, SHALL live in a freshly created
+directory under a parent resolved without following links (an opened
+directory handle held for every later host-side access), and SHALL be
+bounded per lease (default 4 GiB) and by the pool (default 20 GiB). Disk
+bounds are enforced best-effort in this change (repository size from the
+API before cloning, a watcher that kills at the bound); a kernel quota (a
+dedicated scratch filesystem with project quotas) is the named follow-up.
 
 #### Scenario: a large checkout does not enlarge the universe
 - **WHEN** a universe checks out a 3 GiB repository as scratch
 - **THEN** the universe's permanent usage is unchanged and the pool's reserved bytes rise by the lease's bound until release
 
-### Requirement: Lease admission is one transaction and release follows a persisted state machine
+### Requirement: Workspace admission is one transaction and release follows a persisted outbox that reconciles every crash window
 
-The runtime SHALL perform reservation, the pool-total check, the job-lock acquisition and the `ACTIVE` transition of a lease in one `BEGIN IMMEDIATE` transaction in the runs database, SHALL write the run's terminal status and the lease's release entry in one transaction into a `lease_outbox` table, and SHALL release only through that outbox.
-The state machine is `RESERVED → ACTIVE(run, universe, generation) →
-QUARANTINED(path) → WIPING → AVAILABLE`, with `LOST` for a wipe that
-failed (its bytes stay charged against the pool and it is reported). A
-single in-process processor SHALL claim outbox entries at-least-once
-(`claimed_by`, `claimed_at`, generation) after commit and SHALL perform
-atomic rename into quarantine, deletion without following links,
-verification, and only then `AVAILABLE`; a startup sweeper SHALL run before
-any new lease is admitted, and a periodic sweeper SHALL reclaim entries
-whose claimant is dead. Startup recovery that rewrites in-flight runs to
-`interrupted` SHALL enqueue their leases' release. A directory SHALL never
-be recycled in place, and there SHALL be no grace-window reuse.
+The runtime SHALL perform the storage reservation (lease bound or universe quota), the pool-total check, the job-lock acquisition, the byte-ledger reservation of the operation's maximum charge and the `ACTIVE` transition in one `BEGIN IMMEDIATE` transaction in the runs database, SHALL write a run's terminal status and its `workspace_outbox` entries in one transaction, and SHALL release storage and locks only through that outbox.
+An outbox entry SHALL carry one action — `wipe_scratch(lease, generation)`,
+`discard_permanent_generation(repo_key, generation)` or
+`release_lock_only` — and the universe and host locks to release. A single
+in-process processor SHALL claim entries at-least-once with a claim token
+and `claimed_at`, SHALL perform the filesystem steps against a
+deterministic quarantine name derived from the lease (or repo key) and
+generation, SHALL reconcile every combination on retry (source present and
+quarantine absent → rename; source absent and quarantine present →
+delete; both absent → done; both present → delete the quarantine, then
+rename), SHALL delete without following links, and in one final
+transaction SHALL mark the lease `AVAILABLE` or `LOST` (bytes stay charged
+and it is reported), release both locks and acknowledge the entry by
+claim-token compare. This protocol SHALL replace both the direct terminal
+write and the startup bulk rewrite of in-flight runs, so startup recovery
+enqueues each interrupted run's entries in the transaction that rewrites
+it. A startup sweeper SHALL run to completion before any new workspace job
+is admitted, and a periodic sweeper SHALL reclaim entries whose claim
+expired. A directory SHALL never be recycled in place, and there SHALL be
+no grace-window reuse.
 
 #### Scenario: two admissions cannot oversubscribe the pool
 - **WHEN** two checkouts are admitted concurrently with 5 GiB of pool capacity left and 4 GiB leases
@@ -40,17 +47,26 @@ be recycled in place, and there SHALL be no grace-window reuse.
 - **WHEN** a lease is released and a different universe's run is granted a lease
 - **THEN** the new lease is a new random directory created after the old one's deletion verified; no object, ref or file of the old lease exists under the pool
 
-#### Scenario: a crash between terminal status and release is repaired before new work
-- **WHEN** the daemon restarts after a run's terminal status and outbox entry committed but before the entry was processed
-- **THEN** the startup sweeper processes the entry and no new lease is admitted until it has
+#### Scenario: a crash after the rename but before its commit is repaired
+- **WHEN** the processor renamed a lease into quarantine and the daemon died before committing, and the entry is claimed again after restart
+- **THEN** the processor finds the source absent and the deterministic quarantine present, deletes it, and completes the entry; no new workspace job is admitted until every old entry reached `AVAILABLE` or `LOST`
 
-### Requirement: Permanent workspaces are chosen at checkout and removed only on request
+#### Scenario: a failed wipe keeps its bytes charged and still releases the locks
+- **WHEN** deletion of a quarantined lease fails permanently
+- **THEN** the lease is marked `LOST`, its bytes remain charged against the pool, both locks are released, and the loss is reported
 
-A checkout with `storage: "universe"` SHALL place the workspace under the universe's permanent space, SHALL count it against the universe's quota, and SHALL be refused as `workspace_quota_exceeded` before any bytes move when it would exceed that quota.
-There is no separate pin operation; a permanent workspace is reopened only
-through a fresh authority-checked `checkout` with `storage: "universe"`
-and is removed only by `discard`, never by age.
+### Requirement: Permanent workspaces are immutable-by-host generations chosen at checkout
 
-#### Scenario: keeping a workspace across turns is a permanent checkout
+A checkout with `storage: "universe"` SHALL build a new opaque generation from staging's bundle beneath a no-follow universe directory handle, SHALL count it against the universe's quota, SHALL be refused as `workspace_quota_exceeded` before any bytes move when it would exceed that quota — leaving the existing generation unchanged — and SHALL publish it only by atomically switching the repository key's authoritative generation, enqueuing the previous generation for `discard_permanent_generation`.
+There is no `pin`, no `reuse` and no refresh in place: host git SHALL
+never open a previous generation. A permanent workspace is removed only
+by `discard` (an outbox transition that immediately revokes any
+capability over it), never by age.
+
+#### Scenario: a second permanent checkout never opens the first generation
 - **WHEN** a universe checks out the same repository twice with `storage: "universe"`
-- **THEN** the second checkout fetches and resets the existing permanent workspace (or keeps local work when the packet says `reuse: true`) and no scratch lease is created
+- **THEN** the second checkout populates a new generation from a fresh bundle, switches the authoritative generation atomically, and the first generation is quarantined and deleted through the outbox without any host git process opening it
+
+#### Scenario: a quota refusal destroys nothing
+- **WHEN** a permanent checkout would exceed the universe's quota
+- **THEN** it is refused as `workspace_quota_exceeded` and the existing generation, if any, is untouched

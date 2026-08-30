@@ -21,8 +21,8 @@ primitive that turns "edit one line" into "build the project".
 ## What Changes
 
 A **workspace**: a git checkout of a repository the user connected, held as
-**scratch storage leased to one job** (or pinned into the universe's
-permanent space on request), that the universe's code nodes read, modify and
+**scratch storage leased to one job** (or, on request, as an immutable
+generation in the universe's permanent space), that the universe's code nodes read, modify and
 run commands in — inside the OS jail code nodes already run in, with no
 network and no credentials.
 
@@ -44,8 +44,8 @@ network and no credentials.
   per connection and repository, through the request rail.
 - **Storage:** scratch by default — leases in a shared pool, released when
   the run ends and wiped before any reuse, never charged to the universe's
-  quota; a universe working on a 5 GB codebase is not a 5 GB universe. Pin
-  explicitly for incremental work across turns.
+  quota; a universe working on a 5 GB codebase is not a 5 GB universe.
+  `storage: "universe"` for work that should outlive the run.
 - **Limits are usage:** one workspace job at a time (per universe and, in
   this change, box-wide), a `workspace` admission kind (jobs and bytes per
   hour), best-effort disk bounds with a named follow-up for kernel quotas,
@@ -60,8 +60,9 @@ network and no credentials.
   (ADDED: the `workspace` sink, its packets, consents, evidence, branch
   policy), `graph-execution-substrate` (MODIFIED: workspace-bound code nodes,
   `ws.*`, limits, taxonomy), `engine-run-admissions` (ADDED: the `workspace`
-  admission kind; checkout settles as a read), `credential-vault` (MODIFIED:
-  credentialed git from an empty environment through a trusted helper),
+  admission kind; checkout settles as a read), `credential-vault` (ADDED:
+  credentialed git from an empty environment through an in-memory broker,
+  address pinned in the transport),
   `scratch-storage` (NEW: leases, state machine, pool).
 - Code: `tinyassets/effectors/workspace.py` (new sink), outbound worker (git
   helper + staging), `tinyassets/scratch.py` (leases, sweepers, outbox),
@@ -70,8 +71,12 @@ network and no credentials.
   `engine_mcp_server.py` (docs, validation), tests, plugin mirror.
 - Authority surface (new sink, new consent kinds, credentialed git, storage
   lifecycle) → proposal + design + delta specs before code; founder approved
-  the direction 2026-08-30; Codex round 1 REJECT folded, round 2 next.
+  the direction 2026-08-30; Codex rounds 1-3 folded (three is the cap); build proceeds with the
+  residual reported to the founder.
 - Live proof: the founder's universe checks out its own repository, answers a
   question only the checkout can answer (how many Python files the project
   has), runs a command in it (`python -m compileall tinyassets`), commits,
-  pushes a `tiny/…` branch, opens and merges the PR — uncoached.
+  pushes a `tiny/…` branch, opens and merges the PR — uncoached. Slice B's
+  live proof provisions a checked-in hash-locked fixture
+  (`tests/fixtures/workspace/requirements-locked.txt`), not the runtime
+  `requirements.txt` (ranges, no hashes — the grammar refuses it).
