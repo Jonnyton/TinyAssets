@@ -14,11 +14,13 @@ external effect at all) is not the injection case the cap exists for.
 
 The count rule, in one place:
 
-* Every engine-triggered run, every scheduled automation run and every
-  engine write (write_graph, remix, brain) is admitted as kind ``write`` and
-  counts against ``write_max`` (20 per rolling hour). Nothing is trusted
-  about the run before it runs - the packet an effect fires is model-authored
-  at run time, so a branch cannot be classified as read-only up front.
+* Every engine-triggered run and every scheduled automation run is admitted
+  as kind ``write`` and counts against ``write_max`` (20 per rolling hour).
+  Nothing is trusted about the run before it runs - the packet an effect
+  fires is model-authored at run time, so a branch cannot be classified as
+  read-only up front. An engine write (write_graph, remix, brain) is admitted
+  as kind ``engine``: it is a durable mutation of the universe's own state,
+  not an external effect, so it counts toward ``total_max`` only.
 * ``admit`` hands back a TICKET (the ledger row id). The caller binds it to
   the run it starts with ``attach_run``; identity by row id, never "the
   newest row", so two concurrent admissions cannot cross-bind (Codex round 1).
@@ -36,7 +38,10 @@ The count rule, in one place:
 * ``read`` rows still count toward ``total_max`` (60 per rolling hour - a
   run_graph call returns as soon as the run is queued, so this is what bounds
   compute on the owner's subscription), so a loop of read-only runs is
-  bounded too, just not by the write budget.
+  bounded too, just not by the write budget. ``engine`` rows have their own
+  bound (40, two thirds of the total) so a burst of engine writes - failed
+  ones included; a refused validation still charged its admission - cannot
+  take the whole budget from runs.
 
 The ledger is ``<data_dir>/.engine_run_admissions.db`` (the canonical
 resolver, never the CWD) and is NOT the shared runs table (which would
@@ -58,12 +63,19 @@ from typing import NamedTuple
 LEDGER_NAME = ".engine_run_admissions.db"
 KIND_WRITE = "write"
 KIND_READ = "read"
+# An engine write (write_graph, remix, brain): a durable, reversible mutation
+# of the universe's own state, never an external effect. It counts toward the
+# total bound only - live 2026-08-30 04:5xZ a founder's one-line README job
+# was refused at the 20-write cap with nine of the eighteen rows being the
+# universe's own branch authoring (it built ~8 branch variants in an hour).
+KIND_ENGINE = "engine"
 # Verbs that leave nothing behind on the far side. Compared case-insensitively.
 READ_VERBS = frozenset({"GET", "HEAD"})
 # ``admit`` returned this when a DB error was tolerated (fail-open): the run is
 # admitted but no row records it, so there is nothing to bind or settle.
 ADMITTED_UNRECORDED = -1
 REFUSED_BY_WRITE = "write"
+REFUSED_BY_ENGINE = "engine"
 REFUSED_BY_TOTAL = "total"
 REFUSED_BY_LEDGER = "ledger"
 # A settlement row outlives the run it belongs to by this much; pruned on
@@ -75,7 +87,8 @@ SETTLEMENT_TTL_S = 2 * 3600
 class Admission(NamedTuple):
     """``ticket``: the ledger row id when recorded; ``ADMITTED_UNRECORDED``
     when a DB error was tolerated; None when refused - and then ``refused_by``
-    names the cap (``write`` / ``total``) or ``ledger`` (tampered/unusable)."""
+    names the cap (``write`` / ``engine`` / ``total``) or ``ledger``
+    (tampered/unusable)."""
 
     ticket: int | None
     refused_by: str | None
@@ -139,14 +152,24 @@ def admit_detail(
     window_s: int,
     fail_closed: bool = False,
     db: Path | None = None,
+    kind: str = KIND_WRITE,
+    engine_max: int | None = None,
 ) -> Admission:
     """Atomically admit one engine-triggered run/write under the rolling caps.
 
-    Refuses when the universe's ``write`` rows in the window have reached
-    ``write_max`` OR its rows of any kind have reached ``total_max``. Admits
-    as ``write``; ``reclassify_read`` may later downgrade the row once the
-    run proves it wrote nothing. Old rows are pruned opportunistically.
+    A ``write`` (a run) is refused when the universe's ``write`` rows in the
+    window have reached ``write_max``; an ``engine`` admission (write_graph,
+    remix, brain) when its ``engine`` rows have reached ``engine_max``
+    (defaults to two thirds of ``total_max``, so a burst of engine writes can
+    never take the whole budget from runs - Codex); every kind is refused
+    once rows of any kind reach ``total_max``. ``reclassify_read`` may later
+    downgrade a ``write`` row once its run proves it wrote nothing. Rows
+    older than the window are pruned on each admission.
     """
+    if engine_max is None:
+        engine_max = max(1, (total_max * 2) // 3)
+    if kind not in (KIND_WRITE, KIND_ENGINE):
+        raise ValueError(f"admission kind must be write or engine, not {kind!r}")
     db = db or ledger_path()
     try:
         # A data dir that does not exist yet must not mean "no cap" (Codex
@@ -169,18 +192,20 @@ def admit_detail(
             # sees the migrated table rather than racing the ALTER.
             conn.execute("BEGIN IMMEDIATE")
             _ensure_schema(conn)
-            writes = conn.execute(
+            same_kind = conn.execute(
                 "SELECT COUNT(*) FROM admissions "
                 "WHERE universe_id = ? AND ts >= ? AND kind = ?",
-                (universe_id, cutoff, KIND_WRITE),
+                (universe_id, cutoff, kind),
             ).fetchone()[0]
             total = conn.execute(
                 "SELECT COUNT(*) FROM admissions WHERE universe_id = ? AND ts >= ?",
                 (universe_id, cutoff),
             ).fetchone()[0]
             refused_by = None
-            if int(writes) >= write_max:
+            if kind == KIND_WRITE and int(same_kind) >= write_max:
                 refused_by = REFUSED_BY_WRITE
+            elif kind == KIND_ENGINE and int(same_kind) >= engine_max:
+                refused_by = REFUSED_BY_ENGINE
             elif int(total) >= total_max:
                 refused_by = REFUSED_BY_TOTAL
             if refused_by:
@@ -191,10 +216,12 @@ def admit_detail(
                 return Admission(None, refused_by)
             cur = conn.execute(
                 "INSERT INTO admissions (universe_id, ts, kind, run_id) VALUES (?, ?, ?, '')",
-                (universe_id, now, KIND_WRITE),
+                (universe_id, now, kind),
             )
             ticket = int(cur.lastrowid or 0)
-            conn.execute("DELETE FROM admissions WHERE ts < ?", (cutoff - window_s,))
+            # Rows outside the window count for nothing: prune them now, not a
+            # window later (Codex on engine rows).
+            conn.execute("DELETE FROM admissions WHERE ts < ?", (cutoff,))
             conn.execute("DELETE FROM settlements WHERE ts < ?", (now - SETTLEMENT_TTL_S,))
             conn.commit()
             return Admission(ticket if ticket > 0 else ADMITTED_UNRECORDED, None)
@@ -212,6 +239,7 @@ def admit(
     window_s: int,
     fail_closed: bool = False,
     db: Path | None = None,
+    kind: str = KIND_WRITE,
 ) -> int | None:
     """``admit_detail`` without the reason: the ticket, or None when refused."""
     return admit_detail(
@@ -221,6 +249,7 @@ def admit(
         window_s=window_s,
         fail_closed=fail_closed,
         db=db,
+        kind=kind,
     ).ticket
 
 
@@ -229,9 +258,11 @@ def attach_run(ticket: int | None, run_id: str, *, db: Path | None = None) -> bo
 
     Called by whoever admitted the run, right after the run id exists. If the
     run already settled (a fast run finishes before its caller returns), the
-    waiting settlement is applied here. Never raises; False means nothing was
-    bound (no ticket, an unrecorded admission, a missing ledger, or a row
-    already bound) and the row simply stays ``write``.
+    waiting settlement is applied here. Only a ``write`` row can be bound: an
+    ``engine`` row is never a run and can never become a read. Never raises;
+    False means nothing was bound (no ticket, an unrecorded admission, a
+    missing ledger, a row already bound, or not a run row) and the row simply
+    stays as it is.
     """
     run_id = (run_id or "").strip()
     if not run_id or not _is_ticket(ticket):
@@ -245,8 +276,8 @@ def attach_run(ticket: int | None, run_id: str, *, db: Path | None = None) -> bo
             conn.execute("BEGIN IMMEDIATE")
             _ensure_schema(conn)
             cur = conn.execute(
-                "UPDATE admissions SET run_id = ? WHERE rowid = ? AND run_id = ''",
-                (run_id, int(ticket)),
+                "UPDATE admissions SET run_id = ? WHERE rowid = ? AND run_id = '' AND kind = ?",
+                (run_id, int(ticket), KIND_WRITE),
             )
             bound = cur.rowcount == 1
             if bound:

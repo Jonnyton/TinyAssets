@@ -92,7 +92,11 @@ def _bearer_ok(authorization_header, secret) -> bool:
 
 
 def _engine_run_admit(
-    *, fail_closed: bool = False, universe_id: str = "", want_ticket: bool = False
+    *,
+    fail_closed: bool = False,
+    universe_id: str = "",
+    want_ticket: bool = False,
+    kind: str = "write",
 ):
     """Atomically admit one engine-triggered run/write under the rolling caps, or refuse.
 
@@ -107,7 +111,10 @@ def _engine_run_admit(
     ``fail_closed`` (Codex ADAPT 2026-08-22 #6): run_graph passes False — its
     approved-source gate + allowlist are the primary controls, so a DB blip must
     not wedge legitimate runs. remix/write_graph/brain pass True — the rolling cap
-    IS a real safety bound on an autonomous write, so a DB error refuses.
+    IS a real safety bound on an autonomous write, so a DB error refuses. They
+    also pass ``kind="engine"``: a durable mutation of the universe's own state
+    counts toward the total bound only, never the external-effect budget (live
+    2026-08-30: branch authoring spent nine of the twenty).
     """
     from tinyassets import engine_admissions as _adm
 
@@ -118,6 +125,7 @@ def _engine_run_admit(
         total_max=_RUN_GRAPH_TOTAL_MAX,
         window_s=_RUN_GRAPH_RATE_WINDOW_S,
         fail_closed=fail_closed,
+        kind=kind,
     )
     # ``want_ticket``: the caller will start a RUN and needs the admission's
     # identity to bind it (Admission.ticket = ledger row id; ADMITTED_UNRECORDED
@@ -130,8 +138,19 @@ def _engine_refusal(prefix: str, refused_by) -> str:
     """The refusal every engine surface returns, naming the cap that refused."""
     import json as _json
 
+    if refused_by == "ledger":
+        # Not a quota: the admission ledger is unusable or tampered and this
+        # caller fails closed (Codex: never dress that up as "max 20").
+        return _json.dumps({
+            "error": (
+                f"{prefix} refused: the engine admission ledger is unavailable "
+                "or not trusted, so this write is not admitted; try again shortly."
+            ),
+        })
     if refused_by == "total":
         bound = f"max {_RUN_GRAPH_TOTAL_MAX} runs of any kind"
+    elif refused_by == "engine":
+        bound = f"max {(_RUN_GRAPH_TOTAL_MAX * 2) // 3} engine writes"
     else:
         bound = f"max {_RUN_GRAPH_RATE_MAX} runs that write"
     return _json.dumps({
@@ -1065,7 +1084,9 @@ def write_graph(
         })
     # Effect-spam rate limit (shared with run_graph), FAIL-CLOSED: a DB blip must
     # refuse the write, not admit it.
-    _wt, _wrefused = _admission_parts(_engine_run_admit(fail_closed=True, want_ticket=True))
+    _wt, _wrefused = _admission_parts(
+        _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
+    )
     if _wt is None:
         return _engine_refusal("write_graph", _wrefused)
 
@@ -1537,7 +1558,9 @@ def remix_shape(
     if not new_name:
         return json.dumps({"error": "name is required for the remixed branch."})
     # Rolling write bound — FAIL CLOSED for this autonomous write (Codex #6).
-    _wt, _wrefused = _admission_parts(_engine_run_admit(fail_closed=True, want_ticket=True))
+    _wt, _wrefused = _admission_parts(
+        _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
+    )
     if _wt is None:
         return _engine_refusal("engine write", _wrefused)
 
@@ -1775,7 +1798,9 @@ def write_brain(
                 "(identity/founder/origin/body/orgchart) or a name."
             ),
         })
-    _wt, _wrefused = _admission_parts(_engine_run_admit(fail_closed=True, want_ticket=True))
+    _wt, _wrefused = _admission_parts(
+        _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
+    )
     if _wt is None:
         return _engine_refusal("engine write", _wrefused)
 

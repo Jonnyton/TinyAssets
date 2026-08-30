@@ -203,7 +203,8 @@ def test_a_settlement_that_arrives_before_the_bind_is_applied_at_bind_time(tmp_p
     assert adm.reclassify_read("run-fast", db=db) is False        # already a read
     conn = sqlite3.connect(str(db))
     # the settlement stays (until it expires): it is the run's final word
-    assert conn.execute("SELECT kind FROM settlements WHERE run_id='run-fast'").fetchone() == ("read",)
+    kept = conn.execute("SELECT kind FROM settlements WHERE run_id='run-fast'").fetchone()
+    assert kept == ("read",)
     conn.close()
 
 
@@ -280,3 +281,65 @@ def test_settlements_expire_on_every_settle(tmp_path):
     rows = conn.execute("SELECT run_id FROM settlements").fetchall()
     conn.close()
     assert rows == [("browser-run",)]
+
+
+def test_engine_writes_spend_the_total_but_never_the_write_budget(tmp_path):
+    """Live 2026-08-30 04:5xZ: a one-line README job was refused at the
+    20-write cap with nine rows being the universe's own branch authoring.
+    write_graph/remix/brain are durable engine writes, not external effects:
+    they count toward the total bound only."""
+    db = tmp_path / adm.LEDGER_NAME
+    kw = dict(write_max=W, total_max=T, window_s=WIN, db=db)
+    for _ in range(30):
+        assert adm.admit_detail("u-tiny", kind=adm.KIND_ENGINE, **kw).ticket is not None
+    assert _rows(db).count((adm.KIND_ENGINE, "")) == 30
+    # the external-write budget is untouched...
+    for _ in range(W):
+        assert adm.admit_detail("u-tiny", **kw).ticket is not None
+    assert adm.admit_detail("u-tiny", **kw) == adm.Admission(None, adm.REFUSED_BY_WRITE)
+    # ...and engine writes have their own bound (two thirds of the total = 40):
+    # 30 + 10 more, then refused by `engine`, leaving 60 - 50 = 10 for runs
+    for _ in range(10):
+        assert adm.admit_detail("u-tiny", kind=adm.KIND_ENGINE, **kw).ticket is not None
+    refused = adm.admit_detail("u-tiny", kind=adm.KIND_ENGINE, **kw)
+    assert refused == adm.Admission(None, adm.REFUSED_BY_ENGINE)
+    with pytest.raises(ValueError):
+        adm.admit_detail("u-tiny", kind="read", **kw)
+
+
+def test_a_burst_of_engine_writes_cannot_take_the_budget_from_runs(tmp_path):
+    """Codex on this change (P1): 60 failed write_graph calls used to spend the
+    whole total, so the next ordinary run was refused. With the engine bound
+    at 40, runs always keep at least 20 of the 60."""
+    db = tmp_path / adm.LEDGER_NAME
+    kw = dict(write_max=W, total_max=T, window_s=WIN, db=db)
+    engine = [adm.admit_detail("u-tiny", kind=adm.KIND_ENGINE, **kw) for _ in range(70)]
+    assert sum(1 for a in engine if a.ticket is not None) == 40
+    assert engine[-1] == adm.Admission(None, adm.REFUSED_BY_ENGINE)
+    runs = [adm.admit_detail("u-tiny", **kw) for _ in range(25)]
+    assert sum(1 for a in runs if a.ticket is not None) == 20              # 40 + 20 = 60
+    # the 21st run meets both caps at once; the write cap is named first
+    assert runs[-1].ticket is None
+    assert runs[-1].refused_by in (adm.REFUSED_BY_WRITE, adm.REFUSED_BY_TOTAL)
+
+
+def test_an_engine_row_can_never_be_bound_or_become_a_read(tmp_path):
+    """Codex (P2): attach_run bound any unattached ticket; binding an engine
+    row and settling it would have turned an engine write into a read."""
+    db = tmp_path / adm.LEDGER_NAME
+    t = adm.admit("u-tiny", write_max=W, total_max=T, window_s=WIN, db=db, kind=adm.KIND_ENGINE)
+    assert adm.reclassify_read("run-e", db=db) is False                    # waiting settlement
+    assert adm.attach_run(t, "run-e", db=db) is False                      # not a run row
+    assert _rows(db) == [(adm.KIND_ENGINE, "")]
+
+
+def test_rows_outside_the_window_are_pruned_on_the_next_admission(tmp_path):
+    db = tmp_path / adm.LEDGER_NAME
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE admissions (universe_id TEXT NOT NULL, ts REAL NOT NULL)")
+    conn.executemany("INSERT INTO admissions VALUES (?,?)",
+                     [("u-tiny", time.time() - WIN - 1800)] * 5)          # 1.5 windows old
+    conn.commit()
+    conn.close()
+    assert _admit(db) is not None
+    assert len(_rows(db)) == 1                                             # only the new row
