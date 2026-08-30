@@ -70,3 +70,10 @@ where the run function accepts only `universe:<id>` (`scheduler.py:632`,
   is kept, only the activation layer goes.
 - Owners lose old automations: nine controls exist, all the founder's, all dead since Aug 7; the
   founder re-creates the ones still wanted.
+- `no_serving_assignment` carries two causes -- no ready assignment, and a ready assignment on an
+  open `api_key_http` provider -- so a client cannot branch on it. The owner-facing sentence
+  covers both for a human reader, but an app wanting to route "not provisioned yet" to
+  provisioning and "open provider" to connect-a-subscription has nothing to switch on. Accepted
+  for now because the two remedies overlap and the surface is pre-launch; splitting it is a
+  distinct token and a spec change, not a copy edit. Raised by the core builder who introduced
+  the second cause (2026-08-29).

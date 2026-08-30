@@ -2388,6 +2388,9 @@ def _invoke_graph(
             invocation_depth=invocation_depth,
             enqueue_context=enqueue_context,
             execution_context=execution_context,
+            # Threaded so an invoke node can hand it to its CHILD launch;
+            # the child is where a nested prompt's provider call happens.
+            on_node_status=on_node_status,
         )
     except (UnapprovedNodeError, CompilerError) as exc:
         update_run_status(

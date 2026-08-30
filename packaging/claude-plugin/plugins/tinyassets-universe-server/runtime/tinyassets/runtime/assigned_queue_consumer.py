@@ -190,6 +190,7 @@ class AssignedQueueConsumer:
         self._lock = threading.Lock()
         self._active: dict[str, Future[Any]] = {}
         self._runtimes: dict[tuple[str, str, str], dict[str, Any]] = {}
+        self._automation_runs: set[str] = set()
         self._recorded: dict[str, tuple[str, float]] = {}
 
     def start(self) -> None:
@@ -222,9 +223,28 @@ class AssignedQueueConsumer:
 
     def stop(self, timeout: float = 5.0) -> None:
         self._stop.set()
+        # Cancel in-flight automation runs BEFORE tearing the executor down.
+        # `shutdown(cancel_futures=True)` cancels only futures that have not
+        # STARTED; an automation blocked in `wait_for` keeps its worker and its
+        # provider authority claim (Codex ADAPT 2026-08-29 §1). The runs cancel
+        # flag is cooperative and is checked between nodes, so the graph unwinds
+        # and the foreground session releases its claim.
+        self._cancel_automation_runs()
         if self._thread is not None:
             self._thread.join(timeout=max(0.0, timeout))
         self._executor.shutdown(wait=False, cancel_futures=True)
+
+    def _cancel_automation_runs(self) -> None:
+        from tinyassets.runs import request_cancel
+
+        with self._lock:
+            run_ids = sorted(self._automation_runs)
+            self._automation_runs.clear()
+        for run_id in run_ids:
+            try:
+                request_cancel(self.base_path, run_id)
+            except Exception:  # noqa: BLE001 - shutdown must not raise
+                logger.exception("automation run cancel failed run=%s", run_id)
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -259,6 +279,14 @@ class AssignedQueueConsumer:
         # restart preserves `.pause` -- skipping the beat here would turn the P0
         # repair into a restart loop (Codex round 3 on the fleet prune).
         serving_universes = list_serving_universes(self.base_path)
+        # User-owned automations are considered FIRST, before the fleet-era pump
+        # and before the queue claim loop (user-owned-automations task 3.2). They
+        # are the only automation shape that survives the fleet retirement, so a
+        # universe's one active slot goes to its owner's automation rather than to
+        # a legacy control that can no longer authorize itself.
+        automation_submitted, automation_universes = self._submit_due_automations(
+            serving_universes, prep_store
+        )
         paused_universes: set[str] = set()
         for universe_id in serving_universes:
             try:
@@ -273,6 +301,9 @@ class AssignedQueueConsumer:
                     self._record_reason(
                         prep_store, f"universe:{universe_id}:-", universe_id, "paused"
                     )
+                    continue
+                if universe_id in automation_universes:
+                    # One active thing per universe: its automation is running.
                     continue
                 # Only a task THIS consumer could claim defers activation; a pending
                 # task it will never attempt (live: a legacy owner-queued run) must
@@ -302,18 +333,9 @@ class AssignedQueueConsumer:
                 ("assigned-consumer:", "worker_assigned_")
             )
         )
-        with self._lock:
-            finished = [uid for uid, future in self._active.items() if future.done()]
-            for uid in finished:
-                future = self._active.pop(uid)
-                try:
-                    future.result()
-                except Exception:  # noqa: BLE001 - already contained, retain diagnostics
-                    logger.exception("assigned queue task future failed")
-            capacity = self.max_concurrency - len(self._active)
-            busy_universes = set(self._active)
+        capacity, busy_universes = self._reap_finished()
         if capacity <= 0:
-            return 0
+            return automation_submitted
         submitted = 0
         refusal_store = AssignedQueueRefusalStore(self.base_path)
         for universe_id in serving_universes:
@@ -323,6 +345,12 @@ class AssignedQueueConsumer:
                 or universe_id in produced_universes
                 or universe_id in paused_universes
             ):
+                continue
+            # One universe, one lease, whoever the worker is. The legacy path
+            # used to fence on `_active` alone, which is process-local, so a
+            # legacy task in one process and an automation in another could run
+            # the same universe concurrently (Codex round 2 §3a).
+            if not self._hold_universe(universe_id):
                 continue
             candidates = adapter.list_candidates(universe_id=universe_id, limit=20)
             claimed = None
@@ -338,18 +366,290 @@ class AssignedQueueConsumer:
                 if claimed is not None:
                     break
             if claimed is None:
+                # Nothing to run here: never sit on a universe doing nothing.
+                self._release_universe(universe_id)
                 continue
-            future = self._executor.submit(self._execute, claimed, lease)
+            future = self._executor.submit(self._execute_leased, claimed, lease)
             with self._lock:
                 if universe_id in self._active:
                     adapter.release_assigned(
                         claimed, consumer_lease=lease, reason="universe_already_active"
                     )
                     future.cancel()
+                    self._release_universe(universe_id)
                     continue
                 self._active[universe_id] = future
             submitted += 1
-        return submitted
+        return automation_submitted + submitted
+
+    def _hold_universe(self, universe_id: str) -> bool:
+        """Take the shared universe lease for legacy queue work, or record why not.
+
+        The same row `_run_automations` takes. Whoever holds it owns the
+        universe's background work, automation or legacy task alike.
+        """
+        from datetime import datetime as _dt
+
+        from tinyassets.automations import AutomationStore, run_timeout_seconds
+        from tinyassets.storage.assigned_queue_refusals import (
+            AssignedQueueRefusalStore,
+        )
+
+        store = AutomationStore(self.base_path)
+        now = _dt.now(timezone.utc)
+        try:
+            if store.acquire_universe_lease(
+                universe_id,
+                holder=self.consumer_id,
+                now=now,
+                ttl_seconds=run_timeout_seconds(),
+            ):
+                return True
+            holder = store.universe_lease_holder(universe_id, now=now)
+        except Exception as exc:  # noqa: BLE001 - a lease blip cannot claim blind
+            logger.exception("universe lease acquire failed universe=%s", universe_id)
+            self._record_reason(
+                AssignedQueueRefusalStore(self.base_path),
+                f"universe:{universe_id}:-",
+                universe_id,
+                _error_reason("lease_error", exc),
+            )
+            return False
+        self._record_reason(
+            AssignedQueueRefusalStore(self.base_path),
+            f"universe:{universe_id}:-",
+            universe_id,
+            f"universe_busy:{holder or 'unknown'}",
+        )
+        return False
+
+    def _release_universe(self, universe_id: str) -> None:
+        from tinyassets.automations import AutomationStore
+
+        try:
+            AutomationStore(self.base_path).release_universe_lease(
+                universe_id, holder=self.consumer_id
+            )
+        except Exception:  # noqa: BLE001 - an unreleased lease expires on its own
+            logger.exception("universe lease release failed universe=%s", universe_id)
+
+    def _execute_leased(
+        self,
+        claimed_task: Epoch2BranchTask,
+        lease: AssignedConsumerLease,
+    ) -> None:
+        """Run a claimed legacy task, then give the universe back."""
+        try:
+            self._execute(claimed_task, lease)
+        finally:
+            self._release_universe(claimed_task.universe_id)
+
+    def _reap_finished(self) -> tuple[int, set[str]]:
+        """Drop completed futures, then report free slots and busy universes."""
+        with self._lock:
+            finished = [uid for uid, future in self._active.items() if future.done()]
+            for uid in finished:
+                future = self._active.pop(uid)
+                try:
+                    future.result()
+                except Exception:  # noqa: BLE001 - already contained, retain diagnostics
+                    logger.exception("assigned queue task future failed")
+            return self.max_concurrency - len(self._active), set(self._active)
+
+    def _submit_due_automations(
+        self,
+        serving_universes: list[str],
+        refusal_store: Any,
+    ) -> tuple[int, set[str]]:
+        """Submit each free universe's due user-owned automations.
+
+        Returns how many universes were submitted and which ones, so the legacy
+        pump and the claim loop can leave those universes alone this poll.
+
+        Nothing here decides authority: `due_automations` reads owner-declared
+        rows, and `run_due_automation` re-derives the owner's admin, home and
+        current assignment on the executor thread (D1/D3). A universe whose scan
+        raises gets a named refusal and the loop continues to the next owner.
+        """
+        from tinyassets.automations import due_automations
+
+        capacity, busy = self._reap_finished()
+        started: set[str] = set()
+        if capacity <= 0:
+            return 0, started
+        submitted = 0
+        now = datetime.now(timezone.utc)
+        for universe_id in serving_universes:
+            if submitted >= capacity or universe_id in busy:
+                continue
+            # `.pause` halts new background work for a universe; an automation is
+            # exactly that (same sentinel the claim loop and the legacy pump honour).
+            if self._paused(universe_id):
+                continue
+            try:
+                due = due_automations(
+                    self.base_path,
+                    universe_id=universe_id,
+                    now=now,
+                )
+            except Exception as exc:  # noqa: BLE001 - one owner cannot stop the pump
+                logger.exception(
+                    "automation due scan failed universe=%s", universe_id
+                )
+                self._record_reason(
+                    refusal_store,
+                    f"universe:{universe_id}:automations",
+                    universe_id,
+                    _error_reason("automation_scan_error", exc),
+                )
+                continue
+            if not due:
+                continue
+            future = self._executor.submit(self._run_automations, universe_id, due)
+            with self._lock:
+                if universe_id in self._active:
+                    future.cancel()
+                    continue
+                self._active[universe_id] = future
+            started.add(universe_id)
+            submitted += 1
+        return submitted, started
+
+    def _run_automations(
+        self,
+        universe_id: str,
+        due: list[tuple[Any, str]],
+    ) -> None:
+        """Run one universe's due automations sequentially on the executor thread.
+
+        Fenced by a DATABASE lease, not by `self._active`. That map is
+        process-local: a restarted daemon starts with an empty one and would
+        launch an automation for a universe the previous process is still
+        working (Codex ADAPT 2026-08-29 §8). The lease is shared state, so both
+        processes see it, and it is refreshed while the run is in flight so a
+        dead holder's lease expires instead of wedging the universe forever.
+        """
+        from datetime import datetime as _dt
+
+        from tinyassets.automations import (
+            AutomationStore,
+            run_due_automation,
+            run_timeout_seconds,
+        )
+        from tinyassets.storage.assigned_queue_refusals import (
+            AssignedQueueRefusalStore,
+        )
+
+        store = AutomationStore(self.base_path)
+        refusal_store = AssignedQueueRefusalStore(self.base_path)
+        ttl = run_timeout_seconds()
+        if not store.acquire_universe_lease(
+            universe_id,
+            holder=self.consumer_id,
+            now=_dt.now(timezone.utc),
+            ttl_seconds=ttl,
+        ):
+            holder = store.universe_lease_holder(
+                universe_id, now=_dt.now(timezone.utc)
+            )
+            self._record_reason(
+                refusal_store,
+                f"universe:{universe_id}:automations",
+                universe_id,
+                f"universe_busy:{holder or 'unknown'}",
+            )
+            return
+        stop_refresh = threading.Event()
+        refresher = threading.Thread(
+            target=self._refresh_lease,
+            args=(store, universe_id, ttl, stop_refresh),
+            name=f"automation-lease-{universe_id}",
+            daemon=True,
+        )
+        refresher.start()
+        unreleased = False
+        try:
+            for automation, due_at in due:
+                # Re-read `.pause` BETWEEN rows: an owner who pauses mid-batch
+                # expects the batch to stop, not to finish the queue first.
+                if self._paused(universe_id):
+                    self._record_reason(
+                        refusal_store,
+                        f"universe:{universe_id}:automations",
+                        universe_id,
+                        "paused",
+                    )
+                    break
+                try:
+                    reason = run_due_automation(
+                        self.base_path,
+                        automation,
+                        due_at,
+                        consumer_id=self.consumer_id,
+                        on_run_started=self._note_automation_run,
+                    )
+                except Exception:  # noqa: BLE001 - the next automation is owed a try
+                    logger.exception(
+                        "automation run raised universe=%s automation=%s",
+                        universe_id,
+                        getattr(automation, "automation_id", ""),
+                    )
+                    continue
+                if reason == "run_timeout_unreleased":
+                    # The run ignored cancellation and is STILL calling the
+                    # provider. Handing the universe to another process now
+                    # would double-spend the owner's subscription, so keep the
+                    # lease and stop the batch; the TTL frees it eventually.
+                    unreleased = True
+                    break
+        finally:
+            stop_refresh.set()
+            refresher.join(timeout=5.0)
+            if unreleased:
+                logger.warning(
+                    "universe %s stays leased: a timed-out automation run has "
+                    "not stopped",
+                    universe_id,
+                )
+            else:
+                try:
+                    store.release_universe_lease(
+                        universe_id, holder=self.consumer_id
+                    )
+                except Exception:  # noqa: BLE001 - the lease expires on its own
+                    logger.exception(
+                        "automation lease release failed universe=%s", universe_id
+                    )
+
+    def _refresh_lease(
+        self,
+        store: Any,
+        universe_id: str,
+        ttl: float,
+        stop_refresh: threading.Event,
+    ) -> None:
+        """Re-stamp the universe lease while its batch is in flight."""
+        from datetime import datetime as _dt
+
+        from tinyassets.automations import LEASE_REFRESH_SECONDS
+
+        while not stop_refresh.wait(LEASE_REFRESH_SECONDS):
+            try:
+                store.refresh_universe_lease(
+                    universe_id,
+                    holder=self.consumer_id,
+                    now=_dt.now(timezone.utc),
+                    ttl_seconds=ttl,
+                )
+            except Exception:  # noqa: BLE001 - a missed beat re-stamps next round
+                logger.exception(
+                    "automation lease refresh failed universe=%s", universe_id
+                )
+
+    def _note_automation_run(self, run_id: str) -> None:
+        """Remember an in-flight automation run so `stop()` can cancel it."""
+        with self._lock:
+            self._automation_runs.add(run_id)
 
     def _paused(self, universe_id: str) -> bool:
         return (self.base_path / universe_id / ".pause").exists()
@@ -497,12 +797,20 @@ class AssignedQueueConsumer:
             QUEUE_PROTOCOL_VERSION,
         )
 
+        # The BEAT is unconditional; only the descriptor write and the returned
+        # audience need a runtime. Liveness is not activity (verified on the
+        # droplet 2026-08-29): `_serving_runtime` returns None for every universe
+        # now that the runtime rows are fleet-era, so an early return here left
+        # production with no `.worker_supervisor*.json` newer than 16 hours.
+        # `deploy/daemon-watchdog.sh` restarts the daemon when the freshest beat
+        # is older than 900s, so its timer had to stay disabled -- and the
+        # host-services installer refuses to run while it is. A daemon that is
+        # polling is alive whether or not it has anything to execute, and the
+        # watchdog asks only that question.
         context = self._serving_runtime(universe_id)
-        if context is None:
-            return None
-        daemon, runtime = context
+        daemon = None if context is None else context[0]
         now = datetime.now(timezone.utc)
-        runtime_id = str(runtime["runtime_instance_id"])
+        runtime_id = "" if context is None else str(context[1]["runtime_instance_id"])
         build_sha = os.environ.get("TINYASSETS_BUILD_SHA", "").strip().lower()
         if not _is_hex_sha(build_sha):
             build_sha = _release_build_sha()
@@ -522,12 +830,16 @@ class AssignedQueueConsumer:
                 now + timedelta(seconds=DESCRIPTOR_VALIDITY_SECONDS)
             ).isoformat(),
         }
-        set_worker_queue_descriptor(
-            self.base_path,
-            runtime_instance_id=runtime_id,
-            descriptor=descriptor,
-            expected_worker_id=self.consumer_id,
-        )
+        if runtime_id:
+            # A descriptor is a CLAIM on a runtime row; with no runtime there is
+            # nothing to claim, and writing one keyed on "" would invent an
+            # executor identity. The beat below still goes out.
+            set_worker_queue_descriptor(
+                self.base_path,
+                runtime_instance_id=runtime_id,
+                descriptor=descriptor,
+                expected_worker_id=self.consumer_id,
+            )
         beat = {
             "ts": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "phase": "polling",
@@ -544,11 +856,16 @@ class AssignedQueueConsumer:
             **descriptor,
         }
         universe = self.base_path / universe_id
+        universe.mkdir(parents=True, exist_ok=True)
         filename = supervisor_heartbeat_filename(self.consumer_id)
         target = universe / filename
         temporary = universe / f"{filename}.tmp"
         temporary.write_text(json.dumps(beat), encoding="utf-8")
         temporary.replace(target)
+        if daemon is None:
+            # Beat published, no audience: the caller records `no_serving_runtime`
+            # and skips the work that genuinely needs an executor identity.
+            return None
         return BackgroundBranchExecutorAudience(
             executor_class=BackgroundBranchExecutorClass.CLOUD,
             daemon_id=str(daemon["daemon_id"]),

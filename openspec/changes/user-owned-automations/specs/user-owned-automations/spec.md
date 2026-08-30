@@ -29,11 +29,24 @@ host-supplied enrollment manifest.
 
 ### Requirement: A registration that cannot fire is refused loudly
 The daemon SHALL refuse to store an automation or schedule that cannot run at that moment, with
-a named reason, instead of accepting it silently.
+a named reason, instead of accepting it silently. Registration SHALL refuse exactly what
+foreground admission refuses: a row admission would reject is a row that fails every period
+forever. Each reason SHALL reach the owner as a sentence they can act on, not a bare token.
 
 #### Scenario: Consumer flag off
 - **WHEN** the assigned-queue consumer is disabled and an owner registers an automation
 - **THEN** the daemon returns `automation_unavailable` with reason `consumer_disabled`
+
+#### Scenario: A workflow the owner did not author
+- **WHEN** an owner registers a readable but foreign-authored branch, which foreground admission
+  refuses because it requires `branch.author == principal`
+- **THEN** the daemon returns `automation_unavailable` with reason `branch_not_owned`
+
+#### Scenario: Serving on an open compute provider
+- **WHEN** the universe's assignment is ready but names an open `api_key_http` provider, which
+  foreground admission refuses outright
+- **THEN** the daemon returns `automation_unavailable` with reason `no_serving_assignment`, and
+  the owner-facing sentence names the subscription requirement rather than an absent assignment
 
 ### Requirement: One principal's failure is one recorded refusal
 When a due run cannot be authorized, the daemon SHALL record one refusal row for that automation

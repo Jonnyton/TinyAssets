@@ -83,7 +83,7 @@ def _bearer_ok(authorization_header, secret) -> bool:
     return hmac.compare_digest(authorization_header or "", "Bearer " + secret)
 
 
-def _engine_run_admit(*, fail_closed: bool = False) -> bool:
+def _engine_run_admit(*, fail_closed: bool = False, universe_id: str = "") -> bool:
     """Atomically admit one engine-triggered write under the rolling cap, or refuse.
 
     A dedicated engine-admission ledger (NOT the shared runs table, which would
@@ -96,6 +96,15 @@ def _engine_run_admit(*, fail_closed: bool = False) -> bool:
     approved-source gate + allowlist are the primary controls, so a DB blip must
     not wedge legitimate runs. remix passes True — the rolling cap IS a real
     safety bound on an autonomous write, so a DB error refuses rather than admits.
+
+    ``universe_id`` (Codex ADAPT 2026-08-29 §7) names the universe the admission
+    is counted against. It defaults to this process's pinned ``_GRAPH_ID`` so
+    every existing engine call site is unchanged. Background automations pass
+    their OWN universe: they launch the same governed run a foreground
+    ``run_graph`` launches, so they must consume the same 20/hour budget, but a
+    daemon serving many universes has no single pinned graph to count them
+    under. Per-universe counting is also the correct shape — one owner's cadence
+    must not exhaust another owner's budget.
     """
     import sqlite3
     import time as _time
@@ -124,17 +133,18 @@ def _engine_run_admit(*, fail_closed: bool = False) -> bool:
                 "CREATE TABLE IF NOT EXISTS admissions "
                 "(universe_id TEXT NOT NULL, ts REAL NOT NULL)"
             )
+            counted_universe = (universe_id or "").strip() or _GRAPH_ID
             conn.execute("BEGIN IMMEDIATE")
             n = conn.execute(
                 "SELECT COUNT(*) FROM admissions WHERE universe_id = ? AND ts >= ?",
-                (_GRAPH_ID, cutoff),
+                (counted_universe, cutoff),
             ).fetchone()[0]
             if int(n) >= _RUN_GRAPH_RATE_MAX:
                 conn.rollback()
                 return False
             conn.execute(
                 "INSERT INTO admissions (universe_id, ts) VALUES (?, ?)",
-                (_GRAPH_ID, now),
+                (counted_universe, now),
             )
             conn.execute(
                 "DELETE FROM admissions WHERE ts < ?",

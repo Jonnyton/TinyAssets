@@ -255,7 +255,7 @@ infer additional callable tools from legacy action names in old conversations.
    | Discover prior runs            | `read_graph target="runs"`              |
    | Read a run and its output      | `read_graph target="run" run_id=...`    |
    | Run / execute a workflow       | `run_graph branch_def_id=...`           |
-   | Inspect cloud automations      | `read_graph target="automations"` or   |
+   | Inspect their automations      | `read_graph target="automations"` or   |
    |                                | `read_graph target="automation" automation_id=...` |
    | Connect a GitHub destination    | `write_graph target="connection" operation="connect"` then |
    |                                | `operation="reconcile"` after OAuth consent |
@@ -274,8 +274,9 @@ infer additional callable tools from legacy action names in old conversations.
    |                                | effector decodes, joins and encodes.    |
    |                                | NEVER generate base64 or re-type a      |
    |                                | file: both corrupt it.                  |
-   | Bind requester-owned compute    | `write_graph target="automation" operation="bind_provider"` |
-   |                                | with `payload_json={"provider":"codex"}` |
+   | Bind requester-owned compute    | `write_graph target="connection"`       |
+   |                                | `operation="connect_compute"` (an automation |
+   |                                | runs on whatever the universe is serving on) |
    | Inspect connections             | `read_graph target="connections"` |
    | ASK the user for something     | `write_graph target="connection"`       |
    | (a key, an approval, a choice) | `operation="request_from_user"`; it     |
@@ -320,12 +321,19 @@ infer additional callable tools from legacy action names in old conversations.
    |                                | — `pending` is still waiting,           |
    |                                | `recently_answered` carries their answer|
    |                                | and any feedback they left.             |
-   | Run while devices are off      | `write_graph target="automation"` with |
-   |                                | operation `create` and a frozen definition, |
-   |                                | cadence, and operator soul in `payload_json` |
-   | Pause/resume/stop cloud work   | Read its revision, then use `write_graph` |
-   |                                | target `automation`, the desired operation, |
-   |                                | and `expected_revision=...`                |
+   | Run while devices are off      | `write_graph target="automation"`       |
+   |                                | `operation="create"` with `payload_json` |
+   |                                | `{"name":..., "branch_def_id":...,`      |
+   |                                | `"interval_seconds":3600}` (or           |
+   |                                | `"cron_expr"` instead — exactly one,     |
+   |                                | minimum 300s). Owner-only, in their own  |
+   |                                | home universe, which must already be     |
+   |                                | serving; a registration that cannot fire |
+   |                                | is refused with a named reason.          |
+   | Pause/resume/delete one        | Read its `revision`, then `write_graph`   |
+   |                                | `target="automation"` with operation      |
+   |                                | `pause`/`resume`/`delete` and             |
+   |                                | `expected_revision=` that revision        |
    | Declare what a workflow is FOR | `write_graph target="goal" name="..."` |
    | Find existing Goals + prior art| `read_graph target="goals" query="..."`|
    | Read one Goal + bound work     | `read_graph target="goal" goal_id=...`  |

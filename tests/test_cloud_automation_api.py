@@ -319,54 +319,6 @@ def test_owner_pause_resume_and_stop_use_revision_fences(api_env) -> None:
     assert stopped["activation"]["state"] == "stopped"
 
 
-def test_existing_canonical_handles_route_automation_controls(api_env, monkeypatch) -> None:
-    from tinyassets import universe_server as server
-
-    calls: list[dict[str, object]] = []
-
-    def fake(**kwargs):
-        calls.append(kwargs)
-        return {"ok": True}
-
-    monkeypatch.setattr(server, "_cloud_automations_impl", fake)
-
-    read = json.loads(
-        server.read_graph(
-            target="automation",
-            graph_id="universe_alice",
-            automation_id="automation_spec_drain",
-        )
-    )
-    write = json.loads(
-        server.write_graph(
-            target="automation",
-            operation="pause",
-            graph_id="universe_alice",
-            automation_id="automation_spec_drain",
-            expected_revision=7,
-            payload_json='{"owner_actor":"acct_mallory"}',
-        )
-    )
-
-    assert read == {"ok": True}
-    assert write == {"ok": True}
-    assert calls == [
-        {
-            "action": "get",
-            "universe_id": "universe_alice",
-            "automation_id": "automation_spec_drain",
-            "limit": 30,
-        },
-        {
-            "action": "pause",
-            "universe_id": "universe_alice",
-            "automation_id": "automation_spec_drain",
-            "expected_revision": 7,
-            "payload": '{"owner_actor":"acct_mallory"}',
-        },
-    ]
-
-
 def test_existing_write_handle_builds_and_publishes_user_branch(
     api_env,
     monkeypatch,
