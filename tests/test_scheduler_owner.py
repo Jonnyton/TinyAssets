@@ -1523,15 +1523,44 @@ def test_four_concurrent_initialize_runs_db_calls_migrate_correctly(tmp_path, mo
         t.start()
     for t in threads:
         t.join(timeout=60)
+    assert not any(t.is_alive() for t in threads), (
+        "a thread is still running after the 60s join timeout -- it hung "
+        "instead of finishing or raising"
+    )
     assert schema_errors == [], schema_errors
 
     conn = sqlite3.connect(tmp_path / ".runs.db")
     try:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(branch_schedules)")]
+        runs_cols = [r[1] for r in conn.execute("PRAGMA table_info(runs)")]
+        runs_indexes = {r[1] for r in conn.execute("PRAGMA index_list(runs)")}
     finally:
         conn.close()
     assert cols.count("universe_id") == 1  # added exactly once, not four times
     assert {"pause_reason", "revision"} <= set(cols)
+
+    # The same race this test proves fixed for branch_schedules also applies to
+    # every runs-table column _migrate_runs_table_columns adds via ALTER, plus
+    # the indexes that depend on them (Codex ADAPT on a41e5c6c) -- assert the
+    # full migrated shape, not just branch_schedules.
+    assert runs_cols.count("branch_version_id") == 1  # added exactly once, not four times
+    assert {
+        "queue_universe_id",
+        "branch_version_id",
+        "daemon_id",
+        "runtime_instance_id",
+        "worker_id",
+        "branch_task_id",
+        "provider_used",
+        "model",
+        "token_count",
+        "owner_user_id",
+    } <= set(runs_cols)
+    assert {
+        "idx_runs_branch_version",
+        "idx_runs_branch_task",
+        "idx_runs_scope_status_finished",
+    } <= runs_indexes
 
 
 def test_the_migration_is_safe_when_two_connections_race(tmp_path):

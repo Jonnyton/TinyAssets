@@ -1747,10 +1747,12 @@ def _lookup_node_body(
                 "approved_source_hash": nd.get("approved_source_hash", ""),
                 "approval_reason": nd.get("approval_reason", ""),
             }, ""
-    return {}, (
-        f"node '{node_id}' not found on branch '{source}'. "
-        f'Use `read_graph target="branch" branch_id="{source}"` to list its nodes.'
-    )
+    # This string flows into both build_branch and patch_branch(add_node)
+    # rejection `text` (task #58's text-channel rule) via `_apply_node_spec`
+    # -> `staging_errors`/`_apply_patch_op`'s per-op error, so it must not
+    # carry `source` (the resolved branch_def_id) -- the node id alone, and
+    # a generic "referenced branch" wording, are enough to act on.
+    return {}, f"node '{node_id}' not found on the referenced branch."
 
 
 def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
@@ -2488,12 +2490,16 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
     validation_errors = branch.validate()
     errors = staging_errors + validation_errors
 
-    # Validate fork_from points to a real branch_version_id.
+    # Validate fork_from points to a real branch_version_id. This error
+    # string is what the rejection path below joins verbatim into `text`,
+    # so it must not echo the submitted `fork_from` back (task #58's
+    # text-channel rule covers ids the caller supplied, not just stored
+    # ones -- `text` is a phone/chat surface, not a debug log).
     if branch.fork_from:
         from tinyassets.branch_versions import get_branch_version
         if get_branch_version(_base_path(), branch.fork_from) is None:
             errors.append(
-                f"fork_from '{branch.fork_from}' is not a known branch_version_id. "
+                "fork_from is not a known branch_version_id. "
                 "Pass a published branch_version_id, not a branch_def_id."
             )
 
@@ -2813,8 +2819,12 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
         if not bvid:
             return "set_fork_from requires branch_version_id"
         if branch.fork_from is not None:
+            # This op-error string is what the rejected-patch path copies
+            # verbatim into `text` (`_ext_branch_patch`, "Op errors:"
+            # section below), so it must not carry the existing
+            # `fork_from`'s branch_version_id (task #58's text-channel rule).
             return (
-                f"set_fork_from: fork_from is already set to '{branch.fork_from}' "
+                "set_fork_from: fork_from is already set "
                 "and is immutable after set."
             )
         if _resolve_readable_version(bvid, str(_base_path())) is None:
@@ -2978,11 +2988,18 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
     }
 
     truncated = len(persisted.node_defs) > 12
+    # `text` is the phone/chat channel and must never carry a raw id (task
+    # #58) -- `branch_version_id` is `<branch_def_id>@<hash>`, so it embeds
+    # the id this function must not leak. `content_hash` is also the stable
+    # discriminator that mints `branch_version_id`, so even the short form
+    # is an id, not human content -- Codex ADAPT round on 256efe7b. `text`
+    # gets a human description only; the full `branch_version_id` and
+    # `content_hash` both stay in the structured fields below.
     text_lines = [
         f"**Patched branch '{persisted.name}'**: applied {len(changes)} op(s). "
         f"{len(persisted.node_defs)} nodes, {len(persisted.edges)} edges, "
         f"{len(persisted.skills)} skills, entry=`{persisted.entry_point}`.",
-        f"Published version `{branch_version.branch_version_id}`.",
+        "Version updated.",
     ]
     if patched_fields:
         text_lines += ["", f"Changed fields: {', '.join(patched_fields)}."]

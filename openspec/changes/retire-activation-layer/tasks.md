@@ -16,4 +16,4 @@
 ## 4. Runtime-instance half of the registry (PR 4)
 
 - [ ] 4.1 Re-point the seven callers listed in design §4 slice 4, then delete `runtime_reconcile.py` and the eleven measured spans of `daemon_registry.py`; drop the `author_runtime_instances` DDL and its readers in `scoped_reset.py`, `reset.py`, `daemon_brain.py`. Verify: tray, brain and wiki paths green (`tests/test_daemon_registry.py`, `tests/test_daemon_dashboard.py`, `tests/test_supervisor_liveness.py`).
-- [ ] 4.2 Sync the four fleet-reconciliation REMOVED requirements out of `openspec/specs/daemon-runtime-and-dispatch/spec.md`; the boot log no longer flags legacy schedule rows once the founder's `1508d5dc…` row is retired with the same reason. Archive this change.
+- [ ] 4.2 Sync the four fleet-reconciliation REMOVED requirements out of `openspec/specs/daemon-runtime-and-dispatch/spec.md`; the boot log no longer flags legacy schedule rows (the founder unscheduled `1508d5dc…` from the app on 2026-08-30T03:17Z after #2702, so no migration is needed for that row; verify the next boot log carries no `is legacy` line). Archive this change.
