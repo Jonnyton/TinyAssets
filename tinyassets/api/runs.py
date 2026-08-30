@@ -509,6 +509,11 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
     error string and omits failure_class / suggested_action).
     """
     msg = error_str.lower()
+    if msg.startswith("external write failed"):
+        from tinyassets.runs import _classify_external_write, external_write_suggested_action
+
+        cls = _classify_external_write(msg)
+        return (cls, external_write_suggested_action(cls))
     if "empty" in msg and ("llm" in msg or "response" in msg or "provider" in msg):
         return (
             "empty_llm_response",
@@ -1097,6 +1102,19 @@ def _compose_run_snapshot(
     # BUG-029: enrich failed snapshots so chatbots have a user-actionable hint.
     # `actionable_by` tells the chatbot WHO can fix it — chatbot/host/user —
     # so it doesn't have to guess (Mara's failure mode 2026-04-24).
+    # A run whose EFFECT failed completes with `error` set (the nodes ran; the
+    # write was refused or the far side answered with an error). Live
+    # 2026-08-30: this shape carried no class at all, and the list view called
+    # it "error / actionable_by: user", so the universe stopped and asked the
+    # founder after every one. It is the universe's own to fix and rerun.
+    error_text = str(run_record.get("error") or "")
+    if run_record["status"] != "failed" and error_text.lower().startswith("external write failed"):
+        from tinyassets.runs import _classify_failure, external_write_suggested_action
+
+        cls = _classify_failure(run_record)
+        snapshot["failure_class"] = cls
+        snapshot["suggested_action"] = external_write_suggested_action(cls)
+        snapshot["actionable_by"] = _actionable_by(cls)
     if run_record["status"] == "failed":
         error_annotation = _classify_run_outcome_error(run_record.get("error", ""))
         if error_annotation:

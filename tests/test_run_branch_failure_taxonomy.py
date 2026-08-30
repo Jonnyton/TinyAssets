@@ -452,6 +452,11 @@ class TestActionableByCanonicalTable:
         ("state_mutation_conflict", "chatbot"),
         ("snapshot_schema_drift", "chatbot"),
         ("interrupted", "chatbot"),
+        # An effect that failed for a fixable reason (far side 4xx/5xx, a packet
+        # field, a stale sha) is the universe's own; one refused by authority
+        # it does not hold (consent, grant, allow-list) is the founder's.
+        ("external_write_failed", "chatbot"),
+        ("external_write_refused", "user"),
         # Opaque/internal — chatbot escalates raw error for human judgment.
         ("unknown", "user"),
         ("error", "user"),

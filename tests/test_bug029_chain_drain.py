@@ -278,6 +278,12 @@ _OUTCOME_ERROR_FIXTURES: tuple[tuple[str, str], ...] = (
     ("Concurrent modification conflict", "state_mutation_conflict"),
     ("Provider unavailable: no API key", "provider_unavailable"),
     ("Groq call failed: HTTP 502", "provider_error"),
+    ("external write failed - "
+     "open_pr/authenticated_external_call: far side answered HTTP 422: {} [far_side_error]",
+     "external_write_failed"),
+    ("external write failed - post/authenticated_external_call: "
+     "refused before the wire: missing_consent [missing_consent]",
+     "external_write_refused"),
 )
 
 
