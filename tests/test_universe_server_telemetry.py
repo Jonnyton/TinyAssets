@@ -214,12 +214,19 @@ def test_last_activity_returns_none_for_untouched_universe(
 
 
 # ---------------------------------------------------------------------------
-# last_activity_at from the runs ledger / automations store
+# last_activity_at from the runs ledger
 #
 # The fleet daemon loop that wrote activity.log / .runtime_status.json /
 # status.json was retired 2026-08-29 (`user-owned-automations`); automation
-# and schedule runs since then are recorded only in `tinyassets.runs` and
-# `tinyassets.automations.AutomationStore`, never those files.
+# and schedule runs since then are recorded only in `tinyassets.runs`, as
+# rows scoped to a universe via `queue_universe_id`.
+#
+# The automations store is deliberately NOT a source: Codex ADAPT
+# (2026-08-29) found `AutomationStore.last_finished_at` is bumped on a
+# REFUSED attempt too (`finish_attempt` rolls the outcome onto the
+# automation row regardless of status), so treating it as activity could
+# keep the uptime canary green while every requested automation is refused.
+# See `test_last_activity_ignores_refused_automation_attempt` below.
 # ---------------------------------------------------------------------------
 
 
@@ -235,6 +242,7 @@ def test_last_activity_uses_run_ledger_when_newer_than_files(
         thread_id="t1",
         inputs={},
         actor="universe:u1",
+        queue_universe_id="u1",
     )
     recent = time.time() - 60  # 1 minute ago -- newer than the 48h-stale file
     update_run_status(
@@ -248,7 +256,7 @@ def test_last_activity_uses_run_ledger_when_newer_than_files(
     assert age_seconds < 120
 
 
-def test_last_activity_ignores_run_for_different_universe_actor(
+def test_last_activity_ignores_run_for_different_universe_scope(
     universe_base: Path,
 ) -> None:
     from tinyassets.runs import RUN_STATUS_COMPLETED, create_run, update_run_status
@@ -260,6 +268,7 @@ def test_last_activity_ignores_run_for_different_universe_actor(
         thread_id="t1",
         inputs={},
         actor="universe:other-universe",
+        queue_universe_id="other-universe",
     )
     update_run_status(
         universe_base, other_run,
@@ -275,13 +284,85 @@ def test_last_activity_ignores_run_for_different_universe_actor(
     assert age_seconds > 47 * 3600
 
 
-def test_last_activity_uses_automation_last_finished_at(
+def test_last_activity_ignores_queued_run_that_never_started(
     universe_base: Path,
 ) -> None:
+    """A `create_run` row is `queued` immediately, with `started_at` stamped
+    at row-creation time -- before any worker has picked it up. Without the
+    `status != 'queued'` filter, a bare enqueue (never executed) would mark
+    the universe fresh (Codex ADAPT, reproduced against 5eab19b1)."""
+    from tinyassets.runs import create_run
+
+    udir = _make_universe(universe_base, "u1", activity_age_hours=48)
+    create_run(
+        universe_base,
+        branch_def_id="b1",
+        thread_id="t1",
+        inputs={},
+        actor="universe:u1",
+        queue_universe_id="u1",
+    )  # left queued -- never transitioned to running/completed/etc.
+
+    got = us._last_activity_at(udir, None)
+    assert got is not None
+    ts = datetime.fromisoformat(got)
+    age_seconds = (datetime.now(timezone.utc) - ts).total_seconds()
+    # Only the 48h-stale activity.log is a real signal here.
+    assert age_seconds > 47 * 3600
+
+
+def test_last_activity_scopes_by_queue_universe_id_not_actor(
+    universe_base: Path,
+) -> None:
+    """`actor` and `queue_universe_id` are independent columns on `runs`
+    with no DB-level equality invariant (`create_run` takes them as
+    separate arguments). Codex ADAPT reproduced a row carrying one
+    universe's actor and another's queue_universe_id leaking activity into
+    the wrong universe under the old `actor`-scoped query; this asserts the
+    row counts for the queue_universe_id owner (u2) and not the actor (u1)."""
+    from tinyassets.runs import RUN_STATUS_COMPLETED, create_run, update_run_status
+
+    udir_u1 = _make_universe(universe_base, "u1", activity_age_hours=48)
+    udir_u2 = _make_universe(universe_base, "u2", activity_age_hours=48)
+    mismatched_run = create_run(
+        universe_base,
+        branch_def_id="b1",
+        thread_id="t1",
+        inputs={},
+        actor="universe:u1",
+        queue_universe_id="u2",
+    )
+    update_run_status(
+        universe_base, mismatched_run,
+        status=RUN_STATUS_COMPLETED, finished_at=time.time() - 60,
+    )
+
+    got_u1 = us._last_activity_at(udir_u1, None)
+    ts_u1 = datetime.fromisoformat(got_u1)
+    age_u1 = (datetime.now(timezone.utc) - ts_u1).total_seconds()
+    assert age_u1 > 47 * 3600  # the row's actor (u1) does NOT get credit
+
+    got_u2 = us._last_activity_at(udir_u2, None)
+    ts_u2 = datetime.fromisoformat(got_u2)
+    age_u2 = (datetime.now(timezone.utc) - ts_u2).total_seconds()
+    assert age_u2 < 120  # the row's queue_universe_id (u2) does
+
+
+def test_last_activity_ignores_refused_automation_attempt(
+    universe_base: Path,
+) -> None:
+    """Real refusal lifecycle: `AutomationStore.claim_attempt` then
+    `finish_attempt(status="refused")` (matching the actual call site in
+    `tinyassets.automations` when provider authority / rate-limit refuses a
+    due automation). `finish_attempt` bumps the automation row's
+    `last_finished_at` regardless of status -- that field is no longer a
+    source at all, so a refused attempt with no run created must not move
+    `last_activity_at`."""
+    from datetime import datetime as _dt
+
     from tinyassets.automations import Automation, AutomationStore
 
     udir = _make_universe(universe_base, "u1", activity_age_hours=48)
-    recent_iso = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
     old_iso = "2026-01-01T00:00:00+00:00"
     automation = Automation(
         automation_id="a1",
@@ -302,22 +383,189 @@ def test_last_activity_uses_automation_last_finished_at(
         last_due_at="",
         last_run_id="",
         last_reason="",
-        last_finished_at=recent_iso,
+        last_finished_at="",
     )
-    AutomationStore(universe_base).insert(automation)
+    store = AutomationStore(universe_base)
+    store.insert(automation)
+
+    now = _dt.now(timezone.utc)
+    due_at = now.isoformat()
+    assert store.claim_attempt("a1", due_at, now=now) is True
+    store.finish_attempt(
+        "a1", due_at,
+        run_id="",
+        status="refused",
+        reason="run_rate_limited",
+        now=now,
+        succeeded=None,
+    )
 
     got = us._last_activity_at(udir, None)
     assert got is not None
     ts = datetime.fromisoformat(got)
     age_seconds = (datetime.now(timezone.utc) - ts).total_seconds()
-    assert age_seconds < 120
+    # No run was created -- only the 48h-stale activity.log is a real signal.
+    assert age_seconds > 47 * 3600
+
+
+def test_safe_epoch_to_datetime_rejects_bad_values(universe_base: Path) -> None:
+    """Direct unit coverage of each rejection branch in the hygiene wrapper
+    that guards the runs-ledger epoch before it reaches `datetime`."""
+    assert us._safe_epoch_to_datetime(float("nan")) is None
+    assert us._safe_epoch_to_datetime(float("inf")) is None
+    assert us._safe_epoch_to_datetime(float("-inf")) is None
+    assert us._safe_epoch_to_datetime(0.0) is None
+    assert us._safe_epoch_to_datetime(-5.0) is None
+    assert us._safe_epoch_to_datetime(time.time() + 3600) is None  # 1h future
+    assert us._safe_epoch_to_datetime(1e300) is None  # would OverflowError
+
+    good = time.time() - 60
+    got = us._safe_epoch_to_datetime(good)
+    assert got is not None
+    assert abs(got.timestamp() - good) < 1
+
+
+def test_last_activity_ignores_huge_run_timestamp_without_raising(
+    universe_base: Path,
+) -> None:
+    """Codex ADAPT reproduction: a finite-but-huge `finished_at` (1e300)
+    reached `datetime.fromtimestamp` unguarded and raised `OverflowError`,
+    turning the public read into an error. This must degrade to "no
+    signal" instead -- the call not raising is itself part of the proof."""
+    from tinyassets.runs import RUN_STATUS_COMPLETED, create_run, update_run_status
+
+    udir = _make_universe(universe_base, "u1", activity_age_hours=48)
+    run_id = create_run(
+        universe_base,
+        branch_def_id="b1",
+        thread_id="t1",
+        inputs={},
+        actor="universe:u1",
+        queue_universe_id="u1",
+    )
+    update_run_status(
+        universe_base, run_id, status=RUN_STATUS_COMPLETED, finished_at=1e300,
+    )
+
+    got = us._last_activity_at(udir, None)  # must not raise
+
+    assert got is not None
+    ts = datetime.fromisoformat(got)
+    age_seconds = (datetime.now(timezone.utc) - ts).total_seconds()
+    assert age_seconds > 47 * 3600  # falls back to the file-based signal
+
+
+def test_last_activity_runs_lookup_bounded_under_exclusive_lock(
+    universe_base: Path,
+) -> None:
+    """The runs-ledger lookup must be bounded (~2s busy timeout) rather than
+    blocking behind a writer, since it backs a public MCP status read.
+    `PRAGMA locking_mode = EXCLUSIVE` + an uncommitted write is what
+    actually blocks a WAL reader locally (a bare `BEGIN EXCLUSIVE` with no
+    write does not -- WAL readers see the last committed snapshot)."""
+    import sqlite3
+
+    from tinyassets.runs import (
+        RUN_STATUS_COMPLETED,
+        create_run,
+        runs_db_path,
+        update_run_status,
+    )
+
+    udir = _make_universe(universe_base, "u1", activity_age_hours=48)
+    run_id = create_run(
+        universe_base,
+        branch_def_id="b1",
+        thread_id="t1",
+        inputs={},
+        actor="universe:u1",
+        queue_universe_id="u1",
+    )
+    update_run_status(
+        universe_base, run_id, status=RUN_STATUS_COMPLETED, finished_at=time.time() - 60,
+    )
+
+    locker = sqlite3.connect(runs_db_path(universe_base), timeout=1.0)
+    try:
+        locker.execute("PRAGMA locking_mode = EXCLUSIVE")
+        locker.execute("BEGIN IMMEDIATE")
+        locker.execute(
+            "UPDATE runs SET status = status WHERE run_id = ?", (run_id,),
+        )
+
+        start = time.perf_counter()
+        got = us._last_activity_at(udir, None)
+        elapsed = time.perf_counter() - start
+    finally:
+        locker.execute("ROLLBACK")
+        locker.close()
+
+    assert elapsed < 5.0
+    # The locked runs DB contributes no signal -- falls back to the
+    # 48h-stale file value, not the recent (now-unreadable) run.
+    assert got is not None
+    ts = datetime.fromisoformat(got)
+    age_seconds = (datetime.now(timezone.utc) - ts).total_seconds()
+    assert age_seconds > 47 * 3600
+
+
+def test_latest_run_activity_query_uses_scope_status_finished_index(
+    universe_base: Path,
+) -> None:
+    import sqlite3
+
+    from tinyassets.runs import initialize_runs_db, runs_db_path
+
+    initialize_runs_db(universe_base)
+    conn = sqlite3.connect(runs_db_path(universe_base))
+    try:
+        plan = conn.execute(
+            "EXPLAIN QUERY PLAN SELECT MAX(COALESCE(finished_at, started_at)) "
+            "FROM runs WHERE queue_universe_id = ? AND status != ?",
+            ("u1", "queued"),
+        ).fetchall()
+    finally:
+        conn.close()
+    plan_text = " ".join(str(row) for row in plan)
+    assert "idx_runs_scope_status_finished" in plan_text
+
+
+def test_read_graph_target_graph_surfaces_run_ledger_activity(
+    universe_base: Path,
+) -> None:
+    """Public-surface proof: `read_graph target=graph` dispatches to
+    `_action_inspect_universe` (`universe_server.py`'s `normalized ==
+    "graph"` branch), which nests liveness under `daemon`. Assert
+    `daemon.last_activity_at` reflects the run's own timestamp, not merely
+    "some non-null value"."""
+    from tinyassets.runs import RUN_STATUS_COMPLETED, create_run, update_run_status
+
+    _make_universe(universe_base, "u1", activity_age_hours=48)
+    run_id = create_run(
+        universe_base,
+        branch_def_id="b1",
+        thread_id="t1",
+        inputs={},
+        actor="universe:u1",
+        queue_universe_id="u1",
+    )
+    finished_at = time.time() - 60
+    update_run_status(
+        universe_base, run_id, status=RUN_STATUS_COMPLETED, finished_at=finished_at,
+    )
+
+    out = json.loads(us._action_inspect_universe(universe_id="u1"))
+
+    got = out["daemon"]["last_activity_at"]
+    assert got is not None
+    ts = datetime.fromisoformat(got)
+    assert abs(ts.timestamp() - finished_at) < 1
 
 
 def test_last_activity_file_based_value_survives_missing_dbs(
     universe_base: Path,
 ) -> None:
     assert not (universe_base / ".runs.db").exists()
-    assert not (universe_base / ".automations.db").exists()
     udir = _make_universe(universe_base, "u1", activity_age_hours=0.5)
 
     got = us._last_activity_at(udir, None)
@@ -326,9 +574,8 @@ def test_last_activity_file_based_value_survives_missing_dbs(
     ts = datetime.fromisoformat(got)
     age_seconds = (datetime.now(timezone.utc) - ts).total_seconds()
     assert age_seconds < 60 * 60
-    # Neither DB is created as a side effect of a read.
+    # The runs DB is not created as a side effect of a read.
     assert not (universe_base / ".runs.db").exists()
-    assert not (universe_base / ".automations.db").exists()
 
 
 # ---------------------------------------------------------------------------

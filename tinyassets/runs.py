@@ -472,6 +472,21 @@ def initialize_runs_db(base_path: str | Path) -> Path:
             "ON runs(branch_task_id) "
             "WHERE branch_task_id IS NOT NULL AND branch_task_id != ''"
         )
+        # Backs latest_run_activity_for_universe's liveness read (universe
+        # inspect / read_graph target=graph): a queue_universe_id + status
+        # filter over the whole table, on every status-read call, is a full
+        # scan without it. Created here -- AFTER the queue_universe_id
+        # migration above, not in the upfront schema string -- because an
+        # install whose ``runs`` table predates that column would otherwise
+        # hit "no such column" on this CREATE INDEX before the ALTER ever
+        # runs (the same class of hazard SCHEDULER_SCHEMA hit; see the
+        # migrate_scheduler_schema comment near the top of this function).
+        # CREATE INDEX IF NOT EXISTS is idempotent, so this also runs safely
+        # at every daemon boot against the existing production table.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_scope_status_finished "
+            "ON runs(queue_universe_id, status, finished_at)"
+        )
     return runs_db_path(base_path)
 
 
@@ -1474,38 +1489,72 @@ def latest_run_by_name(
     return _row_to_run(row) if row is not None else None
 
 
-def latest_run_activity_for_actor(
+def latest_run_activity_for_universe(
     base_path: str | Path,
     *,
-    actor: str,
+    universe_id: str,
 ) -> float | None:
-    """Newest epoch-seconds activity (finished_at, else started_at) for ``actor``.
+    """Newest epoch-seconds activity (finished_at, else started_at) for
+    runs that actually started under ``universe_id``.
 
     Used by universe liveness telemetry (``_last_activity_at`` in
     ``tinyassets.api.universe``) to attribute activity to automation and
     schedule runs, which record here but never touch the retired fleet
     daemon loop's heartbeat files (``activity.log``,
-    ``.runtime_status.json``). Read-only: does NOT call
-    ``initialize_runs_db`` -- a universe that has never run should not gain
-    a ``.runs.db`` as a side effect of a status check.
+    ``.runtime_status.json``).
+
+    Scoped by ``queue_universe_id`` rather than ``actor``: the two are
+    independent columns on ``runs`` with no DB-level equality invariant
+    (:func:`create_run` accepts them as separate arguments), so a row
+    could in principle carry one universe's ``actor`` and another's
+    ``queue_universe_id``. ``queue_universe_id`` is the authoritative
+    execution scope -- every universe-run entry point
+    (``enqueue_universe_branch_run``, the automation attempt runner, the
+    interactive ``run_branch`` MCP action) passes ``_enqueue_universe_id``
+    through :func:`_execute_branch_core` to it -- so this scopes on that
+    alone rather than adding an ``actor`` OR-predicate (Codex ADAPT,
+    2026-08-29, reproduced the actor/queue_universe_id-mismatch leak this
+    closes).
+
+    Excludes ``status = 'queued'``: :func:`create_run` stamps
+    ``started_at`` at row-creation time, before a worker has picked the
+    run up, so an unqualified read would let a merely-enqueued run (never
+    executed) mark the universe fresh. Every other status
+    (``running``/``completed``/``failed``/``cancelled``/``interrupted``/
+    ``resumed``) means the run left the queue and actually ran.
+
+    Read-only: opens the DB with SQLite ``mode=ro`` and a short (2s) busy
+    timeout, and does NOT call ``initialize_runs_db`` -- a universe that
+    has never run should not gain a ``.runs.db``, and this is a liveness
+    *read* on a public MCP surface that must never block behind, or wait
+    long on, a writer holding the DB (Codex ADAPT: the shared read/write
+    ``_connect`` used a 30s busy timeout and ran ``PRAGMA
+    journal_mode=WAL`` -- a write -- on every read). A locked or missing
+    DB, or any other lookup error, degrades to ``None`` (no signal) rather
+    than raising or blocking, matching the read-only fail-soft contract of
+    ``conversation_store.load_recent_readonly``.
     """
-    if not actor:
+    uid = (universe_id or "").strip()
+    if not uid:
         return None
     db_path = runs_db_path(base_path)
     if not db_path.is_file():
         return None
     try:
-        with _connect(base_path) as conn:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
+        try:
             row = conn.execute(
                 "SELECT MAX(COALESCE(finished_at, started_at)) AS ts "
-                "FROM runs WHERE actor = ?",
-                (actor,),
+                "FROM runs WHERE queue_universe_id = ? AND status != ?",
+                (uid, RUN_STATUS_QUEUED),
             ).fetchone()
+        finally:
+            conn.close()
     except sqlite3.Error:
         return None
-    if row is None or row["ts"] is None:
+    if row is None or row[0] is None:
         return None
-    return float(row["ts"])
+    return float(row[0])
 
 
 def get_run_by_branch_task_id(
