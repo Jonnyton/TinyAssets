@@ -6,11 +6,12 @@ The largest single submodule extracted from the monolith: 27 universe-tool
 subscriptions, goal-pool, daemon overview, tier config), the ``WRITE_ACTIONS``
 dispatch table + 14 ``_extract_*`` extractor closures, the ledger dispatcher
 trio (``_ledger_target_dir`` / ``_scope_universe_response`` /
-``_dispatch_with_ledger``), the daemon telemetry block (``_last_activity_at``,
-``_staleness_bucket``, ``_phase_human``, ``_compute_accept_rate_from_db``,
-``_compute_word_count_from_files``, ``_daemon_liveness``,
-``_parse_activity_line``), and the Pattern A2 body of the ``universe()`` MCP
-tool exposed as ``_universe_impl(action, **kwargs)``.
+``_dispatch_with_ledger``), the daemon telemetry block (``_last_activity_at``
+-- newest of the retired fleet loop's heartbeat files, the runs ledger, and
+the automations store -- ``_staleness_bucket``, ``_phase_human``,
+``_compute_accept_rate_from_db``, ``_compute_word_count_from_files``,
+``_daemon_liveness``, ``_parse_activity_line``), and the Pattern A2 body of
+the ``universe()`` MCP tool exposed as ``_universe_impl(action, **kwargs)``.
 
 The ``@mcp.tool() def universe(...)`` decorator + 23-arg signature + chatbot-
 facing docstring stays in ``tinyassets/universe_server.py`` (Pattern A2) so
@@ -845,6 +846,16 @@ def _dispatch_with_ledger(
 # `.runtime_status.json`, which is refreshed while the graph process is alive,
 # and PROGRAM.md + work_targets.json to disambiguate "no premise" vs
 # "starved for work" vs "actually running".
+#
+# The fleet daemon loop that wrote those three files was retired on
+# 2026-08-29 (`user-owned-automations`); real activity since then comes
+# from automation runs (`tinyassets.automations` /
+# `tinyassets.runtime.assigned_queue_consumer`) and schedule runs
+# (`tinyassets.scheduler`), both recorded in the runs ledger
+# (`tinyassets.runs`) rather than these files. `_last_activity_at` takes the
+# newest across the file-based signals AND the runs ledger AND the
+# automations store so a universe running only through those paths does not
+# read as dormant.
 
 
 # Staleness buckets, in seconds. Chosen to match the lead's spec: <1h fresh,
@@ -854,13 +865,17 @@ _STALE_FRESH_SECONDS = 60 * 60
 _STALE_IDLE_SECONDS = 24 * 60 * 60
 
 
-def _last_activity_at(udir: Path, status: dict[str, Any] | None) -> str | None:
-    """Return the most recent heartbeat ISO timestamp we can find.
+def _file_based_last_activity(
+    udir: Path, status: dict[str, Any] | None,
+) -> datetime | None:
+    """Newest on-disk heartbeat from the retired fleet daemon loop's files.
 
     Uses the newest of activity.log mtime (node progress),
     .runtime_status.json mtime (running-process heartbeat), status.json's
-    `last_updated`, and status.json file mtime. Returns None only if nothing
-    on disk indicates the daemon ever ran.
+    `last_updated`, and status.json file mtime, in that precedence order
+    (unchanged from before the runs-ledger and automations-store sources
+    were added in `_last_activity_at`). Returns None if none of these files
+    exist or parse.
     """
     heartbeat_candidates: list[datetime] = []
 
@@ -874,7 +889,7 @@ def _last_activity_at(udir: Path, status: dict[str, Any] | None) -> str | None:
         except OSError:
             pass
     if heartbeat_candidates:
-        return max(heartbeat_candidates).isoformat()
+        return max(heartbeat_candidates)
 
     if status and isinstance(status, dict):
         last_updated = status.get("last_updated")
@@ -883,7 +898,7 @@ def _last_activity_at(udir: Path, status: dict[str, Any] | None) -> str | None:
                 parsed = datetime.fromisoformat(last_updated)
                 if parsed.tzinfo is None:
                     parsed = parsed.replace(tzinfo=timezone.utc)
-                return parsed.astimezone(timezone.utc).isoformat()
+                return parsed.astimezone(timezone.utc)
             except ValueError:
                 pass
 
@@ -892,11 +907,116 @@ def _last_activity_at(udir: Path, status: dict[str, Any] | None) -> str | None:
         try:
             return datetime.fromtimestamp(
                 status_path.stat().st_mtime, tz=timezone.utc,
-            ).isoformat()
+            )
         except OSError:
             pass
 
     return None
+
+
+def _latest_run_activity_at(universe_id: str) -> datetime | None:
+    """Newest started_at/finished_at from the runs ledger for ``universe_id``.
+
+    Automation and schedule runs are recorded by `tinyassets.runs` under
+    actor ``universe:<universe_id>`` but never touch the retired fleet
+    daemon loop's heartbeat files, so without this a universe that is
+    actively completing runs would still read as dormant. Read-only and
+    fails soft: no `.runs.db` yet (never run), or a lookup error, is not a
+    programming error -- it's logged at debug and treated as no signal.
+    """
+    if not universe_id:
+        return None
+    try:
+        from tinyassets.runs import latest_run_activity_for_actor
+
+        epoch = latest_run_activity_for_actor(
+            _base_path(), actor=f"universe:{universe_id}",
+        )
+    except Exception as exc:
+        logger.debug(
+            "runs-ledger activity lookup failed for %s: %s", universe_id, exc,
+        )
+        return None
+    if epoch is None:
+        return None
+    return datetime.fromtimestamp(epoch, tz=timezone.utc)
+
+
+def _latest_automation_activity_at(universe_id: str) -> datetime | None:
+    """Newest `last_finished_at` across ``universe_id``'s automations.
+
+    `tinyassets.automations.AutomationStore` updates this field when a
+    scheduled automation completes a run; like the runs ledger, it never
+    touches the retired fleet daemon loop's heartbeat files. Includes
+    retired automations -- a retired automation's last real run is still
+    evidence the universe was active. Read-only and fails soft, matching
+    `_latest_run_activity_at`.
+    """
+    if not universe_id:
+        return None
+    try:
+        from tinyassets.automations import AutomationStore
+
+        automations = AutomationStore(_base_path()).list(
+            universe_id=universe_id, include_retired=True,
+        )
+    except Exception as exc:
+        logger.debug(
+            "automation-store activity lookup failed for %s: %s",
+            universe_id, exc,
+        )
+        return None
+
+    newest: datetime | None = None
+    for automation in automations:
+        stamp = getattr(automation, "last_finished_at", "") or ""
+        if not stamp:
+            continue
+        try:
+            parsed = datetime.fromisoformat(stamp)
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        else:
+            parsed = parsed.astimezone(timezone.utc)
+        if newest is None or parsed > newest:
+            newest = parsed
+    return newest
+
+
+def _last_activity_at(udir: Path, status: dict[str, Any] | None) -> str | None:
+    """Return the most recent heartbeat ISO timestamp we can find.
+
+    The retired fleet daemon loop wrote `activity.log` / `.runtime_status.json`
+    / `status.json` directly, so those files went stale the moment
+    `user-owned-automations` retired that loop. This now returns the newest
+    across three source families: (1) `_file_based_last_activity` -- the
+    original on-disk heartbeat files, kept for universes/tests that still
+    only have those; (2) the runs ledger (`_latest_run_activity_at`) --
+    automation and schedule runs recorded via `tinyassets.runs`; and (3) the
+    automations store (`_latest_automation_activity_at`) -- each
+    automation's `last_finished_at`. Returns None only if none of the three
+    families has anything.
+    """
+    candidates: list[datetime] = []
+
+    file_ts = _file_based_last_activity(udir, status)
+    if file_ts is not None:
+        candidates.append(file_ts)
+
+    universe_id = udir.name
+    run_ts = _latest_run_activity_at(universe_id)
+    if run_ts is not None:
+        candidates.append(run_ts)
+
+    automation_ts = _latest_automation_activity_at(universe_id)
+    if automation_ts is not None:
+        candidates.append(automation_ts)
+
+    if not candidates:
+        return None
+    return max(candidates).isoformat()
 
 
 def _staleness_bucket(last_activity_iso: str | None) -> str:
@@ -1194,7 +1314,8 @@ def _worker_liveness(
     """Supervisor-heartbeat liveness, distinct from content activity.
 
     ``last_activity_at`` answers "when did the daemon last DO something"
-    (activity.log / .runtime_status.json mtimes) — it goes stale both
+    (newest of activity.log / .runtime_status.json mtimes, a run in the
+    runs ledger, or an automation's last_finished_at) — it goes stale both
     when the worker is wedged AND when there is simply nothing to do.
     This field answers "is the worker process alive right now" from the
     ``.worker_supervisor.json`` beat the served `AssignedQueueConsumer`

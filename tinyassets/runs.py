@@ -1474,6 +1474,40 @@ def latest_run_by_name(
     return _row_to_run(row) if row is not None else None
 
 
+def latest_run_activity_for_actor(
+    base_path: str | Path,
+    *,
+    actor: str,
+) -> float | None:
+    """Newest epoch-seconds activity (finished_at, else started_at) for ``actor``.
+
+    Used by universe liveness telemetry (``_last_activity_at`` in
+    ``tinyassets.api.universe``) to attribute activity to automation and
+    schedule runs, which record here but never touch the retired fleet
+    daemon loop's heartbeat files (``activity.log``,
+    ``.runtime_status.json``). Read-only: does NOT call
+    ``initialize_runs_db`` -- a universe that has never run should not gain
+    a ``.runs.db`` as a side effect of a status check.
+    """
+    if not actor:
+        return None
+    db_path = runs_db_path(base_path)
+    if not db_path.is_file():
+        return None
+    try:
+        with _connect(base_path) as conn:
+            row = conn.execute(
+                "SELECT MAX(COALESCE(finished_at, started_at)) AS ts "
+                "FROM runs WHERE actor = ?",
+                (actor,),
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None or row["ts"] is None:
+        return None
+    return float(row["ts"])
+
+
 def get_run_by_branch_task_id(
     base_path: str | Path,
     *,

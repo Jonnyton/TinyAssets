@@ -214,6 +214,124 @@ def test_last_activity_returns_none_for_untouched_universe(
 
 
 # ---------------------------------------------------------------------------
+# last_activity_at from the runs ledger / automations store
+#
+# The fleet daemon loop that wrote activity.log / .runtime_status.json /
+# status.json was retired 2026-08-29 (`user-owned-automations`); automation
+# and schedule runs since then are recorded only in `tinyassets.runs` and
+# `tinyassets.automations.AutomationStore`, never those files.
+# ---------------------------------------------------------------------------
+
+
+def test_last_activity_uses_run_ledger_when_newer_than_files(
+    universe_base: Path,
+) -> None:
+    from tinyassets.runs import RUN_STATUS_COMPLETED, create_run, update_run_status
+
+    udir = _make_universe(universe_base, "u1", activity_age_hours=48)
+    run_id = create_run(
+        universe_base,
+        branch_def_id="b1",
+        thread_id="t1",
+        inputs={},
+        actor="universe:u1",
+    )
+    recent = time.time() - 60  # 1 minute ago -- newer than the 48h-stale file
+    update_run_status(
+        universe_base, run_id, status=RUN_STATUS_COMPLETED, finished_at=recent,
+    )
+
+    got = us._last_activity_at(udir, None)
+    assert got is not None
+    ts = datetime.fromisoformat(got)
+    age_seconds = (datetime.now(timezone.utc) - ts).total_seconds()
+    assert age_seconds < 120
+
+
+def test_last_activity_ignores_run_for_different_universe_actor(
+    universe_base: Path,
+) -> None:
+    from tinyassets.runs import RUN_STATUS_COMPLETED, create_run, update_run_status
+
+    udir = _make_universe(universe_base, "u1", activity_age_hours=48)
+    other_run = create_run(
+        universe_base,
+        branch_def_id="b1",
+        thread_id="t1",
+        inputs={},
+        actor="universe:other-universe",
+    )
+    update_run_status(
+        universe_base, other_run,
+        status=RUN_STATUS_COMPLETED, finished_at=time.time() - 60,
+    )
+
+    got = us._last_activity_at(udir, None)
+    assert got is not None
+    ts = datetime.fromisoformat(got)
+    age_seconds = (datetime.now(timezone.utc) - ts).total_seconds()
+    # A different universe's fresh run must not leak in -- the 48h-stale
+    # activity.log is still the only signal for u1.
+    assert age_seconds > 47 * 3600
+
+
+def test_last_activity_uses_automation_last_finished_at(
+    universe_base: Path,
+) -> None:
+    from tinyassets.automations import Automation, AutomationStore
+
+    udir = _make_universe(universe_base, "u1", activity_age_hours=48)
+    recent_iso = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    old_iso = "2026-01-01T00:00:00+00:00"
+    automation = Automation(
+        automation_id="a1",
+        universe_id="u1",
+        owner_principal_id="p1",
+        name="n",
+        branch_def_id="b1",
+        trigger_kind="interval",
+        interval_seconds=300,
+        cron_expr="",
+        inputs={},
+        desired_state="active",
+        pause_reason="",
+        revision=1,
+        created_at=old_iso,
+        updated_at=old_iso,
+        retired_at="",
+        last_due_at="",
+        last_run_id="",
+        last_reason="",
+        last_finished_at=recent_iso,
+    )
+    AutomationStore(universe_base).insert(automation)
+
+    got = us._last_activity_at(udir, None)
+    assert got is not None
+    ts = datetime.fromisoformat(got)
+    age_seconds = (datetime.now(timezone.utc) - ts).total_seconds()
+    assert age_seconds < 120
+
+
+def test_last_activity_file_based_value_survives_missing_dbs(
+    universe_base: Path,
+) -> None:
+    assert not (universe_base / ".runs.db").exists()
+    assert not (universe_base / ".automations.db").exists()
+    udir = _make_universe(universe_base, "u1", activity_age_hours=0.5)
+
+    got = us._last_activity_at(udir, None)
+
+    assert got is not None
+    ts = datetime.fromisoformat(got)
+    age_seconds = (datetime.now(timezone.utc) - ts).total_seconds()
+    assert age_seconds < 60 * 60
+    # Neither DB is created as a side effect of a read.
+    assert not (universe_base / ".runs.db").exists()
+    assert not (universe_base / ".automations.db").exists()
+
+
+# ---------------------------------------------------------------------------
 # accept_rate from scene_history
 # ---------------------------------------------------------------------------
 
