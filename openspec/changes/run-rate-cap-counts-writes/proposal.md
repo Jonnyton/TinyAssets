@@ -41,9 +41,12 @@ becomes:
   admissions, 20 with a full retry, and 60 leaves 3x that). The refusal
   names the cap that refused.
 - A run that fails or is cancelled fired nothing (effects fire only after
-  success): `update_run_status` settles it as a read. An unknown sink stays
-  a write. A settlement that arrives before the bind (a fast run) is kept in
-  a `settlements` table and applied at bind time.
+  success): `update_run_status` settles it as a read — unless the run had
+  already settled as a **write** (its effects fired, then provider-authority
+  release failed and rewrote the status): a write settlement is final. An
+  unknown sink stays a write. A settlement that arrives before the bind (a
+  fast run) is kept in a `settlements` table and applied at bind time;
+  settlement rows expire after two hours. Design: `design.md`.
 - Ledger storage shape: `admissions` gains `kind TEXT NOT NULL DEFAULT
   'write'` and `run_id TEXT NOT NULL DEFAULT ''` (additive `ALTER TABLE`;
   an old ledger's rows count as writes; migration happens inside the

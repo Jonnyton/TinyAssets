@@ -26,9 +26,12 @@ The count rule, in one place:
   ``GET``/``HEAD`` authenticated call, or nothing fired at all (a run that
   failed or was cancelled fires nothing - effects fire only after success),
   the run's row is reclassified as kind ``read``. Anything else - a non-GET
-  verb, another sink (known or not), a verb the result does not name - stays
-  ``write`` (fail closed). A settlement that arrives BEFORE the bind (a fast
-  run) is kept in ``settlements`` and applied when the bind happens (Codex
+  verb, another sink (known or not), a verb the result does not name - is
+  settled as ``write``, and a WRITE SETTLEMENT IS FINAL: a later ``read``
+  settlement for the same run (a FAILED status written after the effects
+  already fired, because provider-authority release failed) cannot downgrade
+  it (Codex round 3). A settlement that arrives BEFORE the bind (a fast run)
+  is kept in ``settlements`` and applied when the bind happens (Codex
   round 2).
 * ``read`` rows still count toward ``total_max`` (60 per rolling hour - a
   run_graph call returns as soon as the run is queued, so this is what bounds
@@ -63,6 +66,10 @@ ADMITTED_UNRECORDED = -1
 REFUSED_BY_WRITE = "write"
 REFUSED_BY_TOTAL = "total"
 REFUSED_BY_LEDGER = "ledger"
+# A settlement row outlives the run it belongs to by this much; pruned on
+# every settle and every admission, so a browser run that never binds leaves
+# at most two hours of rows (Codex round 3).
+SETTLEMENT_TTL_S = 2 * 3600
 
 
 class Admission(NamedTuple):
@@ -188,7 +195,7 @@ def admit_detail(
             )
             ticket = int(cur.lastrowid or 0)
             conn.execute("DELETE FROM admissions WHERE ts < ?", (cutoff - window_s,))
-            conn.execute("DELETE FROM settlements WHERE ts < ?", (cutoff - window_s,))
+            conn.execute("DELETE FROM settlements WHERE ts < ?", (now - SETTLEMENT_TTL_S,))
             conn.commit()
             return Admission(ticket if ticket > 0 else ADMITTED_UNRECORDED, None)
         finally:
@@ -246,12 +253,13 @@ def attach_run(ticket: int | None, run_id: str, *, db: Path | None = None) -> bo
                 waiting = conn.execute(
                     "SELECT kind FROM settlements WHERE run_id = ?", (run_id,)
                 ).fetchone()
-                if waiting is not None:
+                if waiting is not None and waiting[0] == KIND_READ:
                     conn.execute(
                         "UPDATE admissions SET kind = ? WHERE rowid = ?",
-                        (waiting[0], int(ticket)),
+                        (KIND_READ, int(ticket)),
                     )
-                    conn.execute("DELETE FROM settlements WHERE run_id = ?", (run_id,))
+                # The settlement row stays (until it expires): it is what makes
+                # a write final against a later status rewrite.
             conn.commit()
             return bound
         finally:
@@ -260,48 +268,63 @@ def attach_run(ticket: int | None, run_id: str, *, db: Path | None = None) -> bo
         return False
 
 
-def reclassify_read(run_id: str, *, db: Path | None = None) -> bool:
-    """Downgrade the admission for ``run_id`` from ``write`` to ``read``.
+def settle(run_id: str, kind: str, *, db: Path | None = None) -> bool:
+    """Record the FINAL kind ``run_id`` proved, and apply it to its admission.
 
-    Called when the run has finished and nothing it fired could have changed
-    the far side (see ``fired_only_reads``). If no admission is bound to
-    ``run_id`` yet, the settlement is kept and applied at bind time. Returns
-    True when a row changed now. A run that was never admitted through the
-    ledger leaves only a settlement row (pruned with the window); when no
-    ledger exists at all nothing is created.
+    ``read``: the run fired nothing that could change the far side (or
+    nothing at all); its ``write`` row becomes ``read``. ``write``: it did;
+    the row stays and the settlement is FINAL - a later ``read`` for the
+    same run (a FAILED status written after the effects fired) changes
+    nothing. If no admission is bound to ``run_id`` yet, the settlement is
+    kept and applied at bind time. Returns True when an admission row
+    changed now. A run that was never admitted through the ledger leaves
+    only a settlement row (expires in ``SETTLEMENT_TTL_S``); when no ledger
+    exists at all nothing is created.
     """
     run_id = (run_id or "").strip()
-    if not run_id:
+    if not run_id or kind not in (KIND_READ, KIND_WRITE):
         return False
     db = db or ledger_path()
     if _ledger_is_trusted(db) is not True or not db.exists():
         return False
+    now = time.time()
     try:
         conn = sqlite3.connect(str(db), timeout=10)
         try:
             conn.execute("BEGIN IMMEDIATE")
             _ensure_schema(conn)
-            cur = conn.execute(
-                "UPDATE admissions SET kind = ? WHERE run_id = ? AND kind = ?",
-                (KIND_READ, run_id, KIND_WRITE),
-            )
-            changed = cur.rowcount >= 1
-            if not changed:
-                bound = conn.execute(
-                    "SELECT 1 FROM admissions WHERE run_id = ? LIMIT 1", (run_id,)
-                ).fetchone()
-                if bound is None:
-                    # Settled before the bind: remember it for attach_run.
-                    conn.execute(
-                        "INSERT OR REPLACE INTO settlements (run_id, kind, ts) VALUES (?, ?, ?)",
-                        (run_id, KIND_READ, time.time()),
+            prior = conn.execute(
+                "SELECT kind FROM settlements WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            changed = False
+            if not (prior is not None and prior[0] == KIND_WRITE):
+                conn.execute(
+                    "INSERT OR REPLACE INTO settlements (run_id, kind, ts) VALUES (?, ?, ?)",
+                    (run_id, kind, now),
+                )
+                if kind == KIND_READ:
+                    cur = conn.execute(
+                        "UPDATE admissions SET kind = ? WHERE run_id = ? AND kind = ?",
+                        (KIND_READ, run_id, KIND_WRITE),
                     )
+                    changed = cur.rowcount >= 1
+            conn.execute("DELETE FROM settlements WHERE ts < ?", (now - SETTLEMENT_TTL_S,))
             conn.commit()
             return changed
         finally:
             conn.close()
     except sqlite3.Error:
         return False
+
+
+def reclassify_read(run_id: str, *, db: Path | None = None) -> bool:
+    """``settle(run_id, "read")``."""
+    return settle(run_id, KIND_READ, db=db)
+
+
+def settle_write(run_id: str, *, db: Path | None = None) -> bool:
+    """``settle(run_id, "write")`` - final; always returns False (no row changes)."""
+    return settle(run_id, KIND_WRITE, db=db)
 
 
 def fired_only_reads(fired: list[tuple[str, str | None]], *, read_sink: str) -> bool:

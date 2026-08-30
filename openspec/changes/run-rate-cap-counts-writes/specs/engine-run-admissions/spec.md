@@ -22,8 +22,12 @@ When the run has finished, its admission SHALL be settled: reclassified as
 `authenticated_external_call` (a refused-before-the-wire packet counts by the
 verb it declared), or no effect ran at all — including a run that failed or
 was cancelled, which fires nothing; any other sink (known or unknown), any
-other verb, or an unnamed verb SHALL leave it `write`. A settlement that
-arrives before the bind SHALL be kept and applied at bind time. The ledger
+other verb, or an unnamed verb SHALL settle it as `write`, and a `write`
+settlement SHALL be final: a later `read` settlement for the same run SHALL
+change nothing. A settlement that arrives before the bind SHALL be kept and
+applied at bind time. Settlement rows SHALL expire two hours after they are
+written, pruned on every settle and every admission. Every engine surface's
+refusal SHALL name the cap that refused. The ledger
 SHALL be refused (fail closed) when it is a symlink or resolves outside its
 data dir. Older ledgers SHALL be migrated additively, their rows counting as
 writes.
@@ -68,8 +72,15 @@ writes.
 #### Scenario: A run that was never admitted has no admission
 
 - **WHEN** a browser-triggered run's effects fire
-- **THEN** settlement finds no admission row and changes nothing; the ledger
-  is not created for it
+- **THEN** settlement changes no admission; when a ledger already exists it
+  may leave a settlement row that expires within two hours; no ledger is
+  created for it
+
+#### Scenario: A write that later fails stays a write
+
+- **WHEN** an admitted run's `PUT` effect fired and its status is then
+  rewritten to `failed` (provider-authority release failed)
+- **THEN** the admission stays `write`
 
 #### Scenario: A run that failed settles as a read
 

@@ -1203,3 +1203,20 @@ def test_an_unknown_sink_settles_as_a_write(tmp_path, monkeypatch):
         run_id="run-unknown")
     assert evidence["n1"]["github_pull_request"]["error_kind"] == "unknown_sink"
     assert _admission_kind(db, "run-unknown") == "write"
+
+
+def test_a_run_that_wrote_and_then_failed_stays_a_write(tmp_path, monkeypatch):
+    """Codex round 3 (P1): effects fire on success, but provider-authority
+    release can fail afterwards and rewrite the status to FAILED; the
+    failure hook must not downgrade a real write."""
+    from tinyassets import runs as runs_module
+
+    db = _seed_engine_admission(tmp_path, monkeypatch, "run-put-then-fail")
+    evidence, loop = _run_one(tmp_path, monkeypatch, verb="PUT", run_id="run-put-then-fail",
+                              packet_body={"content": "x"})
+    assert evidence["n1"][EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL]["delivered"] is True
+    assert _admission_kind(db, "run-put-then-fail") == "write"
+    runs_module.initialize_runs_db(tmp_path)
+    runs_module.update_run_status(tmp_path, "run-put-then-fail",
+                                  status=runs_module.RUN_STATUS_FAILED, error="release failed")
+    assert _admission_kind(db, "run-put-then-fail") == "write"    # final

@@ -18,6 +18,12 @@
       stated honestly (P1); unknown sinks stay writes (P2); `ledger_path`
       uses the canonical resolver (P2); the refusal names the cap (P2); the
       fail-open sentinel is in the spec (P2).
+- [x] 1.6 Codex round 3 (REJECT, the last round) folded: a write settlement
+      is final so a status rewritten to FAILED after the effects fired
+      cannot downgrade it (P1); settlement rows expire on every settle
+      (P2); the spec says a never-admitted run may leave an expiring
+      settlement row (P2); every engine surface names the refusing cap
+      (P2); `design.md` added for the storage-shape change (P2).
 - [x] 1.3 `effectors.run_effects_for_branch` records one `(sink, verb)` per
       effect that ran (verb from the adapter's result, else from the packet
       via `packet_verb`) and settles the admission as a read when

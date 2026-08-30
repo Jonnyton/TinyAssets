@@ -126,6 +126,22 @@ def _engine_run_admit(
     return admission if want_ticket else (admission.ticket is not None)
 
 
+def _engine_refusal(prefix: str, refused_by) -> str:
+    """The refusal every engine surface returns, naming the cap that refused."""
+    import json as _json
+
+    if refused_by == "total":
+        bound = f"max {_RUN_GRAPH_TOTAL_MAX} runs of any kind"
+    else:
+        bound = f"max {_RUN_GRAPH_RATE_MAX} runs that write"
+    return _json.dumps({
+        "error": (
+            f"{prefix} rate limit reached ({bound} per "
+            f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); try again shortly."
+        ),
+    })
+
+
 def _admission_parts(admission) -> tuple:
     """(ticket, refused_by) from what ``_engine_run_admit(want_ticket=True)``
     returned - tolerant of a test double that returns a bare bool."""
@@ -403,16 +419,7 @@ def run_graph(
     # approved-source-hash gate already pins WHAT runs; this bounds HOW OFTEN.
     ticket, refused_by = _admission_parts(_engine_run_admit(want_ticket=True))
     if ticket is None:
-        if refused_by == "total":
-            bound = f"max {_RUN_GRAPH_TOTAL_MAX} runs of any kind"
-        else:
-            bound = f"max {_RUN_GRAPH_RATE_MAX} runs that write"
-        return json.dumps({
-            "error": (
-                f"run_graph rate limit reached ({bound} per "
-                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); try again shortly."
-            ),
-        })
+        return _engine_refusal("run_graph", refused_by)
 
     from tinyassets.auth.middleware import _current_identity
     from tinyassets.universe_server import run_graph as _impl
@@ -1055,13 +1062,9 @@ def write_graph(
         })
     # Effect-spam rate limit (shared with run_graph), FAIL-CLOSED: a DB blip must
     # refuse the write, not admit it.
-    if not _engine_run_admit(fail_closed=True):
-        return json.dumps({
-            "error": (
-                f"write_graph rate limit reached (max {_RUN_GRAPH_RATE_MAX} per "
-                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); try again shortly."
-            ),
-        })
+    _wt, _wrefused = _admission_parts(_engine_run_admit(fail_closed=True, want_ticket=True))
+    if _wt is None:
+        return _engine_refusal("write_graph", _wrefused)
 
     from tinyassets.api.extensions import _extensions_impl
     from tinyassets.auth.middleware import _current_identity
@@ -1531,13 +1534,9 @@ def remix_shape(
     if not new_name:
         return json.dumps({"error": "name is required for the remixed branch."})
     # Rolling write bound — FAIL CLOSED for this autonomous write (Codex #6).
-    if not _engine_run_admit(fail_closed=True):
-        return json.dumps({
-            "error": (
-                f"engine write rate limit reached (max {_RUN_GRAPH_RATE_MAX} per "
-                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); try again shortly."
-            ),
-        })
+    _wt, _wrefused = _admission_parts(_engine_run_admit(fail_closed=True, want_ticket=True))
+    if _wt is None:
+        return _engine_refusal("engine write", _wrefused)
 
     spec = {
         "name": new_name,
@@ -1773,13 +1772,9 @@ def write_brain(
                 "(identity/founder/origin/body/orgchart) or a name."
             ),
         })
-    if not _engine_run_admit(fail_closed=True):
-        return json.dumps({
-            "error": (
-                f"engine write rate limit reached (max {_RUN_GRAPH_RATE_MAX} per "
-                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); try again shortly."
-            ),
-        })
+    _wt, _wrefused = _admission_parts(_engine_run_admit(fail_closed=True, want_ticket=True))
+    if _wt is None:
+        return _engine_refusal("engine write", _wrefused)
 
     from tinyassets.api.helpers import _universe_dir
     from tinyassets.auth.middleware import _current_identity

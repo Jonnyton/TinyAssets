@@ -203,10 +203,14 @@ def settle_engine_admission(run_id, fired) -> None:
     if not run_id:
         return
     try:
-        from tinyassets.engine_admissions import fired_only_reads, reclassify_read
+        from tinyassets.engine_admissions import fired_only_reads, reclassify_read, settle_write
 
         if fired_only_reads(list(fired), read_sink=EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL):
             reclassify_read(str(run_id))
+        else:
+            # Final: a status rewritten to FAILED after these effects fired
+            # must not turn this write into a read (Codex round 3).
+            settle_write(str(run_id))
     except Exception:  # pragma: no cover - defensive: the completion path never raises
         import logging
 

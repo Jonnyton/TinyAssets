@@ -365,6 +365,11 @@ def test_run_graph_names_the_cap_that_refused(monkeypatch, tmp_path):
     # a bare False from an old-style double still means refused
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: False)
     assert "rate limit" in json.loads(s.run_graph(branch_def_id="b1"))["error"]
+    # the write surfaces name the cap the same way (Codex round 3)
+    total_text = s._engine_refusal("write_graph", "total")
+    assert f"max {s._RUN_GRAPH_TOTAL_MAX} runs of any kind" in total_text
+    write_text = s._engine_refusal("engine write", "write")
+    assert f"max {s._RUN_GRAPH_RATE_MAX} runs that write" in write_text
 
 
 def test_run_graph_binds_its_admission_to_the_started_run(monkeypatch, tmp_path):

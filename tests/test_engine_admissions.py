@@ -202,7 +202,8 @@ def test_a_settlement_that_arrives_before_the_bind_is_applied_at_bind_time(tmp_p
     assert _rows(db) == [(adm.KIND_READ, "run-fast")]
     assert adm.reclassify_read("run-fast", db=db) is False        # already a read
     conn = sqlite3.connect(str(db))
-    assert conn.execute("SELECT COUNT(*) FROM settlements").fetchone()[0] == 0
+    # the settlement stays (until it expires): it is the run's final word
+    assert conn.execute("SELECT kind FROM settlements WHERE run_id='run-fast'").fetchone() == ("read",)
     conn.close()
 
 
@@ -243,3 +244,39 @@ def test_a_failed_run_settles_its_admission_as_a_read(monkeypatch, tmp_path):
     assert adm.attach_run(t2, "run-live", db=db)
     runs_module.update_run_status(tmp_path, "run-live", status="running")
     assert (adm.KIND_WRITE, "run-live") in _rows(db)
+
+
+def test_a_write_settlement_is_final(tmp_path):
+    """Codex round 3 (P1): a run whose effects fired can later have its
+    status rewritten to FAILED (provider-authority release failing); the
+    failure hook's read settlement must not downgrade that write."""
+    db = tmp_path / adm.LEDGER_NAME
+    ticket = _admit(db)
+    assert adm.attach_run(ticket, "run-wrote", db=db)
+    assert adm.settle_write("run-wrote", db=db) is False          # nothing to change
+    assert adm.reclassify_read("run-wrote", db=db) is False       # final: refused
+    assert _rows(db) == [(adm.KIND_WRITE, "run-wrote")]
+    # ...also when the write settled BEFORE the bind
+    t2 = _admit(db)
+    assert adm.settle_write("run-early", db=db) is False
+    assert adm.attach_run(t2, "run-early", db=db)
+    assert adm.reclassify_read("run-early", db=db) is False
+    assert (adm.KIND_WRITE, "run-early") in _rows(db)
+
+
+def test_settlements_expire_on_every_settle(tmp_path):
+    """Codex round 3 (P2): rows for runs that never bind used to pile up until
+    the next successful admission; they now expire on any settle too."""
+    db = tmp_path / adm.LEDGER_NAME
+    _admit(db)                                                    # the ledger exists
+    conn = sqlite3.connect(str(db))
+    old = time.time() - adm.SETTLEMENT_TTL_S - 5
+    conn.executemany("INSERT INTO settlements VALUES (?,?,?)",
+                     [(f"stale-{i}", adm.KIND_READ, old) for i in range(50)])
+    conn.commit()
+    conn.close()
+    adm.reclassify_read("browser-run", db=db)
+    conn = sqlite3.connect(str(db))
+    rows = conn.execute("SELECT run_id FROM settlements").fetchall()
+    conn.close()
+    assert rows == [("browser-run",)]
