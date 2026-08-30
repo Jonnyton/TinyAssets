@@ -1452,10 +1452,13 @@ def _action_goal_bind(kwargs: dict[str, Any]) -> str:
     except CommitFailedError as exc:
         return json.dumps(_format_commit_failed(exc))
     if gid:
+        # `text` is the phone/chat channel and must never carry a raw id
+        # (task #58) -- `goal_id` is kept below in the structured fields,
+        # which is where a caller that needs to look the Goal back up reads
+        # it from.
         text = (
             f"**Bound** workflow '{branch['name']}' to "
-            f"Goal '{goal['name']}'. Inspect the Goal with "
-            f'`read_graph target="goal" goal_id="{gid}"`.'
+            f"Goal '{goal['name']}'."
         )
         status = "bound"
     else:

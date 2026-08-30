@@ -2978,11 +2978,16 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
     }
 
     truncated = len(persisted.node_defs) > 12
+    # `text` is the phone/chat channel and must never carry a raw id (task
+    # #58) -- `branch_version_id` is `<branch_def_id>@<hash>`, so it embeds
+    # the id this function must not leak. `content_hash` alone identifies
+    # the version without it, and the full `branch_version_id` stays in the
+    # structured fields below for a caller that needs it.
     text_lines = [
         f"**Patched branch '{persisted.name}'**: applied {len(changes)} op(s). "
         f"{len(persisted.node_defs)} nodes, {len(persisted.edges)} edges, "
         f"{len(persisted.skills)} skills, entry=`{persisted.entry_point}`.",
-        f"Published version `{branch_version.branch_version_id}`.",
+        f"Published version `{branch_version.content_hash[:8]}`.",
     ]
     if patched_fields:
         text_lines += ["", f"Changed fields: {', '.join(patched_fields)}."]
