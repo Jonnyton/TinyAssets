@@ -559,6 +559,12 @@ MCP.getConversation=async()=>{
   if(SCENARIO.historyError) throw new Error("peek failed");
   return {recent_conversation:{turns: SCENARIO.history||[]}};
 };
+const answered=[];
+MCP.answerRequest=async(payload)=>{
+  answered.push(payload); return SCENARIO.answerReply||{receipt:"Sent."};
+};
+let refreshed=0; async function refreshRail(){ refreshed++; }
+function enterSignedOut(){ messages.push({role:"signed-out"}); }
 let reloaded=false; const location={reload:()=>{ reloaded=true; }};
 let fetched=0;
 async function fetch(){ fetched++; return {headers:{get:()=>SCENARIO.liveBuild||null}}; }
@@ -581,6 +587,18 @@ __APP_FUNCTIONS__
       buttons:n.children.filter(c=>c.tagName==="BUTTON").map(b=>b.textContent)}));
     out.sendDisabled=els["btn-send"].disabled;
     out.status=els["status-line"].textContent;
+  }else if(SCENARIO.kind==="rail"){
+    const req=SCENARIO.request;
+    els["fb_"+req.request_id]=new El("input");
+    els["fb_"+req.request_id].value=SCENARIO.feedback||"";
+    els["mute_"+req.request_id]=new El("input"); els["mute_"+req.request_id].checked=false;
+    if(SCENARIO.turnInFlight){ els["btn-send"].disabled=true; turnStartedAt=Date.now(); }
+    const note=new El("div"); const buttons=[new El("button"), new El("button")];
+    await answerRail(req, !!SCENARIO.dismiss, note, buttons);
+    await new Promise(r=>setTimeout(r, 20));           // the relayed sendTurn is not awaited
+    out.answered=answered; out.refreshed=refreshed; out.note=note.textContent;
+    out.converseCalls=converseCalls; out.messages=messages;
+    out.buttonsEnabled=buttons.every(b=>!b.disabled);
   }else if(SCENARIO.kind==="restore"){
     localStorage.setItem(INFLIGHT_KEY, JSON.stringify({
       message:SCENARIO.pending, display:SCENARIO.pending,
@@ -625,11 +643,13 @@ def _run_app(tmp_path, scenario: dict) -> dict:
     decls = "\n".join(
         re.search(pat, html).group(0)
         for pat in (r"const INFLIGHT_KEY=[^\n]*;", r"let turnStartedAt=[^\n]*;",
-                    r"let historyLoaded = [^\n]*;", r"let inflightRestored = [^\n]*;")
+                    r"let historyLoaded = [^\n]*;", r"let inflightRestored = [^\n]*;",
+                    r"let railOpen = [^\n]*;")
     )
     funcs = "\n".join(_js_function(html, f) for f in (
         "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
         "offerResend", "sendTurn", "checkForNewBuild", "loadHistory", "restoreInflight",
+        "answerLine", "answerRail",
     ))
     program = (_APP_SHIM
                .replace("__SCENARIO__", json.dumps(scenario))
@@ -798,3 +818,46 @@ def test_a_sticky_ask_renders_expanded_and_offers_no_dismiss():
     # It hands off to the provider cards that already work, rather than
     # reinventing the OAuth and token flows inside a tab.
     assert "no fields, no feedback, no dismiss" in html
+
+
+
+# --- a rail answer is the founder's line (2026-08-30) -----------------------------
+#
+# Live 2026-08-29: tiny raised an ask, the founder approved it in the rail, and
+# tiny sat idle until the founder typed "approved - go ahead" - twice. The click
+# is that line; the app now says it in the thread through the normal send path.
+
+_TITLE = "Extend GitHub access so I can repair the README"
+_REQ = {"request_id": "req_1", "kind": "API", "title": _TITLE, "fields": []}
+
+
+def test_an_approval_is_relayed_as_the_founders_line(tmp_path):
+    out = _run_app(tmp_path, {"kind": "rail", "request": _REQ, "payload": {"reply": "on it"}})
+    assert out["answered"][0]["request_id"] == "req_1" and "dismiss" not in out["answered"][0]
+    assert out["converseCalls"] == [f'Approved: "{_TITLE}"']
+    assert [m["role"] for m in out["messages"]] == ["founder", "universe"]
+    assert out["refreshed"] == 1 and out["note"] == "Sent." and out["buttonsEnabled"]
+
+
+def test_feedback_rides_along_and_not_now_is_relayed_too(tmp_path):
+    out = _run_app(tmp_path, {
+        "kind": "rail", "request": _REQ, "dismiss": True,
+        "feedback": "ask again after the PR is open", "payload": {"reply": "ok"},
+    })
+    assert out["answered"][0]["dismiss"] is True
+    assert out["answered"][0]["feedback"] == "ask again after the PR is open"
+    assert out["converseCalls"] == [f'Not now: "{_TITLE}" \u2014 ask again after the PR is open']
+
+
+def test_no_relay_over_a_turn_in_flight(tmp_path):
+    out = _run_app(tmp_path, {"kind": "rail", "request": _REQ, "turnInFlight": True})
+    assert out["answered"] and out["converseCalls"] == []
+    assert "will see it when its current turn ends" in out["note"]
+
+
+def test_a_failed_answer_relays_nothing(tmp_path):
+    out = _run_app(tmp_path, {
+        "kind": "rail", "request": _REQ, "answerReply": {"error": "not_found"},
+    })
+    assert out["converseCalls"] == [] and out["refreshed"] == 0
+    assert out["note"].startswith("Couldn't do that")

@@ -1915,6 +1915,15 @@
     return box;
   }
 
+  // What the founder's click says, in their own words: the answer and the
+  // ask it answers, plus anything they typed in "Anything to tell it?".
+  function answerLine(req, dismiss, feedback){
+    const title = (req && req.title) ? String(req.title).trim() : "your request";
+    let line = (dismiss ? "Not now: " : "Approved: ") + "\"" + title + "\"";
+    if(feedback) line += " \u2014 " + feedback;
+    return line;
+  }
+
   async function answerRail(req, dismiss, note, buttons){
     const payload = { request_id: req.request_id };
     const fbEl = $("fb_" + req.request_id), muteEl = $("mute_" + req.request_id);
@@ -1938,6 +1947,18 @@
         note.textContent = r.receipt || (dismiss ? "Dismissed." : "Sent.");
         railOpen = null;
         await refreshRail();
+        // The answer is the founder's own line in the thread. Live 2026-08-29:
+        // after each approval the universe sat idle until the founder typed
+        // "approved - go ahead", twice. The click IS that line; say it where
+        // the universe listens, through the same send path as any message.
+        // Never over a turn in flight: the universe reads the request state
+        // itself, and its next reply would collide with this one.
+        const line = answerLine(req, dismiss, payload.feedback);
+        if($("btn-send").disabled){
+          note.textContent += " Your universe will see it when its current turn ends.";
+        } else {
+          sendTurn(line);
+        }
       }
     }catch(err){
       if(err.authRequired) return enterSignedOut();
