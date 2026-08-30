@@ -32,7 +32,7 @@
       `$ta.effect`; a user's `$ref` passes through; `$ta.bas64` refused; deep
       plain bodies refused, not crashed; the working-set budget refuses a
       repeated reference; identity on plain bodies; depth and size bounds.
-- [ ] 2.2 Live (the naive test that filed this): "append one line to README
+- [x] 2.2 Live: 2026-08-30 04:4xZ, universe u-01kxm1vszd8hwp7em418asq8h9, uncoached — run `3f86d7b9fde04bff` fetched README.md and PUT it back with one appended line in ONE run via `{"$ta.base64":{"$ta.concat":[{"$ta.from_base64":{"$ta.effect":"fetch_readme.response.body.content"}}," (2026-08-29)"]}}` (sha via `$ta.effect`), GitHub 200; PR #2710 opened, un-drafted and merged by the universe with no rail ask.
       and open a PR" through the app lands a commit whose README differs from
       `main` by exactly the appended line, in ONE run — run id, branch and
       commit sha recorded here; then delete
