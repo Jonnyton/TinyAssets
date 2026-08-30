@@ -1,56 +1,20 @@
-## 1. Shape (specs before code)
+## 1. Slice A — checkout, run, push (scratch and permanent)
 
-- [x] 1.1 Proposal: the two ceilings (read a codebase, run it) and the primitive.
-- [x] 1.2 Design v1; Codex round 1 REJECT (credential path, provision network,
-      aggregate limits, disk bounds, budgets in place of shape caps, lease
-      lifecycle, consent typing, admissions, resume) — all folded into design v2.
-- [x] 1.3 Delta specs written in the shape phase: `external-effect-adapters`
-      (workspace sink), `graph-execution-substrate` (workspace-bound code
-      nodes), `engine-run-admissions` (workspace admission kind),
-      `credential-vault` (credentialed git), `scratch-storage` (new).
-- [ ] 1.4 Codex round 2 on design v2 + delta specs. Fold. Round 3 is the cap.
+- [ ] 1.1 Scratch pool: lease table + `lease_outbox` in the runs database; one `BEGIN IMMEDIATE` admission (reservation, pool total, job lock, `ACTIVE`); terminal status + release entry in one transaction; at-least-once processor (claim, quarantine-rename, delete-without-following, verify, `AVAILABLE`, `LOST` retained); startup sweeper as an admission barrier; periodic dead-claimant sweep; `storage: "universe"` path under the universe quota; no `pin`
+- [ ] 1.2 Credential broker in the outbound worker (in-memory, exact `(protocol, host, path)`, repeated `get`, `store`/`erase` ignored, torn down per operation); empty-environment git launcher with the forced options; address pinning via `http.curloptResolve` from the HTTP driver's per-address classification; stderr scrub to fixed classes; `git_read`/`git_write` grant scopes
+- [ ] 1.3 `workspace` sink `checkout`: clone into staging → bundle → delete staging → populate a fresh repository in the lease from the bundle; intent journal; resolved-SHA receipt; typed consents `workspace_checkout`/`workspace_push`/`workspace_provision`; evidence without token or host path
+- [ ] 1.4 Code node `workspace:` binding: chain-only capability, exact-path bind rule, `ws.run/read/write/glob/bundle` with relative beneath-only paths, bounded drains, cumulative caps, workspace rlimit profile, RSS watchdog, parent-side outer-bwrap kill on timeout with verified exit
+- [ ] 1.5 `workspace` sink `push`: bundle copied through the held lease dirfd (beneath/no-symlink, bounded regular file) → credential-free staging `bundle verify` + fsck-checked `index-pack` + strict `fsck` → branch policy → credentialed fast-forward push from staging → `ls-remote` reconciliation; `discard`
+- [ ] 1.6 Admissions kind `workspace` (jobs/hour, bytes/hour), the MODIFIED checkout-as-read exception, the workspace bytes excluded from HTTP budgets, the seven failure classes with suggested actions
+- [ ] 1.7 Tests: gitfile/alternates/replace-ref workspace cannot make staging read another repository; hook/config in the checkout never runs credentialed; token absent from cmdline/environ/files/evidence; 401 retry succeeds; two concurrent admissions cannot oversubscribe; crash between terminal status and release repaired at startup before admission; `setsid` descendant dies with the namespace; default-branch push refused; checkout settles as read
+- [ ] 1.8 Live proof on the founder universe through the app: checkout TinyAssets, run `compileall` in a workspace node, push a one-line change on a `tiny/…` branch, open the PR; deployed sha asserted
 
-## 2. Build — slice A: checkout, run, push
+## 2. Slice B — provisioning
 
-- [ ] 2.1 `tinyassets/scratch.py`: lease store (opaque ids bound to universe/
-      connection/repo/class/generation), state machine, release outbox
-      processed after the terminal commit, startup + periodic sweepers,
-      quarantine-rename-delete, pool bytes accounting.
-- [ ] 2.2 Outbound worker: `git_read`/`git_write` grant scopes per (host,
-      repo); staging-repo clone/fetch/push with the trusted credential
-      helper, from-empty environment, forced options, DNS/IP classification,
-      intent journal + `ls-remote` reconciliation, stderr scrubbing.
-- [ ] 2.3 `tinyassets/effectors/workspace.py`: sink `workspace`, ops
-      `checkout`/`push`/`discard`, typed consents, branch policy (remote HEAD
-      refused, `tiny/…` only, exact-SHA fast-forward), bounded evidence,
-      failure classes.
-- [ ] 2.4 `node_sandbox.py`: exact-path workspace bind, `ws.run/read/write/glob`
-      with incremental bounded drains and whole-jail timeout, workspace
-      limits profile, RSS watchdog, command/evidence caps.
-- [ ] 2.5 `graph_compiler.py` + `runs.py`: `workspace:` resolved only through
-      the chain capability; per-universe + box-wide job lock; `workspace`
-      admission consumed on checkout, external-write settled as read.
-- [ ] 2.6 `write_graph` docs; taxonomy; plugin mirror; tests (unit, Linux-only
-      jail, live jail probe on the production host).
+- [ ] 2.1 Manifest extraction through the held lease dirfd (beneath/no-symlink, bounded regular files, digests); Python requirement grammar (`name[extras]==version ; marker --hash=…` only) and npm lockfile validator (`https://registry.npmjs.org/` tarballs only)
+- [ ] 2.2 Resolver jail (no checkout, admitted manifests + empty cache, own network namespace, egress allowlist with per-address validation); `pip download --only-binary=:all: --require-hashes`; `npm ci --ignore-scripts` fetch; offline install in the workspace jail bound to the digests; `workspace_provision` consent; `workspace_provision_refused`
+- [ ] 2.3 Tests: URL/path/VCS/include/option lines refused before network; sdist-only package refused; git-URL npm dependency refused; resolver cannot reach loopback/private/neighbours; offline install runs with no network; live proof: provision TinyAssets' requirements and run `pytest -q tests/test_docview.py` in a workspace node
 
-## 3. Build — slice B: provisioning
+## 3. Land
 
-- [ ] 3.1 Resolver jail (no checkout, egress limited to declared registries
-      after DNS/IP validation; option-line rejection), offline install into a
-      workspace-local venv / `npm ci --offline`; consent `workspace_provision`.
-
-## 4. Companion: `run-usage-budgets`
-
-- [ ] 4.1 Per root run: ≤ 500 effect dispatches, ≤ 256 MiB outbound bytes;
-      per universe per hour: ≤ 5,000 dispatches, ≤ 2 GiB; refusal
-      `effect_budget_exhausted` naming the budget; tier-raisable.
-
-## 5. Prove and close
-
-- [ ] 5.1 Live, uncoached: the founder's universe checks out its repo, answers
-      "how many Python files does the project have", runs
-      `python -m compileall tinyassets`, commits, pushes `tiny/…`, opens and
-      merges the PR.
-- [ ] 5.2 PLAN.md: the workspace joins the primitive list; named follow-ups
-      recorded (runner sidecar / cgroup, scratch filesystem with quotas,
-      toolchain profiles); archive.
+- [ ] 3.1 Sync the five deltas into `openspec/specs/`, archive the change, PLAN.md pointer, plugin mirror parity, `deployed_sha.py --assert-contains`
