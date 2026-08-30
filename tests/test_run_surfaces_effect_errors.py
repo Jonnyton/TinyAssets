@@ -160,3 +160,83 @@ def test_a_known_sink_is_untouched_by_the_unknown_sink_path():
     )
     row = evidence["call"]["authenticated_external_call"]
     assert row.get("error_kind") != "unknown_sink"
+
+
+def _branch_with_one_call(node_id="call_github"):
+    class _Node:
+        effects = ["authenticated_external_call"]
+        output_keys = []
+
+    _Node.node_id = node_id
+
+    class _Branch:
+        node_defs = [_Node()]
+
+    return _Branch()
+
+
+def test_a_far_side_refusal_reaches_the_log(monkeypatch, caplog):
+    """Concern 2026-08-28: GitHub answered 403, the run said `completed`, and
+    the daemon log said nothing for 25 minutes. One warning per refused
+    outbound call, naming run, node, status and the first bytes of the body."""
+    import logging
+
+    from tinyassets import effectors
+
+    def refused(**_kw):
+        return {
+            "delivered": True,
+            "verb": "POST",
+            "response": {
+                "status": 403,
+                "body": '{"message":"Resource not accessible by personal access token"}',
+                "headers": {"x-accepted-github-permissions": "contents=write"},
+            },
+        }
+
+    monkeypatch.setitem(effectors._EFFECTORS, "authenticated_external_call", refused)
+    with caplog.at_level(logging.WARNING, logger="tinyassets.effectors"):
+        effectors.run_effects_for_branch(
+            branch=_branch_with_one_call(), run_state={}, base_path=None, run_id="r403"
+        )
+    lines = [r.getMessage() for r in caplog.records if "far side" in r.getMessage()]
+    assert len(lines) == 1, caplog.text
+    for part in ("run=r403", "node=call_github", "status=403", "Resource not accessible"):
+        assert part in lines[0]
+
+
+def test_a_packet_refused_before_the_wire_reaches_the_log(monkeypatch, caplog):
+    import logging
+
+    from tinyassets import effectors
+
+    monkeypatch.setitem(
+        effectors._EFFECTORS,
+        "authenticated_external_call",
+        lambda **_kw: {"delivered": False, "error_kind": "missing_consent"},
+    )
+    with caplog.at_level(logging.WARNING, logger="tinyassets.effectors"):
+        effectors.run_effects_for_branch(
+            branch=_branch_with_one_call("ask"), run_state={}, base_path=None, run_id="rmc"
+        )
+    lines = [r.getMessage() for r in caplog.records if "did not fire" in r.getMessage()]
+    assert len(lines) == 1 and "kind=missing_consent" in lines[0] and "node=ask" in lines[0]
+
+
+def test_a_clean_delivery_logs_nothing(monkeypatch, caplog):
+    import logging
+
+    from tinyassets import effectors
+
+    monkeypatch.setitem(
+        effectors._EFFECTORS,
+        "authenticated_external_call",
+        lambda **_kw: {
+            "delivered": True, "verb": "POST", "response": {"status": 201, "body": "{}"}
+        },
+    )
+    with caplog.at_level(logging.WARNING, logger="tinyassets.effectors"):
+        effectors.run_effects_for_branch(
+            branch=_branch_with_one_call(), run_state={}, base_path=None, run_id="rok"
+        )
+    assert not [r for r in caplog.records if "external effect" in r.getMessage()]
