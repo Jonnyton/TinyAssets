@@ -771,4 +771,6 @@ def test_a_failed_turn_offers_to_send_again():
     assert "Send it again" in html
     # ...and a resend reuses the bubble already on screen instead of drawing the
     # same message twice, which would read as two sends.
-    assert "sendTurn(message, display, {echoed:true})" in html
+    # the retry is the same send with the same options (a side send stays a
+    # side send), echoed because the bubble is already on screen
+    assert "sendTurn(message, display, Object.assign({}, opts||{}, {echoed:true}))" in html
