@@ -414,10 +414,22 @@ def _apply_transforms(value: Any, ctx: _TransformContext, depth: int = 0) -> Any
                     f'{_OP_REPLACE} takes {{"in": <text>, "old": <text>, "new": <text>}} '
                     '(optional "count": how many occurrences, default 1)'
                 )
+            extra = sorted(set(arg) - {"in", "old", "new", "count"})
+            if extra:
+                # A typo'd key ("countt") must not run with the default and
+                # change a different number of places than the author meant
+                # (Codex round 1, P1).
+                raise _TransformError(
+                    f"{_OP_REPLACE} does not take {', '.join(extra)}; "
+                    'keys are "in", "old", "new" and optional "count"'
+                )
             text = _as_text(_apply_transforms(arg["in"], ctx, depth + 1), f"{_OP_REPLACE} in")
             old = _as_text(_apply_transforms(arg["old"], ctx, depth + 1), f"{_OP_REPLACE} old")
             new = _as_text(_apply_transforms(arg["new"], ctx, depth + 1), f"{_OP_REPLACE} new")
-            count = arg.get("count", 1)
+            # count is an operand like the other three: it may come from state.
+            count = _apply_transforms(arg.get("count", 1), ctx, depth + 1)
+            if isinstance(count, str) and count.isdigit():
+                count = int(count)
             if not isinstance(count, int) or isinstance(count, bool) or count < 1:
                 raise _TransformError(f"{_OP_REPLACE} count must be a positive integer")
             if not old:
@@ -433,7 +445,8 @@ def _apply_transforms(value: Any, ctx: _TransformContext, depth: int = 0) -> Any
                     f"{_OP_REPLACE}: old text occurs {found} times, count is {count}; "
                     "make old more specific (include the surrounding text) or set count"
                 )
-            ctx.charge(len(text) + count * max(len(new) - len(old), 0))
+            grown = max(_byte_size(new) - _byte_size(old), 0)
+            ctx.charge(_byte_size(text) + count * grown)   # bytes, not characters
             return text.replace(old, new, count)
         if op == _OP_CONCAT:
             if not isinstance(arg, list):

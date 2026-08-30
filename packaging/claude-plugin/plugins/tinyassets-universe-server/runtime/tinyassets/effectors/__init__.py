@@ -20,6 +20,8 @@ in the platform until a user builds one.
 
 from __future__ import annotations
 
+import logging
+
 from tinyassets.effectors.authenticated_external_call import (
     EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
     bounded_evidence,
@@ -187,10 +189,43 @@ def run_effects_for_branch(
                 fired.append((sink, verb))
             if sink == EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL and isinstance(result, dict):
                 chain[node_id] = result
+                _log_effect_not_ok(run_id, node_id, result)
                 result = bounded_evidence(result, node_id=node_id)
             per_node[sink] = result
     settle_engine_admission(run_id, fired)
     return evidence_map
+
+
+def _log_effect_not_ok(run_id, node_id, result) -> None:
+    """One log line per outbound call that did not succeed: the far side
+    answered >= 400, or the packet was refused before the wire. Concern
+    2026-08-28: GitHub said 403 and the daemon log said nothing for 25 minutes
+    while the reason sat in the evidence map. Status line and the first bytes
+    of the response only - never the request, which carries the credential
+    path. Never raises into the completion path."""
+    try:
+        response = result.get("response")
+        status = response.get("status") if isinstance(response, dict) else None
+        if isinstance(status, int) and status >= 400:
+            body = response.get("body")
+            preview = (body if isinstance(body, str) else str(body or ""))[:200]
+            logging.getLogger(__name__).warning(
+                "external effect refused by the far side: run=%s node=%s status=%s body=%s",
+                run_id,
+                node_id,
+                status,
+                preview.replace(chr(10), " "),
+            )
+        elif result.get("error") or result.get("error_kind"):
+            logging.getLogger(__name__).warning(
+                "external effect did not fire: run=%s node=%s kind=%s error=%s",
+                run_id,
+                node_id,
+                result.get("error_kind"),
+                str(result.get("error") or "")[:200].replace(chr(10), " "),
+            )
+    except Exception:  # pragma: no cover - defensive: the completion path never raises
+        pass
 
 
 def settle_engine_admission(run_id, fired) -> None:
@@ -212,8 +247,6 @@ def settle_engine_admission(run_id, fired) -> None:
             # must not turn this write into a read (Codex round 3).
             settle_write(str(run_id))
     except Exception:  # pragma: no cover - defensive: the completion path never raises
-        import logging
-
         logging.getLogger(__name__).exception("engine admission settle failed")
 
 

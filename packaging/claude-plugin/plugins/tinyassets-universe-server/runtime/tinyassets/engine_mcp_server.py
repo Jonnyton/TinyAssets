@@ -969,8 +969,8 @@ def write_graph(
 
         "content": {"$ta.base64": {"$ta.replace": {
                        "in":  {"$ta.from_base64": {"$ta.effect": "fetch.response.body.content"}},
-                       "old": "<the exact current line>\n",
-                       "new": "<the exact new line>\n"}}}
+                       "old": "<the exact current line>\\n",
+                       "new": "<the exact new line>\\n"}}}
 
     ``$ta.replace`` swaps ONE exact occurrence (set ``"count"`` for more) and
     refuses when ``old`` is absent or occurs a different number of times, so a

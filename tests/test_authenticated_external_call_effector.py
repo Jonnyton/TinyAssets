@@ -1281,3 +1281,27 @@ def test_replace_swaps_one_exact_line_and_refuses_ambiguity():
                 {"$ta.replace": {"in": "x", "old": "x", "new": "y", "count": 0}}):
         out, why = apply_body_transforms({"c": bad}, {}, allowed_state_keys=[], prior_effects=prior)
         assert out is None and why
+
+
+def test_replace_refuses_unknown_keys_takes_count_from_state_and_charges_bytes(monkeypatch):
+    """Codex round 1: a typo'd key ran with the default; `count` was the one
+    operand not resolved through the transforms; a multibyte text was charged
+    in characters, which let ~51 MB of replacement output through the 32 MiB
+    working set."""
+    from tinyassets.effectors import authenticated_external_call as aec
+
+    body = {"c": {"$ta.replace": {"in": "abc", "old": "b", "new": "B", "countt": 2}}}
+    out, why = aec.apply_body_transforms(body, {}, allowed_state_keys=[], prior_effects={})
+    assert out is None and "countt" in why
+    body = {"c": {"$ta.replace": {"in": "aXaXa", "old": "X", "new": "-",
+                                  "count": {"$ta.ref": "n"}}}}
+    out, why = aec.apply_body_transforms(body, {"n": 2}, allowed_state_keys=["n"], prior_effects={})
+    assert why is None and out["c"] == "a-a-a"
+    monkeypatch.setattr(aec, "_MAX_TRANSFORM_WORK_BYTES", 100)
+    text = "\u00e9" * 60   # 60 characters, 120 UTF-8 bytes
+    body = {"c": {"$ta.replace": {"in": text, "old": "\u00e9", "new": "e", "count": 60}}}
+    out, why = aec.apply_body_transforms(body, {}, allowed_state_keys=[], prior_effects={})
+    assert out is None and why
+    body = {"c": {"$ta.replace": {"in": text[:30], "old": "\u00e9", "new": "e", "count": 30}}}
+    out, why = aec.apply_body_transforms(body, {}, allowed_state_keys=[], prior_effects={})
+    assert why is None and out["c"] == "e" * 30
