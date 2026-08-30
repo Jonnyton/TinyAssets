@@ -700,6 +700,7 @@ class TestCompileInvokeBranchVersionNode:
         kwargs = mock_exec.call_args.kwargs
         assert kwargs["branch_version_id"] == "child@abc12345"
         assert kwargs["inputs"] == {"child_in": "value-from-parent"}
+        assert kwargs["on_node_status"] is None
 
     def test_build_invoke_version_node_async_mode_writes_run_id(self, tmp_path):
         """Async mode writes the child run_id into the first output_mapping
@@ -715,8 +716,15 @@ class TestCompileInvokeBranchVersionNode:
                 "output_mapping": {"child_run_id": "ignored"},
             },
         )
+        seen: list[tuple[str, str]] = []
+
+        def on_node_status(node_id: str, status: str) -> None:
+            seen.append((node_id, status))
+
         node_fn = _build_invoke_branch_version_node(
-            nd, base_path=tmp_path, event_sink=None, execution_context=_DEFAULT_TEST_CTX)
+            nd, base_path=tmp_path, event_sink=None,
+            execution_context=_DEFAULT_TEST_CTX,
+            on_node_status=on_node_status)
 
         with patch("tinyassets.runs.execute_branch_version_async") as mock_exec:
             mock_exec.return_value = MagicMock(run_id="async-run-xyz")
@@ -724,6 +732,10 @@ class TestCompileInvokeBranchVersionNode:
 
         assert updates == {"child_run_id": "async-run-xyz"}
         mock_exec.assert_called_once()
+        # The child MUST inherit the parent's per-node callback, or a nested
+        # prompt runs its provider call unguarded. This assertion is the only
+        # thing that fails when the launch drops it (Codex round 3 §a/§d).
+        assert mock_exec.call_args.kwargs["on_node_status"] is on_node_status
 
     def test_build_invoke_version_node_recursion_cap(self, tmp_path):
         """Recursion-cap works through the version-spec path too."""

@@ -2695,6 +2695,7 @@ def _build_invoke_branch_version_node(
                 inputs=child_inputs,
                 actor=actor_arg,
                 provider_call=provider_call,
+                on_node_status=on_node_status,
                 _invocation_depth=depth + 1,
             )
             # design_used emit deferred to await on success (mirrors
