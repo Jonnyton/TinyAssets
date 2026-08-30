@@ -26,6 +26,7 @@ never be reached through it. The two together cover the whole contract.
 
 from __future__ import annotations
 
+import base64 as _b64
 import hashlib
 import http.server
 import json
@@ -38,6 +39,7 @@ from tinyassets.credential_vault import write_credential_vault
 from tinyassets.effectors import authenticated_external_call as aec
 from tinyassets.effectors.authenticated_external_call import (
     EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+    apply_body_transforms,
     run_authenticated_external_call_effector,
 )
 from tinyassets.storage import outbound_connections as _oc
@@ -116,9 +118,10 @@ def _setup(
 class _Loopback:
     """A recording loopback HTTP endpoint the injected driver connects to."""
 
-    def __init__(self):
+    def __init__(self, responder=None):
         self.recorded: list[dict] = []
         recorded = self.recorded
+        responder = responder or (lambda method, path, body: b'{"ok": true}')
 
         class _Handler(http.server.BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
@@ -137,7 +140,7 @@ class _Loopback:
                         "body": body,
                     }
                 )
-                payload = b'{"ok": true}'
+                payload = responder(self.command, self.path, body)
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
@@ -146,6 +149,7 @@ class _Loopback:
 
             do_GET = _handle  # noqa: N815
             do_POST = _handle  # noqa: N815
+            do_PUT = _handle  # noqa: N815
 
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -661,3 +665,398 @@ def test_revoked_consent_refuses_the_call(tmp_path, monkeypatch):
         run_id="r1",
     )
     assert evidence["error_kind"] == "missing_consent"
+
+
+# --------------------------------------------------------------------------- #
+# Body transforms (openspec: external-call-body-encoding). Live 2026-08-29 a
+# model-generated base64 came back `422 not valid Base64`, then as valid base64
+# of a transcribed file (README +2/-87), then a "repair" that re-typed the file
+# (+22/-14). The effector now owns the encoding and the byte-moving: a node
+# writes text, references its own declared inputs, and references an EARLIER
+# node's effect response in the same run. Operators are namespaced (`$ta.*`)
+# so a user's own `$ref`/`$set` payloads are never hijacked (Codex round 1).
+# --------------------------------------------------------------------------- #
+
+
+def _packet(body, *, verb="POST", path="/v1/messages"):
+    return {
+        "sink": EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+        "connection_id": "conn-http",
+        "grant_id": "grant-http",
+        "verb": verb,
+        "request": {"method": verb, "path": path, "body": body},
+    }
+
+
+def _wire(tmp_path, monkeypatch, run_state, *, responder=None, allowed=None, prior=None):
+    """Dispatch through the REAL broker + SSRF driver to a loopback; return
+    (evidence, recorded requests)."""
+    monkeypatch.setenv(_HTTP_FLAG, "1")
+    data_root, universe_dir, db_path = _setup(tmp_path)
+    loop = _Loopback(responder)
+    _install_loopback_driver(monkeypatch, loop.port)
+    _install_inprocess_proxy(
+        monkeypatch, db_path=db_path, universe_dir=universe_dir, grant_id="grant-http",
+        provider="http", destination="api.example.com", runtime_root=tmp_path / "rt",
+    )
+    try:
+        evidence = run_authenticated_external_call_effector(
+            node_id="n1", output_keys=["out"], run_state=run_state,
+            base_path=str(universe_dir), run_id="r1",
+            allowed_state_keys=allowed, prior_effects=prior,
+        )
+    finally:
+        loop.stop()
+    return evidence, loop.recorded
+
+
+def test_base64_transform_is_encoded_by_the_effector_never_the_model(tmp_path, monkeypatch):
+    text = "line one\nline two \u2014 with unicode\n"
+    packet = _packet({"message": "m", "content": {"$ta.base64": text}, "branch": "b"})
+    evidence, recorded = _wire(tmp_path, monkeypatch, {"out": json.dumps(packet)})
+    assert evidence["delivered"] is True
+    sent = json.loads(recorded[0]["body"])
+    encoded = _b64.b64encode(text.encode()).decode()
+    assert sent == {"message": "m", "content": encoded, "branch": "b"}
+    assert "$ta." not in recorded[0]["body"].decode()
+
+
+def test_a_users_own_dollar_keys_pass_through_untouched(tmp_path, monkeypatch):
+    """JSON Schema's `$ref`, Mongo's `$set`: not ours, never touched (P1)."""
+    body = {"schema": {"$ref": "#/$defs/X"}, "update": {"$set": {"a": 1}}, "$comment": "hi"}
+    out, err = apply_body_transforms(body, {})
+    assert err is None and out is body
+    packet = _packet(body)
+    evidence, recorded = _wire(tmp_path, monkeypatch, {"out": json.dumps(packet)})
+    assert evidence["delivered"] is True
+    assert json.loads(recorded[0]["body"]) == body
+
+
+def test_ref_is_fenced_to_the_nodes_declared_keys():
+    """A packet reads only what its node was allowed to see (P0): declared
+    input_keys plus schema-defaulted keys, never the whole final state."""
+    state = {"private": "UNDECLARED", "note": json.dumps({"k": "v"})}
+    leak = {"leak": {"$ta.ref": "private"}}
+    out, err = apply_body_transforms(leak, state, allowed_state_keys=["note"])
+    assert out is None and "not among the node's declared input_keys" in err
+    assert "UNDECLARED" not in err
+    ok = {"x": {"$ta.ref": "note.k"}}
+    out, err = apply_body_transforms(ok, state, allowed_state_keys=["note"])
+    assert (out, err) == ({"x": "v"}, None)
+    # No fence given at all (a legacy caller): nothing is readable.
+    out, err = apply_body_transforms({"x": {"$ta.ref": "note.k"}}, state)
+    assert out is None and "declares no readable state keys" in err
+
+
+def _contents_responder(original: str, sha: str):
+    """A contents-API-shaped GET reply: 60-column-wrapped base64, as such APIs send."""
+    wrapped = _b64.b64encode(original.encode()).decode()
+    wrapped = "\n".join(wrapped[i:i + 60] for i in range(0, len(wrapped), 60)) + "\n"
+
+    def responder(method, path, body):
+        if method == "GET":
+            return json.dumps({"path": "README.md", "sha": sha, "content": wrapped,
+                               "encoding": "base64"}).encode()
+        return b'{"ok": true}'
+
+    return responder
+
+
+def test_append_one_line_chains_a_fetch_effect_into_the_write_in_one_run(tmp_path, monkeypatch):
+    """THE live case (P0): two nodes in one branch. `fetch` GETs the file;
+    `write` PUTs it back with one appended line, referencing the fetch's
+    response through `$ta.effect`. The model authored only the new line, and
+    the bytes never passed through a model or a second run_graph."""
+    import types
+
+    from tinyassets import effectors as effectors_pkg
+
+    original = "# Title\n\n**Bold** para with `code`, an email a.b@c.d and \\Scripts\\path.\n"
+    original += "".join(
+        f"line {i} of a file longer than the evidence preview\n" for i in range(200)
+    )
+    new_line = "Patches by this universe are opened through the request rail.\n"
+    monkeypatch.setenv(_HTTP_FLAG, "1")
+    data_root, universe_dir, db_path = _setup(tmp_path, scopes=("GET", "PUT"), endpoints=[
+        {"host": "api.example.com", "path_template": "/v1/messages", "methods": ["GET", "PUT"]},
+    ])
+    loop = _Loopback(_contents_responder(original, "blob-sha-1"))
+    _install_loopback_driver(monkeypatch, loop.port)
+    _install_inprocess_proxy(
+        monkeypatch, db_path=db_path, universe_dir=universe_dir, grant_id="grant-http",
+        provider="http", destination="api.example.com", runtime_root=tmp_path / "rt",
+    )
+    fetch_packet = _packet(None, verb="GET", path="/v1/messages")
+    del fetch_packet["request"]["body"]
+    write_packet = _packet({
+        "message": "docs: append",
+        "sha": {"$ta.effect": "fetch.response.body.sha"},
+        "content": {"$ta.base64": {"$ta.concat": [
+            {"$ta.from_base64": {"$ta.effect": "fetch.response.body.content"}}, new_line,
+        ]}},
+    }, verb="PUT", path="/v1/messages")
+    node = types.SimpleNamespace
+    branch = node(
+        node_defs=[
+            node(node_id="fetch", effects=[EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL],
+                 output_keys=["fetch_packet"], input_keys=[]),
+            node(node_id="write", effects=[EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL],
+                 output_keys=["write_packet"], input_keys=[]),
+        ],
+        state_schema=None,
+    )
+    run_state = {"fetch_packet": json.dumps(fetch_packet), "write_packet": json.dumps(write_packet)}
+    try:
+        evidence = effectors_pkg.run_effects_for_branch(
+            branch=branch, run_state=run_state, base_path=str(universe_dir), run_id="r1",
+        )
+    finally:
+        loop.stop()
+    sink = EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL
+    assert evidence["fetch"][sink]["delivered"] is True, evidence["fetch"]
+    assert evidence["write"][sink]["delivered"] is True, evidence["write"]
+    assert [r["method"] for r in loop.recorded] == ["GET", "PUT"]
+    sent = json.loads(loop.recorded[1]["body"])
+    assert sent["sha"] == "blob-sha-1"
+    assert _b64.b64decode(sent["content"]).decode() == original + new_line   # exact bytes
+    assert "$ta." not in loop.recorded[1]["body"].decode()
+    # The PERSISTED fetch evidence is a bounded preview (what read_graph shows
+    # a model later), while the chain above saw the full body (Codex round 2).
+    persisted = evidence["fetch"][sink]["response"]
+    assert persisted["body_truncated"] is True and len(persisted["body"]) == 4096
+    assert persisted["body_chars"] > 4096 and len(persisted["body_sha256"]) == 64
+
+
+def test_effect_reference_sees_only_earlier_nodes(tmp_path, monkeypatch):
+    """`write` listed BEFORE `fetch` cannot reference it: effects fire in node
+    order and a reference to a later node is refused, nothing sent."""
+    import types
+
+    from tinyassets import effectors as effectors_pkg
+
+    monkeypatch.setenv(_HTTP_FLAG, "1")
+    data_root, universe_dir, db_path = _setup(tmp_path, scopes=("GET", "PUT"), endpoints=[
+        {"host": "api.example.com", "path_template": "/v1/messages", "methods": ["GET", "PUT"]},
+    ])
+    loop = _Loopback(_contents_responder("x\n", "s"))
+    _install_loopback_driver(monkeypatch, loop.port)
+    _install_inprocess_proxy(
+        monkeypatch, db_path=db_path, universe_dir=universe_dir, grant_id="grant-http",
+        provider="http", destination="api.example.com", runtime_root=tmp_path / "rt",
+    )
+    write_packet = _packet({"sha": {"$ta.effect": "fetch.response.body.sha"}}, verb="PUT")
+    fetch_packet = _packet(None, verb="GET")
+    del fetch_packet["request"]["body"]
+    node = types.SimpleNamespace
+    branch = node(node_defs=[
+        node(node_id="write", effects=[EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL],
+             output_keys=["write_packet"], input_keys=[]),
+        node(node_id="fetch", effects=[EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL],
+             output_keys=["fetch_packet"], input_keys=[]),
+    ], state_schema=None)
+    run_state = {"fetch_packet": json.dumps(fetch_packet), "write_packet": json.dumps(write_packet)}
+    try:
+        evidence = effectors_pkg.run_effects_for_branch(
+            branch=branch, run_state=run_state, base_path=str(universe_dir), run_id="r1",
+        )
+    finally:
+        loop.stop()
+    sink = EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL
+    assert evidence["write"][sink]["error_kind"] == "invalid_body_transform"
+    assert "no earlier node 'fetch'" in evidence["write"][sink]["error"]
+    assert [r["method"] for r in loop.recorded] == ["GET"]           # only the fetch went out
+
+
+def test_malformed_transforms_are_refused_and_nothing_is_sent(tmp_path, monkeypatch):
+    cases = {
+        "not text": {"content": {"$ta.base64": 42}},
+        "not base64": {"content": {"$ta.from_base64": "this is not base64!!"}},
+        "missing ref": {"content": {"$ta.ref": "fetched.missing"}},
+        "concat not list": {"content": {"$ta.concat": "x"}},
+        "ref into text": {"content": {"$ta.ref": "note.deeper"}},
+        "unknown effect": {"content": {"$ta.effect": "nobody.response"}},
+    }
+    for index, (label, body) in enumerate(cases.items()):
+        run_state = {
+            "fetched": json.dumps({"content": "aGk="}), "note": "plain",
+            "out": json.dumps(_packet(body)),
+        }
+        case_root = tmp_path / f"case{index}"
+        case_root.mkdir()
+        evidence, recorded = _wire(
+            case_root, monkeypatch, run_state, allowed=["fetched", "note"],
+        )
+        assert evidence.get("error_kind") == "invalid_body_transform", (label, evidence)
+        assert recorded == [], label
+        assert "aGk=" not in json.dumps(evidence), label   # no values in the error
+
+
+def test_bodies_without_transforms_are_the_same_object():
+    body = {"text": "hello", "nested": {"k": ["v", 1, None]}, "$notatransform": {"a": 1, "b": 2}}
+    out, err = apply_body_transforms(body, {})
+    assert err is None and out is body
+    assert apply_body_transforms("raw string", {}) == ("raw string", None)
+    assert apply_body_transforms(None, {}) == (None, None)
+
+
+def test_ref_traverses_json_strings_lists_and_nested_transforms():
+    state = {"resp": json.dumps({"items": [{"id": "a"}, {"id": "b"}], "content": "aGVsbG8="})}
+    allowed = ["resp"]
+    picked = apply_body_transforms(
+        {"$ta.ref": "resp.items.1.id"}, state, allowed_state_keys=allowed,
+    )
+    assert picked == ("b", None)
+    decoded = apply_body_transforms(
+        {"$ta.from_base64": {"$ta.ref": "resp.content"}}, state, allowed_state_keys=allowed,
+    )
+    assert decoded == ("hello", None)
+    assert apply_body_transforms(
+        {"$ta.base64": {"$ta.concat": [{"$ta.from_base64": {"$ta.ref": "resp.content"}}, "!"]}},
+        state, allowed_state_keys=allowed,
+    ) == (_b64.b64encode(b"hello!").decode(), None)
+    _out, err = apply_body_transforms(
+        {"$ta.ref": "resp.items.9.id"}, state, allowed_state_keys=allowed,
+    )
+    assert err and "out of range" in err
+
+
+def test_depth_and_size_bounds_are_stated_and_enforced():
+    from tinyassets.effectors import authenticated_external_call as mod
+
+    nested = "x"
+    for _ in range(mod._MAX_TRANSFORM_DEPTH + 2):
+        nested = {"$ta.concat": [nested]}
+    _out, err = apply_body_transforms({"c": nested}, {})
+    assert err and "nested deeper than" in err
+    big = "a" * (mod._MAX_TRANSFORMED_BODY_BYTES + 10)
+    _out, err = apply_body_transforms({"content": {"$ta.base64": big}}, {})
+    assert err and "the bound is" in err
+    small = apply_body_transforms({"content": {"$ta.base64": "ok"}}, {})
+    assert small == ({"content": _b64.b64encode(b"ok").decode()}, None)
+
+
+def test_effect_references_cannot_reach_headers(tmp_path, monkeypatch):
+    """Codex round 2 (P0): the worker returns every response header; a
+    `set-cookie` must not be forwardable through `$ta.effect`."""
+    prior = {"fetch": {"delivered": True, "response": {
+        "status": 200, "headers": {"set-cookie": "session=rotated-secret"},
+        "body": json.dumps({"sha": "s", "content": "aGk="}),
+    }}}
+    out, err = apply_body_transforms(
+        {"c": {"$ta.effect": "fetch.response.headers.set-cookie"}}, {}, prior_effects=prior,
+    )
+    assert out is None and "only response.body and response.status" in err
+    assert "rotated-secret" not in err
+    ok = apply_body_transforms(
+        {"s": {"$ta.effect": "fetch.response.status"},
+         "h": {"$ta.effect": "fetch.response.body.sha"}},
+        {}, prior_effects=prior,
+    )
+    assert ok == ({"s": 200, "h": "s"}, None)
+    _out, err = apply_body_transforms(
+        {"d": {"$ta.effect": "fetch.delivered"}}, {}, prior_effects=prior,
+    )
+    assert err and "only response.body and response.status" in err
+
+
+def test_unknown_reserved_spellings_are_refused_not_sent():
+    out, err = apply_body_transforms({"content": {"$ta.bas64": "typo"}}, {})
+    assert out is None and "unknown transform '$ta.bas64'" in err
+    # ...even when buried and even without any real transform present
+    out, err = apply_body_transforms({"a": [{"b": {"$ta.nope": 1}}]}, {})
+    assert out is None and "unknown transform" in err
+
+
+def test_deep_plain_bodies_are_refused_not_crashed():
+    """Codex round 2 (P1): 1,100 nested plain dicts used to raise RecursionError
+    in the scan, surfacing as effector_crashed instead of a refusal."""
+    body = {"leaf": 1}
+    for _ in range(1100):
+        body = {"wrap": body}
+    out, err = apply_body_transforms(body, {})
+    assert out is None and "nested deeper than 32" in err
+
+
+def test_the_working_set_budget_refuses_a_repeated_reference_early(monkeypatch):
+    """Codex round 2 (P0): a hundred references to a 5 MiB blob allocated
+    ~1 GiB before the old size check. Charged as produced, the copies are
+    refused as soon as the charges cross the budget. Scaled: budget 1000
+    bytes, blob 400 bytes, referenced 3x -> refused at the third charge."""
+    from tinyassets.effectors import authenticated_external_call as mod
+
+    monkeypatch.setattr(mod, "_MAX_TRANSFORM_WORK_BYTES", 1000)
+    blob = "x" * 400
+    prior = {"fetch": {"response": {"status": 200, "body": json.dumps({"content": blob})}}}
+    one = {"$ta.effect": "fetch.response.body.content"}
+    out, err = apply_body_transforms(
+        {"c": {"$ta.concat": [one, one, one]}}, {}, prior_effects=prior,
+    )
+    assert out is None and "more than 1000 bytes" in err
+    out, err = apply_body_transforms({"c": {"$ta.concat": [one, "!"]}}, {}, prior_effects=prior)
+    assert out == {"c": blob + "!"} and err is None
+
+
+def test_bounded_evidence_previews_only_long_bodies():
+    from tinyassets.effectors.authenticated_external_call import bounded_evidence
+
+    short = {"delivered": True, "response": {"status": 200, "body": "hi"}}
+    assert bounded_evidence(short) is short
+    long = {"delivered": True, "response": {"status": 200, "body": "y" * 5000, "headers": {}}}
+    b = bounded_evidence(long)
+    assert b["response"]["body"] == "y" * 4096 and b["response"]["body_truncated"] is True
+    assert b["response"]["body_chars"] == 5000 and b["response"]["status"] == 200
+    assert long["response"]["body"] == "y" * 5000          # the original is untouched
+
+
+def test_the_budget_counts_bytes_and_referenced_objects(monkeypatch):
+    """Codex round 3 (P0): only strings were charged, in characters. A
+    referenced object is serialized into the body later, so it counts now;
+    multibyte text counts as its UTF-8 bytes."""
+    from tinyassets.effectors import authenticated_external_call as mod
+
+    monkeypatch.setattr(mod, "_MAX_TRANSFORM_WORK_BYTES", 300)
+    state = {"payload": {"blob": "x" * 400}}
+    _out, err = apply_body_transforms(
+        {"p": {"$ta.ref": "payload"}}, state, allowed_state_keys=["payload"],
+    )
+    assert err and "more than 300 bytes" in err
+    emoji = "\U0001F600" * 100                       # 100 chars, 400 UTF-8 bytes
+    _out, err = apply_body_transforms({"c": {"$ta.base64": emoji}}, {})
+    assert err and "more than 300 bytes" in err
+    ok = apply_body_transforms({"c": {"$ta.base64": "\U0001F600" * 30}}, {})
+    assert ok[1] is None
+
+
+def test_a_reference_to_a_value_json_cannot_carry_is_refused_not_crashed():
+    """Codex round 3 (P1): bytes in state raised TypeError at the final dump,
+    surfacing as effector_crashed."""
+    _out, err = apply_body_transforms(
+        {"b": {"$ta.ref": "raw"}}, {"raw": b"abc"}, allowed_state_keys=["raw"],
+    )
+    assert err and "cannot be sent as JSON" in err
+
+
+def test_the_reserved_namespace_is_refused_beside_other_keys():
+    """Codex round 3 (P2): `{"$ta.base64": ..., "other": 1}` used to pass
+    through untouched."""
+    _out, err = apply_body_transforms({"x": {"$ta.bas64": "typo", "other": 1}}, {})
+    assert err and "unknown transform '$ta.bas64'" in err
+    _out, err = apply_body_transforms({"x": {"$ta.base64": "t", "other": 1}}, {})
+    assert err and "must be the only key" in err
+
+
+def test_bounded_evidence_never_persists_header_values():
+    """Codex round 3 (P1): the worker returns every response header and the
+    run record is forever; a rotated cookie must not survive into it."""
+    from tinyassets.effectors.authenticated_external_call import bounded_evidence
+
+    result = {"delivered": True, "response": {
+        "status": 200, "body": "hi", "headers": {"set-cookie": "session=rotated-secret",
+                                                 "content-type": "application/json"},
+    }}
+    b = bounded_evidence(result)
+    assert "headers" not in b["response"]
+    assert b["response"]["header_names"] == ["content-type", "set-cookie"]
+    assert "rotated-secret" not in json.dumps(b)
+    # the in-memory original (what a later node's $ta.effect sees) is intact
+    assert result["response"]["headers"]["set-cookie"] == "session=rotated-secret"

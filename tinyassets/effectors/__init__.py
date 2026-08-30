@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from tinyassets.effectors.authenticated_external_call import (
     EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+    bounded_evidence,
     run_authenticated_external_call_effector,
 )
 from tinyassets.effectors.wiki_write_back import (
@@ -31,7 +32,8 @@ from tinyassets.effectors.wiki_write_back import (
 
 
 def _authenticated_call_adapter(
-    *, node_id, output_keys, run_state, base_path, run_id, dry_run
+    *, node_id, output_keys, run_state, base_path, run_id, dry_run,
+    allowed_state_keys=None, prior_effects=None,
 ):
     return run_authenticated_external_call_effector(
         node_id=node_id,
@@ -40,11 +42,13 @@ def _authenticated_call_adapter(
         base_path=base_path,
         run_id=run_id,
         dry_run=dry_run,
+        allowed_state_keys=allowed_state_keys,
+        prior_effects=prior_effects,
     )
 
 
 def _wiki_write_back_adapter(
-    *, node_id, output_keys, run_state, base_path, run_id, dry_run
+    *, node_id, output_keys, run_state, base_path, run_id, dry_run, **_unused
 ):
     del dry_run  # internal write-back has no dry-run gate
     return run_wiki_write_back_effector(
@@ -65,6 +69,17 @@ _EFFECTORS = {
 }
 
 
+def _schema_defaulted_keys(state_schema) -> set:
+    """The keys the compiler treats as declared for every node (BUG-085):
+    state_schema entries carrying a default. Same helper the compiler uses."""
+    try:
+        from tinyassets.graph_compiler import _state_schema_defaults
+
+        return set(_state_schema_defaults(state_schema).keys())
+    except Exception:  # noqa: BLE001 - fail CLOSED: no extra keys become readable
+        return set()
+
+
 def run_effects_for_branch(
     *,
     branch,
@@ -83,12 +98,29 @@ def run_effects_for_branch(
     """
     del cloud_effect_session  # no per-channel cloud session; kept for call-site compat
     evidence_map: dict[str, dict] = {}
+    # Full generic-call results, kept in memory for THIS dispatch only: later
+    # nodes' packets may reference an earlier node's response.body/status
+    # (`$ta.effect`). What is persisted is `bounded_evidence(...)`, so a
+    # fetched file never re-enters a model through read_graph.
+    chain: dict[str, dict] = {}
+    schema_defaulted = _schema_defaulted_keys(getattr(branch, "state_schema", None))
+    # Effects fire in the order nodes are STORED in the branch (write_graph
+    # appends in the order given). That is the "earlier node" contract for
+    # `$ta.effect` — storage order, deliberately not graph execution order,
+    # which effects (all fired after the run) do not observe.
     for node in getattr(branch, "node_defs", None) or []:
         effects = list(getattr(node, "effects", None) or [])
         if not effects:
             continue
         node_id = getattr(node, "node_id", "")
         output_keys = list(getattr(node, "output_keys", None) or [])
+        # A packet may read ONLY the node's declared input_keys plus the
+        # state_schema-defaulted keys - never the whole final state (Codex
+        # round 1, P0). This is NARROWER than the compiler's render view
+        # (which shows everything when isolation is off or no inputs are
+        # declared) on purpose: an effect reads less, never more.
+        allowed_state_keys = set(getattr(node, "input_keys", None) or []) | schema_defaulted
+        prior_effects = dict(chain)
         per_node = evidence_map.setdefault(node_id, {})
         for sink in effects:
             adapter = _EFFECTORS.get(sink)
@@ -127,12 +159,17 @@ def run_effects_for_branch(
                     base_path=base_path,
                     run_id=run_id,
                     dry_run=bool(dry_run),
+                    allowed_state_keys=allowed_state_keys,
+                    prior_effects=prior_effects,
                 )
             except Exception as exc:  # defensive: never raise from completion path
                 result = {
                     "error": f"effector crashed: {exc}",
                     "error_kind": "effector_crashed",
                 }
+            if sink == EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL and isinstance(result, dict):
+                chain[node_id] = result
+                result = bounded_evidence(result)
             per_node[sink] = result
     return evidence_map
 
