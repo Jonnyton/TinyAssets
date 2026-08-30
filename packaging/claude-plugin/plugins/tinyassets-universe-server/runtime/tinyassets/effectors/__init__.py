@@ -187,7 +187,7 @@ def run_effects_for_branch(
                 fired.append((sink, verb))
             if sink == EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL and isinstance(result, dict):
                 chain[node_id] = result
-                result = bounded_evidence(result)
+                result = bounded_evidence(result, node_id=node_id)
             per_node[sink] = result
     settle_engine_admission(run_id, fired)
     return evidence_map

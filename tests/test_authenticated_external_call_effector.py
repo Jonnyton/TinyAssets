@@ -825,6 +825,10 @@ def test_append_one_line_chains_a_fetch_effect_into_the_write_in_one_run(tmp_pat
     persisted = evidence["fetch"][sink]["response"]
     assert persisted["body_truncated"] is True and len(persisted["body"]) == 4096
     assert persisted["body_chars"] > 4096 and len(persisted["body_sha256"]) == 64
+    # ...and the preview says how to use the whole body, naming THIS node
+    # (live 2026-08-30: a universe met the preview and looped on it).
+    assert '{"$ta.effect": "fetch.response.body"}' in persisted["body_hint"]
+    assert "one run" in persisted["body_hint"] and "run_graph inputs" in persisted["body_hint"]
 
 
 def test_effect_reference_sees_only_earlier_nodes(tmp_path, monkeypatch):

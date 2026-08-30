@@ -462,12 +462,18 @@ def apply_body_transforms(
         return None, str(exc)
 
 
-def bounded_evidence(result: dict[str, Any]) -> dict[str, Any]:
+def bounded_evidence(result: dict[str, Any], *, node_id: str = "") -> dict[str, Any]:
     """The copy of an effect result that is PERSISTED and later shown to a
     model: a response body longer than ``_EVIDENCE_BODY_PREVIEW_CHARS`` is
     replaced by a preview plus its size and digest. The full result stays
     in memory for later nodes' ``$ta.effect`` in the same run (Codex round
-    2, P1: a fetched file must not re-enter a model through read_graph)."""
+    2, P1: a fetched file must not re-enter a model through read_graph).
+
+    The preview says HOW to use the whole body, at the moment a model sees
+    it is cut: live 2026-08-30 the founder's universe fetched a README in
+    one run, met the preview, tried to push the text back through run_graph
+    inputs and reported a "truncation loop" - the two-node fetch->write shape
+    is in write_graph's docs, but the hint has to be where the failure is."""
     response = result.get("response") if isinstance(result, dict) else None
     if not isinstance(response, dict):
         return result
@@ -487,11 +493,21 @@ def bounded_evidence(result: dict[str, Any]) -> dict[str, Any]:
         persisted.pop("headers", None)
         persisted["header_names"] = sorted(str(k) for k in headers)
     if long_body:
+        ref = f"{node_id or '<this node id>'}.response.body"
         persisted.update({
             "body": body[:_EVIDENCE_BODY_PREVIEW_CHARS],
             "body_truncated": True,
             "body_chars": len(body),
             "body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+            "body_hint": (
+                "Preview only - the full body never reaches a model. To use ALL of "
+                "it, add a LATER node to the SAME branch whose packet references it "
+                f"in place, e.g. {{\"$ta.effect\": \"{ref}\"}} (or "
+                f"\"{ref}.<field>\", wrapped in {{\"$ta.from_base64\": ...}} / "
+                "{\"$ta.base64\": ...} as the target API needs), then run the branch "
+                "ONCE: fetch and write happen in one run. Never copy, re-type or pass "
+                "the text through run_graph inputs."
+            ),
         })
     bounded["response"] = persisted
     return bounded
