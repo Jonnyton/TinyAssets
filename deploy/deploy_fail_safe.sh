@@ -537,15 +537,30 @@ validate_bundle() {
   if ! TINYASSETS_IMAGE="$NEW_IMAGE" docker compose --env-file "$ENV_FILE" \
         -f "${BUNDLE_WORK}/compose.yml" config --format json >"$cfg" 2>"${cfg}.err"; then
     err "staged compose.yml does not parse with ${ENV_FILE}: $(head -c 800 "${cfg}.err" 2>/dev/null)"
-    rm -f "$cfg" "${cfg}.err"
+    rm -f "$cfg" "${cfg}.err" "${cfg}.raw" "${cfg}.raw.err"
+    return 1
+  fi
+  # A second, UNINTERPOLATED render for the env_file posture. Compose v5 (the
+  # droplet runs v5.1.3) resolves every env_file into `environment` and drops
+  # the `env_file` key from the default render, so the first deploy after
+  # #2685 was refused with "daemon.env_file is []" (2026-08-30 00:34Z, run
+  # 33283629722) although the staged file carried it. `--no-interpolate`
+  # keeps `env_file` as {path, required} mappings; paths are literals, so
+  # interpolation is not needed to read them.
+  if ! TINYASSETS_IMAGE="$NEW_IMAGE" docker compose --env-file "$ENV_FILE" \
+        -f "${BUNDLE_WORK}/compose.yml" config --format json --no-interpolate \
+        >"${cfg}.raw" 2>"${cfg}.raw.err"; then
+    err "staged compose.yml does not render uninterpolated: $(head -c 800 "${cfg}.raw.err" 2>/dev/null)"
+    rm -f "$cfg" "${cfg}.err" "${cfg}.raw" "${cfg}.raw.err"
     return 1
   fi
   # argv[1] is the RENDERED config; argv[2] is the RAW source, because the
   # rendered daemon image proves only that THIS invocation resolved to the
   # candidate — a literal candidate ref, or a different variable that happens to
-  # resolve the same, renders identically (Codex round 2, §2).
+  # resolve the same, renders identically (Codex round 2, §2). argv[3] is the
+  # uninterpolated render (env_file survives there).
   RUNTIME_DIR="$RUNTIME_DIR" EXPECT_IMAGE="$NEW_IMAGE" ENV_FILE="$ENV_FILE" \
-    python3 - "$cfg" "${BUNDLE_WORK}/compose.yml" <<'PY'
+    python3 - "$cfg" "${BUNDLE_WORK}/compose.yml" "${cfg}.raw" <<'PY'
 import json
 import os
 import re
@@ -559,8 +574,11 @@ with open(sys.argv[1], encoding="utf-8") as handle:
     config = json.load(handle)
 with open(sys.argv[2], encoding="utf-8") as handle:
     source_lines = handle.read().splitlines()
+with open(sys.argv[3], encoding="utf-8") as handle:
+    uninterpolated = json.load(handle)
 
 services = config.get("services") or {}
+raw_services = uninterpolated.get("services") or {}
 problems = []
 
 
@@ -694,7 +712,11 @@ for service, prefix in (
 # file, no data volume and no healthcheck converges "successfully" and serves
 # nothing: no secrets, an empty /data, and a container docker will never report
 # unhealthy no matter what it is doing.
-daemon_env_files = svc("daemon").get("env_file") or []
+# Read env_file from the uninterpolated render (Compose v5 drops it from the
+# interpolated one); fall back to the interpolated render for older Compose.
+raw_daemon = raw_services.get("daemon")
+raw_daemon = raw_daemon if isinstance(raw_daemon, dict) else {}
+daemon_env_files = raw_daemon.get("env_file") or svc("daemon").get("env_file") or []
 env_file_paths = [
     entry if isinstance(entry, str) else (entry or {}).get("path", "")
     for entry in daemon_env_files
@@ -819,7 +841,7 @@ print(
 )
 PY
   rc=$?
-  rm -f "$cfg" "${cfg}.err"
+  rm -f "$cfg" "${cfg}.err" "${cfg}.raw" "${cfg}.raw.err"
   return $rc
 }
 

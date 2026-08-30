@@ -218,13 +218,21 @@ def normalise_volumes(volumes):
     return out
 
 
-def compose_config(compose_file, env_values):
+def compose_config(compose_file, env_values, interpolate_values=True):
+    """Mirror the one Compose v5.1.3 behaviour the validator depends on: the
+    default render DROPS the `env_file` key (the real CLI inlines those files
+    into `environment`; this fake only drops the key and does not read them,
+    so its `environment` is not Compose-faithful); `--no-interpolate` keeps
+    `env_file`, normalised to {path, required} mappings, and leaves `${VAR}`
+    unresolved. The earlier fake kept `env_file` verbatim, which is why #2685
+    was green in CI and refused in production ("daemon.env_file is []",
+    2026-08-30 00:34Z)."""
     with open(compose_file, encoding="utf-8") as handle:
         raw = handle.read()
     # Shell environment wins over the env file, exactly as compose interpolates.
     values = dict(env_values)
     values.update({k: v for k, v in os.environ.items() if v})
-    data = yaml.safe_load(interpolate(raw, values)) or {}
+    data = yaml.safe_load(interpolate(raw, values) if interpolate_values else raw) or {}
     active = set(filter(None, os.environ.get("COMPOSE_PROFILES", "").split(",")))
     services = {}
     for name, service in (data.get("services") or {}).items():
@@ -236,6 +244,16 @@ def compose_config(compose_file, env_values):
             service["mem_limit"] = to_bytes(service["mem_limit"])
         if "volumes" in service:
             service["volumes"] = normalise_volumes(service["volumes"])
+        env_files = service.pop("env_file", None)
+        if interpolate_values:
+            pass                                   # inlined into environment; key dropped
+        elif env_files is not None:
+            if isinstance(env_files, str):
+                env_files = [env_files]
+            service["env_file"] = [
+                entry if isinstance(entry, dict) else {"path": entry, "required": True}
+                for entry in env_files
+            ]
         services[name] = service
     data["services"] = services
     return data
@@ -310,7 +328,9 @@ def main(argv):
         env_values = read_env_file(env_file)
         if "config" in argv:
             try:
-                config = compose_config(compose_file, env_values)
+                config = compose_config(
+                    compose_file, env_values, interpolate_values="--no-interpolate" not in argv,
+                )
             except SystemExit:
                 raise
             except Exception as exc:  # noqa: BLE001 - mirrors compose's own exit 1
