@@ -900,6 +900,29 @@ def write_graph(
                      "path": "<a path from the connection's allow-list>",
                      "body": { ... }}}      # JSON body to send
 
+    **Writing a file through an API that takes base64 (a contents API):
+    NEVER generate base64 and NEVER re-type a file - both corrupt it (live
+    2026-08-29: `422 not valid Base64`, then a file with 87 lines collapsed,
+    then a "repair" with 36 typos).** Put text in a transform and reference the
+    fetched bytes; the effector does the encoding and the byte-moving. Build TWO
+    nodes in ONE branch, each with ``effects: ["authenticated_external_call"]``:
+    ``fetch`` emits a GET packet for the file; ``write`` (listed after it)
+    emits a PUT packet whose body uses::
+
+        {"message": "docs: append a line",
+         "sha":     {"$ta.effect": "fetch.response.body.sha"},
+         "branch":  "<branch>",
+         "content": {"$ta.base64": {"$ta.concat": [
+                        {"$ta.from_base64": {"$ta.effect": "fetch.response.body.content"}},
+                        "<the new line>\n"]}}}
+
+    ``$ta.effect`` reads an EARLIER node's ``response.body`` / ``response.status``
+    in the same run - "earlier" means listed earlier in the branch, so store
+    ``fetch`` before ``write``; ``$ta.ref`` reads one of the node's own declared
+    ``input_keys`` from state; ``$ta.from_base64`` / ``$ta.base64`` decode and
+    encode (UTF-8 text files); ``$ta.concat`` joins. The model writes only the
+    new line.
+
     ``connection_id`` and ``grant_id`` are REQUIRED and must be the exact ids from
     connect_http; ``verb`` is the HTTP method (it is matched against the connection's
     granted scope). Give the node ``effects: ["authenticated_external_call"]``, one

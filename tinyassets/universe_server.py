@@ -831,6 +831,15 @@ def write_graph(
             generic http connection (auth_scheme bearer). Owner-only; the secret is
             vaulted and never echoed. Then grant effector consent for the
             destination and build a node whose effect is authenticated_external_call.
+            To WRITE A FILE through an API that takes base64 (a contents API),
+            NEVER generate base64 and NEVER re-type the file - both corrupt it.
+            Build two nodes in one branch, both with that effect: `fetch` (a GET
+            packet, stored first) then `write`, whose PUT body uses
+            {"sha": {"$ta.effect": "fetch.response.body.sha"}, "content":
+            {"$ta.base64": {"$ta.concat": [{"$ta.from_base64": {"$ta.effect":
+            "fetch.response.body.content"}}, "<the new line>\n"]}}} - the
+            effector decodes, joins and encodes (UTF-8 text files); the model
+            writes only the new line.
             For target=connection operation=connect_compute, pass
             {"access_method": "api_key_http", "protocol": "openai_chat"|
             "anthropic_messages", "model": "<model>", "ref": "<grant_id of an http

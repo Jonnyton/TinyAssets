@@ -34,6 +34,59 @@ The packet is fully user-specified; the platform validates SHAPE, not channel:
       }
     }
 
+BODY TRANSFORMS. Besides shape, this effector knows exactly two more things:
+one encoding, and the run it belongs to. Anywhere in ``request.body`` a
+one-key object whose key is one of the five names below is applied before the
+request leaves - so a node writes TEXT and references BYTES, and never
+hand-produces base64 or re-types a file (live 2026-08-29: model-generated
+base64 came back ``422 not valid Base64``, then as valid base64 of a
+transcribed file that lost 87 lines, then a "repair" that re-typed the file
+with 36 differences). The ``$ta.`` namespace is RESERVED: a user's own API
+keys (``$ref`` of JSON Schema, ``$set``) are never interpreted, and an unknown
+``$ta.*`` spelling is refused rather than sent as payload.
+
+    {"$ta.base64": X}         the base64 of X's UTF-8 bytes
+    {"$ta.from_base64": X}    the UTF-8 text of base64 X (whitespace-tolerant;
+                              bytes that are not UTF-8 text are refused - this
+                              is for text files)
+    {"$ta.ref": "key.a.0.b"}  a value from the run's state; the root ``key``
+                              MUST be one of the emitting node's declared
+                              ``input_keys`` or a state_schema-defaulted key
+                              (narrower than the compiler's render view on
+                              purpose: an effect reads less, never more);
+                              JSON-encoded strings are traversed, lists by index
+    {"$ta.effect": "node.response.body.x"}
+                              from the evidence of an EARLIER node's effect in
+                              the SAME run - only ``response.body`` (the
+                              sanitized text the worker returned, traversed
+                              as JSON) and ``response.status``; never headers.
+                              "Earlier" is the order nodes are STORED in the
+                              branch (``write_graph`` appends in the order
+                              given), which is the order effects fire in
+    {"$ta.concat": [X, ...]}  the texts joined
+
+X may itself be a transform. Bounds, all refused as ``invalid_body_transform``
+before anything is sent: nesting deeper than 32 anywhere in the body; a
+cumulative working set over ``_MAX_TRANSFORM_WORK_BYTES`` (charged in bytes
+as each value is produced - text as UTF-8, referenced objects as their JSON -
+so a reference repeated a hundred times is refused as soon as the charges
+cross the budget, not after allocating them all); a transformed body over
+``_MAX_TRANSFORMED_BODY_BYTES``. So "append one line to a fetched text file"
+is a two-node branch: ``fetch`` (stored first) emits a GET packet; ``write``
+emits
+
+    {"sha":     {"$ta.effect": "fetch.response.body.sha"},
+     "content": {"$ta.base64": {"$ta.concat": [
+                    {"$ta.from_base64": {"$ta.effect": "fetch.response.body.content"}},
+                    "the new line\n"]}}}
+
+and the model authored only the line - in ONE run, so the fetched bytes never
+pass through a model or a second ``run_graph``. Refusals are whole: a wrong
+type, an unfenced or unresolvable path, or any bound above returns the
+secret-free ``invalid_body_transform`` error and nothing is sent. A body with
+no ``$ta.*`` transform is sent byte-for-byte as before (its own ``$``-keys
+included).
+
 CREDENTIAL-BLINDNESS. This effector NEVER resolves or sees the credential. It
 resolves an exact scoped proxy under the universe's own authority and hands the
 wire request to ``proxy.request(verb, request)``. The credential is applied
@@ -54,6 +107,8 @@ payload-supplied identity.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
 import urllib.parse
@@ -111,6 +166,320 @@ def _find_packet(
 def _str_field(source: dict[str, Any], key: str) -> str:
     value = source.get(key)
     return value.strip() if isinstance(value, str) else ""
+
+
+# --------------------------------------------------------------------------- #
+# Body transforms - one encoding and the run's own data, applied before the wire
+# --------------------------------------------------------------------------- #
+_OP_PREFIX = "$ta."
+_OP_BASE64 = "$ta.base64"
+_OP_FROM_BASE64 = "$ta.from_base64"
+_OP_REF = "$ta.ref"
+_OP_EFFECT = "$ta.effect"
+_OP_CONCAT = "$ta.concat"
+_TRANSFORM_OPS = (_OP_BASE64, _OP_FROM_BASE64, _OP_REF, _OP_EFFECT, _OP_CONCAT)
+_MAX_TRANSFORM_DEPTH = 32
+#: The transformed body is serialized in-process before the worker frames it
+#: (the frame itself is bounded at 16 MiB downstream).
+_MAX_TRANSFORMED_BODY_BYTES = 8 * 1024 * 1024
+#: Every value a transform PRODUCES is charged (in characters) against this
+#: working-set budget BEFORE the next allocation, so a body that references a
+#: large fetched blob many times is refused at the second copy instead of
+#: after materialising them all (Codex round 2, P0). A legitimate append to a
+#: 3.6 MiB text file (the largest a 5 MiB wrapped response can carry) costs
+#: about 13 MiB of working set: reference + decode + join + encode.
+_MAX_TRANSFORM_WORK_BYTES = 32 * 1024 * 1024
+#: The evidence that is PERSISTED (and later shown to a model through
+#: ``read_graph target="run"``) keeps only this much of a response body and
+#: no header values; the full response is still available to later nodes'
+#: transforms in the same run.
+_EVIDENCE_BODY_PREVIEW_CHARS = 4096
+_EFFECT_READABLE = ("response.body", "response.status")
+
+
+class _TransformError(ValueError):
+    """A malformed transform. The message names paths and types, never values."""
+
+
+def _is_transform(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and len(value) == 1
+        and next(iter(value)) in _TRANSFORM_OPS
+    )
+
+
+def _reserved_misuse(value: Any) -> str | None:
+    """The offending key when a dict uses the reserved ``$ta.`` namespace in
+    any way other than a one-key object naming an operator: an unknown name,
+    or an operator key sitting beside other keys (Codex round 3, P2)."""
+    if not isinstance(value, dict):
+        return None
+    for key in value:
+        if isinstance(key, str) and key.startswith(_OP_PREFIX):
+            if key not in _TRANSFORM_OPS or len(value) != 1:
+                return key
+    return None
+
+
+def _scan_body(body: Any) -> bool:
+    """True when a transform is present anywhere. Iterative (no recursion
+    limit to trip) and depth-bounded: a body nested deeper than
+    ``_MAX_TRANSFORM_DEPTH`` is refused whether or not it holds a transform,
+    and a reserved-but-unknown ``$ta.*`` key is refused here too."""
+    found = False
+    stack: list[tuple[Any, int]] = [(body, 0)]
+    while stack:
+        value, depth = stack.pop()
+        if depth > _MAX_TRANSFORM_DEPTH:
+            raise _TransformError(f"body nested deeper than {_MAX_TRANSFORM_DEPTH}")
+        misuse = _reserved_misuse(value)
+        if misuse is not None:
+            raise _TransformError(
+                f"unknown transform {misuse!r}"
+                if misuse not in _TRANSFORM_OPS
+                else f"{misuse!r} must be the only key of its object"
+            )
+        if _is_transform(value):
+            found = True
+        if isinstance(value, dict):
+            stack.extend((item, depth + 1) for item in value.values())
+        elif isinstance(value, list):
+            stack.extend((item, depth + 1) for item in value)
+    return found
+
+
+def _walk(path: str, root: Any, *, label: str) -> Any:
+    """Descend a dotted path; JSON-encoded strings are traversed, lists by index."""
+    node: Any = root
+    walked: list[str] = []
+    for part in path.split("."):
+        here = ".".join(walked) or "<root>"
+        if isinstance(node, str):
+            stripped = node.strip()
+            if stripped[:1] not in ("{", "["):
+                raise _TransformError(f"{label} {path!r}: value at {here} is text, not JSON")
+            try:
+                node = json.loads(stripped)
+            except ValueError as exc:
+                raise _TransformError(f"{label} {path!r}: value at {here} is not JSON") from exc
+        if isinstance(node, dict):
+            if part not in node:
+                raise _TransformError(f"{label} {path!r}: no key {part!r} at {here}")
+            node = node[part]
+        elif isinstance(node, list):
+            try:
+                index = int(part)
+            except ValueError as exc:
+                raise _TransformError(
+                    f"{label} {path!r}: {part!r} is not a list index at {here}"
+                ) from exc
+            if not -len(node) <= index < len(node):
+                raise _TransformError(f"{label} {path!r}: index {index} out of range at {here}")
+            node = node[index]
+        else:
+            raise _TransformError(
+                f"{label} {path!r}: cannot descend into {type(node).__name__} at {here}"
+            )
+        walked.append(part)
+    return node
+
+
+def _split_root(path: Any, label: str) -> tuple[str, str]:
+    if not isinstance(path, str) or not path.strip():
+        raise _TransformError(f"{label} must be a non-empty dotted path")
+    root, _, rest = path.partition(".")
+    return root, rest
+
+
+class _TransformContext:
+    """What a packet may read, and how much work it may cause."""
+
+    __slots__ = ("run_state", "allowed_state_keys", "prior_effects", "work")
+
+    def __init__(self, run_state, allowed_state_keys, prior_effects):
+        self.run_state = run_state or {}
+        self.allowed_state_keys = None if allowed_state_keys is None else set(allowed_state_keys)
+        self.prior_effects = prior_effects or {}
+        self.work = 0
+
+    def charge(self, nbytes: int) -> None:
+        self.work += max(int(nbytes), 0)
+        if self.work > _MAX_TRANSFORM_WORK_BYTES:
+            raise _TransformError(
+                f"transforms would produce more than {_MAX_TRANSFORM_WORK_BYTES} "
+                "bytes in total"
+            )
+
+    def produced(self, value: Any) -> Any:
+        """Charge a produced value by its size in BYTES: text as UTF-8, anything
+        else as its JSON encoding (a referenced object is serialized into the
+        body later, so it counts now). A value JSON cannot carry is refused
+        here, not at the final dump (Codex round 3, P0/P1)."""
+        self.charge(_byte_size(value))
+        return value
+
+    def ref(self, path: Any) -> Any:
+        root, rest = _split_root(path, _OP_REF)
+        if self.allowed_state_keys is None:
+            raise _TransformError(
+                f"{_OP_REF} {path!r}: this node declares no readable state keys"
+            )
+        if root not in self.allowed_state_keys:
+            raise _TransformError(
+                f"{_OP_REF} {path!r}: {root!r} is not among the node's declared "
+                "input_keys (or schema-defaulted keys)"
+            )
+        if root not in self.run_state:
+            raise _TransformError(f"{_OP_REF} {path!r}: {root!r} is not in the run's state")
+        value = self.run_state[root]
+        return self.produced(_walk(rest, value, label=_OP_REF) if rest else value)
+
+    def effect(self, path: Any) -> Any:
+        root, rest = _split_root(path, _OP_EFFECT)
+        if root not in self.prior_effects:
+            raise _TransformError(
+                f"{_OP_EFFECT} {path!r}: no earlier node {root!r} with an "
+                f"{EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL} effect in this run"
+            )
+        readable = rest in ("response.status", "response.body") or rest.startswith("response.body.")
+        if not readable:
+            raise _TransformError(
+                f"{_OP_EFFECT} {path!r}: only {' and '.join(_EFFECT_READABLE)} of an "
+                "earlier effect may be referenced"
+            )
+        return self.produced(_walk(rest, self.prior_effects[root], label=_OP_EFFECT))
+
+
+def _byte_size(value: Any) -> int:
+    if isinstance(value, str):
+        return len(value.encode("utf-8"))
+    if value is None or isinstance(value, (bool, int, float)):
+        return 32
+    try:
+        return len(json.dumps(value, separators=(",", ":")).encode("utf-8"))
+    except (TypeError, ValueError) as exc:
+        raise _TransformError(
+            f"a referenced value of type {type(value).__name__} cannot be sent as JSON"
+        ) from exc
+
+
+def _as_text(value: Any, what: str) -> str:
+    if isinstance(value, str):
+        return value
+    raise _TransformError(f"{what} must resolve to text, got {type(value).__name__}")
+
+
+def _apply_transforms(value: Any, ctx: _TransformContext, depth: int = 0) -> Any:
+    if depth > _MAX_TRANSFORM_DEPTH:
+        raise _TransformError(f"body transforms nested deeper than {_MAX_TRANSFORM_DEPTH}")
+    if _is_transform(value):
+        op, arg = next(iter(value.items()))
+        if op == _OP_REF:
+            return ctx.ref(arg)
+        if op == _OP_EFFECT:
+            return ctx.effect(arg)
+        if op == _OP_CONCAT:
+            if not isinstance(arg, list):
+                raise _TransformError(f"{_OP_CONCAT} takes a list")
+            parts = [
+                _as_text(_apply_transforms(part, ctx, depth + 1), f"{_OP_CONCAT} part")
+                for part in arg
+            ]
+            ctx.charge(sum(_byte_size(part) for part in parts))   # the join, before it exists
+            return "".join(parts)
+        if op == _OP_FROM_BASE64:
+            text = _as_text(_apply_transforms(arg, ctx, depth + 1), _OP_FROM_BASE64)
+            ctx.charge(len(text))                           # decoded bytes <= input chars
+            try:
+                raw = base64.b64decode("".join(text.split()), validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise _TransformError(f"{_OP_FROM_BASE64}: not valid base64") from exc
+            try:
+                return raw.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise _TransformError(
+                    f"{_OP_FROM_BASE64}: bytes are not UTF-8 text (text files only)"
+                ) from exc
+        text = _as_text(_apply_transforms(arg, ctx, depth + 1), _OP_BASE64)
+        raw = text.encode("utf-8")
+        ctx.charge(len(raw) + (len(raw) * 4 + 2) // 3)     # the bytes + their encoding
+        return base64.b64encode(raw).decode("ascii")
+    if isinstance(value, dict):
+        return {key: _apply_transforms(item, ctx, depth + 1) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_apply_transforms(item, ctx, depth + 1) for item in value]
+    return value
+
+
+def apply_body_transforms(
+    body: Any,
+    run_state: dict[str, Any] | None = None,
+    *,
+    allowed_state_keys: list[str] | set[str] | None = None,
+    prior_effects: dict[str, Any] | None = None,
+) -> tuple[Any, str | None]:
+    """Return ``(body, None)`` with every transform applied, or ``(None, why)``.
+
+    A body without transforms is returned as the SAME object, untouched.
+    ``allowed_state_keys`` fences ``$ta.ref`` (``None`` = nothing readable);
+    ``prior_effects`` maps earlier node ids to their effect evidence.
+    """
+    try:
+        if not _scan_body(body):
+            return body, None
+        ctx = _TransformContext(run_state, allowed_state_keys, prior_effects)
+        transformed = _apply_transforms(body, ctx)
+        try:
+            serialized = (
+                transformed if isinstance(transformed, str) else json.dumps(transformed)
+            )
+        except (TypeError, ValueError) as exc:
+            raise _TransformError("transformed body is not JSON-serializable") from exc
+        size = len(serialized.encode("utf-8"))
+        if size > _MAX_TRANSFORMED_BODY_BYTES:
+            raise _TransformError(
+                f"transformed body is {size} bytes; the bound is "
+                f"{_MAX_TRANSFORMED_BODY_BYTES}"
+            )
+        return transformed, None
+    except _TransformError as exc:
+        return None, str(exc)
+
+
+def bounded_evidence(result: dict[str, Any]) -> dict[str, Any]:
+    """The copy of an effect result that is PERSISTED and later shown to a
+    model: a response body longer than ``_EVIDENCE_BODY_PREVIEW_CHARS`` is
+    replaced by a preview plus its size and digest. The full result stays
+    in memory for later nodes' ``$ta.effect`` in the same run (Codex round
+    2, P1: a fetched file must not re-enter a model through read_graph)."""
+    response = result.get("response") if isinstance(result, dict) else None
+    if not isinstance(response, dict):
+        return result
+    body = response.get("body")
+    long_body = isinstance(body, str) and len(body) > _EVIDENCE_BODY_PREVIEW_CHARS
+    headers = response.get("headers")
+    if not long_body and not isinstance(headers, dict):
+        return result
+    import hashlib
+
+    bounded = dict(result)
+    persisted = dict(response)
+    if isinstance(headers, dict):
+        # The worker returns every response header and only strips exact
+        # credential echoes; a rotated cookie would otherwise sit in the run
+        # record forever (Codex round 3, P1). Names are kept, values are not.
+        persisted.pop("headers", None)
+        persisted["header_names"] = sorted(str(k) for k in headers)
+    if long_body:
+        persisted.update({
+            "body": body[:_EVIDENCE_BODY_PREVIEW_CHARS],
+            "body_truncated": True,
+            "body_chars": len(body),
+            "body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        })
+    bounded["response"] = persisted
+    return bounded
 
 
 # --------------------------------------------------------------------------- #
@@ -294,6 +663,8 @@ def run_authenticated_external_call_effector(
     base_path: str | Path | None = None,
     run_id: str = "",
     dry_run: bool | None = None,
+    allowed_state_keys: list[str] | set[str] | None = None,
+    prior_effects: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Dispatch one ``authenticated_external_call`` packet. NEVER raises.
 
@@ -309,6 +680,8 @@ def run_authenticated_external_call_effector(
             run_state=run_state,
             base_path=base_path,
             run_id=run_id,
+            allowed_state_keys=allowed_state_keys,
+            prior_effects=prior_effects,
         )
     except Exception as exc:  # defensive — never raise from the completion path
         logger.exception(
@@ -327,6 +700,8 @@ def _run(
     run_state: dict[str, Any],
     base_path: str | Path | None,
     run_id: str,
+    allowed_state_keys: list[str] | set[str] | None = None,
+    prior_effects: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     matched_key, packet = _find_packet(output_keys=output_keys, run_state=run_state)
     if packet is None:
@@ -455,7 +830,19 @@ def _run(
     if headers is not None:
         wire_request["headers"] = headers
     if "body" in request:
-        wire_request["body"] = request.get("body")
+        body, transform_error = apply_body_transforms(
+            request.get("body"), run_state,
+            allowed_state_keys=allowed_state_keys, prior_effects=prior_effects,
+        )
+        if transform_error:
+            # Refused whole: a half-transformed body must never reach the wire.
+            return {
+                "error": f"body transform refused: {transform_error}",
+                "error_kind": "invalid_body_transform",
+                "matched_output_key": matched_key,
+                "connection_id": connection_id,
+            }
+        wire_request["body"] = body
     header_name = _str_field(request, "header_name")
     if header_name:
         wire_request["header_name"] = header_name
@@ -503,5 +890,7 @@ def _run(
 
 __all__ = [
     "EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL",
+    "apply_body_transforms",
+    "bounded_evidence",
     "run_authenticated_external_call_effector",
 ]

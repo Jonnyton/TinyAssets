@@ -67,7 +67,7 @@ def _binding_payload() -> dict[str, object]:
         "permitted_executor_classes": ["cloud"],
         "daemon_id": "daemon_spec_drain",
         "runtime_id": None,
-        "expires_at": "2026-08-30T00:00:00Z",
+        "expires_at": "2099-01-01T00:00:00Z",
         "max_attempts": 25,
         "remaining_depth": 4,
         "remaining_count": 24,

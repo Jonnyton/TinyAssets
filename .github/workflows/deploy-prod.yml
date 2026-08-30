@@ -177,16 +177,63 @@ jobs:
           echo "prev_image=${prev}" >> "$GITHUB_OUTPUT"
           echo "current prod image (running, digest): ${prev:-<none>}"
 
-      - name: Install the daemon systemd unit from this checkout
-        # The unit is part of the deploy, not a one-time bootstrap: a stale or
-        # broken installed unit is exactly how 2026-08-21's false-green deploys
-        # happened. Reload only; the fail-safe script converges the stack.
+      - name: Sync runtime deploy files
+        # compose.yml, the vector configs and the systemd unit are part of the
+        # deploy, not a one-time bootstrap. PR #2442 dropped this sync and every
+        # compose-level change went silently inert in production for nine days
+        # (docs/concerns/2026-08-27-deploy-drops-compose-sync.md, resolved 2026-08-29
+        # after the droplet's live copy was diffed against the repo: identical
+        # daemon/cloudflared/logs directives, drift only in comments, two env keys
+        # the env file also carries, and vector.yaml's retired worker role).
+        #
+        # This step only STAGES. It installs nothing. A cross-family review of the
+        # first restore (Codex, 2026-08-29) showed that installing here mutates
+        # config OUTSIDE the fail-safe transaction: the auth-volume step below,
+        # the deploy_fail_safe.sh scp, the host-mutation lock and the candidate
+        # image preflight can all fail AFTER the new config is live, leaving the
+        # new compose file under the old image with no rollback path that
+        # restores it. deploy_fail_safe.sh now owns validate -> snapshot ->
+        # install -> converge -> restore for this bundle; see its header and
+        # deploy/DEPLOY.md ("Runtime bundle transaction").
+        id: stage_bundle
         run: |
           set -euo pipefail
-          scp -i ~/.ssh/do_deploy -o BatchMode=yes deploy/tinyassets-daemon.service \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-daemon.service"
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo install -m 0644 -o root -g root /tmp/tinyassets-daemon.service /etc/systemd/system/tinyassets-daemon.service && sudo systemctl daemon-reload && echo 'unit installed + reloaded'"
+          # Per-run directory, not a shared /tmp/tinyassets-bundle. A shared path
+          # is populated here, BEFORE the script's host-mutation lock exists, so
+          # a concurrent deploy or a manual run could swap the bytes between the
+          # script's validation and its install (Codex round 2). The script also
+          # copies this into a private directory under the lock; the per-run name
+          # keeps two workflow runs from clobbering each other's stage first.
+          stage="/tmp/tinyassets-bundle-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "stage=${stage}" >> "$GITHUB_OUTPUT"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo bash -s '${DO_SSH_USER}' '${stage}'" <<'SH'
+          set -euo pipefail
+          owner="$1"
+          stage="$2"
+          case "${stage}" in
+            /tmp/tinyassets-bundle-*) : ;;
+            *) echo "refusing to stage into an unexpected path: ${stage}" >&2; exit 1 ;;
+          esac
+          rm -rf "${stage}"
+          mkdir -p "${stage}"
+          chown "${owner}:" "${stage}"
+          chmod 0750 "${stage}"
+          # Sweep stages older than a day so a failed run does not accumulate.
+          find /tmp -maxdepth 1 -name 'tinyassets-bundle-*' -type d -mtime +1 \
+            -exec rm -rf {} + 2>/dev/null || true
+          echo "staged bundle directory ${stage} (owner ${owner})"
+          SH
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/compose.yml \
+              deploy/vector.yaml \
+              deploy/vector-betterstack.yaml \
+              deploy/vector-entrypoint.sh \
+              deploy/tinyassets-daemon.service \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:${stage}/"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" "ls -l '${stage}/'"
 
       - name: Prepare codex auth persistent volume
         run: |
@@ -246,6 +293,7 @@ jobs:
         id: deploy
         env:
           IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
+          BUNDLE_DIR: ${{ steps.stage_bundle.outputs.stage }}
         run: |
           set -euo pipefail
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
@@ -253,7 +301,7 @@ jobs:
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/"
           set +e
           out="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo HEALTH_TIMEOUT=180 bash /tmp/deploy_fail_safe.sh '${IMAGE_REF}'")"
+                "sudo HEALTH_TIMEOUT=180 BUNDLE_DIR='${BUNDLE_DIR}' bash /tmp/deploy_fail_safe.sh '${IMAGE_REF}'")"
           rc=$?
           set -e
           echo "${out}"
@@ -287,8 +335,16 @@ jobs:
           if [ -z "${PREV_IMAGE}" ]; then
             echo "::error::no previous image captured; manual rollback required"; exit 3
           fi
+          # --restore-bundle, not a plain invocation: the forward deploy installed
+          # a new compose.yml / vector config / systemd unit inside its
+          # transaction, so converging the previous IMAGE against the new CONFIG
+          # would roll back half the change. This reinstalls the snapshot named by
+          # /var/lib/tinyassets-deploy/bundle-previous first, then converges
+          # PREV_IMAGE (and force-recreates tinyassets-logs if the restore moved a
+          # vector input). It never installs the staged bundle — that is what it
+          # is undoing.
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-            "sudo HEALTH_TIMEOUT=180 bash /tmp/deploy_fail_safe.sh '${PREV_IMAGE}'"
+            "sudo HEALTH_TIMEOUT=180 bash /tmp/deploy_fail_safe.sh --restore-bundle '${PREV_IMAGE}'"
 
       - name: Publish release-state receipt
         if: ${{ success() }}
