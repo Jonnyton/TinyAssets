@@ -364,9 +364,11 @@ def test_compose_env_file_covers_daemon_service():
 def test_compose_codex_auth_home_is_shared_data_volume():
     """Services that invoke codex must share one persistent CODEX_HOME.
 
-    `slack-agent` is deliberately absent: it mounts no data volume and holds no
-    provider auth. The four `worker*` services were deleted on 2026-08-29 with
-    the host-run fleet (nothing runs outside a user's universe -- PLAN.md).
+    `slack-agent` is deliberately absent: it holds no provider auth, and its
+    `tinyassets-data` mount (adopted from production 2026-08-29) is READ-ONLY,
+    so it cannot be a CODEX_HOME. The four `worker*` services were deleted on
+    2026-08-29 with the host-run fleet (nothing runs outside a user's universe
+    -- PLAN.md).
     """
     yaml = __import__("yaml")
     data = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
