@@ -825,6 +825,10 @@ def test_append_one_line_chains_a_fetch_effect_into_the_write_in_one_run(tmp_pat
     persisted = evidence["fetch"][sink]["response"]
     assert persisted["body_truncated"] is True and len(persisted["body"]) == 4096
     assert persisted["body_chars"] > 4096 and len(persisted["body_sha256"]) == 64
+    # ...and the preview says how to use the whole body, naming THIS node
+    # (live 2026-08-30: a universe met the preview and looped on it).
+    assert '{"$ta.effect": "fetch.response.body"}' in persisted["body_hint"]
+    assert "one run" in persisted["body_hint"] and "run_graph inputs" in persisted["body_hint"]
 
 
 def test_effect_reference_sees_only_earlier_nodes(tmp_path, monkeypatch):
@@ -1220,3 +1224,21 @@ def test_a_run_that_wrote_and_then_failed_stays_a_write(tmp_path, monkeypatch):
     runs_module.update_run_status(tmp_path, "run-put-then-fail",
                                   status=runs_module.RUN_STATUS_FAILED, error="release failed")
     assert _admission_kind(db, "run-put-then-fail") == "write"    # final
+
+
+def test_an_effect_reference_resolves_a_dotted_node_id():
+    """Codex on the evidence hint: `fetch.v1` is a valid node id, and the hint
+    names `fetch.v1.response.body`; the resolver used to split at the first
+    dot and report no earlier node 'fetch'."""
+    import pytest
+
+    from tinyassets.effectors.authenticated_external_call import _TransformContext, _TransformError
+
+    prior = {"fetch.v1": {"response": {"status": 200, "body": '{"sha": "abc", "content": "aGk="}'}},
+             "fetch": {"response": {"status": 200, "body": '{"sha": "other"}'}}}
+    ctx = _TransformContext({}, None, prior)
+    assert ctx.effect("fetch.v1.response.body.sha") == "abc"      # longest id wins
+    assert ctx.effect("fetch.response.body.sha") == "other"
+    assert ctx.effect("fetch.v1.response.status") == 200
+    with pytest.raises(_TransformError):
+        ctx.effect("fetch.v2.response.body.sha")                    # still refused
