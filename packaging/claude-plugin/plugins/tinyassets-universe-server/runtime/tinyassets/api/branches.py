@@ -1747,10 +1747,12 @@ def _lookup_node_body(
                 "approved_source_hash": nd.get("approved_source_hash", ""),
                 "approval_reason": nd.get("approval_reason", ""),
             }, ""
-    return {}, (
-        f"node '{node_id}' not found on branch '{source}'. "
-        f'Use `read_graph target="branch" branch_id="{source}"` to list its nodes.'
-    )
+    # This string flows into both build_branch and patch_branch(add_node)
+    # rejection `text` (task #58's text-channel rule) via `_apply_node_spec`
+    # -> `staging_errors`/`_apply_patch_op`'s per-op error, so it must not
+    # carry `source` (the resolved branch_def_id) -- the node id alone, and
+    # a generic "referenced branch" wording, are enough to act on.
+    return {}, f"node '{node_id}' not found on the referenced branch."
 
 
 def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
