@@ -380,6 +380,25 @@ class _TransformContext:
         return self.produced(_walk(rest, self.prior_effects[root], label=_OP_EFFECT))
 
 
+def _nearest_window(text: str, old: str, *, before: int = 60, after: int = 100) -> str | None:
+    """The input around the longest prefix of ``old`` that occurs in it, so a
+    refusal shows what the text really looks like where ``old`` stops
+    matching. Binary search on the prefix length (a prefix that occurs implies
+    every shorter one does): ~12 finds over the input, never a scan per
+    character. ``None`` when too little of ``old`` occurs to point anywhere."""
+    lo, hi = 0, min(len(old), 4096)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if text.find(old[:mid]) >= 0:
+            lo = mid
+        else:
+            hi = mid - 1
+    if lo < 8:
+        return None
+    idx = text.find(old[:lo])
+    return text[max(0, idx - before) : idx + lo + after]
+
+
 def _byte_size(value: Any) -> int:
     if isinstance(value, str):
         return len(value.encode("utf-8"))
@@ -436,9 +455,21 @@ def _apply_transforms(value: Any, ctx: _TransformContext, depth: int = 0) -> Any
                 raise _TransformError(f"{_OP_REPLACE} old must not be empty")
             found = text.count(old)
             if found == 0:
+                # The author cannot see the input (a fetched file reaches it
+                # base64-encoded and truncated), so the refusal has to carry
+                # the local truth: what the input really says where it
+                # diverges from `old`. Live 2026-08-30: two runs guessed at
+                # a newline, the file had a space there.
+                near = _nearest_window(text, old)
                 raise _TransformError(
                     f"{_OP_REPLACE}: old text not found in the input - it must match "
-                    "exactly (including whitespace); fetch the file and copy the line"
+                    "exactly (including whitespace)"
+                    + (
+                        f"; the input near the closest partial match reads {near!r} "
+                        "(newlines and spaces shown as written) - copy old from there"
+                        if near
+                        else "; fetch the file and copy the line"
+                    )
                 )
             if found != count:
                 raise _TransformError(
