@@ -339,6 +339,16 @@ def settle(run_id: str, kind: str, *, db: Path | None = None) -> bool:
                         (KIND_READ, run_id, KIND_WRITE),
                     )
                     changed = cur.rowcount >= 1
+                else:
+                    # A write settlement is final in BOTH directions: a read
+                    # that arrived first (a terminal status written while an
+                    # adapter was still running) must not leave the admission
+                    # row a read once the write is known (Codex round 3, P0).
+                    cur = conn.execute(
+                        "UPDATE admissions SET kind = ? WHERE run_id = ? AND kind = ?",
+                        (KIND_WRITE, run_id, KIND_READ),
+                    )
+                    changed = cur.rowcount >= 1
             conn.execute("DELETE FROM settlements WHERE ts < ?", (now - SETTLEMENT_TTL_S,))
             conn.commit()
             return changed

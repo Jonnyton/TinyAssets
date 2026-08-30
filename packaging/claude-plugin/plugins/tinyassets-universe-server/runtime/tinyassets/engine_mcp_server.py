@@ -287,7 +287,9 @@ def read_graph(
             per-node status, ``error``, and a structured ``failure_class`` /
             ``suggested_action`` / ``actionable_by`` - ALWAYS read this after
             ``run_graph`` before telling the user what happened, because a run can
-            fail in milliseconds, e.g. a source_code node that is not approved, and
+            fail in milliseconds, e.g. a code node that raised (``code_node_failed``,
+            the error carries its stderr) or a foreign branch's code
+            (``node_not_accepted``: remix it first), and
             "I queued it" is not an outcome; a run that reads ``running`` with
             ``phase: delivering_effects`` has finished its nodes and is delivering
             its effect, which takes SECONDS - read it again, never call it stuck
@@ -494,10 +496,14 @@ def run_graph(
 # that build_branch, called raw, still let a served turn:
 #   (1) forge an APPROVED source_code node — approval is validated only by
 #       approved_source_hash == sha256(source), a caller-computable value, and
-#       run_graph is already live → RCE. FIX: strip every approval/provenance
-#       field from every node so nodes persist UNAPPROVED; run_graph's
-#       _validate_source_code then refuses them until the founder approves the
-#       source through the browser (an authority path this surface cannot reach).
+#       run_graph is already live → RCE. FIX (2026-08-23): strip every
+#       approval/provenance field from every node. Since change
+#       `sandboxed-code-node` (2026-08-30) approval is provenance only: code
+#       never runs in-process, it runs in the OS sandbox (no network, no
+#       credentials, no files) and ONLY for a run whose caller_provenance is
+#       "own" — engine-authored code in the engine's own universe is meant to
+#       run; a foreign branch's code refuses by authorship. The strip stays as
+#       provenance hygiene.
 #   (2) fork a readable foreign version via spec.fork_from → cross-author copy.
 #       FIX: strip fork_from.
 #   (3) self-declare public / publish. FIX: force visibility=private, strip
@@ -555,11 +561,11 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
         approval is hash-only (self-computable), so a pre-forged public node copied
         in this way would run (→ RCE via the live run_graph). REJECT node_ref (a
         served agent defines nodes inline).
-      * submitted approval/author/fork on a node → strip at each node's top level so
-        the node persists UNAPPROVED (run_graph's _validate_source_code then refuses
-        it — and no user-facing surface can approve it today, so a source_code node
-        built here can never run; prefer prompt_template); publish/fork at the top
-        level → strip + force visibility=private.
+      * submitted approval/author/fork on a node → strip at each node's top level
+        (provenance hygiene: approval is provenance only since `sandboxed-code-node`;
+        a source_code node built here runs in the OS sandbox, in this universe only,
+        and never in-process); publish/fork at the top level → strip + force
+        visibility=private.
 
     Stripping is NODE-LEVEL, not recursive: a blanket recursive strip corrupted
     legitimate opaque workflow data (a user's ``state_schema.default_value`` or
@@ -934,10 +940,12 @@ def write_graph(
     + grant and pins the host/path/method allow-list. Then
     ``source_channel operation=approve`` grants the destination consent (you can
     do that part). The node's
-    delivery node MUST use ``prompt_template`` (NOT ``source_code`` — see the
-    warning below) and MUST produce, under one of its ``output_keys``, a
-    ``json.dumps`` string of a packet of EXACTLY this shape (the effector rejects
-    anything else — do NOT invent ``destination`` / ``payload`` keys)::
+    delivery node is a ``prompt_template`` node (the model emits the packet) or
+    a ``source_code`` node (``run()`` returns the packet, as a dict or a
+    ``json.dumps`` string, under an output key - see CODE NODES below) and MUST
+    produce, under one of its ``output_keys``, a packet of EXACTLY this shape
+    (the effector rejects anything else — do NOT invent ``destination`` /
+    ``payload`` keys)::
 
         {"sink": "authenticated_external_call",
          "connection_id": "<the connection_id connect_http returned>",
@@ -981,7 +989,9 @@ def write_graph(
     node's own declared ``input_keys`` from state; ``$ta.from_base64`` /
     ``$ta.base64`` decode and encode (UTF-8 text files); ``$ta.concat`` joins.
     The model writes only the new (and, for a change, the old) line - the rest
-    of the file never passes through it.
+    of the file never passes through it. For anything beyond an append or one
+    exact replacement, use a CODE NODE (below): three lines of Python over the
+    fetched body, deterministic, no operator to learn.
 
     ``connection_id`` and ``grant_id`` are REQUIRED and must be the exact ids from
     connect_http; ``verb`` is the HTTP method (it is matched against the connection's
@@ -990,19 +1000,42 @@ def write_graph(
     ``prompt_template`` that instructs the model to emit ONLY that JSON packet with
     the literal ids and body filled in — no prose, no code fences.
 
-    DO NOT build the delivery node with ``source_code``. A ``source_code`` node is
-    refused at run time until it is approved, and today NO user-facing surface can
-    approve one — not this chat, not the app (verified 2026-08-26: a founder
-    deposited an X credential, the agent built a source_code node, and the run died
-    in 43 ms with ``node_not_approved`` / ``actionable_by: host``). Telling the user
-    "approve it in the browser" is WRONG; there is no such button. If a task truly
-    needs executable code, say plainly that running user code is not available yet
-    rather than building a node that cannot run.
+    CODE NODES. A node with ``source_code`` instead of ``prompt_template`` runs
+    deterministic Python in an OS sandbox - no network, no credentials, no
+    files - with your data and every earlier call's response. Use one whenever
+    the step is mechanical (change a line, parse a page, compute a body): the
+    model designs the branch once; nothing is re-typed at run time. Contract::
+
+        {"node_id": "edit", "input_keys": [], "output_keys": ["content", "sha"],
+         "source_code": "import base64\n"
+                        "def run(state, effects):\n"
+                        "    got = effects['fetch']['body']   # fetch's FULL response, parsed\n"
+                        "    text = base64.b64decode(got['content']).decode()\n"
+                        "    text = text.replace('old line\\n', 'new line\\n', 1)\n"
+                        "    new = base64.b64encode(text.encode()).decode()\n"
+                        "    return {'content': new, 'sha': got['sha']}\n"}
+
+    ``run(state, effects)``: ``state`` is the node's declared ``input_keys``;
+    ``effects`` is ``{node_id: {"status", "body"}}`` for the node's graph
+    ANCESTORS' calls (full bodies, JSON parsed; never headers). Return a dict
+    under your declared ``output_keys``; the next node's packet reads them with
+    ``{"$ta.ref": "content"}`` (declare them in its ``input_keys``). A code node
+    may itself declare ``effects`` and return the packet under an output key.
+    Effects fire the moment their node returns, in graph order: a refused
+    packet or a far-side error >= 400 FAILS the node and the run (later nodes
+    never run) unless the packet declares ``"accept_statuses": [404]`` for a
+    probe. A failing code node reports ``code_node_failed`` with its stderr -
+    fix ``run()`` with ``op=patch_node`` and run again. Code runs only in the
+    universe that authored it: a public branch's code must be remixed
+    (``fork_from``) before it runs as yours. Stdlib only (``json re base64
+    difflib textwrap html csv datetime math`` ...); 512 MiB, the node's
+    ``timeout_seconds``; the source is at most 50 KB.
 
     A branch is a stored graph SHAPE — building/editing one fires NO effects and
     issues NO provider authority. Actually RUNNING it (with side effects) is a
-    separate step via run_graph, and any source_code node stays UNAPPROVED until you
-    approve its source through the browser. Wiring connections/credentials stays off
+    separate step via run_graph; a source_code node runs there in the OS sandbox,
+    credential-blind, and only in the universe that authored it (no approval
+    step exists or is needed). Wiring connections/credentials stays off
     this surface, so a secret never enters a served turn. Runs as the FOUNDER, on a
     branch you authored. Bounded by the same allowlist + rate limit as run_graph.
 
@@ -1533,9 +1566,10 @@ def remix_shape(
     which you can then inspect, edit, and run.
 
     This copies the shape only — nodes, edges, prompts. It never copies another
-    universe's private data. Any executable source-code node inherited from
-    another author lands UN-approved: you must re-approve it before it can run
-    (a foreign author's approval is not trusted for your executions).
+    universe's private data. An executable source-code node inherited from
+    another author becomes YOURS by the remix: code runs only in the universe
+    that authored it, so the copy runs as yours and the original never runs
+    here (no approval step exists or is needed).
 
     Args:
         fork_from: The ``published_version_id`` of the shape to remix (from a
@@ -1970,12 +2004,10 @@ def connect_compute(
 # authenticated admin-ACL owner, NOT the legacy ambient-actor grant_effector_consent.
 #
 # Safety:
-#  * SINK CONSENT ONLY. channel_type=="source_code" is REFUSED here. Approving a
-#    source_code node sets approved_source_hash, the run-time code-execution gate that the
-#    create-only served write_graph deliberately strips (approval is hash-only /
-#    self-computable). Re-exposing it would reopen the build-unapproved-code -> approve ->
-#    run RCE the sanitizer closes; source_code approval stays a human/browser action, and
-#    run_graph's fail-closed _validate_source_code is the backstop.
+#  * SINK CONSENT ONLY. channel_type=="source_code" is REFUSED here. Since change
+#    `sandboxed-code-node` approval is provenance, not an execution gate (code runs in
+#    the OS sandbox, only in the universe that authored it), so there is nothing to
+#    approve on this surface; the verb stays about outbound sinks.
 #  * Only action=="approve" is served (set_policy/get_policy are not exposed yet).
 #  * owner-gated (source_channel's impl requires an admin ACL row for the bound founder;
 #    anonymous / read-write collaborators get auth_failed), graph-PINNED (universe_id is
@@ -2001,8 +2033,8 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
     or any HTTPS API you connected).
 
     NO SECRET crosses this surface — consent is a ``(sink, destination)`` allow, never a
-    credential. Approving executable ``source_code`` is NOT available here (that stays a
-    human/browser action); this approves outbound-channel sinks only.
+    credential. Executable ``source_code`` needs no approval (it runs in the OS sandbox,
+    in the universe that authored it); this approves outbound-channel sinks only.
 
     Args:
         action: ``approve`` — grant effector consent for an outbound sink. Required.
@@ -2055,12 +2087,12 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
             return json.dumps({"error": f"payload '{key}' must be a string."})
     channel_type = (payload_obj.get("channel_type") or "").strip()
     if channel_type == "source_code":
-        # RCE closure: source_code approval sets approved_source_hash, the execution
-        # gate the create-only served write_graph strips. Keep it off this surface.
+        # Approval is provenance only (change `sandboxed-code-node`); execution is
+        # gated by the sandbox and authorship. This verb approves sinks, not code.
         return json.dumps({
             "error": (
-                "source_code approval is not available on the served surface; approve "
-                "executable source in the browser. This verb approves outbound channel "
+                "source_code needs no approval: a code node runs in the OS sandbox, in "
+                "the universe that authored it. This verb approves outbound channel "
                 "sinks only."
             ),
         })

@@ -10,17 +10,19 @@ Codex's final residual on PR #1349:
 
 This module proves the systematic fix:
 
-1. **Fail-closed runtime gate** — ``graph_compiler._validate_source_code`` now
-   refuses any approved source_code node with a missing/empty OR mismatched
-   ``approved_source_hash`` (no empty-hash carve-out).
+1. **Runtime gate** — since change `sandboxed-code-node` (2026-08-30) the
+   runtime gate is AUTHORSHIP, not the approval hash: code runs only in the
+   universe that authored it (``caller_provenance == "own"``), inside the OS
+   sandbox. ``approved`` / ``approved_source_hash`` are provenance the API
+   keeps honest (sections 2-3) but no longer gate execution.
 2. **Carried snapshots are reconciled** — ``build_branch`` fork-copy and
    ``rollback_node`` re-validate each carried node's approval against its
    source hash and clear approval metadata on mismatch.
 3. **The bid executor** (a second code-exec path) enforces the same invariant.
 
-The security invariant under test (no exceptions): a source_code node may
-execute only if ``approved=True`` AND ``approved_source_hash`` is present AND
-equals ``sha256(effective source_code)``.
+The security invariant under test: a carried approval is never TRUSTED
+beyond its hash (sections 2-3), and code never executes for a run that did
+not author it (section 1).
 """
 
 from __future__ import annotations
@@ -42,10 +44,10 @@ def _hash(src: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class TestFailClosedRuntimeGate:
-    """The empty-hash carve-out is gone: an approved source_code node with no
-    provenance hash must be refused, not run.
-    """
+class TestAuthorshipRuntimeGate:
+    """The approval hash is provenance, not a gate (design D2): an
+    owner-authored node compiles with an empty or stale hash; a run that did
+    not author the code refuses it, whatever the hash says."""
 
     def _one_node_branch(self, *, source_code, approved, approved_source_hash):
         from tinyassets.branches import (
@@ -69,45 +71,44 @@ class TestFailClosedRuntimeGate:
         ]
         return b
 
-    def test_empty_hash_approved_node_fails_closed(self):
-        """approved=True + empty hash → UnapprovedNodeError (the residual)."""
-        from tinyassets.graph_compiler import UnapprovedNodeError, compile_branch
+    def test_empty_hash_owner_node_compiles(self):
+        from tinyassets.graph_compiler import compile_branch
 
         src = "def run(state): return {'out': 1}\n"
-        b = self._one_node_branch(
+        compile_branch(self._one_node_branch(
             source_code=src, approved=True, approved_source_hash="",
-        )
-        with pytest.raises(UnapprovedNodeError, match="no.*provenance|fail-closed"):
-            compile_branch(b)
+        ))
 
-    def test_matching_hash_approved_node_passes(self):
-        """pass-with: approved=True + matching hash → compiles."""
+    def test_stale_hash_owner_node_compiles(self):
         from tinyassets.graph_compiler import compile_branch
+
+        b = self._one_node_branch(
+            source_code="def run(state): return {'x': 1}\n", approved=True,
+            approved_source_hash=_hash("def run(state): return {}\n"),
+        )
+        compile_branch(b)
+
+    def test_foreign_run_refuses_even_a_matching_hash(self):
+        """A public foreign branch run directly: the hash is fine, the
+        authorship is not. Refused with the remix instruction."""
+        from tinyassets.graph_compiler import (
+            BranchExecutionContext,
+            ForeignCodeError,
+            compile_branch,
+        )
 
         src = "def run(state): return {'out': 1}\n"
         b = self._one_node_branch(
             source_code=src, approved=True, approved_source_hash=_hash(src),
         )
-        # Must not raise.
-        compile_branch(b)
+        with pytest.raises(ForeignCodeError, match="did not author"):
+            compile_branch(b, execution_context=BranchExecutionContext(
+                actor="victim", universe_id="u", caller_provenance="public-foreign",
+            ))
 
-    def test_mismatched_hash_approved_node_fails_closed(self):
-        """approved=True + stale/forged hash → UnapprovedNodeError."""
-        from tinyassets.graph_compiler import UnapprovedNodeError, compile_branch
-
-        approved_src = "def run(state): return {}\n"
-        running_src = "def run(state): return {'x': 1}\n"
-        b = self._one_node_branch(
-            source_code=running_src, approved=True,
-            approved_source_hash=_hash(approved_src),
-        )
-        with pytest.raises(UnapprovedNodeError, match="does not match"):
-            compile_branch(b)
-
-    def test_mark_approved_helper_passes_gate(self):
-        """The sanctioned in-process approval helper records a matching hash,
-        so a node it approves runs cleanly through the fail-closed gate.
-        """
+    def test_mark_approved_helper_stamps_provenance(self):
+        """The in-process helper still records a matching hash - provenance
+        the authoring surfaces rely on - and the node compiles."""
         from tinyassets.branches import (
             BranchDefinition,
             EdgeDefinition,
@@ -219,16 +220,20 @@ class TestForkCopyReconcilesCarriedApproval:
         assert nd["approved"] is False, nd
         assert not nd.get("approved_source_hash"), nd
 
-    def test_forked_carried_node_fails_runtime_gate(
+    def test_forked_carried_node_runs_as_the_forker_and_refuses_a_stranger(
         self, tmp_path, monkeypatch, authenticate_request,
     ):
-        """End-to-end: the forked branch with the demoted carried node is
-        refused by the fail-closed runtime gate (fail-without-approval).
-        """
+        """End-to-end (design D2): the fork demoted the carried approval to
+        provenance; the forker's own run compiles it, and a run that is not
+        the forker's refuses it by authorship - the hash never decides."""
         from tinyassets.api.branches import _ext_branch_build
         from tinyassets.branches import BranchDefinition
         from tinyassets.daemon_server import get_branch_definition
-        from tinyassets.graph_compiler import UnapprovedNodeError, compile_branch
+        from tinyassets.graph_compiler import (
+            BranchExecutionContext,
+            ForeignCodeError,
+            compile_branch,
+        )
 
         base = tmp_path / "output"
         base.mkdir()
@@ -245,8 +250,13 @@ class TestForkCopyReconcilesCarriedApproval:
         assert result["status"] == "built", result
 
         forked = get_branch_definition(base, branch_def_id=result["branch_def_id"])
-        with pytest.raises(UnapprovedNodeError):
-            compile_branch(BranchDefinition.from_dict(forked))
+        branch = BranchDefinition.from_dict(forked)
+        assert branch.node_defs[0].approved is False          # demoted to provenance
+        compile_branch(branch)                                  # the forker's own compile
+        with pytest.raises(ForeignCodeError, match="did not author"):
+            compile_branch(branch, execution_context=BranchExecutionContext(
+                actor="stranger", universe_id="u", caller_provenance="public-foreign",
+            ))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

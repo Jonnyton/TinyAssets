@@ -149,7 +149,9 @@ def test_source_code_node_run_sees_top_level_helpers(clean_registry):
         "def run(state):\n"
         "    return {'foo': _text(state.get('name', 'n'))}\n"
     )
-    branch = _minimal_branch(node_body={"source_code": src, "approved": True})
+    branch = _minimal_branch(
+        node_body={"source_code": src, "approved": True, "input_keys": ["name"]},
+    )
     compiled = compile_branch(branch)
     runner = compiled.graph.compile()
     result = runner.invoke({"name": "Z"})

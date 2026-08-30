@@ -68,8 +68,11 @@ def test_source_channel_only_approve_action(monkeypatch):
 
 
 def test_source_channel_refuses_source_code_rce_closure(monkeypatch):
-    """source_code approval sets approved_source_hash — the code-execution gate the
-    create-only write_graph strips. It must stay off the served surface."""
+    """Approving source_code is not a served verb. Since change
+    `sandboxed-code-node` (2026-08-30) approval gates nothing - a code node runs
+    in the OS sandbox, in the universe that authored it - so the verb refuses
+    with that fact rather than pointing at a browser approval; the impl (which
+    would stamp provenance) is never reached either way."""
     s = _bind(monkeypatch)
     cap = _patch_impl(monkeypatch)
     out = json.loads(s.source_channel(
@@ -77,7 +80,8 @@ def test_source_channel_refuses_source_code_rce_closure(monkeypatch):
         branch_id="b-1",
         payload='{"channel_type":"source_code","node_id":"n1"}',
     ))
-    assert "source_code approval is not available" in out["error"]
+    assert "source_code needs no approval" in out["error"]
+    assert "browser" not in out["error"]
     assert cap == {}  # the impl (which would approve the node) is never reached
 
 

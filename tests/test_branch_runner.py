@@ -211,8 +211,15 @@ def test_compiler_rejects_invalid_branch(tmp_path):
         compile_branch(b)
 
 
-def test_compiler_rejects_unapproved_source_code():
-    from tinyassets.graph_compiler import UnapprovedNodeError, compile_branch
+def test_compiler_runs_owner_code_unapproved_and_refuses_foreign_code():
+    """Design D2 (change `sandboxed-code-node`): the OS sandbox bounds what
+    code can touch; AUTHORSHIP decides whose code runs. An owner-authored
+    node needs no approval; a public foreign branch run directly refuses."""
+    from tinyassets.graph_compiler import (
+        BranchExecutionContext,
+        ForeignCodeError,
+        compile_branch,
+    )
 
     b = BranchDefinition(name="test", entry_point="only")
     b.node_defs = [NodeDefinition(
@@ -225,8 +232,12 @@ def test_compiler_rejects_unapproved_source_code():
         EdgeDefinition(from_node="START", to_node="only"),
         EdgeDefinition(from_node="only", to_node="END"),
     ]
-    with pytest.raises(UnapprovedNodeError):
-        compile_branch(b)
+    compile_branch(b)  # own (no context = the caller's own compile)
+    compile_branch(b, execution_context=BranchExecutionContext(
+        actor="me", universe_id="u", caller_provenance="own"))
+    with pytest.raises(ForeignCodeError, match="remix"):
+        compile_branch(b, execution_context=BranchExecutionContext(
+            actor="victim", universe_id="u", caller_provenance="public-foreign"))
 
 
 def test_compiler_accepts_approved_source_code():
@@ -238,6 +249,7 @@ def test_compiler_accepts_approved_source_code():
     b.node_defs = [NodeDefinition(
         node_id="only", display_name="Only",
         source_code="def run(state): return {'out': state.get('x', 0) + 1}",
+        input_keys=["x"],
     ).mark_approved()]
     b.graph_nodes = [GraphNodeRef(id="only", node_def_id="only")]
     b.edges = [
@@ -653,6 +665,7 @@ def test_execute_branch_end_to_end(tmp_path):
     b.node_defs = [NodeDefinition(
         node_id="n1", display_name="N1",
         source_code="def run(state): return {'out': state.get('x', 0) * 2}",
+        input_keys=["x"],
     ).mark_approved()]
     b.graph_nodes = [GraphNodeRef(id="n1", node_def_id="n1")]
     b.edges = [
@@ -680,6 +693,7 @@ def test_execute_branch_records_executor_identity_without_changing_actor(tmp_pat
     b.node_defs = [NodeDefinition(
         node_id="n1", display_name="N1", approved=True,
         source_code="def run(state): return {'out': state.get('x', 0) + 1}",
+        input_keys=["x"],
     )]
     b.graph_nodes = [GraphNodeRef(id="n1", node_def_id="n1")]
     b.edges = [
@@ -719,6 +733,7 @@ def test_execute_branch_reports_node_status_callback(tmp_path):
     b.node_defs = [NodeDefinition(
         node_id="n1", display_name="N1",
         source_code="def run(state): return {'out': state.get('x', 0) * 2}",
+        input_keys=["x"],
     ).mark_approved()]
     b.graph_nodes = [GraphNodeRef(id="n1", node_def_id="n1")]
     b.edges = [
@@ -760,24 +775,35 @@ def test_execute_branch_fails_on_compiler_error(tmp_path):
     assert outcome.error
 
 
-def test_execute_branch_reports_unapproved_source_code(tmp_path):
-    from tinyassets.runs import execute_branch
+def test_execute_branch_refuses_code_the_run_did_not_author(tmp_path):
+    """Design D2 (`sandboxed-code-node`): the runner derives caller_provenance
+    from the run's actor and the branch's author. A branch someone else
+    authored, run directly, fails before any node runs - classified
+    `node_not_accepted` with the remix instruction. The same branch authored
+    by the actor runs unapproved."""
+    from tinyassets.runs import _classify_failure, execute_branch, get_run
 
-    b = BranchDefinition(name="test", entry_point="only")
-    b.node_defs = [NodeDefinition(
-        node_id="only", display_name="Only",
-        source_code="def run(state): return {}",
-        approved=False,
-    )]
-    b.graph_nodes = [GraphNodeRef(id="only", node_def_id="only")]
-    b.edges = [
-        EdgeDefinition(from_node="START", to_node="only"),
-        EdgeDefinition(from_node="only", to_node="END"),
-    ]
+    def _branch(author):
+        b = BranchDefinition(name="test", entry_point="only", author=author)
+        b.node_defs = [NodeDefinition(
+            node_id="only", display_name="Only",
+            source_code="def run(state): return {}",
+            approved=False,
+        )]
+        b.graph_nodes = [GraphNodeRef(id="only", node_def_id="only")]
+        b.edges = [
+            EdgeDefinition(from_node="START", to_node="only"),
+            EdgeDefinition(from_node="only", to_node="END"),
+        ]
+        return b
 
-    outcome = execute_branch(tmp_path, branch=b, inputs={})
+    outcome = execute_branch(tmp_path, branch=_branch("someone_else"), inputs={})
     assert outcome.status == "failed"
-    assert "approved" in outcome.error.lower()
+    assert "did not author" in outcome.error and "remix" in outcome.error
+    assert _classify_failure(get_run(tmp_path, outcome.run_id)) == "node_not_accepted"
+
+    outcome = execute_branch(tmp_path, branch=_branch("anonymous"), inputs={})
+    assert outcome.status == "completed", outcome.error
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1326,6 +1352,7 @@ def test_async_run_completes_successfully(tmp_path):
     b.node_defs = [NodeDefinition(
         node_id="n", display_name="N",
         source_code="def run(state): return {'out': state.get('x', 0) * 3}",
+        input_keys=["x"],
     ).mark_approved()]
     b.graph_nodes = [GraphNodeRef(id="n", node_def_id="n")]
     b.edges = [

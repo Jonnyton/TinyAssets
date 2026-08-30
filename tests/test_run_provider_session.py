@@ -214,9 +214,15 @@ def _run_branch(
         lambda uid="": uid or "universe_alice",
     )
     monkeypatch.setattr("tinyassets.runs.execute_branch_async", capture_execute)
+    # Since change `sandboxed-code-node` effects fire at node time; the
+    # post-run dispatcher this helper used to capture is gone. The completion
+    # path still passes exactly one point, once per COMPLETED run and never on
+    # a refused launch: the quarantine of branch-authored effect keys that
+    # precedes reading the run's effect chain. That is the "effects path was
+    # reached" signal these tests count.
     monkeypatch.setattr(
-        "tinyassets.runs._run_external_write_effectors",
-        lambda *args, **kwargs: captured["effects"].append((args, kwargs)),
+        "tinyassets.runs._quarantine_branch_authored_external_write_keys",
+        lambda output: captured["effects"].append((output,)),
     )
 
     provider = _CountingProvider()

@@ -390,6 +390,9 @@ def test_route_back_executes_real_immutable_version_to_terminal_state(base_path)
     branch = BranchDefinition(
         branch_def_id="route-handler",
         name="Route handler",
+        # The route-back run executes as alice; a code node runs only in the
+        # universe that authored it (design D2), so the version is hers.
+        author="alice",
         graph_nodes=[GraphNodeRef(id="apply-notes", node_def_id="apply-notes")],
         edges=[
             EdgeDefinition(from_node="START", to_node="apply-notes"),

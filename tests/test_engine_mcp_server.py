@@ -1790,18 +1790,24 @@ def test_read_graph_docstring_tells_the_agent_to_read_the_outcome():
     assert "queued" in doc
 
 
-def test_served_guidance_does_not_send_the_agent_into_the_unapprovable_path():
-    """Live 2026-08-26: the founder deposited an X credential, the agent followed this
-    docstring, built a source_code delivery node, and the run died in 43 ms with
-    node_not_approved / actionable_by: host. `mark_approved` has zero callers in the
-    product, so "approve it in the browser" describes a surface that does not exist."""
+def test_served_guidance_teaches_the_code_node_and_promises_no_approval():
+    """Live 2026-08-26: the agent built a source_code node and the run died with
+    node_not_approved - because approval was a gate nobody could grant. Since
+    change `sandboxed-code-node` (2026-08-30) code runs in the OS sandbox, in the
+    universe that authored it, with no approval step: the served guidance must
+    teach the code node (fetch -> code -> write) and must never send the agent
+    to a browser approval that does not exist."""
     from tinyassets import engine_mcp_server as s
 
     fn = s.write_graph.fn if hasattr(s.write_graph, "fn") else s.write_graph
     doc = fn.__doc__ or ""
-    assert "DO NOT build the delivery node with ``source_code``" in doc
-    assert "no such button" in doc
-    assert 'MUST use ``prompt_template``' in doc
+    assert "CODE NODES" in doc
+    assert "def run(state, effects)" in doc
+    assert "accept_statuses" in doc
+    assert "code_node_failed" in doc
+    assert "DO NOT build the delivery node with ``source_code``" not in doc
+    assert "no such button" not in doc
+    assert "UNAPPROVED until you" not in doc
     # The packet contract itself must survive the switch.
     for key in ('"sink": "authenticated_external_call"', "connection_id", "grant_id"):
         assert key in doc

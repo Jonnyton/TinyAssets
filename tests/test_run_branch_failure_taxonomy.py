@@ -44,12 +44,14 @@ class TestClassifyRunError:
         result = _classify_run_error(exc, "b1")
         assert result["failure_class"] == "node_not_approved"
         # PR-178 collapsed the surface to the canonical handles, and approval
-        # is deliberately NOT one of them — so the guidance must route the user
-        # to the operator surface rather than name a handle that no longer
-        # exists. Pinning the absence keeps a retired verb from creeping back.
+        # is deliberately NOT one of them; since change `sandboxed-code-node`
+        # (2026-08-30) approval gates nothing at all - code runs in the OS
+        # sandbox, in the universe that authored it. The guidance must say so
+        # and must never name a retired verb or a browser approval.
         action = result["suggested_action"]
         assert "approve_source_code" not in action, action
-        assert "operator surface" in action, action
+        assert "browser" not in action, action
+        assert "no longer gates" in action, action
 
     def test_quota_exhausted_rate_limit(self):
         exc = RuntimeError("rate limit exceeded for this model")
@@ -457,6 +459,10 @@ class TestActionableByCanonicalTable:
         # it does not hold (consent, grant, allow-list) is the founder's.
         ("external_write_failed", "chatbot"),
         ("external_write_refused", "user"),
+        # sandboxed-code-node: the universe wrote the code and can fix it; a
+        # foreign branch's code is one remix away.
+        ("code_node_failed", "chatbot"),
+        ("node_not_accepted", "chatbot"),
         # Opaque/internal — chatbot escalates raw error for human judgment.
         ("unknown", "user"),
         ("error", "user"),
