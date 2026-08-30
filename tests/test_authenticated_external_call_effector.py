@@ -1224,3 +1224,21 @@ def test_a_run_that_wrote_and_then_failed_stays_a_write(tmp_path, monkeypatch):
     runs_module.update_run_status(tmp_path, "run-put-then-fail",
                                   status=runs_module.RUN_STATUS_FAILED, error="release failed")
     assert _admission_kind(db, "run-put-then-fail") == "write"    # final
+
+
+def test_an_effect_reference_resolves_a_dotted_node_id():
+    """Codex on the evidence hint: `fetch.v1` is a valid node id, and the hint
+    names `fetch.v1.response.body`; the resolver used to split at the first
+    dot and report no earlier node 'fetch'."""
+    import pytest
+
+    from tinyassets.effectors.authenticated_external_call import _TransformContext, _TransformError
+
+    prior = {"fetch.v1": {"response": {"status": 200, "body": '{"sha": "abc", "content": "aGk="}'}},
+             "fetch": {"response": {"status": 200, "body": '{"sha": "other"}'}}}
+    ctx = _TransformContext({}, None, prior)
+    assert ctx.effect("fetch.v1.response.body.sha") == "abc"      # longest id wins
+    assert ctx.effect("fetch.response.body.sha") == "other"
+    assert ctx.effect("fetch.v1.response.status") == 200
+    with pytest.raises(_TransformError):
+        ctx.effect("fetch.v2.response.body.sha")                    # still refused

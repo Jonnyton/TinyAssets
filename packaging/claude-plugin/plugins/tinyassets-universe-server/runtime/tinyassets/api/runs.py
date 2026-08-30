@@ -1010,6 +1010,7 @@ def _compose_run_snapshot(
 
     declared_order: list[str] = []
     branch_name = ""
+    declares_effects: bool | None = None
     try:
         source_dict = get_branch_definition(
             _base_path(), branch_def_id=run_record["branch_def_id"],
@@ -1017,6 +1018,9 @@ def _compose_run_snapshot(
         branch = BranchDefinition.from_dict(source_dict)
         declared_order = [gn.id for gn in branch.graph_nodes]
         branch_name = branch.name or ""
+        declares_effects = any(
+            getattr(nd, "effects", None) for nd in (getattr(branch, "node_defs", None) or [])
+        )
     except KeyError:
         pass
 
@@ -1108,18 +1112,30 @@ def _compose_run_snapshot(
     # external-call phase", and stopped. Say what the window is.
     if run_record["status"] in ("running", "queued"):
         finished = {"ran", "completed", "skipped"}
-        all_ran = bool(node_statuses) and all(
-            s.get("status") in finished for s in node_statuses
-        )
-        snapshot["phase"] = "delivering_effects" if all_ran else "running"
-        snapshot["suggested_action"] = (
-            "Every node has run; the run is delivering its effect - an external "
-            "call takes seconds, not minutes. Read this run again in a few "
-            "seconds; it is not stuck until it has read `running` for minutes."
-            if all_ran else
-            "Still running. Read this run again in a few seconds before "
-            "reporting an outcome."
-        )
+        # Every run also carries __system__ events (recursion_limit_applied,
+        # provider_calls); only real nodes decide whether the graph is done
+        # (Codex: with them counted, "delivering" was unreachable).
+        real = [s for s in node_statuses if s.get("node_id") != "__system__"]
+        all_ran = bool(real) and all(s.get("status") in finished for s in real)
+        if all_ran and declares_effects:
+            snapshot["phase"] = "delivering_effects"
+            snapshot["suggested_action"] = (
+                "Every node has run; the run is delivering its effect - an external "
+                "call takes seconds, not minutes. Read this run again in a few "
+                "seconds; it is not stuck until it has read `running` for minutes."
+            )
+        elif all_ran:
+            snapshot["phase"] = "finalizing"
+            snapshot["suggested_action"] = (
+                "Every node has run; the run is recording its result. Read this run "
+                "again in a few seconds."
+            )
+        else:
+            snapshot["phase"] = "running"
+            snapshot["suggested_action"] = (
+                "Still running. Read this run again in a few seconds before "
+                "reporting an outcome."
+            )
         snapshot["actionable_by"] = "chatbot"
     return snapshot
 

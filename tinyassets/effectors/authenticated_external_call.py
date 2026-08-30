@@ -352,6 +352,14 @@ class _TransformContext:
 
     def effect(self, path: Any) -> Any:
         root, rest = _split_root(path, _OP_EFFECT)
+        # A node id may itself contain dots (`fetch.v1` is a valid id): the
+        # root is the LONGEST earlier node id that prefixes the path, not the
+        # text before the first dot (Codex on the evidence hint).
+        if isinstance(path, str):
+            for nid in sorted(self.prior_effects, key=len, reverse=True):
+                if path == nid or path.startswith(nid + "."):
+                    root, rest = nid, path[len(nid) + 1:]
+                    break
         if root not in self.prior_effects:
             raise _TransformError(
                 f"{_OP_EFFECT} {path!r}: no earlier node {root!r} with an "
