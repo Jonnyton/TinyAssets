@@ -20,7 +20,17 @@ three lines of Python that would have replaced all of it.
 with seven P0s and eleven P1s; every one is folded below and marked *(R1)*.
 The shape (effects in-graph, code in an OS sandbox) was agreed; the
 authority argument, cardinality, settlement, resume, the sandbox switch and
-the output cap were not, and are now different.
+the output cap were not, and are now different. Round 2 (code) returned
+REJECT with six P0s (resume without an execution context, RPC outside the
+request's ContextVars, effects before LangGraph's reducer rejection and
+before the merge-writer guard, an at-most-once race, a settlement race);
+round 3 (code) returned REJECT with four P0s (the context lost one hop
+earlier at the executor, parallel overwrite conflicts firing before the
+barrier, "at most once" and the RPC cap resetting on resume, settlement
+misordered under same-thread re-entrance and read-then-write). All are
+folded and pinned *(R2)*, *(R3)*. Three rounds is the cap
+(`AGENTS.md`); the round-3 folds are Claude-reviewed only, and are reported
+to the founder as such.
 
 ## Decisions
 
@@ -65,10 +75,27 @@ registered under the run id, returned on `CompiledBranch.effect_chain`.
   ids]` in its output — "failed after writes" is a state the surfaces show,
   not accounting policy *(R1 P2)*.
 - **Settlement has exactly one owner.** `update_run_status` looks the chain
-  up by run id on any terminal status, settles from its `fired` list (write
-  is final), and forgets it. The old `settle(run_id, [])` read-shortcut
-  runs only when no chain exists (legacy callers); it can no longer turn a
-  fired write into a read *(R1 P0)*.
+  up by run id on any terminal status, settles from its `fired` list, THEN
+  forgets it *(R3)*; the completion paths do not settle *(R2)*. `settle()`
+  waits (bounded, 30 s) for adapters still running on an active-dispatch
+  count — unrelated effects stay parallel *(R3 P1)* — defers when called
+  from inside a dispatch on the same thread *(R3 P0)*, and closes the chain;
+  a dispatch that finishes after settlement re-settles. In the ledger a
+  **write settlement is final in both directions**: a read that arrived
+  first no longer leaves the admission row a read *(R3 P0)*. The old
+  `settle(run_id, [])` read-shortcut runs only when no chain exists.
+- **At most once and the RPC cap survive an interrupt.** On any non-completed
+  terminal status the chain persists `effects_fired_before`, `rpc_calls` and
+  `invocation_depth`; resume seeds the new chain from them, so a resumed
+  cycle cannot refire and the depth is not reset *(R3 P0/P1)*.
+- **Parallel overwrite conflicts are refused at compile.** Two fan-out
+  siblings that both write a field with no reducer would fire their effects
+  and then be rejected together at LangGraph's barrier; `compile_branch`
+  refuses that shape *(R3 P0)*. Per-node reducer validation still runs
+  before every dispatch *(R2)*.
+- **The request's context reaches the node thread.** The run's worker is
+  submitted with `contextvars.copy_context().run`, and the code node copies
+  that context around the RPC invoker *(R2, R3 P0)*.
 - **One dispatch per node, never two.** The completion paths (normal and
   resume) read the chain's evidence; `run_effects_for_branch` remains only
   for callers that compile without a chain (tests, legacy) *(R1 P1)*.

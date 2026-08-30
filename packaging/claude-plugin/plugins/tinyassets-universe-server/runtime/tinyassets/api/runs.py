@@ -469,12 +469,28 @@ def _classify_run_error(exc: Exception, bid: str) -> dict[str, Any]:
             "operator surface before running; approval is not exposed by the "
             "advertised handles.",
         )
-    if "approv" in msg or "source_code" in msg:
+    if "code runs only in the universe that authored it" in msg:
+        return _failure_payload(
+            exc, "node_not_accepted",
+            "This branch's code was authored elsewhere. Remix it into your universe "
+            "(write_graph with fork_from) and run your copy.",
+        )
+    if "approv" in msg:
+        # Legacy message shape (pre sandboxed-code-node); no compile path emits it.
         return _failure_payload(
             exc, "node_not_approved",
-            "Ask the host to approve the source_code node through the internal "
-            "operator surface before running; approval is not exposed by the "
-            "advertised handles.",
+            "Approval no longer gates code: a source_code node runs in the OS sandbox, "
+            "in the universe that authored it. If this run named an approval, the "
+            "branch predates that change - re-store the node and run again.",
+        )
+    if "source_code" in msg:
+        # A compile-time refusal of the code itself (disallowed pattern, size,
+        # syntax): the universe wrote it and can fix it. No approval exists.
+        return _failure_payload(
+            exc, "code_node_failed",
+            "Your code node was refused at compile; the message says why "
+            "(disallowed pattern, size, or syntax). Fix the node's source_code "
+            "with write_graph (op=patch_node) and run again.",
         )
     if "concurrent" in msg or "conflict" in msg or "modified" in msg or "stale" in msg:
         return _failure_payload(
@@ -577,12 +593,18 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
             "permission_denied:auth_expired",
             "Provider credentials have expired; re-authenticate or rotate the API key.",
         )
-    if "approv" in msg or "source_code" in msg:
+    if "approv" in msg:
         return (
             "node_not_approved",
-            "Ask the host to approve the source_code node through the internal "
-            "operator surface before running; approval is not exposed by the "
-            "advertised handles.",
+            "Approval no longer gates code: a source_code node runs in the OS sandbox, "
+            "in the universe that authored it. Re-store the node and run again.",
+        )
+    if "source_code" in msg:
+        return (
+            "code_node_failed",
+            "Your code node was refused at compile; the message says why (disallowed "
+            "pattern, size, or syntax). Fix the node's source_code with write_graph "
+            "(op=patch_node) and run again.",
         )
     if "permission denied" in msg:
         return (

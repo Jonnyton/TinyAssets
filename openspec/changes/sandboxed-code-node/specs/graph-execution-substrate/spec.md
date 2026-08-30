@@ -86,7 +86,11 @@ later nodes SHALL NOT run. Evidence SHALL persist on every terminal status,
 and a run that fired a delivered effect before failing SHALL carry
 `failed_after_effects` naming those nodes. After an interrupt, a resumed run
 SHALL refuse a reference to an effect fired before the interrupt rather than
-resolve it from persisted bounded evidence.
+resolve it from persisted bounded evidence, SHALL NOT refire an effect that
+fired before the interrupt, and SHALL continue the interrupted segment's
+`invoke_mcp_action` count and invocation depth. Two graph nodes that fan out
+from one parent and both write a field with no reducer SHALL be refused at
+compile (LangGraph would reject the step after their effects fired).
 
 #### Scenario: a refused write stops the chain
 - **WHEN** `write_readme`'s packet is refused (`invalid_body_transform`) and `open_pr` follows it

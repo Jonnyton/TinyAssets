@@ -293,7 +293,8 @@ def test_resume_carries_the_runs_authority_so_foreign_code_cannot_fail_open(tmp_
     # the resume site passes it to compile_branch (structural pin)
     src = inspect.getsource(runs._invoke_graph_resume)
     assert "execution_context=resume_context" in src
-    assert "_execution_context_for_run(base_path, run_id, branch)" in src
+    assert "_execution_context_for_run(" in src
+    assert "invocation_depth=effect_chain.invocation_depth" in src   # R3: depth survives resume
 
 
 def test_rpc_runs_the_invoker_inside_the_requests_context(monkeypatch):
@@ -549,3 +550,234 @@ def test_a_terminal_status_settles_from_the_chain_and_forgets_it(monkeypatch, tm
     assert settled == [("r6", [(SINK, "POST")])]
     assert forget_effect_chain("r6") is None            # forgotten at terminal status
     assert chain.delivered_nodes() == ["create_branch"]
+
+
+# --- Codex round 3 (2026-08-30): the last review round; each finding pinned ----
+
+
+def test_the_requests_context_crosses_the_executor_hop(monkeypatch, tmp_path):
+    """R3 P0: the run's worker was submitted without the request's context, so
+    the node thread copied an EMPTY context and the RPC saw the daemon's env
+    identity. `executor.submit(copy_context().run, worker)` carries it."""
+    import contextvars
+    import time
+
+    from tinyassets import graph_compiler as gc
+    from tinyassets import runs
+
+    who = contextvars.ContextVar("who_r3", default="daemon-env")
+
+    def fake_invoker(node, **_kw):
+        return lambda action, **kwargs: {"actor": who.get()}
+
+    monkeypatch.setattr(gc, "_build_node_mcp_invoker", fake_invoker)
+    who.set("alice")
+    node = NodeDefinition(
+        node_id="who", display_name="who", input_keys=[], output_keys=["r"],
+        source_code="def run(state):\n    return {'r': invoke_mcp_action('probe')}\n",
+    )
+    branch = _linear(node)
+    branch.state_schema = [{"name": "r", "type": "dict"}]
+    queued = runs.execute_branch_async(tmp_path, branch=branch, inputs={}, provider_call=None)
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        rec = runs.get_run(tmp_path, queued.run_id)
+        if rec["status"] in ("completed", "failed"):
+            break
+        time.sleep(0.1)
+    assert rec["status"] == "completed", rec.get("error")
+    assert rec["output"]["r"] == {"actor": "alice"}
+
+
+def test_parallel_siblings_that_both_overwrite_one_field_are_refused_at_compile():
+    """R3 P0: two fan-out nodes both wrote an overwrite field; both effects
+    fired, then LangGraph rejected the step at the barrier."""
+    from tinyassets.graph_compiler import CompilerError
+
+    a = NodeDefinition(node_id="a", display_name="a", prompt_template="x",
+                       output_keys=["shared"])
+    b = NodeDefinition(node_id="b", display_name="b", prompt_template="y",
+                       output_keys=["shared"])
+    root = NodeDefinition(node_id="root", display_name="root", prompt_template="r",
+                          output_keys=["seed"])
+    branch = BranchDefinition(name="fan", entry_point="root")
+    branch.node_defs = [root, a, b]
+    branch.graph_nodes = [GraphNodeRef(id=n, node_def_id=n) for n in ("root", "a", "b")]
+    branch.edges = [
+        EdgeDefinition(from_node="START", to_node="root"),
+        EdgeDefinition(from_node="root", to_node="a"),
+        EdgeDefinition(from_node="root", to_node="b"),
+        EdgeDefinition(from_node="a", to_node="END"),
+        EdgeDefinition(from_node="b", to_node="END"),
+    ]
+    branch.state_schema = [{"name": "seed", "type": "str"}, {"name": "shared", "type": "str"}]
+    mock = lambda *a, **k: "[mock]"  # noqa: E731
+    with pytest.raises(CompilerError, match="both write 'shared'"):
+        compile_branch(branch, provider_call=mock, effect_chain=EffectChain(run_id="x"))
+    branch.state_schema[1]["reducer"] = "append"
+    compile_branch(branch, provider_call=mock, effect_chain=EffectChain(run_id="x"))
+
+
+def test_resume_seeds_at_most_once_and_the_rpc_cap_from_the_interrupted_segment(monkeypatch):
+    """R3 P0: a resumed run got an empty chain, so an effect fired before the
+    interrupt could fire again and 32 more RPCs were allowed."""
+    adapter = _Adapter({"fetch": _OK_GET})
+    monkeypatch.setitem(effectors._EFFECTORS, SINK, adapter)
+    chain = EffectChain(run_id="r16")
+    chain.seed_from_output({
+        "external_write_results": {"fetch": {SINK: {"delivered": True}}},
+        "effects_fired_before": ["older"],
+        "rpc_calls": 31,
+        "invocation_depth": 2,
+    })
+    assert chain.already_fired == {"fetch", "older"} and chain.invocation_depth == 2
+    with pytest.raises(EffectFailedError, match="already fired"):
+        dispatch_node_effects(chain, _effect_node("fetch"), {"fetch_packet": _packet()})
+    assert adapter.calls == []
+    chain.rpc_permit()                      # the 32nd of the run
+    with pytest.raises(RuntimeError, match="too many"):
+        chain.rpc_permit()
+
+
+def test_a_same_thread_settle_inside_a_dispatch_defers_to_its_end(monkeypatch):
+    """R3 P0: with an RLock, an adapter that reached settle() on its own
+    thread settled an empty list; the PUT then landed on a settled chain."""
+    settled: list[list] = []
+    monkeypatch.setattr(
+        effectors, "settle_engine_admission",
+        lambda rid, fired: settled.append(list(fired)),
+    )
+    chain = EffectChain(run_id="r17")
+
+    class _SettlesItself(_Adapter):
+        def __call__(self, **kw):
+            chain.settle()                  # same thread, mid-dispatch
+            assert settled == []            # deferred, not settled empty
+            return super().__call__(**kw)
+
+    monkeypatch.setitem(effectors._EFFECTORS, SINK, _SettlesItself({"write": _OK_PUT}))
+    dispatch_node_effects(chain, _effect_node("write", "PUT"), {"write_packet": _packet("PUT")})
+    assert settled == [[(SINK, "PUT")]] and chain.settled and chain.closed
+
+
+def test_a_dispatch_that_outlives_the_settle_wait_resettles_as_a_write(monkeypatch):
+    """R3 P0/P1: settle waits a bounded time for adapters in flight and does
+    not serialise unrelated effects; a dispatch that finishes after the wait
+    re-settles, and a write settlement is final."""
+    import threading
+
+    settled: list[list] = []
+    monkeypatch.setattr(
+        effectors, "settle_engine_admission",
+        lambda rid, fired: settled.append(list(fired)),
+    )
+    monkeypatch.setattr(EffectChain, "SETTLE_WAIT_S", 0.2)
+    release = threading.Event()
+
+    class _Slow(_Adapter):
+        def __call__(self, **kw):
+            release.wait(5)
+            return super().__call__(**kw)
+
+    monkeypatch.setitem(effectors._EFFECTORS, SINK, _Slow({"write": _OK_PUT}))
+    chain = EffectChain(run_id="r18")
+    worker = threading.Thread(
+        target=dispatch_node_effects,
+        args=(chain, _effect_node("write", "PUT"), {"write_packet": _packet("PUT")}),
+    )
+    worker.start()
+    chain.settle()                          # gives up after 0.2 s
+    assert settled == [[]] and chain.closed
+    release.set()
+    worker.join(5)
+    assert settled == [[], [(SINK, "PUT")]]  # the late write re-settled
+
+
+def test_two_unrelated_effects_run_in_parallel(monkeypatch):
+    """R3 P1: a run-wide dispatch lock serialised independent effect nodes."""
+    import threading
+    import time
+
+    class _Sleepy(_Adapter):
+        def __call__(self, **kw):
+            time.sleep(0.25)
+            return super().__call__(**kw)
+
+    monkeypatch.setitem(effectors._EFFECTORS, SINK, _Sleepy({"a": _OK_GET, "b": _OK_GET}))
+    chain = EffectChain(run_id="r19")
+    t0 = time.monotonic()
+    threads = [
+        threading.Thread(
+            target=dispatch_node_effects,
+            args=(chain, _effect_node(n), {f"{n}_packet": _packet()}),
+        )
+        for n in ("a", "b")
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+    assert time.monotonic() - t0 < 0.45      # parallel, not 0.5 s serialised
+    assert set(chain.evidence) == {"a", "b"}
+
+
+def test_a_write_settlement_promotes_an_admission_a_read_reclassified(tmp_path):
+    """R3 P0: reclassify_read then settle_write left the admission row a
+    read. A write settlement is final in both directions."""
+    import sqlite3
+
+    from tinyassets import engine_admissions as ea
+
+    db = tmp_path / "ledger.db"
+    adm = ea.admit_detail("u1", write_max=20, total_max=60, window_s=3600, db=db)
+    assert adm.ticket and adm.ticket > 0
+    ea.attach_run(adm.ticket, "run-w", db=db)
+
+    def kind():
+        row = sqlite3.connect(db).execute(
+            "select kind from admissions where run_id='run-w'"
+        ).fetchone()
+        return row[0]
+
+    ea.reclassify_read("run-w", db=db)
+    assert kind() == "read"
+    ea.settle_write("run-w", db=db)
+    assert kind() == "write"
+    ea.reclassify_read("run-w", db=db)      # a later read changes nothing
+    assert kind() == "write"
+
+
+def test_the_legacy_dispatcher_fires_once_per_graph_node(monkeypatch):
+    """R3 P1: the chain-less dispatcher iterated node_defs, so two graph nodes
+    over one definition were one effect."""
+    from tinyassets.effectors import run_effects_for_branch
+
+    adapter = _Adapter({"shared_def": _OK_GET})
+    monkeypatch.setitem(effectors._EFFECTORS, SINK, adapter)
+    shared = _effect_node("shared_def")
+    branch = BranchDefinition(name="legacy", entry_point="g1")
+    branch.node_defs = [shared]
+    branch.graph_nodes = [GraphNodeRef(id="g1", node_def_id="shared_def"),
+                          GraphNodeRef(id="g2", node_def_id="shared_def")]
+    branch.edges = [EdgeDefinition(from_node="START", to_node="g1"),
+                    EdgeDefinition(from_node="g1", to_node="g2"),
+                    EdgeDefinition(from_node="g2", to_node="END")]
+    evidence = run_effects_for_branch(
+        branch=branch, run_state={"shared_def_packet": _packet()}, base_path=None, run_id="",
+    )
+    assert set(evidence) == {"g1", "g2"} and len(adapter.calls) == 2
+
+
+def test_source_code_compile_refusals_are_the_universes_to_fix():
+    """R3 P1: a 50 KB / disallowed-pattern refusal was classified as an
+    approval the host must grant, which no longer exists."""
+    from tinyassets.api.runs import _classify_run_outcome_error
+
+    cls, action = _classify_run_outcome_error("Node 'x' source_code exceeds 50KB")
+    assert cls == "code_node_failed" and "patch_node" in action
+    cls, _ = _classify_run_outcome_error(
+        "Node 'x' source_code contains disallowed pattern: 'open('"
+    )
+    assert cls == "code_node_failed"
+    cls, _ = _classify_run_outcome_error("Approval required for source_code node")
+    assert cls == "node_not_approved"       # legacy shape, still classified

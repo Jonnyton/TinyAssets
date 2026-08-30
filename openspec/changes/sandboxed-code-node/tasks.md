@@ -17,8 +17,20 @@
       settled a write as a read; plus graph-node vs def-id identity, evidence
       on INTERRUPTED, accepted 404 re-reported, one settlement owner, RPC cap
       per run, rlimits fail-loud, doc/spec contradictions. All folded, each
-      pinned by a test in `tests/test_effects_at_node_time.py`. Round 3 is
-      the cap; remaining findings go to the founder.
+      pinned by a test in `tests/test_effects_at_node_time.py`.
+- [x] 1.5 Codex round 3 on the code (the cap): REJECT (4 P0 / 4 P1 / 1 P2) -
+      the request context was lost one hop earlier (the run's worker thread
+      submitted without it), parallel fan-out siblings overwriting one field
+      fired their effects before LangGraph rejected the step, "at most once"
+      and the RPC cap reset on resume (fresh chain), settlement misordered
+      under same-thread re-entrance and read-then-write; plus the run-wide
+      dispatch lock serialising unrelated effects, resume resetting depth,
+      the legacy dispatcher keyed by definition, obsolete approval guidance,
+      a stale docstring. All folded and pinned (`copy_context().run` at the
+      executor, `_validate_parallel_overwrites`, `seed_from_output`, an
+      active-dispatch count with deferral and re-settle, write-final in both
+      directions in the ledger). No fourth round: these folds are
+      Claude-reviewed only and are reported to the founder as such.
 
 ## 2. Build the vertical slice
 

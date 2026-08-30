@@ -91,15 +91,16 @@ def _schema_defaulted_keys(state_schema) -> set:
 class EffectFailedError(Exception):
     """A node's declared effect could not do what its packet said (design D1,
     change `sandboxed-code-node`): the packet was refused before the wire, the
-    adapter crashed, the sink does not exist, or a WRITE was answered >= 400 by
-    the far side. The node fails and the run ends ``failed`` with exactly the
-    message shape the run surfaces already classify
+    adapter crashed, the sink does not exist, or the far side answered >= 400
+    with a status the packet did not declare in ``accept_statuses`` (the HTTP
+    method is not intent - a GraphQL query is a POST, a required GET that 404s
+    must not feed an error body downstream). The node fails and the run ends
+    ``failed`` with exactly the message shape the run surfaces already classify
     (``external write failed - <node>/<sink>: <error> [<kind>]``), so
     ``external_write_failed`` / ``external_write_refused`` keep their
     actionability. Later nodes do not run: no ``open_pr`` 422 after a refused
     ``write_readme``, no dangling branches (live 2026-08-30, runs
-    6cb4d9f48a9949be / 7a7a91c14b0d4b8b). A READ answered >= 400 is data, not a
-    failure - probe-then-branch stays possible."""
+    6cb4d9f48a9949be / 7a7a91c14b0d4b8b)."""
 
     def __init__(self, node_id: str, sink: str, error: str, error_kind: str = "") -> None:
         self.node_id = node_id
@@ -140,17 +141,28 @@ class EffectChain:
     evidence: dict[str, dict] = field(default_factory=dict)
     fired: list[tuple[str, str | None]] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
-    #: Held for the whole of one node's dispatch (adapter call included) and by
-    #: ``settle``: a terminal status waits for an in-flight effect to finish and
-    #: then closes the chain, so a late write can never land after settlement
-    #: and settle as a read (Codex round 2, P0).
-    dispatch_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+    #: Dispatch accounting (Codex rounds 2-3): ``inflight`` reserves a key
+    #: before its adapter runs (at most once, race-free); ``active`` counts
+    #: adapters running right now so ``settle`` can WAIT for them without
+    #: serialising unrelated effects; ``dispatching`` holds the thread idents
+    #: inside a dispatch so a same-thread settle defers instead of deadlocking
+    #: or settling early; a dispatch that ends after settlement re-settles
+    #: (write is final, so a late write is never lost).
     inflight: set[str] = field(default_factory=set)
+    active: int = 0
+    dispatching: set[int] = field(default_factory=set, repr=False)
+    settle_pending: bool = False
     closed: bool = False
     settled: bool = False
+    #: Effects that fired in an EARLIER segment of this run (before an
+    #: interrupt), seeded from the persisted output on resume so "at most once
+    #: per run" survives the resume (Codex round 3, P0).
+    already_fired: set[str] = field(default_factory=set)
     #: ``invoke_mcp_action`` round-trips this RUN has made (the child's own cap
-    #: is per node, so the run-wide bound lives here - Codex round 2, P1).
+    #: is per node, so the run-wide bound lives here - Codex round 2, P1);
+    #: persisted on interrupt and seeded on resume.
     rpc_calls: int = 0
+    invocation_depth: int = 0
 
     def prior_effects(self, ancestors: set[str] | None = None) -> dict[str, dict]:
         """Full results of the nodes a reference may legally name (for
@@ -199,19 +211,76 @@ class EffectChain:
                     break
         return out
 
+    #: How long a terminal status waits for adapters still running before it
+    #: settles with what has fired so far. A dispatch that finishes later
+    #: re-settles; since a write settlement is final, nothing is lost - the
+    #: wait only makes the common case exact.
+    SETTLE_WAIT_S = 30.0
+
     def settle(self) -> None:
-        """Settle the run's engine admission from what actually fired, after
-        any in-flight dispatch has finished, and close the chain: nothing may
-        fire after a terminal status. Idempotent; a write that fired before a
-        failure still settles as a write."""
-        with self.dispatch_lock:
-            with self.lock:
-                self.closed = True
-                if self.settled:
-                    return
-                self.settled = True
-                fired = list(self.fired)
+        """Close the chain (nothing may fire after a terminal status) and
+        settle the run's engine admission from what fired. Waits for adapters
+        still running - except when called from inside one of them on the
+        same thread, where it defers to that dispatch's end instead of
+        settling an incomplete list (Codex round 3, P0). Idempotent; a
+        dispatch that ends after settlement re-settles, and a write settlement
+        is final."""
+        import time as _time
+
+        with self.lock:
+            self.closed = True
+            if threading.get_ident() in self.dispatching:
+                self.settle_pending = True
+                return
+            deadline = _time.monotonic() + self.SETTLE_WAIT_S
+            while self.active > 0:
+                remaining = deadline - _time.monotonic()
+                if remaining <= 0:
+                    logging.getLogger(__name__).warning(
+                        "effect chain %s: settling with %d adapter(s) still running "
+                        "after %.0fs; a late write re-settles as a write",
+                        self.run_id, self.active, self.SETTLE_WAIT_S,
+                    )
+                    break
+                self._cond.wait(remaining)
+        self._settle_now()
+
+    def _settle_now(self) -> None:
+        with self.lock:
+            fired = list(self.fired)
+            self.settled = True
+            self.settle_pending = False
         settle_engine_admission(self.run_id, fired)
+
+    @property
+    def _cond(self) -> threading.Condition:
+        cond = self.__dict__.get("_cond_obj")
+        if cond is None:
+            cond = threading.Condition(self.lock)
+            self.__dict__["_cond_obj"] = cond
+        return cond
+
+    def seed_from_output(self, output: Any) -> None:
+        """On resume: what the interrupted segment already fired and spent,
+        so the run-wide bounds hold across the interrupt (Codex round 3,
+        P0)."""
+        if not isinstance(output, dict):
+            return
+        fired = output.get("external_write_results")
+        before = output.get("effects_fired_before")
+        with self.lock:
+            if isinstance(fired, dict):
+                self.already_fired.update(str(k) for k in fired)
+            if isinstance(before, list):
+                self.already_fired.update(str(k) for k in before)
+        try:
+            self.rpc_calls = max(self.rpc_calls, int(output.get("rpc_calls") or 0))
+        except (TypeError, ValueError):
+            pass
+        try:
+            self.invocation_depth = int(output.get("invocation_depth") or self.invocation_depth)
+        except (TypeError, ValueError):
+            pass
 
     def rpc_permit(self, cap: int = 32) -> None:
         """Count one ``invoke_mcp_action`` round-trip against the run's cap."""
@@ -267,39 +336,51 @@ def dispatch_node_effects(
     if not effects:
         return {}
     key = node_key or getattr(node, "node_id", "")
-    with chain.dispatch_lock:
+    me = threading.get_ident()
+    with chain.lock:
+        if chain.closed:
+            raise EffectFailedError(
+                key, effects[0],
+                "the run already reached a terminal status; no effect may fire after it",
+                "run_closed",
+            )
+        if key in chain.evidence or key in chain.inflight or key in chain.already_fired:
+            raise EffectFailedError(
+                key, effects[0],
+                "this node's effects already fired in this run - a cycle revisited it "
+                "(or the run resumed past it); each node's effects fire at most once per "
+                "run, so route the loop around the effect node or split the branch",
+                "effect_already_fired",
+            )
+        chain.inflight.add(key)
+        chain.active += 1
+        chain.dispatching.add(me)
+    resettle = False
+    try:
+        per_node = _fire_node_effects(
+            node, run_state, chain=chain,
+            schema_defaulted=_schema_defaulted_keys(state_schema),
+            ancestors=ancestors, node_key=key,
+        )
+        accept = packet_accept_statuses(
+            output_keys=list(getattr(node, "output_keys", None) or []),
+            run_state=run_state,
+        )
+        _mark_accepted_statuses(per_node, accept)
         with chain.lock:
-            if chain.closed:
-                raise EffectFailedError(
-                    key, effects[0],
-                    "the run already reached a terminal status; no effect may fire after it",
-                    "run_closed",
-                )
-            if key in chain.evidence or key in chain.inflight:
-                raise EffectFailedError(
-                    key, effects[0],
-                    "this node's effects already fired in this run - a cycle revisited it; "
-                    "each node's effects fire at most once per run, so route the loop "
-                    "around the effect node or split the branch",
-                    "effect_already_fired",
-                )
-            chain.inflight.add(key)
-        try:
-            per_node = _fire_node_effects(
-                node, run_state, chain=chain,
-                schema_defaulted=_schema_defaulted_keys(state_schema),
-                ancestors=ancestors, node_key=key,
-            )
-            accept = packet_accept_statuses(
-                output_keys=list(getattr(node, "output_keys", None) or []),
-                run_state=run_state,
-            )
-            _mark_accepted_statuses(per_node, accept)
-            with chain.lock:
-                chain.evidence[key] = per_node
-        finally:
-            with chain.lock:
-                chain.inflight.discard(key)
+            chain.evidence[key] = per_node
+    finally:
+        with chain.lock:
+            chain.inflight.discard(key)
+            chain.active -= 1
+            chain.dispatching.discard(me)
+            # A settle that arrived while we ran: either it deferred to us
+            # (same thread) or it gave up waiting - settle again now with the
+            # complete list; a write settlement is final, so this only adds.
+            resettle = chain.closed and (chain.settle_pending or chain.settled)
+            chain._cond.notify_all()
+        if resettle:
+            chain._settle_now()
     failure = first_effect_failure(per_node, accept_statuses=accept)
     if failure is not None:
         sink, error, kind = failure
@@ -457,11 +538,21 @@ def run_effects_for_branch(
         cloud_effect_session=cloud_effect_session,
     )
     schema_defaulted = _schema_defaulted_keys(getattr(branch, "state_schema", None))
-    for node in getattr(branch, "node_defs", None) or []:
-        if not list(getattr(node, "effects", None) or []):
+    node_defs = list(getattr(branch, "node_defs", None) or [])
+    by_id = {getattr(n, "node_id", ""): n for n in node_defs}
+    graph_nodes = list(getattr(branch, "graph_nodes", None) or [])
+    # One effect per GRAPH node (two graph nodes over one definition are two
+    # effects - Codex round 3), in storage order; a branch without graph
+    # nodes (tests) falls back to its definitions.
+    pairs = (
+        [(gn.id, by_id.get(gn.node_def_id or gn.id)) for gn in graph_nodes]
+        if graph_nodes else [(getattr(n, "node_id", ""), n) for n in node_defs]
+    )
+    for key, node in pairs:
+        if node is None or not list(getattr(node, "effects", None) or []):
             continue
-        chain.evidence[getattr(node, "node_id", "")] = _fire_node_effects(
-            node, run_state, chain=chain, schema_defaulted=schema_defaulted,
+        chain.evidence[key] = _fire_node_effects(
+            node, run_state, chain=chain, schema_defaulted=schema_defaulted, node_key=key,
         )
     chain.settle()
     return chain.evidence

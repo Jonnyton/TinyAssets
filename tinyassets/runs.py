@@ -22,6 +22,7 @@ each operation opens, commits, closes.
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import copy
 import hashlib
 import json
@@ -929,12 +930,23 @@ def update_run_status(
         # record because open_pr failed after it. Without a chain (legacy
         # callers) a run that did not complete fired nothing: a read.
         try:
-            from tinyassets.effectors import forget_effect_chain, settle_engine_admission
+            from tinyassets.effectors import (
+                active_effect_chain,
+                forget_effect_chain,
+                settle_engine_admission,
+            )
 
-            chain = forget_effect_chain(run_id)
+            chain = active_effect_chain(run_id)
             if chain is not None:
-                chain.settle()   # waits for an in-flight dispatch, then closes the chain
-                if chain.evidence and status != RUN_STATUS_COMPLETED:
+                # Settle while still registered, THEN forget: a concurrent
+                # terminal caller must never find "no chain" mid-settlement
+                # (Codex round 3, P0). Settle waits for adapters in flight.
+                chain.settle()
+                forget_effect_chain(run_id)
+                carry = (
+                    chain.evidence or chain.already_fired or chain.rpc_calls
+                ) and status != RUN_STATUS_COMPLETED
+                if carry:
                     evidence = dict(chain.evidence)
                     # Merge into whatever the caller persisted (an interrupt's
                     # receipt gate, for instance) - never clobber, never drop
@@ -949,6 +961,14 @@ def update_run_status(
                         # "failed after writes" is a real state the surfaces
                         # must show, not accounting policy (Codex round 1, P2).
                         persisted["failed_after_effects"] = delivered
+                    # Run-wide bounds survive an interrupt: what fired in any
+                    # earlier segment, the RPC count, and the invocation depth
+                    # are seeded back on resume (Codex round 3, P0/P1).
+                    persisted["effects_fired_before"] = sorted(
+                        set(chain.already_fired) | set(evidence)
+                    )
+                    persisted["rpc_calls"] = int(chain.rpc_calls)
+                    persisted["invocation_depth"] = int(chain.invocation_depth)
                     encoded = json.dumps(persisted, default=str)
                     if "output_json = ?" in sets:
                         params[sets.index("output_json = ?")] = encoded
@@ -2613,6 +2633,7 @@ def _invoke_graph(
         run_id=run_id,
         base_path=_resolve_effector_base(base_path, run_id, _eff_universe_hint),
         cloud_effect_session=_claimed_cloud_effect_session(provider_call),
+        invocation_depth=int(invocation_depth or 0),
     )
     register_effect_chain(effect_chain)
     try:
@@ -3646,7 +3667,11 @@ def _execute_branch_core(
             )
         return outcome
 
-    future = executor.submit(_worker)
+    # The run's worker thread must see the REQUEST's ContextVars (the
+    # authenticated actor): a bare submit gives it the pool thread's empty
+    # context, and a code node's RPC then resolves the daemon's env identity
+    # (Codex round 3, P0).
+    future = executor.submit(contextvars.copy_context().run, _worker)
     _track_future(run_id, future)
 
     return RunOutcome(
@@ -4056,7 +4081,7 @@ def resume_run(
             )
         return outcome
 
-    future = executor.submit(_resume_worker)
+    future = executor.submit(contextvars.copy_context().run, _resume_worker)
     _track_future(run_id, future)
 
     return RunOutcome(
@@ -4159,11 +4184,21 @@ def _invoke_graph_resume(
         base_path=_resolve_effector_base(base_path, run_id),
         cloud_effect_session=_claimed_cloud_effect_session(provider_call),
     )
+    # What the interrupted segment already fired and spent, so "at most once
+    # per run" and the RPC cap hold across the resume, and the nested depth
+    # is not reset to zero (Codex round 3, P0/P1).
+    try:
+        _prior = get_run(base_path, run_id)
+    except Exception:  # noqa: BLE001 - a missing record seeds nothing
+        _prior = None
+    effect_chain.seed_from_output((_prior or {}).get("output") if _prior else None)
     register_effect_chain(effect_chain)
     # A compile for EXECUTION always carries the run's authority (design D2):
     # without it a public-foreign branch's code fails OPEN on resume (Codex
     # round 2, P0). Derived from the persisted run row, never a parameter.
-    resume_context = _execution_context_for_run(base_path, run_id, branch)
+    resume_context = _execution_context_for_run(
+        base_path, run_id, branch, invocation_depth=effect_chain.invocation_depth,
+    )
     try:
         compiled = compile_branch(
             branch,

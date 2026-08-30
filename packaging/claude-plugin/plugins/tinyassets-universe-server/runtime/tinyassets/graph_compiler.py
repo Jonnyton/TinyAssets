@@ -2829,6 +2829,46 @@ def _delta_view(
     return view
 
 
+def _validate_parallel_overwrites(
+    branch: BranchDefinition, schema: list[dict[str, Any]],
+) -> None:
+    """Two graph nodes that fan out from one parent run in the same LangGraph
+    superstep; if both write a field with no reducer, LangGraph rejects the
+    step at the barrier - AFTER both nodes' effects fired (Codex round 3,
+    P0). Refuse that shape at compile instead: declare a reducer, or
+    serialise the nodes."""
+    reduced = {
+        (f.get("name") or "").strip()
+        for f in schema
+        if f.get("name") and (f.get("reducer") or "").strip().lower() in ("append", "merge")
+    }
+    def_of = {gn.id: (gn.node_def_id or gn.id) for gn in getattr(branch, "graph_nodes", None) or []}
+    by_id = {n.node_id: n for n in getattr(branch, "node_defs", None) or []}
+    children: dict[str, list[str]] = {}
+    for edge in getattr(branch, "edges", None) or []:
+        if edge.from_node in def_of and edge.to_node in def_of:
+            children.setdefault(edge.from_node, []).append(edge.to_node)
+    for parent, kids in children.items():
+        if len(kids) < 2:
+            continue
+        seen: dict[str, str] = {}
+        for gid in kids:
+            node = by_id.get(def_of.get(gid, ""))
+            if node is None:
+                continue
+            for key in _declared_node_outputs(node):
+                if key in reduced:
+                    continue
+                if key in seen and seen[key] != gid:
+                    raise CompilerError(
+                        f"Graph nodes '{seen[key]}' and '{gid}' run in parallel after "
+                        f"'{parent}' and both write '{key}', which has no reducer: "
+                        f"LangGraph refuses that after their effects fired. Declare "
+                        f"a reducer for '{key}' (append/merge) or serialise the nodes."
+                    )
+                seen[key] = gid
+
+
 def _graph_ancestors(branch: BranchDefinition) -> dict[str, set[str]]:
     """graph node id -> the graph node ids of every ancestor (plain and
     conditional edges alike; a conditional target is a possible ancestor).
@@ -3260,6 +3300,7 @@ def compile_branch(
 
     merge_fields = _merge_reducer_fields(branch.state_schema or [])
     _validate_single_writer_merge_fields(branch, merge_fields)
+    _validate_parallel_overwrites(branch, list(branch.state_schema or []))
 
     # Build-time warnings (input_keys leaks, etc.) — emit through the
     # event_sink so callers' per-run event logs see them before the
