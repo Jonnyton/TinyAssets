@@ -1009,16 +1009,40 @@
   // Enter in the composer) wait here and go out in order when the turn ends.
   // Two overlapping converse calls would each overwrite the other's in-flight
   // record and could delete each other's recovery (Codex round 1, P1).
+  // The queue is bounded and de-duplicated: Enter held down through a long
+  // turn must not line up copies of one draft (Codex round 2, P1), and an
+  // overflow goes back into the composer rather than vanishing.
   const sendQueue=[];
+  const SEND_QUEUE_MAX=8;
   function flushSendQueue(){
     if($("btn-send").disabled || !sendQueue.length) return;
     const next=sendQueue.shift();
-    sendTurn(next.message, next.display, next.opts);
+    // A rejection before sendTurn's own try/finally (a missing node) must not
+    // strand what is still queued: note it and move on (Codex round 2, P2).
+    sendTurn(next.message, next.display, next.opts)
+      .catch(err=>{ console.error("queued send failed", err); flushSendQueue(); });
+  }
+  function queueTurn(message, display, opts){
+    const last=sendQueue[sendQueue.length-1];
+    if(last && last.message===message) return;          // the same line twice is one line
+    const input=$("composer-input");
+    if(sendQueue.length>=SEND_QUEUE_MAX){
+      input.value=message; autoGrow(input);
+      setStatusLine("Your universe is thinking... too many messages waiting; send this one when it replies.");
+      return;
+    }
+    // From the founder's side the message IS sent: it shows in the thread now
+    // and the composer clears, exactly as an immediate send; it waits its turn
+    // on the wire and is not drawn again when it goes out.
+    if(!opts.echoed) appendMessage("founder", display || message);
+    input.value=""; input.style.height="auto";
+    sendQueue.push({message, display, opts: Object.assign({}, opts, {echoed:true})});
+    setStatusLine("Your universe is thinking... " + sendQueue.length + " waiting");
   }
 
   async function sendTurn(message, display, opts){
     opts=opts||{};
-    if($("btn-send").disabled){ sendQueue.push({message, display, opts}); return; }
+    if($("btn-send").disabled) return queueTurn(message, display, opts);
     // `display` is what the founder sees in their bubble (compact when a file is
     // attached); `message` is the full text sent to the universe (file content
     // embedded verbatim). They differ only when an attachment rode along.
@@ -1936,7 +1960,11 @@
   function answerLine(req, dismiss, payload){
     const raw = (req && req.title) ? String(req.title) : "your request";
     const ws = new RegExp("\\s+", "g");
-    const title = raw.replace(ws, " ").trim().slice(0, 120).split('"').join("'");
+    // Title AND field names are agent-authored (a custom agent's ask is not
+    // the founder's text): one line, bounded, never a bare quote, always
+    // inside the "Approved/Answered/Not now" frame (Codex rounds 1-2).
+    const frame = (s, max) => String(s).replace(ws, " ").trim().slice(0, max).split('"').join("'");
+    const title = frame(raw, 120);
     const values = (payload && payload.values) || {};
     // A secret field's VALUE never enters the thread: the key went to the
     // vault through answerRequest; the line says only that it was provided.
@@ -1947,8 +1975,8 @@
     if(dismiss) line = "Not now: \"" + title + "\"";
     else if(given.length){
       const parts = given.map(k => secretNames.has(k)
-        ? k + ": (provided)"
-        : k + ": " + String(values[k]).trim().slice(0, 200));
+        ? frame(k, 60) + ": (provided)"
+        : frame(k, 60) + ": " + frame(values[k], 200));
       line = "Answered \"" + title + "\" \u2014 " + parts.join("; ");
     } else line = "Approved: \"" + title + "\"";
     if(payload && payload.dont_ask_again) line += " (and don\u2019t ask me this again)";
