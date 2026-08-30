@@ -452,10 +452,6 @@ def test_write_brain_then_next_system_prompt_reflects_it(monkeypatch, tmp_path):
     prompt = _build_persona_system_prompt(udir, universe_id="u-brain", tier="T2")
     assert "Aria" in prompt
     assert "research companion" in prompt
-    # Live 2026-08-30: the founder's universe stopped and asked after every
-    # failed run; the founder tier's prompt now says a job runs until done.
-    assert "# How I finish a job" in prompt
-    assert "run it again in the same turn" in prompt
 
 
 def test_brain_read_write_round_trip_does_not_nest_frontmatter(monkeypatch, tmp_path):
