@@ -68,6 +68,10 @@ _REMIX_CAPABILITIES = ("read", "list", "write", "costly")
 #: engine-triggered runs per universe per rolling window.
 _RUN_GRAPH_RATE_WINDOW_S = 3600
 _RUN_GRAPH_RATE_MAX = 20
+# Runs of ANY kind (reads included) per window. Reads are reclassified off the
+# write budget once they prove they wrote nothing (tinyassets.engine_admissions),
+# but a loop of read-only runs is still bounded here.
+_RUN_GRAPH_TOTAL_MAX = 120
 
 
 def _bearer_ok(authorization_header, secret) -> bool:
@@ -84,80 +88,53 @@ def _bearer_ok(authorization_header, secret) -> bool:
 
 
 def _engine_run_admit(*, fail_closed: bool = False, universe_id: str = "") -> bool:
-    """Atomically admit one engine-triggered write under the rolling cap, or refuse.
+    """Atomically admit one engine-triggered run/write under the rolling caps, or refuse.
 
-    A dedicated engine-admission ledger (NOT the shared runs table, which would
-    over-limit legitimate browser/scheduled runs — Codex 2026-08-19 (b)). The
-    count-and-insert run inside a single ``BEGIN IMMEDIATE`` transaction, so two
-    parallel calls cannot both slip past the cap (atomic admission, closing the
-    TOCTOU race). Old rows are pruned opportunistically so the table stays bounded.
+    The ledger and the count rule live in ``tinyassets.engine_admissions``:
+    every admission is charged as a WRITE against ``_RUN_GRAPH_RATE_MAX`` (Codex
+    gate #5, the effect-spam bound), atomically (``BEGIN IMMEDIATE`` count-and-
+    insert, closing the TOCTOU race); a run that then proves it only READ is
+    reclassified by the effect dispatcher and stops counting against writes,
+    while ``_RUN_GRAPH_TOTAL_MAX`` still bounds runs of any kind. A dedicated
+    ledger, NOT the shared runs table (Codex 2026-08-19 (b)).
 
     ``fail_closed`` (Codex ADAPT 2026-08-22 #6): run_graph passes False — its
     approved-source gate + allowlist are the primary controls, so a DB blip must
-    not wedge legitimate runs. remix passes True — the rolling cap IS a real
-    safety bound on an autonomous write, so a DB error refuses rather than admits.
-
-    ``universe_id`` (Codex ADAPT 2026-08-29 §7) names the universe the admission
-    is counted against. It defaults to this process's pinned ``_GRAPH_ID`` so
-    every existing engine call site is unchanged. Background automations pass
-    their OWN universe: they launch the same governed run a foreground
-    ``run_graph`` launches, so they must consume the same 20/hour budget, but a
-    daemon serving many universes has no single pinned graph to count them
-    under. Per-universe counting is also the correct shape — one owner's cadence
-    must not exhaust another owner's budget.
+    not wedge legitimate runs. remix/write_graph/brain pass True — the rolling cap
+    IS a real safety bound on an autonomous write, so a DB error refuses.
     """
-    import sqlite3
-    import time as _time
-    from pathlib import Path as _P
+    from tinyassets import engine_admissions as _adm
 
-    data_dir = (os.environ.get("TINYASSETS_DATA_DIR") or "").strip() or "."
-    db = _P(data_dir) / ".engine_run_admissions.db"
-    # A symlinked ledger would write to an external SQLite DB (Codex re-review):
-    # refuse if the path is a symlink or resolves outside the data dir. Fail
-    # CLOSED on a tampered ledger regardless of caller mode.
+    counted_universe = (universe_id or "").strip() or _GRAPH_ID
+    return _adm.admit(
+        counted_universe,
+        write_max=_RUN_GRAPH_RATE_MAX,
+        total_max=_RUN_GRAPH_TOTAL_MAX,
+        window_s=_RUN_GRAPH_RATE_WINDOW_S,
+        fail_closed=fail_closed,
+    )
+
+
+def _attach_run_admission(raw: str) -> None:
+    """Bind the admission just charged to the run it became (by run_id), so the
+    effect dispatcher can downgrade it to a read when the run wrote nothing."""
+    import json as _json
+
     try:
-        if db.is_symlink():
-            return False
-        data_root_r = os.path.realpath(data_dir)
-        db_r = os.path.realpath(db)
-        if db_r != data_root_r and not db_r.startswith(data_root_r + os.sep):
-            return False
-    except OSError:
-        return not fail_closed
-    now = _time.time()
-    cutoff = now - _RUN_GRAPH_RATE_WINDOW_S
-    try:
-        conn = sqlite3.connect(str(db), timeout=10)
-        try:
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS admissions "
-                "(universe_id TEXT NOT NULL, ts REAL NOT NULL)"
-            )
-            counted_universe = (universe_id or "").strip() or _GRAPH_ID
-            conn.execute("BEGIN IMMEDIATE")
-            n = conn.execute(
-                "SELECT COUNT(*) FROM admissions WHERE universe_id = ? AND ts >= ?",
-                (counted_universe, cutoff),
-            ).fetchone()[0]
-            if int(n) >= _RUN_GRAPH_RATE_MAX:
-                conn.rollback()
-                return False
-            conn.execute(
-                "INSERT INTO admissions (universe_id, ts) VALUES (?, ?)",
-                (counted_universe, now),
-            )
-            conn.execute(
-                "DELETE FROM admissions WHERE ts < ?",
-                (cutoff - _RUN_GRAPH_RATE_WINDOW_S,),
-            )
-            conn.commit()
-            return True
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        # run_graph: fail open (spam bound, not the primary control). remix: fail
-        # closed (the cap is a real bound on an autonomous write).
-        return not fail_closed
+        data = _json.loads(raw) if isinstance(raw, str) else {}
+    except (TypeError, ValueError):
+        return
+    if not isinstance(data, dict):
+        return
+    run_id = data.get("run_id")
+    if not run_id and isinstance(data.get("run"), dict):
+        run_id = data["run"].get("run_id")
+    run_id = str(run_id or "").strip()
+    if not run_id:
+        return
+    from tinyassets import engine_admissions as _adm
+
+    _adm.attach_run(_GRAPH_ID, run_id)
 
 
 def _bind_founder_identity(capabilities=_READ_CAPABILITIES):
@@ -430,15 +407,18 @@ def run_graph(
         # A run RESULT is generated text (model output + whatever the branch
         # fetched), so it carries the untrusted envelope like any other
         # non-founder content.
-        return _untrusted(
-            f"run:{bid}",
-            _impl(
-                branch_def_id=bid,
-                graph_id=_GRAPH_ID,
-                run_name=(run_name or "").strip(),
-                inputs_json=(inputs_json or "").strip(),
-            ),
+        raw = _impl(
+            branch_def_id=bid,
+            graph_id=_GRAPH_ID,
+            run_name=(run_name or "").strip(),
+            inputs_json=(inputs_json or "").strip(),
         )
+        # The admission above was charged as a write before anything ran (the
+        # packet an effect fires is model-authored at run time, so nothing can
+        # be trusted up front). Bind it to the run: when the run's effects have
+        # fired and every one was a read, the dispatcher reclassifies it.
+        _attach_run_admission(raw)
+        return _untrusted(f"run:{bid}", raw)
     finally:
         _current_identity.reset(token)
 

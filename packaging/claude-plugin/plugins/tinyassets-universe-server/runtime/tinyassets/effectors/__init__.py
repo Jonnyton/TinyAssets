@@ -23,6 +23,7 @@ from __future__ import annotations
 from tinyassets.effectors.authenticated_external_call import (
     EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
     bounded_evidence,
+    packet_verb,
     run_authenticated_external_call_effector,
 )
 from tinyassets.effectors.wiki_write_back import (
@@ -103,6 +104,9 @@ def run_effects_for_branch(
     # (`$ta.effect`). What is persisted is `bounded_evidence(...)`, so a
     # fetched file never re-enters a model through read_graph.
     chain: dict[str, dict] = {}
+    # One (sink, verb) per effect that actually ran; decides what this run cost
+    # the engine's run budget once the loop is done (tinyassets.engine_admissions).
+    fired: list[tuple[str, str | None]] = []
     schema_defaulted = _schema_defaulted_keys(getattr(branch, "state_schema", None))
     # Effects fire in the order nodes are STORED in the branch (write_graph
     # appends in the order given). That is the "earlier node" contract for
@@ -167,11 +171,38 @@ def run_effects_for_branch(
                     "error": f"effector crashed: {exc}",
                     "error_kind": "effector_crashed",
                 }
+            if not dry_run:
+                verb = result.get("verb") if isinstance(result, dict) else None
+                if not verb and sink == EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL:
+                    # Refused before the wire (a gate, a bad packet): the verb the
+                    # packet DECLARED still says whether it could have written.
+                    verb = packet_verb(output_keys=output_keys, run_state=run_state)
+                fired.append((sink, verb))
             if sink == EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL and isinstance(result, dict):
                 chain[node_id] = result
                 result = bounded_evidence(result)
             per_node[sink] = result
+    _settle_engine_admission(run_id, fired)
     return evidence_map
+
+
+def _settle_engine_admission(run_id, fired) -> None:
+    """Downgrade the run's engine admission to a read when nothing it fired
+    could have changed the far side (GET/HEAD authenticated calls, or nothing
+    at all). A run that was not engine-triggered has no admission row: no-op.
+    Never raises into the completion path; a failure to settle leaves the row
+    a write, which is the strict side."""
+    if not run_id:
+        return
+    try:
+        from tinyassets.engine_admissions import fired_only_reads, reclassify_read
+
+        if fired_only_reads(list(fired), read_sink=EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL):
+            reclassify_read(str(run_id))
+    except Exception:  # pragma: no cover - defensive: the completion path never raises
+        import logging
+
+        logging.getLogger(__name__).exception("engine admission settle failed")
 
 
 __all__ = [
