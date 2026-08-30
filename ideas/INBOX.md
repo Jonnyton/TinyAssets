@@ -258,3 +258,9 @@ Needs promotion to an OpenSpec change before any build.
   branches on the repo. Consider: a node after a refused or far-side-failed
   WRITE in the same branch is skipped with `skipped_after_failure` (reads may
   still run). Public packet semantics - OpenSpec-first.
+
+- 2026-08-30: **the universe narrated a value the artifact does not hold.** After
+  merging #2728 it said `README: 92 lines.`; the file it wrote says 91 (correct).
+  The served reply should quote the run's evidence (the node output / the
+  delivered body) rather than recompute a number in prose. Served prompt -
+  founder-owned.

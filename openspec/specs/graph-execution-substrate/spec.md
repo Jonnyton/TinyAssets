@@ -74,21 +74,51 @@ A conditional-edge router built by the compiler SHALL return a key into LangGrap
 - **WHEN** the source node's output key is absent, non-string, or not among the declared labels
 - **THEN** the router returns the first declared label so the graph advances instead of hanging or `KeyError`-ing
 
-### Requirement: source_code nodes execute in-process behind a fail-closed approval gate
-A `source_code` node SHALL execute only after `_validate_source_code` passes a fail-closed gate: the node must be `approved`, must carry a non-empty `approved_source_hash` equal to `sha256` of its effective source, and must contain none of the disallowed dangerous patterns; an empty or mismatched hash SHALL raise `UnapprovedNodeError` (an empty hash is treated as forged or carried-from-elsewhere, never as trusted). Approved source SHALL then run in-process via `exec` into a single namespace and expose a `run(state)` callable. As-built limitation (security-load-bearing): this execution path has no OS-level isolation — it runs with full `__builtins__` in the daemon process, protected only by the approval-hash gate plus a substring pattern scan. A stronger subprocess sandbox (`NodeSandbox` in `tinyassets.node_sandbox`, which filters state to declared keys, enforces an import allowlist, and kills on timeout) exists but is NOT wired into `compile_branch`, and it hardcodes a POSIX `HOME=/tmp` in the child environment, so it is not portable to Windows hosts as written.
+### Requirement: source_code nodes execute in an OS-isolated subprocess with data and no credentials
 
-#### Scenario: an unapproved or hash-mismatched node is refused
-- **WHEN** a source_code node is run without `approved=True`, or with a missing/stale/forged `approved_source_hash`
-- **THEN** `UnapprovedNodeError` is raised and the node does not execute
+A `source_code` node SHALL execute in a child process launched through the
+host's OS sandbox (bubblewrap on Linux: no network, no data directory, no
+universe root, no credential mounts, cleared environment, private `/tmp`,
+`--die-with-parent`), with address-space, CPU, file-size and descriptor
+limits set first thing in the child. The child SHALL receive only the node's
+declared `input_keys` (plus schema-defaulted keys) as `state` and the
+`{status, body}` of its graph ancestors' authenticated calls as `effects` —
+never response headers — and SHALL return a dict, which passes through to
+state exactly as an in-process node's return did (the single-merge-writer
+guard sees it unfiltered; undeclared keys are named in the node's event).
+Calls to `invoke_mcp_action` inside the child SHALL be answered synchronously
+by the parent over the sandbox's pipes, through the run's invoker with the
+run's authority (at most 32 per run, replies bounded); the child SHALL never
+hold the invoker. The in-process `exec` path SHALL NOT exist. A host without the OS
+sandbox SHALL fail the run loudly as `sandbox_unavailable`; no environment
+variable SHALL select an unsandboxed launcher (test doubles are injected).
+Source SHALL still be refused for a disallowed pattern, a size over 50 KB or
+a syntax error.
 
-#### Scenario: a disallowed pattern is refused
-- **WHEN** an approved source_code node's body contains a disallowed dangerous pattern
-- **THEN** `CompilerError` is raised before execution
+Execution authority SHALL be authorship: a `source_code` node runs only when
+the run's `caller_provenance` is `own` (the branch was authored by the actor
+the run executes as). A public foreign branch run directly SHALL refuse at
+compile with a message naming the remedy (remix into the caller's universe),
+classified `node_not_accepted`. `approved` / `approved_source_hash` SHALL be
+provenance only and SHALL NOT gate execution.
 
-#### Scenario: the standalone sandbox isolates but is not the compile path (as-built limitation)
-- **WHEN** `NodeSandbox.execute` runs a node in its own subprocess
-- **THEN** state is filtered to the node's declared input keys, non-allowlisted imports fail, and an infinite loop is killed at the timeout
-- **AND** this sandbox is not invoked by `compile_branch`, whose source_code nodes run in-process instead
+#### Scenario: an owner-authored code node runs without approval
+- **WHEN** a branch authored by the run's actor contains a `source_code` node with `approved=False`
+- **THEN** the node executes in the sandbox and its declared outputs land in state
+
+#### Scenario: a foreign branch's code refuses
+- **WHEN** a run executes a public branch authored by someone else and it contains a `source_code` node
+- **THEN** compilation raises before any node runs, the run fails as `node_not_accepted`, and the message says to remix the branch
+
+#### Scenario: the child sees ancestors' bodies and no headers
+- **WHEN** a code node's ancestor fetched a document with a `Set-Cookie` header
+- **THEN** `effects[<ancestor>]` carries `status` and the full `body` and no `headers` key
+
+#### Scenario: a print flood cannot exhaust the daemon
+- **WHEN** code prints far past the user-print buffer (64 KiB)
+- **THEN** the prints are truncated in the child and the node still succeeds with its `stdout_tail`; and
+- **WHEN** the child writes past the 8 MiB protocol-stdout cap
+- **THEN** the parent kills it at the cap and the node fails with "output too large"
 
 ### Requirement: Runs are checkpointed LangGraph executions with a fixed terminal status set
 The runs engine (`tinyassets.runs`) SHALL execute a compiled branch as a checkpointed LangGraph run using a synchronous `SqliteSaver` (never `AsyncSqliteSaver`, per Hard Rule #1) persisted at `.langgraph_runs.db`, with the LangGraph `thread_id` equal to the `run_id`. A run's lifecycle status SHALL be one of `queued`, `running`, `completed`, `failed`, `cancelled`, `interrupted`, or `resumed`. The graph SHALL be invoked with a recursion ceiling defaulting to `DEFAULT_RECURSION_LIMIT = 100` (raised from LangGraph's stock 25 to accommodate multi-iteration gate loops), overridable per call within validated bounds.
@@ -106,6 +136,14 @@ The runs engine (`tinyassets.runs`) SHALL execute a compiled branch as a checkpo
 ### Requirement: Run failures map to a terminal status taxonomy
 The executor SHALL translate every terminating condition into a terminal run status with a diagnostic error message rather than leaving a run wedged or crashing the daemon: cancellation (including LangGraph-wrapped cancellation) maps to `cancelled`; a LangGraph interrupt or a child-invocation receipt-timeout maps to `interrupted` (the latter carrying a `child_invocation_receipt_gate` marker so it can be reclaimed); and `GraphRecursionError`, node timeout, empty-LLM-response, and propagated child-run failure each map to `failed` with a reason-specific message. A separate presentation helper (`_classify_failure`) SHALL fold a stored run record into a short failure-class label (for example `cancelled`, `interrupted`, `child_receipt_waiting`, `empty_llm_response`, `timeout`, `provider_exhausted`, `sandbox_unavailable`) for run-history surfaces.
 
+The executor SHALL additionally classify a sandboxed code node's failure as
+`code_node_failed` (actionable by the chatbot: the message carries the
+child's stderr tail), a refused foreign code node as `node_not_accepted`
+(chatbot: remix), and an effect failure raised at node time by its
+`external write failed - <node>/<sink>: <error> [<kind>]` message (the
+existing `external_write_failed` / `external_write_refused` classes). All
+other clauses of this requirement are unchanged.
+
 #### Scenario: an empty LLM response terminates the run as failed
 - **WHEN** a node's provider returns an empty response that surfaces as an empty-response error
 - **THEN** the run status becomes `failed` with a message identifying the empty response and the responsible node
@@ -117,6 +155,10 @@ The executor SHALL translate every terminating condition into a terminal run sta
 #### Scenario: a cancelled run reports cancelled, not failed
 - **WHEN** a run is cancelled between nodes
 - **THEN** the run status becomes `cancelled` with a cancellation message, distinct from a crash
+
+#### Scenario: a code node that raises fails the run with its stderr
+- **WHEN** `run()` raises inside the sandbox
+- **THEN** the run status is `failed`, the class is `code_node_failed`, and the error contains the exception text from the child's stderr
 
 ### Requirement: Interrupted runs resume from checkpoint under owner, status, checkpoint, and version guards
 `resume_run` SHALL resume a run only from its `SqliteSaver` checkpoint and only when four guards pass: the caller `actor` owns the run (else `auth_failed`), the run is `interrupted` (a run already `resumed` is idempotently returned; any other status raises `not_interrupted`), a checkpoint exists for the run's `thread_id` (else `no_checkpoint`), and the exact branch version the run used still resolves (else `branch_version_mismatch`). On resume the run SHALL be marked `resumed` before background re-invocation with `None` inputs (LangGraph's resume signal). At server startup `recover_in_flight_runs` SHALL sweep any `queued` or `running` rows to `interrupted` so no run is falsely reported in flight after a restart. As-built limitation: the `recover_in_flight_runs` docstring still states that `interrupted` is terminal and that mid-run resume via checkpoint is "not available today" — that docstring is stale, because `resume_run` implements exactly that checkpoint-based resume.
@@ -507,8 +549,16 @@ The run substrate SHALL persist teammate messages with a generated message ID, e
 - **THEN** its focused helper behavior is available
 - **AND** current `NodeDefinition` and `BranchDefinition` shapes expose no message-spec field and `compile_branch` never invokes these helpers, so compiled graph execution is not wired
 
-### Requirement: Approved source nodes enqueue paced same-universe BranchTasks under trusted bounded context
+### Requirement: Owner-authored source nodes enqueue paced same-universe BranchTasks under trusted bounded context
 When the node-enqueue capability is enabled and an approved `source_code` node declares the enqueue tool, `enqueue_branch_run` SHALL append one epoch-1 `BranchTask` and SHALL NOT start a run synchronously. The task SHALL target the trusted physical queue universe; use forced `trigger_source=owner_queued` and `request_type=branch_run`; copy only object inputs; use server-derived parent/origin lineage and parent depth plus one; and target an existing public branch. Epoch-1 enqueue MUST reject every private target because it carries no request-scoped authenticated actor evidence. Every trusted root run SHALL derive one stable origin shared by all sibling enqueues. One atomic successful-enqueue budget SHALL be shared across every source node in the compiled run. Missing trusted/run context, a foreign universe, mismatched persisted universe metadata, a missing or private target, invalid inputs, depth or run-wide budget exhaustion, or a shared-cap refusal SHALL fail before append or surface the atomic refusal as `CompilerError`.
+
+When the node-enqueue capability is enabled and an owner-authored
+`source_code` node calls `invoke_mcp_action('enqueue_branch_run', …)`, the
+parent SHALL perform the enqueue with the run's authority and answer the
+child with its result; the enqueue SHALL append one epoch-1 `BranchTask` and
+SHALL NOT start a run synchronously. All other clauses (trusted context,
+target authority, capacity) are unchanged; "approved" in this requirement
+reads "owner-authored".
 
 #### Scenario: Enabled enqueue appends but does not execute
 - **WHEN** an approved source node enqueues an existing public branch with valid trusted context and remaining capacity
@@ -613,3 +663,37 @@ The evaluation contract SHALL support a `route_back` rejection decision containi
 #### Scenario: Repeated route hop terminates the loop
 - **WHEN** typed route history already contains the target `(goal_id, scope_actor)` or adding it would exceed three hops
 - **THEN** the originating run terminates with a structured `route_back_loop` error and starts no routed run
+
+### Requirement: Effects fire at node time in graph order
+
+When a node's function returns, the runtime SHALL immediately dispatch the
+node's declared `effects` against the state merged with that node's delta
+(reducers applied), record the full result on a run-scoped effect chain and
+bounded evidence for persistence, and continue to the next node. A node's
+effects SHALL fire at most once per run; a revisit (cycle) SHALL fail the
+node with kind `effect_already_fired`. A reference to an earlier effect —
+`$ta.effect`, a code node's `effects` — SHALL resolve only to the node's
+graph ancestors. A packet refused before the wire, a crashed adapter, a dead
+sink, or a delivered call answered ≥ 400 whose status the packet did not
+declare in `accept_statuses` SHALL fail the node and end the run `failed`;
+later nodes SHALL NOT run. Evidence SHALL persist on every terminal status,
+and a run that fired a delivered effect before failing SHALL carry
+`failed_after_effects` naming those nodes. After an interrupt, a resumed run
+SHALL refuse a reference to an effect fired before the interrupt rather than
+resolve it from persisted bounded evidence, SHALL NOT refire an effect that
+fired before the interrupt, and SHALL continue the interrupted segment's
+`invoke_mcp_action` count and invocation depth. Two graph nodes that fan out
+from one parent and both write a field with no reducer SHALL be refused at
+compile (LangGraph would reject the step after their effects fired).
+
+#### Scenario: a refused write stops the chain
+- **WHEN** `write_readme`'s packet is refused (`invalid_body_transform`) and `open_pr` follows it
+- **THEN** the run fails at `write_readme` with `external write failed - write_readme/…`, `open_pr` never fires, and the evidence of `create_branch` is persisted with `failed_after_effects: ["create_branch"]`
+
+#### Scenario: a probe's 404 is data when declared
+- **WHEN** a GET packet declares `"accept_statuses": [404]` and the far side answers 404
+- **THEN** the node succeeds and a later code node reads `effects["probe"]["status"] == 404`
+
+#### Scenario: a cycle cannot refire an effect
+- **WHEN** a conditional edge routes back to a node whose effects already fired in this run
+- **THEN** the second visit fails the node with kind `effect_already_fired`

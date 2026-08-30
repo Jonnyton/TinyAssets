@@ -1,6 +1,6 @@
 # Engine Run Admissions
 
-> As-built (2026-08-30, changes `run-rate-cap-counts-writes` #2704 and `engine-writes-count-toward-total` #2712): the engine's per-universe run-admission ledger — what an engine-triggered run costs and how it is settled. Design rationale in the archived change's `design.md`. Live proof 2026-08-30: heartbeat periods settle as `read` rows; a one-line README job with retries (runs `c1cd14f98b6e4af8` → `3f86d7b9fde04bff`, `d773d4d006ae45a8`, `b77089dfa3c14d9e`, `631bd6d61473416f`) completed without meeting the cap.
+> As-built (2026-08-30, changes `run-rate-cap-counts-writes` #2704, `engine-writes-count-toward-total` #2712, `sandboxed-code-node` #2719/#2723): the engine's per-universe run-admission ledger — what an engine-triggered run costs and how it is settled. Design rationale in the archived change's `design.md`. Live proof 2026-08-30: heartbeat periods settle as `read` rows; a one-line README job with retries (runs `c1cd14f98b6e4af8` → `3f86d7b9fde04bff`, `d773d4d006ae45a8`, `b77089dfa3c14d9e`, `631bd6d61473416f`) completed without meeting the cap.
 
 ## Purpose
 
@@ -9,7 +9,6 @@ Bound how often an engine-triggered run can fire an already-approved effect (Cod
 ## Requirements
 
 ### Requirement: Engine run admissions are charged as writes and settled by what fired
-
 The engine SHALL admit every engine-triggered run and every scheduled
 automation run through one per-universe rolling ledger
 (`<data_dir>/.engine_run_admissions.db`), charging each as kind `write`
@@ -46,6 +45,19 @@ refusal SHALL name the cap that refused. The ledger
 SHALL be refused (fail closed) when it is a symlink or resolves outside its
 data dir. Older ledgers SHALL be migrated additively, their rows counting as
 writes.
+
+Because effects fire at node time, a run MAY fire a write and then fail or be
+cancelled. On every terminal status the runtime SHALL settle the run's
+admission from the effect chain's record of what fired — a fired write
+settles as `write` (final) even when the run ends `failed`, `cancelled` or
+`interrupted`; a run whose chain fired nothing settles as `read`. Settlement
+SHALL have exactly one owner per run (the chain, via the terminal status
+write); the "failed run fired nothing" shortcut SHALL apply only to runs that
+had no chain. A `write` settlement SHALL be final in both directions: it
+SHALL promote an admission a `read` settlement reclassified earlier, and a
+later `read` SHALL change nothing. The clause "a run that failed or was
+cancelled … fires nothing" is withdrawn. All other clauses of this
+requirement are unchanged.
 
 #### Scenario: A GitHub job's reads do not spend the write budget
 
@@ -133,3 +145,15 @@ writes.
   hour (failed validations included - they charged their admission)
 - **THEN** the 41st is refused by the engine cap while runs are still admitted
   until 60 admissions of any kind exist
+
+#### Scenario: A read that arrived first does not hide a write
+- **WHEN** a terminal status settles `read` while an adapter is still running and that adapter then delivers a PUT
+- **THEN** the later `write` settlement promotes the admission row to `write`
+
+#### Scenario: A write that fired before a failure stays a write
+- **WHEN** `create_branch` (POST) delivered and then `write_readme` was refused, failing the run
+- **THEN** the run's admission settles as `write`, and no later `read` settlement changes it
+
+#### Scenario: A run that failed before any effect settles as a read
+- **WHEN** a run fails at its first node before any effect fires
+- **THEN** its admission settles as `read`
