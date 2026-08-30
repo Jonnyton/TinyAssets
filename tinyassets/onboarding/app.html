@@ -1027,7 +1027,9 @@
     if(last && last.message===message) return;          // the same line twice is one line
     const input=$("composer-input");
     if(sendQueue.length>=SEND_QUEUE_MAX){
-      input.value=message; autoGrow(input);
+      // ...and never over a draft the founder is typing: put it below it.
+      const draft=input.value.trim();
+      input.value=draft ? draft + "\n" + message : message; autoGrow(input);
       setStatusLine("Your universe is thinking... too many messages waiting; send this one when it replies.");
       return;
     }
