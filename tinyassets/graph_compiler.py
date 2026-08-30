@@ -1880,6 +1880,20 @@ def _build_source_code_node(
             concurrency_tracker.acquire()
         try:
             visible = input_keys + defaulted if strict_inputs else list(dict(state).keys())
+            # The sandbox answers RPCs from a drain THREAD, which carries no
+            # ContextVars: without this, an RPC resolved the daemon's env
+            # identity instead of the run's authenticated actor (Codex round 2,
+            # P0). Copy this thread's context and run the invoker inside it;
+            # count every round-trip against the RUN's cap.
+            import contextvars
+
+            request_ctx = contextvars.copy_context()
+
+            def _invoke(action: str, kwargs: dict[str, Any]) -> Any:
+                if effect_chain is not None:
+                    effect_chain.rpc_permit()
+                return request_ctx.run(invoke_mcp_action, action, **dict(kwargs or {}))
+
             result = NodeSandbox(timeout=timeout_s).run_sync(
                 node_id=node.node_id,
                 source_code=src,
@@ -1888,7 +1902,7 @@ def _build_source_code_node(
                 output_keys=output_keys,
                 timeout=timeout_s,
                 effects=effects,
-                invoke=lambda action, kwargs: invoke_mcp_action(action, **dict(kwargs or {})),
+                invoke=_invoke,
             )
         finally:
             if concurrency_tracker is not None:
@@ -2816,7 +2830,7 @@ def _delta_view(
 
 
 def _graph_ancestors(branch: BranchDefinition) -> dict[str, set[str]]:
-    """node_def id -> the node_def ids of every graph ancestor (plain and
+    """graph node id -> the graph node ids of every ancestor (plain and
     conditional edges alike; a conditional target is a possible ancestor).
     A reference to an earlier effect - ``$ta.effect``, a code node's
     ``effects`` - is legal only within this relation (Codex round 1, P1:
@@ -2842,8 +2856,32 @@ def _graph_ancestors(branch: BranchDefinition) -> dict[str, set[str]]:
                 continue
             seen.add(cur)
             stack.extend(parents.get(cur, ()))
-        out.setdefault(def_of[gid], set()).update(def_of[p] for p in seen)
+        # Keyed by GRAPH node id: two graph nodes sharing one definition have
+        # their own ancestors and their own effect identity (Codex round 2, P1).
+        out[gid] = seen
     return out
+
+
+def _validate_delta_reducers(
+    node_id: str,
+    delta: dict[str, Any],
+    append_fields: set[str],
+    merge_fields: set[str],
+) -> None:
+    """What LangGraph will reject when it applies the reducers, rejected HERE,
+    before any effect fires (Codex round 2, P0): an append field needs a list,
+    a merge field needs a dict."""
+    for key, value in delta.items():
+        if key in append_fields and not isinstance(value, list):
+            raise CompilerError(
+                f"Node '{node_id}' returned {key!r} as {type(value).__name__}, but "
+                f"that field's reducer is append (a list); nothing fired."
+            )
+        if key in merge_fields and not isinstance(value, dict):
+            raise CompilerError(
+                f"Node '{node_id}' returned {key!r} as {type(value).__name__}, but "
+                f"that field's reducer is merge (a dict); nothing fired."
+            )
 
 
 def _wrap_with_effects(
@@ -2853,6 +2891,7 @@ def _wrap_with_effects(
     state_schema: list[dict[str, Any]] | None,
     event_sink: Callable[..., None] | None,
     ancestors: set[str] | None = None,
+    chain_key: str = "",
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Fire the node's declared ``effects`` the moment the node returns
     (design D1, change `sandboxed-code-node`): against the state merged with
@@ -2879,9 +2918,11 @@ def _wrap_with_effects(
             return delta
         from tinyassets.effectors import dispatch_node_effects
 
+        _validate_delta_reducers(node_id, delta, append_fields, merge_fields)
         view = _delta_view(state, delta, append_fields, merge_fields)
         evidence = dispatch_node_effects(
             effect_chain, node, view, state_schema=schema, ancestors=ancestors,
+            node_key=chain_key or node_id,
         )
         if event_sink is not None:
             try:
@@ -2914,10 +2955,14 @@ def _build_node(
     on_node_status: Callable[[str, str], None] | None = None,
     effect_chain: Any = None,
     ancestors: set[str] | None = None,
+    merge_fields: set[str] | None = None,
+    graph_node_id: str = "",
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
-    """Build the node function for ``node`` and wrap it so its declared
-    effects fire at node time (see ``_wrap_with_effects``). ``ancestors`` is
-    the set of node ids this node may reference (graph ancestry)."""
+    """Build the node function for ``node``: the inner adapter, then the
+    single-merge-writer guard (when ``merge_fields`` is given), then the
+    effect wrapper - the guard MUST see the delta before any effect fires
+    (Codex round 2, P0). ``ancestors`` is the set of graph node ids this node
+    may reference; ``graph_node_id`` keys its effects on the run's chain."""
     inner = _build_node_inner(
         node,
         provider_call=provider_call,
@@ -2937,8 +2982,16 @@ def _build_node(
         effect_chain=effect_chain,
         ancestors=ancestors,
     )
+    if merge_fields is not None:
+        inner = _guard_single_writer_merge_outputs(
+            inner,
+            graph_node_id=graph_node_id or node.node_id,
+            declared_outputs=_declared_node_outputs(node),
+            merge_fields=merge_fields,
+        )
     return _wrap_with_effects(
         inner, node, effect_chain, state_schema, event_sink, ancestors=ancestors,
+        chain_key=graph_node_id or node.node_id,
     )
 
 
@@ -3265,7 +3318,7 @@ def compile_branch(
     }
 
     node_ids_in_order = [gn.id for gn in branch.graph_nodes]
-    ancestors_by_def = _graph_ancestors(branch) if effect_chain is not None else {}
+    ancestors_by_gid = _graph_ancestors(branch) if effect_chain is not None else {}
 
     # Add graph nodes to the StateGraph. Each graph_node points at a
     # node_def via ``node_def_id`` (usually the same as ``id``).
@@ -3298,13 +3351,9 @@ def compile_branch(
             execution_context=execution_context,
             on_node_status=on_node_status,
             effect_chain=effect_chain,
-            ancestors=ancestors_by_def.get(def_id, set()) if effect_chain is not None else None,
-        )
-        fn = _guard_single_writer_merge_outputs(
-            fn,
-            graph_node_id=gn.id,
-            declared_outputs=_declared_node_outputs(node_def),
+            ancestors=ancestors_by_gid.get(gn.id, set()) if effect_chain is not None else None,
             merge_fields=merge_fields,
+            graph_node_id=gn.id,
         )
         graph.add_node(gn.id, fn)
 

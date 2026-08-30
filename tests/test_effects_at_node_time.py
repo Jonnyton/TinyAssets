@@ -272,6 +272,263 @@ def test_a_code_node_that_raises_fails_the_run_as_code_node_failed(monkeypatch, 
     assert [c["node_id"] for c in adapter.calls] == ["fetch"]      # write never fired
 
 
+# --- Codex round 2 (2026-08-30): the six P0s, each pinned ---------------------
+
+
+def test_resume_carries_the_runs_authority_so_foreign_code_cannot_fail_open(tmp_path):
+    """R2 P0: the resume path compiled without an execution context, so a
+    public-foreign branch's code ran after an interrupt. The context is built
+    from the persisted run row for both paths."""
+    import inspect
+
+    from tinyassets import runs
+
+    runs.initialize_runs_db(tmp_path)
+    branch = _fetch_edit_write_branch()
+    branch.author = "alice"
+    ctx = runs._execution_context_for_run(tmp_path, "nope", branch, fallback_actor="alice")
+    assert ctx.caller_provenance == "own" and ctx.actor == "alice"
+    ctx = runs._execution_context_for_run(tmp_path, "nope", branch, fallback_actor="mallory")
+    assert ctx.caller_provenance == "public-foreign"
+    # the resume site passes it to compile_branch (structural pin)
+    src = inspect.getsource(runs._invoke_graph_resume)
+    assert "execution_context=resume_context" in src
+    assert "_execution_context_for_run(base_path, run_id, branch)" in src
+
+
+def test_rpc_runs_the_invoker_inside_the_requests_context(monkeypatch):
+    """R2 P0: the sandbox answers RPCs from a drain thread, which carries no
+    ContextVars, so an invoker resolved the daemon's env identity instead of
+    the run's actor. The node thread's context is copied into the call."""
+    import contextvars
+
+    from tinyassets import graph_compiler as gc
+
+    who = contextvars.ContextVar("who", default="daemon-env")
+
+    def fake_invoker(node, **_kw):
+        return lambda action, **kwargs: {"actor": who.get(), "action": action}
+
+    monkeypatch.setattr(gc, "_build_node_mcp_invoker", fake_invoker)
+    who.set("alice")
+    node = NodeDefinition(
+        node_id="who", display_name="who", input_keys=[], output_keys=["r"],
+        source_code="def run(state):\n    return {'r': invoke_mcp_action('probe', x=1)}\n",
+    )
+    branch = _linear(node)
+    branch.state_schema = [{"name": "r", "type": "dict"}]
+    chain = EffectChain(run_id="r8")
+    compiled = compile_branch(branch, provider_call=None, effect_chain=chain)
+    app = compiled.graph.compile(checkpointer=InMemorySaver())
+    out = app.invoke({}, config={"configurable": {"thread_id": "r8"}})
+    assert out["r"] == {"actor": "alice", "action": "probe"}
+    assert chain.rpc_calls == 1
+
+
+def test_rpc_cap_is_per_run_not_per_node():
+    chain = EffectChain(run_id="r9")
+    for _ in range(32):
+        chain.rpc_permit()
+    with pytest.raises(RuntimeError, match="too many"):
+        chain.rpc_permit()
+
+
+def test_a_bad_reducer_delta_fails_before_any_effect_fires(monkeypatch):
+    """R2 P0: `_delta_view` overwrote an append field with a non-list, the PUT
+    fired, then LangGraph raised on the reducer. Validate first, fire never."""
+    adapter = _Adapter({"write": _OK_PUT})
+    monkeypatch.setitem(effectors._EFFECTORS, SINK, adapter)
+    node = NodeDefinition(
+        node_id="write", display_name="write", input_keys=[], output_keys=["log", "write_packet"],
+        source_code=(
+            "def run(state):\n"
+            "    return {'log': 'not-a-list', 'write_packet': %r}\n" % _packet("PUT")
+        ),
+        effects=[SINK],
+    )
+    branch = _linear(node)
+    branch.state_schema = [
+        {"name": "log", "type": "list", "reducer": "append"},
+        {"name": "write_packet", "type": "str"},
+    ]
+    chain = EffectChain(run_id="r10")
+    compiled = compile_branch(branch, provider_call=None, effect_chain=chain)
+    app = compiled.graph.compile(checkpointer=InMemorySaver())
+    with pytest.raises(Exception, match="reducer is append"):
+        app.invoke({"log": []}, config={"configurable": {"thread_id": "r10"}})
+    assert adapter.calls == []
+
+
+def test_the_merge_writer_guard_runs_before_effects(monkeypatch):
+    """R2 P0: the guard wrapped the effect wrapper, so a PUT fired before the
+    guard refused an undeclared merge writer. Now guard -> effects."""
+    adapter = _Adapter({"write": _OK_PUT})
+    monkeypatch.setitem(effectors._EFFECTORS, SINK, adapter)
+    declared = NodeDefinition(
+        node_id="declared", display_name="declared", input_keys=[], output_keys=["meta"],
+        source_code="def run(state):\n    return {'meta': {'a': 1}}\n",
+    )
+    sneaky = NodeDefinition(
+        node_id="write", display_name="write", input_keys=[], output_keys=["write_packet"],
+        source_code=(
+            "def run(state):\n"
+            "    return {'meta': {'b': 2}, 'write_packet': %r}\n" % _packet("PUT")
+        ),
+        effects=[SINK],
+    )
+    branch = _linear(declared, sneaky)
+    branch.state_schema = [
+        {"name": "meta", "type": "dict", "reducer": "merge"},
+        {"name": "write_packet", "type": "str"},
+    ]
+    chain = EffectChain(run_id="r11")
+    compiled = compile_branch(branch, provider_call=None, effect_chain=chain)
+    app = compiled.graph.compile(checkpointer=InMemorySaver())
+    with pytest.raises(Exception, match="without declaring it"):
+        app.invoke({}, config={"configurable": {"thread_id": "r11"}})
+    assert adapter.calls == []
+
+
+def test_at_most_once_holds_under_concurrent_visits(monkeypatch):
+    """R2 P0: the evidence check and the reservation were separated by the
+    adapter call, so two synchronized visits both fired."""
+    import threading
+
+    started = threading.Barrier(2, timeout=5)
+    release = threading.Event()
+
+    class _Slow(_Adapter):
+        def __call__(self, **kw):
+            release.wait(5)
+            return super().__call__(**kw)
+
+    adapter = _Slow({"fetch": _OK_GET})
+    monkeypatch.setitem(effectors._EFFECTORS, SINK, adapter)
+    chain = EffectChain(run_id="r12")
+    node = _effect_node("fetch")
+    state = {"fetch_packet": _packet()}
+    errors: list[str] = []
+
+    def visit():
+        started.wait()
+        try:
+            dispatch_node_effects(chain, node, state)
+        except EffectFailedError as exc:
+            errors.append(exc.error_kind)
+
+    threads = [threading.Thread(target=visit) for _ in range(2)]
+    for t in threads:
+        t.start()
+    release.set()
+    for t in threads:
+        t.join(10)
+    assert len(adapter.calls) == 1
+    assert errors == ["effect_already_fired"]
+
+
+def test_settlement_waits_for_an_in_flight_dispatch_and_closes_the_chain(monkeypatch):
+    """R2 P0: a terminal status settled `[]` while an adapter was still
+    running; the late PUT then landed on a forgotten chain as a read."""
+    import threading
+
+    inside = threading.Event()
+    release = threading.Event()
+
+    class _Blocking(_Adapter):
+        def __call__(self, **kw):
+            inside.set()
+            release.wait(5)
+            return super().__call__(**kw)
+
+    adapter = _Blocking({"write": _OK_PUT})
+    monkeypatch.setitem(effectors._EFFECTORS, SINK, adapter)
+    settled: list[list] = []
+    monkeypatch.setattr(
+        effectors, "settle_engine_admission",
+        lambda rid, fired: settled.append(list(fired)),
+    )
+    chain = EffectChain(run_id="r13")
+    node = _effect_node("write", "PUT")
+    worker = threading.Thread(
+        target=dispatch_node_effects, args=(chain, node, {"write_packet": _packet("PUT")}),
+    )
+    worker.start()
+    assert inside.wait(5)
+    settler = threading.Thread(target=chain.settle)
+    settler.start()
+    settler.join(0.3)
+    assert settler.is_alive()                      # settle is waiting for the dispatch
+    assert settled == []
+    release.set()
+    worker.join(5)
+    settler.join(5)
+    assert settled == [[(SINK, "PUT")]]           # the late write was counted
+    assert chain.closed is True
+    with pytest.raises(EffectFailedError, match="terminal"):
+        dispatch_node_effects(chain, _effect_node("late"), {"late_packet": _packet()})
+
+
+def test_an_accepted_status_is_not_re_reported_at_completion(monkeypatch):
+    from tinyassets.runs import _collect_external_write_errors
+
+    miss = {"delivered": True, "verb": "GET",
+            "response": {"status": 404, "body": '{"message": "Not Found"}'}}
+    adapter = _Adapter({"probe": miss})
+    chain = _run(_linear(_effect_node("probe")), {"probe": _packet(accept_statuses=[404])},
+                 adapter, monkeypatch, run_id="r14")
+    assert chain.evidence["probe"][SINK]["accepted_status"] is True
+    assert _collect_external_write_errors(dict(chain.evidence)) == []
+
+
+def test_two_graph_nodes_sharing_a_definition_have_their_own_ancestry():
+    """R2 P1: ancestry and effect identity were keyed by node_def id, so two
+    graph nodes over one definition received the union of both."""
+    shared = _effect_node("shared")
+    fetch = _effect_node("fetch")
+    branch = BranchDefinition(name="reuse", entry_point="first")
+    branch.node_defs = [shared, fetch]
+    branch.graph_nodes = [
+        GraphNodeRef(id="first", node_def_id="shared"),
+        GraphNodeRef(id="fetch", node_def_id="fetch"),
+        GraphNodeRef(id="second", node_def_id="shared"),
+    ]
+    branch.edges = [
+        EdgeDefinition(from_node="START", to_node="first"),
+        EdgeDefinition(from_node="first", to_node="fetch"),
+        EdgeDefinition(from_node="fetch", to_node="second"),
+        EdgeDefinition(from_node="second", to_node="END"),
+    ]
+    anc = _graph_ancestors(branch)
+    assert anc["first"] == set()
+    assert anc["second"] == {"first", "fetch"}
+
+
+def test_evidence_merges_into_a_callers_terminal_output(monkeypatch, tmp_path):
+    """R2 P1: INTERRUPTED with a caller-supplied output dropped the chain's
+    evidence; now it is merged in, never clobbering the caller's keys."""
+    from tinyassets import runs
+
+    monkeypatch.setattr(effectors, "settle_engine_admission", lambda rid, fired: None)
+    runs.initialize_runs_db(tmp_path)
+    created = runs.create_run(
+        tmp_path, branch_def_id="b", thread_id="t15", inputs={}, run_name="x",
+    )
+    run_id = created if isinstance(created, str) else getattr(created, "run_id", "")
+    chain = EffectChain(run_id=run_id)
+    chain.fired.append((SINK, "PUT"))
+    chain.evidence["write"] = {SINK: {"delivered": True, "verb": "PUT",
+                                      "response": {"status": 201, "body": "{}"}}}
+    register_effect_chain(chain)
+    runs.update_run_status(
+        tmp_path, run_id, status=runs.RUN_STATUS_INTERRUPTED, error="paused",
+        output={"child_invocation_receipt_gate": {"status": "receipt_waiting"}},
+    )
+    rec = runs.get_run(tmp_path, run_id)
+    assert rec["output"]["child_invocation_receipt_gate"]["status"] == "receipt_waiting"
+    assert "write" in rec["output"]["external_write_results"]
+    assert rec["output"]["failed_after_effects"] == ["write"]
+
+
 def test_a_terminal_status_settles_from_the_chain_and_forgets_it(monkeypatch, tmp_path):
     """A write that fired before the failure settles as a write - the old
     `settle(run_id, [])` read-shortcut must not run when a chain exists."""

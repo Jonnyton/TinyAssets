@@ -140,7 +140,17 @@ class EffectChain:
     evidence: dict[str, dict] = field(default_factory=dict)
     fired: list[tuple[str, str | None]] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    #: Held for the whole of one node's dispatch (adapter call included) and by
+    #: ``settle``: a terminal status waits for an in-flight effect to finish and
+    #: then closes the chain, so a late write can never land after settlement
+    #: and settle as a read (Codex round 2, P0).
+    dispatch_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+    inflight: set[str] = field(default_factory=set)
+    closed: bool = False
     settled: bool = False
+    #: ``invoke_mcp_action`` round-trips this RUN has made (the child's own cap
+    #: is per node, so the run-wide bound lives here - Codex round 2, P1).
+    rpc_calls: int = 0
 
     def prior_effects(self, ancestors: set[str] | None = None) -> dict[str, dict]:
         """Full results of the nodes a reference may legally name (for
@@ -190,14 +200,27 @@ class EffectChain:
         return out
 
     def settle(self) -> None:
-        """Settle the run's engine admission from what actually fired. Idempotent;
-        a write that fired before a failure still settles as a write."""
-        with self.lock:
-            if self.settled:
-                return
-            self.settled = True
-            fired = list(self.fired)
+        """Settle the run's engine admission from what actually fired, after
+        any in-flight dispatch has finished, and close the chain: nothing may
+        fire after a terminal status. Idempotent; a write that fired before a
+        failure still settles as a write."""
+        with self.dispatch_lock:
+            with self.lock:
+                self.closed = True
+                if self.settled:
+                    return
+                self.settled = True
+                fired = list(self.fired)
         settle_engine_admission(self.run_id, fired)
+
+    def rpc_permit(self, cap: int = 32) -> None:
+        """Count one ``invoke_mcp_action`` round-trip against the run's cap."""
+        with self.lock:
+            self.rpc_calls += 1
+            if self.rpc_calls > cap:
+                raise RuntimeError(
+                    f"too many invoke_mcp_action calls in this run (cap {cap})"
+                )
 
 
 _ACTIVE_CHAINS: dict[str, EffectChain] = {}
@@ -228,44 +251,73 @@ def dispatch_node_effects(
     *,
     state_schema=None,
     ancestors: set[str] | None = None,
+    node_key: str | None = None,
 ) -> dict[str, dict]:
     """Fire ``node.effects`` NOW, against ``run_state`` = the state the node saw
     merged with the delta it returned (the packet lives in that delta). Records
-    full results, bounded evidence and fired verbs on ``chain``; raises
-    ``EffectFailedError`` per design D1 so the node - and the run - fail.
+    full results, bounded evidence and fired verbs on ``chain`` under
+    ``node_key`` (the GRAPH node id - two graph nodes sharing one definition
+    are two effects, Codex round 2); raises ``EffectFailedError`` per design
+    D1 so the node - and the run - fail.
 
-    A node's effects fire AT MOST ONCE per run (Codex round 1, P0): a cycle
-    that revisits an effect node fails on the second visit instead of firing
-    the same PUT up to the recursion ceiling under one admission."""
+    A node's effects fire AT MOST ONCE per run (Codex round 1, P0), reserved
+    under the lock BEFORE the adapter runs so two concurrent visits cannot
+    both fire (round 2, P0); nothing fires after the chain closed."""
     effects = list(getattr(node, "effects", None) or [])
     if not effects:
         return {}
-    node_id = getattr(node, "node_id", "")
-    with chain.lock:
-        already = node_id in chain.evidence
-    if already:
-        raise EffectFailedError(
-            node_id, effects[0],
-            "this node's effects already fired in this run - a cycle revisited it; "
-            "each node's effects fire at most once per run, so route the loop "
-            "around the effect node or split the branch",
-            "effect_already_fired",
-        )
-    per_node = _fire_node_effects(
-        node, run_state, chain=chain,
-        schema_defaulted=_schema_defaulted_keys(state_schema),
-        ancestors=ancestors,
-    )
-    with chain.lock:
-        chain.evidence[node_id] = per_node
-    accept = packet_accept_statuses(
-        output_keys=list(getattr(node, "output_keys", None) or []), run_state=run_state,
-    )
+    key = node_key or getattr(node, "node_id", "")
+    with chain.dispatch_lock:
+        with chain.lock:
+            if chain.closed:
+                raise EffectFailedError(
+                    key, effects[0],
+                    "the run already reached a terminal status; no effect may fire after it",
+                    "run_closed",
+                )
+            if key in chain.evidence or key in chain.inflight:
+                raise EffectFailedError(
+                    key, effects[0],
+                    "this node's effects already fired in this run - a cycle revisited it; "
+                    "each node's effects fire at most once per run, so route the loop "
+                    "around the effect node or split the branch",
+                    "effect_already_fired",
+                )
+            chain.inflight.add(key)
+        try:
+            per_node = _fire_node_effects(
+                node, run_state, chain=chain,
+                schema_defaulted=_schema_defaulted_keys(state_schema),
+                ancestors=ancestors, node_key=key,
+            )
+            accept = packet_accept_statuses(
+                output_keys=list(getattr(node, "output_keys", None) or []),
+                run_state=run_state,
+            )
+            _mark_accepted_statuses(per_node, accept)
+            with chain.lock:
+                chain.evidence[key] = per_node
+        finally:
+            with chain.lock:
+                chain.inflight.discard(key)
     failure = first_effect_failure(per_node, accept_statuses=accept)
     if failure is not None:
         sink, error, kind = failure
-        raise EffectFailedError(node_id, sink, error, kind)
+        raise EffectFailedError(key, sink, error, kind)
     return per_node
+
+
+def _mark_accepted_statuses(per_node: dict, accept: set[int]) -> None:
+    """A delivered call answered >= 400 with a status the packet declared
+    acceptable is data: mark the evidence row so the completion path does not
+    re-report it as an external-write error (Codex round 2, P1)."""
+    for result in (per_node or {}).values():
+        if not isinstance(result, dict) or result.get("delivered") is not True:
+            continue
+        response = result.get("response") if isinstance(result.get("response"), dict) else {}
+        status = response.get("status")
+        if isinstance(status, int) and status >= 400 and status in accept:
+            result["accepted_status"] = True
 
 
 def first_effect_failure(
@@ -301,13 +353,13 @@ def first_effect_failure(
 
 def _fire_node_effects(
     node, run_state, *, chain: EffectChain, schema_defaulted: set,
-    ancestors: set[str] | None = None,
+    ancestors: set[str] | None = None, node_key: str | None = None,
 ) -> dict:
     """Run every sink one node declares and return its bounded evidence
     ({sink: result}); full authenticated-call results and fired verbs land on
-    ``chain``. Never raises: every failure is a structured row (the D1 rule is
-    applied by the caller)."""
-    node_id = getattr(node, "node_id", "")
+    ``chain`` under ``node_key``. Never raises: every failure is a structured
+    row (the D1 rule is applied by the caller)."""
+    node_id = node_key or getattr(node, "node_id", "")
     output_keys = list(getattr(node, "output_keys", None) or [])
     # A packet may read ONLY the node's declared input_keys plus the
     # state_schema-defaulted keys - never the whole final state (Codex

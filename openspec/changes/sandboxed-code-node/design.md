@@ -165,9 +165,12 @@ private cwd) with `RLIMIT_AS` 512 MiB, `RLIMIT_CPU` = node timeout,
   `sanitize-served-invoke-branch` design note are revised to name the new
   backstop — a foreign branch's code refuses by authorship, and no code
   runs in-process *(R1 P0)*.
-- `invoke_mcp_action` is not available inside the sandbox (it never had a
-  caller in stored branches); the "approved source nodes enqueue" clause
-  becomes "owner-authored source nodes enqueue" (spec delta).
+- `invoke_mcp_action` inside the sandbox is the synchronous RPC described
+  above (the parent answers with the run's authority, inside the request's
+  copied `ContextVar` context so the authenticated actor - never the daemon's
+  env identity - is what the invoker sees, 32 calls per RUN); the "approved
+  source nodes enqueue" clause becomes "owner-authored source nodes enqueue"
+  (spec delta).
 - **Hosts without bwrap** (Windows, the desktop plugin runtime): a code
   node fails loudly with `sandbox_unavailable` and the message says to run
   the branch on the cloud universe. A portable isolation backend is part of

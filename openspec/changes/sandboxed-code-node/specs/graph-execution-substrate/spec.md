@@ -41,8 +41,10 @@ provenance only and SHALL NOT gate execution.
 - **THEN** `effects[<ancestor>]` carries `status` and the full `body` and no `headers` key
 
 #### Scenario: a print flood cannot exhaust the daemon
-- **WHEN** code prints past the output cap
-- **THEN** the child is killed at the cap and the node fails with "output too large"
+- **WHEN** code prints far past the user-print buffer (64 KiB)
+- **THEN** the prints are truncated in the child and the node still succeeds with its `stdout_tail`; and
+- **WHEN** the child writes past the 8 MiB protocol-stdout cap
+- **THEN** the parent kills it at the cap and the node fails with "output too large"
 
 ### Requirement: Run failures map to a terminal status taxonomy
 The executor SHALL additionally classify a sandboxed code node's failure as

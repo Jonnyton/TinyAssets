@@ -1003,6 +1003,220 @@ def test_bounded_drain_stops_at_the_cap():
 
 
 # -------------------------------------------------------------------
+# Resource limits are applied or the node says so (Codex round 2, P1)
+# -------------------------------------------------------------------
+
+
+class _FakeResource:
+    """Stand-in for the `resource` module with a scriptable setrlimit."""
+
+    RLIM_INFINITY = -1
+    RLIMIT_AS = 1
+    RLIMIT_CPU = 2
+    RLIMIT_FSIZE = 3
+    RLIMIT_NOFILE = 4
+
+    def __init__(self, mode: str = "ok", hard: int = -1) -> None:
+        self.mode = mode
+        self.hard = hard
+        self.stored: dict[int, tuple[int, int]] = {}
+        self.calls: list[tuple[int, tuple[int, int]]] = []
+
+    def getrlimit(self, res):
+        return self.stored.get(res, (self.hard, self.hard))
+
+    def setrlimit(self, res, pair):
+        self.calls.append((res, pair))
+        if self.mode == "raise":
+            raise OSError("denied by policy")
+        if self.mode == "ignore":
+            return None  # accepted, then not applied — the silent case
+        self.stored[res] = pair
+
+
+def _rlimit_helper():
+    """Compile the exact helper text the child runs."""
+    namespace: dict[str, object] = {}
+    exec(node_sandbox._RLIMIT_HELPER, namespace)
+    return namespace["_apply_rlimits"]
+
+
+def test_rlimit_helper_reports_nothing_when_every_limit_applies():
+    fake = _FakeResource(mode="ok")
+
+    failures = _rlimit_helper()(fake, 30.0)
+
+    assert failures == []
+    assert {res for res, _ in fake.calls} == {1, 2, 3, 4}
+
+
+def test_rlimit_helper_names_a_limit_that_raises():
+    fake = _FakeResource(mode="raise")
+
+    failures = _rlimit_helper()(fake, 30.0)
+
+    assert len(failures) == 4
+    assert any(f.startswith("RLIMIT_AS (OSError: denied by policy)") for f in failures)
+    assert any("RLIMIT_NOFILE" in f for f in failures)
+
+
+def test_rlimit_helper_catches_a_silently_ignored_setrlimit():
+    """A call that returns cleanly but does not take effect is a failure."""
+    fake = _FakeResource(mode="ignore")
+
+    failures = _rlimit_helper()(fake, 30.0)
+
+    assert len(failures) == 4
+    assert all("asked for" in f and "reads -1" in f for f in failures), failures
+
+
+def test_rlimit_helper_reports_a_platform_without_the_module():
+    failures = _rlimit_helper()(None, 30.0)
+
+    assert failures == ["all limits (this platform has no 'resource' module)"]
+
+
+@pytest.mark.parametrize("timeout, expected_cpu", [(30.0, 31), (2.5, 4), (3.0, 4)])
+def test_rlimit_helper_derives_cpu_seconds_from_the_timeout(timeout, expected_cpu):
+    fake = _FakeResource(mode="ok")
+
+    _rlimit_helper()(fake, timeout)
+
+    cpu_calls = [pair for res, pair in fake.calls if res == _FakeResource.RLIMIT_CPU]
+    assert cpu_calls == [(expected_cpu, expected_cpu)]
+
+
+def test_rlimit_helper_respects_a_lower_hard_ceiling():
+    """Never ask for more than the hard limit allows — that would just fail."""
+    fake = _FakeResource(mode="ok", hard=32)
+
+    failures = _rlimit_helper()(fake, 30.0)
+
+    assert failures == []
+    assert all(soft <= 32 for _, (soft, _hard) in fake.calls), fake.calls
+
+
+def test_only_the_os_jail_makes_rlimits_mandatory():
+    assert node_sandbox._requires_rlimits(BwrapLauncher()) is True
+    assert BwrapLauncher.requires_rlimits is True
+    assert node_sandbox._requires_rlimits(PlainSubprocessLauncher()) is False
+    assert node_sandbox._requires_rlimits(object()) is False
+
+
+class _FakeResourceLauncher:
+    """Test double: a child whose `resource` module refuses every setrlimit.
+
+    Deterministic on any OS — the fake is installed in `sys.modules` by a
+    prelude ahead of the real runner script, so the limit gate sees a module
+    that is present and uncooperative rather than absent.
+    """
+
+    name = "fake-resource"
+
+    def __init__(self, requires_rlimits: bool) -> None:
+        self.requires_rlimits = requires_rlimits
+
+    def build_argv(self, runner_script: str, args: list[str]) -> list[str]:
+        prelude = (
+            "import sys, types\n"
+            "fake = types.ModuleType('resource')\n"
+            "fake.RLIM_INFINITY = -1\n"
+            "fake.RLIMIT_AS = 1\n"
+            "fake.RLIMIT_CPU = 2\n"
+            "fake.RLIMIT_FSIZE = 3\n"
+            "fake.RLIMIT_NOFILE = 4\n"
+            "fake.getrlimit = lambda res: (-1, -1)\n"
+            "def _refuse(res, limits):\n"
+            "    raise OSError('denied by policy')\n"
+            "fake.setrlimit = _refuse\n"
+            "sys.modules['resource'] = fake\n"
+        )
+        return [sys.executable, "-c", prelude + runner_script, *args]
+
+    def env(self, home_dir: str) -> dict[str, str]:
+        return PlainSubprocessLauncher().env(home_dir)
+
+
+def test_unappliable_limits_fail_the_node_when_the_sandbox_requires_them():
+    """Codex round 2 P1: a swallowed setrlimit could run a node unbounded."""
+    reached: list[str] = []
+    sandbox = NodeSandbox(timeout=10.0, launcher=_FakeResourceLauncher(True))
+
+    result = sandbox.run_sync(
+        node_id="rlimits-required",
+        source_code="def run(state):\n    return {'r': invoke_mcp_action('ping')}\n",
+        input_state={},
+        input_keys=[],
+        output_keys=["r"],
+        invoke=lambda action, kwargs: reached.append(action) or "pong",
+    )
+
+    assert result.success is False
+    assert result.error.startswith("rlimits not applied:")
+    assert "RLIMIT_AS (OSError: denied by policy)" in result.error
+    assert "RLIMIT_NOFILE" in result.error
+    assert result.output_state == {}
+    assert reached == [], "the node ran despite unappliable limits"
+
+
+def test_unappliable_limits_only_warn_when_the_sandbox_does_not_require_them():
+    """The tests-only launcher still runs, but never in silence."""
+    sandbox = NodeSandbox(timeout=10.0, launcher=_FakeResourceLauncher(False))
+
+    result = sandbox.run_sync(
+        node_id="rlimits-optional",
+        source_code="def run(state):\n    return {'ok': 1}\n",
+        input_state={},
+        input_keys=[],
+        output_keys=["ok"],
+    )
+
+    assert result.success is True, result.error
+    assert result.output_state == {"ok": 1}
+    assert result.warning.startswith("resource limits not applied:")
+    assert "denied by policy" in result.warning
+
+
+def test_rlimit_warning_does_not_hide_the_undeclared_key_warning():
+    """Two warnings must both survive — neither overwrites the other."""
+    sandbox = NodeSandbox(timeout=10.0, launcher=_FakeResourceLauncher(False))
+
+    result = sandbox.run_sync(
+        node_id="two-warnings",
+        source_code="def run(state):\n    return {'ok': 1, 'extra': 2}\n",
+        input_state={},
+        input_keys=[],
+        output_keys=["ok"],
+    )
+
+    assert result.success is True, result.error
+    assert "resource limits not applied" in result.warning
+    assert "Undeclared output keys" in result.warning
+    assert result.undeclared == ["extra"]
+
+
+def test_the_real_plain_launcher_reports_its_limit_situation_honestly():
+    """On this host, whatever `resource` does, the result must say so."""
+    sandbox = NodeSandbox(timeout=10.0, launcher=PlainSubprocessLauncher())
+
+    result = sandbox.run_sync(
+        node_id="rlimits-real",
+        source_code="def run(state):\n    return {'ok': 1}\n",
+        input_state={},
+        input_keys=[],
+        output_keys=["ok"],
+    )
+
+    assert result.success is True, result.error
+    if sys.platform == "win32":
+        assert "no 'resource' module" in result.warning
+    else:
+        assert result.warning == "", (
+            f"POSIX should apply every limit; got {result.warning!r}"
+        )
+
+
+# -------------------------------------------------------------------
 # invoke_mcp_action: synchronous RPC, answered by the parent
 # -------------------------------------------------------------------
 
@@ -1357,8 +1571,10 @@ def test_parent_launch_uses_close_fds_pipes_and_a_private_cwd(monkeypatch):
     assert captured["cwd_existed"] is True
     assert str(captured["cwd"]) != os.getcwd()
     assert "TINYASSETS_TEST_SECRET" not in captured["env"]
-    # The timeout reaches the child as argv, so its RLIMIT_CPU is right.
-    assert captured["argv"][-1] == "10.0"
+    # The timeout and the rlimit requirement reach the child as argv, so the
+    # child can set RLIMIT_CPU and decide fatal-vs-warning before it reads
+    # anything from stdin. "0" here: the plain launcher is not the OS jail.
+    assert captured["argv"][-2:] == ["10.0", "0"]
     assert "preexec_fn" not in captured
 
 
@@ -1457,13 +1673,40 @@ def test_bwrap_argv_binds_system_dirs_read_only():
 
 def test_bwrap_launcher_appends_the_interpreter_and_runner():
     """The jail prefix is followed by the interpreter, the script and argv."""
-    argv = BwrapLauncher(bwrap_path="/usr/bin/bwrap").build_argv("SCRIPT", ["12.5"])
+    argv = BwrapLauncher(bwrap_path="/usr/bin/bwrap").build_argv(
+        "SCRIPT", ["12.5", "1"]
+    )
 
     separator = argv.index("--")
     assert argv[separator + 1] == sys.executable
     assert argv[separator + 2] == "-c"
     assert argv[separator + 3] == "SCRIPT"
-    assert argv[separator + 4] == "12.5"
+    assert argv[separator + 4:] == ["12.5", "1"]
+
+
+def test_the_jail_launch_demands_rlimits(monkeypatch):
+    """Under bwrap the child is told its limits are mandatory."""
+    captured: dict[str, object] = {}
+
+    def _spy(argv, **kwargs):
+        captured["argv"] = argv
+        raise OSError("not launching bwrap on this host")
+
+    monkeypatch.setattr(node_sandbox.subprocess, "Popen", _spy)
+    sandbox = NodeSandbox(timeout=8.0, launcher=BwrapLauncher())
+
+    result = sandbox.run_sync(
+        node_id="jail-argv",
+        source_code="def run(state):\n    return {'ok': 1}\n",
+        input_state={},
+        input_keys=[],
+        output_keys=["ok"],
+        timeout=8.0,
+    )
+
+    assert result.success is False
+    assert "Failed to start subprocess" in result.error
+    assert captured["argv"][-2:] == ["8.0", "1"]
 
 
 # -------------------------------------------------------------------

@@ -31,11 +31,14 @@ Python process that receives **data and no credentials**:
     no node code runs at that depth. A *lazy* runtime import of a
     non-allowlisted internal still fails loudly (``datetime.strptime`` →
     ``_strptime``).
-  - **Resource limits first thing in the child**, before it parses anything,
-    so they hold under bwrap and against a hostile message: ``RLIMIT_AS``
-    512 MiB, ``RLIMIT_CPU`` ``ceil(timeout) + 1``, ``RLIMIT_FSIZE`` 16 MiB,
-    ``RLIMIT_NOFILE`` 64. No ``preexec_fn`` anywhere — the daemon is
-    multithreaded.
+  - **Resource limits first thing in the child**, before the message is read
+    at all, so they hold under bwrap and against a hostile payload:
+    ``RLIMIT_AS`` 512 MiB, ``RLIMIT_CPU`` ``ceil(timeout) + 1``,
+    ``RLIMIT_FSIZE`` 16 MiB, ``RLIMIT_NOFILE`` 64, each set *and read back*.
+    Under a launcher whose :attr:`~Launcher.requires_rlimits` is true (the
+    jail) a limit that cannot be applied **fails the node** before any node
+    code runs; otherwise the failures land in ``warning``. Never silently
+    skipped. No ``preexec_fn`` anywhere — the daemon is multithreaded.
   - **Caps enforced while reading.** stdout and stderr are drained
     incrementally; the moment stdout passes ``max_output_bytes`` (8 MiB) or
     stderr passes :data:`MAX_STDERR_BYTES` (64 KiB) the child is killed and
@@ -243,6 +246,53 @@ FORBIDDEN_PATTERNS = [
 # Sandbox Runner Script
 # ═══════════════════════════════════════════════════════════════════════════
 
+# Applied inside the child, before anything else. Kept as source text rather
+# than a function so the tests compile and drive *this* text with a fake
+# `resource` module — the code under test and the code that runs are the same
+# string, on every platform.
+_RLIMIT_HELPER = '''
+def _apply_rlimits(resource_module, timeout):
+    """Apply the code-node resource limits; return a list of failures.
+
+    Every limit is set AND read back: a `setrlimit` that raises, a hard
+    ceiling below the target, and a silently ignored call are all failures.
+    The caller decides whether a failure is fatal (bwrap: yes) or a warning
+    (the tests-only launcher on a platform with no `resource`).
+    """
+    if resource_module is None:
+        return ["all limits (this platform has no 'resource' module)"]
+
+    try:
+        cpu_seconds = int(timeout) + (0 if timeout == int(timeout) else 1) + 1
+    except Exception:
+        cpu_seconds = 31
+
+    failures = []
+    for name, want in (
+        ("RLIMIT_AS", 512 * 1024 * 1024),
+        ("RLIMIT_CPU", cpu_seconds),
+        ("RLIMIT_FSIZE", 16 * 1024 * 1024),
+        ("RLIMIT_NOFILE", 64),
+    ):
+        try:
+            res = getattr(resource_module, name)
+            _soft, hard = resource_module.getrlimit(res)
+            if hard == resource_module.RLIM_INFINITY:
+                new_hard = want
+            else:
+                new_hard = min(want, hard)
+            target = min(want, new_hard)
+            resource_module.setrlimit(res, (target, new_hard))
+            applied = resource_module.getrlimit(res)[0]
+            if applied != target:
+                failures.append(
+                    f"{name} (asked for {target}, reads {applied})"
+                )
+        except Exception as exc:
+            failures.append(f"{name} ({type(exc).__name__}: {exc})")
+    return failures
+'''
+
 # Executed in the child as `python -c <script> <timeout>`. In order:
 # 1. Resource limits, before anything is read or parsed.
 # 2. Replace sys.stdout with a bounded buffer, so node print() can never
@@ -252,46 +302,38 @@ FORBIDDEN_PATTERNS = [
 # 5. Write one result JSON object to the real stdout.
 
 _RUNNER_SCRIPT = textwrap.dedent('''\
+    import json
     import sys
 
     # ---- 1. Resource limits FIRST -----------------------------------------
-    # Before reading or parsing the message: a hostile payload must not get
-    # any work done under an unbounded process. POSIX only; Windows has no
-    # `resource` module and the plain launcher is tests-only anyway.
+    # Before the message is read at all: a hostile payload must not get any
+    # work done under an unbounded process. argv carries the timeout and
+    # whether limits are mandatory, precisely so this runs before stdin.
     try:
         _timeout = float(sys.argv[1]) if len(sys.argv) > 1 else 30.0
     except Exception:
         _timeout = 30.0
+    _require_rlimits = len(sys.argv) > 2 and sys.argv[2] == "1"
 
     try:
         import resource as _resource
     except Exception:
         _resource = None
 
-    if _resource is not None:
-        try:
-            _cpu_seconds = int(_timeout) + (0 if _timeout == int(_timeout) else 1) + 1
-        except Exception:
-            _cpu_seconds = 31
-        for _name, _want in (
-            ("RLIMIT_AS", 512 * 1024 * 1024),
-            ("RLIMIT_CPU", _cpu_seconds),
-            ("RLIMIT_FSIZE", 16 * 1024 * 1024),
-            ("RLIMIT_NOFILE", 64),
-        ):
-            try:
-                _res = getattr(_resource, _name)
-                _soft, _hard = _resource.getrlimit(_res)
-                if _hard == _resource.RLIM_INFINITY:
-                    _new_hard = _want
-                else:
-                    _new_hard = min(_want, _hard)
-                _resource.setrlimit(_res, (min(_want, _new_hard), _new_hard))
-            except Exception:
-                pass
+    __RLIMIT_HELPER__
+
+    _rlimit_failures = _apply_rlimits(_resource, _timeout)
+    if _require_rlimits and _rlimit_failures:
+        # The OS sandbox demands these limits. Refuse loudly, before the
+        # message is parsed and long before any node code runs.
+        sys.stdout.write(json.dumps({
+            "success": False,
+            "error": "rlimits not applied: " + ", ".join(_rlimit_failures),
+        }) + "\\n")
+        sys.stdout.flush()
+        raise SystemExit(3)
 
     import inspect
-    import json
 
     # ---- 2. Protocol integrity --------------------------------------------
     # The node's print() must not be able to write a result. Capture it into
@@ -507,6 +549,13 @@ _RUNNER_SCRIPT = textwrap.dedent('''\
         printed += f"\\n[{_captured.dropped} more characters dropped]"
     result["user_stdout"] = printed
 
+    # Limits that could not be set are a warning here (they are fatal above
+    # when the OS sandbox requires them), never silence.
+    if _rlimit_failures:
+        notice = "resource limits not applied: " + ", ".join(_rlimit_failures)
+        existing = result.get("warning") or ""
+        result["warning"] = f"{notice}; {existing}" if existing else notice
+
     try:
         payload = json.dumps(result)
     except BaseException as e:
@@ -522,6 +571,8 @@ _RUNNER_SCRIPT = textwrap.dedent('''\
     "MAX_USER_PRINT_BYTES", str(MAX_USER_PRINT_BYTES)
 ).replace(
     "MAX_RPC_CALLS", str(MAX_RPC_CALLS)
+).replace(
+    "__RLIMIT_HELPER__", _RLIMIT_HELPER.strip()
 )
 
 
@@ -632,11 +683,26 @@ class Launcher(Protocol):
 
     name: str
 
+    #: True when the child MUST have its resource limits, so a limit that
+    #: cannot be set fails the node instead of warning.
+    requires_rlimits: bool
+
     def build_argv(self, runner_script: str, args: list[str]) -> list[str]:
         """Full argv for the child, including the interpreter."""
 
     def env(self, home_dir: str) -> dict[str, str]:
         """Env for the child, built from scratch (never inherited)."""
+
+
+def _requires_rlimits(launcher: Any) -> bool:
+    """Whether *launcher* makes the in-child resource limits mandatory.
+
+    Only the OS jail does. A launcher without the attribute is a test double
+    on a platform that may have no ``resource`` module at all; treating it as
+    mandatory would fail every Windows test for a limit the plain launcher
+    never promised.
+    """
+    return bool(getattr(launcher, "requires_rlimits", False))
 
 
 class BwrapLauncher:
@@ -647,6 +713,7 @@ class BwrapLauncher:
     """
 
     name = "bwrap"
+    requires_rlimits = True
 
     def __init__(self, bwrap_path: str | None = None) -> None:
         self.bwrap_path = bwrap_path
@@ -675,6 +742,9 @@ class PlainSubprocessLauncher:
     """
 
     name = "plain"
+    #: Windows has no `resource` module, and this launcher is not the OS
+    #: boundary anyway: missing limits are a warning, not a refusal.
+    requires_rlimits = False
 
     def build_argv(self, runner_script: str, args: list[str]) -> list[str]:
         return [sys.executable, "-c", runner_script, *args]
@@ -999,7 +1069,10 @@ class NodeSandbox:
 
         # bwrap, or an injected launcher, or refuse to run at all.
         launcher = self.resolve_launcher()
-        argv = launcher.build_argv(_RUNNER_SCRIPT, [str(timeout)])
+        argv = launcher.build_argv(
+            _RUNNER_SCRIPT,
+            [str(timeout), "1" if _requires_rlimits(launcher) else "0"],
+        )
 
         work_dir = tempfile.mkdtemp(prefix="ta-node-sandbox-")
         popen_kwargs: dict[str, Any] = {}
@@ -1155,24 +1228,34 @@ class NodeSandbox:
                 stderr_tail=stderr_tail,
             )
 
-        if proc.returncode != 0:
-            return SandboxResult(
-                node_id=node_id,
-                success=False,
-                error=(
-                    f"Process exited with code {proc.returncode}: "
-                    f"{stderr_text[:2000]}"
-                ),
-                duration_seconds=duration,
-                stdout=stdout_text,
-                stderr=stderr_text,
-                stdout_tail=_tail(stdout_text),
-                stderr_tail=stderr_tail,
-            )
+        # A structured result wins over the exit code: the child refuses
+        # loudly (unappliable rlimits) by printing one and exiting non-zero,
+        # and that message is far more actionable than "exited with 3".
+        result = None
+        stripped = stdout_text.strip()
+        if stripped:
+            try:
+                candidate = json.loads(stripped)
+            except json.JSONDecodeError:
+                candidate = None
+            if isinstance(candidate, dict) and "success" in candidate:
+                result = candidate
 
-        try:
-            result = json.loads(stdout_text.strip())
-        except json.JSONDecodeError:
+        if result is None:
+            if proc.returncode != 0:
+                return SandboxResult(
+                    node_id=node_id,
+                    success=False,
+                    error=(
+                        f"Process exited with code {proc.returncode}: "
+                        f"{stderr_text[:2000]}"
+                    ),
+                    duration_seconds=duration,
+                    stdout=stdout_text,
+                    stderr=stderr_text,
+                    stdout_tail=_tail(stdout_text),
+                    stderr_tail=stderr_tail,
+                )
             return SandboxResult(
                 node_id=node_id,
                 success=False,

@@ -1566,9 +1566,10 @@ def remix_shape(
     which you can then inspect, edit, and run.
 
     This copies the shape only — nodes, edges, prompts. It never copies another
-    universe's private data. Any executable source-code node inherited from
-    another author lands UN-approved: you must re-approve it before it can run
-    (a foreign author's approval is not trusted for your executions).
+    universe's private data. An executable source-code node inherited from
+    another author becomes YOURS by the remix: code runs only in the universe
+    that authored it, so the copy runs as yours and the original never runs
+    here (no approval step exists or is needed).
 
     Args:
         fork_from: The ``published_version_id`` of the shape to remix (from a
@@ -2032,8 +2033,8 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
     or any HTTPS API you connected).
 
     NO SECRET crosses this surface — consent is a ``(sink, destination)`` allow, never a
-    credential. Approving executable ``source_code`` is NOT available here (that stays a
-    human/browser action); this approves outbound-channel sinks only.
+    credential. Executable ``source_code`` needs no approval (it runs in the OS sandbox,
+    in the universe that authored it); this approves outbound-channel sinks only.
 
     Args:
         action: ``approve`` — grant effector consent for an outbound sink. Required.

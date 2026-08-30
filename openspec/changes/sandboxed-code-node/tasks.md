@@ -8,8 +8,17 @@
 - [x] 1.3 Codex round 1 on the design: REJECT (7 P0 / 11 P1) - headers to
       code, no owner predicate, per-visit cardinality, read-shortcut
       settlement, resume from truncated evidence, env-var sandbox switch,
-      output cap after the fact; all folded (design.md "(R1)"). Round 2 runs
-      on the code; round 3 is the cap, then the founder.
+      output cap after the fact; all folded (design.md "(R1)").
+- [x] 1.4 Codex round 2 on the code: REJECT (6 P0 / 7 P1 / 2 P2), each
+      reproduced - resume compiled without an execution context (foreign
+      code failed open), RPC answered outside the request's ContextVars
+      (daemon identity), effects fired before LangGraph's reducer rejection
+      and before the merge-writer guard, at-most-once raced, a late dispatch
+      settled a write as a read; plus graph-node vs def-id identity, evidence
+      on INTERRUPTED, accepted 404 re-reported, one settlement owner, RPC cap
+      per run, rlimits fail-loud, doc/spec contradictions. All folded, each
+      pinned by a test in `tests/test_effects_at_node_time.py`. Round 3 is
+      the cap; remaining findings go to the founder.
 
 ## 2. Build the vertical slice
 
@@ -49,8 +58,9 @@
 
 - [ ] 3.1 Live: the founder's universe lands the README one-liner with its
       own fetch → code → write branch, no `$ta.*` operator, uncoached.
-- [ ] 3.2 PLAN.md principle + node vocabulary entry (founder-approved
-      direction 2026-08-30).
+- [x] 3.2 PLAN.md Design Decision "Capabilities are primitives the user's
+      agent composes, not platform operators" (founder-approved 2026-08-30),
+      naming effects-at-node-time and the sandboxed code node.
 - [ ] 3.3 Delete
       `docs/concerns/2026-08-30-the-graph-has-no-deterministic-compute-step.md`;
       archive.

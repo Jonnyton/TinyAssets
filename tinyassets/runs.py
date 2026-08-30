@@ -933,20 +933,28 @@ def update_run_status(
 
             chain = forget_effect_chain(run_id)
             if chain is not None:
-                chain.settle()
-                if output is None and chain.evidence and status != RUN_STATUS_COMPLETED:
+                chain.settle()   # waits for an in-flight dispatch, then closes the chain
+                if chain.evidence and status != RUN_STATUS_COMPLETED:
                     evidence = dict(chain.evidence)
-                    persisted: dict[str, Any] = {"external_write_results": evidence}
+                    # Merge into whatever the caller persisted (an interrupt's
+                    # receipt gate, for instance) - never clobber, never drop
+                    # (Codex round 2, P1).
+                    persisted: dict[str, Any] = dict(output) if isinstance(output, dict) else {}
+                    persisted.setdefault("external_write_results", evidence)
                     rows = _collect_external_write_errors(evidence)
                     if rows:
-                        persisted["external_write_errors"] = rows
+                        persisted.setdefault("external_write_errors", rows)
                     delivered = chain.delivered_nodes()
                     if delivered:
                         # "failed after writes" is a real state the surfaces
                         # must show, not accounting policy (Codex round 1, P2).
                         persisted["failed_after_effects"] = delivered
-                    sets.append("output_json = ?")
-                    params.append(json.dumps(persisted, default=str))
+                    encoded = json.dumps(persisted, default=str)
+                    if "output_json = ?" in sets:
+                        params[sets.index("output_json = ?")] = encoded
+                    else:
+                        sets.append("output_json = ?")
+                        params.append(encoded)
             elif status in (RUN_STATUS_FAILED, RUN_STATUS_CANCELLED):
                 settle_engine_admission(run_id, [])
         except Exception:  # pragma: no cover - never let accounting break a status write
@@ -2949,7 +2957,8 @@ def _invoke_graph(
     # Every effect already fired at its node (design D1); this is its record.
     # Nothing is dispatched here - one dispatch per node, never two.
     external_write_evidence = dict(effect_chain.evidence)
-    effect_chain.settle()
+    # Settlement has exactly one owner: the terminal status write below
+    # (update_run_status forgets + settles the registered chain).
     if external_write_evidence:
         # PR-122 Phase 1 round-2 (Codex finding #2): the receipt is
         # system-authoritative. Overwrite unconditionally — any branch
@@ -3154,6 +3163,10 @@ def _collect_external_write_errors(
             # head branch -> 404 -> PR 422, and the universe read "completed").
             response = ev.get("response")
             status = response.get("status") if isinstance(response, dict) else None
+            if ev.get("accepted_status") is True:
+                # The packet declared this status acceptable (probe-then-branch);
+                # node dispatch already let it through (Codex round 2, P1).
+                continue
             if ev.get("delivered") is True and isinstance(status, int) and status >= 400:
                 body = response.get("body")
                 preview = str(body)[:160].replace("\n", " ") if body else ""
@@ -3215,6 +3228,42 @@ def _find_timeout_exception(exc: BaseException) -> NodeTimeoutError | None:
         seen.add(id(cur))
         cur = cur.__cause__ or cur.__context__
     return None
+
+
+def _execution_context_for_run(
+    base_path: "str | Path",
+    run_id: str,
+    branch: "BranchDefinition",
+    *,
+    fallback_actor: str = "",
+    invocation_depth: int = 0,
+) -> "BranchExecutionContext":
+    """The immutable authority a compile for EXECUTION must carry (design
+    D2): who the run executes as (the persisted run row's actor, never a
+    parameter when the row has one), where, and whether the running
+    definition is its own (authored by that actor). The normal path builds
+    this inline; resume uses this helper - a compile without it fails open
+    for foreign code (Codex round 2, P0)."""
+    run_actor, run_universe = "", ""
+    try:
+        with _connect(base_path) as conn:
+            row = conn.execute(
+                "SELECT actor, queue_universe_id FROM runs WHERE run_id = ?", (run_id,),
+            ).fetchone()
+        if row is not None:
+            run_actor = (row["actor"] or "").strip()
+            run_universe = (row["queue_universe_id"] or "").strip()
+    except Exception:  # noqa: BLE001 - no row: fall back to the caller's actor
+        pass
+    run_actor = run_actor or (fallback_actor or "").strip()
+    author = (getattr(branch, "author", "") or "").strip()
+    provenance = "own" if (run_actor and author and author == run_actor) else "public-foreign"
+    return BranchExecutionContext(
+        actor=run_actor,
+        universe_id=run_universe,
+        caller_provenance=provenance,
+        depth=invocation_depth,
+    )
 
 
 def _find_effect_failed_exception(exc: BaseException):
@@ -4111,12 +4160,17 @@ def _invoke_graph_resume(
         cloud_effect_session=_claimed_cloud_effect_session(provider_call),
     )
     register_effect_chain(effect_chain)
+    # A compile for EXECUTION always carries the run's authority (design D2):
+    # without it a public-foreign branch's code fails OPEN on resume (Codex
+    # round 2, P0). Derived from the persisted run row, never a parameter.
+    resume_context = _execution_context_for_run(base_path, run_id, branch)
     try:
         compiled = compile_branch(
             branch,
             provider_call=provider_call,
             event_sink=_on_node,
             effect_chain=effect_chain,
+            execution_context=resume_context,
         )
     except (UnapprovedNodeError, CompilerError) as exc:
         update_run_status(
@@ -4188,7 +4242,8 @@ def _invoke_graph_resume(
     effect_error = ""
     # Fired at node time (design D1); read the record, dispatch nothing.
     external_write_evidence = dict(effect_chain.evidence)
-    effect_chain.settle()
+    # Settlement has exactly one owner: the terminal status write below
+    # (update_run_status forgets + settles the registered chain).
     if external_write_evidence:
         # System-authoritative receipt — overwrite unconditionally
         # (see start_run for the rationale + Codex finding #2).
