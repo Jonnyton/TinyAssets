@@ -406,6 +406,17 @@ _EXTENSIONS_COSTLY_ACTIONS = frozenset({
     "escrow_refund",
     "record_outcome",
     "record_remix",
+    # pause_schedule / unpause_schedule / unschedule_branch: same tier as the
+    # `schedule_branch` they undo. Authority is the owner-or-admin check the
+    # handlers already run (`_schedule_control_context` in
+    # tinyassets/api/runtime_ops.py, since #2690) -- the ADMIN scope gate sat
+    # in front of that check and was strictly coarser, so an owner who could
+    # register a schedule from their own app session could not stop it from
+    # the same session (docs/concerns/2026-08-30-owner-cannot-pause-or-delete-
+    # own-schedule-from-app.md).
+    "pause_schedule",
+    "unpause_schedule",
+    "unschedule_branch",
 })
 _EXTENSIONS_ADMIN_ACTIONS = frozenset({
     "approve",
@@ -414,9 +425,6 @@ _EXTENSIONS_ADMIN_ACTIONS = frozenset({
     "cancel_run",
     "grant_effector_consent",
     "revoke_effector_consent",
-    "pause_schedule",
-    "unpause_schedule",
-    "unschedule_branch",
 })
 _GATES_COSTLY_ACTIONS = frozenset({
     "claim",
