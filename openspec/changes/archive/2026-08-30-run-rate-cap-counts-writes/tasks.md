@@ -45,7 +45,5 @@
 
 ## 3. Proof and close
 
-- [ ] 3.1 Live: a one-line file change with one retry completes through the
-      app without meeting the cap (run ids, date).
-- [ ] 3.2 Delete `docs/concerns/2026-08-29-run-rate-cap-stalls-a-normal-github-job.md`;
-      sync the spec delta into `openspec/specs/`; archive this change.
+- [x] 3.1 Live 2026-08-30 03:42–04:48Z: the README job ran with retries (branch creations 56295893cd874d91/4a7042797aca49aa/c708d054aaa44ef5/aa504498a4b1499e, writes c1cd14f98b6e4af8 → 3f86d7b9fde04bff, PR d773d4d006ae45a8, undraft b77089dfa3c14d9e, merge 631bd6d61473416f) and was never refused; the ledger showed writes ≤ 15/20 throughout while heartbeat periods settled as `read`.
+- [x] 3.2 Concern deleted; spec synced to `openspec/specs/engine-run-admissions/spec.md`; archived.
