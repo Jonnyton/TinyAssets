@@ -280,3 +280,26 @@ def test_settlements_expire_on_every_settle(tmp_path):
     rows = conn.execute("SELECT run_id FROM settlements").fetchall()
     conn.close()
     assert rows == [("browser-run",)]
+
+
+def test_engine_writes_spend_the_total_but_never_the_write_budget(tmp_path):
+    """Live 2026-08-30 04:5xZ: a one-line README job was refused at the
+    20-write cap with nine rows being the universe's own branch authoring.
+    write_graph/remix/brain are durable engine writes, not external effects:
+    they count toward the total bound only."""
+    db = tmp_path / adm.LEDGER_NAME
+    kw = dict(write_max=W, total_max=T, window_s=WIN, db=db)
+    for _ in range(30):
+        assert adm.admit_detail("u-tiny", kind=adm.KIND_ENGINE, **kw).ticket is not None
+    assert _rows(db).count((adm.KIND_ENGINE, "")) == 30
+    # the external-write budget is untouched...
+    for _ in range(W):
+        assert adm.admit_detail("u-tiny", **kw).ticket is not None
+    assert adm.admit_detail("u-tiny", **kw) == adm.Admission(None, adm.REFUSED_BY_WRITE)
+    # ...and engine writes are still bounded by the total (30 + 20 = 50 of 60)
+    for _ in range(T - 50):
+        assert adm.admit_detail("u-tiny", kind=adm.KIND_ENGINE, **kw).ticket is not None
+    refused = adm.admit_detail("u-tiny", kind=adm.KIND_ENGINE, **kw)
+    assert refused == adm.Admission(None, adm.REFUSED_BY_TOTAL)
+    with pytest.raises(ValueError):
+        adm.admit_detail("u-tiny", kind="read", **kw)

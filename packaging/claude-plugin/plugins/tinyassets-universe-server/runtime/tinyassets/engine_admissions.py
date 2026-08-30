@@ -14,11 +14,13 @@ external effect at all) is not the injection case the cap exists for.
 
 The count rule, in one place:
 
-* Every engine-triggered run, every scheduled automation run and every
-  engine write (write_graph, remix, brain) is admitted as kind ``write`` and
-  counts against ``write_max`` (20 per rolling hour). Nothing is trusted
-  about the run before it runs - the packet an effect fires is model-authored
-  at run time, so a branch cannot be classified as read-only up front.
+* Every engine-triggered run and every scheduled automation run is admitted
+  as kind ``write`` and counts against ``write_max`` (20 per rolling hour).
+  Nothing is trusted about the run before it runs - the packet an effect
+  fires is model-authored at run time, so a branch cannot be classified as
+  read-only up front. An engine write (write_graph, remix, brain) is admitted
+  as kind ``engine``: it is a durable mutation of the universe's own state,
+  not an external effect, so it counts toward ``total_max`` only.
 * ``admit`` hands back a TICKET (the ledger row id). The caller binds it to
   the run it starts with ``attach_run``; identity by row id, never "the
   newest row", so two concurrent admissions cannot cross-bind (Codex round 1).
@@ -58,6 +60,12 @@ from typing import NamedTuple
 LEDGER_NAME = ".engine_run_admissions.db"
 KIND_WRITE = "write"
 KIND_READ = "read"
+# An engine write (write_graph, remix, brain): a durable, reversible mutation
+# of the universe's own state, never an external effect. It counts toward the
+# total bound only - live 2026-08-30 04:5xZ a founder's one-line README job
+# was refused at the 20-write cap with nine of the eighteen rows being the
+# universe's own branch authoring (it built ~8 branch variants in an hour).
+KIND_ENGINE = "engine"
 # Verbs that leave nothing behind on the far side. Compared case-insensitively.
 READ_VERBS = frozenset({"GET", "HEAD"})
 # ``admit`` returned this when a DB error was tolerated (fail-open): the run is
@@ -139,14 +147,19 @@ def admit_detail(
     window_s: int,
     fail_closed: bool = False,
     db: Path | None = None,
+    kind: str = KIND_WRITE,
 ) -> Admission:
     """Atomically admit one engine-triggered run/write under the rolling caps.
 
     Refuses when the universe's ``write`` rows in the window have reached
     ``write_max`` OR its rows of any kind have reached ``total_max``. Admits
-    as ``write``; ``reclassify_read`` may later downgrade the row once the
-    run proves it wrote nothing. Old rows are pruned opportunistically.
+    as ``kind`` (``write`` for a run - ``reclassify_read`` may later downgrade
+    it once the run proves it wrote nothing; ``engine`` for a durable engine
+    write, which only the total bound limits). Old rows are pruned
+    opportunistically.
     """
+    if kind not in (KIND_WRITE, KIND_ENGINE):
+        raise ValueError(f"admission kind must be write or engine, not {kind!r}")
     db = db or ledger_path()
     try:
         # A data dir that does not exist yet must not mean "no cap" (Codex
@@ -179,7 +192,7 @@ def admit_detail(
                 (universe_id, cutoff),
             ).fetchone()[0]
             refused_by = None
-            if int(writes) >= write_max:
+            if kind == KIND_WRITE and int(writes) >= write_max:
                 refused_by = REFUSED_BY_WRITE
             elif int(total) >= total_max:
                 refused_by = REFUSED_BY_TOTAL
@@ -191,7 +204,7 @@ def admit_detail(
                 return Admission(None, refused_by)
             cur = conn.execute(
                 "INSERT INTO admissions (universe_id, ts, kind, run_id) VALUES (?, ?, ?, '')",
-                (universe_id, now, KIND_WRITE),
+                (universe_id, now, kind),
             )
             ticket = int(cur.lastrowid or 0)
             conn.execute("DELETE FROM admissions WHERE ts < ?", (cutoff - window_s,))
@@ -212,6 +225,7 @@ def admit(
     window_s: int,
     fail_closed: bool = False,
     db: Path | None = None,
+    kind: str = KIND_WRITE,
 ) -> int | None:
     """``admit_detail`` without the reason: the ticket, or None when refused."""
     return admit_detail(
@@ -221,6 +235,7 @@ def admit(
         window_s=window_s,
         fail_closed=fail_closed,
         db=db,
+        kind=kind,
     ).ticket
 
 

@@ -1718,6 +1718,7 @@ def test_served_write_graph_admission_fails_closed(monkeypatch):
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
     out = json.loads(s.write_graph(target="branch", operation="create", payload_json="{}"))
     assert seen.get("fail_closed") is True
+    assert seen.get("kind") == "engine"                  # never the external-effect budget
     assert "rate limit" in out.get("error", "").lower()
     assert calls["n"] == 0
 
