@@ -269,7 +269,10 @@ def read_graph(
             ``suggested_action`` / ``actionable_by`` - ALWAYS read this after
             ``run_graph`` before telling the user what happened, because a run can
             fail in milliseconds, e.g. a source_code node that is not approved, and
-            "I queued it" is not an outcome), ``compute`` (list the
+            "I queued it" is not an outcome; a run that reads ``running`` with
+            ``phase: delivering_effects`` has finished its nodes and is delivering
+            its effect, which takes SECONDS - read it again, never call it stuck
+            or hanging until it has read ``running`` for minutes), ``compute`` (list the
             compute providers registered for your universe — the read sibling of
             registering one with ``connect_compute``), or ``connections`` (list the
             outbound channel connections your universe has — every http channel the

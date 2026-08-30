@@ -1102,6 +1102,25 @@ def _compose_run_snapshot(
         error_detail = _run_error_detail(run_record, events)
         if error_detail:
             snapshot["error_detail"] = error_detail
+    # A run reads `running` for the seconds its effect takes to deliver after
+    # its last node has run. Live 2026-08-30: a universe read two 20-second
+    # branch-creation runs during that window, called them "hanging in the
+    # external-call phase", and stopped. Say what the window is.
+    if run_record["status"] in ("running", "queued"):
+        finished = {"ran", "completed", "skipped"}
+        all_ran = bool(node_statuses) and all(
+            s.get("status") in finished for s in node_statuses
+        )
+        snapshot["phase"] = "delivering_effects" if all_ran else "running"
+        snapshot["suggested_action"] = (
+            "Every node has run; the run is delivering its effect - an external "
+            "call takes seconds, not minutes. Read this run again in a few "
+            "seconds; it is not stuck until it has read `running` for minutes."
+            if all_ran else
+            "Still running. Read this run again in a few seconds before "
+            "reporting an outcome."
+        )
+        snapshot["actionable_by"] = "chatbot"
     return snapshot
 
 
