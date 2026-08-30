@@ -493,10 +493,26 @@ image succeed or fail together:
 
 **Nothing reports success over a mixed tree.** A restore that does not complete
 leaves `/var/lib/tinyassets-deploy/bundle-dirty` — which *names the snapshot that
-must go back* — and reports `deploy_result=rollback_failed` (exit 3). While that
-marker exists a normal deploy refuses with `bundle_dirty`, because snapshotting a
-half-installed tree would make the mixed state the next rollback target.
-`--restore-bundle` runs regardless and clears it.
+must go back*, written atomically like the pointer — and reports
+`deploy_result=rollback_failed` (exit 3). While that marker exists a normal
+deploy refuses with `bundle_dirty`, because snapshotting a half-installed tree
+would make the mixed state the next rollback target. `--restore-bundle` runs
+regardless and clears it.
+
+Two corners of that worth knowing before you meet them at 3am:
+
+- **A marker that will not clear is terminal.** If the deploy otherwise
+  succeeded but the marker survives, the result is
+  `deploy_result=marker_clear_failed` (exit 3) — `deployed_image=` is still
+  printed, because the image *did* change and you need to know which one is
+  live. Production is fine; the *next* deploy is blocked until you remove the
+  file by hand.
+- **An empty marker is not "no marker".** It means a run was interrupted without
+  recording its snapshot. `--restore-bundle` refuses rather than falling back to
+  `bundle-previous`: that pointer names the last *good* state, not the
+  interrupted one, so restoring it would report success over a tree nobody has
+  accounted for. Look in `bundle-snapshots/`, decide which one is right, and
+  write its path into `bundle-dirty` yourself.
 
 An **absent** stage directory is not an error: the script logs
 `bundle: absent, image-only deploy` and skips these stages, so a manual

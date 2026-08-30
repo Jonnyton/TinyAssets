@@ -207,6 +207,8 @@ SNAPSHOT_PATH=""         # set by snapshot_bundle
 VECTOR_CHANGED=0         # set by the install / restore stages
 INSTALLED_THIS_RUN=0     # 1 only after install_bundle has written a byte
 BUNDLE_WORK=""           # private copy of the stage, made under the lock
+MARKER_STALE=0           # 1 if the dirty marker could not be cleared
+RESTORE_SNAPSHOT=""      # the snapshot restore_previous_bundle resolved
 
 log() { printf '%s %s\n' "[deploy-fail-safe]" "$*"; }
 err() { printf '::error::%s\n' "$*" >&2; }
@@ -363,8 +365,23 @@ ensure_state_dir() {
   fi
   chmod 700 "$BUNDLE_STATE_DIR" 2>/dev/null || true
   chmod 700 "$SNAPSHOT_ROOT" 2>/dev/null || true
+  # Sweep private work copies a previous run died before removing. Snapshot
+  # retention does not cover these, so without this they accumulate forever on
+  # persistent state (Codex round 3, §5).
+  find "$BUNDLE_STATE_DIR" -maxdepth 1 -name '.bundle-work.*' -type d -mmin +1440 \
+    -exec rm -rf {} + 2>/dev/null || true
   return 0
 }
+
+# The private copy is scratch, and it holds a full bundle. Remove it on EVERY
+# exit path, including the refusals that exit before the install.
+cleanup_bundle_work() {
+  if [ -n "$BUNDLE_WORK" ] && [ -d "$BUNDLE_WORK" ]; then
+    rm -rf "$BUNDLE_WORK" 2>/dev/null || true
+  fi
+  return 0
+}
+trap cleanup_bundle_work EXIT
 
 # Atomic: a truncating redirect that dies half-written leaves a pointer naming
 # nothing, and the rollback that reads it restores nothing while reporting
@@ -390,9 +407,22 @@ read_pointer() {
 # The marker NAMES the snapshot that has to go back. A bare flag would be
 # useless on the first bundle deploy a box ever runs: the install fails before
 # the pointer exists, so nothing would name the snapshot the operator needs.
+# Same atomicity as the pointer, and for the same reason: a truncating write
+# that dies half-way leaves an EMPTY marker, which blocks every normal deploy
+# while naming no snapshot to restore (Codex round 3, §2).
 mark_dirty() {
-  printf '%s\n' "${1:-}" >"$BUNDLE_DIRTY" \
-    || { err "cannot write the dirty marker ${BUNDLE_DIRTY}"; return 1; }
+  local value="${1:-}" tmp
+  if [ -z "$value" ]; then
+    err "refusing to write an empty dirty marker: it would block deploys while naming nothing"
+    return 1
+  fi
+  tmp="$(mktemp "${BUNDLE_STATE_DIR}/.bundle-dirty.XXXXXX")" || {
+    err "cannot stage the dirty marker"
+    return 1
+  }
+  chmod 600 "$tmp" 2>/dev/null || true
+  printf '%s\n' "$value" >"$tmp" || { rm -f "$tmp"; return 1; }
+  mv -fT "$tmp" "$BUNDLE_DIRTY" || { rm -f "$tmp"; return 1; }
   chmod 600 "$BUNDLE_DIRTY" 2>/dev/null || true
   return 0
 }
@@ -400,18 +430,51 @@ mark_dirty() {
 # What a restore must put back: the interrupted run's snapshot if there is one,
 # otherwise the last successful install's. The marker wins — it names a run that
 # did NOT finish, and that is the state nothing else has accounted for.
+#   0  printed a target
+#   1  no marker and no pointer
+#   2  the marker exists but is EMPTY: dirty, with no recorded snapshot. Falling
+#      through to the pointer there would restore the last GOOD state over an
+#      interrupted one and call it success (Codex round 3, §2).
 restore_target() {
-  if [ -s "$BUNDLE_DIRTY" ]; then
+  if [ -f "$BUNDLE_DIRTY" ]; then
     local marked
     marked="$(cat "$BUNDLE_DIRTY" 2>/dev/null || true)"
-    if [ -n "$marked" ]; then printf '%s' "$marked"; return 0; fi
+    if [ -z "${marked//[[:space:]]/}" ]; then
+      return 2
+    fi
+    printf '%s' "$marked"
+    return 0
   fi
   read_pointer
 }
 
+# A marker that will not clear is TERMINAL, not a warning: the run can be a
+# complete success while every later normal deploy refuses. MARKER_STALE carries
+# that to the exit so the operator learns it from the result, not a log line.
 clear_dirty() {
-  rm -f "$BUNDLE_DIRTY" || { err "cannot clear the dirty marker ${BUNDLE_DIRTY}"; return 1; }
+  rm -f "$BUNDLE_DIRTY" 2>/dev/null
+  if [ -e "$BUNDLE_DIRTY" ]; then
+    err "cannot clear the dirty marker ${BUNDLE_DIRTY}; the NEXT normal deploy will refuse with bundle_dirty until it is removed by hand"
+    MARKER_STALE=1
+    return 1
+  fi
   return 0
+}
+
+# Single exit for every path that would otherwise report success. A stale marker
+# turns any of them into marker_clear_failed, and deployed_image= is still
+# printed because the image DID change and the operator has to know which.
+finish() {
+  local result="$1" image="$2" code="$3"
+  if [ "$MARKER_STALE" = "1" ]; then
+    err "the run reached '${result}' but ${BUNDLE_DIRTY} is still present"
+    [ -n "$image" ] && echo "deployed_image=${image}"
+    echo "deploy_result=marker_clear_failed"
+    exit 3
+  fi
+  echo "deploy_result=${result}"
+  [ -n "$image" ] && echo "deployed_image=${image}"
+  exit "$code"
 }
 
 # "absent"  no stage directory at all -> image-only deploy, not an error
@@ -501,35 +564,76 @@ services = config.get("services") or {}
 problems = []
 
 
-def source_block(service):
-    """The raw lines of one service block, by indentation.
+def strip_comment(line):
+    """Drop a trailing YAML comment.
 
-    No YAML parser: python3 on the droplet is not guaranteed to have PyYAML,
-    and this only has to find one `image:` line inside one service.
+    `image: <literal> # ${TINYASSETS_IMAGE}` passed the substring check while
+    the effective image was a literal (Codex round 3, S3). A `#` only starts a
+    comment at the start of a line or after whitespace, which is enough for this
+    file -- no value here contains a quoted `#`.
     """
-    header = re.compile(r"^(\s*)%s:\s*(#.*)?$" % re.escape(service))
-    for index, line in enumerate(source_lines):
-        match = header.match(line)
-        if not match:
+    for position, char in enumerate(line):
+        if char == "#" and (position == 0 or line[position - 1] in " 	"):
+            return line[:position]
+    return line
+
+
+source_stripped = [strip_comment(line) for line in source_lines]
+
+
+def indent_of(line):
+    return len(line) - len(line.lstrip())
+
+
+def daemon_image_lines():
+    """`image:` lines of services.daemon, and nothing else.
+
+    Anchored at a TOP-LEVEL `services:` key and its direct child `daemon:`: an
+    earlier `x-anything:` extension mapping with its own indented `daemon:`
+    block would otherwise be picked up first and satisfy the check while the
+    real service used a literal.
+    """
+    services_at = None
+    for index, line in enumerate(source_stripped):
+        if indent_of(line) == 0 and re.match(r"^services:\s*$", line):
+            services_at = index
+            break
+    if services_at is None:
+        return None
+
+    child_indent = None
+    daemon_at = None
+    for index in range(services_at + 1, len(source_stripped)):
+        line = source_stripped[index]
+        if not line.strip():
             continue
-        indent = len(match.group(1))
-        block = []
-        for candidate in source_lines[index + 1 :]:
-            if not candidate.strip():
-                block.append(candidate)
-                continue
-            leading = len(candidate) - len(candidate.lstrip())
-            if leading <= indent:
-                break
-            block.append(candidate)
-        return block
-    return []
+        if indent_of(line) == 0:
+            break  # the next top-level key ends the services mapping
+        if child_indent is None:
+            child_indent = indent_of(line)
+        if indent_of(line) == child_indent and re.match(r"^\s*daemon:\s*$", line):
+            daemon_at = index
+            break
+    if daemon_at is None or child_indent is None:
+        return None
+
+    lines = []
+    for index in range(daemon_at + 1, len(source_stripped)):
+        line = source_stripped[index]
+        if not line.strip():
+            continue
+        if indent_of(line) <= child_indent:
+            break  # the next service, or the end of the mapping
+        lines.append(line)
+    return [line for line in lines if re.match(r"^\s*image:\s*\S", line)]
 
 
-daemon_source = source_block("daemon")
-image_lines = [
-    line for line in daemon_source if re.match(r"^\s*image:\s*\S", line)
-]
+image_lines = daemon_image_lines()
+if image_lines is None:
+    problems.append(
+        "no top-level `services:` mapping with a `daemon:` child in the source file"
+    )
+    image_lines = []
 if not image_lines:
     problems.append("no `image:` line found in the daemon block of the source file")
 elif "${TINYASSETS_IMAGE" not in image_lines[0]:
@@ -844,7 +948,11 @@ restore_bundle_from() {
   fi
   for entry in "${BUNDLE_MAP[@]}"; do
     IFS='|' read -r rel dest mode owner <<<"$entry"
-    line="$(grep -F "${rel}|" "${snap}/manifest" 2>/dev/null | head -1 || true)"
+    # Exact key match on field 1. `grep -F "${rel}|"` was a SUBSTRING match, so a
+    # missing `compose.yml|` row silently matched `deploy/compose.yml|` and the
+    # root compose file was restored with the deploy copy's uid/gid/mode --
+    # `deployed` over a tree that is not the snapshot's (Codex round 3, §1).
+    line="$(awk -F'|' -v k="$rel" '$1 == k { print; exit }' "${snap}/manifest" 2>/dev/null || true)"
     if [ -z "$line" ]; then
       err "restore: snapshot ${snap} manifest has no row for ${rel}"
       rc=1
@@ -900,9 +1008,15 @@ bundle_history_exists() {
 # going, so a half-restored bundle could still be reported `rolled_back` /
 # `deployed` (Codex round 2, §1) — a success receipt over a mixed tree.
 restore_previous_bundle() {
-  local snap before after rc
-  snap="$(restore_target || true)"
+  local snap before after rc target_rc
+  snap="$(restore_target)"; target_rc=$?
   snap="${snap%/}"
+  if [ "$target_rc" = "2" ]; then
+    err "bundle: ${BUNDLE_DIRTY} exists but is EMPTY -- a bundle install was interrupted and recorded no snapshot."
+    err "refusing to fall through to ${BUNDLE_POINTER}: that names the last GOOD state, not the interrupted one, and restoring it would report success over a tree nobody has accounted for."
+    err "inspect ${SNAPSHOT_ROOT} and point ${BUNDLE_DIRTY} at the right snapshot by hand."
+    return 1
+  fi
   if [ -z "$snap" ]; then
     if bundle_history_exists; then
       err "bundle: no pointer and no dirty marker, but this box has bundle state; refusing to report a rollback that did not happen"
@@ -911,10 +1025,11 @@ restore_previous_bundle() {
     log "bundle: no bundle has ever been installed here; image-only rollback"
     return 0
   fi
-  if [ -z "$snap" ] || [ ! -d "$snap" ]; then
+  if [ ! -d "$snap" ]; then
     err "bundle pointer names a missing snapshot '${snap}'; cannot restore"
     return 1
   fi
+  RESTORE_SNAPSHOT="$snap"
   log "restoring runtime bundle from ${snap}"
   before="$(vector_fingerprint)"
   restore_bundle_from "$snap"
@@ -973,8 +1088,7 @@ recover_from_failed_install() {
   err "restoring ${SNAPSHOT_PATH} and leaving the pointer where it was"
   if restore_bundle_from "$SNAPSHOT_PATH"; then
     clear_dirty || true
-    echo "deploy_result=${result}"
-    exit 1
+    finish "$result" "" 1
   fi
   err "restore from ${SNAPSHOT_PATH} ALSO failed — ${BUNDLE_DIRTY} stays, and the next normal deploy will refuse until --restore-bundle clears it"
   echo "deploy_result=rollback_failed"
@@ -987,6 +1101,7 @@ if [ "$RESTORE_BUNDLE" = "1" ]; then
   # even with the dirty marker set — it is the way out of that state.
   if ! restore_previous_bundle; then
     err "--restore-bundle could not restore the previous bundle; refusing to converge an image over a bundle in an unknown state"
+    [ -n "$RESTORE_SNAPSHOT" ] && { mark_dirty "$RESTORE_SNAPSHOT" || true; }
     echo "deploy_result=rollback_failed"
     exit 3
   fi
@@ -1086,9 +1201,7 @@ fi
 # --- 5. accept the new image (healthy + RUNNING it + tunnel + logs up) -----
 if [ "$CONVERGED" = "1" ] && accept "$NEW_IMAGE"; then
   log "deploy healthy on ${NEW_IMAGE}"
-  echo "deploy_result=deployed"
-  echo "deployed_image=${NEW_IMAGE}"
-  exit 0
+  finish deployed "$NEW_IMAGE" 0
 fi
 
 # --- 6. unhealthy -> restore the bundle, then roll back the image ---------
@@ -1110,7 +1223,7 @@ VECTOR_CHANGED=0
 if [ "$INSTALLED_THIS_RUN" = "1" ]; then
   if ! restore_previous_bundle; then
     err "the runtime bundle could not be restored; refusing to report a rollback over a bundle in an unknown state"
-    mark_dirty "$(restore_target || true)" || true
+    mark_dirty "$SNAPSHOT_PATH" || true
     echo "deploy_result=rollback_failed"
     exit 3
   fi
@@ -1135,9 +1248,7 @@ if [ "$VECTOR_CHANGED" = "1" ] && ! recreate_logs; then
 fi
 if accept "$PREV_IMAGE"; then
   log "rolled back to previous image ${PREV_IMAGE} (healthy)"
-  echo "deploy_result=rolled_back"
-  echo "deployed_image=${PREV_IMAGE}"
-  exit 2
+  finish rolled_back "$PREV_IMAGE" 2
 fi
 
 err "rollback to ${PREV_IMAGE} ALSO did not become acceptable — manual intervention required"

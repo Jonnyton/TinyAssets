@@ -24,7 +24,7 @@ Which test is the discriminator for which guarantee
 ---------------------------------------------------
 Round 2 noted the mutation exercise left no durable artifact, so the map lives
 here. Each row was verified by flipping that guarantee in ``deploy_fail_safe.sh``
-and confirming the named test goes red (27/27 red, 2026-08-29):
+and confirming the named test goes red (36/36 red, 2026-08-29):
 
 ===============================================  ==================================================
 guarantee in deploy_fail_safe.sh                 discriminating test
@@ -52,13 +52,29 @@ a missing manifest row fails the restore         ``restore_of_an_incomplete_snap
 retention never deletes the pointed snapshot     ``retention_keeps_the_pointed_snapshot_when_...``
 ``accept()`` re-checks logs last                 ``logs_that_exits_after_being_seen_running``
 a rollback with logs down is not ``rolled_back`` ``logs_that_stays_dead_through_the_rollback``
+the manifest lookup matches the key EXACTLY      ``a_missing_root_compose_row``
+an unclearable marker is terminal                ``marker_that_will_not_clear_is_terminal``
+an empty marker blocks, and does not fall back   ``an_empty_marker_blocks_a_normal_deploy``,
+                                                 ``an_empty_marker_makes_restore_bundle_refuse``
+comments are stripped before the source scan     ``variable_in_a_trailing_comment``
+the source scan anchors at top-level services:   ``an_earlier_extension_block_named_daemon``
+the private work copy is removed on exit         ``the_private_work_copy_is_removed_on_exit``
+the CLAIMED copy is what gets installed          ``the_private_copy_is_what_gets_installed``
+the rollback's own converge failure is fatal     ``rollback_converge_failure_is_rollback_failed``
 ===============================================  ==================================================
 
-Two mutations initially SURVIVED and were not weak-test artifacts to wave away:
-a bare second-resolution snapshot stamp (fixed, and the name shape is now
-asserted because the timing is not reproducible), and a discarded
-``restart_stack`` status (the test could not see it until the fake could simulate
-a compose run that brings the daemon up and still exits non-zero).
+Three mutations SURVIVED a first pass, and none was a weak test to wave away:
+
+* a bare second-resolution snapshot stamp -- a real bug; the name shape is now
+  asserted, because whether two deploys share a second is not reproducible
+* a discarded ``restart_stack`` status -- invisible until the fake could
+  simulate a compose run that brings the daemon up and still exits non-zero
+* the ROLLBACK's own ``restart_stack`` -- its failure reached
+  ``rollback_failed`` by a second route (the logs recreate failing too), so the
+  test now pre-seeds the vector inputs to rule that route out
+
+Where a test needs a precondition like that to stay discriminating, it asserts
+the precondition rather than relying on it.
 """
 
 from __future__ import annotations
@@ -301,6 +317,13 @@ def main(argv):
                 sys.stderr.write("fake docker compose config: %s\n" % exc)
                 return 1
             print(json.dumps(config, indent=2, sort_keys=True))
+            # Injection point for the private-copy guarantee: `config` is the
+            # last thing validation does, so writing here changes the STAGE
+            # between validation and install. If the script installed from the
+            # stage rather than its own copy, this poison would go live.
+            for path, content in (state.get("mutate_stage_after_config") or {}).items():
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(content)
             return 0
         if "up" in argv:
             ref = env_values.get("TINYASSETS_IMAGE", "")
@@ -355,6 +378,22 @@ def main(argv):
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
+'''
+
+# Refuses to remove one chosen path, so "the marker could not be cleared" is
+# reachable without root: making the state dir unwritable would break the
+# snapshot long before the clear.
+FAKE_RM = r'''#!/bin/sh
+match="${FAKE_RM_FAIL_MATCH:-}"
+if [ -n "$match" ]; then
+  for arg in "$@"; do
+    if [ "$arg" = "$match" ]; then
+      echo "fake rm: refusing to remove $arg" >&2
+      exit 1
+    fi
+  done
+fi
+exec /bin/rm "$@"
 '''
 
 FAKE_SYSTEMCTL = r'''#!/bin/sh
@@ -457,6 +496,10 @@ class Box:
     @property
     def snapshots(self) -> Path:
         return self.state_dir / "bundle-snapshots"
+
+    def work_dirs(self) -> list[Path]:
+        """Leftover private bundle copies under the state directory."""
+        return sorted(self.state_dir.glob(".bundle-work.*"))
 
     def install_calls_text(self) -> str:
         return (
@@ -581,6 +624,7 @@ class Box:
             "FAKE_INSTALL_CALLS": str(self.install_calls),
             "FAKE_INSTALL_FAIL_MATCH": "",
             "FAKE_INSTALL_FAIL_STATE": str(self.root / "install-refused.flag"),
+            "FAKE_RM_FAIL_MATCH": "",
         }
         env.update(overrides)
         return env
@@ -617,9 +661,12 @@ def box(tmp_path: Path) -> Box:
     fake.env_file.write_text(f"TINYASSETS_IMAGE={OLD_IMAGE}\n", encoding="utf-8")
 
     fake_bins = [("docker", FAKE_DOCKER), ("systemctl", FAKE_SYSTEMCTL)]
-    # Only shadow install(1) where the real one is where the wrapper expects it.
+    # Only shadow install(1)/rm(1) where the real ones are where the wrappers
+    # expect them.
     if Path("/usr/bin/install").exists():
         fake_bins.append(("install", FAKE_INSTALL))
+    if Path("/bin/rm").exists():
+        fake_bins.append(("rm", FAKE_RM))
     for name, body in fake_bins:
         path = fake.bin / name
         path.write_text(body, encoding="utf-8", newline="\n")
@@ -798,6 +845,132 @@ def test_invalid_bundle_is_refused_before_any_install(box: Box, label, old, new)
     assert not box.pointer.exists(), f"{label}: the bundle pointer advanced"
     assert box.env_image() == OLD_IMAGE, f"{label}: TINYASSETS_IMAGE was swapped"
     assert "compose up" not in box.docker_calls_text(), f"{label}: the stack converged"
+
+
+_DAEMON_IMAGE_LINE = (
+    "image: ${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE to an immutable "
+    "ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest> ref}"
+)
+
+
+def test_variable_in_a_trailing_comment_does_not_satisfy_the_source_check(box: Box):
+    """`image: <literal> # ${TINYASSETS_IMAGE}` rendered to the candidate and
+    passed the substring scan; comments must be stripped first."""
+    before = box.live()
+    literal = f"image: {NEW_IMAGE}  # ${{TINYASSETS_IMAGE}}"
+    raw = REAL_COMPOSE.read_text(encoding="utf-8")
+    assert _DAEMON_IMAGE_LINE in raw
+    box.stage_bundle(compose_text=box.repoint(raw.replace(_DAEMON_IMAGE_LINE, literal, 1)))
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 1, completed.stderr
+    assert _result(completed) == "bundle_invalid"
+    assert box.live() == before
+
+
+def test_an_earlier_extension_block_named_daemon_does_not_satisfy_the_check(box: Box):
+    """The scan must anchor at top-level `services:` -> `daemon:`.
+
+    An `x-` extension mapping with its own indented `daemon:` block was found
+    first, so a real service using a literal image passed.
+    """
+    before = box.live()
+    raw = REAL_COMPOSE.read_text(encoding="utf-8")
+    assert _DAEMON_IMAGE_LINE in raw
+    decoy = (
+        "x-decoy:\n"
+        "  daemon:\n"
+        "    image: ${TINYASSETS_IMAGE}\n"
+    )
+    poisoned = decoy + raw.replace(_DAEMON_IMAGE_LINE, f"image: {NEW_IMAGE}", 1)
+    box.stage_bundle(compose_text=box.repoint(poisoned))
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 1, completed.stderr
+    assert _result(completed) == "bundle_invalid"
+    assert box.live() == before
+
+
+def test_the_decoy_fixture_is_otherwise_valid(box: Box):
+    """Control: the decoy alone, with the real interpolated image, deploys.
+
+    Without this the test above could pass because the fixture is broken for
+    some unrelated reason.
+    """
+    raw = REAL_COMPOSE.read_text(encoding="utf-8")
+    decoy = "x-decoy:\n  daemon:\n    image: ${TINYASSETS_IMAGE}\n"
+    box.stage_bundle(compose_text=box.repoint(decoy + raw))
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 0, completed.stderr
+    assert _result(completed) == "deployed"
+
+
+def test_the_private_copy_is_what_gets_installed(box: Box):
+    """Change the STAGE after validation; the validated bytes must still win.
+
+    This is the race the claim exists for: the workflow populates the stage
+    before the script's lock exists, so anything with write access to /tmp could
+    swap the bytes between `docker compose config` and `install`.
+    """
+    poison = "# POISON: written to the stage after validation\nsources: {}\n"
+    box.stage_bundle()
+    box.set_docker_state(
+        mutate_stage_after_config={str(box.stage / "vector.yaml"): poison}
+    )
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 0, completed.stderr
+    assert (box.stage / "vector.yaml").read_text(encoding="utf-8") == poison, (
+        "precondition: the stage really was changed mid-run"
+    )
+    assert box.live()["vector"] == NEW_VECTOR, (
+        "the installed file must be the validated copy, not the changed stage"
+    )
+
+
+def test_the_private_work_copy_is_removed_on_exit(box: Box):
+    """It holds a whole bundle and lives under persistent state."""
+    box.stage_bundle()
+    assert box.run(NEW_IMAGE).returncode == 0
+    assert box.work_dirs() == [], f"left behind: {box.work_dirs()}"
+
+    # and on a refusal path, which exits long before the install
+    box.stage_bundle(compose_text="services: {}\n")
+    assert box.run(OTHER_IMAGE).returncode == 1
+    assert box.work_dirs() == [], f"left behind on refusal: {box.work_dirs()}"
+
+
+def test_rollback_converge_failure_is_rollback_failed(box: Box):
+    """The rollback's OWN `restart_stack` can fail; that is not `rolled_back`.
+
+    Vector inputs are pre-seeded to match the bundle so the rollback does NOT
+    force-recreate logs: that call would also fail here, and would reach
+    `rollback_failed` by a different route, leaving the test unable to say which
+    return code the script acted on.
+    """
+    (box.runtime / "deploy" / "vector.yaml").write_text(NEW_VECTOR, encoding="utf-8")
+    (box.runtime / "deploy" / "vector-betterstack.yaml").write_text(
+        NEW_BETTERSTACK, encoding="utf-8"
+    )
+    (box.runtime / "deploy" / "vector-entrypoint.sh").write_text(
+        NEW_ENTRYPOINT, encoding="utf-8"
+    )
+    box.stage_bundle()
+    box.set_docker_state(unhealthy_images=[NEW_IMAGE], up_fail_images=[OLD_IMAGE])
+
+    completed = box.run(NEW_IMAGE)
+
+    assert "--force-recreate" not in box.docker_calls_text(), (
+        "precondition: no logs recreate, so only restart_stack can fail"
+    )
+    assert completed.returncode == 3, completed.stderr
+    assert _result(completed) == "rollback_failed"
+    assert _deployed_image(completed) == ""
 
 
 def test_partial_bundle_is_refused_rather_than_half_installed(box: Box):
@@ -1347,6 +1520,60 @@ def test_dirty_marker_blocks_the_next_normal_deploy(box: Box):
     assert box.env_image() == OLD_IMAGE, "a refused deploy must not swap the image"
 
 
+@pytest.mark.skipif(
+    not Path("/bin/rm").exists(), reason="the rm(1) wrapper needs /bin/rm"
+)
+def test_marker_that_will_not_clear_is_terminal(box: Box):
+    """A successful deploy that leaves the marker behind blocks the NEXT one.
+
+    Reporting `deployed` there hides that production is now un-deployable, so
+    the result is `marker_clear_failed` — while still naming the image, because
+    the image DID change and the operator has to know which one is live.
+    """
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE, FAKE_RM_FAIL_MATCH=str(box.dirty))
+
+    assert completed.returncode == 3, completed.stderr
+    assert _result(completed) == "marker_clear_failed"
+    assert _deployed_image(completed) == NEW_IMAGE, (
+        "the operator must still learn which image is live"
+    )
+    assert box.dirty.exists()
+    assert box.env_image() == NEW_IMAGE, "the deploy itself did succeed"
+
+
+def test_an_empty_marker_blocks_a_normal_deploy(box: Box):
+    box.dirty.parent.mkdir(parents=True, exist_ok=True)
+    box.dirty.write_text("", encoding="utf-8")
+    box.stage_bundle()
+    before = box.live()
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 1, completed.stderr
+    assert _result(completed) == "bundle_dirty"
+    assert box.live() == before
+
+
+def test_an_empty_marker_makes_restore_bundle_refuse_not_fall_through(box: Box):
+    """An empty marker means "interrupted, snapshot unknown".
+
+    Falling through to the pointer would restore the last GOOD state over an
+    interrupted one and report success for a tree nobody has accounted for.
+    """
+    box.stage_bundle()
+    assert box.run(NEW_IMAGE).returncode == 0
+    assert box.pointer.exists(), "precondition: a pointer the fall-through could use"
+    box.dirty.write_text("", encoding="utf-8")
+
+    completed = box.run("--restore-bundle", OLD_IMAGE)
+
+    assert completed.returncode == 3, completed.stderr
+    assert _result(completed) == "rollback_failed"
+    assert str(box.dirty) in completed.stderr, "the refusal must name the empty marker"
+
+
 def test_restore_bundle_clears_the_dirty_marker(box: Box):
     """`--restore-bundle` is the documented way out of the dirty state."""
     box.stage_bundle()
@@ -1440,6 +1667,37 @@ def test_snapshot_records_a_manifest_row_per_bundle_file(box: Box):
         assert state in {"present", "absent"}, row
         if state == "present":
             assert len(meta.split()) == 3, f"{rel}: expected 'uid gid mode', got {meta!r}"
+
+
+def test_a_missing_root_compose_row_is_not_satisfied_by_the_deploy_row(box: Box):
+    """The manifest lookup must match the key EXACTLY, not by suffix.
+
+    `grep -F "compose.yml|"` also matched `deploy/compose.yml|`, so a missing
+    root row was silently served by the deploy copy's metadata and the restore
+    reported success having applied the wrong uid/gid/mode (Codex round 3).
+    """
+    # Distinct modes so a collision is visible in the result, not just the code.
+    (box.runtime / "compose.yml").chmod(0o640)
+    (box.runtime / "deploy" / "compose.yml").chmod(0o604)
+    box.stage_bundle()
+    assert box.run(NEW_IMAGE).returncode == 0
+    snapshot = Path(box.pointer.read_text(encoding="utf-8").strip())
+    manifest = snapshot / "manifest"
+    rows = manifest.read_text(encoding="utf-8").splitlines()
+    kept = [row for row in rows if not row.startswith("compose.yml|")]
+    assert any(row.startswith("deploy/compose.yml|") for row in kept), (
+        "the collision only exists while the deploy row is present"
+    )
+    assert len(kept) == len(rows) - 1
+    manifest.write_text("\n".join(kept) + "\n", encoding="utf-8")
+
+    completed = box.run("--restore-bundle", OLD_IMAGE)
+
+    assert completed.returncode == 3, completed.stderr
+    assert _result(completed) == "rollback_failed"
+    assert stat.S_IMODE((box.runtime / "compose.yml").stat().st_mode) != 0o604, (
+        "the root compose file was restored with the deploy copy's mode"
+    )
 
 
 def test_a_snapshot_without_a_manifest_is_refused(box: Box):
