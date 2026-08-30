@@ -70,8 +70,10 @@ _RUN_GRAPH_RATE_WINDOW_S = 3600
 _RUN_GRAPH_RATE_MAX = 20
 # Runs of ANY kind (reads included) per window. Reads are reclassified off the
 # write budget once they prove they wrote nothing (tinyassets.engine_admissions),
-# but a loop of read-only runs is still bounded here.
-_RUN_GRAPH_TOTAL_MAX = 120
+# but a loop of read-only runs is still bounded here: run_graph returns as soon
+# as the run is QUEUED, so this is what bounds compute on the owner's
+# subscription. 60 = 3x the concern's five-call job with a full retry (Codex).
+_RUN_GRAPH_TOTAL_MAX = 60
 
 
 def _bearer_ok(authorization_header, secret) -> bool:
@@ -87,7 +89,9 @@ def _bearer_ok(authorization_header, secret) -> bool:
     return hmac.compare_digest(authorization_header or "", "Bearer " + secret)
 
 
-def _engine_run_admit(*, fail_closed: bool = False, universe_id: str = "") -> bool:
+def _engine_run_admit(
+    *, fail_closed: bool = False, universe_id: str = "", want_ticket: bool = False
+):
     """Atomically admit one engine-triggered run/write under the rolling caps, or refuse.
 
     The ledger and the count rule live in ``tinyassets.engine_admissions``:
@@ -106,18 +110,26 @@ def _engine_run_admit(*, fail_closed: bool = False, universe_id: str = "") -> bo
     from tinyassets import engine_admissions as _adm
 
     counted_universe = (universe_id or "").strip() or _GRAPH_ID
-    return _adm.admit(
+    ticket = _adm.admit(
         counted_universe,
         write_max=_RUN_GRAPH_RATE_MAX,
         total_max=_RUN_GRAPH_TOTAL_MAX,
         window_s=_RUN_GRAPH_RATE_WINDOW_S,
         fail_closed=fail_closed,
     )
+    # ``want_ticket``: the caller will start a RUN and needs the admission's
+    # identity to bind it (ticket = ledger row id; ADMITTED_UNRECORDED when a
+    # fail-open blip admitted without a row; None = refused).
+    return ticket if want_ticket else (ticket is not None)
 
 
-def _attach_run_admission(raw: str) -> None:
-    """Bind the admission just charged to the run it became (by run_id), so the
+def _attach_run_admission(raw: str, ticket) -> None:
+    """Bind the admission ``ticket`` to the run it became (by run_id), so the
     effect dispatcher can downgrade it to a read when the run wrote nothing."""
+    from tinyassets.engine_admissions import _is_ticket
+
+    if not _is_ticket(ticket):
+        return
     import json as _json
 
     try:
@@ -134,7 +146,7 @@ def _attach_run_admission(raw: str) -> None:
         return
     from tinyassets import engine_admissions as _adm
 
-    _adm.attach_run(_GRAPH_ID, run_id)
+    _adm.attach_run(ticket, run_id)
 
 
 def _bind_founder_identity(capabilities=_READ_CAPABILITIES):
@@ -377,7 +389,8 @@ def run_graph(
     # run_graph on an already-approved effect branch (e.g. opening many PRs). Cap
     # the runs THIS universe can trigger via the engine per rolling window. The
     # approved-source-hash gate already pins WHAT runs; this bounds HOW OFTEN.
-    if not _engine_run_admit():
+    ticket = _engine_run_admit(want_ticket=True)
+    if ticket is None:
         return json.dumps({
             "error": (
                 f"run_graph rate limit reached (max {_RUN_GRAPH_RATE_MAX} per "
@@ -417,7 +430,7 @@ def run_graph(
         # packet an effect fires is model-authored at run time, so nothing can
         # be trusted up front). Bind it to the run: when the run's effects have
         # fired and every one was a read, the dispatcher reclassifies it.
-        _attach_run_admission(raw)
+        _attach_run_admission(raw, ticket)
         return _untrusted(f"run:{bid}", raw)
     finally:
         _current_identity.reset(token)

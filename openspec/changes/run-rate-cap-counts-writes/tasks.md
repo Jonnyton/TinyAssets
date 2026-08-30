@@ -6,8 +6,12 @@
       schema migration (`kind`, `run_id`); tampered-ledger refusal on every
       entry point.
 - [x] 1.2 `engine_mcp_server._engine_run_admit` delegates (same contract,
-      same fail-open/fail-closed split); `run_graph` binds the admission to
-      the started run; `_RUN_GRAPH_TOTAL_MAX = 120`.
+      same fail-open/fail-closed split; `want_ticket` returns the row id);
+      `run_graph` and `automations.run_due_automation` bind the ticket to
+      the started run; `_RUN_GRAPH_TOTAL_MAX = 60`.
+- [x] 1.4 Codex round 1 (REJECT) folded: migration inside `BEGIN IMMEDIATE`
+      (P0), tickets by row id (P2), automations bind (P1), 60 total (P1),
+      `method_mismatch` settles as write (P2), missing data dir created (P2).
 - [x] 1.3 `effectors.run_effects_for_branch` records one `(sink, verb)` per
       effect that ran (verb from the adapter's result, else from the packet
       via `packet_verb`) and settles the admission as a read when
@@ -16,12 +20,16 @@
 ## 2. Tests
 
 - [x] 2.1 `tests/test_engine_admissions.py`: cap, reclassification frees the
-      write budget, total bound holds for reads, attach binds newest
-      unattached row, old-ledger migration, per-universe budgets, symlink
+      write budget, total bound holds for reads, tickets bind by row id,
+      old-ledger migration (kept on a refusal), per-universe budgets, symlink
       refusal, `fired_only_reads` table.
 - [x] 2.2 Dispatcher: GET-only run → read; PUT → write; refused-before-wire
       GET → read; no effect nodes → read; non-engine run → no ledger.
-- [x] 2.3 Engine: `run_graph` writes the run_id into the admission row.
+- [x] 2.3 Engine: `run_graph` writes the run_id into the admission row;
+      automation runner binds its ticket; two first touches of a legacy
+      ledger under 12 threads admit exactly one; tickets bind the right row
+      under interleaving; a missing data dir is created and still capped;
+      method_mismatch settles as write.
 
 ## 3. Proof and close
 

@@ -173,7 +173,11 @@ def run_effects_for_branch(
                 }
             if not dry_run:
                 verb = result.get("verb") if isinstance(result, dict) else None
-                if not verb and sink == EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL:
+                if isinstance(result, dict) and result.get("error_kind") == "method_mismatch":
+                    # verb and request.method disagreed: the result echoes the
+                    # declared verb, which says nothing about intent (Codex).
+                    verb = None
+                elif not verb and sink == EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL:
                     # Refused before the wire (a gate, a bad packet): the verb the
                     # packet DECLARED still says whether it could have written.
                     verb = packet_verb(output_keys=output_keys, run_state=run_state)

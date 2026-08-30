@@ -14,23 +14,30 @@ external effect at all) is not the injection case the cap exists for.
 
 The count rule, in one place:
 
-* Every engine-triggered run and every engine write (write_graph, remix,
-  brain) is admitted as kind ``write`` and counts against ``write_max``
-  (20 per rolling hour). Nothing is trusted about the run before it runs -
-  the packet an effect fires is model-authored at run time, so a branch
-  cannot be classified as read-only up front.
+* Every engine-triggered run, every scheduled automation run and every
+  engine write (write_graph, remix, brain) is admitted as kind ``write`` and
+  counts against ``write_max`` (20 per rolling hour). Nothing is trusted
+  about the run before it runs - the packet an effect fires is model-authored
+  at run time, so a branch cannot be classified as read-only up front.
+* ``admit`` hands back a TICKET (the ledger row id). The caller binds it to
+  the run it starts with ``attach_run``; identity by row id, never "the
+  newest row", so two concurrent admissions cannot cross-bind (Codex round 1).
 * When the run's effects have fired, the dispatcher reports what actually
   left the box. If every fired effect was a ``GET``/``HEAD`` authenticated
   call (or nothing fired), the run's row is RECLASSIFIED as kind ``read``.
   Anything else - a non-GET verb, another sink, a verb the result does not
   name - stays ``write`` (fail closed).
-* ``read`` rows still count toward ``total_max`` (120 per rolling hour), so a
-  loop of read-only runs is bounded too, just not by the write budget.
+* ``read`` rows still count toward ``total_max`` (60 per rolling hour - a
+  run_graph call returns as soon as the run is queued, so this is what bounds
+  compute on the owner's subscription), so a loop of read-only runs is
+  bounded too, just not by the write budget.
 
 The ledger is ``<data_dir>/.engine_run_admissions.db`` and is NOT the shared
 runs table (which would over-limit legitimate browser/scheduled runs - Codex
 2026-08-19 (b)). A symlinked or out-of-tree ledger is refused: fail CLOSED on
-a tampered ledger regardless of caller mode.
+a tampered ledger regardless of caller mode. Schema inspection and migration
+happen INSIDE the ``BEGIN IMMEDIATE`` transaction: two first touches of a
+legacy ledger used to both pass before either had migrated (Codex round 1, P0).
 """
 
 from __future__ import annotations
@@ -45,6 +52,9 @@ KIND_WRITE = "write"
 KIND_READ = "read"
 # Verbs that leave nothing behind on the far side. Compared case-insensitively.
 READ_VERBS = frozenset({"GET", "HEAD"})
+# ``admit`` returned this when a DB error was tolerated (fail-open): the run is
+# admitted but no row records it, so there is nothing to bind or settle.
+ADMITTED_UNRECORDED = -1
 
 
 def ledger_path() -> Path:
@@ -74,6 +84,7 @@ def _ledger_is_trusted(db: Path) -> bool | None:
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
+    """Create or migrate the table. Call INSIDE an immediate transaction."""
     conn.execute(
         "CREATE TABLE IF NOT EXISTS admissions "
         "(universe_id TEXT NOT NULL, ts REAL NOT NULL)"
@@ -89,6 +100,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE admissions ADD COLUMN run_id TEXT NOT NULL DEFAULT ''")
 
 
+def _is_ticket(ticket: object) -> bool:
+    return isinstance(ticket, int) and not isinstance(ticket, bool) and ticket > 0
+
+
 def admit(
     universe_id: str,
     *,
@@ -97,27 +112,39 @@ def admit(
     window_s: int,
     fail_closed: bool = False,
     db: Path | None = None,
-) -> bool:
+) -> int | None:
     """Atomically admit one engine-triggered run/write under the rolling caps.
 
-    Refuses when the universe's ``write`` rows in the window have reached
-    ``write_max`` OR its rows of any kind have reached ``total_max``. Admits
-    as ``write``; ``reclassify_read`` may later downgrade the row once the
-    run proves it wrote nothing. Old rows are pruned opportunistically.
+    Returns the admission's ticket (its ledger row id) when recorded;
+    ``ADMITTED_UNRECORDED`` when a DB error was tolerated (fail-open, no row);
+    ``None`` when refused. Refuses when the universe's ``write`` rows in the
+    window have reached ``write_max`` OR its rows of any kind have reached
+    ``total_max``. Admits as ``write``; ``reclassify_read`` may later
+    downgrade the row once the run proves it wrote nothing. Old rows are
+    pruned opportunistically.
     """
     db = db or ledger_path()
+    try:
+        # A data dir that does not exist yet must not mean "no cap" (Codex
+        # round 1): the ledger creates its own trusted parent.
+        db.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None if fail_closed else ADMITTED_UNRECORDED
     trusted = _ledger_is_trusted(db)
     if trusted is False:
-        return False
+        return None
     if trusted is None:
-        return not fail_closed
+        return None if fail_closed else ADMITTED_UNRECORDED
     now = time.time()
     cutoff = now - window_s
     try:
         conn = sqlite3.connect(str(db), timeout=10)
         try:
-            _ensure_schema(conn)
+            # The lock comes FIRST: schema inspection, migration, count and
+            # insert all happen under it, so a second first-touch waits and
+            # sees the migrated table rather than racing the ALTER.
             conn.execute("BEGIN IMMEDIATE")
+            _ensure_schema(conn)
             writes = conn.execute(
                 "SELECT COUNT(*) FROM admissions "
                 "WHERE universe_id = ? AND ts >= ? AND kind = ?",
@@ -128,45 +155,47 @@ def admit(
                 (universe_id, cutoff),
             ).fetchone()[0]
             if int(writes) >= write_max or int(total) >= total_max:
-                conn.rollback()
-                return False
-            conn.execute(
+                # Refused - but the migration that may have just run must
+                # stay: a rollback here would undo it and redo it on every
+                # refused call. Nothing else was written.
+                conn.commit()
+                return None
+            cur = conn.execute(
                 "INSERT INTO admissions (universe_id, ts, kind, run_id) VALUES (?, ?, ?, '')",
                 (universe_id, now, KIND_WRITE),
             )
+            ticket = int(cur.lastrowid or 0)
             conn.execute("DELETE FROM admissions WHERE ts < ?", (cutoff - window_s,))
             conn.commit()
-            return True
+            return ticket if ticket > 0 else ADMITTED_UNRECORDED
         finally:
             conn.close()
     except sqlite3.Error:
-        return not fail_closed
+        return None if fail_closed else ADMITTED_UNRECORDED
 
 
-def attach_run(universe_id: str, run_id: str, *, db: Path | None = None) -> bool:
-    """Bind the universe's newest unattached admission to the run it became.
+def attach_run(ticket: int | None, run_id: str, *, db: Path | None = None) -> bool:
+    """Bind the admission ``ticket`` to the run it became.
 
-    Called by the engine right after run_graph started the run; the row was
-    inserted by ``admit`` moments earlier. Never raises; False means the
-    ledger could not be updated (the row simply stays ``write``).
+    Called by whoever admitted the run, right after the run id exists. Never
+    raises; False means nothing was bound (no ticket, an unrecorded
+    admission, a missing ledger, or a row already bound) and the row simply
+    stays ``write``.
     """
     run_id = (run_id or "").strip()
-    if not run_id or not universe_id:
+    if not run_id or not _is_ticket(ticket):
         return False
     db = db or ledger_path()
     if _ledger_is_trusted(db) is not True or not db.exists():
-        # No ledger means no engine admission ever happened here (a browser or
-        # scheduled run): nothing to bind or settle, and nothing is created.
         return False
     try:
         conn = sqlite3.connect(str(db), timeout=10)
         try:
+            conn.execute("BEGIN IMMEDIATE")
             _ensure_schema(conn)
             cur = conn.execute(
-                "UPDATE admissions SET run_id = ? WHERE rowid = ("
-                "  SELECT rowid FROM admissions "
-                "  WHERE universe_id = ? AND run_id = '' ORDER BY ts DESC LIMIT 1)",
-                (run_id, universe_id),
+                "UPDATE admissions SET run_id = ? WHERE rowid = ? AND run_id = ''",
+                (run_id, int(ticket)),
             )
             conn.commit()
             return cur.rowcount == 1
@@ -181,19 +210,19 @@ def reclassify_read(run_id: str, *, db: Path | None = None) -> bool:
 
     Called by the effect dispatcher once the run's effects have fired and
     every one of them was read-only (see ``fired_only_reads``). A run that
-    was not engine-triggered has no row: no-op, returns False.
+    was never admitted through the ledger has no row: no-op, returns False,
+    and no ledger is created for it.
     """
     run_id = (run_id or "").strip()
     if not run_id:
         return False
     db = db or ledger_path()
     if _ledger_is_trusted(db) is not True or not db.exists():
-        # No ledger means no engine admission ever happened here (a browser or
-        # scheduled run): nothing to bind or settle, and nothing is created.
         return False
     try:
         conn = sqlite3.connect(str(db), timeout=10)
         try:
+            conn.execute("BEGIN IMMEDIATE")
             _ensure_schema(conn)
             cur = conn.execute(
                 "UPDATE admissions SET kind = ? WHERE run_id = ? AND kind = ?",

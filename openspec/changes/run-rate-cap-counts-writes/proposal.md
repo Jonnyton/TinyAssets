@@ -25,23 +25,29 @@ becomes:
   budget **at admission, atomically** — nothing about a run is trusted before
   it runs, because the packet an effect fires is model-authored at run time
   (a branch cannot be classified as read-only up front).
-- `run_graph` binds the admission to the run it started (`run_id`).
+- Admission returns a ticket (the ledger row id); `run_graph` and the
+  scheduled-automation runner bind it to the run they start the moment its
+  id exists (identity by row id, so concurrent admissions cannot cross-bind).
 - When the run's effects have fired, the dispatcher settles the admission:
   if every effect that ran was a `GET`/`HEAD` authenticated call (or nothing
   ran, or the packet was refused before the wire and declared `GET`/`HEAD`),
   the row is **reclassified as `read`** and stops counting against writes.
   Any other sink, a non-`GET`/`HEAD` verb, or a verb the result and the
   packet do not name stays `write` — fail closed.
-- `read` rows still count toward a new **total bound of 120/h** for runs of
-  any kind, so a loop of read-only runs is bounded too.
+- `read` rows still count toward a new **total bound of 60/h** for runs of
+  any kind, so a loop of read-only runs is bounded too (`run_graph` returns
+  as soon as the run is queued, so this is what bounds compute on the
+  owner's subscription; 60 is 3x the concern's job with a full retry).
 - Ledger storage shape: `admissions` gains `kind TEXT NOT NULL DEFAULT
   'write'` and `run_id TEXT NOT NULL DEFAULT ''` (additive `ALTER TABLE`;
-  an old ledger's rows count as writes). A symlinked or out-of-tree ledger is
-  refused by every entry point.
+  an old ledger's rows count as writes; migration happens inside the
+  `BEGIN IMMEDIATE` transaction so two first touches cannot both pass). A
+  symlinked or out-of-tree ledger is refused by every entry point; a missing
+  parent directory is created, never read as "no cap".
 
 Not changed: the approved-source-hash gate still pins WHAT runs; the
 per-grant `unprompted_action_cap_json` still bounds the requests themselves;
-browser and scheduled runs have no admission row and are untouched.
+browser-triggered runs have no admission row and are untouched (scheduled automations already paid this budget; they now bind and settle like foreground runs).
 
 ## Impact
 

@@ -370,8 +370,6 @@ def test_run_graph_binds_its_admission_to_the_started_run(monkeypatch, tmp_path)
     rows = conn.execute("SELECT universe_id, kind, run_id FROM admissions").fetchall()
     conn.close()
     assert rows == [("u-9", "write", "run-77")]
-    # ...and once the dispatcher settles it as a read, the write budget is free again
-    assert adm.reclassify_read("run-77", db=tmp_path / adm.LEDGER_NAME) is True
 
 
 # ── engine_mcp_server: governed brain read-write loop ───────────────────────

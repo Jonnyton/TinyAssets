@@ -2,13 +2,18 @@
 
 ### Requirement: Engine run admissions are charged as writes and settled by what fired
 
-The engine SHALL admit every engine-triggered run and every engine write
-(`write_graph`, remix, brain write) through one per-universe rolling ledger
+The engine SHALL admit every engine-triggered run, every scheduled
+automation run and every engine write (`write_graph`, remix, brain write)
+through one per-universe rolling ledger
 (`<data_dir>/.engine_run_admissions.db`), charging each admission as kind
-`write` atomically at admission time. The engine SHALL refuse an admission
+`write` atomically at admission time, with schema inspection and migration
+inside the same immediate transaction. The engine SHALL refuse an admission
 when the universe's `write` admissions in the window have reached the write
 cap (20 per 3600 s) OR its admissions of any kind have reached the total cap
-(120 per 3600 s). `run_graph` SHALL bind the admission to the run it starts.
+(60 per 3600 s). Admission SHALL return a ticket (the ledger row id);
+`run_graph` and the automation runner SHALL bind that ticket to the run they
+start the moment its id exists. A ledger whose parent directory does not
+exist yet SHALL be created there, never treated as "no cap".
 When the run's effects have fired, the dispatcher SHALL reclassify the run's
 admission as `read` if and only if every effect that ran was a `GET`/`HEAD`
 `authenticated_external_call` (a refused-before-the-wire packet counts by the
@@ -33,8 +38,20 @@ SHALL be migrated additively, their rows counting as writes.
 
 #### Scenario: A loop of read-only runs is still bounded
 
-- **WHEN** a universe has 120 admissions of any kind in the rolling hour
+- **WHEN** a universe has 60 admissions of any kind in the rolling hour
 - **THEN** the next engine run is refused even if no write budget was spent
+
+#### Scenario: Two first touches of a legacy ledger cannot both pass
+
+- **WHEN** two admissions race on a ledger that still has the old schema and
+  one write of budget left
+- **THEN** exactly one is admitted and exactly one row is recorded
+
+#### Scenario: A scheduled automation settles like a foreground run
+
+- **WHEN** a scheduled automation's run fires only `GET` effects
+- **THEN** its admission, bound to that run when it started, is reclassified
+  as `read`
 
 #### Scenario: A branch cannot be pre-classified as read-only
 
@@ -42,8 +59,14 @@ SHALL be migrated additively, their rows counting as writes.
 - **THEN** it is charged as a write regardless of the branch's shape, because
   the verb an effect uses is decided by the packet the run produces
 
-#### Scenario: A run that never ran through the engine has no admission
+#### Scenario: A run that was never admitted has no admission
 
-- **WHEN** a browser or scheduled run's effects fire
+- **WHEN** a browser-triggered run's effects fire
 - **THEN** settlement finds no admission row and changes nothing; the ledger
   is not created for it
+
+#### Scenario: A verb that disagrees with the request method is a write
+
+- **WHEN** a packet declares `verb: GET` and `request.method: PUT`
+- **THEN** the adapter refuses it before the wire and the admission stays
+  `write` (the declared verb says nothing about intent)

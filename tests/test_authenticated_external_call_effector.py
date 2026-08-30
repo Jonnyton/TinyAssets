@@ -1067,8 +1067,9 @@ def _seed_engine_admission(tmp_path, monkeypatch, run_id, universe_id="universe-
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     db = tmp_path / adm.LEDGER_NAME
-    assert adm.admit(universe_id, write_max=20, total_max=120, window_s=3600, db=db)
-    assert adm.attach_run(universe_id, run_id, db=db)
+    ticket = adm.admit(universe_id, write_max=20, total_max=60, window_s=3600, db=db)
+    assert adm._is_ticket(ticket)
+    assert adm.attach_run(ticket, run_id, db=db)
     return db
 
 
@@ -1082,7 +1083,8 @@ def _admission_kind(db, run_id):
         conn.close()
 
 
-def _run_one(tmp_path, monkeypatch, *, verb, run_id, packet_body=None, refuse_grant=False):
+def _run_one(tmp_path, monkeypatch, *, verb, run_id, packet_body=None, refuse_grant=False,
+             request_method=None):
     import types
 
     from tinyassets import effectors as effectors_pkg
@@ -1101,6 +1103,8 @@ def _run_one(tmp_path, monkeypatch, *, verb, run_id, packet_body=None, refuse_gr
     packet = _packet(packet_body, verb=verb, path="/v1/messages")
     if packet_body is None:
         del packet["request"]["body"]
+    if request_method:
+        packet["request"]["method"] = request_method
     node = types.SimpleNamespace
     branch = node(node_defs=[node(node_id="n1", effects=[EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL],
                                   output_keys=["pkt"], input_keys=[])], state_schema=None)
@@ -1168,3 +1172,15 @@ def test_a_run_without_an_engine_admission_settles_nothing(tmp_path, monkeypatch
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     _run_one(tmp_path, monkeypatch, verb="GET", run_id="browser-run")
     assert not (tmp_path / adm.LEDGER_NAME).exists()
+
+
+def test_a_verb_that_disagrees_with_the_method_settles_as_a_write(tmp_path, monkeypatch):
+    """Codex round 1 (P2): the method_mismatch refusal echoes the DECLARED
+    verb (GET), which used to settle the run as a read. Nothing fired, but
+    the packet's intent is unknown - fail closed."""
+    db = _seed_engine_admission(tmp_path, monkeypatch, "run-mismatch")
+    evidence, loop = _run_one(tmp_path, monkeypatch, verb="GET", run_id="run-mismatch",
+                              request_method="PUT")
+    assert evidence["n1"][EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL]["error_kind"] == "method_mismatch"
+    assert loop.recorded == []
+    assert _admission_kind(db, "run-mismatch") == "write"
