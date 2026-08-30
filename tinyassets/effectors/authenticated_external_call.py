@@ -163,6 +163,21 @@ def _find_packet(
     return None, None
 
 
+def packet_verb(*, output_keys: list[str], run_state: dict[str, Any]) -> str | None:
+    """The verb a node's packet declares (``verb`` or ``request.method``), or
+    None when there is no parseable packet, no verb, or the two disagree. Used
+    by the dispatcher to classify an effect that was refused before the wire."""
+    _key, packet = _find_packet(output_keys=output_keys, run_state=run_state)
+    if packet is None:
+        return None
+    verb = _str_field(packet, "verb")
+    request = packet.get("request")
+    method = _str_field(request, "method") if isinstance(request, dict) else ""
+    if verb and method and verb.upper() != method.upper():
+        return None
+    return (verb or method or "").strip() or None
+
+
 def _str_field(source: dict[str, Any], key: str) -> str:
     value = source.get(key)
     return value.strip() if isinstance(value, str) else ""

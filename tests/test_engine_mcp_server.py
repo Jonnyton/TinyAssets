@@ -345,6 +345,60 @@ def test_run_graph_refuses_foreign_private_branch(monkeypatch):
     assert calls["n"] == 0  # the run path was never reached
 
 
+def test_run_graph_names_the_cap_that_refused(monkeypatch, tmp_path):
+    """Codex round 2 (P2): the refusal always said "max 20" even when the
+    60-run total bound was what refused."""
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_admissions as adm
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit",
+                        lambda **kw: adm.Admission(None, adm.REFUSED_BY_TOTAL))
+    out = json.loads(s.run_graph(branch_def_id="b1"))
+    assert f"max {s._RUN_GRAPH_TOTAL_MAX} runs of any kind" in out["error"]
+    monkeypatch.setattr(s, "_engine_run_admit",
+                        lambda **kw: adm.Admission(None, adm.REFUSED_BY_WRITE))
+    out = json.loads(s.run_graph(branch_def_id="b1"))
+    assert f"max {s._RUN_GRAPH_RATE_MAX} runs that write" in out["error"]
+    # a bare False from an old-style double still means refused
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: False)
+    assert "rate limit" in json.loads(s.run_graph(branch_def_id="b1"))["error"]
+    # the write surfaces name the cap the same way (Codex round 3)
+    total_text = s._engine_refusal("write_graph", "total")
+    assert f"max {s._RUN_GRAPH_TOTAL_MAX} runs of any kind" in total_text
+    write_text = s._engine_refusal("engine write", "write")
+    assert f"max {s._RUN_GRAPH_RATE_MAX} runs that write" in write_text
+
+
+def test_run_graph_binds_its_admission_to_the_started_run(monkeypatch, tmp_path):
+    """The admission is charged as a write before the run; binding it to the
+    run_id is what lets the dispatcher downgrade it to a read afterwards."""
+    import sqlite3
+    import types
+
+    import tinyassets.api.branches as branches
+    import tinyassets.engine_mcp_http as http
+    import tinyassets.universe_server as us
+    from tinyassets import engine_admissions as adm
+    from tinyassets import engine_mcp_server as s
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(branches, "_resolve_readable_branch",
+                        lambda *a, **k: ("b1", types.SimpleNamespace()))
+    started = json.dumps({"run_id": "run-77", "status": "running"})
+    monkeypatch.setattr(us, "run_graph", lambda **kw: started)
+    out = s.run_graph(branch_def_id="b1")
+    assert "run-77" in out
+    conn = sqlite3.connect(str(tmp_path / adm.LEDGER_NAME))
+    rows = conn.execute("SELECT universe_id, kind, run_id FROM admissions").fetchall()
+    conn.close()
+    assert rows == [("u-9", "write", "run-77")]
+
+
 # ── engine_mcp_server: governed brain read-write loop ───────────────────────
 
 def _seed_brain_universe(monkeypatch, tmp_path, uid="u-brain"):

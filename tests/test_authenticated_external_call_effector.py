@@ -1060,3 +1060,163 @@ def test_bounded_evidence_never_persists_header_values():
     assert "rotated-secret" not in json.dumps(b)
     # the in-memory original (what a later node's $ta.effect sees) is intact
     assert result["response"]["headers"]["set-cookie"] == "session=rotated-secret"
+
+
+def _seed_engine_admission(tmp_path, monkeypatch, run_id, universe_id="universe-1"):
+    from tinyassets import engine_admissions as adm
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    db = tmp_path / adm.LEDGER_NAME
+    ticket = adm.admit(universe_id, write_max=20, total_max=60, window_s=3600, db=db)
+    assert adm._is_ticket(ticket)
+    assert adm.attach_run(ticket, run_id, db=db)
+    return db
+
+
+def _admission_kind(db, run_id):
+    import sqlite3
+
+    conn = sqlite3.connect(str(db))
+    try:
+        return conn.execute("SELECT kind FROM admissions WHERE run_id = ?", (run_id,)).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def _run_one(tmp_path, monkeypatch, *, verb, run_id, packet_body=None, refuse_grant=False,
+             request_method=None):
+    import types
+
+    from tinyassets import effectors as effectors_pkg
+
+    monkeypatch.setenv(_HTTP_FLAG, "1")
+    _, universe_dir, db_path = _setup(
+        tmp_path, scopes=("GET", "PUT"), grant_consent_for=not refuse_grant, endpoints=[
+            {"host": "api.example.com", "path_template": "/v1/messages", "methods": ["GET", "PUT"]},
+        ])
+    loop = _Loopback()
+    _install_loopback_driver(monkeypatch, loop.port)
+    _install_inprocess_proxy(
+        monkeypatch, db_path=db_path, universe_dir=universe_dir, grant_id="grant-http",
+        provider="http", destination="api.example.com", runtime_root=tmp_path / "rt",
+    )
+    packet = _packet(packet_body, verb=verb, path="/v1/messages")
+    if packet_body is None:
+        del packet["request"]["body"]
+    if request_method:
+        packet["request"]["method"] = request_method
+    node = types.SimpleNamespace
+    branch = node(node_defs=[node(node_id="n1", effects=[EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL],
+                                  output_keys=["pkt"], input_keys=[])], state_schema=None)
+    try:
+        evidence = effectors_pkg.run_effects_for_branch(
+            branch=branch, run_state={"pkt": json.dumps(packet)},
+            base_path=str(universe_dir), run_id=run_id,
+        )
+    finally:
+        loop.stop()
+    return evidence, loop
+
+
+def test_a_run_that_only_reads_settles_its_engine_admission_as_a_read(tmp_path, monkeypatch):
+    """docs/concerns/2026-08-29-run-rate-cap-stalls-a-normal-github-job.md:
+    the GET half of a GitHub job must not spend the engine's write budget."""
+    db = _seed_engine_admission(tmp_path, monkeypatch, "run-get")
+    evidence, loop = _run_one(tmp_path, monkeypatch, verb="GET", run_id="run-get")
+    assert evidence["n1"][EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL]["delivered"] is True
+    assert [r["method"] for r in loop.recorded] == ["GET"]
+    assert _admission_kind(db, "run-get") == "read"
+
+
+def test_a_run_that_writes_keeps_its_engine_admission_a_write(tmp_path, monkeypatch):
+    db = _seed_engine_admission(tmp_path, monkeypatch, "run-put")
+    evidence, loop = _run_one(tmp_path, monkeypatch, verb="PUT", run_id="run-put",
+                              packet_body={"content": "x"})
+    assert evidence["n1"][EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL]["delivered"] is True
+    assert [r["method"] for r in loop.recorded] == ["PUT"]
+    assert _admission_kind(db, "run-put") == "write"
+
+
+def test_a_read_refused_before_the_wire_still_settles_as_a_read(tmp_path, monkeypatch):
+    """No consent grant: the adapter refuses before sending. The packet declared
+    GET, so nothing could have been written - the admission is a read."""
+    db = _seed_engine_admission(tmp_path, monkeypatch, "run-refused")
+    evidence, loop = _run_one(tmp_path, monkeypatch, verb="GET", run_id="run-refused",
+                              refuse_grant=True)
+    refused = evidence["n1"][EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL]
+    assert refused["error_kind"] == "missing_consent" and refused["dry_run"] is True
+    assert loop.recorded == []
+    assert _admission_kind(db, "run-refused") == "read"
+
+
+def test_a_run_with_no_effect_nodes_settles_as_a_read(tmp_path, monkeypatch):
+    import types
+
+    from tinyassets import effectors as effectors_pkg
+
+    db = _seed_engine_admission(tmp_path, monkeypatch, "run-compute")
+    node = types.SimpleNamespace
+    branch = node(node_defs=[node(node_id="think", effects=[], output_keys=["o"], input_keys=[])],
+                  state_schema=None)
+    assert effectors_pkg.run_effects_for_branch(
+        branch=branch, run_state={"o": "text"}, base_path=str(tmp_path / "universe-1"),
+        run_id="run-compute") == {}
+    assert _admission_kind(db, "run-compute") == "read"
+
+
+def test_a_run_without_an_engine_admission_settles_nothing(tmp_path, monkeypatch):
+    """Browser/scheduled runs have no admission row: the settle is a no-op and
+    the ledger is not created for them."""
+    from tinyassets import engine_admissions as adm
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    _run_one(tmp_path, monkeypatch, verb="GET", run_id="browser-run")
+    assert not (tmp_path / adm.LEDGER_NAME).exists()
+
+
+def test_a_verb_that_disagrees_with_the_method_settles_as_a_write(tmp_path, monkeypatch):
+    """Codex round 1 (P2): the method_mismatch refusal echoes the DECLARED
+    verb (GET), which used to settle the run as a read. Nothing fired, but
+    the packet's intent is unknown - fail closed."""
+    db = _seed_engine_admission(tmp_path, monkeypatch, "run-mismatch")
+    evidence, loop = _run_one(tmp_path, monkeypatch, verb="GET", run_id="run-mismatch",
+                              request_method="PUT")
+    assert evidence["n1"][EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL]["error_kind"] == "method_mismatch"
+    assert loop.recorded == []
+    assert _admission_kind(db, "run-mismatch") == "write"
+
+
+def test_an_unknown_sink_settles_as_a_write(tmp_path, monkeypatch):
+    """Codex round 2 (P2): an unknown sink was skipped before the dispatcher
+    recorded it, so the run settled as a read. What it would have done is
+    unknown - it stays a write."""
+    import types
+
+    from tinyassets import effectors as effectors_pkg
+
+    db = _seed_engine_admission(tmp_path, monkeypatch, "run-unknown")
+    node = types.SimpleNamespace
+    branch = node(node_defs=[node(node_id="n1", effects=["github_pull_request"],
+                                  output_keys=["o"], input_keys=[])], state_schema=None)
+    evidence = effectors_pkg.run_effects_for_branch(
+        branch=branch, run_state={"o": "x"}, base_path=str(tmp_path / "universe-1"),
+        run_id="run-unknown")
+    assert evidence["n1"]["github_pull_request"]["error_kind"] == "unknown_sink"
+    assert _admission_kind(db, "run-unknown") == "write"
+
+
+def test_a_run_that_wrote_and_then_failed_stays_a_write(tmp_path, monkeypatch):
+    """Codex round 3 (P1): effects fire on success, but provider-authority
+    release can fail afterwards and rewrite the status to FAILED; the
+    failure hook must not downgrade a real write."""
+    from tinyassets import runs as runs_module
+
+    db = _seed_engine_admission(tmp_path, monkeypatch, "run-put-then-fail")
+    evidence, loop = _run_one(tmp_path, monkeypatch, verb="PUT", run_id="run-put-then-fail",
+                              packet_body={"content": "x"})
+    assert evidence["n1"][EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL]["delivered"] is True
+    assert _admission_kind(db, "run-put-then-fail") == "write"
+    runs_module.initialize_runs_db(tmp_path)
+    runs_module.update_run_status(tmp_path, "run-put-then-fail",
+                                  status=runs_module.RUN_STATUS_FAILED, error="release failed")
+    assert _admission_kind(db, "run-put-then-fail") == "write"    # final

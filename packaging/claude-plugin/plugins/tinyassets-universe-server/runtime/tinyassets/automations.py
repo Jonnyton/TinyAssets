@@ -1310,9 +1310,12 @@ def run_due_automation(
         # (Codex ADAPT §7). Counted against THIS universe, so one owner's
         # cadence cannot exhaust another's. A refusal is NOT a pause: the
         # budget refills, so the next period simply tries again.
-        from tinyassets.engine_mcp_server import _engine_run_admit
+        from tinyassets.engine_mcp_server import _admission_parts, _engine_run_admit
 
-        if not _engine_run_admit(universe_id=automation.universe_id):
+        ticket, _refused_by = _admission_parts(
+            _engine_run_admit(universe_id=automation.universe_id, want_ticket=True)
+        )
+        if ticket is None:
             store.finish_attempt(
                 automation.automation_id,
                 due_at,
@@ -1326,13 +1329,25 @@ def run_due_automation(
 
         branch = _load_branch(base, automation)
         provider_call = _bind_automation_provider_call(base, automation)
+
+        def _started(run_id: str) -> None:
+            # Bind the admission to the run the moment it exists, so a run that
+            # only READ settles off the write budget like a foreground run
+            # (tinyassets.engine_admissions); _execute publishes the id before
+            # it blocks on completion.
+            from tinyassets.engine_admissions import attach_run
+
+            attach_run(ticket, str(run_id or ""))
+            if callable(on_run_started):
+                on_run_started(run_id)
+
         outcome = _execute(
             base,
             automation,
             provider_call,
             branch,
             dict(automation.inputs),
-            on_run_started,
+            _started,
         )
         from tinyassets.runs import RUN_STATUS_COMPLETED
 

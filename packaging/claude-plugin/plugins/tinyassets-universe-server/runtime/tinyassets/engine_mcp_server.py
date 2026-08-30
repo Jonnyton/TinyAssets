@@ -68,6 +68,14 @@ _REMIX_CAPABILITIES = ("read", "list", "write", "costly")
 #: engine-triggered runs per universe per rolling window.
 _RUN_GRAPH_RATE_WINDOW_S = 3600
 _RUN_GRAPH_RATE_MAX = 20
+# Runs of ANY kind (reads included) per window. Reads are reclassified off the
+# write budget once they prove they wrote nothing (tinyassets.engine_admissions),
+# but a loop of read-only runs is still bounded here: run_graph returns as soon
+# as the run is QUEUED, so this is what bounds compute on the owner's
+# subscription. Arithmetic: the concern's GitHub job is 5 runs plus up to 5
+# write_graph retunes = 10 admissions; with one full retry, 20; 60 leaves 3x
+# that. Every one of those 60 still runs on the owner's own subscription.
+_RUN_GRAPH_TOTAL_MAX = 60
 
 
 def _bearer_ok(authorization_header, secret) -> bool:
@@ -83,81 +91,90 @@ def _bearer_ok(authorization_header, secret) -> bool:
     return hmac.compare_digest(authorization_header or "", "Bearer " + secret)
 
 
-def _engine_run_admit(*, fail_closed: bool = False, universe_id: str = "") -> bool:
-    """Atomically admit one engine-triggered write under the rolling cap, or refuse.
+def _engine_run_admit(
+    *, fail_closed: bool = False, universe_id: str = "", want_ticket: bool = False
+):
+    """Atomically admit one engine-triggered run/write under the rolling caps, or refuse.
 
-    A dedicated engine-admission ledger (NOT the shared runs table, which would
-    over-limit legitimate browser/scheduled runs — Codex 2026-08-19 (b)). The
-    count-and-insert run inside a single ``BEGIN IMMEDIATE`` transaction, so two
-    parallel calls cannot both slip past the cap (atomic admission, closing the
-    TOCTOU race). Old rows are pruned opportunistically so the table stays bounded.
+    The ledger and the count rule live in ``tinyassets.engine_admissions``:
+    every admission is charged as a WRITE against ``_RUN_GRAPH_RATE_MAX`` (Codex
+    gate #5, the effect-spam bound), atomically (``BEGIN IMMEDIATE`` count-and-
+    insert, closing the TOCTOU race); a run that then proves it only READ is
+    reclassified by the effect dispatcher and stops counting against writes,
+    while ``_RUN_GRAPH_TOTAL_MAX`` still bounds runs of any kind. A dedicated
+    ledger, NOT the shared runs table (Codex 2026-08-19 (b)).
 
     ``fail_closed`` (Codex ADAPT 2026-08-22 #6): run_graph passes False — its
     approved-source gate + allowlist are the primary controls, so a DB blip must
-    not wedge legitimate runs. remix passes True — the rolling cap IS a real
-    safety bound on an autonomous write, so a DB error refuses rather than admits.
-
-    ``universe_id`` (Codex ADAPT 2026-08-29 §7) names the universe the admission
-    is counted against. It defaults to this process's pinned ``_GRAPH_ID`` so
-    every existing engine call site is unchanged. Background automations pass
-    their OWN universe: they launch the same governed run a foreground
-    ``run_graph`` launches, so they must consume the same 20/hour budget, but a
-    daemon serving many universes has no single pinned graph to count them
-    under. Per-universe counting is also the correct shape — one owner's cadence
-    must not exhaust another owner's budget.
+    not wedge legitimate runs. remix/write_graph/brain pass True — the rolling cap
+    IS a real safety bound on an autonomous write, so a DB error refuses.
     """
-    import sqlite3
-    import time as _time
-    from pathlib import Path as _P
+    from tinyassets import engine_admissions as _adm
 
-    data_dir = (os.environ.get("TINYASSETS_DATA_DIR") or "").strip() or "."
-    db = _P(data_dir) / ".engine_run_admissions.db"
-    # A symlinked ledger would write to an external SQLite DB (Codex re-review):
-    # refuse if the path is a symlink or resolves outside the data dir. Fail
-    # CLOSED on a tampered ledger regardless of caller mode.
+    counted_universe = (universe_id or "").strip() or _GRAPH_ID
+    admission = _adm.admit_detail(
+        counted_universe,
+        write_max=_RUN_GRAPH_RATE_MAX,
+        total_max=_RUN_GRAPH_TOTAL_MAX,
+        window_s=_RUN_GRAPH_RATE_WINDOW_S,
+        fail_closed=fail_closed,
+    )
+    # ``want_ticket``: the caller will start a RUN and needs the admission's
+    # identity to bind it (Admission.ticket = ledger row id; ADMITTED_UNRECORDED
+    # when a fail-open blip admitted without a row; None = refused, and
+    # Admission.refused_by names the cap).
+    return admission if want_ticket else (admission.ticket is not None)
+
+
+def _engine_refusal(prefix: str, refused_by) -> str:
+    """The refusal every engine surface returns, naming the cap that refused."""
+    import json as _json
+
+    if refused_by == "total":
+        bound = f"max {_RUN_GRAPH_TOTAL_MAX} runs of any kind"
+    else:
+        bound = f"max {_RUN_GRAPH_RATE_MAX} runs that write"
+    return _json.dumps({
+        "error": (
+            f"{prefix} rate limit reached ({bound} per "
+            f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); try again shortly."
+        ),
+    })
+
+
+def _admission_parts(admission) -> tuple:
+    """(ticket, refused_by) from what ``_engine_run_admit(want_ticket=True)``
+    returned - tolerant of a test double that returns a bare bool."""
+    ticket = getattr(admission, "ticket", admission)
+    if ticket is False:
+        ticket = None
+    return ticket, getattr(admission, "refused_by", None)
+
+
+def _attach_run_admission(raw: str, ticket) -> None:
+    """Bind the admission ``ticket`` to the run it became (by run_id), so the
+    effect dispatcher can downgrade it to a read when the run wrote nothing."""
+    from tinyassets.engine_admissions import _is_ticket
+
+    if not _is_ticket(ticket):
+        return
+    import json as _json
+
     try:
-        if db.is_symlink():
-            return False
-        data_root_r = os.path.realpath(data_dir)
-        db_r = os.path.realpath(db)
-        if db_r != data_root_r and not db_r.startswith(data_root_r + os.sep):
-            return False
-    except OSError:
-        return not fail_closed
-    now = _time.time()
-    cutoff = now - _RUN_GRAPH_RATE_WINDOW_S
-    try:
-        conn = sqlite3.connect(str(db), timeout=10)
-        try:
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS admissions "
-                "(universe_id TEXT NOT NULL, ts REAL NOT NULL)"
-            )
-            counted_universe = (universe_id or "").strip() or _GRAPH_ID
-            conn.execute("BEGIN IMMEDIATE")
-            n = conn.execute(
-                "SELECT COUNT(*) FROM admissions WHERE universe_id = ? AND ts >= ?",
-                (counted_universe, cutoff),
-            ).fetchone()[0]
-            if int(n) >= _RUN_GRAPH_RATE_MAX:
-                conn.rollback()
-                return False
-            conn.execute(
-                "INSERT INTO admissions (universe_id, ts) VALUES (?, ?)",
-                (counted_universe, now),
-            )
-            conn.execute(
-                "DELETE FROM admissions WHERE ts < ?",
-                (cutoff - _RUN_GRAPH_RATE_WINDOW_S,),
-            )
-            conn.commit()
-            return True
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        # run_graph: fail open (spam bound, not the primary control). remix: fail
-        # closed (the cap is a real bound on an autonomous write).
-        return not fail_closed
+        data = _json.loads(raw) if isinstance(raw, str) else {}
+    except (TypeError, ValueError):
+        return
+    if not isinstance(data, dict):
+        return
+    run_id = data.get("run_id")
+    if not run_id and isinstance(data.get("run"), dict):
+        run_id = data["run"].get("run_id")
+    run_id = str(run_id or "").strip()
+    if not run_id:
+        return
+    from tinyassets import engine_admissions as _adm
+
+    _adm.attach_run(ticket, run_id)
 
 
 def _bind_founder_identity(capabilities=_READ_CAPABILITIES):
@@ -400,13 +417,9 @@ def run_graph(
     # run_graph on an already-approved effect branch (e.g. opening many PRs). Cap
     # the runs THIS universe can trigger via the engine per rolling window. The
     # approved-source-hash gate already pins WHAT runs; this bounds HOW OFTEN.
-    if not _engine_run_admit():
-        return json.dumps({
-            "error": (
-                f"run_graph rate limit reached (max {_RUN_GRAPH_RATE_MAX} per "
-                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); try again shortly."
-            ),
-        })
+    ticket, refused_by = _admission_parts(_engine_run_admit(want_ticket=True))
+    if ticket is None:
+        return _engine_refusal("run_graph", refused_by)
 
     from tinyassets.auth.middleware import _current_identity
     from tinyassets.universe_server import run_graph as _impl
@@ -430,15 +443,18 @@ def run_graph(
         # A run RESULT is generated text (model output + whatever the branch
         # fetched), so it carries the untrusted envelope like any other
         # non-founder content.
-        return _untrusted(
-            f"run:{bid}",
-            _impl(
-                branch_def_id=bid,
-                graph_id=_GRAPH_ID,
-                run_name=(run_name or "").strip(),
-                inputs_json=(inputs_json or "").strip(),
-            ),
+        raw = _impl(
+            branch_def_id=bid,
+            graph_id=_GRAPH_ID,
+            run_name=(run_name or "").strip(),
+            inputs_json=(inputs_json or "").strip(),
         )
+        # The admission above was charged as a write before anything ran (the
+        # packet an effect fires is model-authored at run time, so nothing can
+        # be trusted up front). Bind it to the run: when the run's effects have
+        # fired and every one was a read, the dispatcher reclassifies it.
+        _attach_run_admission(raw, ticket)
+        return _untrusted(f"run:{bid}", raw)
     finally:
         _current_identity.reset(token)
 
@@ -1046,13 +1062,9 @@ def write_graph(
         })
     # Effect-spam rate limit (shared with run_graph), FAIL-CLOSED: a DB blip must
     # refuse the write, not admit it.
-    if not _engine_run_admit(fail_closed=True):
-        return json.dumps({
-            "error": (
-                f"write_graph rate limit reached (max {_RUN_GRAPH_RATE_MAX} per "
-                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); try again shortly."
-            ),
-        })
+    _wt, _wrefused = _admission_parts(_engine_run_admit(fail_closed=True, want_ticket=True))
+    if _wt is None:
+        return _engine_refusal("write_graph", _wrefused)
 
     from tinyassets.api.extensions import _extensions_impl
     from tinyassets.auth.middleware import _current_identity
@@ -1522,13 +1534,9 @@ def remix_shape(
     if not new_name:
         return json.dumps({"error": "name is required for the remixed branch."})
     # Rolling write bound — FAIL CLOSED for this autonomous write (Codex #6).
-    if not _engine_run_admit(fail_closed=True):
-        return json.dumps({
-            "error": (
-                f"engine write rate limit reached (max {_RUN_GRAPH_RATE_MAX} per "
-                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); try again shortly."
-            ),
-        })
+    _wt, _wrefused = _admission_parts(_engine_run_admit(fail_closed=True, want_ticket=True))
+    if _wt is None:
+        return _engine_refusal("engine write", _wrefused)
 
     spec = {
         "name": new_name,
@@ -1764,13 +1772,9 @@ def write_brain(
                 "(identity/founder/origin/body/orgchart) or a name."
             ),
         })
-    if not _engine_run_admit(fail_closed=True):
-        return json.dumps({
-            "error": (
-                f"engine write rate limit reached (max {_RUN_GRAPH_RATE_MAX} per "
-                f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); try again shortly."
-            ),
-        })
+    _wt, _wrefused = _admission_parts(_engine_run_admit(fail_closed=True, want_ticket=True))
+    if _wt is None:
+        return _engine_refusal("engine write", _wrefused)
 
     from tinyassets.api.helpers import _universe_dir
     from tinyassets.auth.middleware import _current_identity

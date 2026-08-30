@@ -2115,6 +2115,46 @@ def test_an_automation_pays_the_same_engine_run_budget_as_a_foreground_run(
     )
 
 
+def test_an_automation_binds_its_admission_to_the_run_it_starts(
+    tmp_path: Path,
+    registered: Automation,
+    monkeypatch,
+) -> None:
+    """Codex round 1 (P1): a scheduled run admitted against the ledger but
+    never bound could not settle as a read, so a GET-only automation spent
+    the write budget on every period."""
+    import sqlite3
+    import types
+
+    from tinyassets import engine_admissions as adm
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(automations_module, "_load_branch", lambda base, a: object())
+    monkeypatch.setattr(
+        automations_module, "_bind_automation_provider_call", lambda base, a: None
+    )
+    started: list[str] = []
+
+    def seam(base, automation, provider_call, branch, inputs, on_run_started):
+        on_run_started("run-auto-1")                      # published before blocking
+        return types.SimpleNamespace(run_id="run-auto-1", status="completed")
+
+    monkeypatch.setattr(automations_module, "_execute", seam)
+
+    reason = run_due_automation(
+        tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW,
+        on_run_started=started.append,
+    )
+
+    assert reason == "ok:ran:run-auto-1" and started == ["run-auto-1"]
+    conn = sqlite3.connect(str(tmp_path / adm.LEDGER_NAME))
+    rows = conn.execute("SELECT universe_id, kind, run_id FROM admissions").fetchall()
+    conn.close()
+    assert rows == [(UNIVERSE, "write", "run-auto-1")]
+    # ...so a read-only period can settle off the write budget
+    assert adm.reclassify_read("run-auto-1", db=tmp_path / adm.LEDGER_NAME) is True
+
+
 def test_one_universes_run_budget_is_not_spent_by_another_universe(
     tmp_path: Path, monkeypatch
 ) -> None:
