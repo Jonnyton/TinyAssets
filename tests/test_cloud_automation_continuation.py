@@ -2232,7 +2232,9 @@ def test_activation_compositor_rejects_binding_that_expired_after_preparation(
 ) -> None:
     fixture, _continuation, _audience_value, service = _activation_compositor_fixture(
         tmp_path,
-        activation_time=datetime(2026, 8, 30, tzinfo=timezone.utc),
+        # The day AFTER the fixture binding's far-future expiry: the frozen
+        # activation clock moves with the expiry, never the real calendar.
+        activation_time=datetime(2099, 1, 2, tzinfo=timezone.utc),
     )
 
     with pytest.raises(CloudContinuationActivationError, match="continuation_authority_changed"):
