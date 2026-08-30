@@ -178,6 +178,20 @@ def packet_verb(*, output_keys: list[str], run_state: dict[str, Any]) -> str | N
     return (verb or method or "").strip() or None
 
 
+def packet_accept_statuses(*, output_keys: list[str], run_state: dict[str, Any]) -> set[int]:
+    """The far-side statuses (>= 400) a node's packet declared as acceptable
+    data rather than failure: ``"accept_statuses": [404]`` at the packet's top
+    level (design D1: probe-then-branch). Anything else >= 400 fails the node.
+    Non-integers are ignored; an absent field is the empty set."""
+    _key, packet = _find_packet(output_keys=output_keys, run_state=run_state)
+    if packet is None:
+        return set()
+    raw = packet.get("accept_statuses")
+    if not isinstance(raw, list):
+        return set()
+    return {int(v) for v in raw if isinstance(v, int) and not isinstance(v, bool)}
+
+
 def _str_field(source: dict[str, Any], key: str) -> str:
     value = source.get(key)
     return value.strip() if isinstance(value, str) else ""

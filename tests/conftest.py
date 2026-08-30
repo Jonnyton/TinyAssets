@@ -305,6 +305,22 @@ def _isolate_storage_backend(monkeypatch):
     _catalog.invalidate_backend_cache()
 
 
+@pytest.fixture(autouse=True)
+def _code_nodes_use_the_plain_launcher(monkeypatch):
+    """Change `sandboxed-code-node`: a source_code node runs in an OS sandbox
+    (bwrap on Linux). The suite also runs on hosts without one, so every test
+    injects the TESTS-ONLY plain subprocess launcher by dependency injection -
+    production code has no switch to do this (Codex round 1, P0). Tests that
+    exercise the real bwrap launcher construct it explicitly and skip when the
+    host has no bwrap."""
+    from tinyassets import node_sandbox
+
+    monkeypatch.setattr(
+        node_sandbox, "DEFAULT_LAUNCHER_FACTORY",
+        lambda: node_sandbox.PlainSubprocessLauncher(),
+    )
+
+
 @pytest.fixture
 def checkpointer():
     """Yield an in-memory SqliteSaver for testing.

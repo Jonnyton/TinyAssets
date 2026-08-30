@@ -519,6 +519,20 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
             "empty_llm_response",
             _EMPTY_LLM_RESPONSE_ACTION,
         )
+    if "code runs only in the universe that authored it" in msg:
+        # A public foreign branch with code was run directly (sandboxed-code-node D2).
+        return (
+            "node_not_accepted",
+            "This branch's code was authored elsewhere. Remix it into your universe "
+            "(write_graph with fork_from) and run your copy.",
+        )
+    if "code node '" in msg:
+        # A source_code node's sandboxed run failed; the message carries its stderr.
+        return (
+            "code_node_failed",
+            "Your code node raised or exited non-zero; the error carries its stderr tail. "
+            "Fix run() in that node with write_graph (op=patch_node) and run again.",
+        )
     if "timed out" in msg or "timeout" in msg:
         return (
             "timeout",

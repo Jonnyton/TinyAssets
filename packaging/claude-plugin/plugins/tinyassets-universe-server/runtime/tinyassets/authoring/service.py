@@ -703,7 +703,7 @@ def _execute_draft_nodes(
     from the measured run, so "the budget fired" is an observation, not a
     declaration. Execution stops at the first budget breach.
     """
-    from tinyassets.node_sandbox import NodeSandbox
+    from tinyassets.node_sandbox import NodeSandbox, SandboxUnavailableError
 
     if session.artifact_kind != "node":
         return [], None
@@ -780,9 +780,11 @@ def _execute_draft_nodes(
                     dependencies=[str(d) for d in node.get("dependencies", [])],
                 )
             )
-        except RuntimeError as exc:
-            # An already-running event loop is an environment problem, not a
-            # draft problem; report it instead of claiming a pass.
+        except (RuntimeError, SandboxUnavailableError) as exc:
+            # An already-running event loop, or a host with no OS sandbox
+            # (`SandboxUnavailableError`, design D2: code nodes refuse rather
+            # than run unsandboxed), is an environment problem, not a draft
+            # problem; report it instead of claiming a pass.
             executions.append({
                 "node_id": node_id,
                 "status": "refused",

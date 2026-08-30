@@ -918,3 +918,33 @@ def test_destination_display_never_echoes_userinfo_or_query(store):
         "https://api.example/hook?token=SECRET"
     ) == ["secret-shaped parameter 'token'"]
     assert sandbox.destination_secret_parts("https://api.example/hook") == []
+
+
+def test_a_host_without_the_os_sandbox_refuses_instead_of_raising(store, monkeypatch):
+    """No OS sandbox -> a `sandbox.unavailable` record, not an exception.
+
+    Design D2: a code node refuses rather than running unsandboxed, so the
+    launcher factory raises `SandboxUnavailableError` on a host with no
+    bwrap. The authoring preview has to surface that as a refused execution
+    the author can read. `tests/conftest.py` injects the tests-only launcher
+    for the whole suite, so this restores the production path deliberately.
+    """
+    from tinyassets import node_sandbox
+    from tinyassets.authoring import service
+
+    def _no_sandbox():
+        raise node_sandbox.SandboxUnavailableError(
+            "code nodes need the OS sandbox: bwrap not found on PATH"
+        )
+
+    monkeypatch.setattr(node_sandbox, "DEFAULT_LAUNCHER_FACTORY", _no_sandbox)
+
+    session_id = _code_session(store, "def run(state):\n    return {'b': 1}\n")
+
+    result = service.run_test(actor_id="alice", session_id=session_id, store=store)
+
+    execution = result["executions"][0]
+    assert execution["status"] == "refused"
+    assert execution["reason"].startswith("sandbox.unavailable:")
+    assert "bwrap not found on PATH" in execution["reason"]
+    assert result["clean"] is False

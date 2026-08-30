@@ -284,6 +284,15 @@ _OUTCOME_ERROR_FIXTURES: tuple[tuple[str, str], ...] = (
     ("external write failed - post/authenticated_external_call: "
      "refused before the wire: missing_consent [missing_consent]",
      "external_write_refused"),
+    # sandboxed-code-node (2026-08-30): a code node that raised, and a public
+    # foreign branch's code run directly.
+    ("code node 'edit' failed: KeyError: 'content' | stderr: Traceback ...",
+     "code_node_failed"),
+    ("Node 'edit' carries source_code this run did not author (caller provenance: "
+     "public-foreign). Code runs only in the universe that authored it: remix the "
+     "branch into your universe with write_graph (fork_from) so the code is yours, "
+     "then run your copy.",
+     "node_not_accepted"),
 )
 
 

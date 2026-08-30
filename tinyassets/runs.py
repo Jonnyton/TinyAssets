@@ -919,19 +919,41 @@ def update_run_status(
     if token_count is not None:
         sets.append("token_count = ?")
         params.append(token_count)
+    if status in (
+        RUN_STATUS_COMPLETED, RUN_STATUS_FAILED, RUN_STATUS_CANCELLED, RUN_STATUS_INTERRUPTED,
+    ):
+        # Effects fire at node time (design D1), so a run can fire a write and
+        # then fail. Its engine admission settles from what actually fired
+        # (write is final), and what it fired is persisted even though the run
+        # did not complete - a branch it created must not vanish from the
+        # record because open_pr failed after it. Without a chain (legacy
+        # callers) a run that did not complete fired nothing: a read.
+        try:
+            from tinyassets.effectors import forget_effect_chain, settle_engine_admission
+
+            chain = forget_effect_chain(run_id)
+            if chain is not None:
+                chain.settle()
+                if output is None and chain.evidence and status != RUN_STATUS_COMPLETED:
+                    evidence = dict(chain.evidence)
+                    persisted: dict[str, Any] = {"external_write_results": evidence}
+                    rows = _collect_external_write_errors(evidence)
+                    if rows:
+                        persisted["external_write_errors"] = rows
+                    delivered = chain.delivered_nodes()
+                    if delivered:
+                        # "failed after writes" is a real state the surfaces
+                        # must show, not accounting policy (Codex round 1, P2).
+                        persisted["failed_after_effects"] = delivered
+                    sets.append("output_json = ?")
+                    params.append(json.dumps(persisted, default=str))
+            elif status in (RUN_STATUS_FAILED, RUN_STATUS_CANCELLED):
+                settle_engine_admission(run_id, [])
+        except Exception:  # pragma: no cover - never let accounting break a status write
+            logger.exception("engine admission settle failed for run %s", run_id)
     if not sets:
         return
     params.append(run_id)
-    if status in (RUN_STATUS_FAILED, RUN_STATUS_CANCELLED):
-        # A run that did not complete fired no effect (effects fire only after
-        # success), so its engine admission - if it has one - settles as a
-        # read here; the dispatcher never sees a failed run (Codex round 2).
-        try:
-            from tinyassets.effectors import settle_engine_admission
-
-            settle_engine_admission(run_id, [])
-        except Exception:  # pragma: no cover - never let accounting break a status write
-            logger.exception("engine admission settle failed for run %s", run_id)
     with _connect(base_path) as conn:
         conn.execute(
             f"UPDATE runs SET {', '.join(sets)} WHERE run_id = ?",
@@ -2466,6 +2488,22 @@ def _invoke_graph(
             _emit_node_status(node_id, NODE_STATUS_RUNNING)
             return
 
+        if phase == "effect":
+            # Design D1: the node's effects fired inside its step. Recorded as
+            # a system row (never a node status) so per-node status stays
+            # pending -> running -> ran/failed and the snapshot's phase logic,
+            # which ignores __system__, is untouched.
+            record_event(base_path, RunStepEvent(
+                run_id=run_id,
+                step_index=step + _PENDING_OFFSET,
+                node_id="__system__",
+                status="effect",
+                started_at=_now(),
+                finished_at=_now(),
+                detail={"node_id": node_id, **detail},
+            ))
+            return
+
         if phase == "failed":
             record_event(base_path, RunStepEvent(
                 run_id=run_id,
@@ -2553,12 +2591,29 @@ def _invoke_graph(
                 run_id, step, node_id, exc,
             )
 
+    # Effects fire at node time (design D1, change `sandboxed-code-node`):
+    # the chain is what they leave behind - full results for later nodes,
+    # bounded evidence for persistence, fired verbs for the engine budget.
+    # Registered under the run id so a terminal status written from any path
+    # settles and persists it.
+    from tinyassets.effectors import EffectChain, register_effect_chain
+
+    _eff_universe_hint = ""
+    if enqueue_context is not None and getattr(enqueue_context, "universe_id", ""):
+        _eff_universe_hint = str(enqueue_context.universe_id).strip()
+    effect_chain = EffectChain(
+        run_id=run_id,
+        base_path=_resolve_effector_base(base_path, run_id, _eff_universe_hint),
+        cloud_effect_session=_claimed_cloud_effect_session(provider_call),
+    )
+    register_effect_chain(effect_chain)
     try:
         compiled = compile_branch(
             branch,
             provider_call=provider_call,
             event_sink=_on_node,
             concurrency_budget_override=concurrency_budget_override,
+            effect_chain=effect_chain,
             base_path=base_path,
             parent_run_id=run_id,
             invocation_depth=invocation_depth,
@@ -2749,6 +2804,39 @@ def _invoke_graph(
         # can tell "your evidence-intake node hit the 300s cap" from a
         # generic crash. The NodeTimeoutError message carries the
         # node_id and timeout value.
+        effect_exc = _find_effect_failed_exception(exc)
+        if effect_exc is not None:
+            # Design D1: a refused packet or a write the far side refused
+            # failed its node; the message is already in the shape the run
+            # surfaces classify (external_write_failed / _refused).
+            msg = str(effect_exc)
+            step = execution_cursor["step"]
+            execution_cursor["step"] += 1
+            record_event(base_path, RunStepEvent(
+                run_id=run_id,
+                step_index=step + _PENDING_OFFSET,
+                node_id=effect_exc.node_id or "(unknown)",
+                status=NODE_STATUS_FAILED,
+                started_at=_now(),
+                finished_at=_now(),
+                detail={
+                    "reason": "effect_failed",
+                    "sink": effect_exc.sink,
+                    "error_kind": effect_exc.error_kind,
+                    "message": effect_exc.error,
+                },
+            ))
+            _emit_node_status(effect_exc.node_id or "(unknown)", NODE_STATUS_FAILED)
+            update_run_status(
+                base_path, run_id,
+                status=RUN_STATUS_FAILED,
+                error=msg,
+                finished_at=_now(),
+            )
+            return RunOutcome(
+                run_id=run_id, status=RUN_STATUS_FAILED,
+                output={}, error=msg,
+            )
         timeout_exc = _find_timeout_exception(exc)
         if timeout_exc is not None:
             msg = f"Node timeout: {timeout_exc}"
@@ -2856,18 +2944,12 @@ def _invoke_graph(
     # raise into the user-facing run status. Hard-rule #8 (fail loudly)
     # is satisfied by the structured error fields on each evidence entry.
     _quarantine_branch_authored_external_write_keys(output)
-    _eff_universe_hint = ""
-    if enqueue_context is not None and getattr(enqueue_context, "universe_id", ""):
-        _eff_universe_hint = str(enqueue_context.universe_id).strip()
     # Empty unless a declared effect failed; see _external_write_error_summary.
     effect_error = ""
-    external_write_evidence = _run_external_write_effectors(
-        branch,
-        output,
-        base_path=_resolve_effector_base(base_path, run_id, _eff_universe_hint),
-        run_id=run_id,
-        cloud_effect_session=_claimed_cloud_effect_session(provider_call),
-    )
+    # Every effect already fired at its node (design D1); this is its record.
+    # Nothing is dispatched here - one dispatch per node, never two.
+    external_write_evidence = dict(effect_chain.evidence)
+    effect_chain.settle()
     if external_write_evidence:
         # PR-122 Phase 1 round-2 (Codex finding #2): the receipt is
         # system-authoritative. Overwrite unconditionally — any branch
@@ -3129,6 +3211,24 @@ def _find_timeout_exception(exc: BaseException) -> NodeTimeoutError | None:
     cur: BaseException | None = exc
     while cur is not None and id(cur) not in seen:
         if isinstance(cur, NodeTimeoutError):
+            return cur
+        seen.add(id(cur))
+        cur = cur.__cause__ or cur.__context__
+    return None
+
+
+def _find_effect_failed_exception(exc: BaseException):
+    """Walk the exception chain for an ``EffectFailedError`` (design D1):
+    LangGraph wraps node errors; the effect failure sits on
+    ``__cause__`` / ``__context__``."""
+    try:
+        from tinyassets.effectors import EffectFailedError
+    except Exception:  # pragma: no cover - defensive import guard
+        return None
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        if isinstance(cur, EffectFailedError):
             return cur
         seen.add(id(cur))
         cur = cur.__cause__ or cur.__context__
@@ -3960,6 +4060,22 @@ def _invoke_graph_resume(
             ))
             return
 
+        if phase == "effect":
+            # Design D1: the node's effects fired inside its step. Recorded as
+            # a system row (never a node status) so per-node status stays
+            # pending -> running -> ran/failed and the snapshot's phase logic,
+            # which ignores __system__, is untouched.
+            record_event(base_path, RunStepEvent(
+                run_id=run_id,
+                step_index=step + _PENDING_OFFSET,
+                node_id="__system__",
+                status="effect",
+                started_at=_now(),
+                finished_at=_now(),
+                detail={"node_id": node_id, **detail},
+            ))
+            return
+
         if phase == "failed":
             record_event(base_path, RunStepEvent(
                 run_id=run_id,
@@ -3984,11 +4100,23 @@ def _invoke_graph_resume(
             detail=detail,
         ))
 
+    from tinyassets.effectors import EffectChain, register_effect_chain
+
+    # Design D1: the chain is in memory, so an effect that fired BEFORE the
+    # interrupt is not readable by a later node after resume - a reference to
+    # it refuses rather than resolving from a truncated preview.
+    effect_chain = EffectChain(
+        run_id=run_id,
+        base_path=_resolve_effector_base(base_path, run_id),
+        cloud_effect_session=_claimed_cloud_effect_session(provider_call),
+    )
+    register_effect_chain(effect_chain)
     try:
         compiled = compile_branch(
             branch,
             provider_call=provider_call,
             event_sink=_on_node,
+            effect_chain=effect_chain,
         )
     except (UnapprovedNodeError, CompilerError) as exc:
         update_run_status(
@@ -4058,13 +4186,9 @@ def _invoke_graph_resume(
     _quarantine_branch_authored_external_write_keys(output)
     # Empty unless a declared effect failed; see _external_write_error_summary.
     effect_error = ""
-    external_write_evidence = _run_external_write_effectors(
-        branch,
-        output,
-        base_path=_resolve_effector_base(base_path, run_id),
-        run_id=run_id,
-        cloud_effect_session=_claimed_cloud_effect_session(provider_call),
-    )
+    # Fired at node time (design D1); read the record, dispatch nothing.
+    external_write_evidence = dict(effect_chain.evidence)
+    effect_chain.settle()
     if external_write_evidence:
         # System-authoritative receipt — overwrite unconditionally
         # (see start_run for the rationale + Codex finding #2).
@@ -4590,6 +4714,8 @@ ACTIONABLE_BY: dict[str, str] = {
     # never a host credential rotation.
     "permission_denied:provider_not_bound": "chatbot",
     # chatbot — recoverable via another tool call
+    "code_node_failed": "chatbot",
+    "node_not_accepted": "chatbot",
     "quota_exhausted": "chatbot",
     "provider_overloaded": "chatbot",
     "provider_error": "chatbot",
@@ -4700,6 +4826,14 @@ def _classify_failure(run: dict) -> str:
         return "timeout"
     if "exhausted" in lower or "cooldown" in lower:
         return "provider_exhausted"
+    if "code runs only in the universe that authored it" in lower:
+        # A public foreign branch with code was run directly (design D2): the
+        # fix is a remix, one tool call away.
+        return "node_not_accepted"
+    if "code node '" in lower:
+        # A source_code node's sandboxed run failed (design D2): the universe
+        # wrote that code and can fix it - the message carries the stderr tail.
+        return "code_node_failed"
     if "sandbox" in lower or "bwrap" in lower:
         return "sandbox_unavailable"
     return "error"
@@ -4769,6 +4903,16 @@ def list_recent_runs(
             suggested_action = "Wait for provider cooldown or add an alternative provider."
         elif failure_class == "timeout":
             suggested_action = "Increase node timeout or simplify the prompt."
+        elif failure_class == "node_not_accepted":
+            suggested_action = (
+                "This branch's code was authored elsewhere. Remix it into your universe "
+                "(write_graph with fork_from) and run your copy."
+            )
+        elif failure_class == "code_node_failed":
+            suggested_action = (
+                "Your code node raised or exited non-zero; the error carries its stderr "
+                "tail. Fix run() in that node with write_graph (op=patch_node) and run again."
+            )
         elif failure_class == "sandbox_unavailable":
             suggested_action = "Enable unprivileged user namespaces or run on a bwrap-capable host."
         elif failure_class == "cancelled":

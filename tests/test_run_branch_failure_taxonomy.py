@@ -457,6 +457,10 @@ class TestActionableByCanonicalTable:
         # it does not hold (consent, grant, allow-list) is the founder's.
         ("external_write_failed", "chatbot"),
         ("external_write_refused", "user"),
+        # sandboxed-code-node: the universe wrote the code and can fix it; a
+        # foreign branch's code is one remix away.
+        ("code_node_failed", "chatbot"),
+        ("node_not_accepted", "chatbot"),
         # Opaque/internal — chatbot escalates raw error for human judgment.
         ("unknown", "user"),
         ("error", "user"),

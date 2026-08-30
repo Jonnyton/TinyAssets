@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import concurrent.futures
 import copy
-import hashlib
 import json
 import logging
 import operator
@@ -95,6 +94,31 @@ class NodeTimeoutError(CompilerError):
     def __init__(self, message: str, *, node_id: str = "") -> None:
         super().__init__(message)
         self.node_id = node_id
+
+
+class ForeignCodeError(CompilerError):
+    """Raised when a run would execute source_code it did not author (design
+    D2, Codex round 1 P0): ``run_graph`` admits a PUBLIC foreign branch
+    directly, and the cross-author approval strip only runs on fork, so
+    authorship has to be checked where the run's identity exists. Code runs
+    only in the universe that authored it; remixing the branch (write_graph
+    fork_from) re-authors it under the caller and is the acceptance."""
+
+    def __init__(self, message: str, *, node_id: str = "") -> None:
+        super().__init__(message)
+        self.node_id = node_id
+
+
+class CodeNodeError(CompilerError):
+    """Raised when a source_code node's sandboxed run fails: non-zero exit, an
+    exception inside ``run()``, bad JSON, an output over the cap. Carries the
+    node id and the child's stderr tail so the run error says what happened
+    where, not just that it happened (design D2)."""
+
+    def __init__(self, message: str, *, node_id: str = "", stderr_tail: str = "") -> None:
+        super().__init__(message)
+        self.node_id = node_id
+        self.stderr_tail = stderr_tail
 
 
 class EmptyResponseError(CompilerError):
@@ -273,6 +297,8 @@ def _call_policy_router_with_retry(
             time.sleep(delay)
     raise AssertionError("unreachable policy provider retry state")
 
+
+_MAX_SOURCE_CODE_BYTES = 50_000
 
 _DANGEROUS_PATTERNS = (
     "os.system", "subprocess", "eval(", "exec(", "__import__",
@@ -1351,60 +1377,34 @@ def _build_prompt_template_node(
 
 
 def _validate_source_code(node: NodeDefinition) -> None:
-    """Gate source_code nodes (FAIL-CLOSED): a node may run only when
-    ``approved=True`` AND ``approved_source_hash`` is present AND equals
-    ``sha256(source_code)``, and the source contains no obviously dangerous
-    patterns. This is the runtime line of defense; host approval is the
-    primary one. See spec §Risks — a proper sandbox is future work."""
+    """Compile-time gate for a source_code node (design D2, change
+    `sandboxed-code-node`). The OS sandbox is the authority boundary - the
+    child has no credentials, no network and no data dir, and its only output
+    is a state delta that reaches the world through the owner's consent-gated
+    effects - so there is no host-approval check here any more:
+    ``approved`` / ``approved_source_hash`` are provenance, not a gate.
+
+    What stays is defence in depth: the disallowed-pattern scan, a size cap
+    and a syntax check. A code node SHOULD declare ``output_keys`` - anything
+    it returns under another key is dropped, named in the node's event."""
     src = node.source_code or ""
-    if not node.approved:
-        raise UnapprovedNodeError(
-            f"Node '{node.node_id}' is source_code and must be approved "
-            f"by the host before running."
-        )
-    # SECURITY (Codex ADAPT + final residual, PR #1349): the ``approved``
-    # boolean alone is not sufficient provenance, AND the gate is FAIL-CLOSED.
-    # A source_code node executes only when ``approved=True`` *and*
-    # ``approved_source_hash`` is present *and* equals sha256(effective source).
-    #
-    # The earlier version carved out an empty hash as "trusted in-process
-    # construction". That carve-out was exploitable: a legacy/trusted snapshot
-    # carrying ``source_code`` + ``approved=True`` + ``approved_source_hash=""``
-    # could be persisted (via build_branch fork-copy or rollback_node restore)
-    # and run, because the runtime only checked NON-empty hashes. Carrying
-    # paths re-validate against the hash now (branches.build_branch fork-copy,
-    # evaluation.rollback_node), but the runtime is the last line of defense
-    # and must not trust an empty hash regardless of how the node arrived.
-    #
-    # Genuine in-process approval records the hash via
-    # ``NodeDefinition.mark_approved`` (host code / fixtures) or the
-    # ``approve`` / ``_ext_manage`` MCP gates (which compute the hash from the
-    # approved source). A runtime empty/stale hash therefore means the approval
-    # is forged, carried-from-elsewhere, or pre-dates the provenance field;
-    # fail closed and require re-approval.
-    approved_hash = (node.approved_source_hash or "").strip()
-    if not approved_hash:
-        raise UnapprovedNodeError(
-            f"Node '{node.node_id}' is marked approved but carries no "
-            f"approved_source_hash provenance. A source_code node may run "
-            f"only when its approval is bound to the hash of the approved "
-            f"source (fail-closed). Re-approve the node against its current "
-            f"source before running."
-        )
-    actual_hash = hashlib.sha256(src.encode("utf-8")).hexdigest()
-    if approved_hash != actual_hash:
-        raise UnapprovedNodeError(
-            f"Node '{node.node_id}' source_code does not match its "
-            f"approved hash (approval is stale or forged — source was "
-            f"changed after approval). Re-approve the node against its "
-            f"current source before running."
-        )
     for pattern in _DANGEROUS_PATTERNS:
         if pattern in src:
             raise CompilerError(
                 f"Node '{node.node_id}' source_code contains disallowed "
                 f"pattern: '{pattern}'"
             )
+    if len(src.encode("utf-8")) > _MAX_SOURCE_CODE_BYTES:
+        raise CompilerError(
+            f"Node '{node.node_id}' source_code is {len(src.encode('utf-8'))} bytes; "
+            f"the cap is {_MAX_SOURCE_CODE_BYTES}"
+        )
+    try:
+        compile(src, f"<node {node.node_id}>", "exec")
+    except SyntaxError as exc:
+        raise CompilerError(
+            f"Node '{node.node_id}' source_code does not parse: {exc}"
+        ) from exc
 
 
 _NODE_MCP_ACTION_ALIASES: dict[str, tuple[str, str]] = {
@@ -1815,94 +1815,122 @@ def _build_source_code_node(
     base_path: str | Path | None = None,
     enqueue_context: "NodeEnqueueContext | None" = None,
     enqueue_budget: "NodeEnqueueBudget | None" = None,
+    effect_chain: Any = None,
+    state_schema: list[dict[str, Any]] | None = None,
+    ancestors: set[str] | None = None,
+    execution_context: "BranchExecutionContext | None" = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
-    """Return a node function that exec()s the approved source_code.
-
-    The source must define a callable named ``run(state)`` returning a dict.
-    Keeps the runtime surface small and matches the existing extensions
-    sandbox contract for node registration.
+    """Return a node function that runs the node's ``source_code`` in the OS
+    sandbox (``tinyassets.node_sandbox``, design D2): a child process that
+    receives the node's declared inputs and every earlier effect's full
+    response, and nothing else - no credentials, no network, no data dir. The
+    source defines ``def run(state, effects=None) -> dict``; the return is
+    filtered to ``output_keys`` and merged into state like any node's delta.
+    An owner-authored node needs no host approval: the sandbox is the
+    authority boundary. No bwrap on the host -> ``SandboxUnavailableError``
+    (the run fails loudly as ``sandbox_unavailable``), never an unsandboxed run.
     """
-    _validate_source_code(node)
-    src = node.source_code
-    timeout_s = float(node.timeout_seconds or 300.0)
+    # `invoke_mcp_action` inside the sandbox is a synchronous RPC to the
+    # parent: the child asks over its pipes, the parent answers with the run's
+    # authority through this invoker (node-enqueue, wiki_read, ...). The
+    # child never holds the invoker or any credential.
     invoke_mcp_action = _build_node_mcp_invoker(
         node, event_sink=event_sink, invocation_depth=invocation_depth,
         base_path=base_path, enqueue_context=enqueue_context,
         enqueue_budget=enqueue_budget,
     )
-
-    # BUG-112: exec into a SINGLE namespace (globals == locals). With split
-    # globals/locals, top-level defs land in locals, but each function's
-    # __globals__ is the globals dict — so run() cannot see a sibling top-level
-    # helper (def _helper) and raises NameError at call time. One namespace
-    # restores module-level semantics: every top-level name is visible to every
-    # other. The injected globals (builtins, invoke_mcp_action) seed it.
-    namespace: dict[str, Any] = {
-        "__builtins__": __builtins__,
-        "invoke_mcp_action": invoke_mcp_action,
-    }
-    try:
-        exec(src, namespace)  # noqa: S102
-    except Exception as exc:
-        raise CompilerError(
-            f"Node '{node.node_id}' source_code failed to load: {exc}"
-        ) from exc
-    runner = namespace.get("run")
-    if not callable(runner):
-        raise CompilerError(
-            f"Node '{node.node_id}' source_code must define `def run(state)`."
+    provenance = "own"
+    if execution_context is not None:
+        provenance = getattr(execution_context, "caller_provenance", "own") or "own"
+    if provenance != "own":
+        # The run executes as someone who did not author this code (a public
+        # foreign branch run directly). The sandbox bounds what the code can
+        # touch; it does not decide whose code may run - authorship does.
+        raise ForeignCodeError(
+            f"Node '{node.node_id}' carries source_code this run did not author "
+            f"(caller provenance: {provenance}). Code runs only in the universe "
+            f"that authored it: remix the branch into your universe with "
+            f"write_graph (fork_from) so the code is yours, then run your copy.",
+            node_id=node.node_id,
         )
+    _validate_source_code(node)
+    src = node.source_code
+    timeout_s = float(node.timeout_seconds or 300.0)
+    input_keys = list(node.input_keys or [])
+    output_keys = list(node.output_keys or [])
+    defaulted = list(_state_schema_defaults(state_schema or []).keys())
+    # A code node reads only what it declares (input_keys + schema defaults),
+    # the same rule a packet lives under. `strict_input_isolation=False` is the
+    # declared escape hatch - the whole state - exactly as it is for a prompt
+    # node's render view.
+    strict_inputs = bool(getattr(node, "strict_input_isolation", True))
 
     def _fn(state: dict[str, Any]) -> dict[str, Any]:
-        # #60: emit a starting event so long-running source_code nodes
-        # don't look frozen to polling clients.
+        from tinyassets.node_sandbox import NodeSandbox
+
         if event_sink is not None:
             try:
-                event_sink(
-                    node_id=node.node_id,
-                    phase="starting", source_code=True,
-                )
+                event_sink(node_id=node.node_id, phase="starting", source_code=True)
             except Exception as exc:
                 if _is_cancel_exception(exc):
                     raise
-                logger.exception(
-                    "event_sink raised in %s (starting)", node.node_id,
-                )
+                logger.exception("event_sink raised in %s (starting)", node.node_id)
+        effects = effect_chain.effects_view(ancestors) if effect_chain is not None else {}
         if concurrency_tracker is not None:
             concurrency_tracker.acquire()
         try:
-            result = _run_with_timeout(
-                lambda: runner(state),
-                timeout_s=timeout_s,
+            visible = input_keys + defaulted if strict_inputs else list(dict(state).keys())
+            result = NodeSandbox(timeout=timeout_s).run_sync(
                 node_id=node.node_id,
+                source_code=src,
+                input_state=dict(state),
+                input_keys=visible,
+                output_keys=output_keys,
+                timeout=timeout_s,
+                effects=effects,
+                invoke=lambda action, kwargs: invoke_mcp_action(action, **dict(kwargs or {})),
             )
-        except NodeTimeoutError:
-            raise
-        except Exception as exc:
-            logger.exception("source_code node %s raised", node.node_id)
-            raise CompilerError(
-                f"Node '{node.node_id}' raised at runtime: {exc}"
-            ) from exc
         finally:
             if concurrency_tracker is not None:
                 concurrency_tracker.release()
-        if not isinstance(result, dict):
-            raise CompilerError(
-                f"Node '{node.node_id}' must return a dict, "
-                f"got {type(result).__name__}."
-            )
+        stderr_tail = getattr(result, "stderr_tail", "") or (result.stderr or "")[-2048:]
+        stdout_tail = getattr(result, "stdout_tail", "") or (result.stdout or "")[-2048:]
+        if not result.success:
+            error = result.error or "code node failed"
+            if "timed out" in error.lower():
+                raise NodeTimeoutError(
+                    f"Node '{node.node_id}' (code) exceeded its timeout of {timeout_s}s",
+                    node_id=node.node_id,
+                )
+            message = f"code node '{node.node_id}' failed: {error}"
+            if stderr_tail.strip():
+                message += f" | stderr: {stderr_tail.strip()[-600:]}"
+            raise CodeNodeError(message, node_id=node.node_id, stderr_tail=stderr_tail)
+        output = dict(result.output_state or {})
+        # The return passes through exactly as the in-process node's did:
+        # the single-merge-writer guard wrapping this function sees every key
+        # (Codex round 1, P1) and refuses an undeclared MERGE writer; other
+        # undeclared keys land in state as before and are named in the event
+        # so the author can see what run() wrote beyond its declared outputs.
+        undeclared = sorted(k for k in output if k not in output_keys)
         if event_sink is not None:
             try:
                 event_sink(
                     node_id=node.node_id,
                     phase="ran",
-                    source_code=True, output=result,
+                    source_code=True,
+                    output=output,
+                    undeclared_outputs=undeclared,
+                    duration_seconds=round(float(result.duration_seconds or 0.0), 3),
+                    stdout_tail=stdout_tail,
+                    stderr_tail=stderr_tail,
+                    warning=getattr(result, "warning", "") or "",
                 )
             except Exception as exc:
                 if _is_cancel_exception(exc):
                     raise
                 logger.exception("event_sink raised in %s", node.node_id)
-        return result
+        return output
 
     return _fn
 
@@ -2767,6 +2795,106 @@ def _build_await_branch_run_node(
     return _node_fn
 
 
+def _delta_view(
+    state: dict[str, Any],
+    delta: dict[str, Any],
+    append_fields: set[str],
+    merge_fields: set[str],
+) -> dict[str, Any]:
+    """The state a node's effects render against: what the node saw, merged
+    with the delta it returned exactly as LangGraph's reducers will merge it
+    (append concatenates, merge shallow-merges right-biased, else overwrite)."""
+    view = dict(state)
+    for key, value in delta.items():
+        if key in append_fields and isinstance(value, list):
+            view[key] = list(state.get(key) or []) + value
+        elif key in merge_fields and isinstance(value, dict):
+            view[key] = {**(state.get(key) or {}), **value}
+        else:
+            view[key] = value
+    return view
+
+
+def _graph_ancestors(branch: BranchDefinition) -> dict[str, set[str]]:
+    """node_def id -> the node_def ids of every graph ancestor (plain and
+    conditional edges alike; a conditional target is a possible ancestor).
+    A reference to an earlier effect - ``$ta.effect``, a code node's
+    ``effects`` - is legal only within this relation (Codex round 1, P1:
+    graph-defined, never scheduler-timing-defined)."""
+    def_of: dict[str, str] = {}
+    for gn in getattr(branch, "graph_nodes", None) or []:
+        def_of[gn.id] = gn.node_def_id or gn.id
+    parents: dict[str, set[str]] = {gid: set() for gid in def_of}
+    for edge in getattr(branch, "edges", None) or []:
+        if edge.from_node in def_of and edge.to_node in def_of:
+            parents[edge.to_node].add(edge.from_node)
+    for cedge in getattr(branch, "conditional_edges", None) or []:
+        for target in (cedge.conditions or {}).values():
+            if cedge.from_node in def_of and target in def_of:
+                parents[target].add(cedge.from_node)
+    out: dict[str, set[str]] = {}
+    for gid in def_of:
+        seen: set[str] = set()
+        stack = list(parents.get(gid, ()))
+        while stack:
+            cur = stack.pop()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            stack.extend(parents.get(cur, ()))
+        out.setdefault(def_of[gid], set()).update(def_of[p] for p in seen)
+    return out
+
+
+def _wrap_with_effects(
+    inner_fn: Callable[[dict[str, Any]], dict[str, Any]],
+    node: NodeDefinition,
+    effect_chain: Any,
+    state_schema: list[dict[str, Any]] | None,
+    event_sink: Callable[..., None] | None,
+    ancestors: set[str] | None = None,
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """Fire the node's declared ``effects`` the moment the node returns
+    (design D1, change `sandboxed-code-node`): against the state merged with
+    the node's delta, recording full results on the run's effect chain so a
+    later node - a packet's ``$ta.effect`` or a code node's ``effects`` - can
+    read them. A refused packet or a write the far side refused raises
+    ``EffectFailedError`` from inside the node: the run fails there and later
+    nodes never run. Without an effect chain (tests, legacy callers) the
+    post-run dispatcher is still the path and this is a no-op."""
+    effects = list(getattr(node, "effects", None) or [])
+    if not effects or effect_chain is None:
+        return inner_fn
+    schema = list(state_schema or [])
+    append_fields = {
+        f["name"] for f in schema
+        if f.get("name") and (f.get("reducer") or "").strip().lower() == "append"
+    }
+    merge_fields = _merge_reducer_fields(schema)
+    node_id = node.node_id
+
+    def _fn(state: dict[str, Any]) -> dict[str, Any]:
+        delta = inner_fn(state)
+        if not isinstance(delta, dict):
+            return delta
+        from tinyassets.effectors import dispatch_node_effects
+
+        view = _delta_view(state, delta, append_fields, merge_fields)
+        evidence = dispatch_node_effects(
+            effect_chain, node, view, state_schema=schema, ancestors=ancestors,
+        )
+        if event_sink is not None:
+            try:
+                event_sink(node_id=node_id, phase="effect", effects=evidence)
+            except Exception as exc:
+                if _is_cancel_exception(exc):
+                    raise
+                logger.exception("event_sink raised in %s (effect)", node_id)
+        return delta
+
+    return _fn
+
+
 def _build_node(
     node: NodeDefinition,
     *,
@@ -2784,6 +2912,55 @@ def _build_node(
     universe_context: "UniverseContext | None" = None,
     execution_context: "BranchExecutionContext | None" = None,
     on_node_status: Callable[[str, str], None] | None = None,
+    effect_chain: Any = None,
+    ancestors: set[str] | None = None,
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """Build the node function for ``node`` and wrap it so its declared
+    effects fire at node time (see ``_wrap_with_effects``). ``ancestors`` is
+    the set of node ids this node may reference (graph ancestry)."""
+    inner = _build_node_inner(
+        node,
+        provider_call=provider_call,
+        event_sink=event_sink,
+        domain_id=domain_id,
+        state_schema=state_schema,
+        llm_policy=llm_policy,
+        concurrency_tracker=concurrency_tracker,
+        base_path=base_path,
+        parent_run_id=parent_run_id,
+        invocation_depth=invocation_depth,
+        enqueue_context=enqueue_context,
+        enqueue_budget=enqueue_budget,
+        universe_context=universe_context,
+        execution_context=execution_context,
+        on_node_status=on_node_status,
+        effect_chain=effect_chain,
+        ancestors=ancestors,
+    )
+    return _wrap_with_effects(
+        inner, node, effect_chain, state_schema, event_sink, ancestors=ancestors,
+    )
+
+
+def _build_node_inner(
+    node: NodeDefinition,
+    *,
+    provider_call: Callable[..., str] | None,
+    event_sink: Callable[..., None] | None,
+    domain_id: str = "",
+    state_schema: list[dict[str, Any]] | None = None,
+    llm_policy: dict[str, Any] | None = None,
+    concurrency_tracker: ConcurrencyTracker | None = None,
+    base_path: str | Path | None = None,
+    parent_run_id: str = "",
+    invocation_depth: int = 0,
+    enqueue_context: "NodeEnqueueContext | None" = None,
+    enqueue_budget: "NodeEnqueueBudget | None" = None,
+    universe_context: "UniverseContext | None" = None,
+    execution_context: "BranchExecutionContext | None" = None,
+    on_node_status: Callable[[str, str], None] | None = None,
+    effect_chain: Any = None,
+    ancestors: set[str] | None = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Dispatch a NodeDefinition to the right adapter.
 
@@ -2813,6 +2990,8 @@ def _build_node(
             invocation_depth=invocation_depth,
             base_path=base_path, enqueue_context=enqueue_context,
             enqueue_budget=enqueue_budget,
+            effect_chain=effect_chain, state_schema=state_schema,
+            ancestors=ancestors, execution_context=execution_context,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if has_template:
@@ -2962,6 +3141,9 @@ class CompiledBranch:
     branch: BranchDefinition
     node_ids_in_order: list[str]
     concurrency_tracker: ConcurrencyTracker | None = None
+    #: The run's effect chain when the runner supplied one (design D1): the
+    #: evidence of every effect that fired at node time, what the run persists.
+    effect_chain: Any = None
 
 
 def compile_branch(
@@ -2977,6 +3159,7 @@ def compile_branch(
     universe_context: "UniverseContext | None" = None,
     execution_context: "BranchExecutionContext | None" = None,
     on_node_status: Callable[[str, str], None] | None = None,
+    effect_chain: Any = None,
 ) -> CompiledBranch:
     """Compile a validated BranchDefinition into a StateGraph.
 
@@ -2988,6 +3171,11 @@ def compile_branch(
         Synchronous LLM caller with signature ``(prompt, system, *, role)
         -> str``. When ``None``, prompt_template nodes return a mock
         string (useful for tests).
+    effect_chain
+        The run's ``tinyassets.effectors.EffectChain``. When given, every
+        node's declared effects fire the moment the node returns (design D1)
+        and their evidence accumulates on the chain; when ``None`` (tests,
+        legacy callers) effects are the caller's business after the run.
     on_node_status
         The runner's per-node status callback. Threaded down to CHILD branch
         launches so a nested prompt node is gated by the same pre-node checks
@@ -3077,6 +3265,7 @@ def compile_branch(
     }
 
     node_ids_in_order = [gn.id for gn in branch.graph_nodes]
+    ancestors_by_def = _graph_ancestors(branch) if effect_chain is not None else {}
 
     # Add graph nodes to the StateGraph. Each graph_node points at a
     # node_def via ``node_def_id`` (usually the same as ``id``).
@@ -3108,6 +3297,8 @@ def compile_branch(
             universe_context=universe_context,
             execution_context=execution_context,
             on_node_status=on_node_status,
+            effect_chain=effect_chain,
+            ancestors=ancestors_by_def.get(def_id, set()) if effect_chain is not None else None,
         )
         fn = _guard_single_writer_merge_outputs(
             fn,
@@ -3148,6 +3339,7 @@ def compile_branch(
         branch=branch,
         node_ids_in_order=node_ids_in_order,
         concurrency_tracker=concurrency_tracker,
+        effect_chain=effect_chain,
     )
 
 

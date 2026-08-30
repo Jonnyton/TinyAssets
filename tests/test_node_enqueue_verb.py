@@ -38,6 +38,9 @@ from tinyassets.graph_compiler import (
     compile_branch,
 )
 
+# Since change `sandboxed-code-node` the call inside the sandbox is a synchronous
+# RPC to the parent, which answers with the run's authority; the child never
+# holds the invoker. The contract run() sees is unchanged.
 ENQUEUE_ONE = (
     "def run(state):\n"
     "    r = invoke_mcp_action('enqueue_branch_run',\n"

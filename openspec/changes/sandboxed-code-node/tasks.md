@@ -1,30 +1,49 @@
 ## 1. Shape (proposal + design, then one cross-family shape review)
 
 - [x] 1.1 Proposal: why, what changes, impact (this change).
-- [ ] 1.2 Design: node kind, sandbox mechanism (reuse the served-turn
-      isolation path), input/output contract, effect interleaving,
-      authority model, limits, failure taxonomy.
-- [ ] 1.3 Codex refute of the design (shape, single-user safety holes).
-      One round; fold; escalate only structural disagreement.
+- [x] 1.2 Design: node kind, sandbox mechanism (bwrap inside the daemon
+      container, as served codex turns already use), input/output contract,
+      effects at node time, authorship as the authority predicate, limits,
+      failure taxonomy.
+- [x] 1.3 Codex round 1 on the design: REJECT (7 P0 / 11 P1) - headers to
+      code, no owner predicate, per-visit cardinality, read-shortcut
+      settlement, resume from truncated evidence, env-var sandbox switch,
+      output cap after the fact; all folded (design.md "(R1)"). Round 2 runs
+      on the code; round 3 is the cap, then the founder.
 
 ## 2. Build the vertical slice
 
-- [ ] 2.1 `NodeSandbox` wired into `compile_branch` for `source_code` nodes;
-      in-process `exec` path retired; no `approved`/hash gate for
-      owner-authored nodes; denylist kept.
-- [ ] 2.2 Sandbox: subprocess with no network, no data dir, private tmp,
-      CPU/mem/wall limits, stdin/stdout JSON; portable (no POSIX HOME
-      hardcode); `sandbox_unavailable` fails the run loudly.
-- [ ] 2.3 Inputs: declared `input_keys` + earlier effects' `response.*`;
-      outputs: declared `output_keys` into state; `$ta.ref` reads them.
-- [ ] 2.4 Effect dispatch interleaves with node execution when a later node
-      reads an earlier effect (branch order preserved).
-- [ ] 2.5 `write_graph` docs teach fetch → code → write; validation names a
-      missing `output_keys` / oversized source.
-- [ ] 2.6 Tests: end-to-end branch with a fake provider; sandbox limits;
-      no-network; refusal shapes; differential test against `$ta.replace`
-      on the live README shape.
-- [ ] 2.7 Plugin mirror; spec deltas synced.
+- [x] 2.1 `NodeSandbox.run_sync` is the only path for `source_code` nodes;
+      in-process `exec` deleted; authorship (`caller_provenance == "own"`)
+      replaces the approval gate (`ForeignCodeError` → `node_not_accepted`);
+      denylist + 50 KB + syntax checks kept.
+- [x] 2.2 Sandbox: `BwrapLauncher` (no network, no `/data`, no universe root,
+      `--clearenv --chdir /tmp`, private tmpfs, rlimits first in the child,
+      capped incremental reads, user stdout redirected), launchers injected -
+      no env var; `PlainSubprocessLauncher` tests-only via `conftest`;
+      `sandbox_unavailable` fails loudly. Live jail probe on the production
+      container 2026-08-30 (real argv): network `ENETUNREACH`; `/data`,
+      `/app`, `/etc/hostname` absent; `/usr` read-only; env = the six
+      declared vars; `/proc/1/environ` is the jail's own init (19 bytes);
+      fresh PID namespace; positive control edited the README bytes
+      correctly with `effects` passed through.
+- [x] 2.3 `run(state, effects)`: declared `input_keys` (+ schema defaults;
+      `strict_input_isolation=False` = whole state) and ancestors'
+      `{status, body}` (no headers); the return passes through to state
+      (merge guard sees it); `$ta.ref` reads it from the next packet;
+      `invoke_mcp_action` is a synchronous RPC answered by the parent.
+- [x] 2.4 Effects fire at node time in graph order (`EffectChain`,
+      `_wrap_with_effects`); at most once per node per run; ancestry-only
+      references; fail-the-node rule with packet `accept_statuses`;
+      evidence + `failed_after_effects` persisted on every terminal status;
+      settlement from `fired`, one owner.
+- [x] 2.5 `write_graph` docs teach fetch → code → write (CODE NODES section);
+      the served sanitizer / approval verb name the new backstop.
+- [x] 2.6 Tests: `tests/test_effects_at_node_time.py` (10, incl. fetch → code
+      → write through the real sandbox subprocess and `code_node_failed`),
+      `tests/test_node_sandbox.py` (85 + 6 bwrap-only), gate tests rewritten
+      to authorship, taxonomy fixtures, node-enqueue over RPC (37).
+- [x] 2.7 Plugin mirror rebuilt; spec deltas written (`specs/`).
 
 ## 3. Prove and close
 
