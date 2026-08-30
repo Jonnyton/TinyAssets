@@ -52,8 +52,22 @@ logger = logging.getLogger("universe_server.runs")
 ENV_CAPABILITIES_VAR = "UNIVERSE_SERVER_CAPABILITIES"
 
 
-def _bind_run_provider_call(provider_call: Any, universe_id: str) -> Any:
-    """Bind branch execution to a server-owned foreground run session."""
+def _bind_run_provider_call(
+    provider_call: Any,
+    universe_id: str,
+    *,
+    principal_id: str = "",
+) -> Any:
+    """Bind branch execution to a server-owned foreground run session.
+
+    ``principal_id`` names the person the run acts for. A foreground request
+    omits it and the request identity is used, as before. A BACKGROUND trigger
+    must pass it explicitly: the scheduler tick runs on its own thread with no
+    request context, so ``current_request_actor_id()`` there is ``anonymous`` and
+    the session's founder-home check refuses every run. The principal comes from
+    the schedule row, recorded at registration from the authenticated owner —
+    never from an ambient or host identity.
+    """
     uid = (universe_id or "").strip()
     from tinyassets.config import load_universe_config
     from tinyassets.providers.base import UniverseContext
@@ -72,10 +86,11 @@ def _bind_run_provider_call(provider_call: Any, universe_id: str) -> Any:
     from tinyassets.api.permissions import current_request_actor_id
     from tinyassets.foreground_run_provider import new_foreground_run_provider_session
 
+    principal = (principal_id or "").strip() or current_request_actor_id()
     session = new_foreground_run_provider_session(
         _base_path(),
         universe_id=uid,
-        principal_id=current_request_actor_id(),
+        principal_id=principal,
         provider_call=provider_call,
     )
     return bind_universe_provider_call(
@@ -854,6 +869,7 @@ def enqueue_universe_branch_run(
     branch_def_id: str,
     inputs: dict[str, Any],
     run_name: str = "",
+    principal_id: str = "",
 ) -> str:
     """Enqueue a run of ``branch_def_id`` as ``universe:<universe_id>``.
 
@@ -865,6 +881,12 @@ def enqueue_universe_branch_run(
     ``_action_run_branch``'s resolve → validate → provider-bind → execute, and appends a
     global-ledger entry for parity with the MCP dispatch path (which the direct
     ``execute_branch_async`` call would otherwise skip).
+
+    ``principal_id`` is the person the run acts for, and is REQUIRED of a trigger that
+    has no request context of its own — the scheduler's tick thread. Omitting it keeps
+    the pre-existing behaviour (the request identity binds the session), which is what
+    the webhook path wants: its authority is the token it was called with, presented on
+    a live request. See :func:`_bind_run_provider_call`.
     """
     from tinyassets.api.branches import (
         _append_global_ledger,
@@ -896,7 +918,9 @@ def enqueue_universe_branch_run(
     try:
         from tinyassets.providers.call import call_provider
 
-        provider_call = _bind_run_provider_call(call_provider, uid)
+        provider_call = _bind_run_provider_call(
+            call_provider, uid, principal_id=principal_id
+        )
     except ImportError:
         provider_call = None
 

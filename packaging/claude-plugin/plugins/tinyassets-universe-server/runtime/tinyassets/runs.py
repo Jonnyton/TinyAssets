@@ -402,7 +402,7 @@ def initialize_runs_db(base_path: str | Path) -> Path:
         migrate_contribution_events_schema,
     )
     from tinyassets.gate_events.schema import GATE_EVENT_SCHEMA
-    from tinyassets.scheduler import SCHEDULER_SCHEMA
+    from tinyassets.scheduler import SCHEDULER_SCHEMA, migrate_scheduler_schema
     schema = (
         schema
         + SCHEDULER_SCHEMA
@@ -411,6 +411,13 @@ def initialize_runs_db(base_path: str | Path) -> Path:
         + CONTRIBUTION_EVENTS_SCHEMA
     )
     with _connect(base_path) as conn:
+        # BEFORE the schema script, not after: SCHEDULER_SCHEMA creates an index
+        # on ``branch_schedules(universe_id)``, and on an install that predates
+        # that column the index fails with "no such column" — taking the whole
+        # of initialize_runs_db down with it. The migration is a no-op on a
+        # fresh DB (the table does not exist yet; CREATE TABLE brings the
+        # columns) and idempotent on every subsequent call.
+        migrate_scheduler_schema(conn)
         conn.executescript(schema)
         # Migration: older installs may predate the body-snapshot columns
         # added for rollback support. SQLite doesn't have
