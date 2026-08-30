@@ -414,6 +414,13 @@ def _schedule_request_owner(kwargs: dict[str, Any]) -> tuple[str, str, str | Non
 
 
 def _action_schedule_branch(kwargs: dict[str, Any]) -> str:
+    """Register a schedule for the authenticated owner's own universe.
+
+    ``cron_expr`` is evaluated in **UTC**, not host-local time. That is both a
+    user-facing fact and a correctness one: the cadence floor below is computed
+    from wall-clock minute/hour algebra, which only equals elapsed time in a zone
+    with no DST transitions.
+    """
     from tinyassets.runs import initialize_runs_db
     from tinyassets.scheduler import (
         MIN_SCHEDULE_INTERVAL_S,
@@ -529,9 +536,35 @@ def _schedule_row_universe(row: dict[str, Any], request_universe: str, actor: st
     if not request_universe:
         return ""
     owner_actor = str(row.get("owner_actor") or "").strip()
-    if owner_actor in legacy_owner_actors_for(request_universe, (actor,)):
+    if owner_actor in legacy_owner_actors_for(
+        request_universe, _recoverable_principals(request_universe, actor)
+    ):
         return request_universe
     return ""
+
+
+def _recoverable_principals(universe_id: str, actor: str) -> tuple[str, ...]:
+    """Principals a legacy row's bare ``owner_actor`` may name for ``universe_id``.
+
+    The caller, plus every founder whose home IS this universe. Without the
+    second, a bare-founder legacy row was addressable only when that founder
+    happened to be the caller — so a delegated admin of the universe could see
+    the row but never delete it (Codex round 2, finding 6). Reading the registry
+    is what makes "an admin of X can clean up X's legacy rows" true rather than
+    true-for-one-person.
+    """
+    from tinyassets.daemon_server import founder_subs_for_universe
+
+    principals = {actor} if actor else set()
+    try:
+        principals.update(founder_subs_for_universe(_base_path(), universe_id))
+    except Exception:  # noqa: BLE001 - a registry read must not break the surface
+        logger.warning(
+            "schedule legacy recovery: founder lookup failed for %r",
+            universe_id,
+            exc_info=True,
+        )
+    return tuple(sorted(p for p in principals if p))
 
 
 def _schedule_control_context(
@@ -622,35 +655,89 @@ _SCHEDULE_SUMMARY_FIELDS = (
 )
 
 
-def _action_list_schedules(kwargs: dict[str, Any]) -> str:
-    from tinyassets.runs import initialize_runs_db
-    from tinyassets.scheduler import list_schedules
+def _fresh_refusal_reasons(base: Any, universe_ids: set[str]) -> dict[str, str]:
+    """Freshest ledger reason per ``schedule:<id>`` key across ``universe_ids``.
 
-    # Owner-scoped read: a schedule discloses which branch runs, how often, and
-    # when it last fired. That is the owner's operational picture, so listing
-    # takes the same authenticated-admin gate registration does.
-    actor, universe_id, error = _schedule_request_owner(kwargs)
-    if error is not None:
-        return error
+    Same read the automations surface does. A skipped attempt that does not pause
+    the row (``skip_if_running``, ``run_fn_incompatible``, ``enqueue_error:*``)
+    leaves no mark ON the row, so without this the owner's list said only that
+    nothing had run lately and never why.
+    """
+    from tinyassets.runtime.assigned_queue_consumer import (
+        assigned_queue_refusal_freshness_seconds,
+    )
+    from tinyassets.storage.assigned_queue_refusals import AssignedQueueRefusalStore
+
+    reasons: dict[str, str] = {}
+    store = AssignedQueueRefusalStore(base)
+    window = assigned_queue_refusal_freshness_seconds()
+    for uid in universe_ids:
+        try:
+            reasons.update(
+                store.fresh_reasons(universe_id=uid, max_age_seconds=window)
+            )
+        except Exception:  # noqa: BLE001 - a projection read never fails the surface
+            logger.warning(
+                "schedule list: refusal read failed for %r", uid, exc_info=True
+            )
+    return reasons
+
+
+def _action_list_schedules(kwargs: dict[str, Any]) -> str:
+    from tinyassets.api import permissions
+    from tinyassets.runs import initialize_runs_db
+    from tinyassets.scheduler import REFUSAL_KEY_PREFIX, list_schedules
+
+    if not permissions.is_authenticated_request():
+        return json.dumps({"error": "authentication_required"})
     active_only = bool(kwargs.get("active_only", True))
     base = _base_path()
     initialize_runs_db(base)
-    # Owner-scoped: a request lists the schedules of ITS OWN universe. The old
-    # unfiltered listing disclosed every universe's schedules to any caller.
-    # MIGRATED legacy rows carry universe_id='' and would be invisible to the
-    # only people who may delete them, so they are recovered by owner_actor —
-    # `universe:<id>`, or this caller's own principal.
-    rows = list_schedules(
-        base,
-        universe_id=universe_id,
-        legacy_owner_actors=(actor,),
-        active_only=active_only,
+
+    # Owner-scoped read: a schedule discloses which branch runs, how often, and
+    # when it last fired — the owner's operational picture, so the admin gate
+    # registration uses is the default path.
+    actor, universe_id, error = _schedule_request_owner(kwargs)
+    if error is None:
+        # MIGRATED legacy rows carry universe_id='' and would be invisible to the
+        # only people who may delete them, so they are recovered by owner_actor:
+        # `universe:<id>`, the caller, or a founder whose home this universe is.
+        rows = list_schedules(
+            base,
+            universe_id=universe_id,
+            legacy_owner_actors=_recoverable_principals(universe_id, actor),
+            active_only=active_only,
+        )
+        scope = "universe"
+    else:
+        # The person a refusal is ABOUT is often the one who can no longer pass
+        # that gate: `owner_lost_admin` and `not_owner_home` are exactly the
+        # states that lock an owner out of the surface telling them why their
+        # schedule stopped. Fall back to a READ of their own rows — never
+        # control, which stays admin-only (Codex round 2, finding 2).
+        rows = list_schedules(
+            base, owner_principal_id=actor, active_only=active_only
+        )
+        if not rows:
+            # No rows of their own: this is a stranger naming someone else's
+            # universe, and they get the refusal rather than an empty list.
+            return error
+        universe_id = ""
+        scope = "owner"
+
+    reasons = _fresh_refusal_reasons(
+        base, {str(row.get("universe_id") or "") for row in rows}
     )
-    summaries = [
-        {field: row.get(field) for field in _SCHEDULE_SUMMARY_FIELDS} for row in rows
-    ]
+    summaries = []
+    for row in rows:
+        summary = {field: row.get(field) for field in _SCHEDULE_SUMMARY_FIELDS}
+        summary["recent_reason"] = reasons.get(
+            f"{REFUSAL_KEY_PREFIX}{row.get('schedule_id')}"
+        )
+        summaries.append(summary)
     return json.dumps({
         "universe_id": universe_id,
+        "scope": scope,
         "schedules": summaries,
         "count": len(summaries),
     })

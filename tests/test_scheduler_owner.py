@@ -852,6 +852,142 @@ def test_an_enqueue_failure_records_a_named_refusal(env):
 
     Scheduler(base, exploding_run_fn)._fire_due_schedules()
     assert refusals_for(base, uid) == {f"schedule:{sid}": "enqueue_error:RuntimeError"}
+    # The claim STANDS, by design: the attempt happened, and rolling it back
+    # would spin the schedule against whatever rejected it on every tick. The
+    # refusal names the cause; the next fire waits a full interval.
+    assert _schedule_rows(base)[0]["last_fired_at"] is not None
+
+
+# ── The owner can read why their schedule stopped ────────────────────────────
+
+
+def test_a_revoked_owner_can_still_read_their_own_schedule(env, live_scheduler):
+    """`owner_lost_admin` locks the owner out of the very surface explaining it.
+
+    The refusal is ABOUT them, so the read must not require the grant they just
+    lost. Read only — control stays admin-gated
+    (`test_an_owner_who_lost_admin_can_no_longer_control_the_row`).
+    """
+    base, authenticate = env
+    uid = _create_universe("founder-a", authenticate)
+    sid = _ext("schedule_branch", branch_def_id="b1", interval_seconds=600.0)[
+        "schedule_id"
+    ]
+
+    from tinyassets.daemon_server import revoke_universe_access
+
+    assert revoke_universe_access(base, universe_id=uid, actor_id="founder-a") is True
+    _fire_once(base, [])  # first tick after the revoke: denied → paused with a reason
+
+    listed = _ext("list_schedules")
+    assert listed["scope"] == "owner", listed
+    assert listed["count"] == 1
+    row = listed["schedules"][0]
+    assert row["schedule_id"] == sid
+    assert row["paused"] == 1
+    assert row["pause_reason"] == "owner_lost_admin"
+
+
+def test_a_stranger_still_gets_the_refusal_not_an_empty_list(env, live_scheduler):
+    """The owner fallback must not become a way to probe another universe."""
+    base, authenticate = env
+    uid_a = _create_universe("founder-a", authenticate)
+    _ext("schedule_branch", branch_def_id="b1", interval_seconds=600.0)
+
+    _create_universe("stranger-b", authenticate)
+    out = _ext("list_schedules", universe_id=uid_a)
+    # They own no schedules, so the fallback finds nothing and the gate's own
+    # refusal stands — the fallback never becomes a probe for another universe.
+    assert out["error"] == "owner_not_admin", out
+
+
+def test_an_ongoing_refusal_stays_visible_across_owner_reads(env, live_scheduler):
+    """Readers treat a refusal as fresh for ~10s; a 60s rewrite gap hid it.
+
+    Three reads spanning more than the freshness window. With the old fixed
+    60-second rewrite guard the ledger row is written once and has aged out by
+    the third read, so an ongoing `skip_if_running` looked like nothing was
+    wrong for roughly 50 seconds in every 60.
+    """
+    import datetime as _dt
+
+    base, authenticate = env
+    uid = _create_universe("founder-a", authenticate)
+    sid = _ext(
+        "schedule_branch", branch_def_id="b1", interval_seconds=600.0, skip_if_running=True
+    )["schedule_id"]
+    conn = sqlite3.connect(base / ".runs.db")
+    conn.execute(
+        "INSERT INTO runs (run_id, branch_def_id, thread_id, status, actor, started_at) "
+        "VALUES ('r1','b1','t1','running','x',0)"
+    )
+    conn.commit()
+    conn.close()
+
+    from tinyassets.runtime.assigned_queue_consumer import (
+        assigned_queue_refusal_freshness_seconds,
+    )
+    from tinyassets.storage.assigned_queue_refusals import AssignedQueueRefusalStore
+
+    window = assigned_queue_refusal_freshness_seconds()
+    origin = _dt.datetime(2026, 8, 29, 12, 0, 0, tzinfo=_dt.timezone.utc)
+    clock = {"mono": 0.0, "wall": origin}
+
+    class _FrozenDatetime(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock["wall"]
+
+    import tinyassets.scheduler as sched
+
+    monkey_mono = lambda: clock["mono"]  # noqa: E731
+    original_mono, original_dt = sched.time.monotonic, sched.datetime
+    sched.time.monotonic = monkey_mono
+    sched.datetime = _FrozenDatetime
+    store = AssignedQueueRefusalStore(base)
+    seen: list[str | None] = []
+    # ONE Scheduler across all three ticks: the rewrite guard is per-instance, so
+    # a fresh instance per tick would re-record every time and the window under
+    # test would never engage.
+    ticker = _capturing_scheduler(base, [])
+    try:
+        # Tick, then read, three times — each pair further apart than half the
+        # freshness window, which is when a rewrite is due.
+        for offset in (0.0, window * 0.6, window * 1.2):
+            clock["mono"] = offset
+            clock["wall"] = origin + _dt.timedelta(seconds=offset)
+            ticker._fire_due_schedules()
+            read_at = clock["wall"] + _dt.timedelta(seconds=window * 0.4)
+            fresh = store.fresh_reasons(
+                universe_id=uid, max_age_seconds=window, now=read_at
+            )
+            seen.append(fresh.get(f"schedule:{sid}"))
+    finally:
+        sched.time.monotonic = original_mono
+        sched.datetime = original_dt
+
+    assert seen == ["skip_if_running"] * 3, seen
+
+
+def test_the_list_surfaces_a_recent_refusal_reason(env, live_scheduler):
+    """A skip that does not pause leaves no mark on the row — only in the ledger."""
+    base, authenticate = env
+    _create_universe("founder-a", authenticate)
+    _ext(
+        "schedule_branch", branch_def_id="b1", interval_seconds=600.0, skip_if_running=True
+    )
+    conn = sqlite3.connect(base / ".runs.db")
+    conn.execute(
+        "INSERT INTO runs (run_id, branch_def_id, thread_id, status, actor, started_at) "
+        "VALUES ('r1','b1','t1','running','x',0)"
+    )
+    conn.commit()
+    conn.close()
+    _fire_once(base, [])
+
+    row = _ext("list_schedules")["schedules"][0]
+    assert row["paused"] == 0 and row["pause_reason"] == ""  # nothing on the row
+    assert row["recent_reason"] == "skip_if_running"  # the ledger says why
 
 
 # ── The due-row claim ────────────────────────────────────────────────────────
@@ -860,36 +996,138 @@ def test_an_enqueue_failure_records_a_named_refusal(env):
 def test_two_schedulers_over_one_db_fire_exactly_once(env):
     """The singleton is per PROCESS; two daemons share one data root.
 
-    Without a compare-and-swap claim both tick loops read the same
-    ``last_fired_at``, both decide the row is due, and both enqueue before
-    either writes the timestamp back.
+    Genuinely concurrent: two threads released by a barrier. The earlier
+    sequential form proved nothing — the pre-CAS fire-then-update implementation
+    passed it too, because running one tick fully before the other never
+    overlaps the read with the write (Codex round 2, finding 3).
     """
+    import threading
+
     base, _authenticate = env
     uid, principal = "u-race", "founder-a"
     seed_ready_universe(base, universe_id=uid, principal=principal)
     _register_owned(base, uid=uid, principal=principal)
 
     calls: list = []
-    first = _capturing_scheduler(base, calls)
-    second = _capturing_scheduler(base, calls)
-    first._fire_due_schedules()
-    second._fire_due_schedules()
+    lock = threading.Lock()
+    barrier = threading.Barrier(3)
+    errors: list[BaseException] = []
 
+    def run_fn(branch_def_id, actor, inputs, run_name, *, principal_id=""):
+        with lock:
+            calls.append(actor)
+
+    def tick() -> None:
+        scheduler = Scheduler(base, run_fn)
+        try:
+            barrier.wait(timeout=10)
+            scheduler._fire_due_schedules()
+        except BaseException as exc:  # noqa: BLE001 - surfaced as an assertion
+            errors.append(exc)
+
+    from tinyassets.scheduler import Scheduler
+
+    threads = [threading.Thread(target=tick) for _ in range(2)]
+    for t in threads:
+        t.start()
+    barrier.wait(timeout=10)
+    for t in threads:
+        t.join(timeout=30)
+
+    assert errors == [], errors
     assert len(calls) == 1, calls
 
 
 def test_a_claim_that_loses_the_race_does_not_fire(env):
-    """Directly: a stale `last_fired_at` never wins the claim."""
+    """The claim swaps on the WHOLE observation, not only the due time."""
     base, _authenticate = env
     uid, principal = "u-cas", "founder-a"
     seed_ready_universe(base, universe_id=uid, principal=principal)
     sid = _register_owned(base, uid=uid, principal=principal)
 
+    from tinyassets.scheduler import get_schedule
+
     scheduler = _capturing_scheduler(base, [])
-    assert scheduler._claim_due(sid, last_fired=None, now=100.0) is True
-    # The value moved on; a ticker still holding the old one must lose.
-    assert scheduler._claim_due(sid, last_fired=None, now=200.0) is False
-    assert scheduler._claim_due(sid, last_fired=100.0, now=300.0) is True
+    rev = get_schedule(base, sid)["revision"]
+    assert scheduler._claim_due(sid, last_fired=None, now=100.0, revision=rev) is True
+    # Same revision replayed: the row moved on, so this ticker must lose.
+    assert scheduler._claim_due(sid, last_fired=None, now=200.0, revision=rev) is False
+    rev2 = get_schedule(base, sid)["revision"]
+    assert rev2 == rev + 1
+    assert scheduler._claim_due(sid, last_fired=100.0, now=300.0, revision=rev2) is True
+
+
+def test_a_stale_authorized_ticker_cannot_fire_a_row_another_ticker_paused(env):
+    """deny-then-claim. Codex reproduced: paused with a reason AND a run fired.
+
+    The interleaving point is real: ticker A's authorization check runs while the
+    grant still holds and returns "", THEN the grant is revoked and ticker B
+    denies and pauses the row, THEN A reaches its claim. Only A's authorization
+    call is wrapped — to place the revocation inside A's own race window — and it
+    delegates to the real method. The claim under test is untouched.
+    """
+    base, _authenticate = env
+    uid, principal = "u-interleave", "founder-a"
+    seed_ready_universe(base, universe_id=uid, principal=principal)
+    sid = _register_owned(base, uid=uid, principal=principal)
+
+    from tinyassets.daemon_server import revoke_universe_access
+    from tinyassets.scheduler import get_schedule
+
+    calls: list = []
+    ticker_a = _capturing_scheduler(base, calls)
+    ticker_b = _capturing_scheduler(base, calls)
+    real_check = ticker_a._authorization_denial
+
+    def check_then_let_b_deny(row):
+        verdict = real_check(row)  # still authorized at this instant
+        assert verdict == "", verdict
+        revoke_universe_access(base, universe_id=uid, actor_id=principal)
+        ticker_b._fire_due_schedules()  # B denies, pauses, bumps the revision
+        return verdict
+
+    ticker_a._authorization_denial = check_then_let_b_deny
+    ticker_a._fire_due_schedules()
+
+    assert calls == [], "a paused row was fired by a ticker holding a stale read"
+    row = get_schedule(base, sid)
+    assert row["paused"] == 1
+    assert row["pause_reason"] == "owner_lost_admin"
+    assert row["last_fired_at"] is None
+
+
+def test_a_stale_denier_does_not_clobber_an_owner_resume(env):
+    """resume-then-stale-pause. Codex reproduced the clobber.
+
+    The row dict is genuinely stale — read before the owner resumed — and the
+    tick's pause is a compare-and-swap on it, so the resume stands and no
+    refusal is recorded for an authority state that no longer applies.
+    """
+    base, _authenticate = env
+    uid, principal = "u-resume-race", "founder-a"
+    seed_ready_universe(base, universe_id=uid, principal=principal)
+    sid = _register_owned(base, uid=uid, principal=principal)
+
+    from tinyassets.daemon_server import revoke_universe_access
+    from tinyassets.scheduler import get_schedule, unpause_schedule
+
+    revoke_universe_access(base, universe_id=uid, actor_id=principal)
+    stale_row = get_schedule(base, sid)  # this ticker's observation
+
+    # The owner resumes in the window between the scan and the write.
+    assert unpause_schedule(base, sid, requesting_actor=principal) is True
+    resumed = get_schedule(base, sid)
+    assert resumed["revision"] == stale_row["revision"] + 1
+
+    calls: list = []
+    scheduler = _capturing_scheduler(base, calls)
+    scheduler._maybe_fire_schedule(stale_row, time.time(), time.gmtime())
+
+    assert calls == []
+    final = get_schedule(base, sid)
+    assert final["paused"] == 0, "a stale denier undid the owner's resume"
+    assert final["pause_reason"] == ""
+    assert refusals_for(base, uid) == {}
 
 
 def test_an_admin_on_the_rows_universe_can_pause_it(env, live_scheduler):
@@ -1083,6 +1321,66 @@ def test_initialize_runs_db_migrates_an_existing_schedules_table(tmp_path, monke
     assert row["universe_id"] == "" and row["owner_principal_id"] == ""
 
 
+def test_four_concurrent_initialize_runs_db_calls_migrate_correctly(tmp_path, monkeypatch):
+    """The PRODUCTION entry point raced, not just the migration primitive.
+
+    Codex noted the four-thread test drove `migrate_scheduler_schema` directly.
+    What a restarting fleet actually does is call `initialize_runs_db` from
+    several processes at once, which runs the migration AND the schema script.
+
+    SCOPE. ``initialize_runs_db`` is not concurrency-safe today and that is
+    PRE-EXISTING, not something this change introduced: four concurrent callers
+    raise ``database is locked`` on a FRESH database too, where the scheduler
+    migration is a no-op (measured 2026-08-29 — 3 of 4 threads fresh, 2 of 4 with
+    the migration, so the added `BEGIN IMMEDIATE` if anything helps). Fixing the
+    schema script's lock behaviour touches every daemon boot and every test and
+    belongs in its own lane. So a lock collision is retried here, exactly as a
+    real caller would, and the assertions are about the MIGRATION: no thread may
+    see `no such column` or `duplicate column`, and the final schema must be
+    right — neither of which a retry could paper over.
+    """
+    import threading
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    _old_schema_db(tmp_path)
+    from tinyassets.runs import initialize_runs_db
+
+    schema_errors: list[str] = []
+    barrier = threading.Barrier(4)
+
+    def initialize() -> None:
+        barrier.wait(timeout=10)
+        for _attempt in range(20):
+            try:
+                initialize_runs_db(tmp_path)
+                return
+            except sqlite3.OperationalError as exc:
+                if "database is locked" in str(exc).lower():
+                    time.sleep(0.05)
+                    continue
+                schema_errors.append(repr(exc))
+                return
+            except BaseException as exc:  # noqa: BLE001
+                schema_errors.append(repr(exc))
+                return
+        schema_errors.append("gave up retrying a locked database")
+
+    threads = [threading.Thread(target=initialize) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+    assert schema_errors == [], schema_errors
+
+    conn = sqlite3.connect(tmp_path / ".runs.db")
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(branch_schedules)")]
+    finally:
+        conn.close()
+    assert cols.count("universe_id") == 1  # added exactly once, not four times
+    assert {"pause_reason", "revision"} <= set(cols)
+
+
 def test_the_migration_is_safe_when_two_connections_race(tmp_path):
     """Check-then-ALTER is atomic under one BEGIN IMMEDIATE; a loser is idempotent."""
     import threading
@@ -1152,6 +1450,65 @@ def test_a_cron_at_or_above_the_floor_is_accepted(env, live_scheduler, expr):
     assert len(_schedule_rows(base)) == 1
 
 
+def test_a_dst_straddling_cron_is_judged_by_utc_arithmetic(env, live_scheduler):
+    """`0,59 1,3 * mar sun` — the expression Codex used to break the floor.
+
+    Evaluated in host-local time on a DST host it computes as 3540s and is
+    accepted, while 01:59 standard → 03:00 daylight is 60 elapsed seconds. In
+    UTC there is no such Sunday, so the 3540s answer is exact and the schedule
+    is genuinely above the floor. The host TZ is set to one that observes DST to
+    prove the verdict does not depend on it.
+    """
+    import os
+
+    base, authenticate = env
+    from tinyassets.scheduler import min_cron_interval_seconds
+
+    _create_universe("founder-a", authenticate)
+    os.environ["TZ"] = "America/New_York"
+    if hasattr(time, "tzset"):
+        time.tzset()
+    try:
+        assert min_cron_interval_seconds("0,59 1,3 * mar sun") == 3540.0
+        out = _ext("schedule_branch", branch_def_id="b1", cron_expr="0,59 1,3 * mar sun")
+        assert out["status"] == "scheduled", out
+    finally:
+        os.environ.pop("TZ", None)
+        if hasattr(time, "tzset"):
+            time.tzset()
+    assert len(_schedule_rows(base)) == 1
+
+
+def test_a_cron_fires_on_the_utc_minute_not_the_local_one(env):
+    """`0 12 * * *` is 12:00 UTC on every host, whatever the host clock says."""
+    from unittest.mock import patch
+
+    base, _authenticate = env
+    uid, principal = "u-utc", "founder-a"
+    seed_ready_universe(base, universe_id=uid, principal=principal)
+    from tinyassets.scheduler import register_schedule
+
+    register_schedule(
+        base,
+        branch_def_id="b1",
+        owner_actor=f"universe:{uid}",
+        universe_id=uid,
+        owner_principal_id=principal,
+        cron_expr="0 12 * * *",
+    )
+
+    noon_utc = time.strptime("2026-04-24 12:00:00", "%Y-%m-%d %H:%M:%S")
+    seven_local = time.strptime("2026-04-24 07:00:00", "%Y-%m-%d %H:%M:%S")
+    calls: list = []
+    with patch("tinyassets.scheduler.time") as mock_time:
+        mock_time.time.return_value = 1000000.0
+        mock_time.gmtime.return_value = noon_utc
+        mock_time.localtime.return_value = seven_local  # a UTC-5 host: must not matter
+        mock_time.monotonic.return_value = 0.0
+        _capturing_scheduler(base, calls)._fire_due_schedules()
+    assert len(calls) == 1, calls
+
+
 # ── Legacy rows stay discoverable and deletable ──────────────────────────────
 
 
@@ -1184,6 +1541,42 @@ def test_a_migrated_legacy_row_is_listed_and_deletable(env, live_scheduler):
     for sid in (by_universe, by_principal):
         removed = _ext("unschedule_branch", schedule_id=sid)
         assert removed["status"] == "unscheduled", removed
+
+
+def test_a_delegated_admin_can_clear_a_bare_founder_legacy_row(env, live_scheduler):
+    """"An admin of X can delete X's legacy rows" has to be true for any admin.
+
+    A migrated row whose `owner_actor` is the ORIGINAL founder's bare principal
+    used to be addressable only when that founder was the caller, so a delegated
+    admin could not clean it up (Codex round 2, finding 6). The founder is now
+    resolved from the registry, not assumed to be whoever is asking.
+    """
+    base, authenticate = env
+    uid = _create_universe("founder-a", authenticate)
+    from tinyassets.scheduler import register_schedule
+
+    sid = register_schedule(
+        base, branch_def_id="b-founder", owner_actor="founder-a", interval_seconds=600.0
+    )
+
+    from tinyassets.daemon_server import grant_universe_access
+
+    grant_universe_access(
+        base,
+        universe_id=uid,
+        actor_id="ops-admin",
+        permission="admin",
+        granted_by="founder-a",
+    )
+    from tinyassets.daemon_server import set_founder_home
+
+    set_founder_home(base, founder_sub="ops-admin", universe_id=uid)
+    authenticate("ops-admin", _FOUNDER_CAPS)
+
+    listed = _ext("list_schedules")
+    assert [s["branch_def_id"] for s in listed["schedules"]] == ["b-founder"], listed
+    removed = _ext("unschedule_branch", schedule_id=sid)
+    assert removed["status"] == "unscheduled", removed
 
 
 def test_an_orphaned_legacy_row_is_not_controllable(env, live_scheduler):

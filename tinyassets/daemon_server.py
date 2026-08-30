@@ -4741,6 +4741,29 @@ def get_founder_home(base_path: str | Path, founder_sub: str) -> str:
     return str(row[0]) if row and row[0] else ""
 
 
+def founder_subs_for_universe(base_path: str | Path, universe_id: str) -> tuple[str, ...]:
+    """Every founder sub whose bound home is ``universe_id`` — the inverse of
+    :func:`get_founder_home`.
+
+    Needed to recover who a pre-2.1 row belonged to. A legacy ``branch_schedules``
+    row carries only an ``owner_actor``, which may be a bare founder principal;
+    without this inverse only that founder could ever address the row, so a
+    delegated admin of the universe could not clean it up (Codex round 2,
+    finding 6). Returns them sorted, so callers are deterministic.
+    """
+    uid = (universe_id or "").strip()
+    if not uid:
+        return ()
+    initialize_author_server(base_path)
+    with _connect(base_path) as conn:
+        rows = conn.execute(
+            "SELECT founder_sub FROM founder_home WHERE universe_id = ? "
+            "ORDER BY founder_sub",
+            (uid,),
+        ).fetchall()
+    return tuple(str(row[0]) for row in rows if row[0])
+
+
 def founder_home_is_platform_generated(
     base_path: str | Path,
     *,

@@ -2351,7 +2351,8 @@ def extensions(
     - Escrow: escrow_balance, escrow_fund, escrow_set_wallet, escrow_withdraw.
     - Scheduling: list_scheduler_subscriptions, list_schedules,
       schedule_branch, subscribe_branch, unschedule_branch,
-      unsubscribe_branch.
+      unsubscribe_branch. **Cron expressions are evaluated in UTC**, not the
+      host's local time, and may not fire more often than every 5 minutes.
 
     Pass `action` plus the matching ids or JSON payload fields.
     Receipt actions use `run_id`, `receipt_type`, `payload_json`, and optional

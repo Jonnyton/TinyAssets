@@ -333,7 +333,9 @@ class TestSchedulerTick:
         matching = time.strptime("2026-04-24 12:30:00", "%Y-%m-%d %H:%M:%S")
         with patch("tinyassets.scheduler.time") as mock_time:
             mock_time.time.return_value = time.mktime(matching)
-            mock_time.localtime.return_value = matching
+            # gmtime, not localtime: cron is evaluated in UTC so the cadence
+            # floor's wall-clock arithmetic has no DST discontinuity to model.
+            mock_time.gmtime.return_value = matching
             s._fire_due_schedules()
         assert len(run_calls) == 1
 
@@ -346,7 +348,7 @@ class TestSchedulerTick:
         non_matching = time.strptime("2026-04-24 12:31:00", "%Y-%m-%d %H:%M:%S")
         with patch("tinyassets.scheduler.time") as mock_time:
             mock_time.time.return_value = time.mktime(non_matching)
-            mock_time.localtime.return_value = non_matching
+            mock_time.gmtime.return_value = non_matching
             s._fire_due_schedules()
         assert len(run_calls) == 0
 

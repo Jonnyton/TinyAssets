@@ -152,7 +152,11 @@ class CronSchedule:
 
 
 def _cron_matches(expr: str, t: time.struct_time) -> bool:
-    """Return True if cron expression matches the given local time struct."""
+    """Return True if cron expression matches the given UTC time struct.
+
+    Cron expressions are evaluated in **UTC**, never host-local time — see
+    :func:`min_cron_interval_seconds` for why the cadence floor depends on it.
+    """
     try:
         return CronSchedule.parse(expr).matches(t)
     except CronParseError:
@@ -179,6 +183,14 @@ def min_cron_interval_seconds(expr: str) -> float:
 
     A single matching minute in a single hour cannot repeat inside a day, so the
     floor is one day. Raises ``CronParseError`` on an unparseable expression.
+
+    **This arithmetic is only exact in a zone with no DST transitions**, because
+    it equates a wall-clock hour difference with elapsed time. Matching is
+    therefore defined in UTC (``_fire_due_schedules`` reads ``time.gmtime``). On
+    a DST host evaluating locally, ``0,59 1,3 * mar sun`` computes as 3540s and
+    is accepted, while on spring-forward Sunday 01:59 → 03:00 is 60 elapsed
+    seconds — under the floor (Codex round 2, finding 5). UTC removes the
+    discontinuity instead of modelling it.
     """
     schedule = CronSchedule.parse(expr)
     minutes = sorted(schedule.minutes)
@@ -222,11 +234,25 @@ MIN_SCHEDULE_INTERVAL_S = 300.0
 #: (D5 — recorded refusals, one table).
 REFUSAL_KEY_PREFIX = "schedule:"
 
-#: How long an UNCHANGED refusal reason is left alone before being re-recorded.
-#: The store upserts, so re-recording never grows the table, but it does cost a
-#: write per tick per refused schedule; the owner's surface only needs the row to
-#: look fresh. Mirrors the consumer's write-amplification guard.
-_REFUSAL_REWRITE_SECONDS = 60.0
+def _refusal_rewrite_seconds() -> float:
+    """How long an UNCHANGED refusal reason may go un-rewritten.
+
+    Half the freshness window the READERS use, which is the consumer's
+    convention. A fixed 60 seconds was wrong in exactly one direction that
+    matters: readers treat a refusal as current for
+    ``assigned_queue_refusal_freshness_seconds()`` — 10 seconds by default — so a
+    minute-long rewrite gap made every unchanged refusal vanish from the owner's
+    surface for ~50 seconds out of every 60 (Codex round 2, finding 2). Deriving
+    it from the reader's window keeps the two in step if either is retuned.
+    """
+    try:
+        from tinyassets.runtime.assigned_queue_consumer import (
+            assigned_queue_refusal_freshness_seconds,
+        )
+
+        return max(1.0, assigned_queue_refusal_freshness_seconds() / 2)
+    except Exception:  # noqa: BLE001 - never let a config read stop a refusal write
+        return 5.0
 
 # Supported event types
 VALID_EVENT_TYPES = frozenset({
@@ -267,6 +293,7 @@ CREATE TABLE IF NOT EXISTS branch_schedules (
     active               INTEGER NOT NULL DEFAULT 1,
     paused               INTEGER NOT NULL DEFAULT 0,
     pause_reason         TEXT NOT NULL DEFAULT '',
+    revision             INTEGER NOT NULL DEFAULT 0,
     created_at           REAL NOT NULL,
     last_fired_at        REAL
 );
@@ -437,7 +464,10 @@ def unregister_schedule(
                 f"{requesting_actor!r} is not the owner of schedule {schedule_id!r}"
             )
         conn.execute(
-            "UPDATE branch_schedules SET active=0 WHERE schedule_id=?",
+            # `revision` bumps on every state change so a tick still holding an
+            # earlier observation of this row loses its compare-and-swap.
+            "UPDATE branch_schedules SET active=0, revision=revision+1 "
+            "WHERE schedule_id=?",
             (schedule_id,),
         )
     return True
@@ -462,6 +492,7 @@ def list_schedules(
     base_path: str | Path,
     *,
     owner_actor: str = "",
+    owner_principal_id: str = "",
     universe_id: str = "",
     legacy_owner_actors: tuple[str, ...] = (),
     include_orphaned_legacy: bool = False,
@@ -494,6 +525,13 @@ def list_schedules(
         if owner_actor:
             clauses.append("owner_actor=?")
             params.append(owner_actor)
+        if owner_principal_id:
+            # The person who registered it, whatever their CURRENT grant on the
+            # universe is. A revoked owner still gets to read why their own
+            # schedule stopped (Codex round 2, finding 2) — read only; control
+            # stays admin-gated.
+            clauses.append("owner_principal_id=?")
+            params.append(owner_principal_id)
         if universe_id:
             if include_orphaned_legacy:
                 # Every legacy row, addressable or not, alongside this universe's.
@@ -547,7 +585,8 @@ def pause_schedule(
             # An owner pausing by hand records no reason; only the tick's
             # auto-pause writes one, so a reason on the row always means "the
             # daemon stopped this, and here is why".
-            "UPDATE branch_schedules SET paused=1, pause_reason='' WHERE schedule_id=?",
+            "UPDATE branch_schedules SET paused=1, pause_reason='', "
+            "revision=revision+1 WHERE schedule_id=?",
             (schedule_id,),
         )
     return True
@@ -581,7 +620,8 @@ def unpause_schedule(
             # Resuming clears the auto-pause reason: the owner has answered it.
             # If the cause is still live the next tick refuses and re-pauses,
             # which is the loud, readable outcome rather than a silent no-op.
-            "UPDATE branch_schedules SET paused=0, pause_reason='' WHERE schedule_id=?",
+            "UPDATE branch_schedules SET paused=0, pause_reason='', "
+            "revision=revision+1 WHERE schedule_id=?",
             (schedule_id,),
         )
     return True
@@ -829,7 +869,13 @@ class Scheduler:
 
     def _fire_due_schedules(self) -> None:
         now = time.time()
-        local_now = time.localtime(now)
+        # UTC, not host-local. `min_cron_interval_seconds` computes the cadence
+        # floor from wall-clock minute/hour arithmetic, which is only exact in a
+        # zone with no DST transitions: on a spring-forward Sunday `0,59 1,3 * mar sun`
+        # is 3540s on paper and 60s in elapsed time, sneaking under the floor.
+        # Defining matching in UTC removes the discontinuity rather than trying to
+        # model it (Codex round 2, finding 5).
+        utc_now = time.gmtime(now)
         db = _runs_db(self._base_path)
         try:
             with _connect(db) as conn:
@@ -842,7 +888,7 @@ class Scheduler:
 
         for row in rows:
             try:
-                self._maybe_fire_schedule(dict(row), now, local_now)
+                self._maybe_fire_schedule(dict(row), now, utc_now)
             except Exception:
                 logger.exception("scheduler: error firing schedule %s", row["schedule_id"])
 
@@ -850,7 +896,7 @@ class Scheduler:
         self,
         row: dict[str, Any],
         now: float,
-        local_now: time.struct_time,
+        utc_now: time.struct_time,
     ) -> None:
         schedule_id = row["schedule_id"]
         universe_id = str(row.get("universe_id") or "").strip()
@@ -874,6 +920,9 @@ class Scheduler:
             return
 
         last_fired = row["last_fired_at"] or 0.0
+        #: The row state THIS tick observed. Every write below compare-and-swaps
+        #: on it, so a decision made from a stale read cannot land.
+        revision = row["revision"]
         should_fire = False
 
         cron_expr = row["cron_expr"]
@@ -882,7 +931,7 @@ class Scheduler:
         if cron_expr:
             # Fire if cron matches current minute and hasn't already fired this minute.
             minute_start = now - (now % 60)
-            if _cron_matches(cron_expr, local_now) and last_fired < minute_start:
+            if _cron_matches(cron_expr, utc_now) and last_fired < minute_start:
                 should_fire = True
         elif interval_s > 0:
             if now - last_fired >= interval_s:
@@ -910,8 +959,20 @@ class Scheduler:
             # D5 — one recorded refusal, and the row auto-pauses with a reason the
             # owner can read. `last_fired_at` is deliberately NOT advanced: nothing
             # ran, so the schedule has not fired.
+            #
+            # The pause comes FIRST and is a compare-and-swap. A denier holding a
+            # stale observation loses it and records nothing: writing a refusal
+            # for an authority state that has since changed would tell the owner
+            # their schedule was refused for a reason that no longer applies.
+            if not self._pause_for_reason(schedule_id, denial, revision):
+                logger.debug(
+                    "scheduler: schedule %s changed under a stale denial (%s); "
+                    "recording nothing",
+                    schedule_id,
+                    denial,
+                )
+                return
             self._record_refusal(schedule_id, universe_id, denial)
-            self._pause_for_reason(schedule_id, denial)
             logger.warning(
                 "scheduler: schedule %s refused (%s) and paused", schedule_id, denial
             )
@@ -933,7 +994,12 @@ class Scheduler:
         # this tick read. Two daemons sharing one data root each run a tick loop
         # (the singleton is per process, not per data root), and without the claim
         # both would enqueue before either wrote the timestamp back.
-        if not self._claim_due(schedule_id, last_fired=row["last_fired_at"], now=now):
+        if not self._claim_due(
+            schedule_id,
+            last_fired=row["last_fired_at"],
+            now=now,
+            revision=revision,
+        ):
             logger.debug(
                 "scheduler: schedule %s already claimed by another ticker", schedule_id
             )
@@ -1002,8 +1068,14 @@ class Scheduler:
         Same ledger the assigned-queue consumer writes to, so the owner's surface
         reads every skipped attempt from one place (D5). The store upserts on the
         key, so a repeating reason keeps one row rather than growing the table;
-        an unchanged reason is re-recorded at most once per window, mirroring the
-        consumer's write-amplification guard.
+        an unchanged reason is re-recorded once per :func:`_refusal_rewrite_seconds`,
+        which is half the window readers treat as fresh — so an ongoing refusal
+        never disappears from an owner read between rewrites.
+
+        Note the asymmetry this leaves by design: a row the tick AUTO-PAUSED stops
+        being scanned (the tick selects ``paused=0``), so its ledger row ages out.
+        Its durable answer is ``pause_reason`` ON the row, which the owner surface
+        reads directly and which no freshness window expires.
         """
         key = f"{REFUSAL_KEY_PREFIX}{schedule_id}"
         previous = self._recorded_refusals.get(key)
@@ -1011,7 +1083,7 @@ class Scheduler:
         if (
             previous is not None
             and previous[0] == reason
-            and elapsed - previous[1] < _REFUSAL_REWRITE_SECONDS
+            and elapsed - previous[1] < _refusal_rewrite_seconds()
         ):
             return
         try:
@@ -1035,20 +1107,44 @@ class Scheduler:
             return
         self._recorded_refusals[key] = (reason, elapsed)
 
-    def _pause_for_reason(self, schedule_id: str, reason: str) -> None:
-        """Auto-pause a row the tick refused, recording the reason on it (D3)."""
+    def _pause_for_reason(self, schedule_id: str, reason: str, revision: Any) -> bool:
+        """Auto-pause a refused row, compare-and-swapping on ``revision`` (D3).
+
+        True only when THIS observation was still current. A blind
+        ``WHERE schedule_id=?`` clobbered whatever happened between the scan and
+        the write: an owner who resumed the row in that window had their resume
+        silently undone by a stale denier, restoring a pause and a reason from an
+        authority state that no longer held.
+        """
         try:
             with _connect(_runs_db(self._base_path)) as conn:
-                conn.execute(
-                    "UPDATE branch_schedules SET paused=1, pause_reason=? "
-                    "WHERE schedule_id=?",
-                    (reason, schedule_id),
+                cursor = conn.execute(
+                    "UPDATE branch_schedules "
+                    "SET paused=1, pause_reason=?, revision=revision+1 "
+                    "WHERE schedule_id=? AND revision=?",
+                    (reason, schedule_id, revision),
                 )
+                return cursor.rowcount == 1
         except sqlite3.Error:
             logger.exception("scheduler: failed to pause schedule %s", schedule_id)
+            return False
 
-    def _claim_due(self, schedule_id: str, *, last_fired: Any, now: float) -> bool:
+    def _claim_due(
+        self,
+        schedule_id: str,
+        *,
+        last_fired: Any,
+        now: float,
+        revision: Any,
+    ) -> bool:
         """Compare-and-swap the due row. True when THIS ticker won the claim.
+
+        The swap is on the WHOLE observation, not just the due time: another
+        ticker may have denied and paused this row, or its owner may have paused
+        or deleted it, between this tick's scan and this write. Comparing only
+        ``last_fired_at`` let a ticker holding an earlier *authorized* reading
+        fire a row that had since been paused with ``owner_lost_admin`` —
+        reproduced by Codex, final state paused with a reason AND a run fired.
 
         ``IS`` rather than ``=`` because ``last_fired_at`` is NULL until the first
         fire, and ``NULL = NULL`` is never true in SQL — an equality comparison
@@ -1057,9 +1153,11 @@ class Scheduler:
         try:
             with _connect(_runs_db(self._base_path)) as conn:
                 cursor = conn.execute(
-                    "UPDATE branch_schedules SET last_fired_at=? "
-                    "WHERE schedule_id=? AND last_fired_at IS ?",
-                    (now, schedule_id, last_fired),
+                    "UPDATE branch_schedules "
+                    "SET last_fired_at=?, revision=revision+1 "
+                    "WHERE schedule_id=? AND last_fired_at IS ? "
+                    "AND active=1 AND paused=0 AND revision=?",
+                    (now, schedule_id, last_fired, revision),
                 )
                 return cursor.rowcount == 1
         except sqlite3.Error:
@@ -1222,12 +1320,15 @@ def _runs_db(base_path: str | Path) -> Path:
 #: and is LEGACY — it never fires, because a run with no owner would have to fall
 #: back to an ambient identity, which is exactly what the founder principle
 #: forbids. ``pause_reason`` carries why the tick auto-paused a row (D3/D5), so
-#: the owner can read the cause on their own surface.
+#: the owner can read the cause on their own surface. ``revision`` is the
+#: optimistic-concurrency counter every state-changing write compares and bumps,
+#: so a tick acting on a stale observation loses instead of clobbering.
 _SCHEDULE_COLUMN_MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("paused", "INTEGER NOT NULL DEFAULT 0"),
     ("universe_id", "TEXT NOT NULL DEFAULT ''"),
     ("owner_principal_id", "TEXT NOT NULL DEFAULT ''"),
     ("pause_reason", "TEXT NOT NULL DEFAULT ''"),
+    ("revision", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 
