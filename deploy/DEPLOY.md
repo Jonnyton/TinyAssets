@@ -460,6 +460,19 @@ image succeed or fail together:
    `${TINYASSETS_IMAGE}` in the daemon image line, and the `logs` service
    mounting exactly the three vector files read-only. Any miss →
    `deploy_result=bundle_invalid`, exit 1, **production untouched**.
+
+   > **Read the real rendering before adding or moving a check here.** Compose
+   > v5 (the droplet runs 5.1.3) does not hand back what the compose file says:
+   > it resolves every `env_file` into `environment` and drops the key, and
+   > `mem_limit: 4g` comes back as the *string* `'4294967296'`. The first
+   > production run of this transaction refused a correct bundle for exactly
+   > that reason (`"daemon.env_file is []"`, 2026-08-30 00:34Z, run
+   > 33283629722) while the mocked suite was green, because the fake and the
+   > validator shared one wrong belief. `env_file` is now read from a second
+   > `--no-interpolate` render. `tests/test_deploy_bundle_validator.py` pins the
+   > validator against a *capture* of the real output and needs no docker, so it
+   > runs everywhere — extend that capture, not just the fake, when Compose is
+   > upgraded or these assertions change.
 2. **snapshot** — the *live* `/opt/tinyassets/compose.yml`,
    `/opt/tinyassets/deploy/{compose.yml,vector.yaml,vector-betterstack.yaml,vector-entrypoint.sh}`
    and `/etc/systemd/system/tinyassets-daemon.service` are copied into
