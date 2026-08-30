@@ -15,12 +15,36 @@ missing thing: a filesystem the universe's code can read and run against.
 
 ## Decisions
 
-### D1. A workspace is a per-universe git checkout, created and pushed by the credentialed worker
+### D0. Two kinds of storage: the universe's permanent space, and scratch leased per job
 
-- Path: `<data>/<universe>/workspaces/<workspace_id>/repo`, `workspace_id`
-  = a short hash of `(connection_id, repo, ref)`; the checkout effect is
-  idempotent (a second `checkout` fetches and resets to the ref, unless the
-  node says `reuse: true`, in which case local work is kept).
+Founder 2026-08-30: "storage for a user can be treated differently depending
+on whether it's permanent storage — cloud space for your universe — versus
+temp storage used for a run by one user, then later used by a different user
+for their run … users' universes don't need to be bigger than whatever
+codebase they want to work on."
+
+- **Permanent** (`<data>/<universe>/…`): the universe itself — brain, pages,
+  branches, evidence. Bounded by the universe's storage quota (tier).
+- **Scratch** (`<data>/scratch/<lease_id>/`, a shared pool): a **lease**
+  held for one job — created when a checkout effect runs, released when the
+  run reaches a terminal status (plus a short grace for a follow-up run in
+  the same turn), then wiped so the space serves the next user's run.
+  Bounded by a per-lease size and a pool size, never charged to the
+  universe's permanent quota. A universe working on a 5 GB codebase does
+  not become a 5 GB universe.
+- A workspace is **scratch by default**. A universe may **pin** one
+  (`storage: "universe"` on the checkout, or a later `pin` op) for
+  incremental work across turns; a pinned workspace lives under the
+  universe's permanent space and counts against its quota.
+
+### D1. A workspace is a git checkout, created and pushed by the credentialed worker
+
+- Path: scratch `<data>/scratch/<lease_id>/repo` (default) or pinned
+  `<data>/<universe>/workspaces/<workspace_id>/repo`; `workspace_id` = a
+  short hash of `(connection_id, repo, ref)`; the checkout effect is
+  idempotent (a second `checkout` of a pinned workspace fetches and resets to
+  the ref, unless the node says `reuse: true`, in which case local work is
+  kept; a scratch checkout is always fresh).
 - **`checkout`** runs in the outbound worker (the process that today holds
   the credential for HTTP): `git clone --depth <n> --branch <ref>` (or
   `fetch` into the existing checkout) with the token supplied through a
@@ -90,9 +114,17 @@ missing thing: a filesystem the universe's code can read and run against.
 
 ### D4. Limits are usage
 
-- Disk: per-universe workspace quota, default 2 GiB (tier-raisable); a
-  checkout that would exceed it fails as `workspace_quota_exceeded` before
-  cloning (size probed via the API when available, else on the fly).
+- Disk: scratch leases are bounded per lease (default 4 GiB, tier-raisable)
+  and by the pool (a fixed slice of the box, e.g. 20 GiB, admission refuses
+  a new lease when the pool is full — `workspace_pool_busy`, retry later,
+  never a silent partial clone); pinned workspaces count against the
+  universe's permanent quota. A checkout that would exceed its bound fails
+  as `workspace_quota_exceeded` before cloning when the size is knowable
+  (repository size from the API), else the clone is killed at the bound.
+- Leases are released on the run's terminal status (`update_run_status`
+  path, like effect settlement) with a grace of 15 minutes so a follow-up
+  run in the same turn can reuse the checkout; unreleased leases are swept
+  by age.
 - Memory: the jail's `RLIMIT_AS`; the box has 8 GiB and one workspace job
   per universe at a time keeps the worst case bounded.
 - Time: node timeout; admissions: checkout = read, push = write, every run
