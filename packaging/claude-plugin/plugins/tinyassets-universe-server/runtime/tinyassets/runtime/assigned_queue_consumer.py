@@ -352,34 +352,48 @@ class AssignedQueueConsumer:
             # the same universe concurrently (Codex round 2 §3a).
             if not self._hold_universe(universe_id):
                 continue
-            candidates = adapter.list_candidates(universe_id=universe_id, limit=20)
-            claimed = None
-            lease = self._consumer_lease()
-            for candidate in candidates:
-                # Every pending task this consumer passes over gets a reason, and
-                # an unclaimable task must not starve a claimable one behind it.
-                skip = _consumer_skip_reason(candidate)
-                if skip is not None:
-                    self._record_refusal(refusal_store, candidate, skip)
+            # Everything from here to the handover is guarded: until the worker
+            # owns the lease, NOTHING may leave this block still holding it. A
+            # raise out of `list_candidates` or `submit` used to strand the
+            # universe until its TTL expired (Codex §b).
+            handed_over = False
+            try:
+                candidates = adapter.list_candidates(
+                    universe_id=universe_id, limit=20
+                )
+                claimed = None
+                lease = self._consumer_lease()
+                for candidate in candidates:
+                    # Every pending task this consumer passes over gets a reason,
+                    # and an unclaimable task must not starve a claimable one
+                    # behind it.
+                    skip = _consumer_skip_reason(candidate)
+                    if skip is not None:
+                        self._record_refusal(refusal_store, candidate, skip)
+                        continue
+                    claimed = self._try_claim(adapter, refusal_store, candidate, lease)
+                    if claimed is not None:
+                        break
+                if claimed is None:
+                    # Nothing to run here: never sit on a universe doing nothing.
                     continue
-                claimed = self._try_claim(adapter, refusal_store, candidate, lease)
-                if claimed is not None:
-                    break
-            if claimed is None:
-                # Nothing to run here: never sit on a universe doing nothing.
-                self._release_universe(universe_id)
-                continue
-            future = self._executor.submit(self._execute_leased, claimed, lease)
-            with self._lock:
-                if universe_id in self._active:
-                    adapter.release_assigned(
-                        claimed, consumer_lease=lease, reason="universe_already_active"
-                    )
-                    future.cancel()
+                future = self._executor.submit(self._execute_leased, claimed, lease)
+                with self._lock:
+                    if universe_id in self._active:
+                        adapter.release_assigned(
+                            claimed,
+                            consumer_lease=lease,
+                            reason="universe_already_active",
+                        )
+                        future.cancel()
+                        continue
+                    self._active[universe_id] = future
+                # The worker's `finally` owns the lease from this point.
+                handed_over = True
+                submitted += 1
+            finally:
+                if not handed_over:
                     self._release_universe(universe_id)
-                    continue
-                self._active[universe_id] = future
-            submitted += 1
         return automation_submitted + submitted
 
     def _hold_universe(self, universe_id: str) -> bool:
@@ -390,7 +404,7 @@ class AssignedQueueConsumer:
         """
         from datetime import datetime as _dt
 
-        from tinyassets.automations import AutomationStore, run_timeout_seconds
+        from tinyassets.automations import AutomationStore
         from tinyassets.storage.assigned_queue_refusals import (
             AssignedQueueRefusalStore,
         )
@@ -402,7 +416,13 @@ class AssignedQueueConsumer:
                 universe_id,
                 holder=self.consumer_id,
                 now=now,
-                ttl_seconds=run_timeout_seconds(),
+                # The Epoch2 claim envelope, NOT the automation run timeout. A
+                # crashed legacy process makes its task recoverable after 30
+                # minutes; holding the universe for the 3-hour automation
+                # default would leave it blocked for another 2.5 hours after
+                # the work it was fencing became claimable again (Codex §b).
+                # The task heartbeat re-stamps this while the worker lives.
+                ttl_seconds=EPOCH2_TASK_LEASE_SECONDS,
             ):
                 return True
             holder = store.universe_lease_holder(universe_id, now=now)
@@ -422,6 +442,22 @@ class AssignedQueueConsumer:
             f"universe_busy:{holder or 'unknown'}",
         )
         return False
+
+    def _refresh_universe(self, universe_id: str) -> None:
+        """Re-stamp a legacy hold for another Epoch2 claim envelope."""
+        from datetime import datetime as _dt
+
+        from tinyassets.automations import AutomationStore
+
+        try:
+            AutomationStore(self.base_path).refresh_universe_lease(
+                universe_id,
+                holder=self.consumer_id,
+                now=_dt.now(timezone.utc),
+                ttl_seconds=EPOCH2_TASK_LEASE_SECONDS,
+            )
+        except Exception:  # noqa: BLE001 - a missed beat re-stamps next round
+            logger.exception("universe lease refresh failed universe=%s", universe_id)
 
     def _release_universe(self, universe_id: str) -> None:
         from tinyassets.automations import AutomationStore
@@ -1101,6 +1137,10 @@ class AssignedQueueConsumer:
         adapter = Epoch2BranchTaskAdapter(self.base_path)
 
         def heartbeat() -> None:
+            # The universe lease rides the SAME beat as the task claim, so the
+            # two expire together instead of the universe outliving the work by
+            # hours (Codex §b).
+            self._refresh_universe(claimed_task.universe_id)
             current = adapter.heartbeat(
                 claimed_task.branch_task_id,
                 worker_id=lease.consumer_id,
