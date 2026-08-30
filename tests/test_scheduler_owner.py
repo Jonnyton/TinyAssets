@@ -30,13 +30,27 @@ import pytest
 # ── Real fixtures ────────────────────────────────────────────────────────────
 
 #: OAuth scopes a founder needs to create a universe and drive the schedule ops.
-#: ``schedule_branch`` derives EXTENSIONS_WRITE; pause/unpause/unschedule derive
-#: EXTENSIONS_ADMIN (tinyassets/auth/provider.py).
+#: ``schedule_branch``, ``pause_schedule``, ``unpause_schedule``, and
+#: ``unschedule_branch`` all derive EXTENSIONS_COSTLY (tinyassets/auth/provider.py);
+#: ``.admin`` is included here too so this fixture keeps covering the
+#: fine-grained-admin-scoped path as well, not just costly.
 _FOUNDER_CAPS = [
     "tinyassets.universe.costly",
     "tinyassets.extensions.read",
     "tinyassets.extensions.write",
     "tinyassets.extensions.admin",
+    "tinyassets.extensions.costly",
+]
+
+#: The exact production shape from the 2026-08-30 concern
+#: (docs/concerns/2026-08-30-owner-cannot-pause-or-delete-own-schedule-from-app.md):
+#: a founder session with the coarse ``costly`` grant ``schedule_branch`` needs,
+#: and deliberately no fine-grained ``tinyassets.extensions.admin`` scope --
+#: proves pause/unpause/unschedule no longer require the admin tier they used to.
+_COSTLY_ONLY_CAPS = [
+    "tinyassets.universe.costly",
+    "tinyassets.extensions.read",
+    "tinyassets.extensions.write",
     "tinyassets.extensions.costly",
 ]
 
@@ -1214,6 +1228,81 @@ def test_an_admin_on_the_rows_universe_can_pause_it(env, live_scheduler):
     authenticate("ops-admin", _FOUNDER_CAPS)
     assert _ext("pause_schedule", schedule_id=sid)["status"] == "paused"
     assert _schedule_rows(base)[0]["paused"] == 1
+
+
+# ── Tier fix: pause/unpause/unschedule ride costly, not admin ────────────────
+#
+# 2026-08-30 concern: these three sat in `_EXTENSIONS_ADMIN_ACTIONS`, so a
+# founder session with the ordinary coarse `costly` grant `schedule_branch`
+# already needs was refused at the OAuth scope gate before the handler's real
+# owner-or-admin check (`_schedule_control_context`) ever ran. They now derive
+# `tinyassets.extensions.costly`, the same tier as `schedule_branch`. These
+# mutation-check tests drive the real scope resolver (`require_action_scope`
+# via the real `extensions()` dispatch, through `_ext`) and the real handler —
+# no monkeypatched capability set.
+
+_SCHEDULE_CONTROL_ACTIONS = ("pause_schedule", "unpause_schedule", "unschedule_branch")
+
+
+@pytest.mark.parametrize("action", _SCHEDULE_CONTROL_ACTIONS)
+def test_costly_only_owner_can_control_their_own_schedule(
+    env, live_scheduler, action,
+) -> None:
+    """A costly-only founder session must reach and pass the handler's own
+    owner check for a row it owns, not be blocked one layer earlier."""
+    base, authenticate = env
+    _create_universe("founder-a", authenticate)
+    sid = _ext("schedule_branch", branch_def_id="b1", interval_seconds=600.0)[
+        "schedule_id"
+    ]
+
+    authenticate("founder-a", _COSTLY_ONLY_CAPS)
+    out = _ext(action, schedule_id=sid)
+    assert "error" not in out, out
+
+
+@pytest.mark.parametrize("action", _SCHEDULE_CONTROL_ACTIONS)
+def test_costly_only_non_owner_is_refused_by_the_handler_not_the_scope_gate(
+    env, live_scheduler, action,
+) -> None:
+    """A costly-scoped stranger passes the (now coarser) scope gate -- that is
+    the fix -- but must still be refused, by the handler's owner-or-admin
+    check specifically (`owner_not_admin`), not by some other refusal that
+    would mask a hole in the handler if the scope gate were ever removed."""
+    base, authenticate = env
+    _create_universe("founder-a", authenticate)
+    sid = _ext("schedule_branch", branch_def_id="b1", interval_seconds=600.0)[
+        "schedule_id"
+    ]
+
+    _create_universe("mallory", authenticate)  # an unrelated universe/ACL
+    authenticate("mallory", _COSTLY_ONLY_CAPS)
+    out = _ext(action, schedule_id=sid)
+    assert out["error"] == "owner_not_admin", out
+
+
+@pytest.mark.parametrize("action", _SCHEDULE_CONTROL_ACTIONS)
+def test_costly_only_delegated_admin_can_control_a_row_they_do_not_own(
+    env, live_scheduler, action,
+) -> None:
+    """A universe admin who is not the schedule's `owner_principal_id` must
+    still be able to act: authority is a CURRENT admin ACL grant on the row's
+    own universe, not identity with the row-creating principal."""
+    base, authenticate = env
+    from tinyassets.daemon_server import grant_universe_access
+
+    uid = _create_universe("founder-a", authenticate)
+    sid = _ext("schedule_branch", branch_def_id="b1", interval_seconds=600.0)[
+        "schedule_id"
+    ]
+    grant_universe_access(
+        base, universe_id=uid, actor_id="ops-admin",
+        permission="admin", granted_by="founder-a",
+    )
+
+    authenticate("ops-admin", _COSTLY_ONLY_CAPS)
+    out = _ext(action, schedule_id=sid)
+    assert "error" not in out, out
 
 
 def test_anonymous_cannot_pause(env, live_scheduler):
