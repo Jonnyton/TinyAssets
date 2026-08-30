@@ -881,6 +881,18 @@ def _file_based_last_activity(
     (unchanged from before the runs-ledger and automations-store sources
     were added in `_last_activity_at`). Returns None if none of these files
     exist or parse.
+
+    `status.json`'s `last_updated` is user/daemon-authored free text on a
+    public MCP read, so it gets the same treatment as the runs-ledger epoch
+    in `_safe_epoch_to_datetime`: the UTC-normalization conversion
+    (`.astimezone(timezone.utc)`) can raise `OverflowError` for an
+    out-of-range offset combination (an extreme year paired with a large
+    UTC offset can shift the result past `datetime.min`/`datetime.max` --
+    Codex ADAPT round 2 reproduced this with both a 9999 negative-offset
+    and a year-1 positive-offset value) even though `datetime.fromisoformat`
+    itself parsed successfully, so the conversion is caught too, not just
+    the parse. A successfully parsed value more than 5 minutes in the
+    future is also rejected, matching the runs-ledger hygiene.
     """
     heartbeat_candidates: list[datetime] = []
 
@@ -899,13 +911,20 @@ def _file_based_last_activity(
     if status and isinstance(status, dict):
         last_updated = status.get("last_updated")
         if isinstance(last_updated, str) and last_updated:
+            parsed: datetime | None
             try:
                 parsed = datetime.fromisoformat(last_updated)
                 if parsed.tzinfo is None:
                     parsed = parsed.replace(tzinfo=timezone.utc)
-                return parsed.astimezone(timezone.utc)
-            except ValueError:
-                pass
+                else:
+                    parsed = parsed.astimezone(timezone.utc)
+            except (ValueError, OverflowError, OSError):
+                parsed = None
+            if (
+                parsed is not None
+                and (parsed - datetime.now(timezone.utc)).total_seconds() <= 300
+            ):
+                return parsed
 
     status_path = udir / "status.json"
     if status_path.exists():

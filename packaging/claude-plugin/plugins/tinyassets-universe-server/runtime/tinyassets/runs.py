@@ -1516,11 +1516,30 @@ def latest_run_activity_for_universe(
     2026-08-29, reproduced the actor/queue_universe_id-mismatch leak this
     closes).
 
-    Excludes ``status = 'queued'``: :func:`create_run` stamps
-    ``started_at`` at row-creation time, before a worker has picked the
-    run up, so an unqualified read would let a merely-enqueued run (never
-    executed) mark the universe fresh. Every other status
-    (``running``/``completed``/``failed``/``cancelled``/``interrupted``/
+    Excludes ``status IN ('queued', 'interrupted')``:
+
+    - ``queued``: :func:`create_run` stamps ``started_at`` at row-creation
+      time, before a worker has picked the run up, so an unqualified read
+      would let a merely-enqueued run (never executed) mark the universe
+      fresh.
+    - ``interrupted``: :func:`recover_in_flight_runs` moves BOTH ``queued``
+      *and* ``running`` rows straight to ``interrupted`` and stamps
+      ``finished_at=now`` on server restart -- so an enqueue that never
+      reached a worker before the restart would otherwise turn fresh the
+      moment the server comes back up (Codex ADAPT round 2, 2026-08-29).
+      The schema has no dequeue/execution-start timestamp or transition
+      history (``started_at`` is creation time; ``run_events`` pending rows
+      are written synchronously before worker submission, so their
+      presence isn't authoritative either), so there is no way to tell a
+      genuinely-executed run that got interrupted mid-flight apart from one
+      that never left the queue. This exclusion is deliberately
+      conservative: it omits real activity from genuinely-executed
+      interrupted runs rather than risk crediting a run that never ran.
+      Counting those precisely would need an authoritative
+      ``execution_started_at``/``dequeued_at`` field or a transition
+      ledger -- not present today.
+
+    Every other status (``running``/``completed``/``failed``/``cancelled``/
     ``resumed``) means the run left the queue and actually ran.
 
     Read-only: opens the DB with SQLite ``mode=ro`` and a short (2s) busy
@@ -1530,9 +1549,10 @@ def latest_run_activity_for_universe(
     long on, a writer holding the DB (Codex ADAPT: the shared read/write
     ``_connect`` used a 30s busy timeout and ran ``PRAGMA
     journal_mode=WAL`` -- a write -- on every read). A locked or missing
-    DB, or any other lookup error, degrades to ``None`` (no signal) rather
-    than raising or blocking, matching the read-only fail-soft contract of
-    ``conversation_store.load_recent_readonly``.
+    DB, a malformed stored value (``float()`` runs inside the same try as
+    the query -- Codex ADAPT round 2), or any other lookup error, degrades
+    to ``None`` (no signal) rather than raising or blocking, matching the
+    read-only fail-soft contract of ``conversation_store.load_recent_readonly``.
     """
     uid = (universe_id or "").strip()
     if not uid:
@@ -1540,21 +1560,23 @@ def latest_run_activity_for_universe(
     db_path = runs_db_path(base_path)
     if not db_path.is_file():
         return None
+    conn: sqlite3.Connection | None = None
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
-        try:
-            row = conn.execute(
-                "SELECT MAX(COALESCE(finished_at, started_at)) AS ts "
-                "FROM runs WHERE queue_universe_id = ? AND status != ?",
-                (uid, RUN_STATUS_QUEUED),
-            ).fetchone()
-        finally:
+        row = conn.execute(
+            "SELECT MAX(COALESCE(finished_at, started_at)) AS ts "
+            "FROM runs WHERE queue_universe_id = ? "
+            "AND status NOT IN (?, ?)",
+            (uid, RUN_STATUS_QUEUED, RUN_STATUS_INTERRUPTED),
+        ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return float(row[0])
+    except (sqlite3.Error, TypeError, ValueError):
+        return None
+    finally:
+        if conn is not None:
             conn.close()
-    except sqlite3.Error:
-        return None
-    if row is None or row[0] is None:
-        return None
-    return float(row[0])
 
 
 def get_run_by_branch_task_id(

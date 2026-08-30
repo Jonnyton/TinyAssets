@@ -185,6 +185,41 @@ def test_last_activity_falls_back_to_status_last_updated(
     assert got == "2026-04-05T12:00:00+00:00"
 
 
+def test_last_activity_ignores_overflow_future_status_last_updated(
+    universe_base: Path,
+) -> None:
+    """`status.json`'s `last_updated` is free text reaching a public MCP
+    read. An extreme year + large negative UTC offset parses fine via
+    `datetime.fromisoformat` but raised `OverflowError` on the
+    UTC-normalizing `.astimezone()` call (Codex ADAPT round 2 probe:
+    `_last_activity_at(udir, {"last_updated": "9999-12-31T23:59:59-23:59"})`,
+    reproduced against bda62f73). No other files exist on disk, so a
+    correctly-contained read has no signal at all -- it must not raise."""
+    udir = universe_base / "u1"
+    udir.mkdir()
+
+    got = us._last_activity_at(
+        udir, {"last_updated": "9999-12-31T23:59:59-23:59"},
+    )  # must not raise
+
+    assert got is None
+
+
+def test_last_activity_ignores_overflow_past_status_last_updated(
+    universe_base: Path,
+) -> None:
+    """The symmetric year-1 positive-offset case Codex's round-2 probe also
+    reproduced -- `.astimezone()` shifts the result past `datetime.min`."""
+    udir = universe_base / "u1"
+    udir.mkdir()
+
+    got = us._last_activity_at(
+        udir, {"last_updated": "0001-01-01T00:00:00+23:59"},
+    )  # must not raise
+
+    assert got is None
+
+
 def test_last_activity_uses_runtime_status_heartbeat(
     universe_base: Path,
 ) -> None:
@@ -259,6 +294,10 @@ def test_last_activity_uses_run_ledger_when_newer_than_files(
 def test_last_activity_ignores_run_for_different_universe_scope(
     universe_base: Path,
 ) -> None:
+    """Actor matches u1 -- only `queue_universe_id` (the real scope) does
+    not, so this discriminates queue-scoping from actor-scoping (Codex
+    ADAPT round 2: the previous version set both to "other-universe" and so
+    would have passed even under an actor-only query)."""
     from tinyassets.runs import RUN_STATUS_COMPLETED, create_run, update_run_status
 
     udir = _make_universe(universe_base, "u1", activity_age_hours=48)
@@ -267,7 +306,7 @@ def test_last_activity_ignores_run_for_different_universe_scope(
         branch_def_id="b1",
         thread_id="t1",
         inputs={},
-        actor="universe:other-universe",
+        actor="universe:u1",
         queue_universe_id="other-universe",
     )
     update_run_status(
@@ -308,6 +347,45 @@ def test_last_activity_ignores_queued_run_that_never_started(
     ts = datetime.fromisoformat(got)
     age_seconds = (datetime.now(timezone.utc) - ts).total_seconds()
     # Only the 48h-stale activity.log is a real signal here.
+    assert age_seconds > 47 * 3600
+
+
+def test_last_activity_ignores_interrupted_run_that_never_started(
+    universe_base: Path,
+) -> None:
+    """Real recovery lifecycle: `create_run` (left `queued`) then
+    `recover_in_flight_runs` -- the actual startup-recovery sweep, which
+    moves BOTH `queued` and `running` rows straight to `interrupted` and
+    stamps `finished_at=now`. Without excluding `interrupted` too, an
+    enqueue that never reached a worker before a restart would turn fresh
+    the moment the server comes back up (Codex ADAPT round 2, reproduced
+    against bda62f73's `status != 'queued'`-only predicate). The schema has
+    no dequeue timestamp, so this exclusion is conservative -- it also
+    omits genuinely-executed runs that got interrupted mid-flight, which is
+    the documented, accepted tradeoff (see
+    `latest_run_activity_for_universe`'s docstring)."""
+    from tinyassets.runs import create_run, recover_in_flight_runs
+
+    udir = _make_universe(universe_base, "u1", activity_age_hours=48)
+    create_run(
+        universe_base,
+        branch_def_id="b1",
+        thread_id="t1",
+        inputs={},
+        actor="universe:u1",
+        queue_universe_id="u1",
+    )  # left queued -- never transitioned to running
+
+    recovered = recover_in_flight_runs(universe_base)
+    assert recovered == 1  # sanity: the sweep actually touched this row
+
+    got = us._last_activity_at(udir, None)
+    assert got is not None
+    ts = datetime.fromisoformat(got)
+    age_seconds = (datetime.now(timezone.utc) - ts).total_seconds()
+    # Only the 48h-stale activity.log is a real signal -- the interrupted,
+    # queued-origin row must not count just because the recovery sweep
+    # stamped a fresh finished_at on it.
     assert age_seconds > 47 * 3600
 
 
@@ -533,11 +611,15 @@ def test_latest_run_activity_query_uses_scope_status_finished_index(
 def test_read_graph_target_graph_surfaces_run_ledger_activity(
     universe_base: Path,
 ) -> None:
-    """Public-surface proof: `read_graph target=graph` dispatches to
-    `_action_inspect_universe` (`universe_server.py`'s `normalized ==
-    "graph"` branch), which nests liveness under `daemon`. Assert
+    """Public-surface proof: calls the ACTUAL MCP router
+    (`tinyassets.universe_server.read_graph`), not the private
+    `_action_inspect_universe` handler it dispatches to -- Codex ADAPT round
+    2 found the previous version of this test called the private handler
+    directly and so never actually exercised the router's `normalized ==
+    "graph"` branch (`universe_server.py`'s `read_graph`). Assert
     `daemon.last_activity_at` reflects the run's own timestamp, not merely
     "some non-null value"."""
+    import tinyassets.universe_server as universe_server
     from tinyassets.runs import RUN_STATUS_COMPLETED, create_run, update_run_status
 
     _make_universe(universe_base, "u1", activity_age_hours=48)
@@ -554,7 +636,7 @@ def test_read_graph_target_graph_surfaces_run_ledger_activity(
         universe_base, run_id, status=RUN_STATUS_COMPLETED, finished_at=finished_at,
     )
 
-    out = json.loads(us._action_inspect_universe(universe_id="u1"))
+    out = json.loads(universe_server.read_graph(target="graph", graph_id="u1"))
 
     got = out["daemon"]["last_activity_at"]
     assert got is not None
