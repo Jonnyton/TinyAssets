@@ -565,12 +565,25 @@ class TestNodeRefSourceOverrideCannotForgeApproval:
 
         from tinyassets.branches import BranchDefinition
         from tinyassets.daemon_server import get_branch_definition
-        from tinyassets.graph_compiler import UnapprovedNodeError, compile_branch
+        from tinyassets.graph_compiler import (
+            BranchExecutionContext,
+            ForeignCodeError,
+            compile_branch,
+        )
 
         branch = get_branch_definition(base, branch_def_id=built["branch_def_id"])
         bdef = BranchDefinition.from_dict(branch)
-        with pytest.raises(UnapprovedNodeError):
-            compile_branch(bdef)
+        # The override demoted the approval to provenance (D2): the node is
+        # UNAPPROVED, the caller's own compile still runs it, and a run that did
+        # not author it refuses by authorship - the hash never decides.
+        assert all(not nd.approved for nd in bdef.node_defs if nd.source_code), [
+            (nd.node_id, nd.approved) for nd in bdef.node_defs
+        ]
+        compile_branch(bdef)
+        with pytest.raises(ForeignCodeError, match="did not author"):
+            compile_branch(bdef, execution_context=BranchExecutionContext(
+                actor="stranger", universe_id="u", caller_provenance="public-foreign",
+            ))
 
     def test_clean_node_ref_copy_stays_approved_and_runs(
         self, ext_env, authenticate_request,
@@ -616,10 +629,9 @@ class TestNodeRefSourceOverrideCannotForgeApproval:
         compile_branch(BranchDefinition.from_dict(branch))
 
     def test_runtime_gate_rejects_hash_mismatch_directly(self):
-        """Unit-level guard on the run-time gate itself: an ``approved=True``
-        node whose ``approved_source_hash`` does not match its current
-        ``source_code`` must be refused at compile, independent of the
-        authoring path.
+        """Unit-level: an ``approved=True`` node whose hash does not match its
+        source is not TRUSTED by the hash - but since `sandboxed-code-node`
+        the hash gates nothing at compile; authorship does.
         """
         from tinyassets.api.branches import _source_code_hash
         from tinyassets.branches import (
@@ -628,7 +640,11 @@ class TestNodeRefSourceOverrideCannotForgeApproval:
             GraphNodeRef,
             NodeDefinition,
         )
-        from tinyassets.graph_compiler import UnapprovedNodeError, compile_branch
+        from tinyassets.graph_compiler import (
+            BranchExecutionContext,
+            ForeignCodeError,
+            compile_branch,
+        )
 
         approved_src = "def run(state): return {}\n"
         running_src = "def run(state): return {'x': 1}\n"  # different body
@@ -644,8 +660,13 @@ class TestNodeRefSourceOverrideCannotForgeApproval:
             EdgeDefinition(from_node="START", to_node="only"),
             EdgeDefinition(from_node="only", to_node="END"),
         ]
-        with pytest.raises(UnapprovedNodeError):
-            compile_branch(b)
+        # D2: a stale hash is provenance, not a gate - the caller's own compile
+        # runs the node; authorship is what refuses.
+        compile_branch(b)
+        with pytest.raises(ForeignCodeError, match="did not author"):
+            compile_branch(b, execution_context=BranchExecutionContext(
+                actor="stranger", universe_id="u", caller_provenance="public-foreign",
+            ))
 
 
 class TestPatchNodesSourceOverrideCannotForgeApproval:
@@ -727,12 +748,25 @@ class TestPatchNodesSourceOverrideCannotForgeApproval:
 
         from tinyassets.branches import BranchDefinition
         from tinyassets.daemon_server import get_branch_definition
-        from tinyassets.graph_compiler import UnapprovedNodeError, compile_branch
+        from tinyassets.graph_compiler import (
+            BranchExecutionContext,
+            ForeignCodeError,
+            compile_branch,
+        )
 
         branch = get_branch_definition(base, branch_def_id=bid)
         bdef = BranchDefinition.from_dict(branch)
-        with pytest.raises(UnapprovedNodeError):
-            compile_branch(bdef)
+        # The override demoted the approval to provenance (D2): the node is
+        # UNAPPROVED, the caller's own compile still runs it, and a run that did
+        # not author it refuses by authorship - the hash never decides.
+        assert all(not nd.approved for nd in bdef.node_defs if nd.source_code), [
+            (nd.node_id, nd.approved) for nd in bdef.node_defs
+        ]
+        compile_branch(bdef)
+        with pytest.raises(ForeignCodeError, match="did not author"):
+            compile_branch(bdef, execution_context=BranchExecutionContext(
+                actor="stranger", universe_id="u", caller_provenance="public-foreign",
+            ))
 
     def test_patch_nodes_non_content_field_keeps_approval(self, ext_env):
         """Patching a non-executable field (display_name) must NOT disturb a
