@@ -100,7 +100,8 @@ def test_the_failure_taxonomy_owns_external_write_failures():
     from tinyassets import runs as runs_module
 
     failed = ("external write failed - "
-              "open_pr/authenticated_external_call: far side answered HTTP 422: {} [far_side_error]")
+              "open_pr/authenticated_external_call: far side answered "
+              "HTTP 422: {} [far_side_error]")
     assert (runs_module._classify_failure({"status": "completed", "error": failed})
             == "external_write_failed")
     assert runs_module.ACTIONABLE_BY["external_write_failed"] == "chatbot"
