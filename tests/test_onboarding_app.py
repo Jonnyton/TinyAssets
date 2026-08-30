@@ -593,6 +593,7 @@ __APP_FUNCTIONS__
       });
       out.composerWhileQueued=els["composer-input"].value;
       out.statusWhileQueued=els["status-line"].textContent;
+      out.savedWhileQueued=JSON.parse(localStorage.getItem(QUEUE_KEY)||"null");
       out.queuedWhileInFlight=sendQueue.length;
       // every queued send now rejects before its try/finally
       if(SCENARIO.breakComposer) els["composer-input"]=undefined;
@@ -616,6 +617,7 @@ __APP_FUNCTIONS__
     out.sendDisabled=els["btn-send"].disabled;
     out.status=els["status-line"].textContent;
     out.composer=els["composer-input"] ? els["composer-input"].value : null;
+    out.savedAfter=JSON.parse(localStorage.getItem(QUEUE_KEY)||"null");
   }else if(SCENARIO.kind==="rail"){
     const req=SCENARIO.request;
     els["fb_"+req.request_id]=new El("input");
@@ -645,12 +647,16 @@ __APP_FUNCTIONS__
     out.converseCalls=converseCalls; out.messages=messages;
     out.buttonsEnabled=buttons.every(b=>!b.disabled);
   }else if(SCENARIO.kind==="restore"){
-    localStorage.setItem(INFLIGHT_KEY, JSON.stringify({
+    if(SCENARIO.pending) localStorage.setItem(INFLIGHT_KEY, JSON.stringify({
       message:SCENARIO.pending, display:SCENARIO.pending,
       ts: Date.now()-(SCENARIO.pendingAgeS||0)*1000}));
+    if(SCENARIO.queued) localStorage.setItem(QUEUE_KEY, JSON.stringify(SCENARIO.queued));
     await loadHistory();
     await loadHistory();                                 // a second pass must not double-restore
+    await new Promise(r=>setTimeout(r, 30));             // let restored sends settle
     out.inflight=JSON.parse(localStorage.getItem(INFLIGHT_KEY)||"null");
+    out.savedAfter=JSON.parse(localStorage.getItem(QUEUE_KEY)||"null");
+    out.converseCalls=converseCalls;
     out.messages=messages;
     out.notes=els.thread.children.map(n=>({cls:n.className, text:n.textContent,
       buttons:n.children.filter(c=>c.tagName==="BUTTON").map(b=>b.textContent)}));
@@ -690,12 +696,14 @@ def _run_app(tmp_path, scenario: dict) -> dict:
         for pat in (r"const INFLIGHT_KEY=[^\n]*;", r"let turnStartedAt=[^\n]*;",
                     r"let historyLoaded = [^\n]*;", r"let inflightRestored = [^\n]*;",
                     r"let railOpen = [^\n]*;", r"const sendQueue=[^\n]*;",
-                    r"const SEND_QUEUE_MAX=[^\n]*;")
+                    r"const SEND_QUEUE_MAX=[^\n]*;", r"const QUEUE_KEY=[^\n]*;",
+                    r"let queueRestored=[^\n]*;")
     )
     funcs = "\n".join(_js_function(html, f) for f in (
         "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
         "offerResend", "sendTurn", "checkForNewBuild", "loadHistory", "restoreInflight",
         "answerLine", "answerRail", "flushSendQueue", "queueTurn",
+        "saveQueue", "takeSavedQueue", "restoreQueue",
     ))
     program = (_APP_SHIM
                .replace("__SCENARIO__", json.dumps(scenario))
@@ -1027,3 +1035,49 @@ def test_an_overflow_lands_below_a_draft_in_progress_not_over_it(tmp_path):
                               "slowFirst": True})
     assert out["queuedWhileInFlight"] == 8
     assert out["composerWhileQueued"] == "founder draft in progress" + chr(10) + "line 7"
+
+
+def test_a_queued_line_is_saved_while_it_waits_and_cleared_when_it_goes_out(tmp_path):
+    out = _run_app(tmp_path, {"kind": "send", "message": "hi", "payload": {"reply": "hello"},
+                              "secondMessage": "and this", "slowFirst": True})
+    assert out["savedWhileQueued"] == [{"message": "and this", "display": "and this"}]
+    assert out["converseCalls"] == ["hi", "and this"]
+    assert out["savedAfter"] is None
+
+
+def test_a_queued_line_survives_a_refresh_and_goes_out_on_load(tmp_path):
+    """Codex on #2698 (deferred): a rail answer queued behind a long turn
+    lived only in page memory, so a refresh before the turn ended lost it -
+    the very failure the relay exists to fix."""
+    line = 'Approved: "Extend my github access"'
+    out = _run_app(tmp_path, {"kind": "restore", "history": [],
+                              "queued": [{"message": line, "display": line}],
+                              "payload": {"reply": "on it"}})
+    assert out["converseCalls"] == [line]                       # once, despite two passes
+    assert [m["text"] for m in out["messages"] if m["role"] == "founder"] == [line]
+    assert out["savedAfter"] is None                            # taken off disk before sending
+
+
+def test_a_queued_line_goes_out_even_when_the_turn_before_it_was_never_confirmed(tmp_path):
+    line = 'Approved: "Extend my github access"'
+    out = _run_app(tmp_path, {"kind": "restore", "pending": "first", "history": [],
+                              "queued": [{"message": line, "display": line}],
+                              "payload": {"reply": "on it"}})
+    assert out["converseCalls"] == [line]
+    # the unconfirmed first message keeps its bubble and its resend offer on
+    # screen (the single in-flight record itself is taken over by the line
+    # that went out - the known single-slot limit, recorded in ideas/INBOX.md)
+    unconfirmed = [n for n in out["notes"] if "never confirmed" in n["text"]]
+    assert unconfirmed and unconfirmed[0]["buttons"] == ["Send it again"]
+    assert out["savedAfter"] is None
+
+
+def test_a_queued_line_goes_out_after_a_turn_delivered_while_away(tmp_path):
+    line = 'Approved: "Extend my github access"'
+    out = _run_app(tmp_path, {"kind": "restore", "pending": "first",
+                              "history": [{"speaker": "founder", "text": "first", "ts": 2e9},
+                                          {"speaker": "universe", "text": "ok", "ts": 2e9 + 1}],
+                              "queued": [{"message": line, "display": line}],
+                              "payload": {"reply": "on it"}})
+    assert out["converseCalls"] == [line]
+    assert out["inflight"] is None                              # delivered: record cleared

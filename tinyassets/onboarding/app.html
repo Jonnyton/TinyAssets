@@ -1014,9 +1014,38 @@
   // overflow goes back into the composer rather than vanishing.
   const sendQueue=[];
   const SEND_QUEUE_MAX=8;
+  // What is queued is also on disk: a rail answer queued behind a long turn
+  // must survive the founder refreshing before that turn ends (Codex on #2698,
+  // deferred then; founder 2026-08-30: handle it). Only message + display are
+  // kept - a queued item is always already echoed on screen.
+  const QUEUE_KEY="ta_send_queue";
+  function saveQueue(){
+    try{
+      if(!sendQueue.length) localStorage.removeItem(QUEUE_KEY);
+      else localStorage.setItem(QUEUE_KEY, JSON.stringify(
+        sendQueue.map(q=>({message:q.message, display:q.display||q.message}))));
+    }catch(_e){}
+  }
+  function takeSavedQueue(){
+    // Read AND clear in one step so a second tab restoring at the same time
+    // does not send the same lines twice.
+    try{
+      const raw=localStorage.getItem(QUEUE_KEY);
+      if(raw) localStorage.removeItem(QUEUE_KEY);
+      const items=raw?JSON.parse(raw):[];
+      return Array.isArray(items)?items.filter(i=>i&&typeof i.message==="string"&&i.message):[];
+    }catch(_e){ return []; }
+  }
+  // Lines that were waiting when the page went away go out now, in order,
+  // drawn again because they were never in history (they never went out).
+  let queueRestored=false;
+  function restoreQueue(){
+    if(queueRestored) return; queueRestored=true;
+    takeSavedQueue().forEach(i=>sendTurn(i.message, i.display));
+  }
   function flushSendQueue(){
     if($("btn-send").disabled || !sendQueue.length) return;
-    const next=sendQueue.shift();
+    const next=sendQueue.shift(); saveQueue();
     // A rejection before sendTurn's own try/finally (a missing node) must not
     // strand what is still queued: note it and move on (Codex round 2, P2).
     sendTurn(next.message, next.display, next.opts)
@@ -1039,6 +1068,7 @@
     if(!opts.echoed) appendMessage("founder", display || message);
     input.value=""; input.style.height="auto";
     sendQueue.push({message, display, opts: Object.assign({}, opts, {echoed:true})});
+    saveQueue();
     setStatusLine("Your universe is thinking... " + sendQueue.length + " waiting");
   }
 
@@ -2080,7 +2110,9 @@
   let inflightRestored = false;
   function restoreInflight(turns){
     const pending = readInflight();
-    if(!pending || inflightRestored) return;
+    // Whatever was queued behind the in-flight turn goes out after it has been
+    // accounted for below (its bubble and resend offer come first).
+    if(!pending || inflightRestored){ restoreQueue(); return; }
     // Delivered while the user was away? Only the NEWEST founder turn can be
     // this message, and it must be stamped no earlier than the send. A
     // text-only match against the whole history let an older identical prompt
@@ -2091,7 +2123,7 @@
     const last = founderTurns[founderTurns.length-1];
     const already = !!last && last.text === pending.message &&
       (typeof last.ts !== "number" || last.ts*1000 >= (pending.ts||0) - 60*1000);
-    if(already){ forgetInflight(); return; }
+    if(already){ forgetInflight(); restoreQueue(); return; }
     inflightRestored = true;
     appendMessage("founder", pending.display);
     const note = document.createElement("div");
@@ -2106,6 +2138,10 @@
     });
     note.appendChild(again);
     $("thread").appendChild(note);
+    // The in-flight turn died with the page; a line queued behind it still
+    // has to reach the universe (an approval, typically). It goes out now,
+    // ahead of any resend the founder chooses above.
+    restoreQueue();
   }
 
   // Proactive renewal: keep the ~5-minute access token fresh in the background so
