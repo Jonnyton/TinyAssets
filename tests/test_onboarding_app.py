@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -564,8 +565,9 @@ const CFG={build: SCENARIO.build||"b1"};
 const token=()=>"t";
 MCP.getConversation=async()=>{
   if(SCENARIO.historyError) throw new Error("peek failed");
-  return {recent_conversation:{turns: SCENARIO.history||[]}};
+  return {universe_id: SCENARIO.universe||"u-1", recent_conversation:{turns: SCENARIO.history||[]}};
 };
+if(SCENARIO.storageFull){ localStorage.setItem=()=>{ throw new Error("QuotaExceededError"); }; }
 const answered=[];
 MCP.answerRequest=async(payload)=>{
   answered.push(payload); return SCENARIO.answerReply||{receipt:"Sent."};
@@ -593,6 +595,8 @@ __APP_FUNCTIONS__
       });
       out.composerWhileQueued=els["composer-input"].value;
       out.statusWhileQueued=els["status-line"].textContent;
+      out.savedWhileQueued=JSON.parse(localStorage.getItem(QUEUE_KEY)||"null");
+      if(SCENARIO.claimElsewhere) localStorage.removeItem(QUEUE_KEY);   // another tab restored it
       out.queuedWhileInFlight=sendQueue.length;
       // every queued send now rejects before its try/finally
       if(SCENARIO.breakComposer) els["composer-input"]=undefined;
@@ -616,6 +620,7 @@ __APP_FUNCTIONS__
     out.sendDisabled=els["btn-send"].disabled;
     out.status=els["status-line"].textContent;
     out.composer=els["composer-input"] ? els["composer-input"].value : null;
+    out.savedAfter=JSON.parse(localStorage.getItem(QUEUE_KEY)||"null");
   }else if(SCENARIO.kind==="rail"){
     const req=SCENARIO.request;
     els["fb_"+req.request_id]=new El("input");
@@ -634,8 +639,15 @@ __APP_FUNCTIONS__
       };
       sendTurn("first");
     }
+    if(SCENARIO.draft) els["composer-input"].value=SCENARIO.draft;
     const note=new El("div"); const buttons=[new El("button"), new El("button")];
     await answerRail(req, !!SCENARIO.dismiss, note, buttons);
+    out.composer=els["composer-input"].value;
+    if(SCENARIO.secondRequest){
+      const r2=SCENARIO.secondRequest;
+      els["fb_"+r2.request_id]=new El("input"); els["mute_"+r2.request_id]=new El("input");
+      await answerRail(r2, false, new El("div"), [new El("button")]);
+    }
     await new Promise(r=>setTimeout(r, 20));
     out.noteBeforeRelease=note.textContent; out.callsBeforeRelease=converseCalls.slice();
     out.statusBeforeRelease=els["status-line"].textContent;
@@ -645,12 +657,32 @@ __APP_FUNCTIONS__
     out.converseCalls=converseCalls; out.messages=messages;
     out.buttonsEnabled=buttons.every(b=>!b.disabled);
   }else if(SCENARIO.kind==="restore"){
-    localStorage.setItem(INFLIGHT_KEY, JSON.stringify({
+    if(SCENARIO.pending) localStorage.setItem(INFLIGHT_KEY, JSON.stringify({
       message:SCENARIO.pending, display:SCENARIO.pending,
       ts: Date.now()-(SCENARIO.pendingAgeS||0)*1000}));
+    if(SCENARIO.queued) localStorage.setItem(QUEUE_KEY, JSON.stringify(SCENARIO.queued));
+    if(SCENARIO.draftBeforeRestore) els["composer-input"].value=SCENARIO.draftBeforeRestore;
     await loadHistory();
     await loadHistory();                                 // a second pass must not double-restore
+    await new Promise(r=>setTimeout(r, 30));             // let restored sends settle
+    out.callsAfterRestore=converseCalls.slice();
+    out.statusAfterRestore=els["status-line"].textContent;
+    out.composerAfterRestore=els["composer-input"].value;
+    out.savedAfterRestore=JSON.parse(localStorage.getItem(QUEUE_KEY)||"null");
+    const clickNamed=async(label)=>{
+      // the NEWEST button with that label (a failure note is appended last)
+      const btn=els.thread.children.filter(n=>!n.removed).flatMap(n=>n.children)
+        .filter(c=>c.tagName==="BUTTON" && c.textContent===label).pop();
+      btn.click(); await new Promise(r=>setTimeout(r, 60));
+    };
+    if(SCENARIO.claimBeforeClick) localStorage.removeItem(QUEUE_KEY);   // another window acted
+    if(SCENARIO.clickAfterRestore) await clickNamed(SCENARIO.clickAfterRestore);
+    if(SCENARIO.clickAfterRestore2) await clickNamed(SCENARIO.clickAfterRestore2);
+    out.composerAfterClick=els["composer-input"].value;
+    out.notesAfterClick=els.thread.children.filter(n=>!n.removed).map(n=>n.textContent);
     out.inflight=JSON.parse(localStorage.getItem(INFLIGHT_KEY)||"null");
+    out.savedAfter=JSON.parse(localStorage.getItem(QUEUE_KEY)||"null");
+    out.converseCalls=converseCalls;
     out.messages=messages;
     out.notes=els.thread.children.map(n=>({cls:n.className, text:n.textContent,
       buttons:n.children.filter(c=>c.tagName==="BUTTON").map(b=>b.textContent)}));
@@ -690,12 +722,17 @@ def _run_app(tmp_path, scenario: dict) -> dict:
         for pat in (r"const INFLIGHT_KEY=[^\n]*;", r"let turnStartedAt=[^\n]*;",
                     r"let historyLoaded = [^\n]*;", r"let inflightRestored = [^\n]*;",
                     r"let railOpen = [^\n]*;", r"const sendQueue=[^\n]*;",
-                    r"const SEND_QUEUE_MAX=[^\n]*;")
+                    r"const SEND_QUEUE_MAX=[^\n]*;", r"const QUEUE_KEY=[^\n]*;",
+                    r"let queueRestored=[^\n]*;", r"const QUEUE_MAX_AGE_MS=[^\n]*;",
+                    r"let queueScope=[^\n]*;", r"let queuePersisted=[^\n]*;",
+                    r"let retainedItems=[^\n]*;")
     )
     funcs = "\n".join(_js_function(html, f) for f in (
         "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
         "offerResend", "sendTurn", "checkForNewBuild", "loadHistory", "restoreInflight",
         "answerLine", "answerRail", "flushSendQueue", "queueTurn",
+        "saveQueue", "readSavedQueue", "stillSaved", "forgetSavedItem", "savedItem",
+        "restoreQueue", "claimedElsewhere", "offerSavedLine",
     ))
     program = (_APP_SHIM
                .replace("__SCENARIO__", json.dumps(scenario))
@@ -1027,3 +1064,222 @@ def test_an_overflow_lands_below_a_draft_in_progress_not_over_it(tmp_path):
                               "slowFirst": True})
     assert out["queuedWhileInFlight"] == 8
     assert out["composerWhileQueued"] == "founder draft in progress" + chr(10) + "line 7"
+
+
+def test_a_queued_line_is_saved_while_it_waits_and_cleared_when_it_goes_out(tmp_path):
+    out = _run_app(tmp_path, {"kind": "send", "message": "hi", "payload": {"reply": "hello"},
+                              "secondMessage": "and this", "slowFirst": True})
+    saved = out["savedWhileQueued"]
+    assert [(i["message"], i["display"]) for i in saved] == [("and this", "and this")]
+    assert saved[0]["ts"] >= _NOW_MS and "scope" in saved[0]   # scope is set by status/history
+    assert out["converseCalls"] == ["hi", "and this"]
+    assert out["savedAfter"] is None
+
+
+_NOW_MS = int(time.time() * 1000)
+
+
+def test_a_queued_line_survives_a_refresh_as_an_offer_and_goes_out_on_one_click(tmp_path):
+    """Codex on #2698 (deferred): a rail answer queued behind a long turn
+    lived only in page memory, so a refresh lost it. It comes back as an
+    OFFER - never a send (Codex rounds 1-2 on this lane: every auto-send
+    shape could overlap a reply still on its way, double-send across tabs,
+    or erase a draft) - and one click sends it, once."""
+    line = 'Approved: "Extend my github access"'
+    out = _run_app(tmp_path, {"kind": "restore", "history": [],
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS}],
+                              "payload": {"reply": "on it"}, "clickAfterRestore": "Send it now"})
+    assert out["callsAfterRestore"] == []                       # offered, not sent
+    assert out["savedAfterRestore"][0]["message"] == line       # kept until acted on
+    offers = [n for n in out["notes"] if "Still waiting" in n["text"]]
+    assert len(offers) == 1                                     # once, despite two passes
+    assert offers[0]["buttons"] == ["Send it now", "Discard"]
+    assert line in offers[0]["text"]
+    assert out["converseCalls"] == [line]                       # one click, one send
+    assert out["notesAfterClick"] == []                         # the offer is gone
+    assert out["savedAfter"] is None                            # ...and so is the record
+
+
+def test_a_restored_offer_can_be_discarded_and_never_touches_the_composer(tmp_path):
+    line = 'Approved: "Extend my github access"'
+    out = _run_app(tmp_path, {"kind": "restore", "history": [],
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS}],
+                              "draftBeforeRestore": "founder draft in progress",
+                              "payload": {"reply": "on it"}, "clickAfterRestore": "Discard"})
+    assert out["converseCalls"] == []
+    assert out["composerAfterRestore"] == "founder draft in progress"   # untouched (Codex round 2)
+    assert out["notesAfterClick"] == []
+    assert out["savedAfter"] is None                            # discarded = forgotten
+
+
+def test_an_offer_below_an_unconfirmed_turn_leaves_that_turn_alone(tmp_path):
+    """Codex round 2: sending the queued line at once could overlap a reply
+    still on its way and took over the unconfirmed turn's record. Now both
+    sit on screen with their own buttons; sending the offer leaves the
+    unconfirmed record and its resend offer exactly as they were."""
+    line = 'Approved: "Extend my github access"'
+    out = _run_app(tmp_path, {"kind": "restore", "pending": "first", "history": [],
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS}],
+                              "payload": {"reply": "on it"}, "clickAfterRestore": "Send it now"})
+    assert out["callsAfterRestore"] == []
+    unconfirmed = [n for n in out["notes"] if "never confirmed" in n["text"]]
+    assert unconfirmed and unconfirmed[0]["buttons"] == ["Send it again"]
+    assert out["converseCalls"] == [line]
+    assert out["inflight"]["message"] == "first"                # A's record survived B's send
+    assert any("never confirmed" in t for t in out["notesAfterClick"])
+
+
+def test_an_offer_after_a_turn_delivered_while_away(tmp_path):
+    line = 'Approved: "Extend my github access"'
+    out = _run_app(tmp_path, {"kind": "restore", "pending": "first",
+                              "history": [{"speaker": "founder", "text": "first", "ts": 2e9},
+                                          {"speaker": "universe", "text": "ok", "ts": 2e9 + 1}],
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS}],
+                              "payload": {"reply": "on it"}})
+    assert out["converseCalls"] == []
+    assert out["inflight"] is None                              # delivered: record cleared
+    assert any("Still waiting" in n["text"] for n in out["notes"])
+
+
+def test_a_line_another_tab_already_sent_is_not_sent_again(tmp_path):
+    """Codex round 1 (P1): tab 2 restored and sent the saved line while tab 1
+    still held it in memory; tab 1 must drop it when its turn ends."""
+    out = _run_app(tmp_path, {"kind": "send", "message": "hi", "payload": {"reply": "hello"},
+                              "secondMessage": "and this", "slowFirst": True,
+                              "claimElsewhere": True})
+    assert out["savedWhileQueued"][0]["message"] == "and this"
+    assert out["converseCalls"] == ["hi"]                       # not sent twice
+    assert out["savedAfter"] is None
+
+
+def test_a_saved_line_older_than_the_hold_says_so_and_still_needs_a_click(tmp_path):
+    line = 'Approved: "Extend my github access"'
+    old = _NOW_MS - 4 * 60 * 60 * 1000
+    out = _run_app(tmp_path, {"kind": "restore", "history": [],
+                              "queued": [{"message": line, "display": line, "ts": old}],
+                              "payload": {"reply": "on it"}})
+    assert out["converseCalls"] == []
+    offer = [n for n in out["notes"] if "Still waiting" in n["text"]][0]
+    assert "more than three hours" in offer["text"]
+    assert offer["buttons"] == ["Send it now", "Discard"]
+    assert out["composerAfterRestore"] == ""
+
+
+def test_a_saved_line_from_another_universe_can_only_be_discarded(tmp_path):
+    line = 'Approved: "Extend my github access"'
+    out = _run_app(tmp_path, {"kind": "restore", "history": [], "universe": "u-2",
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS,
+                                          "scope": "u-1"}],
+                              "payload": {"reply": "on it"}})
+    assert out["converseCalls"] == []
+    # neither the line nor the other universe's id is shown, nothing can be
+    # done to it here, and it stays on disk for its own universe's page
+    note = [n for n in out["notes"] if "another universe" in n["text"]][0]
+    assert line not in note["text"] and "u-1" not in note["text"] and note["buttons"] == []
+    assert not any("Still waiting" in n["text"] for n in out["notes"])
+    assert out["savedAfter"][0]["message"] == line
+
+
+def test_a_saved_line_for_this_universe_is_offered_normally(tmp_path):
+    out = _run_app(tmp_path, {"kind": "restore", "history": [], "universe": "u-7",
+                              "queued": [{"message": "x", "display": "x", "ts": _NOW_MS,
+                                          "scope": "u-7"}],
+                              "payload": {"reply": "ok"}, "clickAfterRestore": "Send it now"})
+    assert out["converseCalls"] == ["x"]
+
+
+def test_two_answers_with_the_same_title_are_two_answers(tmp_path):
+    """Codex round 2: answerLine omits the request id, so two asks sharing a
+    title relay identical text; the last-item dedupe dropped the second."""
+    req2 = dict(_REQ, request_id="req_twin")
+    out = _run_app(tmp_path, {"kind": "rail", "request": _REQ, "turnInFlight": True,
+                              "secondRequest": req2})
+    assert out["converseCalls"] == ["first", f'Approved: "{_TITLE}"', f'Approved: "{_TITLE}"']
+
+
+def test_a_save_that_fails_says_so_instead_of_claiming_the_line_is_waiting(tmp_path):
+    """Codex round 1 (P2): a quota error was swallowed; the status line said
+    "1 waiting" although a refresh would have lost it."""
+    out = _run_app(tmp_path, {"kind": "send", "message": "hi", "payload": {"reply": "hello"},
+                              "secondMessage": "and this", "slowFirst": True,
+                              "storageFull": True})
+    assert "could not be saved" in out["statusWhileQueued"]
+    assert out["converseCalls"] == ["hi", "and this"]           # still goes out in this page
+
+
+def test_an_offer_nobody_clicked_survives_another_refresh(tmp_path):
+    """Codex round 3 (P1): the offer used to be taken off disk when drawn, so
+    a second refresh, crash or build reload silently lost it."""
+    line = 'Approved: "Extend my github access"'
+    out = _run_app(tmp_path, {"kind": "restore", "history": [],
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS}],
+                              "payload": {"reply": "on it"}})
+    assert out["converseCalls"] == []
+    assert out["savedAfter"][0]["message"] == line              # still there for the next load
+    assert len([n for n in out["notes"] if "Still waiting" in n["text"]]) == 1
+
+
+def test_send_it_now_keeps_a_typed_draft(tmp_path):
+    line = 'Approved: "Extend my github access"'
+    out = _run_app(tmp_path, {"kind": "restore", "history": [],
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS}],
+                              "draftBeforeRestore": "do not lose this draft",
+                              "payload": {"reply": "on it"}, "clickAfterRestore": "Send it now"})
+    assert out["converseCalls"] == [line]
+    assert out["composerAfterClick"] == "do not lose this draft"
+
+
+def test_a_rail_relay_keeps_a_typed_draft(tmp_path):
+    """A rail click is not a composer send: whatever the founder was typing
+    stays (the relay used to clear it - found by Codex round 3)."""
+    out = _run_app(tmp_path, {"kind": "rail", "request": _REQ, "payload": {"reply": "ok"},
+                              "draft": "half a sentence"})
+    assert out["converseCalls"] == [f'Approved: "{_TITLE}"']
+    assert out["composer"] == "half a sentence"
+
+
+def test_a_failed_side_send_retries_as_a_side_send(tmp_path):
+    """Codex round 3 (P1): the retry did not inherit the options, so a second
+    attempt took over the unconfirmed turn's record."""
+    line = 'Approved: "Extend my github access"'
+    out = _run_app(tmp_path, {"kind": "restore", "pending": "first", "history": [],
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS}],
+                              "transportError": True,
+                              "clickAfterRestore": "Send it now",
+                              "clickAfterRestore2": "Send it again"})
+    assert out["converseCalls"] == [line, line]
+    assert out["inflight"]["message"] == "first"                # never taken over
+
+
+def test_an_offer_already_handled_in_another_window_is_not_sent_again(tmp_path):
+    line = 'Approved: "Extend my github access"'
+    out = _run_app(tmp_path, {"kind": "restore", "history": [],
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS}],
+                              "payload": {"reply": "on it"},
+                              "claimBeforeClick": True, "clickAfterRestore": "Send it now"})
+    assert out["converseCalls"] == []
+    assert any("another window" in t for t in out["notesAfterClick"])
+
+
+def test_a_line_with_no_recorded_universe_is_offered_with_a_warning(tmp_path):
+    line = 'Approved: "Extend my github access"'
+    out = _run_app(tmp_path, {"kind": "restore", "history": [],
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS,
+                                          "scope": ""}],
+                              "payload": {"reply": "on it"}})
+    offer = [n for n in out["notes"] if "Still waiting" in n["text"]][0]
+    assert "had recorded its universe" in offer["text"]
+    assert offer["buttons"] == ["Send it now", "Discard"]
+
+
+def test_nothing_is_offered_until_the_page_knows_its_universe(tmp_path):
+    """The history peek failed, so the scope is unknown: the saved line stays
+    on disk, untouched, for a later load (or the status heartbeat)."""
+    line = 'Approved: "Extend my github access"'
+    out = _run_app(tmp_path, {"kind": "restore", "history": [], "historyError": True,
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS,
+                                          "scope": "u-1"}],
+                              "payload": {"reply": "on it"}})
+    assert out["converseCalls"] == []
+    assert not any("Still waiting" in n["text"] for n in out["notes"])
+    assert out["savedAfter"][0]["message"] == line
