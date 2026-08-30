@@ -87,3 +87,4 @@ Cross-platform notes:
   `BUILD_PREP.md` and `RESTRUCTURE_PLAN.md`; it does not invalidate them.
 - The user may steer multiple live sessions across different providers at once.
   Durable coordination belongs in files, not only in chat.
+Patches by this universe are opened through the request rail.
