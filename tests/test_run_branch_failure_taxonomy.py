@@ -463,6 +463,7 @@ class TestActionableByCanonicalTable:
         # foreign branch's code is one remix away.
         ("code_node_failed", "chatbot"),
         ("node_not_accepted", "chatbot"),
+        ("effect_budget_exhausted", "chatbot"),
         # Opaque/internal — chatbot escalates raw error for human judgment.
         ("unknown", "user"),
         ("error", "user"),

@@ -1008,9 +1008,22 @@ def _run(
             except Exception:  # pragma: no cover — best-effort teardown
                 logger.debug("proxy close failed for node %s", node_id, exc_info=True)
 
+    # Usage budgets (change `run-usage-budgets`): what this call moved, so
+    # the per-run and per-hour byte budgets charge the real size.
+    try:
+        _sent_body = wire_request.get("body")
+        request_bytes = _byte_size(_sent_body) if _sent_body is not None else 0
+    except Exception:  # noqa: BLE001 - a non-encodable body was refused earlier
+        request_bytes = 0
+    try:
+        response_bytes = _byte_size(response.get("body")) if isinstance(response, dict) else 0
+    except Exception:  # noqa: BLE001
+        response_bytes = 0
     return {
         "delivered": True,
         "response": response,
+        "request_bytes": int(request_bytes),
+        "response_bytes": int(response_bytes),
         "matched_output_key": matched_key,
         "connection_id": connection_id,
         "grant_id": grant_id,
