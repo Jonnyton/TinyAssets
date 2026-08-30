@@ -70,6 +70,15 @@
 
 - [ ] 3.1 Live: the founder's universe lands the README one-liner with its
       own fetch → code → write branch, no `$ta.*` operator, uncoached.
+      2026-08-30 09:31Z, prod `81b1fe19`: the universe merged #2720 (-2/+1,
+      exactly the fix) uncoached, retrying itself twice inside ONE turn. Its
+      first attempt WAS a code node (fetch → edit → write, merge packet built
+      by code) and my provenance rule refused it as foreign - the served turn
+      stores the founder user id as author while runs execute as
+      universe:<id>; it then fell back to `$ta.replace`, which the #2717
+      nearest-match refusal unblocked. Fix: own = authored by the actor OR by
+      an admin of the run universe (`_caller_provenance`). The code-node
+      live proof is the next task once that ships.
 - [x] 3.2 PLAN.md Design Decision "Capabilities are primitives the user's
       agent composes, not platform operators" (founder-approved 2026-08-30),
       naming effects-at-node-time and the sandboxed code node.
