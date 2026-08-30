@@ -57,3 +57,8 @@ fix. Two of today's live tests died this way before producing a result.
 Delete it when a served turn in flight across a production deploy either
 finishes or leaves the user a truthful notice — observed once on the live
 surface, not inferred from a test.
+
+## Two more casualties, 2026-08-30
+
+- 02:05Z: the #2698 deploy restarted the container while another session's heartbeat-automation turn was being served; the app showed the bubble as 'never confirmed' and the session had to resend in two steps.
+- 03:46Z: the #2705 deploy restarted the container while the founder's universe was mid-way through a one-line README edit (branches `auto/tiny-docs-touch-20260830e`/`f` already created on GitHub); the app showed 'the reply was cut off in transit'. Three more PRs from other sessions were armed with auto-merge at the time, so any resend had to wait for their deploys - with several sessions landing PRs, a 5-minute served turn has no clean window. The fix is on the deploy side (drain served turns before the swap, or hand the turn to the new container), not on the founder's side.
