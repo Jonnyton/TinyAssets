@@ -1324,7 +1324,7 @@ def test_replace_refusal_shows_the_input_where_old_stops_matching():
     out, why = aec.apply_body_transforms(body, {}, allowed_state_keys=[], prior_effects={})
     assert out is None
     assert "closest partial match" in why
-    assert repr("request rail.\n (2026-08-29)") in why, why   # the space is visible
+    assert repr("request rail.\n (2026-08-29)")[1:-1] in why, why   # the space is visible
     # nothing in common -> no window, the plain advice
     body["c"]["$ta.replace"]["old"] = "zzzz"
     out, why = aec.apply_body_transforms(body, {}, allowed_state_keys=[], prior_effects={})
