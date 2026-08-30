@@ -346,6 +346,12 @@ class AssignedQueueConsumer:
                 or universe_id in paused_universes
             ):
                 continue
+            # One universe, one lease, whoever the worker is. The legacy path
+            # used to fence on `_active` alone, which is process-local, so a
+            # legacy task in one process and an automation in another could run
+            # the same universe concurrently (Codex round 2 §3a).
+            if not self._hold_universe(universe_id):
+                continue
             candidates = adapter.list_candidates(universe_id=universe_id, limit=20)
             claimed = None
             lease = self._consumer_lease()
@@ -360,18 +366,83 @@ class AssignedQueueConsumer:
                 if claimed is not None:
                     break
             if claimed is None:
+                # Nothing to run here: never sit on a universe doing nothing.
+                self._release_universe(universe_id)
                 continue
-            future = self._executor.submit(self._execute, claimed, lease)
+            future = self._executor.submit(self._execute_leased, claimed, lease)
             with self._lock:
                 if universe_id in self._active:
                     adapter.release_assigned(
                         claimed, consumer_lease=lease, reason="universe_already_active"
                     )
                     future.cancel()
+                    self._release_universe(universe_id)
                     continue
                 self._active[universe_id] = future
             submitted += 1
         return automation_submitted + submitted
+
+    def _hold_universe(self, universe_id: str) -> bool:
+        """Take the shared universe lease for legacy queue work, or record why not.
+
+        The same row `_run_automations` takes. Whoever holds it owns the
+        universe's background work, automation or legacy task alike.
+        """
+        from datetime import datetime as _dt
+
+        from tinyassets.automations import AutomationStore, run_timeout_seconds
+        from tinyassets.storage.assigned_queue_refusals import (
+            AssignedQueueRefusalStore,
+        )
+
+        store = AutomationStore(self.base_path)
+        now = _dt.now(timezone.utc)
+        try:
+            if store.acquire_universe_lease(
+                universe_id,
+                holder=self.consumer_id,
+                now=now,
+                ttl_seconds=run_timeout_seconds(),
+            ):
+                return True
+            holder = store.universe_lease_holder(universe_id, now=now)
+        except Exception as exc:  # noqa: BLE001 - a lease blip cannot claim blind
+            logger.exception("universe lease acquire failed universe=%s", universe_id)
+            self._record_reason(
+                AssignedQueueRefusalStore(self.base_path),
+                f"universe:{universe_id}:-",
+                universe_id,
+                _error_reason("lease_error", exc),
+            )
+            return False
+        self._record_reason(
+            AssignedQueueRefusalStore(self.base_path),
+            f"universe:{universe_id}:-",
+            universe_id,
+            f"universe_busy:{holder or 'unknown'}",
+        )
+        return False
+
+    def _release_universe(self, universe_id: str) -> None:
+        from tinyassets.automations import AutomationStore
+
+        try:
+            AutomationStore(self.base_path).release_universe_lease(
+                universe_id, holder=self.consumer_id
+            )
+        except Exception:  # noqa: BLE001 - an unreleased lease expires on its own
+            logger.exception("universe lease release failed universe=%s", universe_id)
+
+    def _execute_leased(
+        self,
+        claimed_task: Epoch2BranchTask,
+        lease: AssignedConsumerLease,
+    ) -> None:
+        """Run a claimed legacy task, then give the universe back."""
+        try:
+            self._execute(claimed_task, lease)
+        finally:
+            self._release_universe(claimed_task.universe_id)
 
     def _reap_finished(self) -> tuple[int, set[str]]:
         """Drop completed futures, then report free slots and busy universes."""
@@ -496,6 +567,7 @@ class AssignedQueueConsumer:
             daemon=True,
         )
         refresher.start()
+        unreleased = False
         try:
             for automation, due_at in due:
                 # Re-read `.pause` BETWEEN rows: an owner who pauses mid-batch
@@ -509,7 +581,7 @@ class AssignedQueueConsumer:
                     )
                     break
                 try:
-                    run_due_automation(
+                    reason = run_due_automation(
                         self.base_path,
                         automation,
                         due_at,
@@ -522,17 +594,32 @@ class AssignedQueueConsumer:
                         universe_id,
                         getattr(automation, "automation_id", ""),
                     )
+                    continue
+                if reason == "run_timeout_unreleased":
+                    # The run ignored cancellation and is STILL calling the
+                    # provider. Handing the universe to another process now
+                    # would double-spend the owner's subscription, so keep the
+                    # lease and stop the batch; the TTL frees it eventually.
+                    unreleased = True
+                    break
         finally:
             stop_refresh.set()
             refresher.join(timeout=5.0)
-            try:
-                store.release_universe_lease(
-                    universe_id, holder=self.consumer_id
+            if unreleased:
+                logger.warning(
+                    "universe %s stays leased: a timed-out automation run has "
+                    "not stopped",
+                    universe_id,
                 )
-            except Exception:  # noqa: BLE001 - an unreleased lease expires on its own
-                logger.exception(
-                    "automation lease release failed universe=%s", universe_id
-                )
+            else:
+                try:
+                    store.release_universe_lease(
+                        universe_id, holder=self.consumer_id
+                    )
+                except Exception:  # noqa: BLE001 - the lease expires on its own
+                    logger.exception(
+                        "automation lease release failed universe=%s", universe_id
+                    )
 
     def _refresh_lease(
         self,

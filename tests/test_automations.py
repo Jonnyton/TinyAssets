@@ -26,6 +26,7 @@ from tinyassets.automations import (
     Automation,
     AutomationStore,
     AutomationUnavailable,
+    cancel_grace_seconds,
     cron_min_gap_seconds,
     due_automations,
     register_automation,
@@ -92,6 +93,68 @@ def _seed_branch(
     initialize_author_server(tmp_path)
     save_branch_definition(tmp_path, branch_def=branch.to_dict())
     return branch_def_id
+
+
+def _seed_nested_branch(
+    tmp_path: Path,
+    *,
+    parent_id: str = "branch_parent_invoke",
+    child_id: str = "branch_child_prompt",
+    author: str = OWNER,
+    wait_mode: str = "blocking",
+) -> str:
+    """A root whose only node invokes a CHILD branch that holds the prompt.
+
+    The root itself never calls a provider, so a guard wired only to the root's
+    nodes never runs where the spend happens.
+    """
+    from tinyassets.daemon_server import initialize_author_server, save_branch_definition
+
+    initialize_author_server(tmp_path)
+    child = BranchDefinition(
+        branch_def_id=child_id,
+        name="Nested child",
+        author=author,
+        visibility="public",
+        graph_nodes=[GraphNodeRef(id="c1", node_def_id="c1")],
+        edges=[EdgeDefinition(from_node="c1", to_node="END")],
+        entry_point="c1",
+        node_defs=[
+            NodeDefinition(
+                node_id="c1",
+                display_name="Child writer",
+                prompt_template="Do the nested work.",
+                output_keys=["child_out"],
+            )
+        ],
+        state_schema=[{"name": "child_out", "type": "str"}],
+    )
+    save_branch_definition(tmp_path, branch_def=child.to_dict())
+
+    parent = BranchDefinition(
+        branch_def_id=parent_id,
+        name="Parent invoker",
+        author=author,
+        visibility="public",
+        graph_nodes=[GraphNodeRef(id="p1", node_def_id="p1")],
+        edges=[EdgeDefinition(from_node="p1", to_node="END")],
+        entry_point="p1",
+        node_defs=[
+            NodeDefinition(
+                node_id="p1",
+                display_name="Invoke the child",
+                invoke_branch_spec={
+                    "branch_def_id": child_id,
+                    "wait_mode": wait_mode,
+                    "inputs_mapping": {},
+                    "output_mapping": {"parent_out": "child_out"},
+                },
+            )
+        ],
+        state_schema=[{"name": "parent_out", "type": "str"}],
+    )
+    save_branch_definition(tmp_path, branch_def=parent.to_dict())
+    return parent_id
 
 
 def _seed_owner(
@@ -227,12 +290,28 @@ class _SeamRecorder:
         self.calls: list[tuple[str, dict]] = []
         self.status = status
 
-    def __call__(self, base_path, automation, provider_call, branch, inputs):
+    def __call__(
+        self, base_path, automation, provider_call, branch, inputs,
+        on_run_started=None,
+    ):
         self.calls.append((automation.automation_id, dict(inputs)))
         return _FakeOutcome(
             run_id=f"run_{len(self.calls)}",
             status=self.status,
         )
+
+
+def _child_run_ids(tmp_path: Path, branch_def_id: str) -> list[str]:
+    """Run ids launched for a child branch, newest last."""
+    from tinyassets.runs import _connect, initialize_runs_db
+
+    initialize_runs_db(tmp_path)
+    with _connect(tmp_path) as conn:
+        rows = conn.execute(
+            "SELECT run_id FROM runs WHERE branch_def_id = ? ORDER BY rowid",
+            (branch_def_id,),
+        ).fetchall()
+    return [str(row[0]) for row in rows]
 
 
 def _refusal_rows(tmp_path: Path) -> dict[str, str]:
@@ -1123,6 +1202,343 @@ def test_admin_revoked_between_precheck_and_launch_never_reaches_a_provider(
     assert paused.pause_reason == "owner_lost_admin"
 
 
+def test_a_nested_child_branch_is_guarded_too(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Codex round 2 §1: the guard has to reach CHILD prompts.
+
+    An `invoke_branch` node emits no `starting` event of its own, and the child
+    launch used to drop `on_node_status`, so a nested prompt's provider call ran
+    unguarded. The single-root ACL test stays green under that omission, which
+    is exactly why this fixture exists.
+    """
+    from tests.test_background_budget_finalization_e2e import _CountingProvider
+    from tinyassets.daemon_server import grant_universe_access
+    from tinyassets.runs import get_run
+
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+    _seed_serving_assignment(tmp_path)
+    _seed_owner(tmp_path)
+    _seed_nested_branch(tmp_path)
+    nested = register_automation(
+        tmp_path,
+        **_registration_kwargs(
+            name="nested", branch_def_id="branch_parent_invoke"
+        ),
+    )
+    real_check = automations_module._runtime_authority_reason
+    checks: list[str] = []
+
+    def racing(base, automation):
+        verdict = real_check(base, automation)
+        checks.append(verdict)
+        if len(checks) == 1:
+            grant_universe_access(
+                tmp_path,
+                universe_id=UNIVERSE,
+                actor_id=OWNER,
+                permission="read",
+                granted_by="acct_someone_else",
+            )
+        return verdict
+
+    monkeypatch.setattr(automations_module, "_runtime_authority_reason", racing)
+    fake = _CountingProvider()
+
+    with _real_providers(codex=fake):
+        run_due_automation(
+            tmp_path, nested, "2026-08-29T12:10:00+00:00", now=NOW
+        )
+
+    assert checks[0] == ""
+    assert fake.calls == []
+    # `fake.calls == []` alone is NOT proof here, and neither is the guard
+    # verdict list: a blocking child shares the parent's session, whose snapshot
+    # has no prompt node, so its provider call is refused by admission even with
+    # the guard absent, and the pause path re-reads authority either way.
+    # Measured while writing this test. What DOES discriminate is how the child
+    # run ended: guarded it is `cancelled` naming the authority loss; unguarded
+    # it is `failed` on the provider-authority refusal.
+    child_ids = _child_run_ids(tmp_path, "branch_child_prompt")
+    assert child_ids, "the child run never started"
+    child = get_run(tmp_path, child_ids[0]) or {}
+    assert child.get("status") == "cancelled"
+    assert "automation_owner_lost_admin" in str(child.get("error"))
+    paused = AutomationStore(tmp_path).get(nested.automation_id)
+    assert paused is not None
+    assert paused.desired_state == "paused"
+    assert paused.pause_reason == "owner_lost_admin"
+
+
+def test_an_async_child_branch_is_guarded_too(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """The async child launch drops the callback in exactly the same way.
+
+    The parent returns as soon as the child is queued, so this waits for the
+    child run itself before asserting -- a bare `fake.calls == []` right after
+    `run_due_automation` would be racy and could pass for the wrong reason.
+    """
+    from tests.test_background_budget_finalization_e2e import _CountingProvider
+    from tinyassets.daemon_server import grant_universe_access
+    from tinyassets.runs import get_run, wait_for
+
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+    _seed_serving_assignment(tmp_path)
+    _seed_owner(tmp_path)
+    _seed_nested_branch(
+        tmp_path,
+        parent_id="branch_parent_async",
+        child_id="branch_child_async",
+        wait_mode="async",
+    )
+    nested = register_automation(
+        tmp_path,
+        **_registration_kwargs(
+            name="nested async", branch_def_id="branch_parent_async"
+        ),
+    )
+    real_check = automations_module._runtime_authority_reason
+    checks: list[str] = []
+
+    def racing(base, automation):
+        verdict = real_check(base, automation)
+        checks.append(verdict)
+        if len(checks) == 1:
+            grant_universe_access(
+                tmp_path,
+                universe_id=UNIVERSE,
+                actor_id=OWNER,
+                permission="read",
+                granted_by="acct_someone_else",
+            )
+        return verdict
+
+    monkeypatch.setattr(automations_module, "_runtime_authority_reason", racing)
+    fake = _CountingProvider()
+
+    with _real_providers(codex=fake):
+        run_due_automation(
+            tmp_path, nested, "2026-08-29T12:10:00+00:00", now=NOW
+        )
+        child_ids = _child_run_ids(tmp_path, "branch_child_async")
+        for child_id in child_ids:
+            wait_for(child_id, timeout=30)
+
+    assert checks[0] == ""
+    # The guard REALLY ran inside the child; without this the assertion below
+    # could pass for an unrelated admission failure.
+    assert "owner_lost_admin" in checks[1:]
+    assert fake.calls == []
+    assert child_ids, "the child run never started"
+    assert (get_run(tmp_path, child_ids[0]) or {}).get("status") == "cancelled"
+    assert "automation_owner_lost_admin" in str(
+        (get_run(tmp_path, child_ids[0]) or {}).get("error")
+    )
+    for child_id in child_ids:
+        assert (get_run(tmp_path, child_id) or {}).get("status") != "completed"
+
+
+def test_the_run_row_names_the_authority_loss_not_a_generic_cancel(
+    tmp_path: Path,
+    registered: Automation,
+    monkeypatch,
+) -> None:
+    """Codex round 2 §2: an authority cancel used to read like a user's stop."""
+    from tests.test_background_budget_finalization_e2e import _CountingProvider
+    from tinyassets.daemon_server import grant_universe_access
+    from tinyassets.runs import get_run
+
+    real_check = automations_module._runtime_authority_reason
+    checks: list[str] = []
+    started: list[str] = []
+    real_execute = automations_module._execute
+
+    def capturing(base, automation, provider_call, branch, inputs, on_run_started=None):
+        def note(run_id: str) -> None:
+            started.append(run_id)
+            if callable(on_run_started):
+                on_run_started(run_id)
+
+        return real_execute(base, automation, provider_call, branch, inputs, note)
+
+    def racing(base, automation):
+        verdict = real_check(base, automation)
+        checks.append(verdict)
+        if len(checks) == 1:
+            grant_universe_access(
+                tmp_path,
+                universe_id=UNIVERSE,
+                actor_id=OWNER,
+                permission="read",
+                granted_by="acct_someone_else",
+            )
+        return verdict
+
+    monkeypatch.setattr(automations_module, "_runtime_authority_reason", racing)
+    monkeypatch.setattr(automations_module, "_execute", capturing)
+
+    with _real_providers(codex=_CountingProvider()):
+        run_due_automation(
+            tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW
+        )
+
+    assert started, "the run id was never published"
+    record = get_run(tmp_path, started[0])
+    assert record is not None
+    assert record["status"] == "cancelled"
+    assert "automation_owner_lost_admin" in str(record["error"])
+    assert "cancelled between nodes" not in str(record["error"])
+
+
+def test_stop_cancels_the_run_through_the_real_callback_timing(
+    tmp_path: Path,
+    registered: Automation,
+    monkeypatch,
+) -> None:
+    """Codex round 2 §3c/§6: the previous test inserted the id by hand.
+
+    `on_run_started` used to fire only after `_execute` had finished waiting, so
+    `stop()` could never see a live run. This drives the REAL callback, from
+    inside the wait, the way the consumer does.
+    """
+    from tinyassets.runs import is_cancel_requested
+
+    consumer, _inline = _consumer_with_inline_executor(tmp_path)
+    seen: list[str] = []
+
+    def waiting(run_id, timeout=None):
+        # We are now exactly where a real run blocks. If the id was published
+        # before the wait, stop() can find it.
+        seen.append(run_id)
+        consumer.stop()
+
+    monkeypatch.setattr("tinyassets.runs.wait_for", waiting)
+    monkeypatch.setattr(
+        automations_module, "_runtime_authority_reason", lambda *_a: ""
+    )
+
+    with _real_providers():
+        run_due_automation(
+            tmp_path,
+            registered,
+            "2026-08-29T12:10:00+00:00",
+            now=NOW,
+            consumer_id=consumer.consumer_id,
+            on_run_started=consumer._note_automation_run,
+        )
+
+    assert seen, "the run never reached the wait"
+    assert is_cancel_requested(tmp_path, seen[0]) is True
+
+
+def test_a_run_that_ignores_cancellation_keeps_the_universe_leased(
+    tmp_path: Path,
+    registered: Automation,
+    monkeypatch,
+) -> None:
+    """Codex round 2 §3b: releasing on timeout lets a second process double-spend."""
+    monkeypatch.setenv("AUTOMATION_CANCEL_GRACE_SECONDS", "7")
+
+    def never_stops(run_id, timeout=None):
+        raise TimeoutError("this worker ignores cancellation")
+
+    monkeypatch.setattr("tinyassets.runs.wait_for", never_stops)
+    monkeypatch.setattr(
+        automations_module, "_runtime_authority_reason", lambda *_a: ""
+    )
+    consumer, _inline = _consumer_with_inline_executor(tmp_path)
+
+    with _real_providers():
+        try:
+            consumer._run_automations(
+                UNIVERSE, [(registered, "2026-08-29T12:10:00+00:00")]
+            )
+        finally:
+            consumer.stop()
+
+    assert (
+        _refusal_rows(tmp_path)[f"automation:{registered.automation_id}"]
+        == "run_timeout_unreleased"
+    )
+    # The universe is NOT handed back while a provider call may still be live.
+    holder = AutomationStore(tmp_path).universe_lease_holder(
+        UNIVERSE, now=datetime.now(timezone.utc)
+    )
+    assert holder == consumer.consumer_id
+
+
+def test_a_legacy_task_and_an_automation_cannot_hold_one_universe(
+    tmp_path: Path,
+    registered: Automation,
+    monkeypatch,
+) -> None:
+    """Codex round 2 §3a: one universe, one lease, whoever the worker is."""
+    ran: list[str] = []
+    monkeypatch.setattr(
+        automations_module,
+        "run_due_automation",
+        lambda *_a, **_k: ran.append("automation") or "ok:ran:run_1",
+    )
+    store = AutomationStore(tmp_path)
+
+    # Direction 1: a legacy worker in another process holds the universe.
+    assert store.acquire_universe_lease(
+        UNIVERSE,
+        holder="worker_assigned_legacy_process",
+        now=datetime.now(timezone.utc),
+        ttl_seconds=3600,
+    ) is True
+    consumer, _inline = _consumer_with_inline_executor(tmp_path)
+    try:
+        consumer._run_automations(UNIVERSE, [(registered, "2026-08-29T12:10:00+00:00")])
+        assert ran == []
+        assert _refusal_rows(tmp_path)[f"universe:{UNIVERSE}:automations"] == (
+            "universe_busy:worker_assigned_legacy_process"
+        )
+
+        # Direction 2: the automation holds it, and the legacy claim path is
+        # refused by the SAME row BEFORE it ever tries to claim a task. Driven
+        # through poll_once, not by calling the gate directly -- a direct call
+        # stays green even if the claim loop never consults it.
+        store.release_universe_lease(
+            UNIVERSE, holder="worker_assigned_legacy_process"
+        )
+        assert store.acquire_universe_lease(
+            UNIVERSE,
+            holder="worker_assigned_automation_process",
+            now=datetime.now(timezone.utc),
+            ttl_seconds=3600,
+        ) is True
+        monkeypatch.setattr(
+            "tinyassets.provider_serving_binding.list_serving_universes",
+            lambda _base: [UNIVERSE],
+        )
+        monkeypatch.setattr(
+            automations_module,
+            "due_automations",
+            lambda base, *, universe_id, now: [],
+        )
+        listed: list[str] = []
+        monkeypatch.setattr(
+            "tinyassets.branch_tasks_v2.Epoch2BranchTaskAdapter.list_candidates",
+            lambda self, *, universe_id, limit=20: listed.append(universe_id) or [],
+        )
+        consumer.poll_once()
+    finally:
+        consumer.stop()
+
+    # The claim loop never even looked for candidates: the lease stopped it.
+    # (The heartbeat pass lists candidates once; the CLAIM pass must not add
+    # a second listing for a leased universe.)
+    assert listed.count(UNIVERSE) <= 1
+    assert _refusal_rows(tmp_path)[f"universe:{UNIVERSE}:-"] == (
+        "universe_busy:worker_assigned_automation_process"
+    )
+
+
 # §6 -- registration refuses what admission refuses
 
 
@@ -1546,7 +1962,10 @@ def test_a_run_that_outlives_its_timeout_is_cancelled_not_abandoned(
     def timing_out(run_id, timeout=None):
         started.append(run_id)
         waited.append(timeout)
-        raise TimeoutError("graph never finished")
+        # First call is the run wait and times out; the second is the
+        # post-cancel grace, which returns -- this worker HONOURS the cancel.
+        if len(waited) == 1:
+            raise TimeoutError("graph never finished")
 
     monkeypatch.setattr("tinyassets.runs.wait_for", timing_out)
     fake = _CountingProvider()
@@ -1557,10 +1976,12 @@ def test_a_run_that_outlives_its_timeout_is_cancelled_not_abandoned(
         )
 
     assert reason == "run_timeout"
-    assert len(started) == 1
+    # Two waits: the bounded run wait, then the post-cancel grace on the SAME run.
+    assert started == [started[0], started[0]]
     # The wait is actually BOUNDED, and by the configured value -- a `wait_for`
     # with no timeout would block this consumer slot forever.
-    assert waited == [1234.0]
+    assert waited[0] == 1234.0
+    assert waited[1] == cancel_grace_seconds()
     assert is_cancel_requested(tmp_path, started[0]) is True
     assert (
         _refusal_rows(tmp_path)[f"automation:{registered.automation_id}"]

@@ -2355,6 +2355,7 @@ def _build_invoke_branch_node(
     depth: int = 0,
     parent_run_id: str = "",
     execution_context: "BranchExecutionContext | None" = None,
+    on_node_status: Callable[[str, str], None] | None = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Build a callable for an ``invoke_branch_spec`` node.
 
@@ -2438,6 +2439,7 @@ def _build_invoke_branch_node(
                     _base, branch=child_branch, inputs=child_inputs,
                     actor=actor_arg,
                     provider_call=provider_call,
+                    on_node_status=on_node_status,
                     _invocation_depth=depth + 1,
                 )
                 if outcome.status == "completed":
@@ -2486,6 +2488,7 @@ def _build_invoke_branch_node(
                 _base, branch=child_branch, inputs=child_inputs,
                 actor=actor_arg,
                 provider_call=provider_call,
+                on_node_status=on_node_status,
                 _invocation_depth=depth + 1,
             )
             # async: write the child run_id into the first output_mapping target.
@@ -2509,6 +2512,7 @@ def _build_invoke_branch_version_node(
     depth: int = 0,
     parent_run_id: str = "",
     execution_context: "BranchExecutionContext | None" = None,
+    on_node_status: Callable[[str, str], None] | None = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Build a callable for an ``invoke_branch_version_spec`` node.
 
@@ -2633,6 +2637,7 @@ def _build_invoke_branch_version_node(
                     inputs=child_inputs,
                     actor=actor_arg,
                     provider_call=provider_call,
+                    on_node_status=on_node_status,
                     _invocation_depth=depth + 1,
                 )
                 # Block until the child terminates; harvest its output dict.
@@ -2777,6 +2782,7 @@ def _build_node(
     enqueue_budget: "NodeEnqueueBudget | None" = None,
     universe_context: "UniverseContext | None" = None,
     execution_context: "BranchExecutionContext | None" = None,
+    on_node_status: Callable[[str, str], None] | None = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Dispatch a NodeDefinition to the right adapter.
 
@@ -2841,6 +2847,7 @@ def _build_node(
             parent_run_id=parent_run_id,
             depth=invocation_depth,
             execution_context=execution_context,
+            on_node_status=on_node_status,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if node.invoke_branch_version_spec is not None:
@@ -2855,6 +2862,7 @@ def _build_node(
             parent_run_id=parent_run_id,
             depth=invocation_depth,
             execution_context=execution_context,
+            on_node_status=on_node_status,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if node.await_run_spec is not None:
@@ -2967,6 +2975,7 @@ def compile_branch(
     enqueue_context: "NodeEnqueueContext | None" = None,
     universe_context: "UniverseContext | None" = None,
     execution_context: "BranchExecutionContext | None" = None,
+    on_node_status: Callable[[str, str], None] | None = None,
 ) -> CompiledBranch:
     """Compile a validated BranchDefinition into a StateGraph.
 
@@ -2978,6 +2987,13 @@ def compile_branch(
         Synchronous LLM caller with signature ``(prompt, system, *, role)
         -> str``. When ``None``, prompt_template nodes return a mock
         string (useful for tests).
+    on_node_status
+        The runner's per-node status callback. Threaded down to CHILD branch
+        launches so a nested prompt node is gated by the same pre-node checks
+        the root's nodes are. Without it an `invoke_branch` node could launch a
+        child whose provider call ran unguarded (Codex 2026-08-29 round 2 §1);
+        an invoke node emits no `starting` event of its own, so the child is the
+        only place the callback can fire.
     event_sink
         Optional callable invoked after each node executes with
         per-node diagnostics. Used by the runner to record
@@ -3090,6 +3106,7 @@ def compile_branch(
             enqueue_budget=enqueue_budget,
             universe_context=universe_context,
             execution_context=execution_context,
+            on_node_status=on_node_status,
         )
         fn = _guard_single_writer_merge_outputs(
             fn,

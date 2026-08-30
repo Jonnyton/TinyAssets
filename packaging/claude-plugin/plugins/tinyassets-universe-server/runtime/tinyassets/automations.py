@@ -87,6 +87,11 @@ MAX_CONSECUTIVE_FAILURES = 3
 #: finish. On expiry the run is CANCELLED through the runs API, not abandoned.
 DEFAULT_RUN_TIMEOUT_SECONDS = 10800
 
+#: How long a cancelled run is given to actually stop before the pump gives
+#: up on it. The lease is held for the whole of it -- releasing sooner would
+#: let a second process start while the first is still calling the provider.
+DEFAULT_CANCEL_GRACE_SECONDS = 300
+
 #: How often a held universe lease is re-stamped while its run is in flight.
 LEASE_REFRESH_SECONDS = 60
 
@@ -164,7 +169,45 @@ def run_timeout_seconds() -> float:
 
 
 class AutomationRunTimeout(Exception):
-    """The run outlived ``run_timeout_seconds()`` and was cancelled."""
+    """The run outlived ``run_timeout_seconds()``, was cancelled, and stopped."""
+
+
+class AutomationRunUnstopped(AutomationRunTimeout):
+    """Cancelled at timeout but STILL RUNNING after the grace period.
+
+    A subclass so every timeout handler catches both, but the caller can tell
+    the two apart where it matters: the universe lease must NOT be released
+    while a provider call the owner is paying for is still in flight.
+    """
+
+
+def cancel_grace_seconds() -> float:
+    """How long to wait for a cancelled run to actually stop."""
+    raw = os.environ.get("AUTOMATION_CANCEL_GRACE_SECONDS", "").strip()
+    if not raw:
+        return float(DEFAULT_CANCEL_GRACE_SECONDS)
+    value = float(raw)
+    if value <= 0:
+        raise ValueError("AUTOMATION_CANCEL_GRACE_SECONDS must be positive")
+    return value
+
+
+def _await_cancelled_run(run_id: str) -> bool:
+    """True when the run's worker ended within the grace period.
+
+    Cancellation is checked between nodes, so a run inside a long provider call
+    keeps going after the flag is set. The caller needs to know which happened:
+    a stopped run frees its universe, one still running does not.
+    """
+    from tinyassets.runs import wait_for
+
+    try:
+        wait_for(run_id, timeout=cancel_grace_seconds())
+    except TimeoutError:
+        return False
+    except Exception:  # noqa: BLE001 - the worker raised, but it HAS ended
+        return True
+    return True
 
 
 def cron_min_gap_seconds(expr: str) -> int:
@@ -1039,6 +1082,14 @@ def _authority_guard(base_path: Path, automation: Automation):
             return
         lost = _runtime_authority_reason(base_path, automation)
         if lost:
+            # The message IS the diagnosis. Measured 2026-08-29: the run row
+            # ends up carrying this text verbatim (status `cancelled`, error
+            # `automation_owner_lost_admin:...`), so an owner can tell an
+            # authority cancel from a user pressing stop by reading the run.
+            # Codex round 2 §2 named `_invoke_graph`'s generic-cancel branch as
+            # the writer; it is not the one that writes this row -- reverting a
+            # marker-preserving patch there changed no observed output, so no
+            # change was made to that authority-adjacent file.
             raise RunCancelledError(f"{AUTHORITY_LOST_MARKER}:{lost}")
 
     return guard
@@ -1050,6 +1101,7 @@ def _execute(
     provider_call: Any,
     branch: Any,
     inputs: dict[str, Any],
+    on_run_started: Any = None,
 ) -> Any:
     """The one seam a test may replace. Everything authority-bearing is above it.
 
@@ -1092,15 +1144,31 @@ def _execute(
         _enqueue_universe_id=automation.universe_id,
     )
     run_id = str(getattr(outcome, "run_id", "") or "")
+    # Publish the run id BEFORE blocking on it. Announcing it after `wait_for`
+    # returned meant `stop()` could never see an active run -- the only moment
+    # it needed one was while the wait was still in progress (Codex round 2 §3c).
+    if callable(on_run_started) and run_id:
+        on_run_started(run_id)
     if not run_id or outcome.status == RUN_STATUS_FAILED:
         # Admission already refused this run; there is no worker to wait on.
         return outcome
     try:
         wait_for(run_id, timeout=run_timeout_seconds())
     except TimeoutError as exc:
+        # Cancellation is COOPERATIVE and deliberately does not interrupt an
+        # active provider call. Releasing the universe now would let another
+        # process start work while this one is still talking to the provider on
+        # the owner's subscription (Codex round 2 §3b), so wait out a bounded
+        # grace and report whether the worker actually ended.
         request_cancel(base_path, run_id)
-        raise AutomationRunTimeout(
-            f"automation run {run_id} exceeded {run_timeout_seconds()}s; cancelled"
+        if _await_cancelled_run(run_id):
+            raise AutomationRunTimeout(
+                f"automation run {run_id} exceeded {run_timeout_seconds()}s; "
+                "cancelled and stopped"
+            ) from exc
+        raise AutomationRunUnstopped(
+            f"automation run {run_id} ignored cancellation for "
+            f"{cancel_grace_seconds()}s; universe stays leased"
         ) from exc
     record = get_run(base_path, run_id) or {}
     return _replace(
@@ -1259,14 +1327,17 @@ def run_due_automation(
         branch = _load_branch(base, automation)
         provider_call = _bind_automation_provider_call(base, automation)
         outcome = _execute(
-            base, automation, provider_call, branch, dict(automation.inputs)
+            base,
+            automation,
+            provider_call,
+            branch,
+            dict(automation.inputs),
+            on_run_started,
         )
         from tinyassets.runs import RUN_STATUS_COMPLETED
 
         run_id = str(getattr(outcome, "run_id", "") or "")
         status = str(getattr(outcome, "status", "") or "unknown")
-        if callable(on_run_started) and run_id:
-            on_run_started(run_id)
         succeeded = status == RUN_STATUS_COMPLETED
         reason = f"ok:ran:{run_id}" if succeeded else f"run_failed:{status}"
         store.finish_attempt(
@@ -1297,7 +1368,14 @@ def run_due_automation(
     except AutomationRunTimeout as exc:
         # The fence row STAYS: this instant was attempted and must not be
         # re-launched by the next poll. The run itself has been cancelled.
-        reason = "run_timeout"
+        # `run_timeout_unreleased` additionally tells the caller NOT to give
+        # the universe back yet -- the worker ignored the cancel and is still
+        # spending the owner's subscription (Codex round 2 §3b).
+        reason = (
+            "run_timeout_unreleased"
+            if isinstance(exc, AutomationRunUnstopped)
+            else "run_timeout"
+        )
         logger.warning("automation run timed out: %s", exc)
         _close_attempt_quietly(
             store, automation, due_at, status="timeout", reason=reason, now=moment
@@ -1394,9 +1472,11 @@ __all__ = [
     "REFUSAL_KEY_PREFIX",
     "Automation",
     "AutomationRunTimeout",
+    "AutomationRunUnstopped",
     "AutomationStore",
     "AutomationUnavailable",
     "automations_db_path",
+    "cancel_grace_seconds",
     "cron_min_gap_seconds",
     "due_automations",
     "register_automation",
