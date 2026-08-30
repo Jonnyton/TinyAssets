@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -564,8 +565,9 @@ const CFG={build: SCENARIO.build||"b1"};
 const token=()=>"t";
 MCP.getConversation=async()=>{
   if(SCENARIO.historyError) throw new Error("peek failed");
-  return {recent_conversation:{turns: SCENARIO.history||[]}};
+  return {universe_id: SCENARIO.universe||"u-1", recent_conversation:{turns: SCENARIO.history||[]}};
 };
+if(SCENARIO.storageFull){ localStorage.setItem=()=>{ throw new Error("QuotaExceededError"); }; }
 const answered=[];
 MCP.answerRequest=async(payload)=>{
   answered.push(payload); return SCENARIO.answerReply||{receipt:"Sent."};
@@ -594,6 +596,7 @@ __APP_FUNCTIONS__
       out.composerWhileQueued=els["composer-input"].value;
       out.statusWhileQueued=els["status-line"].textContent;
       out.savedWhileQueued=JSON.parse(localStorage.getItem(QUEUE_KEY)||"null");
+      if(SCENARIO.claimElsewhere) localStorage.removeItem(QUEUE_KEY);   // another tab restored it
       out.queuedWhileInFlight=sendQueue.length;
       // every queued send now rejects before its try/finally
       if(SCENARIO.breakComposer) els["composer-input"]=undefined;
@@ -654,6 +657,14 @@ __APP_FUNCTIONS__
     await loadHistory();
     await loadHistory();                                 // a second pass must not double-restore
     await new Promise(r=>setTimeout(r, 30));             // let restored sends settle
+    out.callsAfterRestore=converseCalls.slice();
+    out.statusAfterRestore=els["status-line"].textContent;
+    out.composerAfterRestore=els["composer-input"].value;
+    out.savedAfterRestore=JSON.parse(localStorage.getItem(QUEUE_KEY)||"null");
+    if(SCENARIO.resendAfterRestore){
+      const btn=els.thread.children.flatMap(n=>n.children).find(c=>c.tagName==="BUTTON");
+      btn.click(); await new Promise(r=>setTimeout(r, 60));
+    }
     out.inflight=JSON.parse(localStorage.getItem(INFLIGHT_KEY)||"null");
     out.savedAfter=JSON.parse(localStorage.getItem(QUEUE_KEY)||"null");
     out.converseCalls=converseCalls;
@@ -697,13 +708,14 @@ def _run_app(tmp_path, scenario: dict) -> dict:
                     r"let historyLoaded = [^\n]*;", r"let inflightRestored = [^\n]*;",
                     r"let railOpen = [^\n]*;", r"const sendQueue=[^\n]*;",
                     r"const SEND_QUEUE_MAX=[^\n]*;", r"const QUEUE_KEY=[^\n]*;",
-                    r"let queueRestored=[^\n]*;")
+                    r"let queueRestored=[^\n]*;", r"const QUEUE_MAX_AGE_MS=[^\n]*;",
+                    r"let queueScope=[^\n]*;", r"let queuePersisted=[^\n]*;")
     )
     funcs = "\n".join(_js_function(html, f) for f in (
         "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
         "offerResend", "sendTurn", "checkForNewBuild", "loadHistory", "restoreInflight",
         "answerLine", "answerRail", "flushSendQueue", "queueTurn",
-        "saveQueue", "takeSavedQueue", "restoreQueue",
+        "saveQueue", "takeSavedQueue", "restoreQueue", "claimedElsewhere", "parkAsDraft",
     ))
     program = (_APP_SHIM
                .replace("__SCENARIO__", json.dumps(scenario))
@@ -1040,9 +1052,14 @@ def test_an_overflow_lands_below_a_draft_in_progress_not_over_it(tmp_path):
 def test_a_queued_line_is_saved_while_it_waits_and_cleared_when_it_goes_out(tmp_path):
     out = _run_app(tmp_path, {"kind": "send", "message": "hi", "payload": {"reply": "hello"},
                               "secondMessage": "and this", "slowFirst": True})
-    assert out["savedWhileQueued"] == [{"message": "and this", "display": "and this"}]
+    saved = out["savedWhileQueued"]
+    assert [(i["message"], i["display"]) for i in saved] == [("and this", "and this")]
+    assert saved[0]["ts"] >= _NOW_MS and "scope" in saved[0]   # scope is set by status/history
     assert out["converseCalls"] == ["hi", "and this"]
     assert out["savedAfter"] is None
+
+
+_NOW_MS = int(time.time() * 1000)
 
 
 def test_a_queued_line_survives_a_refresh_and_goes_out_on_load(tmp_path):
@@ -1051,24 +1068,29 @@ def test_a_queued_line_survives_a_refresh_and_goes_out_on_load(tmp_path):
     the very failure the relay exists to fix."""
     line = 'Approved: "Extend my github access"'
     out = _run_app(tmp_path, {"kind": "restore", "history": [],
-                              "queued": [{"message": line, "display": line}],
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS}],
                               "payload": {"reply": "on it"}})
     assert out["converseCalls"] == [line]                       # once, despite two passes
     assert [m["text"] for m in out["messages"] if m["role"] == "founder"] == [line]
     assert out["savedAfter"] is None                            # taken off disk before sending
 
 
-def test_a_queued_line_goes_out_even_when_the_turn_before_it_was_never_confirmed(tmp_path):
+def test_a_queued_line_waits_behind_an_unconfirmed_turn_and_follows_its_resend(tmp_path):
+    """Codex round 1 (P1 x3): sending the queued line at once could overlap a
+    reply still on its way and took over the unconfirmed turn's record. Now
+    it is drawn, kept waiting (and saved), and goes out right after the
+    founder's next send - here, the resend of the unconfirmed turn."""
     line = 'Approved: "Extend my github access"'
     out = _run_app(tmp_path, {"kind": "restore", "pending": "first", "history": [],
-                              "queued": [{"message": line, "display": line}],
-                              "payload": {"reply": "on it"}})
-    assert out["converseCalls"] == [line]
-    # the unconfirmed first message keeps its bubble and its resend offer on
-    # screen (the single in-flight record itself is taken over by the line
-    # that went out - the known single-slot limit, recorded in ideas/INBOX.md)
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS}],
+                              "payload": {"reply": "on it"}, "resendAfterRestore": True})
+    assert out["callsAfterRestore"] == []                       # nothing overlapped
+    assert out["statusAfterRestore"].startswith("1 waiting")
+    assert out["savedAfterRestore"][0]["message"] == line       # still on disk while it waits
+    assert [m["text"] for m in out["messages"] if m["role"] == "founder"] == ["first", line]
     unconfirmed = [n for n in out["notes"] if "never confirmed" in n["text"]]
     assert unconfirmed and unconfirmed[0]["buttons"] == ["Send it again"]
+    assert out["converseCalls"] == ["first", line]              # resend first, then the line
     assert out["savedAfter"] is None
 
 
@@ -1077,7 +1099,59 @@ def test_a_queued_line_goes_out_after_a_turn_delivered_while_away(tmp_path):
     out = _run_app(tmp_path, {"kind": "restore", "pending": "first",
                               "history": [{"speaker": "founder", "text": "first", "ts": 2e9},
                                           {"speaker": "universe", "text": "ok", "ts": 2e9 + 1}],
-                              "queued": [{"message": line, "display": line}],
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS}],
                               "payload": {"reply": "on it"}})
     assert out["converseCalls"] == [line]
     assert out["inflight"] is None                              # delivered: record cleared
+
+
+def test_a_line_another_tab_already_sent_is_not_sent_again(tmp_path):
+    """Codex round 1 (P1): tab 2 restored and sent the saved line while tab 1
+    still held it in memory; tab 1 must drop it when its turn ends."""
+    out = _run_app(tmp_path, {"kind": "send", "message": "hi", "payload": {"reply": "hello"},
+                              "secondMessage": "and this", "slowFirst": True,
+                              "claimElsewhere": True})
+    assert out["savedWhileQueued"][0]["message"] == "and this"
+    assert out["converseCalls"] == ["hi"]                       # not sent twice
+    assert out["savedAfter"] is None
+
+
+def test_a_saved_line_older_than_the_hold_becomes_a_draft(tmp_path):
+    line = 'Approved: "Extend my github access"'
+    old = _NOW_MS - 4 * 60 * 60 * 1000
+    out = _run_app(tmp_path, {"kind": "restore", "history": [],
+                              "queued": [{"message": line, "display": line, "ts": old}],
+                              "payload": {"reply": "on it"}})
+    assert out["converseCalls"] == []
+    assert out["composerAfterRestore"] == line
+    assert any("more than three hours" in n["text"] for n in out["notes"])
+    assert out["savedAfter"] is None
+
+
+def test_a_saved_line_from_another_universe_becomes_a_draft(tmp_path):
+    line = 'Approved: "Extend my github access"'
+    out = _run_app(tmp_path, {"kind": "restore", "history": [], "universe": "u-2",
+                              "queued": [{"message": line, "display": line, "ts": _NOW_MS,
+                                          "scope": "u-1"}],
+                              "payload": {"reply": "on it"}})
+    assert out["converseCalls"] == []
+    assert out["composerAfterRestore"] == line
+    assert any("another universe" in n["text"] for n in out["notes"])
+
+
+def test_a_saved_line_carries_its_universe(tmp_path):
+    out = _run_app(tmp_path, {"kind": "restore", "history": [], "universe": "u-7",
+                              "queued": [{"message": "x", "display": "x", "ts": _NOW_MS,
+                                          "scope": "u-7"}],
+                              "payload": {"reply": "ok"}})
+    assert out["converseCalls"] == ["x"]
+
+
+def test_a_save_that_fails_says_so_instead_of_claiming_the_line_is_waiting(tmp_path):
+    """Codex round 1 (P2): a quota error was swallowed; the status line said
+    "1 waiting" although a refresh would have lost it."""
+    out = _run_app(tmp_path, {"kind": "send", "message": "hi", "payload": {"reply": "hello"},
+                              "secondMessage": "and this", "slowFirst": True,
+                              "storageFull": True})
+    assert "could not be saved" in out["statusWhileQueued"]
+    assert out["converseCalls"] == ["hi", "and this"]           # still goes out in this page

@@ -1019,12 +1019,27 @@
   // deferred then; founder 2026-08-30: handle it). Only message + display are
   // kept - a queued item is always already echoed on screen.
   const QUEUE_KEY="ta_send_queue";
+  // A saved line auto-sends for as long as the client would hold a turn in
+  // flight (three hours, see checkForNewBuild); older, it becomes a draft.
+  const QUEUE_MAX_AGE_MS=3*60*60*1000;
+  // The universe this page is talking to, once known (status / history).
+  // Saved lines carry it, so another founder's session on this browser does
+  // not send them (Codex round 1).
+  let queueScope="";
+  let queuePersisted=true;
   function saveQueue(){
     try{
-      if(!sendQueue.length) localStorage.removeItem(QUEUE_KEY);
-      else localStorage.setItem(QUEUE_KEY, JSON.stringify(
-        sendQueue.map(q=>({message:q.message, display:q.display||q.message}))));
-    }catch(_e){}
+      if(!sendQueue.length){ localStorage.removeItem(QUEUE_KEY); queuePersisted=true; return; }
+      localStorage.setItem(QUEUE_KEY, JSON.stringify(sendQueue.map(q=>({
+        message:q.message, display:q.display||q.message, ts:q.ts||Date.now(), scope:queueScope}))));
+      queuePersisted=true;
+    }catch(_e){
+      // Say so where the founder is looking, instead of a status line that
+      // claims the line is waiting when a refresh would lose it.
+      queuePersisted=false;
+      setStatusLine("Your universe is thinking... " + sendQueue.length +
+        " waiting (could not be saved in this browser \u2014 do not refresh)");
+    }
   }
   function takeSavedQueue(){
     // Read AND clear in one step so a second tab restoring at the same time
@@ -1036,16 +1051,52 @@
       return Array.isArray(items)?items.filter(i=>i&&typeof i.message==="string"&&i.message):[];
     }catch(_e){ return []; }
   }
-  // Lines that were waiting when the page went away go out now, in order,
-  // drawn again because they were never in history (they never went out).
+  // Another tab that restored while this one waited took the saved queue
+  // and is sending it; this copy must not go out a second time.
+  function claimedElsewhere(item){
+    if(!queuePersisted) return false;
+    try{
+      const raw=localStorage.getItem(QUEUE_KEY);
+      const items=raw?JSON.parse(raw):[];
+      return !(Array.isArray(items) && items.some(i=>i && i.message===item.message));
+    }catch(_e){ return false; }
+  }
+  // A saved line that must not auto-send (too old, or another universe's)
+  // is handed back as a draft, below whatever is being typed.
+  function parkAsDraft(item, why){
+    const input=$("composer-input"); const draft=input.value.trim();
+    input.value=draft ? draft + "\n" + item.message : item.message; autoGrow(input);
+    const note=document.createElement("div");
+    note.className="msg msg--system";
+    note.textContent="A line queued earlier " + why + " and was not sent; it is in the composer.";
+    $("thread").appendChild(note);
+  }
+  // Lines that were waiting when the page went away. With nothing in flight
+  // they go out now, in order, drawn again because they were never in
+  // history. With an UNCONFIRMED earlier turn they wait behind it instead:
+  // its reply may still be on its way, and two turns must never overlap.
   let queueRestored=false;
-  function restoreQueue(){
+  function restoreQueue(hold){
     if(queueRestored) return; queueRestored=true;
-    takeSavedQueue().forEach(i=>sendTurn(i.message, i.display));
+    const now=Date.now();
+    takeSavedQueue().forEach(i=>{
+      if(now-(i.ts||0) > QUEUE_MAX_AGE_MS) return parkAsDraft(i, "was waiting for more than three hours");
+      if(i.scope && queueScope && i.scope!==queueScope) return parkAsDraft(i, "belongs to another universe");
+      if(hold){
+        appendMessage("founder", i.display||i.message);
+        sendQueue.push({message:i.message, display:i.display, opts:{echoed:true}, ts:i.ts});
+      } else sendTurn(i.message, i.display);
+    });
+    if(hold && sendQueue.length){
+      saveQueue();
+      setStatusLine(sendQueue.length + " waiting \u2014 send the unconfirmed message above again first");
+    }
   }
   function flushSendQueue(){
     if($("btn-send").disabled || !sendQueue.length) return;
-    const next=sendQueue.shift(); saveQueue();
+    const next=sendQueue.shift();
+    if(claimedElsewhere(next)){ saveQueue(); return flushSendQueue(); }
+    saveQueue();
     // A rejection before sendTurn's own try/finally (a missing node) must not
     // strand what is still queued: note it and move on (Codex round 2, P2).
     sendTurn(next.message, next.display, next.opts)
@@ -1067,9 +1118,9 @@
     // on the wire and is not drawn again when it goes out.
     if(!opts.echoed) appendMessage("founder", display || message);
     input.value=""; input.style.height="auto";
-    sendQueue.push({message, display, opts: Object.assign({}, opts, {echoed:true})});
-    saveQueue();
+    sendQueue.push({message, display, opts: Object.assign({}, opts, {echoed:true}), ts: Date.now()});
     setStatusLine("Your universe is thinking... " + sendQueue.length + " waiting");
+    saveQueue();   // last: a failed save replaces the status line with why
   }
 
   async function sendTurn(message, display, opts){
@@ -1131,6 +1182,7 @@
       dot.title=alive?("host: "+host):"no active host";
       const name=s.universe_name||s.universe||s.universe_id||"";
       if(name) $("universe-name").textContent=name;
+      queueScope = String(s.universe_id || s.universe || queueScope || "");
     }catch(err){
       if(err.authRequired) return sessionExpired();
       // The heartbeat doubles as the healer. A transport failure means the
@@ -2075,6 +2127,7 @@
     let turns = [];
     try{
       const r = await MCP.getConversation();
+      queueScope = String((r && (r.universe_id || r.universe)) || queueScope || "");
       const conv = r && r.recent_conversation;
       turns = (conv && Array.isArray(conv.turns)) ? conv.turns : [];
       if(!turns.length){ restoreInflight(turns); return; }
@@ -2138,10 +2191,11 @@
     });
     note.appendChild(again);
     $("thread").appendChild(note);
-    // The in-flight turn died with the page; a line queued behind it still
-    // has to reach the universe (an approval, typically). It goes out now,
-    // ahead of any resend the founder chooses above.
-    restoreQueue();
+    // A line queued behind the unconfirmed turn (an approval, typically) is
+    // drawn and kept waiting: it goes out with the founder's next send - the
+    // resend above, or anything else - never alongside a reply that may
+    // still be on its way (Codex round 1).
+    restoreQueue(true);
   }
 
   // Proactive renewal: keep the ~5-minute access token fresh in the background so
