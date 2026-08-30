@@ -138,8 +138,19 @@ def _engine_refusal(prefix: str, refused_by) -> str:
     """The refusal every engine surface returns, naming the cap that refused."""
     import json as _json
 
+    if refused_by == "ledger":
+        # Not a quota: the admission ledger is unusable or tampered and this
+        # caller fails closed (Codex: never dress that up as "max 20").
+        return _json.dumps({
+            "error": (
+                f"{prefix} refused: the engine admission ledger is unavailable "
+                "or not trusted, so this write is not admitted; try again shortly."
+            ),
+        })
     if refused_by == "total":
         bound = f"max {_RUN_GRAPH_TOTAL_MAX} runs of any kind"
+    elif refused_by == "engine":
+        bound = f"max {(_RUN_GRAPH_TOTAL_MAX * 2) // 3} engine writes"
     else:
         bound = f"max {_RUN_GRAPH_RATE_MAX} runs that write"
     return _json.dumps({

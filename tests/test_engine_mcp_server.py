@@ -370,6 +370,9 @@ def test_run_graph_names_the_cap_that_refused(monkeypatch, tmp_path):
     assert f"max {s._RUN_GRAPH_TOTAL_MAX} runs of any kind" in total_text
     write_text = s._engine_refusal("engine write", "write")
     assert f"max {s._RUN_GRAPH_RATE_MAX} runs that write" in write_text
+    assert "engine writes" in s._engine_refusal("write_graph", "engine")
+    ledger_text = s._engine_refusal("write_graph", "ledger")
+    assert "not admitted" in ledger_text and "max" not in ledger_text     # not a quota
 
 
 def test_run_graph_binds_its_admission_to_the_started_run(monkeypatch, tmp_path):

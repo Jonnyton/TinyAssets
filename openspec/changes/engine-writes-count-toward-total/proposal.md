@@ -13,9 +13,15 @@ against. Founder 2026-08-30: "drive this all to completion and testing".
 ## What Changes
 
 - `engine_admissions.admit_detail` takes `kind`: `write` (a run; may settle to
-  `read`) or `engine` (write_graph, remix, brain). An `engine` admission is
-  refused only by the total bound (60/h) and never counts toward the 20/h
-  write budget. Other kinds are refused (`ValueError`).
+  `read`) or `engine` (write_graph, remix, brain). An `engine` admission never
+  counts toward the 20/h write budget; it is refused by its own bound (40/h,
+  two thirds of the total, so runs always keep at least 20 — Codex: 60 failed
+  `write_graph` calls could otherwise take the whole budget from runs) or by
+  the total (60/h). An `engine` row is never bound to a run or reclassified.
+  A ledger refusal (unusable/tampered) is reported as such, not as a quota.
+  Rows outside the window are pruned on the next admission. Other kinds are
+  refused (`ValueError`). Not done: refunding an engine admission whose write
+  then fails validation — the engine bound already keeps runs safe from that.
 - `_engine_run_admit(kind=…)`; the three durable engine writes pass
   `kind="engine"`. Runs and automations are unchanged.
 - Storage: no schema change (`kind` already exists; a third value).
