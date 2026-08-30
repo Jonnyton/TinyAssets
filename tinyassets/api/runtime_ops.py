@@ -662,15 +662,18 @@ def _fresh_refusal_reasons(base: Any, universe_ids: set[str]) -> dict[str, str]:
     the row (``skip_if_running``, ``run_fn_incompatible``, ``enqueue_error:*``)
     leaves no mark ON the row, so without this the owner's list said only that
     nothing had run lately and never why.
+
+    The window is the SCHEDULE one, not the consumer's: the tick writes every
+    ``TICK_INTERVAL_S`` plus the pass's own work, so reading with a window equal
+    to the consumer's poll-derived freshness left an ongoing refusal invisible
+    for part of every cycle.
     """
-    from tinyassets.runtime.assigned_queue_consumer import (
-        assigned_queue_refusal_freshness_seconds,
-    )
+    from tinyassets.scheduler import refusal_visibility_seconds
     from tinyassets.storage.assigned_queue_refusals import AssignedQueueRefusalStore
 
     reasons: dict[str, str] = {}
     store = AssignedQueueRefusalStore(base)
-    window = assigned_queue_refusal_freshness_seconds()
+    window = refusal_visibility_seconds()
     for uid in universe_ids:
         try:
             reasons.update(

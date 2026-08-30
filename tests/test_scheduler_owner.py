@@ -924,12 +924,10 @@ def test_an_ongoing_refusal_stays_visible_across_owner_reads(env, live_scheduler
     conn.commit()
     conn.close()
 
-    from tinyassets.runtime.assigned_queue_consumer import (
-        assigned_queue_refusal_freshness_seconds,
-    )
+    from tinyassets.scheduler import refusal_visibility_seconds
     from tinyassets.storage.assigned_queue_refusals import AssignedQueueRefusalStore
 
-    window = assigned_queue_refusal_freshness_seconds()
+    window = refusal_visibility_seconds()
     origin = _dt.datetime(2026, 8, 29, 12, 0, 0, tzinfo=_dt.timezone.utc)
     clock = {"mono": 0.0, "wall": origin}
 
@@ -967,6 +965,72 @@ def test_an_ongoing_refusal_stays_visible_across_owner_reads(env, live_scheduler
         sched.datetime = original_dt
 
     assert seen == ["skip_if_running"] * 3, seen
+
+
+def test_an_ongoing_refusal_is_visible_at_the_real_tick_cadence(env, live_scheduler):
+    """Read the OWNER'S SURFACE every second across a real tick cycle.
+
+    The previous test ticked at 0/6/12 s, which is not what production does: the
+    tick sleeps ``TICK_INTERVAL_S`` *after* each pass, so consecutive writes are
+    ten seconds plus the work. With a reader window equal to that interval the
+    refusal disappeared for the tail of every cycle (Codex round 3, finding b).
+    Both clocks are frozen — the writer's inside the scheduler, the reader's
+    inside the refusal store — so this is the real code on a simulated timeline,
+    not a sleep.
+    """
+    import datetime as _dt
+
+    import tinyassets.scheduler as sched
+    import tinyassets.storage.assigned_queue_refusals as aqr
+
+    base, authenticate = env
+    _create_universe("founder-a", authenticate)
+    _ext(
+        "schedule_branch", branch_def_id="b1", interval_seconds=600.0, skip_if_running=True
+    )
+    conn = sqlite3.connect(base / ".runs.db")
+    conn.execute(
+        "INSERT INTO runs (run_id, branch_def_id, thread_id, status, actor, started_at) "
+        "VALUES ('r1','b1','t1','running','x',0)"
+    )
+    conn.commit()
+    conn.close()
+
+    origin = _dt.datetime(2026, 8, 29, 12, 0, 0, tzinfo=_dt.timezone.utc)
+    clock = {"mono": 0.0, "wall": origin}
+
+    class _FrozenDatetime(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock["wall"]
+
+    def _advance(seconds: float) -> None:
+        clock["mono"] = seconds
+        clock["wall"] = origin + _dt.timedelta(seconds=seconds)
+
+    ticker = _capturing_scheduler(base, [])
+    originals = (sched.time.monotonic, sched.datetime, aqr.datetime)
+    sched.time.monotonic = lambda: clock["mono"]
+    sched.datetime = _FrozenDatetime
+    aqr.datetime = _FrozenDatetime
+    missing: list[float] = []
+    try:
+        # Production cadence: a pass, then TICK_INTERVAL_S of sleep, then a pass
+        # that itself takes a moment.
+        tick_times = [0.0, sched.TICK_INTERVAL_S + 2.5]
+        for second in range(0, 26):
+            for t in tick_times:
+                if t <= second < t + 1:
+                    _advance(t)
+                    ticker._fire_due_schedules()
+            _advance(float(second))
+            row = _ext("list_schedules")["schedules"][0]
+            if row.get("recent_reason") != "skip_if_running":
+                missing.append(float(second))
+    finally:
+        sched.time.monotonic, sched.datetime, aqr.datetime = originals
+
+    assert missing == [], f"recent_reason vanished at t={missing}"
 
 
 def test_the_list_surfaces_a_recent_refusal_reason(env, live_scheduler):
@@ -1450,33 +1514,93 @@ def test_a_cron_at_or_above_the_floor_is_accepted(env, live_scheduler, expr):
     assert len(_schedule_rows(base)) == 1
 
 
-def test_a_dst_straddling_cron_is_judged_by_utc_arithmetic(env, live_scheduler):
-    """`0,59 1,3 * mar sun` — the expression Codex used to break the floor.
+#: The expression Codex used to break the cadence floor, and the instant that
+#: breaks it. US DST begins Sunday 2026-03-08 at 02:00 local, so on a
+#: DST-observing host 01:59 EST → 03:00 EDT is sixty elapsed seconds while the
+#: minute/hour algebra reads it as 3540.
+_DST_CRON = "0,59 1,3 * mar sun"
+_DST_TZ = "America/New_York"
 
-    Evaluated in host-local time on a DST host it computes as 3540s and is
-    accepted, while 01:59 standard → 03:00 daylight is 60 elapsed seconds. In
-    UTC there is no such Sunday, so the 3540s answer is exact and the schedule
-    is genuinely above the floor. The host TZ is set to one that observes DST to
-    prove the verdict does not depend on it.
+
+def _spring_forward_instants() -> tuple[float, time.struct_time, time.struct_time]:
+    """(epoch, its UTC struct, its America/New_York struct) on spring-forward day.
+
+    At 2026-03-08 01:00:00Z the cron matches in UTC — minute 0, hour 1, March,
+    Sunday — and does NOT match in New York, where it is still 20:00 on Saturday
+    the 7th (EST, UTC-5). One instant, opposite verdicts: exactly the
+    discriminator a matcher defined in UTC has to survive.
     """
-    import os
+    import calendar
 
+    epoch = float(
+        calendar.timegm(time.strptime("2026-03-08 01:00:00", "%Y-%m-%d %H:%M:%S"))
+    )
+    return epoch, time.gmtime(epoch), time.gmtime(epoch - 5 * 3600)
+
+
+def test_a_dst_straddling_cron_is_judged_by_utc_arithmetic(env, live_scheduler):
+    """The cadence floor's answer for `0,59 1,3 * mar sun` is exact under UTC."""
     base, authenticate = env
     from tinyassets.scheduler import min_cron_interval_seconds
 
     _create_universe("founder-a", authenticate)
-    os.environ["TZ"] = "America/New_York"
-    if hasattr(time, "tzset"):
-        time.tzset()
+    assert min_cron_interval_seconds(_DST_CRON) == 3540.0
+    out = _ext("schedule_branch", branch_def_id="b1", cron_expr=_DST_CRON)
+    assert out["status"] == "scheduled", out
+    assert len(_schedule_rows(base)) == 1
+
+
+def test_the_tick_matches_a_dst_straddling_cron_in_utc(env):
+    """Drive the TICK on spring-forward Sunday, not just the arithmetic.
+
+    The registration test above cannot go red if matching reverts to local time,
+    because neither the floor nor registration calls the matcher (Codex round 3,
+    finding e). This one fires the real `_fire_due_schedules` at an instant whose
+    UTC and New-York verdicts disagree.
+
+    ``localtime`` is patched to the zone's struct for that instant rather than
+    relying on the host honouring ``TZ`` — Windows has no ``tzset`` — so the
+    assertion is deterministic on any machine while still being a genuine
+    DST-zone reading.
+    """
+    import os
+    from unittest.mock import patch
+
+    import tinyassets.scheduler as sched
+
+    base, _authenticate = env
+    uid, principal = "u-dst", "founder-a"
+    seed_ready_universe(base, universe_id=uid, principal=principal)
+    from tinyassets.scheduler import register_schedule
+
+    register_schedule(
+        base,
+        branch_def_id="b1",
+        owner_actor=f"universe:{uid}",
+        universe_id=uid,
+        owner_principal_id=principal,
+        cron_expr=_DST_CRON,
+    )
+
+    epoch, utc_struct, ny_struct = _spring_forward_instants()
+    assert (utc_struct.tm_hour, utc_struct.tm_mday) == (1, 8)  # Sunday 01:00 UTC
+    assert (ny_struct.tm_hour, ny_struct.tm_mday) == (20, 7)  # Saturday 20:00 EST
+
+    os.environ["TZ"] = _DST_TZ  # realism; the assertion does not depend on it
+    calls: list = []
     try:
-        assert min_cron_interval_seconds("0,59 1,3 * mar sun") == 3540.0
-        out = _ext("schedule_branch", branch_def_id="b1", cron_expr="0,59 1,3 * mar sun")
-        assert out["status"] == "scheduled", out
+        with (
+            patch.object(sched.time, "time", return_value=epoch),
+            patch.object(sched.time, "localtime", return_value=ny_struct),
+        ):
+            _capturing_scheduler(base, calls)._fire_due_schedules()
     finally:
         os.environ.pop("TZ", None)
-        if hasattr(time, "tzset"):
-            time.tzset()
-    assert len(_schedule_rows(base)) == 1
+
+    assert len(calls) == 1, (
+        "the tick did not fire on the UTC minute — a local-time matcher reads "
+        "this instant as Saturday 20:00 and never matches"
+    )
 
 
 def test_a_cron_fires_on_the_utc_minute_not_the_local_one(env):

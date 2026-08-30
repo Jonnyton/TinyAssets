@@ -234,25 +234,40 @@ MIN_SCHEDULE_INTERVAL_S = 300.0
 #: (D5 — recorded refusals, one table).
 REFUSAL_KEY_PREFIX = "schedule:"
 
-def _refusal_rewrite_seconds() -> float:
-    """How long an UNCHANGED refusal reason may go un-rewritten.
+def refusal_visibility_seconds() -> float:
+    """How long a SCHEDULE refusal must stay readable on the owner's surface.
 
-    Half the freshness window the READERS use, which is the consumer's
-    convention. A fixed 60 seconds was wrong in exactly one direction that
-    matters: readers treat a refusal as current for
-    ``assigned_queue_refusal_freshness_seconds()`` — 10 seconds by default — so a
-    minute-long rewrite gap made every unchanged refusal vanish from the owner's
-    surface for ~50 seconds out of every 60 (Codex round 2, finding 2). Deriving
-    it from the reader's window keeps the two in step if either is retuned.
+    The consumer's own freshness window is tuned to the consumer's poll rate and
+    is 10 seconds by default — the same as ``TICK_INTERVAL_S``. A window equal to
+    the write interval cannot stay covered: the tick sleeps ``TICK_INTERVAL_S``
+    *after* finishing a pass, so consecutive writes are 10 seconds plus the work,
+    and an ongoing refusal blinked out of the owner's read for the remainder of
+    every cycle (Codex round 3, finding b). Three tick intervals leaves room for
+    a slow pass and a missed one.
+
+    Both the reader (``_action_list_schedules``) and the writer
+    (:func:`_refusal_rewrite_seconds`) derive from THIS function, so the two
+    cannot drift apart the way a hand-tuned pair of constants did twice already.
     """
     try:
         from tinyassets.runtime.assigned_queue_consumer import (
             assigned_queue_refusal_freshness_seconds,
         )
 
-        return max(1.0, assigned_queue_refusal_freshness_seconds() / 2)
-    except Exception:  # noqa: BLE001 - never let a config read stop a refusal write
-        return 5.0
+        consumer_window = assigned_queue_refusal_freshness_seconds()
+    except Exception:  # noqa: BLE001 - never let a config read stop a refusal read
+        consumer_window = 10.0
+    return max(consumer_window, 3 * TICK_INTERVAL_S)
+
+
+def _refusal_rewrite_seconds() -> float:
+    """How long an UNCHANGED refusal reason may go un-rewritten.
+
+    Half the window readers treat as current, which is the consumer's
+    convention: it guarantees a reader always sees a record no older than half
+    its own window, without one upsert per key per tick.
+    """
+    return max(1.0, refusal_visibility_seconds() / 2)
 
 # Supported event types
 VALID_EVENT_TYPES = frozenset({
