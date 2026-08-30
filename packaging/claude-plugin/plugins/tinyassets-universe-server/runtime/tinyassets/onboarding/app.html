@@ -1061,36 +1061,43 @@
       return !(Array.isArray(items) && items.some(i=>i && i.message===item.message));
     }catch(_e){ return false; }
   }
-  // A saved line that must not auto-send (too old, or another universe's)
-  // is handed back as a draft, below whatever is being typed.
-  function parkAsDraft(item, why){
-    const input=$("composer-input"); const draft=input.value.trim();
-    input.value=draft ? draft + "\n" + item.message : item.message; autoGrow(input);
-    const note=document.createElement("div");
-    note.className="msg msg--system";
-    note.textContent="A line queued earlier " + why + " and was not sent; it is in the composer.";
-    $("thread").appendChild(note);
-  }
-  // Lines that were waiting when the page went away. With nothing in flight
-  // they go out now, in order, drawn again because they were never in
-  // history. With an UNCONFIRMED earlier turn they wait behind it instead:
-  // its reply may still be on its way, and two turns must never overlap.
+  // Lines that were waiting when the page went away come back as an OFFER,
+  // never as a send: the page cannot know whether the turn they waited
+  // behind is still answering, whether another window holds the same line,
+  // or what the founder typed since (Codex rounds 1-2: every auto-send
+  // shape leaked one of those). One click sends it; one click drops it.
   let queueRestored=false;
-  function restoreQueue(hold){
+  function restoreQueue(){
     if(queueRestored) return; queueRestored=true;
     const now=Date.now();
-    takeSavedQueue().forEach(i=>{
-      if(now-(i.ts||0) > QUEUE_MAX_AGE_MS) return parkAsDraft(i, "was waiting for more than three hours");
-      if(i.scope && queueScope && i.scope!==queueScope) return parkAsDraft(i, "belongs to another universe");
-      if(hold){
-        appendMessage("founder", i.display||i.message);
-        sendQueue.push({message:i.message, display:i.display, opts:{echoed:true}, ts:i.ts});
-      } else sendTurn(i.message, i.display);
-    });
-    if(hold && sendQueue.length){
-      saveQueue();
-      setStatusLine(sendQueue.length + " waiting \u2014 send the unconfirmed message above again first");
+    takeSavedQueue().forEach(i=>offerSavedLine(i, now));
+  }
+  function offerSavedLine(item, now){
+    const stale = now-(item.ts||0) > QUEUE_MAX_AGE_MS;
+    const foreign = !!(item.scope && queueScope && item.scope!==queueScope);
+    const note=document.createElement("div");
+    note.className="msg msg--system";
+    let text = "Still waiting to be sent when the page reloaded: \u201c" +
+      String(item.display||item.message).slice(0, 200) + "\u201d";
+    if(stale) text += " \u2014 queued more than three hours ago";
+    if(foreign) text += " \u2014 queued for another universe (" + item.scope + ")";
+    note.textContent = text + ". ";
+    if(!foreign){
+      const send=document.createElement("button");
+      send.className="btn btn--link"; send.textContent="Send it now";
+      send.addEventListener("click", ()=>{
+        note.remove();
+        sendTurn(item.message, item.display, {relay:true, keepInflight: !!readInflight()});
+      });
+      note.appendChild(send);
+      note.appendChild(document.createTextNode(" "));
     }
+    const drop=document.createElement("button");
+    drop.className="btn btn--link"; drop.textContent="Discard";
+    drop.addEventListener("click", ()=>{ note.remove(); });
+    note.appendChild(drop);
+    const thread=$("thread");
+    thread.appendChild(note); thread.scrollTop=thread.scrollHeight;
   }
   function flushSendQueue(){
     if($("btn-send").disabled || !sendQueue.length) return;
@@ -1104,7 +1111,9 @@
   }
   function queueTurn(message, display, opts){
     const last=sendQueue[sendQueue.length-1];
-    if(last && last.message===message) return;          // the same line twice is one line
+    // The same typed line twice is one line - but two answers to two asks
+    // that happen to share a title are two answers (Codex round 2).
+    if(last && last.message===message && !opts.relay) return;
     const input=$("composer-input");
     if(sendQueue.length>=SEND_QUEUE_MAX){
       // ...and never over a draft the founder is typing: put it below it.
@@ -1132,13 +1141,15 @@
     // `opts.echoed` says the bubble is ALREADY on screen (a resend, or a message
     // restored after a reload) - drawing it twice would read as two sends.
     if(!opts.echoed) appendMessage("founder", display || message);
-    rememberInflight(message, display);
+    // A line sent from a restore offer is a SIDE send: it must not take over
+    // the in-flight record of an unconfirmed turn still on screen.
+    if(!opts.keepInflight) rememberInflight(message, display);
     const input=$("composer-input"); input.value=""; input.style.height="auto";
     $("btn-send").disabled=true; turnStartedAt=Date.now();
     setStatusLine("Your universe is thinking...");
     try{
       renderConverse(await MCP.converse(message)); setStatusLine("");
-      forgetInflight();
+      if(!opts.keepInflight) forgetInflight();
     }catch(err){
       if(err.authRequired){ setStatusLine(""); $("composer-input").value=message; return sessionExpired(); }
       setStatusLine("");
@@ -2099,7 +2110,7 @@
           + (busy ? " Your universe will see it when its current turn ends." : "");
         railOpen = null;
         await refreshRail();
-        sendTurn(answerLine(req, dismiss, payload));
+        sendTurn(answerLine(req, dismiss, payload), undefined, {relay:true});
       }
     }catch(err){
       if(err.authRequired) return enterSignedOut();
@@ -2192,10 +2203,9 @@
     note.appendChild(again);
     $("thread").appendChild(note);
     // A line queued behind the unconfirmed turn (an approval, typically) is
-    // drawn and kept waiting: it goes out with the founder's next send - the
-    // resend above, or anything else - never alongside a reply that may
-    // still be on its way (Codex round 1).
-    restoreQueue(true);
+    // offered below it, never sent on its own: the founder decides what goes
+    // out, and in what order, once they see both.
+    restoreQueue();
   }
 
   // Proactive renewal: keep the ~5-minute access token fresh in the background so
