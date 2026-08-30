@@ -38,7 +38,8 @@ def _stub_branch(monkeypatch, *, effects):
     node = types.SimpleNamespace
     fake = node(name="wf",
                 graph_nodes=[node(id="call_github", display_name="call_github")],
-                node_defs=[node(node_id="call_github", display_name="call_github", effects=effects)])
+                node_defs=[node(node_id="call_github", display_name="call_github",
+                                effects=effects)])
     monkeypatch.setattr(daemon_server, "get_branch_definition", lambda *a, **k: {})
     monkeypatch.setattr(branches.BranchDefinition, "from_dict", staticmethod(lambda d: fake))
 
