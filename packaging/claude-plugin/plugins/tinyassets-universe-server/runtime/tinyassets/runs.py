@@ -2451,10 +2451,7 @@ def _invoke_graph(
     # "public-foreign" (a foreign/public/remixed branch), which delegated child
     # authorization keys off. Depth carries the recursion counter.
     _branch_author = (getattr(branch, "author", "") or "").strip()
-    _provenance = (
-        "own" if (run_actor and _branch_author and _branch_author == run_actor)
-        else "public-foreign"
-    )
+    _provenance = _caller_provenance(base_path, run_actor, run_universe, _branch_author)
     execution_context = BranchExecutionContext(
         actor=run_actor,
         universe_id=run_universe,
@@ -3251,6 +3248,38 @@ def _find_timeout_exception(exc: BaseException) -> NodeTimeoutError | None:
     return None
 
 
+def _caller_provenance(
+    base_path: "str | Path",
+    run_actor: str,
+    run_universe: str,
+    branch_author: str,
+) -> str:
+    """``own`` when the running definition was authored by the actor the run
+    executes as, OR by an admin of the universe the run executes in - the
+    canonical per-universe ownership signal (``universe_owner_actor``). The
+    second clause is what makes a universe's engine-authored branches its
+    own: the served turn stores the founder's user id as ``author`` while the
+    run executes as ``universe:<id>`` (live 2026-08-30, run
+    fda6cac079c44ed9: the founder's own code node refused as foreign).
+    Everything else is ``public-foreign``. Fail closed on any lookup error."""
+    author = (branch_author or "").strip()
+    actor = (run_actor or "").strip()
+    universe = (run_universe or "").strip()
+    if not author:
+        return "public-foreign"
+    if actor and author == actor:
+        return "own"
+    if universe:
+        try:
+            from tinyassets.api.source_channel import universe_owner_actor
+
+            if universe_owner_actor(base_path, universe, author):
+                return "own"
+        except Exception:  # noqa: BLE001 - fail closed
+            logger.exception("caller provenance: owner lookup failed for %s", universe)
+    return "public-foreign"
+
+
 def _execution_context_for_run(
     base_path: "str | Path",
     run_id: str,
@@ -3278,7 +3307,7 @@ def _execution_context_for_run(
         pass
     run_actor = run_actor or (fallback_actor or "").strip()
     author = (getattr(branch, "author", "") or "").strip()
-    provenance = "own" if (run_actor and author and author == run_actor) else "public-foreign"
+    provenance = _caller_provenance(base_path, run_actor, run_universe, author)
     return BranchExecutionContext(
         actor=run_actor,
         universe_id=run_universe,

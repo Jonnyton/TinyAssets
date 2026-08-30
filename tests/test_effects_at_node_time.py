@@ -781,3 +781,31 @@ def test_source_code_compile_refusals_are_the_universes_to_fix():
     assert cls == "code_node_failed"
     cls, _ = _classify_run_outcome_error("Approval required for source_code node")
     assert cls == "node_not_approved"       # legacy shape, still classified
+
+
+def test_a_universes_engine_authored_branch_is_its_own(monkeypatch, tmp_path):
+    """Live 2026-08-30 09:27Z, run fda6cac079c44ed9: the founder's universe
+    built a code node and its own run refused it as public-foreign - the
+    branch's author is the founder's user id, the run executes as
+    `universe:<id>`. Own = authored by the actor OR by an admin of the run's
+    universe (the canonical ownership signal); a stranger stays foreign."""
+    from tinyassets import runs
+    from tinyassets.api import source_channel
+
+    admins = {("u-1", "user_founder")}
+    monkeypatch.setattr(
+        source_channel, "universe_owner_actor",
+        lambda base, universe_id, actor: (universe_id, actor) in admins,
+    )
+    prov = runs._caller_provenance
+    assert prov(tmp_path, "universe:u-1", "u-1", "user_founder") == "own"
+    assert prov(tmp_path, "universe:u-1", "u-1", "user_stranger") == "public-foreign"
+    assert prov(tmp_path, "user_founder", "", "user_founder") == "own"
+    assert prov(tmp_path, "universe:u-2", "u-2", "user_founder") == "public-foreign"
+    assert prov(tmp_path, "universe:u-1", "u-1", "") == "public-foreign"
+    # and the execution context built for a run uses it
+    branch = _fetch_edit_write_branch()
+    branch.author = "user_founder"
+    runs.initialize_runs_db(tmp_path)
+    ctx = runs._execution_context_for_run(tmp_path, "nope", branch, fallback_actor="universe:u-1")
+    assert ctx.caller_provenance == "public-foreign"      # no universe on a missing row
