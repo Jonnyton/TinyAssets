@@ -2631,6 +2631,7 @@ def _invoke_graph(
         base_path=_resolve_effector_base(base_path, run_id, _eff_universe_hint),
         cloud_effect_session=_claimed_cloud_effect_session(provider_call),
         invocation_depth=int(invocation_depth or 0),
+        universe_id=_eff_universe_hint or run_universe,
     )
     register_effect_chain(effect_chain)
     try:
@@ -4208,10 +4209,21 @@ def _invoke_graph_resume(
     # Design D1: the chain is in memory, so an effect that fired BEFORE the
     # interrupt is not readable by a later node after resume - a reference to
     # it refuses rather than resolving from a truncated preview.
+    _resume_universe = ""
+    try:
+        with _connect(base_path) as _uconn:
+            _urow = _uconn.execute(
+                "SELECT queue_universe_id FROM runs WHERE run_id = ?", (run_id,),
+            ).fetchone()
+        if _urow is not None and _urow["queue_universe_id"]:
+            _resume_universe = str(_urow["queue_universe_id"]).strip()
+    except Exception:  # noqa: BLE001 - unknown universe: only the per-run budget applies
+        _resume_universe = ""
     effect_chain = EffectChain(
         run_id=run_id,
         base_path=_resolve_effector_base(base_path, run_id),
         cloud_effect_session=_claimed_cloud_effect_session(provider_call),
+        universe_id=_resume_universe,
     )
     # What the interrupted segment already fired and spent, so "at most once
     # per run" and the RPC cap hold across the resume, and the nested depth
@@ -4835,6 +4847,7 @@ ACTIONABLE_BY: dict[str, str] = {
     # chatbot — recoverable via another tool call
     "code_node_failed": "chatbot",
     "node_not_accepted": "chatbot",
+    "effect_budget_exhausted": "chatbot",
     "quota_exhausted": "chatbot",
     "provider_overloaded": "chatbot",
     "provider_error": "chatbot",
@@ -4875,6 +4888,12 @@ EXTERNAL_WRITE_FAILED_ACTION = (
     "decision)."
 )
 
+EFFECT_BUDGET_EXHAUSTED_ACTION = (
+    "This run (or this universe's last hour) has used its outbound budget - the "
+    "error names which one. Split the work across runs, fetch less per run, or wait "
+    "for the hourly window to clear; the budget is usage, not a limit on your graph."
+)
+
 EXTERNAL_WRITE_REFUSED_ACTION = (
     "An effect was refused by authority you do not hold - a consent, a grant that "
     "is missing, revoked or too narrow, an allow-list or SSRF refusal. Retrying "
@@ -4899,6 +4918,8 @@ _EXTERNAL_WRITE_REFUSED_WORDS = (
 def _classify_external_write(lower: str) -> str:
     """Split the "external write failed - ..." summary into the founder's
     (refused by authority) and the universe's (failed, fixable)."""
+    if "[effect_budget_exhausted]" in lower:
+        return "effect_budget_exhausted"
     for kind in _EXTERNAL_WRITE_REFUSED_KINDS:
         if f"[{kind}]" in lower:
             return "external_write_refused"
@@ -4908,6 +4929,8 @@ def _classify_external_write(lower: str) -> str:
 
 
 def external_write_suggested_action(failure_class: str) -> str:
+    if failure_class == "effect_budget_exhausted":
+        return EFFECT_BUDGET_EXHAUSTED_ACTION
     if failure_class == "external_write_refused":
         return EXTERNAL_WRITE_REFUSED_ACTION
     if failure_class == "external_write_failed":

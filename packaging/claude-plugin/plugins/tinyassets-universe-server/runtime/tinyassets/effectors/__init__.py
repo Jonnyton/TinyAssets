@@ -114,6 +114,73 @@ class EffectFailedError(Exception):
 
 _READ_VERBS = frozenset({"GET", "HEAD"})
 
+#: Per-root-run usage budgets (defaults; tier-raisable, never a shape rule).
+RUN_DISPATCHES_MAX = 500
+RUN_BYTES_MAX = 256 * 1024 * 1024
+#: Charged when a delivered call did not report its sizes: the per-call caps.
+_UNKNOWN_REQUEST_BYTES = 8 * 1024 * 1024
+_UNKNOWN_RESPONSE_BYTES = 5 * 1024 * 1024
+
+
+def _bytes_moved(per_node: dict) -> int:
+    total = 0
+    for result in (per_node or {}).values():
+        if not isinstance(result, dict) or result.get("delivered") is not True:
+            continue
+        req = result.get("request_bytes")
+        resp = result.get("response_bytes")
+        total += int(req) if isinstance(req, int) else _UNKNOWN_REQUEST_BYTES
+        total += int(resp) if isinstance(resp, int) else _UNKNOWN_RESPONSE_BYTES
+    return total
+
+
+def _budget_refusal(chain: "EffectChain", key: str, sink: str) -> "EffectFailedError | None":
+    """The budget an upcoming dispatch would break, as the node's failure, or
+    None. Per-run first (cheap, exact), then the universe's rolling hour."""
+    if chain.dispatches >= RUN_DISPATCHES_MAX:
+        return EffectFailedError(
+            key, sink,
+            f"run budget exhausted: {chain.dispatches} effect dispatches in this run "
+            f"(budget {RUN_DISPATCHES_MAX}); split the work across runs",
+            "effect_budget_exhausted",
+        )
+    if chain.bytes_out >= RUN_BYTES_MAX:
+        return EffectFailedError(
+            key, sink,
+            f"run budget exhausted: {chain.bytes_out} outbound bytes in this run "
+            f"(budget {RUN_BYTES_MAX}); fetch less or split the work across runs",
+            "effect_budget_exhausted",
+        )
+    if chain.universe_id:
+        try:
+            from tinyassets.engine_admissions import (
+                BUDGET_WINDOW_S,
+                BYTES_PER_HOUR,
+                DISPATCHES_PER_HOUR,
+                dispatch_window_usage,
+            )
+
+            used_n, used_b = dispatch_window_usage(chain.universe_id)
+        except Exception:  # noqa: BLE001 - the per-run budget still holds
+            return None
+        if used_n >= DISPATCHES_PER_HOUR:
+            return EffectFailedError(
+                key, sink,
+                f"hourly budget exhausted: {used_n} effect dispatches in the last "
+                f"{BUDGET_WINDOW_S // 60} min (budget {DISPATCHES_PER_HOUR}); "
+                "wait for the window to clear",
+                "effect_budget_exhausted",
+            )
+        if used_b >= BYTES_PER_HOUR:
+            return EffectFailedError(
+                key, sink,
+                f"hourly budget exhausted: {used_b} outbound bytes in the last "
+                f"{BUDGET_WINDOW_S // 60} min (budget {BYTES_PER_HOUR}); "
+                "wait for the window to clear",
+                "effect_budget_exhausted",
+            )
+    return None
+
 
 @dataclass
 class EffectChain:
@@ -163,6 +230,12 @@ class EffectChain:
     #: persisted on interrupt and seeded on resume.
     rpc_calls: int = 0
     invocation_depth: int = 0
+    #: Usage budgets (change `run-usage-budgets`): what this RUN has dispatched
+    #: and moved; the hourly half is in the admissions ledger under
+    #: ``universe_id``. Graph shape is unbounded; this is what bounds it.
+    universe_id: str = ""
+    dispatches: int = 0
+    bytes_out: int = 0
 
     def prior_effects(self, ancestors: set[str] | None = None) -> dict[str, dict]:
         """Full results of the nodes a reference may legally name (for
@@ -352,9 +425,13 @@ def dispatch_node_effects(
                 "run, so route the loop around the effect node or split the branch",
                 "effect_already_fired",
             )
+        refusal = _budget_refusal(chain, key, effects[0])
+        if refusal is not None:
+            raise refusal
         chain.inflight.add(key)
         chain.active += 1
         chain.dispatching.add(me)
+        chain.dispatches += 1
     resettle = False
     try:
         per_node = _fire_node_effects(
@@ -367,8 +444,17 @@ def dispatch_node_effects(
             run_state=run_state,
         )
         _mark_accepted_statuses(per_node, accept)
+        moved = _bytes_moved(per_node)
         with chain.lock:
             chain.evidence[key] = per_node
+            chain.bytes_out += moved
+        if chain.universe_id:
+            try:
+                from tinyassets.engine_admissions import charge_dispatch
+
+                charge_dispatch(chain.universe_id, dispatches=1, nbytes=moved)
+            except Exception:  # noqa: BLE001 - never let accounting break a dispatch
+                logging.getLogger(__name__).exception("dispatch budget charge failed")
     finally:
         with chain.lock:
             chain.inflight.discard(key)

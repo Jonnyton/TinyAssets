@@ -293,6 +293,11 @@ _OUTCOME_ERROR_FIXTURES: tuple[tuple[str, str], ...] = (
      "branch into your universe with write_graph (fork_from) so the code is yours, "
      "then run your copy.",
      "node_not_accepted"),
+    # run-usage-budgets: the shape caps are gone; usage bounds a runaway graph.
+    ("external write failed - fetch_9/authenticated_external_call: run budget exhausted: "
+     "500 effect dispatches in this run (budget 500); split the work across runs "
+     "[effect_budget_exhausted]",
+     "effect_budget_exhausted"),
 )
 
 

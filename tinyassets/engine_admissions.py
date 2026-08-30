@@ -138,6 +138,18 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE TABLE IF NOT EXISTS settlements "
         "(run_id TEXT PRIMARY KEY, kind TEXT NOT NULL, ts REAL NOT NULL)"
     )
+    # Usage budgets (change `run-usage-budgets`): one row per effect dispatch
+    # with the bytes it moved; the rolling-hour sums bound a universe's
+    # outbound volume now that graph shape no longer does.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS dispatch_budget "
+        "(universe_id TEXT NOT NULL, ts REAL NOT NULL, dispatches INTEGER NOT NULL, "
+        "bytes INTEGER NOT NULL)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS dispatch_budget_universe_ts "
+        "ON dispatch_budget(universe_id, ts)"
+    )
 
 
 def _is_ticket(ticket: object) -> bool:
@@ -382,3 +394,71 @@ def fired_only_reads(fired: list[tuple[str, str | None]], *, read_sink: str) -> 
         if not verb or str(verb).strip().upper() not in READ_VERBS:
             return False
     return True
+
+
+# --------------------------------------------------------------------------- #
+# Usage budgets - outbound volume per universe per rolling hour
+# (change `run-usage-budgets`; the per-run half lives on the EffectChain)
+# --------------------------------------------------------------------------- #
+DISPATCHES_PER_HOUR = 5_000
+BYTES_PER_HOUR = 2 * 1024 * 1024 * 1024
+BUDGET_WINDOW_S = 3600
+
+
+def dispatch_window_usage(
+    universe_id: str, *, window_s: int = BUDGET_WINDOW_S, db: Path | None = None,
+) -> tuple[int, int]:
+    """(dispatches, bytes) this universe moved in the rolling window. A ledger
+    that cannot be read counts as empty here - the per-call caps and the
+    per-run budget still bound the run; refusing every effect on a ledger
+    hiccup would be the louder failure in the wrong place."""
+    universe_id = (universe_id or "").strip()
+    if not universe_id:
+        return (0, 0)
+    db = db or ledger_path()
+    if not db.exists():
+        return (0, 0)
+    try:
+        conn = sqlite3.connect(str(db), timeout=10)
+        try:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(dispatches), 0), COALESCE(SUM(bytes), 0) "
+                "FROM dispatch_budget WHERE universe_id = ? AND ts >= ?",
+                (universe_id, time.time() - window_s),
+            ).fetchone()
+            return (int(row[0] or 0), int(row[1] or 0))
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return (0, 0)
+
+
+def charge_dispatch(
+    universe_id: str, *, dispatches: int = 1, nbytes: int = 0,
+    window_s: int = BUDGET_WINDOW_S, db: Path | None = None,
+) -> None:
+    """Record one dispatch and the bytes it moved; prune rows older than one
+    window. Never raises into the dispatch path."""
+    universe_id = (universe_id or "").strip()
+    if not universe_id:
+        return
+    db = db or ledger_path()
+    try:
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db), timeout=10)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            _ensure_schema(conn)
+            now = time.time()
+            conn.execute(
+                "INSERT INTO dispatch_budget (universe_id, ts, dispatches, bytes) "
+                "VALUES (?, ?, ?, ?)",
+                (universe_id, now, max(int(dispatches), 0), max(int(nbytes), 0)),
+            )
+            conn.execute("DELETE FROM dispatch_budget WHERE ts < ?", (now - window_s,))
+            conn.commit()
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError):
+        return
+
