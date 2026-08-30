@@ -892,19 +892,29 @@ def _file_based_last_activity(
     and a year-1 positive-offset value) even though `datetime.fromisoformat`
     itself parsed successfully, so the conversion is caught too, not just
     the parse. A successfully parsed value more than 5 minutes in the
-    future is also rejected, matching the runs-ledger hygiene.
+    future is also rejected, matching the runs-ledger hygiene -- and, per
+    Codex ADAPT round 3's founder note, so is every file-mtime candidate
+    below (`activity.log`, `.runtime_status.json`, and the `status.json`
+    mtime fallback): a spoofed or clock-skewed future mtime shouldn't read
+    as "just happened" any more than a corrupt runs-ledger timestamp should.
     """
+    def _reject_future(candidate: datetime) -> datetime | None:
+        if (candidate - datetime.now(timezone.utc)).total_seconds() > 300:
+            return None
+        return candidate
+
     heartbeat_candidates: list[datetime] = []
 
     for path in (udir / "activity.log", udir / ".runtime_status.json"):
         if not path.exists():
             continue
         try:
-            heartbeat_candidates.append(
-                datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc),
-            )
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
         except OSError:
-            pass
+            continue
+        accepted = _reject_future(mtime)
+        if accepted is not None:
+            heartbeat_candidates.append(accepted)
     if heartbeat_candidates:
         return max(heartbeat_candidates)
 
@@ -920,20 +930,23 @@ def _file_based_last_activity(
                     parsed = parsed.astimezone(timezone.utc)
             except (ValueError, OverflowError, OSError):
                 parsed = None
-            if (
-                parsed is not None
-                and (parsed - datetime.now(timezone.utc)).total_seconds() <= 300
-            ):
+            if parsed is not None:
+                parsed = _reject_future(parsed)
+            if parsed is not None:
                 return parsed
 
     status_path = udir / "status.json"
     if status_path.exists():
         try:
-            return datetime.fromtimestamp(
+            mtime = datetime.fromtimestamp(
                 status_path.stat().st_mtime, tz=timezone.utc,
             )
         except OSError:
-            pass
+            mtime = None
+        if mtime is not None:
+            accepted = _reject_future(mtime)
+            if accepted is not None:
+                return accepted
 
     return None
 

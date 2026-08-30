@@ -1489,13 +1489,26 @@ def latest_run_by_name(
     return _row_to_run(row) if row is not None else None
 
 
+# Single source of truth for the liveness lookup's query text, so the
+# EXPLAIN QUERY PLAN test that asserts it uses idx_runs_scope_status_finished
+# cannot silently drift from the real query the way it did in an earlier
+# round (Codex ADAPT round 3, 2026-08-29, founder note: the committed
+# EXPLAIN test kept explaining the OLD `status != ?` predicate after the
+# predicate itself moved on). The test imports and reuses this constant
+# rather than retyping the SQL.
+LATEST_RUN_ACTIVITY_SQL = (
+    "SELECT MAX(COALESCE(finished_at, started_at)) AS ts "
+    "FROM runs WHERE queue_universe_id = ? AND status IN (?, ?)"
+)
+
+
 def latest_run_activity_for_universe(
     base_path: str | Path,
     *,
     universe_id: str,
 ) -> float | None:
     """Newest epoch-seconds activity (finished_at, else started_at) for
-    runs that actually started under ``universe_id``.
+    runs that actually EXECUTED under ``universe_id``.
 
     Used by universe liveness telemetry (``_last_activity_at`` in
     ``tinyassets.api.universe``) to attribute activity to automation and
@@ -1516,31 +1529,40 @@ def latest_run_activity_for_universe(
     2026-08-29, reproduced the actor/queue_universe_id-mismatch leak this
     closes).
 
-    Excludes ``status IN ('queued', 'interrupted')``:
+    POSITIVE allowlist -- counts ONLY ``status IN ('running', 'completed')``
+    -- rather than a denylist of non-executing statuses. A denylist kept
+    finding new holes across three review rounds (Codex ADAPT round 3,
+    2026-08-29): a run refused at provider admission transitions
+    ``queued -> failed`` in :func:`_execute_branch_core` / :func:`resume_run`
+    with error text ``"Provider authority admission failed: ..."`` BEFORE
+    the worker ever submits the graph for execution, so ``failed`` alone
+    does not mean the run ran -- and the uptime canary was reading that
+    fresh ``failed`` timestamp as real work. ``cancelled`` has the same
+    ambiguity: a still-``queued`` run can be cancelled before ever running.
+    ``resumed`` is excluded too, deliberately: :func:`resume_run` sets it
+    AFTER provider admission succeeds but BEFORE :func:`_invoke_graph_resume`
+    compiles the branch and flips the row to ``running`` -- a crash in that
+    narrow window leaves the row permanently ``resumed``
+    (:func:`recover_in_flight_runs` only sweeps ``queued``/``running``, not
+    ``resumed``), so it is not proven to reliably imply the worker actually
+    ran a node the way ``running`` does.
 
-    - ``queued``: :func:`create_run` stamps ``started_at`` at row-creation
-      time, before a worker has picked the run up, so an unqualified read
-      would let a merely-enqueued run (never executed) mark the universe
-      fresh.
-    - ``interrupted``: :func:`recover_in_flight_runs` moves BOTH ``queued``
-      *and* ``running`` rows straight to ``interrupted`` and stamps
-      ``finished_at=now`` on server restart -- so an enqueue that never
-      reached a worker before the restart would otherwise turn fresh the
-      moment the server comes back up (Codex ADAPT round 2, 2026-08-29).
-      The schema has no dequeue/execution-start timestamp or transition
-      history (``started_at`` is creation time; ``run_events`` pending rows
-      are written synchronously before worker submission, so their
-      presence isn't authoritative either), so there is no way to tell a
-      genuinely-executed run that got interrupted mid-flight apart from one
-      that never left the queue. This exclusion is deliberately
-      conservative: it omits real activity from genuinely-executed
-      interrupted runs rather than risk crediting a run that never ran.
-      Counting those precisely would need an authoritative
-      ``execution_started_at``/``dequeued_at`` field or a transition
-      ledger -- not present today.
+    This means a universe whose every run is refused at admission,
+    cancelled before starting, or dies before actually executing reads as
+    having NO activity -- which is exactly what the uptime canary needs: it
+    exists to detect when nothing real is happening, and crediting an
+    admission-refused ``failed`` row as activity was reporting the
+    opposite.
 
-    Every other status (``running``/``completed``/``failed``/``cancelled``/
-    ``resumed``) means the run left the queue and actually ran.
+    The schema has no execution-start (dequeue) timestamp or transition
+    history to do better than this: ``started_at`` is stamped at
+    row-creation time regardless of status (:func:`create_run`), and
+    ``run_events`` pending rows are written synchronously before worker
+    submission, so neither is authoritative about whether a worker actually
+    ran a node. Counting genuinely-executed ``failed``/``cancelled``/
+    ``interrupted``/``resumed`` runs precisely would need an authoritative
+    ``execution_started_at``/``dequeued_at`` field or a transition ledger --
+    not present today.
 
     Read-only: opens the DB with SQLite ``mode=ro`` and a short (2s) busy
     timeout, and does NOT call ``initialize_runs_db`` -- a universe that
@@ -1564,10 +1586,8 @@ def latest_run_activity_for_universe(
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
         row = conn.execute(
-            "SELECT MAX(COALESCE(finished_at, started_at)) AS ts "
-            "FROM runs WHERE queue_universe_id = ? "
-            "AND status NOT IN (?, ?)",
-            (uid, RUN_STATUS_QUEUED, RUN_STATUS_INTERRUPTED),
+            LATEST_RUN_ACTIVITY_SQL,
+            (uid, RUN_STATUS_RUNNING, RUN_STATUS_COMPLETED),
         ).fetchone()
         if row is None or row[0] is None:
             return None

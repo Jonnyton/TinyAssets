@@ -389,6 +389,69 @@ def test_last_activity_ignores_interrupted_run_that_never_started(
     assert age_seconds > 47 * 3600
 
 
+def test_last_activity_ignores_admission_refused_run(
+    universe_base: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex ADAPT round 3's exact reproduction: a run refused at provider
+    admission -- BEFORE any node executes -- transitions `queued -> failed`
+    in `_execute_branch_core` with error text "Provider authority admission
+    failed: ...". Under round 2's denylist (`status NOT IN ('queued',
+    'interrupted')`), a bare `failed` was enough to read as activity, so a
+    universe whose every run is refused at admission stayed fresh forever
+    (reproduced against 767ba9d4). Patches the REAL admission hook
+    (`tinyassets.foreground_run_provider.prepare_foreground_run_provider`)
+    to raise, drives the real `execute_branch_async` entry point end to
+    end, then asserts the PUBLIC `read_graph` router does not report
+    fresh."""
+    import tinyassets.foreground_run_provider as frp
+    import tinyassets.universe_server as universe_server
+    from tinyassets.branches import (
+        BranchDefinition,
+        EdgeDefinition,
+        GraphNodeRef,
+        NodeDefinition,
+    )
+    from tinyassets.runs import RUN_STATUS_FAILED, execute_branch_async
+
+    def _refuse(*_args, **_kwargs):
+        raise RuntimeError("refused before execution")
+
+    monkeypatch.setattr(frp, "prepare_foreground_run_provider", _refuse)
+
+    _make_universe(universe_base, "u1", activity_age_hours=48)
+
+    branch = BranchDefinition(name="Probe", entry_point="n1")
+    branch.node_defs = [
+        NodeDefinition(
+            node_id="n1", display_name="N1",
+            prompt_template="hello", output_keys=["n1_out"],
+        )
+    ]
+    branch.graph_nodes = [GraphNodeRef(id="n1", node_def_id="n1", position=0)]
+    branch.edges = [
+        EdgeDefinition(from_node="START", to_node="n1"),
+        EdgeDefinition(from_node="n1", to_node="END"),
+    ]
+    branch.state_schema = [{"name": "n1_out", "type": "str"}]
+
+    outcome = execute_branch_async(
+        universe_base, branch=branch, inputs={},
+        provider_call=lambda *a, **kw: "[ok]",
+        _enqueue_universe_id="u1",
+    )
+    assert outcome.status == RUN_STATUS_FAILED
+    assert "Provider authority admission failed" in outcome.error
+
+    out = json.loads(universe_server.read_graph(target="graph", graph_id="u1"))
+    daemon = out["daemon"]
+    assert daemon["staleness"] != "fresh"
+    ts = datetime.fromisoformat(daemon["last_activity_at"])
+    age_seconds = (datetime.now(timezone.utc) - ts).total_seconds()
+    # Only the 48h-stale activity.log is a real signal -- the
+    # admission-refused run must not count as activity.
+    assert age_seconds > 47 * 3600
+
+
 def test_last_activity_scopes_by_queue_universe_id_not_actor(
     universe_base: Path,
 ) -> None:
@@ -590,17 +653,28 @@ def test_last_activity_runs_lookup_bounded_under_exclusive_lock(
 def test_latest_run_activity_query_uses_scope_status_finished_index(
     universe_base: Path,
 ) -> None:
+    """Explains the ACTUAL query `latest_run_activity_for_universe` runs --
+    imports `LATEST_RUN_ACTIVITY_SQL` rather than retyping the SQL, so this
+    test cannot silently drift from the real predicate the way it did
+    across round 2 (Codex ADAPT round 3, founder note: this test kept
+    explaining the OLD `status != ?` predicate after the real predicate had
+    already moved to `status NOT IN (?, ?)`, and now to `status IN (?, ?)`)."""
     import sqlite3
 
-    from tinyassets.runs import initialize_runs_db, runs_db_path
+    from tinyassets.runs import (
+        LATEST_RUN_ACTIVITY_SQL,
+        RUN_STATUS_COMPLETED,
+        RUN_STATUS_RUNNING,
+        initialize_runs_db,
+        runs_db_path,
+    )
 
     initialize_runs_db(universe_base)
     conn = sqlite3.connect(runs_db_path(universe_base))
     try:
         plan = conn.execute(
-            "EXPLAIN QUERY PLAN SELECT MAX(COALESCE(finished_at, started_at)) "
-            "FROM runs WHERE queue_universe_id = ? AND status != ?",
-            ("u1", "queued"),
+            "EXPLAIN QUERY PLAN " + LATEST_RUN_ACTIVITY_SQL,
+            ("u1", RUN_STATUS_RUNNING, RUN_STATUS_COMPLETED),
         ).fetchall()
     finally:
         conn.close()
