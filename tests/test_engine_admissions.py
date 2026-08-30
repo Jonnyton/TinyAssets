@@ -203,7 +203,8 @@ def test_a_settlement_that_arrives_before_the_bind_is_applied_at_bind_time(tmp_p
     assert adm.reclassify_read("run-fast", db=db) is False        # already a read
     conn = sqlite3.connect(str(db))
     # the settlement stays (until it expires): it is the run's final word
-    assert conn.execute("SELECT kind FROM settlements WHERE run_id='run-fast'").fetchone() == ("read",)
+    kept = conn.execute("SELECT kind FROM settlements WHERE run_id='run-fast'").fetchone()
+    assert kept == ("read",)
     conn.close()
 
 
