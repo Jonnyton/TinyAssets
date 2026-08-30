@@ -652,6 +652,17 @@ class TestWorldbuildCanonGeneration:
         located by slug match. ``f.is_file()`` / ``read_text`` / ``write_text``
         all follow symlinks, so a symlinked match could read or clobber a file
         outside canon_dir. Containment must reject it before any I/O.
+
+        The actual rejection happens one step earlier than the overwrite: the
+        slug-match scan (``iter_canon_files``) skips the escaping symlink as a
+        candidate (``tinyassets/ingestion/canon_io.py``), so no existing match
+        is found and this falls through to ``_handle_new_element``'s own
+        containment check on the (also escaping) fresh filename -- raising
+        with ``kind="filename"``, not ``kind="existing file"``. The match
+        below asserts the fixed, kind-independent tail of
+        ``resolve_within_canon``'s message (``tinyassets/ingestion/
+        canon_names.py``) rather than a specific ``kind``, so it stays true
+        regardless of which of the two paths actually raises.
         """
         canon_dir = tmp_path / "canon"
         canon_dir.mkdir()
@@ -662,7 +673,7 @@ class TestWorldbuildCanonGeneration:
         except (OSError, NotImplementedError) as exc:
             pytest.skip(f"symlink creation not permitted on this platform: {exc}")
 
-        with pytest.raises(ValueError, match="canon existing file escapes"):
+        with pytest.raises(ValueError, match="escapes canon directory"):
             _handle_contradiction(
                 canon_dir, "magic_system", "detail", "premise", {}
             )
@@ -670,7 +681,11 @@ class TestWorldbuildCanonGeneration:
         assert outside.read_text(encoding="utf-8") == "# Outside secret"
 
     def test_handle_expansion_rejects_symlinked_existing_file(self, tmp_path):
-        """Same containment guard on the expansion overwrite path."""
+        """Same containment guard on the expansion overwrite path.
+
+        See ``test_handle_contradiction_rejects_symlinked_existing_file``
+        above for why the match is the kind-independent message tail.
+        """
         canon_dir = tmp_path / "canon"
         canon_dir.mkdir()
         outside = tmp_path / "secret.md"
@@ -680,7 +695,7 @@ class TestWorldbuildCanonGeneration:
         except (OSError, NotImplementedError) as exc:
             pytest.skip(f"symlink creation not permitted on this platform: {exc}")
 
-        with pytest.raises(ValueError, match="canon existing file escapes"):
+        with pytest.raises(ValueError, match="escapes canon directory"):
             _handle_expansion(
                 canon_dir, "magic_system", "detail", "premise", {}
             )

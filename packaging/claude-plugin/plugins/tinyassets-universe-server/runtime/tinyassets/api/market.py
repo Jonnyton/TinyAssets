@@ -1452,10 +1452,13 @@ def _action_goal_bind(kwargs: dict[str, Any]) -> str:
     except CommitFailedError as exc:
         return json.dumps(_format_commit_failed(exc))
     if gid:
+        # `text` is the phone/chat channel and must never carry a raw id
+        # (task #58) -- `goal_id` is kept below in the structured fields,
+        # which is where a caller that needs to look the Goal back up reads
+        # it from.
         text = (
             f"**Bound** workflow '{branch['name']}' to "
-            f"Goal '{goal['name']}'. Inspect the Goal with "
-            f'`read_graph target="goal" goal_id="{gid}"`.'
+            f"Goal '{goal['name']}'."
         )
         status = "bound"
     else:
@@ -2337,17 +2340,19 @@ def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
         return json.dumps({"status": "rejected", "error": str(exc)})
 
     if branch_version_id:
+        # `text` is the phone/chat channel and must never carry a raw id
+        # (task #58); `branch_version_id` is `<branch_def_id>@<hash>`, so
+        # printing it here leaked the branch id. The id stays in the
+        # structured `canonical_branch_version_id` field below.
         if scope_actor:
             text = (
-                f"Your canonical branch for Goal '{goal['name']}' is now "
-                f"`{branch_version_id}`. Your canonical runs prefer this "
-                "immutable version."
+                f"Your canonical branch for Goal '{goal['name']}' is set. "
+                "Your canonical runs prefer this immutable version."
             )
         else:
             text = (
-                f"Canonical branch for Goal '{goal['name']}' set to "
-                f"`{branch_version_id}`. New users forking this Goal will "
-                f"start from this version."
+                f"Canonical branch for Goal '{goal['name']}' set. "
+                f"New users forking this Goal will start from this version."
             )
     else:
         if scope_actor:
