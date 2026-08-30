@@ -572,7 +572,13 @@ __APP_FUNCTIONS__
 (async()=>{
   const out={};
   if(SCENARIO.kind==="send"){
-    await sendTurn(SCENARIO.message);
+    if(SCENARIO.secondMessage){
+      const first=sendTurn(SCENARIO.message);
+      sendTurn(SCENARIO.secondMessage);            // arrives while the first is in flight
+      await first; await new Promise(r=>setTimeout(r, 30));
+    } else {
+      await sendTurn(SCENARIO.message);
+    }
     if(SCENARIO.clickResend){
       const btn=els.thread.children.flatMap(n=>n.children).find(c=>c.tagName==="BUTTON");
       btn.click();                                   // the listener fires sendTurn (async)
@@ -591,11 +597,25 @@ __APP_FUNCTIONS__
     const req=SCENARIO.request;
     els["fb_"+req.request_id]=new El("input");
     els["fb_"+req.request_id].value=SCENARIO.feedback||"";
-    els["mute_"+req.request_id]=new El("input"); els["mute_"+req.request_id].checked=false;
-    if(SCENARIO.turnInFlight){ els["btn-send"].disabled=true; turnStartedAt=Date.now(); }
+    els["mute_"+req.request_id]=new El("input");
+    els["mute_"+req.request_id].checked=!!SCENARIO.mute;
+    (req.fields||[]).forEach(f=>{ els["f_"+req.request_id+"_"+f.name]=new El("input");
+      els["f_"+req.request_id+"_"+f.name].value=(SCENARIO.values||{})[f.name]||""; });
+    let release=null;
+    if(SCENARIO.turnInFlight){
+      // a real turn in flight: sendTurn is awaiting a converse that we release later
+      MCP.converse=async m=>{
+        converseCalls.push(m);
+        if(m==="first"){ await new Promise(r=>{ release=r; }); }
+        return {reply:"ok "+m};
+      };
+      sendTurn("first");
+    }
     const note=new El("div"); const buttons=[new El("button"), new El("button")];
     await answerRail(req, !!SCENARIO.dismiss, note, buttons);
-    await new Promise(r=>setTimeout(r, 20));           // the relayed sendTurn is not awaited
+    await new Promise(r=>setTimeout(r, 20));
+    out.noteBeforeRelease=note.textContent; out.callsBeforeRelease=converseCalls.slice();
+    if(release){ release(); await new Promise(r=>setTimeout(r, 30)); }
     out.answered=answered; out.refreshed=refreshed; out.note=note.textContent;
     out.converseCalls=converseCalls; out.messages=messages;
     out.buttonsEnabled=buttons.every(b=>!b.disabled);
@@ -644,12 +664,12 @@ def _run_app(tmp_path, scenario: dict) -> dict:
         re.search(pat, html).group(0)
         for pat in (r"const INFLIGHT_KEY=[^\n]*;", r"let turnStartedAt=[^\n]*;",
                     r"let historyLoaded = [^\n]*;", r"let inflightRestored = [^\n]*;",
-                    r"let railOpen = [^\n]*;")
+                    r"let railOpen = [^\n]*;", r"const sendQueue=[^\n]*;")
     )
     funcs = "\n".join(_js_function(html, f) for f in (
         "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
         "offerResend", "sendTurn", "checkForNewBuild", "loadHistory", "restoreInflight",
-        "answerLine", "answerRail",
+        "answerLine", "answerRail", "flushSendQueue",
     ))
     program = (_APP_SHIM
                .replace("__SCENARIO__", json.dumps(scenario))
@@ -849,10 +869,46 @@ def test_feedback_rides_along_and_not_now_is_relayed_too(tmp_path):
     assert out["converseCalls"] == [f'Not now: "{_TITLE}" \u2014 ask again after the PR is open']
 
 
-def test_no_relay_over_a_turn_in_flight(tmp_path):
+def test_a_relay_during_a_turn_waits_and_goes_out_when_the_turn_ends(tmp_path):
+    """Codex round 1 (P1): the second answer used to be dropped, and the note
+    claiming otherwise was set on a detached node. Now it queues in sendTurn
+    and flushes in order when the running turn ends."""
     out = _run_app(tmp_path, {"kind": "rail", "request": _REQ, "turnInFlight": True})
-    assert out["answered"] and out["converseCalls"] == []
-    assert "will see it when its current turn ends" in out["note"]
+    assert out["callsBeforeRelease"] == ["first"]                     # nothing overlapped
+    assert "will see it when its current turn ends" in out["noteBeforeRelease"]
+    assert out["converseCalls"] == ["first", f'Approved: "{_TITLE}"']  # flushed in order
+    assert [m["role"] for m in out["messages"]] == ["founder", "universe", "founder", "universe"]
+
+
+def test_a_general_answer_relays_the_values_given(tmp_path):
+    """Codex round 1 (P1): the rail is a general ask primitive; a choice or a
+    value must reach the universe, not a bare "Approved"."""
+    req = {"request_id": "req_2", "kind": "Choice", "title": "Which colour for the rail?",
+           "fields": [{"name": "colour", "label": "Colour", "type": "text"}]}
+    out = _run_app(tmp_path, {"kind": "rail", "request": req, "values": {"colour": "blue"},
+                              "payload": {"reply": "blue it is"}})
+    assert out["answered"][0]["values"] == {"colour": "blue"}
+    assert out["converseCalls"] == ['Answered "Which colour for the rail?" \u2014 colour: blue']
+
+
+def test_dont_ask_again_and_agent_authored_titles_are_framed(tmp_path):
+    req = {"request_id": "req_3", "kind": "API", "fields": [],
+           "title": 'Extend "github"\n  access\tnow'}
+    out = _run_app(tmp_path, {"kind": "rail", "request": req, "dismiss": True, "mute": True,
+                              "payload": {"reply": "understood"}})
+    assert out["answered"][0]["dont_ask_again"] is True
+    assert out["converseCalls"] == [
+        "Not now: \"Extend 'github' access now\" (and don\u2019t ask me this again)"
+    ]
+
+
+def test_enter_during_a_turn_queues_instead_of_overlapping(tmp_path):
+    """Codex round 1 (P1): sendTurn itself serialises; a second call while a
+    turn runs waits for it instead of overwriting the in-flight record."""
+    out = _run_app(tmp_path, {"kind": "send", "message": "hi", "payload": {"reply": "hello"},
+                              "secondMessage": "and this"})
+    assert out["converseCalls"] == ["hi", "and this"]
+    assert out["inflight"] is None
 
 
 def test_a_failed_answer_relays_nothing(tmp_path):

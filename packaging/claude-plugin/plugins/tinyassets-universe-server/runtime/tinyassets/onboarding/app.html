@@ -1005,8 +1005,20 @@
     catch(_e){ return null; }
   }
 
+  // Messages that arrive while a turn is in flight (a relayed rail answer, an
+  // Enter in the composer) wait here and go out in order when the turn ends.
+  // Two overlapping converse calls would each overwrite the other's in-flight
+  // record and could delete each other's recovery (Codex round 1, P1).
+  const sendQueue=[];
+  function flushSendQueue(){
+    if($("btn-send").disabled || !sendQueue.length) return;
+    const next=sendQueue.shift();
+    sendTurn(next.message, next.display, next.opts);
+  }
+
   async function sendTurn(message, display, opts){
     opts=opts||{};
+    if($("btn-send").disabled){ sendQueue.push({message, display, opts}); return; }
     // `display` is what the founder sees in their bubble (compact when a file is
     // attached); `message` is the full text sent to the universe (file content
     // embedded verbatim). They differ only when an attachment rode along.
@@ -1030,7 +1042,7 @@
       offerResend(message, display, err);
       // Deliberately NOT forgotten: the send failed, so the message is still the
       // user's to resend.
-    }finally{ $("btn-send").disabled=false; turnStartedAt=0; }
+    }finally{ $("btn-send").disabled=false; turnStartedAt=0; flushSendQueue(); }
   }
 
   // Explain a failed turn in the user's own terms and hand back a working
@@ -1915,12 +1927,26 @@
     return box;
   }
 
-  // What the founder's click says, in their own words: the answer and the
-  // ask it answers, plus anything they typed in "Anything to tell it?".
-  function answerLine(req, dismiss, feedback){
-    const title = (req && req.title) ? String(req.title).trim() : "your request";
-    let line = (dismiss ? "Not now: " : "Approved: ") + "\"" + title + "\"";
-    if(feedback) line += " \u2014 " + feedback;
+  // What the founder's click says. The verdict and any feedback are theirs;
+  // the ask's title is the AGENT's text, so it is quoted as metadata - one
+  // line, bounded, quotes escaped - never elevated to an instruction. A
+  // general ask with fields (a choice, a value) relays the values the
+  // founder gave, not a bare "Approved" (Codex round 1, P1); a standing
+  // "don't ask me this again" is said too (P2).
+  function answerLine(req, dismiss, payload){
+    const raw = (req && req.title) ? String(req.title) : "your request";
+    const ws = new RegExp("\\s+", "g");
+    const title = raw.replace(ws, " ").trim().slice(0, 120).split('"').join("'");
+    const values = (payload && payload.values) || {};
+    const given = Object.keys(values).filter(k => String(values[k]||"").trim() !== "");
+    let line;
+    if(dismiss) line = "Not now: \"" + title + "\"";
+    else if(given.length){
+      const parts = given.map(k => k + ": " + String(values[k]).trim().slice(0, 200));
+      line = "Answered \"" + title + "\" \u2014 " + parts.join("; ");
+    } else line = "Approved: \"" + title + "\"";
+    if(payload && payload.dont_ask_again) line += " (and don\u2019t ask me this again)";
+    if(payload && payload.feedback) line += " \u2014 " + payload.feedback;
     return line;
   }
 
@@ -1944,21 +1970,18 @@
       const r = await MCP.answerRequest(payload);
       if(r && r.error){ note.textContent = "Couldn't do that: " + (r.detail || r.error); }
       else {
-        note.textContent = r.receipt || (dismiss ? "Dismissed." : "Sent.");
-        railOpen = null;
-        await refreshRail();
         // The answer is the founder's own line in the thread. Live 2026-08-29:
         // after each approval the universe sat idle until the founder typed
         // "approved - go ahead", twice. The click IS that line; say it where
         // the universe listens, through the same send path as any message.
-        // Never over a turn in flight: the universe reads the request state
-        // itself, and its next reply would collide with this one.
-        const line = answerLine(req, dismiss, payload.feedback);
-        if($("btn-send").disabled){
-          note.textContent += " Your universe will see it when its current turn ends.";
-        } else {
-          sendTurn(line);
-        }
+        // While a turn is in flight the line waits in sendTurn's queue and
+        // goes out when the turn ends - never dropped, never overlapping.
+        const busy = $("btn-send").disabled;
+        note.textContent = (r.receipt || (dismiss ? "Dismissed." : "Sent."))
+          + (busy ? " Your universe will see it when its current turn ends." : "");
+        railOpen = null;
+        await refreshRail();
+        sendTurn(answerLine(req, dismiss, payload));
       }
     }catch(err){
       if(err.authRequired) return enterSignedOut();
