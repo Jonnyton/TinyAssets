@@ -547,11 +547,16 @@ function sessionExpired(){ messages.push({role:"session-expired"}); }
 function showConnect(){ messages.push({role:"connect"}); }
 const SCENARIO=__SCENARIO__;
 const converseCalls=[];
+let active=0, maxActive=0;
 const MCP={ converse: async m => {
   converseCalls.push(m);
-  if(SCENARIO.transportError){ const e=new Error("offline"); e.transport=true; throw e; }
-  const payloads=SCENARIO.payloads||[SCENARIO.payload];
-  return payloads[Math.min(converseCalls.length-1, payloads.length-1)];
+  active++; maxActive=Math.max(maxActive, active);
+  try{
+    if(SCENARIO.transportError){ const e=new Error("offline"); e.transport=true; throw e; }
+    if(SCENARIO.slowFirst && converseCalls.length===1){ await new Promise(r=>setTimeout(r, 40)); }
+    const payloads=SCENARIO.payloads||[SCENARIO.payload];
+    return payloads[Math.min(converseCalls.length-1, payloads.length-1)];
+  } finally { active--; }
 }};
 const CFG={build: SCENARIO.build||"b1"};
 const token=()=>"t";
@@ -584,7 +589,7 @@ __APP_FUNCTIONS__
       btn.click();                                   // the listener fires sendTurn (async)
       await new Promise(r=>setTimeout(r, 20));
     }
-    out.converseCalls=converseCalls;
+    out.converseCalls=converseCalls; out.maxActive=maxActive;
     out.notesRemoved=els.thread.children.filter(n=>n.removed).length;
     out.inflight=JSON.parse(localStorage.getItem(INFLIGHT_KEY)||"null");
     out.messages=messages;
@@ -906,8 +911,9 @@ def test_enter_during_a_turn_queues_instead_of_overlapping(tmp_path):
     """Codex round 1 (P1): sendTurn itself serialises; a second call while a
     turn runs waits for it instead of overwriting the in-flight record."""
     out = _run_app(tmp_path, {"kind": "send", "message": "hi", "payload": {"reply": "hello"},
-                              "secondMessage": "and this"})
+                              "secondMessage": "and this", "slowFirst": True})
     assert out["converseCalls"] == ["hi", "and this"]
+    assert out["maxActive"] == 1                     # never two converse calls in flight
     assert out["inflight"] is None
 
 
