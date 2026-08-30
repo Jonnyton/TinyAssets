@@ -13,7 +13,10 @@
 
 ## 2. Proof and close
 
-- [ ] 2.1 Live: the README fix job that was refused at 04:5xZ completes after
-      deploy without a write-cap refusal while the universe authors branches.
-- [ ] 2.2 Sync the delta into `openspec/specs/engine-run-admissions/spec.md`;
-      archive.
+- [x] 2.1 Live 2026-08-30 05:59:49Z (prod `6c8ab0ca`): write run
+      `473073dd02a444c1` admitted with no cap refusal right after three
+      `engine` rows (284, 286, 287 - the universe authoring its branch);
+      ledger for the hour: 9 reads / 7 writes. The run itself opened a wrong
+      PR (#2714, closed) - that is the `body-transform-replace` change, not
+      the budget.
+- [x] 2.2 Synced into `openspec/specs/engine-run-admissions/spec.md`; archived.
