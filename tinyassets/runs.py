@@ -249,6 +249,94 @@ def _recover_orphaned_runs_on_read(base_path: str | Path) -> int:
     return count
 
 
+def _migrate_runs_table_columns(conn: sqlite3.Connection) -> None:
+    """Add every post-initial ``runs`` column, then the indexes that depend on
+    them. Idempotent, concurrency-safe -- mirrors
+    ``scheduler.migrate_scheduler_schema``.
+
+    Four processes racing ``initialize_runs_db`` at boot can each read
+    ``PRAGMA table_info(runs)`` before any of them has issued its ``ALTER
+    TABLE``, then all try to add the same column -- every caller after the
+    first to actually run the ALTER gets ``OperationalError: duplicate
+    column name``. The probe and every ALTER below now run inside one
+    ``BEGIN IMMEDIATE`` so only one connection can hold the write lock at a
+    time; a caller that still loses a race against another *process*
+    racing between two separate transactions treats "duplicate column" as
+    proof the column already exists rather than a fatal error (belt and
+    braces on top of the lock).
+
+    Called from ``initialize_runs_db`` only, after the schema script and the
+    ``node_edit_audit`` migration have already run on the same connection --
+    the ``runs`` table is guaranteed to exist by this point.
+    """
+    from tinyassets.contribution_events import migrate_contribution_events_schema
+
+    def _alter(col: str, ddl: str) -> None:
+        try:
+            conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {ddl}")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
+
+    conn.commit()  # close any implicit transaction so BEGIN IMMEDIATE can take the lock
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # Migration: add run instrumentation columns. Provider telemetry
+        # landed first; executor identity fields are nullable observability.
+        existing_runs = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(runs)")
+        }
+        for col, ddl in (
+            ("provider_used", "TEXT"),
+            ("model",         "TEXT"),
+            ("token_count",   "INTEGER"),
+            ("owner_user_id", "TEXT NOT NULL DEFAULT ''"),
+            ("daemon_id",     "TEXT"),
+            ("runtime_instance_id", "TEXT"),
+            ("worker_id",     "TEXT"),
+            ("branch_task_id", "TEXT"),
+            ("queue_universe_id", "TEXT"),
+        ):
+            if col not in existing_runs:
+                _alter(col, ddl)
+        migrate_contribution_events_schema(conn)
+        # Phase A item 6 (Task #65a) — branch_version_id on runs. NULL for
+        # def-based runs (the existing path); populated only by
+        # execute_branch_version_async for version-based runs. Required by
+        # Task #48 contribution ledger + Task #53 route-back attribution.
+        if "branch_version_id" not in existing_runs:
+            _alter("branch_version_id", "TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_branch_version "
+            "ON runs(branch_version_id)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_branch_task "
+            "ON runs(branch_task_id) "
+            "WHERE branch_task_id IS NOT NULL AND branch_task_id != ''"
+        )
+        # Backs latest_run_activity_for_universe's liveness read (universe
+        # inspect / read_graph target=graph): a queue_universe_id + status
+        # filter over the whole table, on every status-read call, is a full
+        # scan without it. Created here -- AFTER the queue_universe_id
+        # migration above, not in the upfront schema string -- because an
+        # install whose ``runs`` table predates that column would otherwise
+        # hit "no such column" on this CREATE INDEX before the ALTER ever
+        # runs (the same class of hazard SCHEDULER_SCHEMA hit; see the
+        # migrate_scheduler_schema comment near the top of this function).
+        # CREATE INDEX IF NOT EXISTS is idempotent, so this also runs safely
+        # at every daemon boot against the existing production table.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_scope_status_finished "
+            "ON runs(queue_universe_id, status, finished_at)"
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
 def initialize_runs_db(base_path: str | Path) -> Path:
     """Ensure runs, events, and Phase 4 judgment tables exist. Idempotent."""
     schema = """
@@ -397,10 +485,7 @@ def initialize_runs_db(base_path: str | Path) -> Path:
         ON run_receipts(subject_id);
     """
     from tinyassets.branch_versions import BRANCH_VERSIONS_SCHEMA
-    from tinyassets.contribution_events import (
-        CONTRIBUTION_EVENTS_SCHEMA,
-        migrate_contribution_events_schema,
-    )
+    from tinyassets.contribution_events import CONTRIBUTION_EVENTS_SCHEMA
     from tinyassets.gate_events.schema import GATE_EVENT_SCHEMA
     from tinyassets.scheduler import SCHEDULER_SCHEMA, migrate_scheduler_schema
     schema = (
@@ -435,58 +520,7 @@ def initialize_runs_db(base_path: str | Path) -> Path:
                 conn.execute(
                     f"ALTER TABLE node_edit_audit ADD COLUMN {col} {ddl}"
                 )
-        # Migration: add run instrumentation columns. Provider telemetry
-        # landed first; executor identity fields are nullable observability.
-        existing_runs = {
-            row["name"]
-            for row in conn.execute("PRAGMA table_info(runs)")
-        }
-        for col, ddl in (
-            ("provider_used", "TEXT"),
-            ("model",         "TEXT"),
-            ("token_count",   "INTEGER"),
-            ("owner_user_id", "TEXT NOT NULL DEFAULT ''"),
-            ("daemon_id",     "TEXT"),
-            ("runtime_instance_id", "TEXT"),
-            ("worker_id",     "TEXT"),
-            ("branch_task_id", "TEXT"),
-            ("queue_universe_id", "TEXT"),
-        ):
-            if col not in existing_runs:
-                conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {ddl}")
-        migrate_contribution_events_schema(conn)
-        # Phase A item 6 (Task #65a) — branch_version_id on runs. NULL for
-        # def-based runs (the existing path); populated only by
-        # execute_branch_version_async for version-based runs. Required by
-        # Task #48 contribution ledger + Task #53 route-back attribution.
-        if "branch_version_id" not in existing_runs:
-            conn.execute(
-                "ALTER TABLE runs ADD COLUMN branch_version_id TEXT"
-            )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_runs_branch_version "
-            "ON runs(branch_version_id)"
-        )
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_branch_task "
-            "ON runs(branch_task_id) "
-            "WHERE branch_task_id IS NOT NULL AND branch_task_id != ''"
-        )
-        # Backs latest_run_activity_for_universe's liveness read (universe
-        # inspect / read_graph target=graph): a queue_universe_id + status
-        # filter over the whole table, on every status-read call, is a full
-        # scan without it. Created here -- AFTER the queue_universe_id
-        # migration above, not in the upfront schema string -- because an
-        # install whose ``runs`` table predates that column would otherwise
-        # hit "no such column" on this CREATE INDEX before the ALTER ever
-        # runs (the same class of hazard SCHEDULER_SCHEMA hit; see the
-        # migrate_scheduler_schema comment near the top of this function).
-        # CREATE INDEX IF NOT EXISTS is idempotent, so this also runs safely
-        # at every daemon boot against the existing production table.
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_runs_scope_status_finished "
-            "ON runs(queue_universe_id, status, finished_at)"
-        )
+        _migrate_runs_table_columns(conn)
     return runs_db_path(base_path)
 
 
