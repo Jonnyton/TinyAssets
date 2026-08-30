@@ -461,4 +461,3 @@ def charge_dispatch(
             conn.close()
     except (sqlite3.Error, OSError):
         return
-
