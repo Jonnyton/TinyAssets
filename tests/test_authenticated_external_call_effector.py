@@ -1305,3 +1305,29 @@ def test_replace_refuses_unknown_keys_takes_count_from_state_and_charges_bytes(m
     body = {"c": {"$ta.replace": {"in": text[:30], "old": "\u00e9", "new": "e", "count": 30}}}
     out, why = aec.apply_body_transforms(body, {}, allowed_state_keys=[], prior_effects={})
     assert why is None and out["c"] == "e" * 30
+
+
+def test_replace_refusal_shows_the_input_where_old_stops_matching():
+    """Live 2026-08-30 (runs 6cb4d9f48a9949be, 7a7a91c14b0d4b8b): the file
+    ended `rail.\n (2026-08-29)` - a space before the date - and the universe,
+    which cannot see the bytes, guessed `rail.\n(2026-08-29)` twice. The
+    refusal now shows the input around the closest partial match with the
+    whitespace visible, so the next attempt can be exact."""
+    from tinyassets.effectors import authenticated_external_call as aec
+
+    doc = "# T\n\nPatches by this universe are opened through the request rail.\n (2026-08-29)"
+    body = {"c": {"$ta.replace": {
+        "in": doc,
+        "old": "Patches by this universe are opened through the request rail.\n(2026-08-29)",
+        "new": "Patches by this universe are opened through the request rail. (2026-08-29)\n",
+    }}}
+    out, why = aec.apply_body_transforms(body, {}, allowed_state_keys=[], prior_effects={})
+    assert out is None
+    assert "closest partial match" in why
+    assert repr("request rail.\n (2026-08-29)")[1:-1] in why, why   # the space is visible
+    # nothing in common -> no window, the plain advice
+    body["c"]["$ta.replace"]["old"] = "zzzz"
+    out, why = aec.apply_body_transforms(body, {}, allowed_state_keys=[], prior_effects={})
+    assert out is None and "fetch the file" in why and "closest" not in why
+    assert aec._nearest_window("abc", "abcdef") is None      # under the 8-char floor
+    assert aec._nearest_window("x" * 50 + "needle-here-yes", "needle-here-no").startswith("x")
