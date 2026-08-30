@@ -1,9 +1,9 @@
 ## ADDED Requirements
 
 ### Requirement: Schedule controls are admitted by the owner's coarse scope and authorized by the row's universe ACL
-The actions that undo a schedule registration — `pause_schedule`, `unpause_schedule`,
-`unschedule_branch` — SHALL carry the same permission tier as `schedule_branch` (`costly`), so the
-coarse scope every authenticated founder holds admits the call to the handler. The handler SHALL be
+`pause_schedule`, `unpause_schedule` and `unschedule_branch` SHALL carry the same permission tier
+as the `schedule_branch` they undo (`costly`), so the coarse scope every authenticated founder
+holds admits the call to the handler. The handler SHALL be
 the authority: it MUST require an authenticated request-local identity (never a caller-supplied or
 environment-derived actor) and a CURRENT admin ACL on the schedule row's own universe before
 mutating the row. Platform `admin` scope MUST NOT be required to control a schedule the caller's
