@@ -1588,9 +1588,11 @@ def test_served_write_graph_rejects_duplicate_effect_sinks(monkeypatch):
     assert calls["n"] == 0
 
 
-def test_served_write_graph_caps_effect_node_count(monkeypatch):
-    """A served channel graph is bounded to a small number of effect-declaring nodes
-    (structural per-build ceiling on outbound volume)."""
+def test_served_write_graph_has_no_shape_cap(monkeypatch):
+    """Founder 2026-08-30 (`no-graph-size-caps`): a universe may build as large
+    a graph as it wants - 300 nodes, 60 of them effect nodes - the served
+    surface refuses none of it. Usage (admissions, consent, at-most-once) is
+    what bounds a big graph; its shape is the user's."""
     import tinyassets.api.extensions as ext
     import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
@@ -1600,23 +1602,14 @@ def test_served_write_graph_caps_effect_node_count(monkeypatch):
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     calls = {"n": 0}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
-    over = s._SERVED_MAX_EFFECT_NODES + 1
     nodes = [
-        {"node_id": f"n{i}", "effects": ["authenticated_external_call"]}
-        for i in range(over)
-    ]
+        {"node_id": f"e{i}", "effects": ["authenticated_external_call"]} for i in range(60)
+    ] + [{"node_id": f"p{i}", "prompt_template": "x"} for i in range(240)]
     out = json.loads(s.write_graph(target="branch", operation="create",
                                    payload_json=json.dumps({"name": "x", "node_defs": nodes})))
-    assert "too many effect-declaring nodes" in out.get("error", "")
-    assert calls["n"] == 0
-    # At the cap it builds.
-    at = [
-        {"node_id": f"n{i}", "effects": ["authenticated_external_call"]}
-        for i in range(s._SERVED_MAX_EFFECT_NODES)
-    ]
-    s.write_graph(target="branch", operation="create",
-                  payload_json=json.dumps({"name": "x", "node_defs": at}))
+    assert "error" not in out, out
     assert calls["n"] == 1
+    assert not hasattr(s, "_SERVED_MAX_EFFECT_NODES") and not hasattr(s, "_SERVED_MAX_NODES")
 
 
 def test_served_write_graph_byte_cap_counts_utf8(monkeypatch):
@@ -1631,8 +1624,9 @@ def test_served_write_graph_byte_cap_counts_utf8(monkeypatch):
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     calls = {"n": 0}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
-    # 200k of a 3-byte char = 600k bytes > 256k cap, but only 200k chars.
-    payload = "☃" * (200 * 1024)
+    # Just over the byte bound in 3-byte chars: fewer CHARS than the bound,
+    # more BYTES - the bound must count encoded bytes.
+    payload = "☃" * (s._SERVED_MAX_SPEC_BYTES // 3 + 1024)
     out = json.loads(s.write_graph(target="branch", operation="create", payload_json=payload))
     assert "too large" in out.get("error", "").lower()
     assert calls["n"] == 0
@@ -1669,27 +1663,11 @@ def test_served_write_graph_payload_too_large(monkeypatch):
     calls = {"n": 0}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
     out = json.loads(s.write_graph(target="branch", operation="create",
-                                   payload_json="x" * (300 * 1024)))
+                                   payload_json="x" * (s._SERVED_MAX_SPEC_BYTES + 1024)))
     assert "too large" in out.get("error", "").lower()
     assert calls["n"] == 0
-
-
-def test_served_write_graph_too_many_nodes(monkeypatch):
-    """A spec past the node cap is a structured rejection, not a persisted build."""
-    import tinyassets.api.extensions as ext
-    import tinyassets.engine_mcp_http as http
-    from tinyassets import engine_mcp_server as s
-
-    _bind_ids(monkeypatch, graph="u-9")
-    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
-    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
-    calls = {"n": 0}
-    monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
-    spec = {"name": "x", "node_defs": [{"node_id": f"n{i}"} for i in range(101)]}
-    out = json.loads(s.write_graph(target="branch", operation="create",
-                                   payload_json=json.dumps(spec)))
-    assert "too many nodes" in out.get("error", "")
-    assert calls["n"] == 0
+    # The bound is transport sanity, not a shape cap: a legitimately large
+    # graph under it builds (see test_served_write_graph_has_no_shape_cap).
 
 
 def test_served_write_graph_refused_off_allowlist(monkeypatch):

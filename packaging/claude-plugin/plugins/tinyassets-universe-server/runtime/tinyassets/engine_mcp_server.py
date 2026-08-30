@@ -537,15 +537,14 @@ _SERVED_NODE_TEXT_FIELDS = (
     "node_type", "model_hint",
 )
 _SERVED_STATE_FIELD_TEXT = ("name", "description", "reducer")
-#: DoS bounds on a served build payload.
-_SERVED_MAX_SPEC_BYTES = 256 * 1024
-_SERVED_MAX_NODES = 100
-#: Effect-spam bound: a served-built graph may declare at most this many
-#: effect-carrying nodes (each fires at most once per run — loops/invoke are already
-#: rejected). Structural per-build ceiling on outbound volume while a proper per-root-run
-#: effect-dispatch cap (all surfaces) is a tracked follow-up; run-time gates (consent,
-#: connection grant, outbound flag, SSRF) still fire per dispatch regardless.
-_SERVED_MAX_EFFECT_NODES = 5
+#: Transport sanity bound on ONE served build payload (matches the effector's
+#: transformed-body cap). It is not a shape cap: there is NO maximum on nodes,
+#: effect nodes or edges in a branch, anywhere (founder 2026-08-30, change
+#: `no-graph-size-caps`: "the entire point of the app is that users can make
+#: and share and remix as complex a graph workflow as they want"). What bounds
+#: a big graph is usage - engine admissions per run/hour, per-effect consent,
+#: at-most-once per node per run, the sandbox's limits - never its size.
+_SERVED_MAX_SPEC_BYTES = 8 * 1024 * 1024
 
 
 def _sanitize_served_branch_spec(spec: dict) -> None:
@@ -695,13 +694,9 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
             for f in _SERVED_NODE_TEXT_FIELDS:
                 if f in n and not isinstance(n[f], str):
                     raise ValueError(f"node field '{f}' must be a string")
-    if total_nodes > _SERVED_MAX_NODES:
-        raise ValueError(f"too many nodes (max {_SERVED_MAX_NODES})")
-    if effect_nodes > _SERVED_MAX_EFFECT_NODES:
-        raise ValueError(
-            f"too many effect-declaring nodes (max {_SERVED_MAX_EFFECT_NODES}); "
-            "keep a served channel graph small"
-        )
+    # No shape cap (see _SERVED_MAX_SPEC_BYTES): total_nodes / effect_nodes
+    # are counted for the build evidence only.
+    del total_nodes, effect_nodes
 
 
 # ── Served EDIT surface (write_graph operation="patch", served-agent-build-run §2.2) ──
