@@ -472,6 +472,21 @@ def initialize_runs_db(base_path: str | Path) -> Path:
             "ON runs(branch_task_id) "
             "WHERE branch_task_id IS NOT NULL AND branch_task_id != ''"
         )
+        # Backs latest_run_activity_for_universe's liveness read (universe
+        # inspect / read_graph target=graph): a queue_universe_id + status
+        # filter over the whole table, on every status-read call, is a full
+        # scan without it. Created here -- AFTER the queue_universe_id
+        # migration above, not in the upfront schema string -- because an
+        # install whose ``runs`` table predates that column would otherwise
+        # hit "no such column" on this CREATE INDEX before the ALTER ever
+        # runs (the same class of hazard SCHEDULER_SCHEMA hit; see the
+        # migrate_scheduler_schema comment near the top of this function).
+        # CREATE INDEX IF NOT EXISTS is idempotent, so this also runs safely
+        # at every daemon boot against the existing production table.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_scope_status_finished "
+            "ON runs(queue_universe_id, status, finished_at)"
+        )
     return runs_db_path(base_path)
 
 
@@ -1472,6 +1487,116 @@ def latest_run_by_name(
             params,
         ).fetchone()
     return _row_to_run(row) if row is not None else None
+
+
+# Single source of truth for the liveness lookup's query text, so the
+# EXPLAIN QUERY PLAN test that asserts it uses idx_runs_scope_status_finished
+# cannot silently drift from the real query the way it did in an earlier
+# round (Codex ADAPT round 3, 2026-08-29, founder note: the committed
+# EXPLAIN test kept explaining the OLD `status != ?` predicate after the
+# predicate itself moved on). The test imports and reuses this constant
+# rather than retyping the SQL.
+LATEST_RUN_ACTIVITY_SQL = (
+    "SELECT MAX(COALESCE(finished_at, started_at)) AS ts "
+    "FROM runs WHERE queue_universe_id = ? AND status IN (?, ?)"
+)
+
+
+def latest_run_activity_for_universe(
+    base_path: str | Path,
+    *,
+    universe_id: str,
+) -> float | None:
+    """Newest epoch-seconds activity (finished_at, else started_at) for
+    runs that actually EXECUTED under ``universe_id``.
+
+    Used by universe liveness telemetry (``_last_activity_at`` in
+    ``tinyassets.api.universe``) to attribute activity to automation and
+    schedule runs, which record here but never touch the retired fleet
+    daemon loop's heartbeat files (``activity.log``,
+    ``.runtime_status.json``).
+
+    Scoped by ``queue_universe_id`` rather than ``actor``: the two are
+    independent columns on ``runs`` with no DB-level equality invariant
+    (:func:`create_run` accepts them as separate arguments), so a row
+    could in principle carry one universe's ``actor`` and another's
+    ``queue_universe_id``. ``queue_universe_id`` is the authoritative
+    execution scope -- every universe-run entry point
+    (``enqueue_universe_branch_run``, the automation attempt runner, the
+    interactive ``run_branch`` MCP action) passes ``_enqueue_universe_id``
+    through :func:`_execute_branch_core` to it -- so this scopes on that
+    alone rather than adding an ``actor`` OR-predicate (Codex ADAPT,
+    2026-08-29, reproduced the actor/queue_universe_id-mismatch leak this
+    closes).
+
+    POSITIVE allowlist -- counts ONLY ``status IN ('running', 'completed')``
+    -- rather than a denylist of non-executing statuses. A denylist kept
+    finding new holes across three review rounds (Codex ADAPT round 3,
+    2026-08-29): a run refused at provider admission transitions
+    ``queued -> failed`` in :func:`_execute_branch_core` / :func:`resume_run`
+    with error text ``"Provider authority admission failed: ..."`` BEFORE
+    the worker ever submits the graph for execution, so ``failed`` alone
+    does not mean the run ran -- and the uptime canary was reading that
+    fresh ``failed`` timestamp as real work. ``cancelled`` has the same
+    ambiguity: a still-``queued`` run can be cancelled before ever running.
+    ``resumed`` is excluded too, deliberately: :func:`resume_run` sets it
+    AFTER provider admission succeeds but BEFORE :func:`_invoke_graph_resume`
+    compiles the branch and flips the row to ``running`` -- a crash in that
+    narrow window leaves the row permanently ``resumed``
+    (:func:`recover_in_flight_runs` only sweeps ``queued``/``running``, not
+    ``resumed``), so it is not proven to reliably imply the worker actually
+    ran a node the way ``running`` does.
+
+    This means a universe whose every run is refused at admission,
+    cancelled before starting, or dies before actually executing reads as
+    having NO activity -- which is exactly what the uptime canary needs: it
+    exists to detect when nothing real is happening, and crediting an
+    admission-refused ``failed`` row as activity was reporting the
+    opposite.
+
+    The schema has no execution-start (dequeue) timestamp or transition
+    history to do better than this: ``started_at`` is stamped at
+    row-creation time regardless of status (:func:`create_run`), and
+    ``run_events`` pending rows are written synchronously before worker
+    submission, so neither is authoritative about whether a worker actually
+    ran a node. Counting genuinely-executed ``failed``/``cancelled``/
+    ``interrupted``/``resumed`` runs precisely would need an authoritative
+    ``execution_started_at``/``dequeued_at`` field or a transition ledger --
+    not present today.
+
+    Read-only: opens the DB with SQLite ``mode=ro`` and a short (2s) busy
+    timeout, and does NOT call ``initialize_runs_db`` -- a universe that
+    has never run should not gain a ``.runs.db``, and this is a liveness
+    *read* on a public MCP surface that must never block behind, or wait
+    long on, a writer holding the DB (Codex ADAPT: the shared read/write
+    ``_connect`` used a 30s busy timeout and ran ``PRAGMA
+    journal_mode=WAL`` -- a write -- on every read). A locked or missing
+    DB, a malformed stored value (``float()`` runs inside the same try as
+    the query -- Codex ADAPT round 2), or any other lookup error, degrades
+    to ``None`` (no signal) rather than raising or blocking, matching the
+    read-only fail-soft contract of ``conversation_store.load_recent_readonly``.
+    """
+    uid = (universe_id or "").strip()
+    if not uid:
+        return None
+    db_path = runs_db_path(base_path)
+    if not db_path.is_file():
+        return None
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
+        row = conn.execute(
+            LATEST_RUN_ACTIVITY_SQL,
+            (uid, RUN_STATUS_RUNNING, RUN_STATUS_COMPLETED),
+        ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return float(row[0])
+    except (sqlite3.Error, TypeError, ValueError):
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def get_run_by_branch_task_id(

@@ -6,11 +6,12 @@ The largest single submodule extracted from the monolith: 27 universe-tool
 subscriptions, goal-pool, daemon overview, tier config), the ``WRITE_ACTIONS``
 dispatch table + 14 ``_extract_*`` extractor closures, the ledger dispatcher
 trio (``_ledger_target_dir`` / ``_scope_universe_response`` /
-``_dispatch_with_ledger``), the daemon telemetry block (``_last_activity_at``,
-``_staleness_bucket``, ``_phase_human``, ``_compute_accept_rate_from_db``,
-``_compute_word_count_from_files``, ``_daemon_liveness``,
-``_parse_activity_line``), and the Pattern A2 body of the ``universe()`` MCP
-tool exposed as ``_universe_impl(action, **kwargs)``.
+``_dispatch_with_ledger``), the daemon telemetry block (``_last_activity_at``
+-- newest of the retired fleet loop's heartbeat files and started runs in the
+runs ledger, scoped to this universe -- ``_staleness_bucket``, ``_phase_human``,
+``_compute_accept_rate_from_db``, ``_compute_word_count_from_files``,
+``_daemon_liveness``, ``_parse_activity_line``), and the Pattern A2 body of
+the ``universe()`` MCP tool exposed as ``_universe_impl(action, **kwargs)``.
 
 The ``@mcp.tool() def universe(...)`` decorator + 23-arg signature + chatbot-
 facing docstring stays in ``tinyassets/universe_server.py`` (Pattern A2) so
@@ -51,6 +52,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -845,6 +847,20 @@ def _dispatch_with_ledger(
 # `.runtime_status.json`, which is refreshed while the graph process is alive,
 # and PROGRAM.md + work_targets.json to disambiguate "no premise" vs
 # "starved for work" vs "actually running".
+#
+# The fleet daemon loop that wrote those three files was retired on
+# 2026-08-29 (`user-owned-automations`); real activity since then comes
+# from automation runs (`tinyassets.automations` /
+# `tinyassets.runtime.assigned_queue_consumer`) and schedule runs
+# (`tinyassets.scheduler`), both recorded in the runs ledger
+# (`tinyassets.runs`) as rows scoped to this universe via
+# ``queue_universe_id``. `_last_activity_at` takes the newest across the
+# file-based signals AND actually-started runs in the ledger so a universe
+# running only through those paths does not read as dormant. It deliberately
+# does NOT consult the automations store: `AutomationStore.last_finished_at`
+# is bumped on a REFUSED attempt too (Codex ADAPT, 2026-08-29), so treating
+# it as activity could keep the canary green while every requested
+# automation is refused. Only a run that actually started counts.
 
 
 # Staleness buckets, in seconds. Chosen to match the lead's spec: <1h fresh,
@@ -854,49 +870,175 @@ _STALE_FRESH_SECONDS = 60 * 60
 _STALE_IDLE_SECONDS = 24 * 60 * 60
 
 
-def _last_activity_at(udir: Path, status: dict[str, Any] | None) -> str | None:
-    """Return the most recent heartbeat ISO timestamp we can find.
+def _file_based_last_activity(
+    udir: Path, status: dict[str, Any] | None,
+) -> datetime | None:
+    """Newest on-disk heartbeat from the retired fleet daemon loop's files.
 
     Uses the newest of activity.log mtime (node progress),
     .runtime_status.json mtime (running-process heartbeat), status.json's
-    `last_updated`, and status.json file mtime. Returns None only if nothing
-    on disk indicates the daemon ever ran.
+    `last_updated`, and status.json file mtime, in that precedence order
+    (unchanged from before the runs-ledger and automations-store sources
+    were added in `_last_activity_at`). Returns None if none of these files
+    exist or parse.
+
+    `status.json`'s `last_updated` is user/daemon-authored free text on a
+    public MCP read, so it gets the same treatment as the runs-ledger epoch
+    in `_safe_epoch_to_datetime`: the UTC-normalization conversion
+    (`.astimezone(timezone.utc)`) can raise `OverflowError` for an
+    out-of-range offset combination (an extreme year paired with a large
+    UTC offset can shift the result past `datetime.min`/`datetime.max` --
+    Codex ADAPT round 2 reproduced this with both a 9999 negative-offset
+    and a year-1 positive-offset value) even though `datetime.fromisoformat`
+    itself parsed successfully, so the conversion is caught too, not just
+    the parse. A successfully parsed value more than 5 minutes in the
+    future is also rejected, matching the runs-ledger hygiene -- and, per
+    Codex ADAPT round 3's founder note, so is every file-mtime candidate
+    below (`activity.log`, `.runtime_status.json`, and the `status.json`
+    mtime fallback): a spoofed or clock-skewed future mtime shouldn't read
+    as "just happened" any more than a corrupt runs-ledger timestamp should.
     """
+    def _reject_future(candidate: datetime) -> datetime | None:
+        if (candidate - datetime.now(timezone.utc)).total_seconds() > 300:
+            return None
+        return candidate
+
     heartbeat_candidates: list[datetime] = []
 
     for path in (udir / "activity.log", udir / ".runtime_status.json"):
         if not path.exists():
             continue
         try:
-            heartbeat_candidates.append(
-                datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc),
-            )
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
         except OSError:
-            pass
+            continue
+        accepted = _reject_future(mtime)
+        if accepted is not None:
+            heartbeat_candidates.append(accepted)
     if heartbeat_candidates:
-        return max(heartbeat_candidates).isoformat()
+        return max(heartbeat_candidates)
 
     if status and isinstance(status, dict):
         last_updated = status.get("last_updated")
         if isinstance(last_updated, str) and last_updated:
+            parsed: datetime | None
             try:
                 parsed = datetime.fromisoformat(last_updated)
                 if parsed.tzinfo is None:
                     parsed = parsed.replace(tzinfo=timezone.utc)
-                return parsed.astimezone(timezone.utc).isoformat()
-            except ValueError:
-                pass
+                else:
+                    parsed = parsed.astimezone(timezone.utc)
+            except (ValueError, OverflowError, OSError):
+                parsed = None
+            if parsed is not None:
+                parsed = _reject_future(parsed)
+            if parsed is not None:
+                return parsed
 
     status_path = udir / "status.json"
     if status_path.exists():
         try:
-            return datetime.fromtimestamp(
+            mtime = datetime.fromtimestamp(
                 status_path.stat().st_mtime, tz=timezone.utc,
-            ).isoformat()
+            )
         except OSError:
-            pass
+            mtime = None
+        if mtime is not None:
+            accepted = _reject_future(mtime)
+            if accepted is not None:
+                return accepted
 
     return None
+
+
+def _safe_epoch_to_datetime(epoch: float) -> datetime | None:
+    """Convert an epoch-seconds activity timestamp to a UTC datetime, or None.
+
+    ``_last_activity_at`` feeds a public MCP read (`read_graph target=graph`),
+    so a corrupt or adversarial timestamp in the runs DB must degrade to "no
+    signal" rather than raising or falsely reporting freshness (Codex ADAPT,
+    2026-08-29): rejects non-finite values, non-positive values, and values
+    more than 5 minutes in the future (clock-skew tolerance beyond which we
+    no longer trust it as "now"). Also wraps `datetime.fromtimestamp` itself
+    -- a finite float can still be large enough in magnitude to raise
+    `OverflowError` or `OSError` there on some platforms.
+    """
+    try:
+        if not math.isfinite(epoch) or epoch <= 0:
+            return None
+        if epoch > time.time() + 300:
+            return None
+        return datetime.fromtimestamp(epoch, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _latest_run_activity_at(universe_id: str) -> datetime | None:
+    """Newest actually-started run for ``universe_id`` in the runs ledger.
+
+    Automation and schedule runs are recorded by `tinyassets.runs` with
+    ``queue_universe_id`` set to the universe they ran under -- the
+    authoritative execution scope every universe-run entry point populates
+    (the automation attempt runner, the schedule tick's
+    `enqueue_universe_branch_run`, and the interactive `run_branch` MCP
+    action all pass `_enqueue_universe_id` through to it) -- but never touch
+    the retired fleet daemon loop's heartbeat files, so without this a
+    universe that is actively completing runs would still read as dormant.
+
+    Delegates the actually-started / non-queued filtering and the
+    read-only, short-timeout, scope-correct query to
+    `tinyassets.runs.latest_run_activity_for_universe`. Read-only and fails
+    soft here too: no `.runs.db` yet (never run), a locked DB, or any other
+    lookup error is not a programming error -- it's logged at debug and
+    treated as no signal, never raised through a status read.
+    """
+    if not universe_id:
+        return None
+    try:
+        from tinyassets.runs import latest_run_activity_for_universe
+
+        epoch = latest_run_activity_for_universe(
+            _base_path(), universe_id=universe_id,
+        )
+    except Exception as exc:
+        logger.debug(
+            "runs-ledger activity lookup failed for %s: %s", universe_id, exc,
+        )
+        return None
+    if epoch is None:
+        return None
+    return _safe_epoch_to_datetime(epoch)
+
+
+def _last_activity_at(udir: Path, status: dict[str, Any] | None) -> str | None:
+    """Return the most recent heartbeat ISO timestamp we can find.
+
+    The retired fleet daemon loop wrote `activity.log` / `.runtime_status.json`
+    / `status.json` directly, so those files went stale the moment
+    `user-owned-automations` retired that loop. This now returns the newest
+    across two source families: (1) `_file_based_last_activity` -- the
+    original on-disk heartbeat files, kept for universes/tests that still
+    only have those; and (2) the runs ledger (`_latest_run_activity_at`) --
+    automation and schedule runs recorded via `tinyassets.runs`, scoped by
+    `queue_universe_id` and filtered to runs that actually started. Does NOT
+    consult the automations store -- see the module comment above
+    `_STALE_FRESH_SECONDS` for why. Returns None only if neither family has
+    anything.
+    """
+    candidates: list[datetime] = []
+
+    file_ts = _file_based_last_activity(udir, status)
+    if file_ts is not None:
+        candidates.append(file_ts)
+
+    universe_id = udir.name
+    run_ts = _latest_run_activity_at(universe_id)
+    if run_ts is not None:
+        candidates.append(run_ts)
+
+    if not candidates:
+        return None
+    return max(candidates).isoformat()
 
 
 def _staleness_bucket(last_activity_iso: str | None) -> str:
@@ -1194,8 +1336,9 @@ def _worker_liveness(
     """Supervisor-heartbeat liveness, distinct from content activity.
 
     ``last_activity_at`` answers "when did the daemon last DO something"
-    (activity.log / .runtime_status.json mtimes) — it goes stale both
-    when the worker is wedged AND when there is simply nothing to do.
+    (newest of activity.log / .runtime_status.json mtimes, or a run that
+    actually started in the runs ledger) — it goes stale both when the
+    worker is wedged AND when there is simply nothing to do.
     This field answers "is the worker process alive right now" from the
     ``.worker_supervisor.json`` beat the served `AssignedQueueConsumer`
     writes (docs/specs/daemon-liveness-watchdog.md). Consumers (the activity
