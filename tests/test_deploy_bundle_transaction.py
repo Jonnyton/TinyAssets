@@ -24,7 +24,7 @@ Which test is the discriminator for which guarantee
 ---------------------------------------------------
 Round 2 noted the mutation exercise left no durable artifact, so the map lives
 here. Each row was verified by flipping that guarantee in ``deploy_fail_safe.sh``
-and confirming the named test goes red (36/36 red, 2026-08-29):
+and confirming the named test goes red (38/38 red, 2026-08-30):
 
 ===============================================  ==================================================
 guarantee in deploy_fail_safe.sh                 discriminating test
@@ -46,6 +46,8 @@ the dirty marker is written, and blocks          ``dirty_marker_blocks_the_next_
 the stage is claimed into a private copy         ``valid_bundle_snapshots_installs``
 sidecar images are pinned and expected           ``invalid_bundle_is_refused``
 the daemon keeps env_file / /data / healthcheck  ``invalid_bundle_is_refused``
+the parser accepts Compose v5's mem_limit STRING  ``valid_bundle_snapshots_installs``
+env_file is read from the uninterpolated render   ``valid_bundle_snapshots_installs``
 the SOURCE interpolates ``${TINYASSETS_IMAGE}``  ``invalid_bundle_is_refused``
 restore uses the manifest, not the contract      ``restore_puts_back_the_recorded_mode``
 a missing manifest row fails the restore         ``restore_of_an_incomplete_snapshot``
@@ -75,7 +77,19 @@ Three mutations SURVIVED a first pass, and none was a weak test to wave away:
 
 Where a test needs a precondition like that to stay discriminating, it asserts
 the precondition rather than relying on it.
-"""
+
+The fake is not the oracle. #2685 shipped 60/60 green and was refused by the
+first production deploy: the fake modelled `env_file` as a passthrough key, and
+Compose v5 resolves it into `environment` and drops it. #2696 fixed that, and
+this commit closed the two divergences it left -- `mem_limit` rendered as an int
+where Compose emits the string '4294967296', and a named volume missing its
+`volume: {}` shape. Both were load-bearing: against the int-emitting fake, a
+validator mutated to reject numeric strings still passes 60/60.
+
+A corrected fake is still only what its author believed, so the validator is
+ALSO pinned against a capture of the real rendering in
+``tests/test_deploy_bundle_validator.py``, which needs no docker and runs on
+Windows too."""
 
 from __future__ import annotations
 
@@ -184,14 +198,21 @@ def interpolate(text, values):
 
 
 def to_bytes(value):
+    """Byte count as a STRING, which is what Compose v5 emits.
+
+    Measured on the droplet 2026-08-30: `mem_limit: 4g` renders as
+    '4294967296'. Returning an int here left the suite exercising a shape
+    production does not produce -- the same class of divergence that made
+    #2685 green in CI and refused on the box.
+    """
     if isinstance(value, int):
-        return value
+        return str(value)
     text = str(value).strip().lower()
     for suffix, factor in (("g", 1024 ** 3), ("m", 1024 ** 2), ("k", 1024)):
         if text.endswith(suffix):
-            return int(float(text[:-1]) * factor)
+            return str(int(float(text[:-1]) * factor))
     try:
-        return int(text)
+        return str(int(text))
     except ValueError:
         return value
 
@@ -207,22 +228,56 @@ def normalise_volumes(volumes):
             continue
         source, target = parts[0], parts[1]
         options = parts[2].split(",") if len(parts) > 2 else []
-        out.append(
-            {
-                "type": "bind" if source.startswith("/") else "volume",
+        if source.startswith("/"):
+            out.append(
+                {
+                    "type": "bind",
+                    "source": source,
+                    "target": target,
+                    "read_only": "ro" in options,
+                }
+            )
+        else:
+            # A named volume carries `volume: {}` and NO `read_only` key unless
+            # it is actually read-only -- measured on the droplet 2026-08-30.
+            entry = {
+                "type": "volume",
                 "source": source,
                 "target": target,
-                "read_only": "ro" in options,
+                "volume": {},
             }
-        )
+            if "ro" in options:
+                entry["read_only"] = True
+            out.append(entry)
     return out
+
+
+def inline_env_files(service):
+    """Read the env files into `environment`, as the real CLI does.
+
+    Dropping the key alone left `environment` unfaithful, so a check added
+    against a value that reaches the daemon THROUGH an env file would pass here
+    and fail on the box. Service-level `environment` wins, as in Compose.
+    """
+    paths = service.get("env_file") or []
+    if isinstance(paths, (str, dict)):
+        paths = [paths]
+    merged = {}
+    for entry in paths:
+        path = entry if isinstance(entry, str) else (entry or {}).get("path", "")
+        if path:
+            merged.update(read_env_file(path))
+    merged.update(service.get("environment") or {})
+    if merged:
+        service["environment"] = merged
+    return service
 
 
 def compose_config(compose_file, env_values, interpolate_values=True):
     """Mirror the one Compose v5.1.3 behaviour the validator depends on: the
-    default render DROPS the `env_file` key (the real CLI inlines those files
-    into `environment`; this fake only drops the key and does not read them,
-    so its `environment` is not Compose-faithful); `--no-interpolate` keeps
+    default render inlines every `env_file` into `environment` and then DROPS
+    the key, as the real CLI does (a missing file is skipped here, where the
+    real CLI errors -- the one remaining divergence); `--no-interpolate` keeps
     `env_file`, normalised to {path, required} mappings, and leaves `${VAR}`
     unresolved. The earlier fake kept `env_file` verbatim, which is why #2685
     was green in CI and refused in production ("daemon.env_file is []",
@@ -246,7 +301,11 @@ def compose_config(compose_file, env_values, interpolate_values=True):
             service["volumes"] = normalise_volumes(service["volumes"])
         env_files = service.pop("env_file", None)
         if interpolate_values:
-            pass                                   # inlined into environment; key dropped
+            # Inlined into environment, then the key is dropped -- both halves,
+            # so `environment` is what the daemon would actually receive.
+            service["env_file"] = env_files
+            service = inline_env_files(service)
+            service.pop("env_file", None)
         elif env_files is not None:
             if isinstance(env_files, str):
                 env_files = [env_files]
@@ -679,6 +738,16 @@ def box(tmp_path: Path) -> Box:
     )
     fake.unit_file.write_text(OLD_UNIT, encoding="utf-8")
     fake.env_file.write_text(f"TINYASSETS_IMAGE={OLD_IMAGE}\n", encoding="utf-8")
+    # Every env file the compose lists, so the fake inlines the same set the
+    # real CLI would rather than silently skipping the absent ones. Real Compose
+    # errors on a missing env_file, so an absent one is not a shape production
+    # can be in.
+    for extra in (
+        "agent-interchange.env",
+        "request-idempotency.env",
+        "app-ingress.env",
+    ):
+        (fake.env_file.parent / extra).write_text("", encoding="utf-8")
 
     fake_bins = [("docker", FAKE_DOCKER), ("systemctl", FAKE_SYSTEMCTL)]
     # Only shadow install(1)/rm(1) where the real ones are where the wrappers
