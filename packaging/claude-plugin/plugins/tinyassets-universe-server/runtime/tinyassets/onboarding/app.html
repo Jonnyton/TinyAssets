@@ -1938,11 +1938,17 @@
     const ws = new RegExp("\\s+", "g");
     const title = raw.replace(ws, " ").trim().slice(0, 120).split('"').join("'");
     const values = (payload && payload.values) || {};
+    // A secret field's VALUE never enters the thread: the key went to the
+    // vault through answerRequest; the line says only that it was provided.
+    const secretNames = new Set((req && req.fields ? req.fields : [])
+      .filter(f => f && f.type === "secret").map(f => f.name));
     const given = Object.keys(values).filter(k => String(values[k]||"").trim() !== "");
     let line;
     if(dismiss) line = "Not now: \"" + title + "\"";
     else if(given.length){
-      const parts = given.map(k => k + ": " + String(values[k]).trim().slice(0, 200));
+      const parts = given.map(k => secretNames.has(k)
+        ? k + ": (provided)"
+        : k + ": " + String(values[k]).trim().slice(0, 200));
       line = "Answered \"" + title + "\" \u2014 " + parts.join("; ");
     } else line = "Approved: \"" + title + "\"";
     if(payload && payload.dont_ask_again) line += " (and don\u2019t ask me this again)";

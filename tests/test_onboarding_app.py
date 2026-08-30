@@ -8,6 +8,7 @@ user against the DEPLOYED cloud daemon (tinyassets.io) — never a local run.
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -923,3 +924,19 @@ def test_a_failed_answer_relays_nothing(tmp_path):
     })
     assert out["converseCalls"] == [] and out["refreshed"] == 0
     assert out["note"].startswith("Couldn't do that")
+
+
+def test_a_pasted_secret_never_reaches_the_thread(tmp_path):
+    """A connect_http ask carries the key in `values`; the relayed line must
+    say it was provided and nothing more."""
+    req = {"request_id": "req_4", "kind": "API", "title": "GitHub key so I can open your pull request",
+           "fields": [{"name": "secret", "label": "Paste the key", "type": "secret"},
+                      {"name": "note", "label": "Note", "type": "text"}]}
+    out = _run_app(tmp_path, {"kind": "rail", "request": req,
+                              "values": {"secret": "ghp_SUPERSECRET123", "note": "read-only ok"},
+                              "payload": {"reply": "got it"}})
+    assert out["answered"][0]["values"]["secret"] == "ghp_SUPERSECRET123"   # to the vault
+    line = out["converseCalls"][0]
+    assert "ghp_SUPERSECRET123" not in line and "SUPERSECRET" not in json.dumps(out["messages"])
+    assert line == 'Answered "GitHub key so I can open your pull request" \u2014 secret: (provided); note: read-only ok'
+
