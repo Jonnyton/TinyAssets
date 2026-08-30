@@ -219,11 +219,14 @@ def normalise_volumes(volumes):
 
 
 def compose_config(compose_file, env_values, interpolate_values=True):
-    """Mirror Compose v5.1.3 (the droplet): the default render resolves every
-    env_file into `environment` and DROPS the `env_file` key; only
-    `--no-interpolate` keeps it, normalised to {path, required} mappings. The
-    earlier fake kept `env_file` verbatim, which is why #2685 was green in CI
-    and refused in production ("daemon.env_file is []", 2026-08-30 00:34Z)."""
+    """Mirror the one Compose v5.1.3 behaviour the validator depends on: the
+    default render DROPS the `env_file` key (the real CLI inlines those files
+    into `environment`; this fake only drops the key and does not read them,
+    so its `environment` is not Compose-faithful); `--no-interpolate` keeps
+    `env_file`, normalised to {path, required} mappings, and leaves `${VAR}`
+    unresolved. The earlier fake kept `env_file` verbatim, which is why #2685
+    was green in CI and refused in production ("daemon.env_file is []",
+    2026-08-30 00:34Z)."""
     with open(compose_file, encoding="utf-8") as handle:
         raw = handle.read()
     # Shell environment wins over the env file, exactly as compose interpolates.
