@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from dataclasses import fields, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -31,7 +32,9 @@ from tinyassets.automations import (
     due_automations,
     register_automation,
     run_due_automation,
+    run_timeout_seconds,
 )
+from tinyassets.branch_tasks_v2 import EPOCH2_TASK_LEASE_SECONDS
 from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
@@ -148,6 +151,69 @@ def _seed_nested_branch(
                     "wait_mode": wait_mode,
                     "inputs_mapping": {},
                     "output_mapping": {"parent_out": "child_out"},
+                },
+            )
+        ],
+        state_schema=[{"name": "parent_out", "type": "str"}],
+    )
+    save_branch_definition(tmp_path, branch_def=parent.to_dict())
+    return parent_id
+
+
+def _seed_version_invoking_branch(
+    tmp_path: Path,
+    *,
+    parent_id: str = "branch_parent_version",
+    child_id: str = "branch_child_version",
+    author: str = OWNER,
+) -> str:
+    """A root that invokes a PUBLISHED VERSION of a child, async.
+
+    The version-pinned async launch is a fourth child path, and it was the one
+    that still dropped the guard after round 2 (Codex round 3 §a).
+    """
+    from tinyassets.branch_versions import publish_branch_version
+    from tinyassets.daemon_server import initialize_author_server, save_branch_definition
+
+    initialize_author_server(tmp_path)
+    child = BranchDefinition(
+        branch_def_id=child_id,
+        name="Versioned child",
+        author=author,
+        visibility="public",
+        graph_nodes=[GraphNodeRef(id="v1", node_def_id="v1")],
+        edges=[EdgeDefinition(from_node="v1", to_node="END")],
+        entry_point="v1",
+        node_defs=[
+            NodeDefinition(
+                node_id="v1",
+                display_name="Versioned writer",
+                prompt_template="Do the versioned work.",
+                output_keys=["child_out"],
+            )
+        ],
+        state_schema=[{"name": "child_out", "type": "str"}],
+    )
+    save_branch_definition(tmp_path, branch_def=child.to_dict())
+    version = publish_branch_version(tmp_path, child.to_dict(), publisher=author)
+
+    parent = BranchDefinition(
+        branch_def_id=parent_id,
+        name="Version invoker",
+        author=author,
+        visibility="public",
+        graph_nodes=[GraphNodeRef(id="p1", node_def_id="p1")],
+        edges=[EdgeDefinition(from_node="p1", to_node="END")],
+        entry_point="p1",
+        node_defs=[
+            NodeDefinition(
+                node_id="p1",
+                display_name="Invoke the published version",
+                invoke_branch_version_spec={
+                    "branch_version_id": version.branch_version_id,
+                    "wait_mode": "async",
+                    "inputs_mapping": {},
+                    "output_mapping": {"parent_out": "ignored"},
                 },
             )
         ],
@@ -312,6 +378,18 @@ def _child_run_ids(tmp_path: Path, branch_def_id: str) -> list[str]:
             (branch_def_id,),
         ).fetchall()
     return [str(row[0]) for row in rows]
+
+
+def _lease_ttl_seconds(store, universe_id: str) -> float:
+    """Seconds until the universe lease expires, from its stored row."""
+    with sqlite3.connect(store.db_path) as conn:
+        row = conn.execute(
+            "SELECT expires_at FROM universe_leases WHERE universe_id = ?",
+            (universe_id,),
+        ).fetchone()
+    assert row is not None, "no universe lease row"
+    expires = datetime.fromisoformat(str(row[0]))
+    return (expires - datetime.now(timezone.utc)).total_seconds()
 
 
 def _refusal_rows(tmp_path: Path) -> dict[str, str]:
@@ -1341,6 +1419,65 @@ def test_an_async_child_branch_is_guarded_too(
         assert (get_run(tmp_path, child_id) or {}).get("status") != "completed"
 
 
+def test_an_async_version_pinned_child_is_guarded_too(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """The fourth child path. Same discriminator as the other nested tests.
+
+    Round 2 threaded three of the four child launches; the version-pinned async
+    one was still bare (Codex round 3 §a), and the unit test for it asserted
+    only that the launch happened, so nothing went red.
+    """
+    from tests.test_background_budget_finalization_e2e import _CountingProvider
+    from tinyassets.daemon_server import grant_universe_access
+    from tinyassets.runs import get_run, wait_for
+
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+    _seed_serving_assignment(tmp_path)
+    _seed_owner(tmp_path)
+    _seed_version_invoking_branch(tmp_path)
+    versioned = register_automation(
+        tmp_path,
+        **_registration_kwargs(
+            name="versioned", branch_def_id="branch_parent_version"
+        ),
+    )
+    real_check = automations_module._runtime_authority_reason
+    checks: list[str] = []
+
+    def racing(base, automation):
+        verdict = real_check(base, automation)
+        checks.append(verdict)
+        if len(checks) == 1:
+            grant_universe_access(
+                tmp_path,
+                universe_id=UNIVERSE,
+                actor_id=OWNER,
+                permission="read",
+                granted_by="acct_someone_else",
+            )
+        return verdict
+
+    monkeypatch.setattr(automations_module, "_runtime_authority_reason", racing)
+    fake = _CountingProvider()
+
+    with _real_providers(codex=fake):
+        run_due_automation(
+            tmp_path, versioned, "2026-08-29T12:10:00+00:00", now=NOW
+        )
+        child_ids = _child_run_ids(tmp_path, "branch_child_version")
+        for child_id in child_ids:
+            wait_for(child_id, timeout=30)
+
+    assert checks[0] == ""
+    assert fake.calls == []
+    assert child_ids, "the versioned child run never started"
+    child = get_run(tmp_path, child_ids[0]) or {}
+    assert child.get("status") == "cancelled"
+    assert "automation_owner_lost_admin" in str(child.get("error"))
+
+
 def test_the_run_row_names_the_authority_loss_not_a_generic_cancel(
     tmp_path: Path,
     registered: Automation,
@@ -1439,13 +1576,31 @@ def test_a_run_that_ignores_cancellation_keeps_the_universe_leased(
     registered: Automation,
     monkeypatch,
 ) -> None:
-    """Codex round 2 §3b: releasing on timeout lets a second process double-spend."""
-    monkeypatch.setenv("AUTOMATION_CANCEL_GRACE_SECONDS", "7")
+    """Codex round 2 §3b: releasing on timeout lets a second process double-spend.
 
-    def never_stops(run_id, timeout=None):
+    The grace really ELAPSES here. The previous version made both waits fail
+    instantly, so it proved "lease retained" without ever exercising the wait it
+    is named for (Codex round 3 §d). A fake clock advances past the configured
+    grace while the future stays unfinished.
+    """
+    from concurrent.futures import Future
+
+    grace = 7.0
+    monkeypatch.setenv("AUTOMATION_CANCEL_GRACE_SECONDS", str(int(grace)))
+    clock = {"now": 0.0}
+    still_running: Future = Future()  # never resolved: the worker ignores cancel
+    waits: list[tuple[str, float | None, float]] = []
+
+    def waiting(run_id, timeout=None):
+        waits.append((run_id, timeout, clock["now"]))
+        # The run wait and the post-cancel grace both consume their full budget
+        # on the fake clock, then report the future is STILL not done.
+        clock["now"] += float(timeout or 0.0)
+        if still_running.done():  # pragma: no cover - defensive
+            return
         raise TimeoutError("this worker ignores cancellation")
 
-    monkeypatch.setattr("tinyassets.runs.wait_for", never_stops)
+    monkeypatch.setattr("tinyassets.runs.wait_for", waiting)
     monkeypatch.setattr(
         automations_module, "_runtime_authority_reason", lambda *_a: ""
     )
@@ -1459,15 +1614,213 @@ def test_a_run_that_ignores_cancellation_keeps_the_universe_leased(
         finally:
             consumer.stop()
 
+    # Two waits: the run timeout, then the grace -- and the grace really ran
+    # for its configured duration on the clock.
+    assert [entry[1] for entry in waits] == [run_timeout_seconds(), grace]
+    assert clock["now"] == run_timeout_seconds() + grace
     assert (
         _refusal_rows(tmp_path)[f"automation:{registered.automation_id}"]
         == "run_timeout_unreleased"
     )
-    # The universe is NOT handed back while a provider call may still be live.
+    # The universe is NOT handed back while a provider call may still be live,
+    # and the row is still there carrying its full TTL rather than deleted.
+    store = AutomationStore(tmp_path)
+    assert store.universe_lease_holder(
+        UNIVERSE, now=datetime.now(timezone.utc)
+    ) == consumer.consumer_id
+    with sqlite3.connect(store.db_path) as conn:
+        row = conn.execute(
+            "SELECT holder, expires_at FROM universe_leases WHERE universe_id = ?",
+            (UNIVERSE,),
+        ).fetchone()
+    assert row is not None, "the lease row was deleted, not retained"
+    assert str(row[0]) == consumer.consumer_id
+    expires = datetime.fromisoformat(str(row[1]))
+    assert expires > datetime.now(timezone.utc)
+
+
+def test_a_failure_before_the_worker_owns_the_lease_releases_it(
+    tmp_path: Path,
+    registered: Automation,
+    monkeypatch,
+) -> None:
+    """Codex round 3 §b: the lease was taken before `list_candidates`, but only
+    the submitted worker released it. A raise in between stranded the universe."""
+    monkeypatch.setattr(
+        "tinyassets.provider_serving_binding.list_serving_universes",
+        lambda _base: [UNIVERSE],
+    )
+    monkeypatch.setattr(
+        automations_module, "due_automations", lambda base, **_k: []
+    )
+    monkeypatch.setattr(
+        AssignedQueueConsumer, "_publish_heartbeat", lambda self, universe_id: None
+    )
+
+    def exploding(self, *, universe_id, limit=20):
+        raise RuntimeError("candidate listing blew up")
+
+    monkeypatch.setattr(
+        "tinyassets.branch_tasks_v2.Epoch2BranchTaskAdapter.list_candidates",
+        exploding,
+    )
+    consumer, _inline = _consumer_with_inline_executor(tmp_path)
+
+    try:
+        with pytest.raises(RuntimeError):
+            consumer.poll_once()
+    finally:
+        consumer.stop()
+
     holder = AutomationStore(tmp_path).universe_lease_holder(
         UNIVERSE, now=datetime.now(timezone.utc)
     )
-    assert holder == consumer.consumer_id
+    assert holder == "", "the universe was stranded by a pre-handover failure"
+
+
+def test_a_real_legacy_claim_holds_refreshes_and_releases_the_lease(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """The whole legacy lifecycle, driven through poll_once with one candidate.
+
+    The earlier legacy test inserted lease rows by hand and used an empty
+    candidate list, so it could not see an unheld or unreleased legacy path
+    (Codex round 3 §d).
+    """
+    from tinyassets.branch_tasks_v2 import Epoch2BranchTask
+
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
+    _seed_owner(tmp_path)
+    monkeypatch.setattr(
+        "tinyassets.provider_serving_binding.list_serving_universes",
+        lambda _base: [UNIVERSE],
+    )
+    monkeypatch.setattr(
+        automations_module, "due_automations", lambda base, **_k: []
+    )
+    monkeypatch.setattr(
+        AssignedQueueConsumer, "_publish_heartbeat", lambda self, universe_id: None
+    )
+    candidate = Epoch2BranchTask(
+        branch_task_id="bt2_" + "c" * 32,
+        branch_def_id="branch-legacy",
+        universe_id=UNIVERSE,
+        automation_id="automation-legacy",
+        automation_executor_class="cloud",
+        automation_branch_version="version-legacy",
+    )
+    monkeypatch.setattr(
+        "tinyassets.branch_tasks_v2.Epoch2BranchTaskAdapter.list_candidates",
+        lambda self, *, universe_id, limit=20: [candidate],
+    )
+    monkeypatch.setattr(
+        AssignedQueueConsumer,
+        "_try_claim",
+        lambda self, adapter, store, cand, lease: cand,
+    )
+    consumer, _inline = _consumer_with_inline_executor(tmp_path)
+    store = AutomationStore(tmp_path)
+    observed: dict[str, object] = {}
+
+    # Drive the REAL `_execute`, so the REAL heartbeat closure runs. Replacing
+    # `_execute` wholesale (the first version of this test) meant the beat that
+    # refreshes the universe was never exercised -- the mutation that deletes it
+    # stayed green (Codex round 3 §d, caught by mutation P4).
+    monkeypatch.setattr(
+        "tinyassets.branch_tasks_v2.Epoch2BranchTaskAdapter.heartbeat",
+        lambda self, task_id, *, worker_id, lease_seconds: SimpleNamespace(
+            status="running"
+        ),
+    )
+    monkeypatch.setattr(
+        "tinyassets.branch_tasks_v2.Epoch2BranchTaskAdapter.finish",
+        lambda self, task_id, *, worker_id, status, detail=None: None,
+    )
+    monkeypatch.setattr(
+        "tinyassets.background_served_provider.start_background_queue_authority",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        "tinyassets.background_served_provider.terminalize_background_queue_authority",
+        lambda *_a, **_k: None,
+    )
+
+    def capture_identity(base_path, claimed_task, lease, *, heartbeat=None):
+        from tinyassets.background_served_provider import (
+            BackgroundExecutorIdentityError,
+        )
+
+        observed["held"] = store.universe_lease_holder(
+            UNIVERSE, now=datetime.now(timezone.utc)
+        )
+        observed["ttl_at_hold"] = _lease_ttl_seconds(store, UNIVERSE)
+        # Age the lease to just inside its envelope, then let the TASK BEAT
+        # re-stamp it -- the beat is the only thing keeping the universe alive
+        # while a long legacy task runs.
+        store.acquire_universe_lease(
+            UNIVERSE,
+            holder=lease.consumer_id,
+            now=datetime.now(timezone.utc) - timedelta(
+                seconds=EPOCH2_TASK_LEASE_SECONDS - 30
+            ),
+            ttl_seconds=EPOCH2_TASK_LEASE_SECONDS,
+        )
+        observed["ttl_before_beat"] = _lease_ttl_seconds(store, UNIVERSE)
+        heartbeat()
+        observed["ttl_after_beat"] = _lease_ttl_seconds(store, UNIVERSE)
+        raise BackgroundExecutorIdentityError("test_stops_here")
+
+    monkeypatch.setattr(
+        "tinyassets.background_served_provider.load_background_executor_identity",
+        capture_identity,
+    )
+
+    try:
+        assert consumer.poll_once() == 1
+    finally:
+        consumer.stop()
+
+    assert observed["held"] == consumer.consumer_id
+    # The legacy hold uses the EPOCH2 claim envelope, not the 3-hour automation
+    # run timeout: a crashed process must free the universe when its task
+    # becomes claimable again.
+    assert 0 < float(observed["ttl_at_hold"]) <= EPOCH2_TASK_LEASE_SECONDS + 5
+    # The beat really re-stamped it: nearly expired before, full envelope after.
+    assert float(observed["ttl_before_beat"]) < 60
+    assert float(observed["ttl_after_beat"]) > EPOCH2_TASK_LEASE_SECONDS - 60
+    assert store.universe_lease_holder(
+        UNIVERSE, now=datetime.now(timezone.utc)
+    ) == "", "the worker did not give the universe back"
+
+
+def test_a_stale_legacy_lease_frees_the_universe_after_the_claim_envelope(
+    tmp_path: Path,
+    registered: Automation,
+) -> None:
+    """A crashed legacy process must free the universe when its Epoch2 claim
+    becomes recoverable, not 2.5 hours later (Codex round 3 §b)."""
+    store = AutomationStore(tmp_path)
+    crashed_at = datetime.now(timezone.utc) - timedelta(
+        seconds=EPOCH2_TASK_LEASE_SECONDS + 60
+    )
+    assert store.acquire_universe_lease(
+        UNIVERSE,
+        holder="worker_assigned_crashed_legacy",
+        now=crashed_at,
+        ttl_seconds=EPOCH2_TASK_LEASE_SECONDS,
+    ) is True
+
+    # Past the claim envelope: nobody is refreshing, so it is stealable.
+    assert store.universe_lease_holder(
+        UNIVERSE, now=datetime.now(timezone.utc)
+    ) == ""
+    assert store.acquire_universe_lease(
+        UNIVERSE,
+        holder="worker_assigned_new_process",
+        now=datetime.now(timezone.utc),
+        ttl_seconds=EPOCH2_TASK_LEASE_SECONDS,
+    ) is True
 
 
 def test_a_legacy_task_and_an_automation_cannot_hold_one_universe(
