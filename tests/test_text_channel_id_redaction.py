@@ -164,7 +164,55 @@ def test_patch_branch_text_hides_branch_def_id(env):
                    changes_json=json.dumps(ops))
     assert result["status"] == "patched"
     assert bid not in result["text"]
+    # content_hash alone is still the version discriminator that mints
+    # branch_version_id -- an id, not human content, even though it does
+    # not itself embed branch_def_id (Codex ADAPT round on 256efe7b). The
+    # leak was only the 8-char PREFIX (`branch_version_id`'s own display
+    # convention), so check the prefix specifically -- checking containment
+    # of the full 64-char hash would pass even with the prefix still leaking.
+    assert result["content_hash"][:8] not in result["text"]
+    assert result["branch_version_id"] not in result["text"]
     assert "patch fixture" in result["text"]
+
+
+def test_patch_branch_rejected_set_fork_from_hides_the_existing_id(env):
+    """The rejected path leaks too, not just the successful one.
+
+    `set_fork_from` is immutable once set: a second attempt is rejected with
+    an op error naming the value ALREADY on the branch. That error string is
+    copied verbatim into the rejection `text`'s "Op errors:" section, so it
+    must not carry the existing branch_version_id either.
+    """
+    us, _ = env
+    source_bid = _build_min_branch(us, name="fork source")
+    published = _call(
+        us, "extensions", "patch_branch", branch_def_id=source_bid,
+        changes_json=json.dumps([{
+            "op": "update_node", "node_id": "capture",
+            "display_name": "Capture v2",
+        }]),
+    )
+    fork_bvid = published["branch_version_id"]
+
+    target_bid = _build_min_branch(us, name="fork target")
+    first_set = _call(
+        us, "extensions", "patch_branch", branch_def_id=target_bid,
+        changes_json=json.dumps([
+            {"op": "set_fork_from", "branch_version_id": fork_bvid},
+        ]),
+    )
+    assert first_set["status"] == "patched", first_set
+
+    rejected = _call(
+        us, "extensions", "patch_branch", branch_def_id=target_bid,
+        changes_json=json.dumps([
+            {"op": "set_fork_from", "branch_version_id": fork_bvid},
+        ]),
+    )
+    assert rejected["status"] == "rejected", rejected
+    assert fork_bvid not in rejected["text"]
+    assert source_bid not in rejected["text"]
+    assert target_bid not in rejected["text"]
 
 
 def test_run_branch_text_hides_run_id(env):
@@ -263,3 +311,68 @@ def test_goal_bind_text_hides_goal_id_and_branch_def_id(env):
     assert bid not in result["text"]
     assert "Binding Goal" in result["text"]
     assert "bind me" in result["text"]
+
+
+def test_goal_set_canonical_hides_branch_version_id(env):
+    us, _ = env
+    goal = _call(us, "goals", "propose", name="Canonical Goal")
+    gid = goal["goal"]["goal_id"]
+    bid = _build_min_branch(us, name="canonical fixture")
+    published = _call(
+        us, "extensions", "patch_branch", branch_def_id=bid,
+        changes_json=json.dumps([{
+            "op": "update_node", "node_id": "capture",
+            "display_name": "Capture v2",
+        }]),
+    )
+    bvid = published["branch_version_id"]
+
+    result = _call(us, "goals", "set_canonical",
+                    goal_id=gid, branch_version_id=bvid)
+    assert result["status"] == "ok", result
+    assert bvid not in result["text"]
+    assert bid not in result["text"]
+    assert "Canonical Goal" in result["text"]
+
+
+def test_build_branch_invalid_fork_from_hides_the_id(env):
+    """The staging-time fork_from check hides its input, same as the pre-flight one.
+
+    ``build_branch`` validates ``spec["fork_from"]`` twice: an early, lenient
+    check (``fork_selector = spec.get("fork_from").strip()``) that resolves
+    the version and inherits the parent's content, and a later, strict one
+    inside the staged branch (``branch.fork_from``, set from the UNSTRIPPED
+    raw value) that confirms it is a real ``branch_version_id`` via an exact
+    string match. A value that trims to a real version_id -- e.g. one with
+    incidental leading/trailing whitespace -- passes the first (stripped)
+    check and fails the second (unstripped), so its error text used to leak
+    the raw branch_version_id it had just proven exists.
+    """
+    us, _ = env
+    source_bid = _build_min_branch(us, name="fork source")
+    published = _call(
+        us, "extensions", "patch_branch", branch_def_id=source_bid,
+        changes_json=json.dumps([{
+            "op": "update_node", "node_id": "capture",
+            "display_name": "Capture v2",
+        }]),
+    )
+    bvid = published["branch_version_id"]
+    spec = {
+        "name": "fork target",
+        "fork_from": f" {bvid} ",  # trims to a real version_id
+        "entry_point": "n1",
+        "state_schema": [{"name": "x", "type": "str", "default": ""}],
+        "node_defs": [{
+            "node_id": "n1", "display_name": "n1", "phase": "custom",
+            "prompt_template": "hi", "input_keys": [], "output_keys": ["x"],
+        }],
+        "edges": [
+            {"from_node": "START", "to_node": "n1"},
+            {"from_node": "n1", "to_node": "END"},
+        ],
+    }
+    result = _call(us, "extensions", "build_branch", spec_json=json.dumps(spec))
+    assert result["status"] == "rejected", result
+    assert bvid not in result["text"]
+    assert source_bid not in result["text"]
