@@ -1019,19 +1019,29 @@
   // deferred then; founder 2026-08-30: handle it). Only message + display are
   // kept - a queued item is always already echoed on screen.
   const QUEUE_KEY="ta_send_queue";
-  // A saved line auto-sends for as long as the client would hold a turn in
-  // flight (three hours, see checkForNewBuild); older, it becomes a draft.
+  // A saved line older than this is offered with a warning (it is as old as
+  // the longest turn the client would ever hold in flight, see
+  // checkForNewBuild); nothing saved is ever sent without a click.
   const QUEUE_MAX_AGE_MS=3*60*60*1000;
   // The universe this page is talking to, once known (status / history).
   // Saved lines carry it, so another founder's session on this browser does
   // not send them (Codex round 1).
   let queueScope="";
   let queuePersisted=true;
+  // Saved lines this page holds for later: offers not yet acted on, and
+  // lines queued for another universe (kept for that universe's own page).
+  // They stay on disk until acted on - a second refresh must not lose an
+  // offer nobody clicked (Codex round 3).
+  let retainedItems=[];
+  function savedItem(q){
+    return {message:q.message, display:q.display||q.message, ts:q.ts||Date.now(),
+      scope:(q.scope!==undefined)?q.scope:queueScope};
+  }
   function saveQueue(){
     try{
-      if(!sendQueue.length){ localStorage.removeItem(QUEUE_KEY); queuePersisted=true; return; }
-      localStorage.setItem(QUEUE_KEY, JSON.stringify(sendQueue.map(q=>({
-        message:q.message, display:q.display||q.message, ts:q.ts||Date.now(), scope:queueScope}))));
+      const items=retainedItems.map(savedItem).concat(sendQueue.map(savedItem));
+      if(!items.length){ localStorage.removeItem(QUEUE_KEY); queuePersisted=true; return; }
+      localStorage.setItem(QUEUE_KEY, JSON.stringify(items));
       queuePersisted=true;
     }catch(_e){
       // Say so where the founder is looking, instead of a status line that
@@ -1041,15 +1051,21 @@
         " waiting (could not be saved in this browser \u2014 do not refresh)");
     }
   }
-  function takeSavedQueue(){
-    // Read AND clear in one step so a second tab restoring at the same time
-    // does not send the same lines twice.
+  function readSavedQueue(){
     try{
       const raw=localStorage.getItem(QUEUE_KEY);
-      if(raw) localStorage.removeItem(QUEUE_KEY);
       const items=raw?JSON.parse(raw):[];
       return Array.isArray(items)?items.filter(i=>i&&typeof i.message==="string"&&i.message):[];
     }catch(_e){ return []; }
+  }
+  // Is this line still on disk? Another window may have sent or discarded
+  // it since the offer was drawn here.
+  function stillSaved(item){
+    return readSavedQueue().some(i=>i.message===item.message && (i.ts||0)===(item.ts||0));
+  }
+  function forgetSavedItem(item){
+    retainedItems=retainedItems.filter(i=>!(i.message===item.message && (i.ts||0)===(item.ts||0)));
+    saveQueue();
   }
   // Another tab that restored while this one waited took the saved queue
   // and is sending it; this copy must not go out a second time.
@@ -1066,37 +1082,55 @@
   // behind is still answering, whether another window holds the same line,
   // or what the founder typed since (Codex rounds 1-2: every auto-send
   // shape leaked one of those). One click sends it; one click drops it.
+  // Nothing happens until this page knows its universe: a line is offered
+  // only where it belongs (Codex round 3).
   let queueRestored=false;
   function restoreQueue(){
-    if(queueRestored) return; queueRestored=true;
+    if(queueRestored || !queueScope) return; queueRestored=true;
     const now=Date.now();
-    takeSavedQueue().forEach(i=>offerSavedLine(i, now));
+    retainedItems=readSavedQueue();
+    retainedItems.forEach(i=>offerSavedLine(i, now));
   }
   function offerSavedLine(item, now){
-    const stale = now-(item.ts||0) > QUEUE_MAX_AGE_MS;
-    const foreign = !!(item.scope && queueScope && item.scope!==queueScope);
     const note=document.createElement("div");
     note.className="msg msg--system";
+    const thread=$("thread");
+    if(item.scope && item.scope!==queueScope){
+      // Another universe's line: not this founder's to read, send or drop.
+      // It stays on disk for that universe's own page.
+      note.textContent="A line queued in another universe's session on this browser is "+
+        "waiting there; open that universe to send or discard it.";
+      thread.appendChild(note); thread.scrollTop=thread.scrollHeight;
+      return;
+    }
+    const stale = now-(item.ts||0) > QUEUE_MAX_AGE_MS;
     let text = "Still waiting to be sent when the page reloaded: \u201c" +
       String(item.display||item.message).slice(0, 200) + "\u201d";
     if(stale) text += " \u2014 queued more than three hours ago";
-    if(foreign) text += " \u2014 queued for another universe (" + item.scope + ")";
+    if(!item.scope) text += " \u2014 queued before this page had recorded its universe, so check it is meant for this one";
     note.textContent = text + ". ";
-    if(!foreign){
-      const send=document.createElement("button");
-      send.className="btn btn--link"; send.textContent="Send it now";
-      send.addEventListener("click", ()=>{
-        note.remove();
-        sendTurn(item.message, item.display, {relay:true, keepInflight: !!readInflight()});
-      });
-      note.appendChild(send);
-      note.appendChild(document.createTextNode(" "));
-    }
+    const send=document.createElement("button");
+    send.className="btn btn--link"; send.textContent="Send it now";
+    send.addEventListener("click", ()=>{
+      note.remove();
+      if(!stillSaved(item)){
+        const gone=document.createElement("div");
+        gone.className="msg msg--system";
+        gone.textContent="That line was already sent or discarded in another window.";
+        thread.appendChild(gone); thread.scrollTop=thread.scrollHeight;
+        return;
+      }
+      forgetSavedItem(item);
+      // A side send: it neither takes over an unconfirmed turn's record nor
+      // clears whatever the founder is typing.
+      sendTurn(item.message, item.display, {relay:true, keepInflight: !!readInflight(), keepComposer:true});
+    });
+    note.appendChild(send);
+    note.appendChild(document.createTextNode(" "));
     const drop=document.createElement("button");
     drop.className="btn btn--link"; drop.textContent="Discard";
-    drop.addEventListener("click", ()=>{ note.remove(); });
+    drop.addEventListener("click", ()=>{ note.remove(); forgetSavedItem(item); });
     note.appendChild(drop);
-    const thread=$("thread");
     thread.appendChild(note); thread.scrollTop=thread.scrollHeight;
   }
   function flushSendQueue(){
@@ -1144,7 +1178,10 @@
     // A line sent from a restore offer is a SIDE send: it must not take over
     // the in-flight record of an unconfirmed turn still on screen.
     if(!opts.keepInflight) rememberInflight(message, display);
-    const input=$("composer-input"); input.value=""; input.style.height="auto";
+    // A relayed answer or a side send did not come from the composer: what
+    // the founder is typing there stays (Codex round 3).
+    const input=$("composer-input");
+    if(!opts.keepComposer){ input.value=""; input.style.height="auto"; }
     $("btn-send").disabled=true; turnStartedAt=Date.now();
     setStatusLine("Your universe is thinking...");
     try{
@@ -1157,7 +1194,7 @@
       // dropped, so the next attempt rebuilds it. Say what actually went wrong
       // and put the retry one click away, instead of leaving the user staring
       // at a parser string with nothing to do (founder, 2026-08-28).
-      offerResend(message, display, err);
+      offerResend(message, display, err, opts);
       // Deliberately NOT forgotten: the send failed, so the message is still the
       // user's to resend.
     }finally{ $("btn-send").disabled=false; turnStartedAt=0; flushSendQueue(); }
@@ -1166,7 +1203,7 @@
   // Explain a failed turn in the user's own terms and hand back a working
   // button. Transport failures carry `err.transport`; anything else is a real
   // reply from the universe and is reported as it came.
-  function offerResend(message, display, err){
+  function offerResend(message, display, err, opts){
     const note=document.createElement("div");
     note.className="msg msg--system";
     note.textContent=(err&&err.transport)
@@ -1178,7 +1215,9 @@
     const again=document.createElement("button");
     again.className="btn btn--link"; again.textContent="Send it again";
     again.addEventListener("click", ()=>{
-      note.remove(); sendTurn(message, display, {echoed:true});
+      // The retry is the same send: same options (a side send stays a side
+      // send and keeps the earlier unconfirmed record - Codex round 3).
+      note.remove(); sendTurn(message, display, Object.assign({}, opts||{}, {echoed:true}));
     });
     note.appendChild(again);
     const thread=$("thread");
@@ -1194,6 +1233,7 @@
       const name=s.universe_name||s.universe||s.universe_id||"";
       if(name) $("universe-name").textContent=name;
       queueScope = String(s.universe_id || s.universe || queueScope || "");
+      restoreQueue();   // no-op once done, or until the scope is known
     }catch(err){
       if(err.authRequired) return sessionExpired();
       // The heartbeat doubles as the healer. A transport failure means the
@@ -2110,7 +2150,7 @@
           + (busy ? " Your universe will see it when its current turn ends." : "");
         railOpen = null;
         await refreshRail();
-        sendTurn(answerLine(req, dismiss, payload), undefined, {relay:true});
+        sendTurn(answerLine(req, dismiss, payload), undefined, {relay:true, keepComposer:true});
       }
     }catch(err){
       if(err.authRequired) return enterSignedOut();
