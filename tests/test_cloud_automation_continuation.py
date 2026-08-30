@@ -197,7 +197,7 @@ def _background_binding(
             "permitted_executor_classes": list(executor_classes),
             "daemon_id": daemon_id,
             "runtime_id": None,
-            "expires_at": "2026-08-30T00:00:00Z",
+            "expires_at": "2099-01-01T00:00:00Z",
             "max_attempts": max_attempts,
             "remaining_depth": 2,
             "remaining_count": remaining_count,
@@ -265,7 +265,7 @@ def _fixture(
             max_invocations=4,
             max_tokens=max_tokens,
             max_cost_microunits=max_cost_microunits,
-            expires_at="2026-08-30T00:00:00Z",
+            expires_at="2099-01-01T00:00:00Z",
         )
     )
     provider_binding = installed.record
@@ -2455,7 +2455,7 @@ def test_claimed_cloud_attempt_resolves_one_restart_safe_provider_receipt(
     assert created.record.max_cost_microunits == fixture[0].max_cost_microunits
     # Receipt identity/budgets survive rotating task leases; every launch
     # still revalidates the live task and background attempt transactionally.
-    assert created.record.expires_at == "2026-08-30T00:00:00Z"
+    assert created.record.expires_at == "2099-01-01T00:00:00Z"
 
 
 @pytest.mark.parametrize(
