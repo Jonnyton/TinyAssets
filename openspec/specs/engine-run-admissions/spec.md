@@ -1,6 +1,6 @@
 # Engine Run Admissions
 
-> As-built (2026-08-30, change `run-rate-cap-counts-writes`, landed #2704): the engine's per-universe run-admission ledger — what an engine-triggered run costs and how it is settled. Design rationale in the archived change's `design.md`. Live proof 2026-08-30: heartbeat periods settle as `read` rows; a one-line README job with retries (runs `c1cd14f98b6e4af8` → `3f86d7b9fde04bff`, `d773d4d006ae45a8`, `b77089dfa3c14d9e`, `631bd6d61473416f`) completed without meeting the cap.
+> As-built (2026-08-30, changes `run-rate-cap-counts-writes` #2704 and `engine-writes-count-toward-total` #2712): the engine's per-universe run-admission ledger — what an engine-triggered run costs and how it is settled. Design rationale in the archived change's `design.md`. Live proof 2026-08-30: heartbeat periods settle as `read` rows; a one-line README job with retries (runs `c1cd14f98b6e4af8` → `3f86d7b9fde04bff`, `d773d4d006ae45a8`, `b77089dfa3c14d9e`, `631bd6d61473416f`) completed without meeting the cap.
 
 ## Purpose
 
@@ -10,15 +10,22 @@ Bound how often an engine-triggered run can fire an already-approved effect (Cod
 
 ### Requirement: Engine run admissions are charged as writes and settled by what fired
 
-The engine SHALL admit every engine-triggered run, every scheduled
-automation run and every engine write (`write_graph`, remix, brain write)
-through one per-universe rolling ledger
-(`<data_dir>/.engine_run_admissions.db`), charging each admission as kind
-`write` atomically at admission time, with schema inspection and migration
-inside the same immediate transaction. The engine SHALL refuse an admission
-when the universe's `write` admissions in the window have reached the write
-cap (20 per 3600 s) OR its admissions of any kind have reached the total cap
-(60 per 3600 s), and SHALL say which cap refused. Admission SHALL return a
+The engine SHALL admit every engine-triggered run and every scheduled
+automation run through one per-universe rolling ledger
+(`<data_dir>/.engine_run_admissions.db`), charging each as kind `write`
+atomically at admission time, with schema inspection and migration inside
+the same immediate transaction. The engine SHALL admit every durable engine
+write (`write_graph`, remix, brain write) through the same ledger as kind
+`engine`. The engine SHALL refuse a run admission when the universe's
+`write` admissions in the window have reached the write cap (20 per 3600 s)
+OR its admissions of any kind have reached the total cap (60 per 3600 s);
+it SHALL refuse an `engine` admission when the universe's `engine`
+admissions in the window have reached the engine cap (40 per 3600 s, two
+thirds of the total, so runs always keep at least 20) OR the total cap; and
+SHALL say which cap refused. An `engine` row SHALL never be bound to a run
+or reclassified. A refusal caused by an unusable or untrusted ledger SHALL
+say so and SHALL NOT be reported as a quota. Rows outside the window SHALL
+be pruned on the next admission. Admission SHALL return a
 ticket (the ledger row id), or the sentinel `ADMITTED_UNRECORDED` when a
 tolerated ledger error admitted without a row (fail-open callers only);
 `run_graph` and the automation runner SHALL bind a real ticket to the run
@@ -113,3 +120,16 @@ writes.
 - **WHEN** a packet declares `verb: GET` and `request.method: PUT`
 - **THEN** the adapter refuses it before the wire and the admission stays
   `write` (the declared verb says nothing about intent)
+
+#### Scenario: Branch authoring does not spend the effect budget
+
+- **WHEN** a universe's engine has made 30 `write_graph` calls in the rolling
+  hour and then runs a job that writes externally
+- **THEN** the job's writes are admitted against an untouched 20-write budget
+
+#### Scenario: A burst of engine writes cannot starve runs
+
+- **WHEN** a universe's engine has made 40 `write_graph` calls in the rolling
+  hour (failed validations included - they charged their admission)
+- **THEN** the 41st is refused by the engine cap while runs are still admitted
+  until 60 admissions of any kind exist
