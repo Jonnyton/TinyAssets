@@ -964,12 +964,24 @@ def write_graph(
                         {"$ta.from_base64": {"$ta.effect": "fetch.response.body.content"}},
                         "<the new line>\n"]}}}
 
-    ``$ta.effect`` reads an EARLIER node's ``response.body`` / ``response.status``
-    in the same run - "earlier" means listed earlier in the branch, so store
-    ``fetch`` before ``write``; ``$ta.ref`` reads one of the node's own declared
-    ``input_keys`` from state; ``$ta.from_base64`` / ``$ta.base64`` decode and
-    encode (UTF-8 text files); ``$ta.concat`` joins. The model writes only the
-    new line.
+    To CHANGE a line instead of appending one, replace it inside the fetched
+    text - never re-type the file::
+
+        "content": {"$ta.base64": {"$ta.replace": {
+                       "in":  {"$ta.from_base64": {"$ta.effect": "fetch.response.body.content"}},
+                       "old": "<the exact current line>\n",
+                       "new": "<the exact new line>\n"}}}
+
+    ``$ta.replace`` swaps ONE exact occurrence (set ``"count"`` for more) and
+    refuses when ``old`` is absent or occurs a different number of times, so a
+    typo cannot silently change the wrong place; ``old``/``new`` may include the
+    line's newline. ``$ta.effect`` reads an EARLIER node's ``response.body`` /
+    ``response.status`` in the same run - "earlier" means listed earlier in the
+    branch, so store ``fetch`` before ``write``; ``$ta.ref`` reads one of the
+    node's own declared ``input_keys`` from state; ``$ta.from_base64`` /
+    ``$ta.base64`` decode and encode (UTF-8 text files); ``$ta.concat`` joins.
+    The model writes only the new (and, for a change, the old) line - the rest
+    of the file never passes through it.
 
     ``connection_id`` and ``grant_id`` are REQUIRED and must be the exact ids from
     connect_http; ``verb`` is the HTTP method (it is matched against the connection's

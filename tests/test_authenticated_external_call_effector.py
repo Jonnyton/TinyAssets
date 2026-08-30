@@ -1242,3 +1242,42 @@ def test_an_effect_reference_resolves_a_dotted_node_id():
     assert ctx.effect("fetch.v1.response.status") == 200
     with pytest.raises(_TransformError):
         ctx.effect("fetch.v2.response.body.sha")                    # still refused
+
+
+def test_replace_swaps_one_exact_line_and_refuses_ambiguity():
+    """Live 2026-08-30 (PR #2714, closed): asked to change one README line,
+    the universe re-typed the file through a model and lost every blank line
+    and a backslash. `$ta.replace` edits inside the fetched text; the model
+    authors only the old and the new line."""
+    from tinyassets.effectors.authenticated_external_call import apply_body_transforms
+
+    doc = "# T\n\nline one\n\nPatches by this universe are opened through the request rail.\n"
+    encoded = _b64.b64encode(doc.encode()).decode()
+    prior = {"fetch": {"response": {"status": 200, "body": '{"content": "' + encoded + '"}'}}}
+    body = {"content": {"$ta.base64": {"$ta.replace": {
+        "in": {"$ta.from_base64": {"$ta.effect": "fetch.response.body.content"}},
+        "old": "Patches by this universe are opened through the request rail.\n",
+        "new": "Patches by this universe are opened through the request rail. (2026-08-29)\n",
+    }}}}
+    out, why = apply_body_transforms(body, {}, allowed_state_keys=[], prior_effects=prior)
+    assert why is None
+    assert _b64.b64decode(out["content"]).decode() == doc.replace(
+        "request rail.\n", "request rail. (2026-08-29)\n")   # blank lines intact, exact bytes
+    # absent old -> refused, nothing sent
+    body["content"]["$ta.base64"]["$ta.replace"]["old"] = "not in the file\n"
+    out, why = apply_body_transforms(body, {}, allowed_state_keys=[], prior_effects=prior)
+    assert out is None and "not found" in why
+    # ambiguous old -> refused unless count says so
+    body["content"]["$ta.base64"]["$ta.replace"]["old"] = "\n"
+    out, why = apply_body_transforms(body, {}, allowed_state_keys=[], prior_effects=prior)
+    assert out is None and "occurs" in why
+    body["content"]["$ta.base64"]["$ta.replace"].update(
+        {"old": "line one", "new": "line 1", "count": 1})
+    out, why = apply_body_transforms(body, {}, allowed_state_keys=[], prior_effects=prior)
+    assert why is None and "line 1" in _b64.b64decode(out["content"]).decode()
+    # malformed shapes are refused
+    for bad in ({"$ta.replace": {"in": "x", "old": "x"}},
+                {"$ta.replace": {"in": "x", "old": "", "new": "y"}},
+                {"$ta.replace": {"in": "x", "old": "x", "new": "y", "count": 0}}):
+        out, why = apply_body_transforms({"c": bad}, {}, allowed_state_keys=[], prior_effects=prior)
+        assert out is None and why

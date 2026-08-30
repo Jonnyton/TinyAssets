@@ -192,7 +192,13 @@ _OP_FROM_BASE64 = "$ta.from_base64"
 _OP_REF = "$ta.ref"
 _OP_EFFECT = "$ta.effect"
 _OP_CONCAT = "$ta.concat"
-_TRANSFORM_OPS = (_OP_BASE64, _OP_FROM_BASE64, _OP_REF, _OP_EFFECT, _OP_CONCAT)
+# Replace ONE exact occurrence inside fetched text - the edit shape. Live
+# 2026-08-30: asked to change one line of README, the universe re-typed the
+# whole file through a model and the result dropped every blank line and ate
+# a backslash (PR #2714, closed). With replace, the model authors only the old
+# and the new line; the bytes around them never pass through it.
+_OP_REPLACE = "$ta.replace"
+_TRANSFORM_OPS = (_OP_BASE64, _OP_FROM_BASE64, _OP_REF, _OP_EFFECT, _OP_CONCAT, _OP_REPLACE)
 _MAX_TRANSFORM_DEPTH = 32
 #: The transformed body is serialized in-process before the worker frames it
 #: (the frame itself is bounded at 16 MiB downstream).
@@ -402,6 +408,33 @@ def _apply_transforms(value: Any, ctx: _TransformContext, depth: int = 0) -> Any
             return ctx.ref(arg)
         if op == _OP_EFFECT:
             return ctx.effect(arg)
+        if op == _OP_REPLACE:
+            if not isinstance(arg, dict) or not {"in", "old", "new"} <= set(arg):
+                raise _TransformError(
+                    f'{_OP_REPLACE} takes {{"in": <text>, "old": <text>, "new": <text>}} '
+                    '(optional "count": how many occurrences, default 1)'
+                )
+            text = _as_text(_apply_transforms(arg["in"], ctx, depth + 1), f"{_OP_REPLACE} in")
+            old = _as_text(_apply_transforms(arg["old"], ctx, depth + 1), f"{_OP_REPLACE} old")
+            new = _as_text(_apply_transforms(arg["new"], ctx, depth + 1), f"{_OP_REPLACE} new")
+            count = arg.get("count", 1)
+            if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+                raise _TransformError(f"{_OP_REPLACE} count must be a positive integer")
+            if not old:
+                raise _TransformError(f"{_OP_REPLACE} old must not be empty")
+            found = text.count(old)
+            if found == 0:
+                raise _TransformError(
+                    f"{_OP_REPLACE}: old text not found in the input - it must match "
+                    "exactly (including whitespace); fetch the file and copy the line"
+                )
+            if found != count:
+                raise _TransformError(
+                    f"{_OP_REPLACE}: old text occurs {found} times, count is {count}; "
+                    "make old more specific (include the surrounding text) or set count"
+                )
+            ctx.charge(len(text) + count * max(len(new) - len(old), 0))
+            return text.replace(old, new, count)
         if op == _OP_CONCAT:
             if not isinstance(arg, list):
                 raise _TransformError(f"{_OP_CONCAT} takes a list")
@@ -512,9 +545,10 @@ def bounded_evidence(result: dict[str, Any], *, node_id: str = "") -> dict[str, 
                 "it, add a LATER node to the SAME branch whose packet references it "
                 f"in place, e.g. {{\"$ta.effect\": \"{ref}\"}} (or "
                 f"\"{ref}.<field>\", wrapped in {{\"$ta.from_base64\": ...}} / "
-                "{\"$ta.base64\": ...} as the target API needs), then run the branch "
-                "ONCE: fetch and write happen in one run. Never copy, re-type or pass "
-                "the text through run_graph inputs."
+                "{\"$ta.base64\": ...} as the target API needs; to change one line use "
+                "{\"$ta.replace\": {\"in\": ..., \"old\": ..., \"new\": ...}}), then "
+                "run the branch ONCE: fetch and write happen in one run. Never copy, "
+                "re-type or pass the text through run_graph inputs."
             ),
         })
     bounded["response"] = persisted
