@@ -510,9 +510,10 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
     """
     msg = error_str.lower()
     if msg.startswith("external write failed"):
-        from tinyassets.runs import EXTERNAL_WRITE_FAILED_ACTION
+        from tinyassets.runs import _classify_external_write, external_write_suggested_action
 
-        return ("external_write_failed", EXTERNAL_WRITE_FAILED_ACTION)
+        cls = _classify_external_write(msg)
+        return (cls, external_write_suggested_action(cls))
     if "empty" in msg and ("llm" in msg or "response" in msg or "provider" in msg):
         return (
             "empty_llm_response",
@@ -1108,11 +1109,12 @@ def _compose_run_snapshot(
     # founder after every one. It is the universe's own to fix and rerun.
     error_text = str(run_record.get("error") or "")
     if run_record["status"] != "failed" and error_text.lower().startswith("external write failed"):
-        from tinyassets.runs import EXTERNAL_WRITE_FAILED_ACTION
+        from tinyassets.runs import _classify_failure, external_write_suggested_action
 
-        snapshot["failure_class"] = "external_write_failed"
-        snapshot["suggested_action"] = EXTERNAL_WRITE_FAILED_ACTION
-        snapshot["actionable_by"] = "chatbot"
+        cls = _classify_failure(run_record)
+        snapshot["failure_class"] = cls
+        snapshot["suggested_action"] = external_write_suggested_action(cls)
+        snapshot["actionable_by"] = _actionable_by(cls)
     if run_record["status"] == "failed":
         error_annotation = _classify_run_outcome_error(run_record.get("error", ""))
         if error_annotation:

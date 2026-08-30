@@ -99,10 +99,64 @@ def test_a_completed_run_whose_effect_failed_is_the_universes_to_fix(monkeypatch
 def test_the_failure_taxonomy_owns_external_write_failures():
     from tinyassets import runs as runs_module
 
-    assert runs_module._classify_failure(
-        {"status": "completed", "error": "external write failed - open_pr/...: 422"}
-    ) == "external_write_failed"
+    failed = ("external write failed - "
+              "open_pr/authenticated_external_call: far side answered HTTP 422: {} [far_side_error]")
+    assert (runs_module._classify_failure({"status": "completed", "error": failed})
+            == "external_write_failed")
     assert runs_module.ACTIONABLE_BY["external_write_failed"] == "chatbot"
+    refused = ("external write failed - call/authenticated_external_call: "
+               "refused before the wire: missing_consent [missing_consent]")
+    assert (runs_module._classify_failure({"status": "completed", "error": refused})
+            == "external_write_refused")
+    revoked = ("external write failed - call/authenticated_external_call: "
+               "connection authority refused: grant_revoked [grant_revoked]")
+    assert (runs_module._classify_failure({"status": "completed", "error": revoked})
+            == "external_write_refused")
+    assert runs_module.ACTIONABLE_BY["external_write_refused"] == "user"
     assert runs_module._classify_failure({"status": "completed", "error": "boom"}) == "error"
-    outcome = runs_api._classify_run_outcome_error("external write failed - x")
-    assert outcome[0] == "external_write_failed"
+    assert runs_api._classify_run_outcome_error(failed)[0] == "external_write_failed"
+    assert runs_api._classify_run_outcome_error(refused)[0] == "external_write_refused"
+    assert "at most twice" in runs_module.EXTERNAL_WRITE_FAILED_ACTION
+    assert "request rail" in runs_module.EXTERNAL_WRITE_REFUSED_ACTION
+
+
+def test_a_delivered_4xx_and_a_consent_refusal_become_error_rows():
+    """Codex (P1) + docs/concerns/2026-08-28-a-403-effect-completes-the-run-
+    silently.md: `delivered` means the request reached the far side, not that
+    it succeeded; a 404/422/403 was recorded like a 201 and a consent refusal
+    carried no `error` at all, so neither reached the run's error or class."""
+    from tinyassets import runs as runs_module
+
+    evidence = {
+        "create_branch": {"authenticated_external_call": {
+            "delivered": True, "response": {"status": 404, "body": '{"message":"Not Found"}'}}},
+        "write": {"authenticated_external_call": {
+            "delivered": True, "response": {"status": 201, "body": "{}"}}},
+        "post": {"authenticated_external_call": {
+            "error_kind": "missing_consent", "dry_run": True}},
+    }
+    rows = runs_module._collect_external_write_errors(evidence)
+    assert [(r["node_id"], r["error_kind"]) for r in rows] == [
+        ("create_branch", "far_side_error"), ("post", "missing_consent")]
+    assert "HTTP 404" in rows[0]["error"]
+    summary = runs_module._external_write_error_summary(rows)
+    assert "[far_side_error]" in summary and "[missing_consent]" in summary
+    # ...and the summary classifies as REFUSED because a consent is involved
+    assert runs_module._classify_failure(
+        {"status": "completed", "error": "external write failed - " + summary}
+    ) == "external_write_refused"
+    only_404 = runs_module._external_write_error_summary(rows[:1])
+    assert runs_module._classify_failure(
+        {"status": "completed", "error": "external write failed - " + only_404}
+    ) == "external_write_failed"
+
+
+def test_a_refused_effect_snapshot_routes_to_the_founder(monkeypatch):
+    _stub_branch(monkeypatch, effects=["authenticated_external_call"])
+    err = ("external write failed - post/authenticated_external_call: refused before "
+           "the wire: missing_consent [missing_consent]")
+    snap = runs_api._compose_run_snapshot(_record("completed", error=err),
+                                          _events(("call_github", "ran")))
+    assert snap["failure_class"] == "external_write_refused"
+    assert snap["actionable_by"] == "user"
+    assert "request rail" in snap["suggested_action"]

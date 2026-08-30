@@ -3035,7 +3035,8 @@ def _external_write_error_summary(errors: list[dict[str, Any]]) -> str:
         node = row.get("node_id") or "?"
         sink = row.get("sink") or "?"
         detail = row.get("error") or row.get("error_kind") or "failed"
-        parts.append(f"{node}/{sink}: {detail}")
+        kind = row.get("error_kind") or ""
+        parts.append(f"{node}/{sink}: {detail} [{kind}]" if kind else f"{node}/{sink}: {detail}")
     more = "" if len(errors) <= 5 else f" (+{len(errors) - 5} more)"
     return "external write failed - " + "; ".join(parts) + more
 
@@ -3062,6 +3063,34 @@ def _collect_external_write_errors(
                     "sink": sink,
                     "error": ev.get("error"),
                     "error_kind": ev.get("error_kind") or "unknown",
+                })
+                continue
+            # `delivered` means the request REACHED the far side, not that it
+            # succeeded: a 404/422/403 was recorded exactly like a 201 and the
+            # run completed with no error at all (docs/concerns/2026-08-28-a-403-
+            # effect-completes-the-run-silently.md; live 2026-08-30 a deleted
+            # head branch -> 404 -> PR 422, and the universe read "completed").
+            response = ev.get("response")
+            status = response.get("status") if isinstance(response, dict) else None
+            if ev.get("delivered") is True and isinstance(status, int) and status >= 400:
+                body = response.get("body")
+                preview = str(body)[:160].replace("\n", " ") if body else ""
+                errors.append({
+                    "node_id": node_id,
+                    "sink": sink,
+                    "error": f"far side answered HTTP {status}: {preview}".rstrip(": "),
+                    "error_kind": "far_side_error",
+                })
+                continue
+            # A refusal before the wire that carries only an error_kind (the
+            # consent gate returns dry_run + missing_consent and no `error`).
+            kind = ev.get("error_kind")
+            if kind and not ev.get("delivered"):
+                errors.append({
+                    "node_id": node_id,
+                    "sink": sink,
+                    "error": f"refused before the wire: {kind}",
+                    "error_kind": str(kind),
                 })
     return errors
 
@@ -4572,11 +4601,16 @@ ACTIONABLE_BY: dict[str, str] = {
     "snapshot_schema_drift": "chatbot",
     "interrupted": "chatbot",
     "child_receipt_waiting": "chatbot",
-    # chatbot — an effect was refused or the far side answered with an error:
-    # the packet, the branch or a stale sha is the universe's own to fix and
-    # run again (live 2026-08-30: every such failure read as "user", so the
-    # universe stopped and asked the founder after each one).
+    # chatbot — an effect failed for a reason the universe can fix: the far side
+    # answered 4xx/5xx (a deleted branch, a missing PR), a packet field, a
+    # transform, a stale sha. Live 2026-08-30: every such failure read as
+    # "user", so the universe stopped and asked the founder after each one.
     "external_write_failed": "chatbot",
+    # user — an effect was refused by AUTHORITY the universe does not hold: a
+    # consent it lacks, a grant that is missing/revoked/too narrow, an
+    # allow-list or SSRF refusal, its soul's own limits. Only the founder can
+    # change that, and the request rail is the channel.
+    "external_write_refused": "user",
     # user — opaque/internal; chatbot escalates raw error for human judgment
     "unknown": "user",
     "error": "user",
@@ -4586,13 +4620,54 @@ ACTIONABLE_BY: dict[str, str] = {
 
 
 EXTERNAL_WRITE_FAILED_ACTION = (
-    "An effect was refused or the far side answered with an error. Read "
-    "external_write_errors for the node, status and body: a 404 on a head branch "
-    "means it no longer exists (create a fresh one), a 422 usually means the "
-    "commit or PR it depends on did not happen, a packet error names the field. "
-    "Fix that and run again yourself, in this turn - this is yours to fix; ask the "
-    "founder only for something only they have (a grant, a decision)."
+    "An effect failed for a reason you can fix. Read external_write_errors for "
+    "the node, HTTP status and body: a 404 on a head branch means it no longer "
+    "exists (create a fresh one), a 422 usually means the commit or PR it depends "
+    "on did not happen, a packet error names the field. Fix that and run again "
+    "yourself, in this turn - this is yours to fix. Try at most twice for the same "
+    "failure; if it fails the same way a third time, stop and report exactly what "
+    "is stuck. Ask the founder only for something only they have (a grant, a "
+    "decision)."
 )
+
+EXTERNAL_WRITE_REFUSED_ACTION = (
+    "An effect was refused by authority you do not hold - a consent, a grant that "
+    "is missing, revoked or too narrow, an allow-list or SSRF refusal. Retrying "
+    "cannot change that. Raise the exact ask in the request rail (extend_http for "
+    "a wider reach on a destination you already hold, connect_http for a new one, "
+    "or the consent the refusal names), then continue when it is answered."
+)
+
+# error_kind values (from the adapter's summary line) that mean the far side of
+# the refusal is AUTHORITY the founder holds, not something the universe can fix.
+_EXTERNAL_WRITE_REFUSED_KINDS = (
+    "missing_consent",
+    "soul_authority_denied",
+    "no_universe_authority",
+)
+_EXTERNAL_WRITE_REFUSED_WORDS = (
+    "consent", "grant", "revoked", "allowlist", "allow-list", "ssrf",
+    "not allowed", "scope", "authority refused",
+)
+
+
+def _classify_external_write(lower: str) -> str:
+    """Split the "external write failed - ..." summary into the founder's
+    (refused by authority) and the universe's (failed, fixable)."""
+    for kind in _EXTERNAL_WRITE_REFUSED_KINDS:
+        if f"[{kind}]" in lower:
+            return "external_write_refused"
+    if any(word in lower for word in _EXTERNAL_WRITE_REFUSED_WORDS):
+        return "external_write_refused"
+    return "external_write_failed"
+
+
+def external_write_suggested_action(failure_class: str) -> str:
+    if failure_class == "external_write_refused":
+        return EXTERNAL_WRITE_REFUSED_ACTION
+    if failure_class == "external_write_failed":
+        return EXTERNAL_WRITE_FAILED_ACTION
+    return ""
 
 _EMPTY_LLM_RESPONSE_ACTION = (
     "Ask the host to check get_status provider availability/cooldowns and fix "
@@ -4618,7 +4693,7 @@ def _classify_failure(run: dict) -> str:
         return ""
     lower = error.lower()
     if lower.startswith("external write failed"):
-        return "external_write_failed"
+        return _classify_external_write(lower)
     if "empty" in lower and ("llm" in lower or "response" in lower or "provider" in lower):
         return "empty_llm_response"
     if "timeout" in lower:
@@ -4708,8 +4783,8 @@ def list_recent_runs(
                 "Wait for the child run to complete. Attaching an existing "
                 "child run is not exposed by the advertised handles."
             )
-        elif failure_class == "external_write_failed":
-            suggested_action = EXTERNAL_WRITE_FAILED_ACTION
+        elif failure_class in ("external_write_failed", "external_write_refused"):
+            suggested_action = external_write_suggested_action(failure_class)
         elif failure_class == "error":
             suggested_action = "Check error field for details; re-run after fixing root cause."
 
