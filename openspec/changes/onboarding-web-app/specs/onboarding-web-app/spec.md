@@ -131,8 +131,16 @@ a hostile reply cannot inject script or steal the browser-held token.
 
 The app SHALL drive onboarding using only the canonical MCP handles: `converse`
 for the chat (rendering the universe's first-person reply verbatim), `get_status`
-for a liveness heartbeat, and `write_graph target=connection operation=connect_llm`
-for the subscription deposit. When the universe has no engine, the app SHALL render
+for a liveness heartbeat (and, with `include_conversation`, the thread on reload),
+`write_graph target=connection` for the founder's deposits and answers
+(`connect_llm` for the subscription, `connect_http` for an outbound credential,
+`connect_compute` for a compute node, `resolve_connection`, and `answer_request`
+for a rail ask), and `read_graph target=pending_requests` for the request rail.
+An answered rail ask SHALL also be relayed into the thread as the founder's own
+line through `converse` (`Approved: "<title>"`, `Not now: "<title>"`, or
+`Answered "<title>" — field: value`; a secret field's value is never relayed),
+queued behind any turn in flight so the universe resumes without being told
+again. When the universe has no engine, the app SHALL render
 `converse`'s setup-required envelope honestly as the universe's own note and
 surface a connect-subscription affordance, never a fabricated reply. The app SHALL
 invent no backend tools and hold no universe logic, identity, or persona.
