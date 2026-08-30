@@ -8,28 +8,31 @@ The shipped Branch-completion effect dispatch, sink-specific adapter behavior, s
 
 ## Requirements
 
-### Requirement: Declared node effects dispatch after run completion without changing terminal success
-After a normal or resumed Branch run completes, the runtime SHALL inspect each node's declared `effects`, find matching packets only in that node's declared output keys, and dispatch the registered sink adapter. Returned per-node, per-sink evidence SHALL be stored in system-authored `external_write_results`; only evidence with a truthy `error` SHALL also be flattened into `external_write_errors`, so dry-run refusals remain results rather than errors. Per-sink exceptions SHALL become structured crash evidence and SHALL NOT reverse the completed run status. As-built limitation: a top-level effector import or dispatch exception is logged and returns an empty evidence map, so that failure is not persisted as structured run evidence. Nodes without declared effects SHALL produce no adapter work.
+### Requirement: Declared node effects dispatch at node time and a failed effect fails its node
 
-#### Scenario: Declared sink receives its matching packet
-- **WHEN** a completed node declares a supported effect and one declared output key contains that sink's packet
-- **THEN** the runtime dispatches that adapter and records its result under the node and sink in `external_write_results`
+As each node of a Branch run completes, the runtime SHALL inspect that node's
+declared `effects`, find matching packets only in the node's declared output
+keys (rendered against the state merged with the node's delta), and dispatch
+the registered sink adapter before the next node runs. The full result SHALL
+be kept in memory for the rest of the run so a later node may reference an
+earlier node's `response.status` / `response.body` (`$ta.effect`) only when
+that node is a graph ancestor; persisted evidence stays bounded. A packet MAY
+declare `accept_statuses` (a list of integers) at its top level; a delivered
+call answered ≥ 400 with a status not in that list, a packet refused before
+the wire, an adapter crash or an unknown sink SHALL fail the node and the run
+(`external write failed - <node>/<sink>: <error> [<kind>]`), and later nodes
+SHALL NOT run. Each node's effects fire at most once per run. The post-run
+dispatcher remains only for callers that compile without an effect chain and
+SHALL NOT run for a chain-compiled run. All other clauses of this requirement
+are unchanged.
 
-#### Scenario: Adapter error does not fail the run
-- **WHEN** a sink adapter returns evidence with a truthy `error` or raises inside per-sink dispatch
-- **THEN** the runtime records result and flattened error evidence and the Branch run remains completed
+#### Scenario: a later node reads an ancestor's full body
+- **WHEN** node `fetch` delivered a 6.8 KB document and node `edit` (a graph descendant) references `fetch.response.body.content`
+- **THEN** the reference resolves to the full body, not the 4 KiB persisted preview
 
-#### Scenario: Dry-run refusal is not flattened as an error
-- **WHEN** an adapter returns dry-run evidence without an `error` field
-- **THEN** the evidence remains in `external_write_results` and no corresponding `external_write_errors` row is created
-
-#### Scenario: Top-level dispatch crash loses structured evidence
-- **WHEN** the effector module import or top-level dispatch raises
-- **THEN** the runtime logs the exception, returns an empty evidence map, and still completes the Branch run without persisted adapter evidence
-
-#### Scenario: Resume completion also dispatches effects
-- **WHEN** a previously interrupted run reaches completion through `resume_run`
-- **THEN** its declared effects use the same dispatch and evidence path as an initial completion
+#### Scenario: a sibling cannot be referenced
+- **WHEN** two nodes fan out from the same parent and one references the other's effect
+- **THEN** the packet is refused as `invalid_body_transform` naming the missing ancestor, every run, regardless of which sibling ran first
 
 ### Requirement: External-write receipt keys are system-authoritative and visible in run snapshots
 Before adapter dispatch the runtime SHALL move any Branch-authored `external_write_results` or `external_write_errors` value to the corresponding `_branch_authored_*` quarantine key. System-generated adapter evidence SHALL then own the canonical keys. The composed run snapshot SHALL expose canonical external-write results and errors from persisted run output so callers do not need a separate output-only read.
@@ -244,3 +247,7 @@ dispatch.
 - **THEN** the call is refused with `invalid_body_transform` and nothing is
   sent; a not-found refusal quotes the input near the closest partial match
   with newlines and spaces visible
+
+#### Scenario: a code node's output feeds the next packet
+- **WHEN** a code node returns `{"content": <text>, "sha": <sha>}` under its declared `output_keys` and the next node's packet body uses `{"$ta.base64": {"$ta.ref": "content"}}` with `content` in its `input_keys`
+- **THEN** the write carries the code node's text, base64-encoded by the effector, and the model never carried the bytes
