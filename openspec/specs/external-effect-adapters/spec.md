@@ -136,8 +136,8 @@ The host-local Windows desktop adapter SHALL require explicit affirmative user a
 The generic `authenticated_external_call` effector SHALL treat a one-key JSON
 object anywhere inside `request.body` (object values and list elements) whose
 key is one of `$ta.base64`, `$ta.from_base64`, `$ta.ref`, `$ta.effect`,
-`$ta.concat` as a transform applied in the effector process before the wire
-request reaches the credential-blind worker. The `$ta.` namespace SHALL be
+`$ta.concat`, `$ta.replace` as a transform applied in the effector process
+before the wire request reaches the credential-blind worker. The `$ta.` namespace SHALL be
 reserved: any other one-key object whose key starts with `$ta.` is refused,
 and every other key — a user's own `$ref`, `$set` — is sent as written.
 `{"$ta.base64": X}` sends the base64 of X's UTF-8 bytes; `{"$ta.from_base64": X}`
@@ -150,10 +150,21 @@ compiler's render view, never the whole final state; `{"$ta.effect":
 `response.status` — never headers — from the evidence of a node STORED EARLIER
 in the branch whose generic-call effect already fired in this run (effects
 fire in storage order; `write_graph` appends nodes in the order given);
-`{"$ta.concat": [X, …]}` joins texts. X MAY itself be a transform. JSON-encoded
-strings are traversed and lists indexed. This SHALL be the only knowledge the
-effector gains beyond shape: one encoding and the run it belongs to, never a
-service.
+`{"$ta.concat": [X, …]}` joins texts; `{"$ta.replace": {"in": X, "old": A,
+"new": B, "count": n}}` replaces exactly `count` (default 1) occurrences of
+`A` inside `X` with `B`, every operand (`count` included) resolved through the
+same transforms, the key set closed (`in`, `old`, `new`, `count` only) and the
+work charged in UTF-8 bytes; it SHALL refuse the whole call when `old` is
+empty, absent from the input, or occurs a number of times other than `count`,
+or when `count` is not a positive integer — and the not-found refusal SHALL
+show the input around the longest prefix of `old` that does occur (whitespace
+made visible with `repr`), because the author cannot see the fetched bytes
+(live 2026-08-30: two runs guessed at a newline where the file had a space).
+X MAY itself be a transform. JSON-encoded strings are traversed and lists
+indexed. This SHALL be the only knowledge the effector gains beyond shape: one
+encoding and the run it belongs to, never a service. The `$ta.*` vocabulary
+is FROZEN as of change `sandboxed-code-node` (#2719): a new edit shape is a
+code node, not an operator.
 
 Bounds SHALL refuse the whole call before anything is sent, as the effector's
 secret-free error dict (`error_kind: invalid_body_transform`; paths and types
@@ -216,3 +227,20 @@ dispatch.
 - **THEN** the call is refused with `invalid_body_transform` at the first
   bound crossed — the working-set charge, the depth scan, or the size check —
   never a crash (`effector_crashed`) and never a partially built body
+
+#### Scenario: One line of a fetched file is changed without the model carrying the file
+
+- **WHEN** a write node's body uses `$ta.replace` over the decoded content of
+  an earlier fetch node, with `old` the exact current line and `new` the
+  intended line
+- **THEN** the written file differs from the fetched one only in that line,
+  byte for byte elsewhere (live 2026-08-30: PR #2720, `-2/+1`, run
+  `ecabc10d41294d7f`, opened and merged uncoached in one write run)
+
+#### Scenario: A typo in the old text changes nothing, and the refusal shows the real bytes
+
+- **WHEN** `old` does not occur in the fetched text, or occurs twice with
+  `count` 1
+- **THEN** the call is refused with `invalid_body_transform` and nothing is
+  sent; a not-found refusal quotes the input near the closest partial match
+  with newlines and spaces visible
