@@ -4572,6 +4572,11 @@ ACTIONABLE_BY: dict[str, str] = {
     "snapshot_schema_drift": "chatbot",
     "interrupted": "chatbot",
     "child_receipt_waiting": "chatbot",
+    # chatbot — an effect was refused or the far side answered with an error:
+    # the packet, the branch or a stale sha is the universe's own to fix and
+    # run again (live 2026-08-30: every such failure read as "user", so the
+    # universe stopped and asked the founder after each one).
+    "external_write_failed": "chatbot",
     # user — opaque/internal; chatbot escalates raw error for human judgment
     "unknown": "user",
     "error": "user",
@@ -4579,6 +4584,15 @@ ACTIONABLE_BY: dict[str, str] = {
     "cancelled": "none",
 }
 
+
+EXTERNAL_WRITE_FAILED_ACTION = (
+    "An effect was refused or the far side answered with an error. Read "
+    "external_write_errors for the node, status and body: a 404 on a head branch "
+    "means it no longer exists (create a fresh one), a 422 usually means the "
+    "commit or PR it depends on did not happen, a packet error names the field. "
+    "Fix that and run again yourself, in this turn - this is yours to fix; ask the "
+    "founder only for something only they have (a grant, a decision)."
+)
 
 _EMPTY_LLM_RESPONSE_ACTION = (
     "Ask the host to check get_status provider availability/cooldowns and fix "
@@ -4603,6 +4617,8 @@ def _classify_failure(run: dict) -> str:
     if not error:
         return ""
     lower = error.lower()
+    if lower.startswith("external write failed"):
+        return "external_write_failed"
     if "empty" in lower and ("llm" in lower or "response" in lower or "provider" in lower):
         return "empty_llm_response"
     if "timeout" in lower:
@@ -4692,6 +4708,8 @@ def list_recent_runs(
                 "Wait for the child run to complete. Attaching an existing "
                 "child run is not exposed by the advertised handles."
             )
+        elif failure_class == "external_write_failed":
+            suggested_action = EXTERNAL_WRITE_FAILED_ACTION
         elif failure_class == "error":
             suggested_action = "Check error field for details; re-run after fixing root cause."
 

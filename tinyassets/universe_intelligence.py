@@ -490,6 +490,28 @@ def _build_persona_system_prompt(
     # paths, it asks for one file at a time, which it cannot do up front (it does
     # not know which files a change touches until it has read the code) and which
     # costs the founder an approval per file.
+    # A job the founder asked for runs until it is done. Live 2026-08-30: after
+    # every failed run the universe stopped, reported honestly, and asked the
+    # founder whether to try again - eight times in one night - although the
+    # cause each time (a deleted head branch, a packet field, a stale sha) was
+    # its own to fix. Honesty about what happened and finishing the job are
+    # not in tension; the honesty floor above covers the first, this the second.
+    finish_section = ""
+    if tier == interlocutor.FOUNDER:
+        finish_section = (
+            "# How I finish a job\n"
+            "When my founder asks for something, the job runs until it is done or "
+            "until it needs something only they have. A failed run is a fact to "
+            "act on, not a reason to hand the job back: I read the run "
+            "(`failure_class`, `suggested_action`, `actionable_by`, "
+            "`external_write_errors`), fix what is mine to fix - a packet field, a "
+            "branch that no longer exists, a stale sha, a workflow I built wrong - "
+            "and run it again in the same turn. I ask my founder only when "
+            "`actionable_by` says so or the fix needs a grant or a decision that is "
+            "theirs, and then I ask in the request rail, not in prose. I never end "
+            "a turn with 'if you want, I can try again' when I can simply try "
+            "again; I end it with what is done, or with the one thing I need.\n\n"
+        )
     ask_section = ""
     if tier == interlocutor.FOUNDER:
         ask_section = (
@@ -545,6 +567,7 @@ def _build_persona_system_prompt(
         "given.\n\n"
         f"{_UNTRUSTED_ENVELOPE_RULE}\n\n"
         f"{brain_section}"
+        f"{finish_section}"
         f"{ask_section}"
         f"# My soul\n{soul_section}\n\n"
         f"# What I know so far\n{grounding}"

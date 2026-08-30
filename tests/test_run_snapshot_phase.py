@@ -78,3 +78,31 @@ def test_a_finished_run_carries_no_phase(monkeypatch):
     _stub_branch(monkeypatch, effects=["authenticated_external_call"])
     snap = runs_api._compose_run_snapshot(_record("completed"), _events(("call_github", "ran")))
     assert "phase" not in snap and "suggested_action" not in snap
+
+
+def test_a_completed_run_whose_effect_failed_is_the_universes_to_fix(monkeypatch):
+    """Live 2026-08-30: an effect that was refused (404 on a deleted branch,
+    422, a packet field) completes the run with `error` set; the snapshot
+    carried no class, the list view said actionable_by "user", and the
+    universe stopped and asked the founder after every one."""
+    _stub_branch(monkeypatch, effects=["authenticated_external_call"])
+    err = ("external write failed - write_readme/authenticated_external_call: "
+           "packet.connection_id is required")
+    rec = _record("completed", error=err)
+    snap = runs_api._compose_run_snapshot(rec, _events(("call_github", "ran")))
+    assert snap["failure_class"] == "external_write_failed"
+    assert snap["actionable_by"] == "chatbot"
+    assert "run again yourself" in snap["suggested_action"]
+    assert "phase" not in snap
+
+
+def test_the_failure_taxonomy_owns_external_write_failures():
+    from tinyassets import runs as runs_module
+
+    assert runs_module._classify_failure(
+        {"status": "completed", "error": "external write failed - open_pr/...: 422"}
+    ) == "external_write_failed"
+    assert runs_module.ACTIONABLE_BY["external_write_failed"] == "chatbot"
+    assert runs_module._classify_failure({"status": "completed", "error": "boom"}) == "error"
+    outcome = runs_api._classify_run_outcome_error("external write failed - x")
+    assert outcome[0] == "external_write_failed"
