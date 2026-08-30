@@ -866,6 +866,16 @@ def update_run_status(
     if not sets:
         return
     params.append(run_id)
+    if status in (RUN_STATUS_FAILED, RUN_STATUS_CANCELLED):
+        # A run that did not complete fired no effect (effects fire only after
+        # success), so its engine admission - if it has one - settles as a
+        # read here; the dispatcher never sees a failed run (Codex round 2).
+        try:
+            from tinyassets.effectors import settle_engine_admission
+
+            settle_engine_admission(run_id, [])
+        except Exception:  # pragma: no cover - never let accounting break a status write
+            logger.exception("engine admission settle failed for run %s", run_id)
     with _connect(base_path) as conn:
         conn.execute(
             f"UPDATE runs SET {', '.join(sets)} WHERE run_id = ?",

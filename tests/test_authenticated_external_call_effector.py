@@ -1184,3 +1184,22 @@ def test_a_verb_that_disagrees_with_the_method_settles_as_a_write(tmp_path, monk
     assert evidence["n1"][EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL]["error_kind"] == "method_mismatch"
     assert loop.recorded == []
     assert _admission_kind(db, "run-mismatch") == "write"
+
+
+def test_an_unknown_sink_settles_as_a_write(tmp_path, monkeypatch):
+    """Codex round 2 (P2): an unknown sink was skipped before the dispatcher
+    recorded it, so the run settled as a read. What it would have done is
+    unknown - it stays a write."""
+    import types
+
+    from tinyassets import effectors as effectors_pkg
+
+    db = _seed_engine_admission(tmp_path, monkeypatch, "run-unknown")
+    node = types.SimpleNamespace
+    branch = node(node_defs=[node(node_id="n1", effects=["github_pull_request"],
+                                  output_keys=["o"], input_keys=[])], state_schema=None)
+    evidence = effectors_pkg.run_effects_for_branch(
+        branch=branch, run_state={"o": "x"}, base_path=str(tmp_path / "universe-1"),
+        run_id="run-unknown")
+    assert evidence["n1"]["github_pull_request"]["error_kind"] == "unknown_sink"
+    assert _admission_kind(db, "run-unknown") == "write"

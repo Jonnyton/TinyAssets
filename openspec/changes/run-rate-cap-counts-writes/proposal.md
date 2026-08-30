@@ -37,7 +37,13 @@ becomes:
 - `read` rows still count toward a new **total bound of 60/h** for runs of
   any kind, so a loop of read-only runs is bounded too (`run_graph` returns
   as soon as the run is queued, so this is what bounds compute on the
-  owner's subscription; 60 is 3x the concern's job with a full retry).
+  owner's subscription; the concern's job is 5 runs + up to 5 retunes = 10
+  admissions, 20 with a full retry, and 60 leaves 3x that). The refusal
+  names the cap that refused.
+- A run that fails or is cancelled fired nothing (effects fire only after
+  success): `update_run_status` settles it as a read. An unknown sink stays
+  a write. A settlement that arrives before the bind (a fast run) is kept in
+  a `settlements` table and applied at bind time.
 - Ledger storage shape: `admissions` gains `kind TEXT NOT NULL DEFAULT
   'write'` and `run_id TEXT NOT NULL DEFAULT ''` (additive `ALTER TABLE`;
   an old ledger's rows count as writes; migration happens inside the

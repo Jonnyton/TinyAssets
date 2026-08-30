@@ -345,6 +345,28 @@ def test_run_graph_refuses_foreign_private_branch(monkeypatch):
     assert calls["n"] == 0  # the run path was never reached
 
 
+def test_run_graph_names_the_cap_that_refused(monkeypatch, tmp_path):
+    """Codex round 2 (P2): the refusal always said "max 20" even when the
+    60-run total bound was what refused."""
+    import tinyassets.engine_mcp_http as http
+    from tinyassets import engine_admissions as adm
+    from tinyassets import engine_mcp_server as s
+
+    _bind_ids(monkeypatch, graph="u-9")
+    monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
+    monkeypatch.setattr(s, "_engine_run_admit",
+                        lambda **kw: adm.Admission(None, adm.REFUSED_BY_TOTAL))
+    out = json.loads(s.run_graph(branch_def_id="b1"))
+    assert f"max {s._RUN_GRAPH_TOTAL_MAX} runs of any kind" in out["error"]
+    monkeypatch.setattr(s, "_engine_run_admit",
+                        lambda **kw: adm.Admission(None, adm.REFUSED_BY_WRITE))
+    out = json.loads(s.run_graph(branch_def_id="b1"))
+    assert f"max {s._RUN_GRAPH_RATE_MAX} runs that write" in out["error"]
+    # a bare False from an old-style double still means refused
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: False)
+    assert "rate limit" in json.loads(s.run_graph(branch_def_id="b1"))["error"]
+
+
 def test_run_graph_binds_its_admission_to_the_started_run(monkeypatch, tmp_path):
     """The admission is charged as a write before the run; binding it to the
     run_id is what lets the dispatcher downgrade it to a read afterwards."""

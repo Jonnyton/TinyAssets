@@ -72,7 +72,9 @@ _RUN_GRAPH_RATE_MAX = 20
 # write budget once they prove they wrote nothing (tinyassets.engine_admissions),
 # but a loop of read-only runs is still bounded here: run_graph returns as soon
 # as the run is QUEUED, so this is what bounds compute on the owner's
-# subscription. 60 = 3x the concern's five-call job with a full retry (Codex).
+# subscription. Arithmetic: the concern's GitHub job is 5 runs plus up to 5
+# write_graph retunes = 10 admissions; with one full retry, 20; 60 leaves 3x
+# that. Every one of those 60 still runs on the owner's own subscription.
 _RUN_GRAPH_TOTAL_MAX = 60
 
 
@@ -110,7 +112,7 @@ def _engine_run_admit(
     from tinyassets import engine_admissions as _adm
 
     counted_universe = (universe_id or "").strip() or _GRAPH_ID
-    ticket = _adm.admit(
+    admission = _adm.admit_detail(
         counted_universe,
         write_max=_RUN_GRAPH_RATE_MAX,
         total_max=_RUN_GRAPH_TOTAL_MAX,
@@ -118,9 +120,19 @@ def _engine_run_admit(
         fail_closed=fail_closed,
     )
     # ``want_ticket``: the caller will start a RUN and needs the admission's
-    # identity to bind it (ticket = ledger row id; ADMITTED_UNRECORDED when a
-    # fail-open blip admitted without a row; None = refused).
-    return ticket if want_ticket else (ticket is not None)
+    # identity to bind it (Admission.ticket = ledger row id; ADMITTED_UNRECORDED
+    # when a fail-open blip admitted without a row; None = refused, and
+    # Admission.refused_by names the cap).
+    return admission if want_ticket else (admission.ticket is not None)
+
+
+def _admission_parts(admission) -> tuple:
+    """(ticket, refused_by) from what ``_engine_run_admit(want_ticket=True)``
+    returned - tolerant of a test double that returns a bare bool."""
+    ticket = getattr(admission, "ticket", admission)
+    if ticket is False:
+        ticket = None
+    return ticket, getattr(admission, "refused_by", None)
 
 
 def _attach_run_admission(raw: str, ticket) -> None:
@@ -389,11 +401,15 @@ def run_graph(
     # run_graph on an already-approved effect branch (e.g. opening many PRs). Cap
     # the runs THIS universe can trigger via the engine per rolling window. The
     # approved-source-hash gate already pins WHAT runs; this bounds HOW OFTEN.
-    ticket = _engine_run_admit(want_ticket=True)
+    ticket, refused_by = _admission_parts(_engine_run_admit(want_ticket=True))
     if ticket is None:
+        if refused_by == "total":
+            bound = f"max {_RUN_GRAPH_TOTAL_MAX} runs of any kind"
+        else:
+            bound = f"max {_RUN_GRAPH_RATE_MAX} runs that write"
         return json.dumps({
             "error": (
-                f"run_graph rate limit reached (max {_RUN_GRAPH_RATE_MAX} per "
+                f"run_graph rate limit reached ({bound} per "
                 f"{_RUN_GRAPH_RATE_WINDOW_S // 60}m); try again shortly."
             ),
         })

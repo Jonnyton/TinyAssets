@@ -22,22 +22,26 @@ The count rule, in one place:
 * ``admit`` hands back a TICKET (the ledger row id). The caller binds it to
   the run it starts with ``attach_run``; identity by row id, never "the
   newest row", so two concurrent admissions cannot cross-bind (Codex round 1).
-* When the run's effects have fired, the dispatcher reports what actually
-  left the box. If every fired effect was a ``GET``/``HEAD`` authenticated
-  call (or nothing fired), the run's row is RECLASSIFIED as kind ``read``.
-  Anything else - a non-GET verb, another sink, a verb the result does not
-  name - stays ``write`` (fail closed).
+* When the run has finished, it is SETTLED: if every effect that fired was a
+  ``GET``/``HEAD`` authenticated call, or nothing fired at all (a run that
+  failed or was cancelled fires nothing - effects fire only after success),
+  the run's row is reclassified as kind ``read``. Anything else - a non-GET
+  verb, another sink (known or not), a verb the result does not name - stays
+  ``write`` (fail closed). A settlement that arrives BEFORE the bind (a fast
+  run) is kept in ``settlements`` and applied when the bind happens (Codex
+  round 2).
 * ``read`` rows still count toward ``total_max`` (60 per rolling hour - a
   run_graph call returns as soon as the run is queued, so this is what bounds
   compute on the owner's subscription), so a loop of read-only runs is
   bounded too, just not by the write budget.
 
-The ledger is ``<data_dir>/.engine_run_admissions.db`` and is NOT the shared
-runs table (which would over-limit legitimate browser/scheduled runs - Codex
-2026-08-19 (b)). A symlinked or out-of-tree ledger is refused: fail CLOSED on
-a tampered ledger regardless of caller mode. Schema inspection and migration
-happen INSIDE the ``BEGIN IMMEDIATE`` transaction: two first touches of a
-legacy ledger used to both pass before either had migrated (Codex round 1, P0).
+The ledger is ``<data_dir>/.engine_run_admissions.db`` (the canonical
+resolver, never the CWD) and is NOT the shared runs table (which would
+over-limit legitimate browser/scheduled runs - Codex 2026-08-19 (b)). A
+symlinked or out-of-tree ledger is refused: fail CLOSED on a tampered ledger
+regardless of caller mode. Schema inspection and migration happen INSIDE the
+``BEGIN IMMEDIATE`` transaction: two first touches of a legacy ledger used to
+both pass before either had migrated (Codex round 1, P0).
 """
 
 from __future__ import annotations
@@ -46,6 +50,7 @@ import os
 import sqlite3
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 LEDGER_NAME = ".engine_run_admissions.db"
 KIND_WRITE = "write"
@@ -55,14 +60,24 @@ READ_VERBS = frozenset({"GET", "HEAD"})
 # ``admit`` returned this when a DB error was tolerated (fail-open): the run is
 # admitted but no row records it, so there is nothing to bind or settle.
 ADMITTED_UNRECORDED = -1
+REFUSED_BY_WRITE = "write"
+REFUSED_BY_TOTAL = "total"
+REFUSED_BY_LEDGER = "ledger"
+
+
+class Admission(NamedTuple):
+    """``ticket``: the ledger row id when recorded; ``ADMITTED_UNRECORDED``
+    when a DB error was tolerated; None when refused - and then ``refused_by``
+    names the cap (``write`` / ``total``) or ``ledger`` (tampered/unusable)."""
+
+    ticket: int | None
+    refused_by: str | None
 
 
 def ledger_path() -> Path:
-    """The ledger's location: under ``TINYASSETS_DATA_DIR`` when set, else the
-    daemon's resolved data root (never the CWD)."""
-    env = (os.environ.get("TINYASSETS_DATA_DIR") or "").strip()
-    if env:
-        return Path(env) / LEDGER_NAME
+    """The ledger's location under the daemon's resolved data root
+    (``tinyassets.storage.data_dir``: ``TINYASSETS_DATA_DIR`` first, absolute,
+    never the CWD)."""
     from tinyassets.storage import data_dir
 
     return data_dir() / LEDGER_NAME
@@ -84,7 +99,7 @@ def _ledger_is_trusted(db: Path) -> bool | None:
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create or migrate the table. Call INSIDE an immediate transaction."""
+    """Create or migrate the tables. Call INSIDE an immediate transaction."""
     conn.execute(
         "CREATE TABLE IF NOT EXISTS admissions "
         "(universe_id TEXT NOT NULL, ts REAL NOT NULL)"
@@ -98,13 +113,18 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
     if "run_id" not in cols:
         conn.execute("ALTER TABLE admissions ADD COLUMN run_id TEXT NOT NULL DEFAULT ''")
+    # A settlement that arrived before its run was bound waits here.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS settlements "
+        "(run_id TEXT PRIMARY KEY, kind TEXT NOT NULL, ts REAL NOT NULL)"
+    )
 
 
 def _is_ticket(ticket: object) -> bool:
     return isinstance(ticket, int) and not isinstance(ticket, bool) and ticket > 0
 
 
-def admit(
+def admit_detail(
     universe_id: str,
     *,
     write_max: int,
@@ -112,16 +132,13 @@ def admit(
     window_s: int,
     fail_closed: bool = False,
     db: Path | None = None,
-) -> int | None:
+) -> Admission:
     """Atomically admit one engine-triggered run/write under the rolling caps.
 
-    Returns the admission's ticket (its ledger row id) when recorded;
-    ``ADMITTED_UNRECORDED`` when a DB error was tolerated (fail-open, no row);
-    ``None`` when refused. Refuses when the universe's ``write`` rows in the
-    window have reached ``write_max`` OR its rows of any kind have reached
-    ``total_max``. Admits as ``write``; ``reclassify_read`` may later
-    downgrade the row once the run proves it wrote nothing. Old rows are
-    pruned opportunistically.
+    Refuses when the universe's ``write`` rows in the window have reached
+    ``write_max`` OR its rows of any kind have reached ``total_max``. Admits
+    as ``write``; ``reclassify_read`` may later downgrade the row once the
+    run proves it wrote nothing. Old rows are pruned opportunistically.
     """
     db = db or ledger_path()
     try:
@@ -129,12 +146,12 @@ def admit(
         # round 1): the ledger creates its own trusted parent.
         db.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
-        return None if fail_closed else ADMITTED_UNRECORDED
+        return Admission(None if fail_closed else ADMITTED_UNRECORDED, REFUSED_BY_LEDGER)
     trusted = _ledger_is_trusted(db)
     if trusted is False:
-        return None
+        return Admission(None, REFUSED_BY_LEDGER)
     if trusted is None:
-        return None if fail_closed else ADMITTED_UNRECORDED
+        return Admission(None if fail_closed else ADMITTED_UNRECORDED, REFUSED_BY_LEDGER)
     now = time.time()
     cutoff = now - window_s
     try:
@@ -154,33 +171,60 @@ def admit(
                 "SELECT COUNT(*) FROM admissions WHERE universe_id = ? AND ts >= ?",
                 (universe_id, cutoff),
             ).fetchone()[0]
-            if int(writes) >= write_max or int(total) >= total_max:
+            refused_by = None
+            if int(writes) >= write_max:
+                refused_by = REFUSED_BY_WRITE
+            elif int(total) >= total_max:
+                refused_by = REFUSED_BY_TOTAL
+            if refused_by:
                 # Refused - but the migration that may have just run must
                 # stay: a rollback here would undo it and redo it on every
                 # refused call. Nothing else was written.
                 conn.commit()
-                return None
+                return Admission(None, refused_by)
             cur = conn.execute(
                 "INSERT INTO admissions (universe_id, ts, kind, run_id) VALUES (?, ?, ?, '')",
                 (universe_id, now, KIND_WRITE),
             )
             ticket = int(cur.lastrowid or 0)
             conn.execute("DELETE FROM admissions WHERE ts < ?", (cutoff - window_s,))
+            conn.execute("DELETE FROM settlements WHERE ts < ?", (cutoff - window_s,))
             conn.commit()
-            return ticket if ticket > 0 else ADMITTED_UNRECORDED
+            return Admission(ticket if ticket > 0 else ADMITTED_UNRECORDED, None)
         finally:
             conn.close()
     except sqlite3.Error:
-        return None if fail_closed else ADMITTED_UNRECORDED
+        return Admission(None if fail_closed else ADMITTED_UNRECORDED, REFUSED_BY_LEDGER)
+
+
+def admit(
+    universe_id: str,
+    *,
+    write_max: int,
+    total_max: int,
+    window_s: int,
+    fail_closed: bool = False,
+    db: Path | None = None,
+) -> int | None:
+    """``admit_detail`` without the reason: the ticket, or None when refused."""
+    return admit_detail(
+        universe_id,
+        write_max=write_max,
+        total_max=total_max,
+        window_s=window_s,
+        fail_closed=fail_closed,
+        db=db,
+    ).ticket
 
 
 def attach_run(ticket: int | None, run_id: str, *, db: Path | None = None) -> bool:
     """Bind the admission ``ticket`` to the run it became.
 
-    Called by whoever admitted the run, right after the run id exists. Never
-    raises; False means nothing was bound (no ticket, an unrecorded
-    admission, a missing ledger, or a row already bound) and the row simply
-    stays ``write``.
+    Called by whoever admitted the run, right after the run id exists. If the
+    run already settled (a fast run finishes before its caller returns), the
+    waiting settlement is applied here. Never raises; False means nothing was
+    bound (no ticket, an unrecorded admission, a missing ledger, or a row
+    already bound) and the row simply stays ``write``.
     """
     run_id = (run_id or "").strip()
     if not run_id or not _is_ticket(ticket):
@@ -197,8 +241,19 @@ def attach_run(ticket: int | None, run_id: str, *, db: Path | None = None) -> bo
                 "UPDATE admissions SET run_id = ? WHERE rowid = ? AND run_id = ''",
                 (run_id, int(ticket)),
             )
+            bound = cur.rowcount == 1
+            if bound:
+                waiting = conn.execute(
+                    "SELECT kind FROM settlements WHERE run_id = ?", (run_id,)
+                ).fetchone()
+                if waiting is not None:
+                    conn.execute(
+                        "UPDATE admissions SET kind = ? WHERE rowid = ?",
+                        (waiting[0], int(ticket)),
+                    )
+                    conn.execute("DELETE FROM settlements WHERE run_id = ?", (run_id,))
             conn.commit()
-            return cur.rowcount == 1
+            return bound
         finally:
             conn.close()
     except sqlite3.Error:
@@ -208,10 +263,12 @@ def attach_run(ticket: int | None, run_id: str, *, db: Path | None = None) -> bo
 def reclassify_read(run_id: str, *, db: Path | None = None) -> bool:
     """Downgrade the admission for ``run_id`` from ``write`` to ``read``.
 
-    Called by the effect dispatcher once the run's effects have fired and
-    every one of them was read-only (see ``fired_only_reads``). A run that
-    was never admitted through the ledger has no row: no-op, returns False,
-    and no ledger is created for it.
+    Called when the run has finished and nothing it fired could have changed
+    the far side (see ``fired_only_reads``). If no admission is bound to
+    ``run_id`` yet, the settlement is kept and applied at bind time. Returns
+    True when a row changed now. A run that was never admitted through the
+    ledger leaves only a settlement row (pruned with the window); when no
+    ledger exists at all nothing is created.
     """
     run_id = (run_id or "").strip()
     if not run_id:
@@ -228,8 +285,19 @@ def reclassify_read(run_id: str, *, db: Path | None = None) -> bool:
                 "UPDATE admissions SET kind = ? WHERE run_id = ? AND kind = ?",
                 (KIND_READ, run_id, KIND_WRITE),
             )
+            changed = cur.rowcount >= 1
+            if not changed:
+                bound = conn.execute(
+                    "SELECT 1 FROM admissions WHERE run_id = ? LIMIT 1", (run_id,)
+                ).fetchone()
+                if bound is None:
+                    # Settled before the bind: remember it for attach_run.
+                    conn.execute(
+                        "INSERT OR REPLACE INTO settlements (run_id, kind, ts) VALUES (?, ?, ?)",
+                        (run_id, KIND_READ, time.time()),
+                    )
             conn.commit()
-            return cur.rowcount >= 1
+            return changed
         finally:
             conn.close()
     except sqlite3.Error:

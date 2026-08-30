@@ -142,6 +142,9 @@ def run_effects_for_branch(
                 # nodes over the generic call, never hard-coded effectors): the
                 # branch must be rebuilt against a supported sink.
                 supported = ", ".join(sorted(_EFFECTORS))
+                # A sink we do not know is not a read (Codex round 2): what it
+                # would have done is unknown, so the run stays a write.
+                fired.append((sink, None))
                 per_node[sink] = {
                     "error": (
                         f"unknown effect sink: {sink} - this branch names a sink "
@@ -186,16 +189,17 @@ def run_effects_for_branch(
                 chain[node_id] = result
                 result = bounded_evidence(result)
             per_node[sink] = result
-    _settle_engine_admission(run_id, fired)
+    settle_engine_admission(run_id, fired)
     return evidence_map
 
 
-def _settle_engine_admission(run_id, fired) -> None:
+def settle_engine_admission(run_id, fired) -> None:
     """Downgrade the run's engine admission to a read when nothing it fired
     could have changed the far side (GET/HEAD authenticated calls, or nothing
-    at all). A run that was not engine-triggered has no admission row: no-op.
-    Never raises into the completion path; a failure to settle leaves the row
-    a write, which is the strict side."""
+    at all - a run that failed or was cancelled fired nothing, because effects
+    fire only after success). A run that was not engine-triggered has no
+    admission row: no-op. Never raises into the completion path; a failure to
+    settle leaves the row a write, which is the strict side."""
     if not run_id:
         return
     try:

@@ -1310,9 +1310,11 @@ def run_due_automation(
         # (Codex ADAPT §7). Counted against THIS universe, so one owner's
         # cadence cannot exhaust another's. A refusal is NOT a pause: the
         # budget refills, so the next period simply tries again.
-        from tinyassets.engine_mcp_server import _engine_run_admit
+        from tinyassets.engine_mcp_server import _admission_parts, _engine_run_admit
 
-        ticket = _engine_run_admit(universe_id=automation.universe_id, want_ticket=True)
+        ticket, _refused_by = _admission_parts(
+            _engine_run_admit(universe_id=automation.universe_id, want_ticket=True)
+        )
         if ticket is None:
             store.finish_attempt(
                 automation.automation_id,

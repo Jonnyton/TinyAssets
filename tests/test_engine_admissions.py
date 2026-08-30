@@ -138,7 +138,15 @@ def test_only_reads_means_only_reads(fired, expected):
 
 def test_ledger_path_follows_the_data_dir_env(monkeypatch, tmp_path):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    assert adm.ledger_path() == tmp_path / adm.LEDGER_NAME
+    assert adm.ledger_path() == tmp_path.resolve() / adm.LEDGER_NAME
+
+
+def test_ledger_path_is_absolute_even_for_a_relative_env(monkeypatch, tmp_path):
+    """Codex round 2 (P2): the old resolver joined a relative env value to the
+    CWD; the canonical resolver never returns a CWD-relative path."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", "relative-ledger-root")
+    assert adm.ledger_path().is_absolute()
 
 
 def test_two_first_touches_of_a_legacy_ledger_cannot_both_pass(tmp_path):
@@ -182,3 +190,56 @@ def test_a_missing_data_dir_is_created_and_the_cap_still_applies(tmp_path):
     admits = [_admit(db) for _ in range(W + 1)]
     assert db.exists()
     assert [a is not None for a in admits] == [True] * W + [False]
+
+
+def test_a_settlement_that_arrives_before_the_bind_is_applied_at_bind_time(tmp_path):
+    """Codex round 2 (P1): a fast run can finish - and settle - before run_graph
+    has bound the admission to its id; the read used to be lost."""
+    db = tmp_path / adm.LEDGER_NAME
+    ticket = _admit(db)
+    assert adm.reclassify_read("run-fast", db=db) is False        # nothing bound yet...
+    assert adm.attach_run(ticket, "run-fast", db=db) is True      # ...the bind applies it
+    assert _rows(db) == [(adm.KIND_READ, "run-fast")]
+    assert adm.reclassify_read("run-fast", db=db) is False        # already a read
+    conn = sqlite3.connect(str(db))
+    assert conn.execute("SELECT COUNT(*) FROM settlements").fetchone()[0] == 0
+    conn.close()
+
+
+def test_admit_detail_names_the_cap_that_refused(tmp_path):
+    db = tmp_path / adm.LEDGER_NAME
+    kw = dict(write_max=W, total_max=T, window_s=WIN, db=db)
+    for _ in range(W):
+        assert adm.admit_detail("u-tiny", **kw).refused_by is None
+    assert adm.admit_detail("u-tiny", **kw) == adm.Admission(None, adm.REFUSED_BY_WRITE)
+    # settle every one as a read: the write cap lifts, the total cap remains
+    conn = sqlite3.connect(str(db))
+    conn.execute("UPDATE admissions SET kind = ?", (adm.KIND_READ,))
+    conn.commit()
+    conn.close()
+    for i in range(T - W):
+        res = adm.admit_detail("u-tiny", **kw)
+        assert res.ticket is not None, i
+        assert adm.attach_run(res.ticket, f"r{i}", db=db) and adm.reclassify_read(f"r{i}", db=db)
+    assert adm.admit_detail("u-tiny", **kw) == adm.Admission(None, adm.REFUSED_BY_TOTAL)
+
+
+def test_a_failed_run_settles_its_admission_as_a_read(monkeypatch, tmp_path):
+    """Codex round 2 (P1): a failed, cancelled or timed-out run never reaches
+    the effect dispatcher, so it never settled - honest failed retries kept
+    spending the write budget. update_run_status settles it."""
+    from tinyassets import runs as runs_module
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    db = tmp_path / adm.LEDGER_NAME
+    ticket = _admit(db)
+    assert adm.attach_run(ticket, "run-dead", db=db)
+    runs_module.initialize_runs_db(tmp_path)
+    runs_module.update_run_status(tmp_path, "run-dead", status=runs_module.RUN_STATUS_FAILED,
+                                  error="boom", finished_at=time.time())
+    assert _rows(db) == [(adm.KIND_READ, "run-dead")]
+    # a non-terminal status change settles nothing
+    t2 = _admit(db)
+    assert adm.attach_run(t2, "run-live", db=db)
+    runs_module.update_run_status(tmp_path, "run-live", status="running")
+    assert (adm.KIND_WRITE, "run-live") in _rows(db)
