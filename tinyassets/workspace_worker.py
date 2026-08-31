@@ -111,15 +111,13 @@ def _curl_version_text(request: dict[str, Any], home: Path, path: str) -> str:
     injected = request.get("resolver_text")
     if isinstance(injected, str) and injected.strip():
         return injected
-    curl = shutil.which("curl")
-    if not curl:
-        raise WorkspaceGitError(
-            "bad_argument",
-            "no curl to read a libcurl version from, and no resolver_text was given",
-        )
-    try:
-        probe = subprocess.run(
-            [curl, "-V"],
+    # The library first (the production container has no curl binary), then
+    # `curl -V` from an environment built from empty; fail loud with neither.
+    from tinyassets.workspace_git import libcurl_version_text
+
+    def _run_curl(argv: list[str], **kwargs: Any) -> Any:
+        return subprocess.run(
+            argv,
             cwd=str(home),
             env={"PATH": path, "HOME": str(home), "LANG": "C.UTF-8"},
             stdin=subprocess.DEVNULL,
@@ -128,11 +126,10 @@ def _curl_version_text(request: dict[str, Any], home: Path, path: str) -> str:
             timeout=15,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise WorkspaceGitError(
-            "bad_argument", f"could not read the libcurl version: {type(exc).__name__}"
-        ) from None
-    return (probe.stdout or b"").decode("utf-8", "replace")
+
+    return libcurl_version_text(
+        which=lambda name: shutil.which(name, path=path), run=_run_curl,
+    )
 
 
 class _GitSession:

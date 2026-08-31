@@ -2170,3 +2170,75 @@ def test_populate_without_a_descriptor_still_works_by_path(monkeypatch):
     assert seen["unbundle_dest_fd"] is None
     assert seen["checkout_cwd"] == "/tmp/dest"
     assert seen["checkout_pass_fds"] == ()
+
+
+
+# ---------------------------------------------------------------------------
+# libcurl version text: the library first, the binary second, never a default
+# ---------------------------------------------------------------------------
+
+
+class _FakeLib:
+    def __init__(self, text: bytes | None):
+        self._text = text
+
+    @property
+    def curl_version(self):
+        if self._text is None:
+            raise AttributeError("curl_version")
+
+        class _Fn:
+            restype = None
+
+            def __call__(_self):
+                return self._text
+
+        return _Fn()
+
+
+def test_libcurl_version_text_reads_the_library_when_there_is_no_curl_binary():
+    from tinyassets.workspace_git import libcurl_version_text
+
+    loaded: list[str] = []
+
+    def _load(name):
+        loaded.append(name)
+        if name != "libcurl-gnutls.so.4":
+            raise OSError("not this one")
+        return _FakeLib(b"libcurl/8.5.0 GnuTLS/3.8.3 zlib/1.3")
+
+    text = libcurl_version_text(
+        find_library=lambda _n: "libcurl.so.4", load_library=_load, which=lambda _n: None,
+    )
+    assert text.startswith("libcurl/8.5.0")
+    assert loaded[0] == "libcurl-gnutls.so.4", "git's libcurl (gnutls) is tried first"
+
+
+def test_libcurl_version_text_falls_back_to_the_binary_when_no_library_loads():
+    from tinyassets.workspace_git import libcurl_version_text
+
+    def _load(_name):
+        raise OSError("no such library")
+
+    class _Probe:
+        stdout = b"curl 8.5.0 (x86_64-pc-linux-gnu) libcurl/8.5.0 OpenSSL/3.0.13"
+
+    text = libcurl_version_text(
+        find_library=lambda _n: None, load_library=_load,
+        which=lambda _n: "/usr/bin/curl", run=lambda argv, **kw: _Probe(),
+    )
+    assert "libcurl/8.5.0" in text
+
+
+def test_libcurl_version_text_fails_loud_with_neither():
+    from tinyassets.workspace_git import WorkspaceGitError, libcurl_version_text
+
+    def _load(_name):
+        raise OSError("no such library")
+
+    with pytest.raises(WorkspaceGitError) as excinfo:
+        libcurl_version_text(
+            find_library=lambda _n: None, load_library=_load, which=lambda _n: None,
+        )
+    assert excinfo.value.code == "bad_argument"
+    assert "neither" in str(excinfo.value)

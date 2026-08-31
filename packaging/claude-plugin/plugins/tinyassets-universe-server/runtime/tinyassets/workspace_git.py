@@ -31,6 +31,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import signal
 import socket
 import stat
@@ -55,6 +56,7 @@ __all__ = [
     "git_environment",
     "kill_git",
     "libcurl_supports_multi_resolve",
+    "libcurl_version_text",
     "pin_address",
     "populate_workspace_from_bundle",
     "run_git",
@@ -562,6 +564,77 @@ def git_environment(home_dir: str | os.PathLike[str], *, path: str) -> dict[str,
 #: in 7.59.0. Below that, one entry holds one address.
 _MULTI_RESOLVE_MINIMUM = (7, 59, 0)
 _LIBCURL_VERSION_RE = re.compile(r"libcurl/(\d+)\.(\d+)(?:\.(\d+))?")
+
+
+def libcurl_version_text(
+    *,
+    find_library: Callable[[str], str | None] | None = None,
+    load_library: Callable[[str], Any] | None = None,
+    which: Callable[[str], str | None] | None = None,
+    run: Callable[..., Any] | None = None,
+    candidates: Sequence[str] = ("libcurl-gnutls.so.4", "libcurl.so.4", "libcurl.so"),
+) -> str:
+    """The text :func:`libcurl_supports_multi_resolve` decides on.
+
+    Read from the LIBRARY first: ``curl_version()`` of the libcurl this host
+    links (the same one git's ``git-remote-https`` uses) - the production
+    container ships no ``curl`` binary at all, so a binary-only probe would
+    refuse every checkout (found on the droplet, 2026-08-31). ``curl -V`` is
+    the fallback; with neither, fail loud - a silent default would be a
+    permanent, invisible downgrade to one address per operation.
+    """
+    import ctypes
+    import ctypes.util
+
+    finder = find_library or ctypes.util.find_library
+    loader = load_library or ctypes.CDLL
+    # git-remote-https links libcurl-GNUTLS on Debian-family images while
+    # find_library('curl') answers the OpenSSL build - two different libcurls.
+    # The one git uses decides, so the gnutls name is tried first and the
+    # finder's answer after the fixed candidates.
+    names: list[str] = list(candidates)
+    try:
+        found = finder("curl")
+    except Exception:  # noqa: BLE001 - a finder that crashes is "not found"
+        found = None
+    if found and found not in names:
+        names.append(found)
+    for name in names:
+        try:
+            lib = loader(name)
+            fn = getattr(lib, "curl_version")
+            fn.restype = ctypes.c_char_p
+            raw = fn()
+        except (OSError, AttributeError):
+            continue
+        text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw or "")
+        if text.strip():
+            return text
+    whicher = which or shutil.which
+    binary = whicher("curl")
+    if binary:
+        runner = run or subprocess.run
+        try:
+            probe = runner(
+                [binary, "-V"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise WorkspaceGitError(
+                "bad_argument", f"could not read the libcurl version: {type(exc).__name__}"
+            ) from None
+        out = getattr(probe, "stdout", b"") or b""
+        text = out.decode("utf-8", "replace") if isinstance(out, bytes) else str(out)
+        if text.strip():
+            return text
+    raise WorkspaceGitError(
+        "bad_argument",
+        "no libcurl to read a version from: neither the shared library nor a curl binary",
+    )
 
 
 def libcurl_supports_multi_resolve(curl_version_text: str) -> bool:
