@@ -116,6 +116,17 @@ _NPM_INSTALLED_FIELDS: Final[tuple[str, ...]] = (
     "devDependencies",
     "optionalDependencies",
 )
+#: Fields carried from a lockfile entry into the rebuilt lockfile. Everything
+#: else is dropped: the staged file holds what admission validated and nothing
+#: it merely tolerated.
+_LOCK_ENTRY_FLAGS: Final[tuple[str, ...]] = (
+    "dev",
+    "optional",
+    "peer",
+    "hasInstallScript",
+)
+_LOCK_ENTRY_MAPS: Final[tuple[str, ...]] = ("engines", "bin")
+
 # Dependency maps that may appear *inside* a lockfile entry.
 _NPM_ENTRY_FIELDS: Final[tuple[str, ...]] = (
     "dependencies",
@@ -171,7 +182,31 @@ _MAX_MARKER_CHARS: Final[int] = 512
 # npm allows legacy mixed-case names; it forbids a leading ``.``/``_`` and caps at 214.
 _NPM_NAME = re.compile(r"^(?:@[A-Za-z0-9][A-Za-z0-9._-]*/)?[A-Za-z0-9][A-Za-z0-9._-]*$")
 _MAX_NPM_NAME_CHARS: Final[int] = 214
-_SEMVER_RANGE = re.compile(r"^[0-9A-Za-z.+*^~<>=|,\- ]+$")
+# node-semver's own range grammar, not a charset: a charset admits `latest`,
+# `not-a-range` and `1.2.3.4`, none of which npm would resolve the way the
+# lockfile claims. Built up from the pieces the grammar names so each one is
+# legible: nr < xr < partial < primitive/tilde/caret < simple < range < set.
+_SV_NR = r"(?:0|[1-9][0-9]*)"
+_SV_XR = r"(?:x|X|\*|" + _SV_NR + r")"
+_SV_PART = r"(?:[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)"
+_SV_QUALIFIER = r"(?:-" + _SV_PART + r")?(?:\+" + _SV_PART + r")?"
+_SV_PARTIAL = (
+    _SV_XR + r"(?:\." + _SV_XR + r"(?:\." + _SV_XR + _SV_QUALIFIER + r")?)?"
+)
+_SV_PRIMITIVE = r"(?:(?:<=|>=|<|>|=)\s*" + _SV_PARTIAL + r")"
+_SV_TILDE = r"(?:~>?\s*" + _SV_PARTIAL + r")"
+_SV_CARET = r"(?:\^\s*" + _SV_PARTIAL + r")"
+_SV_SIMPLE = (
+    r"(?:" + _SV_PRIMITIVE + r"|" + _SV_TILDE + r"|" + _SV_CARET
+    + r"|" + _SV_PARTIAL + r")"
+)
+_SV_HYPHEN = r"(?:" + _SV_PARTIAL + r"\s+-\s+" + _SV_PARTIAL + r")"
+_SV_RANGE = (
+    r"(?:" + _SV_HYPHEN + r"|" + _SV_SIMPLE + r"(?:\s+" + _SV_SIMPLE + r")*)"
+)
+_SEMVER_RANGE = re.compile(
+    r"^" + _SV_RANGE + r"(?:\s*\|\|\s*" + _SV_RANGE + r")*$"
+)
 _MAX_RANGE_CHARS: Final[int] = 128
 _NPM_VERSION = re.compile(r"^[0-9][0-9A-Za-z.+\-]*$")
 _SRI_SHA512 = re.compile(r"^sha512-[A-Za-z0-9+/]{86}==$")
@@ -406,7 +441,11 @@ def _parse_requirement(line: str, line_no: int) -> PythonRecord:
     version = _admitted_version(requirement, line, line_no)
     marker = None
     if requirement.marker is not None:
-        marker = _canonical_marker(str(requirement.marker), line_no)
+        # The ORIGINAL text, never ``str(requirement.marker)``: packaging
+        # re-quotes every literal with double quotes, so a literal holding a
+        # double quote comes back with its clause boundaries moved -- one
+        # comparison arrives as two. Its *parse* is right; its output is not.
+        marker = _canonical_marker(marker_text or "", line_no)
     extras = tuple(sorted(canonicalize_name(extra) for extra in requirement.extras))
     hashes = _parse_hashes(hash_text, line, line_no)
     return PythonRecord(
@@ -553,8 +592,26 @@ def _canonical_marker(text: str, line_no: int) -> str:
     stripped = text.strip()
     if not stripped or len(stripped) > _MAX_MARKER_CHARS:
         _refuse("bad_marker", text, line_no)
+    if not _marker_parses(stripped):
+        _refuse("bad_marker", text, line_no)
     tokens = _tokenise_marker(stripped, line_no)
-    return _marker_text(_MarkerParser(tokens, stripped, line_no).parse())
+    tree = _MarkerParser(tokens, stripped, line_no).parse()
+    canonical = _marker_text(tree)
+    # Mandatory postcondition. The canonical text must still parse under
+    # ``packaging``, and OUR parse of it must be the identical tree -- so a
+    # literal whose quoting moved a clause boundary is refused here instead of
+    # being handed to pip as a different condition. The comparison is against
+    # our tree rather than ``Marker.__eq__`` because canonicalisation flips and
+    # orders operands on purpose; both trees are normalised the same way, so
+    # equality here is exactly 'means the same thing'.
+    if not _marker_parses(canonical):
+        _refuse("bad_marker", text, line_no)
+    round_trip = _MarkerParser(
+        _tokenise_marker(canonical, line_no), canonical, line_no
+    ).parse()
+    if round_trip != tree:
+        _refuse("bad_marker", text, line_no)
+    return canonical
 
 
 def _tokenise_marker(text: str, line_no: int) -> list[tuple[str, str]]:
@@ -667,10 +724,24 @@ def _combine(kind: str, parts: Sequence[tuple[Any, ...]]) -> tuple[Any, ...]:
     return (kind, tuple(sorted(flattened, key=_marker_text)))
 
 
+def _quote_literal(value: str) -> str:
+    """Quote with a character the literal does not hold.
+
+    Always possible today: :data:`_MARKER_TOKEN` excludes a literal's own
+    delimiter from its body, so a literal holds at most one kind of quote and
+    the other is always free. PEP 508 has no escape sequence, so if that ever
+    stops being true there is no correct output and the round-trip check in
+    :func:`_canonical_marker` is what refuses -- not a guess here.
+    """
+    if '"' in value:
+        return "'" + value + "'"
+    return '"' + value + '"'
+
+
 def _marker_text(node: tuple[Any, ...]) -> str:
-    """Serialise the tree: variable, operator, double-quoted literal, minimal parens."""
+    """Serialise the tree: variable, operator, quoted literal, minimal parens."""
     if node[0] == "cmp":
-        return f'{node[1]} {node[2]} "{node[3]}"'
+        return f"{node[1]} {node[2]} " + _quote_literal(node[3])
     joiner = " and " if node[0] == "and" else " or "
     parts = []
     for child in node[1]:
@@ -725,6 +796,11 @@ def admit_node(
     a ``sha512-`` SRI digest, and every dependency the manifest names must have a
     top-level lockfile entry. Refusals carry no ``line_no`` -- JSON has no line the sink
     can act on, so the detail names the offending key.
+
+    The two normalized texts are **rebuilt from validated fields**, never the
+    admitted text passed through: a v2 lockfile carries a second, v1-shaped
+    ``dependencies`` graph that no amount of validating the ``packages`` map
+    touches, and forwarding the original would stage whatever it said.
     """
     _check_text_size(package_json_text, max_bytes, "package.json")
     if lockfile_text is None or not lockfile_text.strip():
@@ -735,7 +811,7 @@ def admit_node(
     lockfile = _load_json(lockfile_text, "package-lock.json")
 
     declared = _admit_manifest_dependencies(manifest)
-    version, packages, lock_names = _admit_lockfile(lockfile)
+    version, packages, lock_names, rebuilt_lockfile = _admit_lockfile(lockfile)
 
     optional_peers = _optional_peers(manifest)
     for field in _NPM_DEPENDENCY_FIELDS:
@@ -749,8 +825,8 @@ def admit_node(
             if name not in lock_names:
                 _refuse("non_registry_resolution", f"{field} {name}: not in lockfile")
 
-    normalized_manifest = _canonical_json(manifest)
-    normalized_lockfile = _canonical_json(lockfile)
+    normalized_manifest = _canonical_json(_normalized_manifest(manifest, declared))
+    normalized_lockfile = _canonical_json(rebuilt_lockfile)
     digest = hashlib.sha256(
         normalized_manifest.encode("utf-8") + b"\x00" + normalized_lockfile.encode("utf-8")
     ).hexdigest()
@@ -813,27 +889,34 @@ def _optional_peers(manifest: Mapping[str, Any]) -> frozenset[str]:
 
 def _check_dependency_map(
     container: Mapping[str, Any], fields: Sequence[str], label: str
-) -> dict[str, tuple[str, ...]]:
-    """Every value in each named map must be a plain semver range."""
-    declared: dict[str, tuple[str, ...]] = {}
+) -> dict[str, dict[str, str]]:
+    """Every value in each named map must be a plain semver range.
+
+    Returns the validated maps themselves, not just the names: they are what
+    the rebuilt manifest and lockfile carry, so nothing reaches npm that this
+    function did not read.
+    """
+    declared: dict[str, dict[str, str]] = {}
     for field in fields:
         block = container.get(field)
         if block is None:
             continue
         if not isinstance(block, dict):
             _refuse("bad_json", f"{label}{field} is not an object")
-        names: list[str] = []
+        validated: dict[str, str] = {}
         for name, spec in block.items():
             _check_npm_name(name, f"{label}{field} {name}")
             if not isinstance(spec, str):
                 _refuse("bad_json", f"{label}{field} {name}: version is not a string")
             _check_range(name, spec, f"{label}{field}")
-            names.append(name)
-        declared[field] = tuple(names)
+            validated[name] = spec
+        declared[field] = validated
     return declared
 
 
-def _admit_manifest_dependencies(manifest: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
+def _admit_manifest_dependencies(
+    manifest: Mapping[str, Any],
+) -> dict[str, dict[str, str]]:
     _check_no_workspaces(manifest, "package.json")
     for field in ("bundleDependencies", "bundledDependencies"):
         if field in manifest:
@@ -870,12 +953,92 @@ def _check_range(name: str, spec: str, field: str) -> None:
     if ":" in value:
         _refuse("url_dependency", label)
     if len(value) > _MAX_RANGE_CHARS or not _SEMVER_RANGE.match(value):
+        # A dist-tag (`latest`, `next`) lands here too: it is a name npm resolves
+        # at install time, not a range the lockfile can be checked against.
         _refuse("non_registry_resolution", f"{label}: not a semver range")
+
+
+def _carry_string(source_map: Mapping[str, Any], field: str, target: dict[str, Any]) -> None:
+    """Carry a string field when it is a string; drop it otherwise."""
+    value = source_map.get(field)
+    if isinstance(value, str) and value:
+        target[field] = value
+
+
+def _carry_string_map(
+    source_map: Mapping[str, Any], field: str, target: dict[str, Any]
+) -> None:
+    """Carry a ``{str: str}`` map (or a bare string, which ``bin`` may be)."""
+    value = source_map.get(field)
+    if isinstance(value, str):
+        target[field] = value
+        return
+    if isinstance(value, dict) and all(
+        isinstance(k, str) and isinstance(v, str) for k, v in value.items()
+    ):
+        target[field] = dict(value)
+
+
+def _normalized_entry(
+    entry: Mapping[str, Any],
+    nested: Mapping[str, dict[str, str]],
+    *,
+    root: bool,
+    version: str = "",
+    resolved: str = "",
+    integrity: str = "",
+) -> dict[str, Any]:
+    """One lockfile entry, rebuilt from validated fields only."""
+    rebuilt: dict[str, Any] = {}
+    if root:
+        _carry_string(entry, "name", rebuilt)
+        _carry_string(entry, "version", rebuilt)
+    else:
+        rebuilt["version"] = version
+        rebuilt["resolved"] = resolved
+        rebuilt["integrity"] = integrity
+    for flag in _LOCK_ENTRY_FLAGS:
+        if entry.get(flag) is True:
+            rebuilt[flag] = True
+    _carry_string(entry, "license", rebuilt)
+    for field in _LOCK_ENTRY_MAPS:
+        _carry_string_map(entry, field, rebuilt)
+    _carry_string_map(entry, "funding", rebuilt)
+    for field, specs in nested.items():
+        if specs:
+            rebuilt[field] = dict(specs)
+    return rebuilt
+
+
+def _normalized_manifest(
+    manifest: Mapping[str, Any], declared: Mapping[str, dict[str, str]]
+) -> dict[str, Any]:
+    """The package.json the resolver stages: name, version, the validated maps.
+
+    ``scripts`` is deliberately not carried. The offline install may run
+    lifecycle scripts, and the root manifest is the one file admission could
+    hand it a command through, so it hands it none.
+    """
+    rebuilt: dict[str, Any] = {}
+    name = manifest.get("name")
+    if name is not None:
+        _check_npm_name(name, "package.json name")
+        rebuilt["name"] = name
+    _carry_string(manifest, "version", rebuilt)
+    for field, specs in declared.items():
+        if specs:
+            rebuilt[field] = dict(specs)
+    optional = _optional_peers(manifest)
+    if optional:
+        rebuilt["peerDependenciesMeta"] = {
+            name: {"optional": True} for name in sorted(optional)
+        }
+    return rebuilt
 
 
 def _admit_lockfile(
     lockfile: Mapping[str, Any],
-) -> tuple[int, tuple[NodePackage, ...], frozenset[str]]:
+) -> tuple[int, tuple[NodePackage, ...], frozenset[str], dict[str, Any]]:
     version = lockfile.get("lockfileVersion")
     if not isinstance(version, int) or isinstance(version, bool) or version not in (2, 3):
         _refuse("lockfile_version", f"lockfileVersion={version!r}; only 2 and 3 are admitted")
@@ -886,13 +1049,15 @@ def _admit_lockfile(
 
     packages: set[NodePackage] = set()
     top_level: set[str] = set()
+    rebuilt_entries: dict[str, Any] = {}
     for key, entry in entries.items():
         if not isinstance(entry, dict):
             _refuse("bad_json", f"{key}: entry is not an object")
         label = "root entry" if key == "" else key
         _check_no_workspaces(entry, label)
-        _check_dependency_map(entry, _NPM_ENTRY_FIELDS, f"{label} ")
+        nested = _check_dependency_map(entry, _NPM_ENTRY_FIELDS, f"{label} ")
         if key == "":
+            rebuilt_entries[key] = _normalized_entry(entry, nested, root=True)
             continue
         if entry.get("link") is True:
             _refuse("workspace_dependency", f"{key}: link")
@@ -902,18 +1067,35 @@ def _admit_lockfile(
         _check_npm_name(name, key)
         if key == f"node_modules/{name}":
             top_level.add(name)
-        packages.add(
-            NodePackage(
-                name=name,
-                version=_entry_version(key, entry),
-                resolved=_entry_resolved(key, entry),
-                integrity=_entry_integrity(key, entry),
-            )
+        package = NodePackage(
+            name=name,
+            version=_entry_version(key, entry),
+            resolved=_entry_resolved(key, entry),
+            integrity=_entry_integrity(key, entry),
+        )
+        packages.add(package)
+        rebuilt_entries[key] = _normalized_entry(
+            entry,
+            nested,
+            root=False,
+            version=package.version,
+            resolved=package.resolved,
+            integrity=package.integrity,
         )
     ordered = tuple(
         sorted(packages, key=lambda item: (item.name, item.version, item.resolved))
     )
-    return version, ordered, frozenset(top_level)
+    # Rebuilt, never forwarded, and always v3: a v2 document also carries a
+    # second v1-shaped `dependencies` graph, and forwarding the original text
+    # would stage whatever THAT said -- a URL the packages map never mentioned.
+    rebuilt: dict[str, Any] = {}
+    _carry_string(lockfile, "name", rebuilt)
+    _carry_string(lockfile, "version", rebuilt)
+    rebuilt["lockfileVersion"] = 3
+    if lockfile.get("requires") is True:
+        rebuilt["requires"] = True
+    rebuilt["packages"] = rebuilt_entries
+    return version, ordered, frozenset(top_level), rebuilt
 
 
 def _entry_version(key: str, entry: Mapping[str, Any]) -> str:
