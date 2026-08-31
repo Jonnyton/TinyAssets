@@ -4,6 +4,16 @@ from unittest.mock import patch
 
 import pytest
 
+# Imported at MODULE scope, before any test's patches run. A module first
+# imported INSIDE `patch("tinyassets.api.helpers._base_path", ...)` copies the
+# MagicMock into its own namespace at import time, and mock restores only the
+# module it patched - so `tinyassets.api.branches._base_path` stayed a mock
+# returning "/fake" for the rest of the session, and a later suite's
+# build_branch wrote where nothing could read it back ("Branch not found", plus
+# a ledger doing str / str). Found 2026-08-30 running this file before
+# tests/test_workspace_authority.py.
+import tinyassets.api.branches  # noqa: F401
+import tinyassets.api.engine_helpers  # noqa: F401
 from tinyassets.api.runs import (
     _classify_run_error,
     _classify_run_outcome_error,
