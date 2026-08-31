@@ -1032,34 +1032,52 @@ def write_graph(
     difflib textwrap html csv datetime math`` ...); 512 MiB, the node's
     ``timeout_seconds``; the source is at most 50 KB.
 
-    WORKSPACES. To read or run a whole repository, check it out with the
-    ``workspace`` sink and bind code nodes to it. A node with
-    ``"effects": ["workspace"]`` returns a ``workspace_packet`` under an
-    output key: ``{"op": "checkout", "connection_id": "<github http
-    connection>", "repo": "owner/name", "ref": "main", "storage": "scratch"}``
-    (``"universe"`` keeps it in your permanent space across turns). A later
-    code node declaring ``"workspace": "<that node id>"`` runs with the
-    repository at ``/workspace`` and a ``ws`` object: ``ws.run(["pytest",
-    "-q"], timeout=600)`` -> ``{"returncode", "stdout_tail", "stderr_tail"}``,
-    ``ws.read(path)``, ``ws.write(path, text)``, ``ws.glob("**/*.py")``,
-    ``ws.bundle(commit_sha)`` after a local ``git commit``. To publish, a node
-    returns ``{"op": "push", "workspace": "<checkout node>", "commit_sha":
-    "<40 hex>", "branch_slug": "fix-readme"}`` - the branch lands as
+    WORKSPACES. A workspace is a DIRECTORY your code nodes can read, write and
+    run commands in - the thing to reach for whenever a step needs real files
+    rather than one API response: rendering a video, building a dataset,
+    running a test suite, editing a repository. A node with ``"effects":
+    ["workspace"]`` returns a ``workspace_packet`` under an output key, and a
+    later code node declaring ``"workspace": "<that node id>"`` runs inside it
+    at ``/workspace`` with a ``ws`` object: ``ws.run(["ffmpeg", "-i", "in.mov",
+    "out.mp4"], timeout=600)`` -> ``{"returncode", "stdout_tail",
+    "stderr_tail"}``, ``ws.read(path)`` / ``ws.write(path, text)`` for text,
+    ``ws.glob("**/*.py")``, and ``ws.bundle(commit_sha)`` when the workspace is
+    a git checkout. Anything the node produces leaves the same way everything
+    else does: read it and hand it to a generic
+    ``authenticated_external_call`` node on whatever connection you hold - the
+    workspace neither knows nor cares which platform that is.
+
+    TWO WAYS TO GET ONE. An EMPTY one needs nothing at all - no connection, no
+    credential, no consent, because it is your own scratch space:
+    ``{"op": "create", "storage": "scratch"}`` (``"universe"`` keeps it in your
+    permanent space; name it with ``"workspace_key": "<slug>"``, and re-using a
+    name is refused rather than overwriting what is there). A REPOSITORY one
+    clones a git remote: ``{"op": "checkout", "connection_id": "<an http
+    connection to the forge>", "repo": "owner/name", "ref": "main", "storage":
+    "scratch"}``. The forge is whatever host that connection declares - GitHub,
+    GitLab, Gitea, self-hosted - not a fixed one. To publish, a node returns
+    ``{"op": "push", "workspace": "<checkout node>", "commit_sha": "<40 hex>",
+    "branch_slug": "fix-readme"}`` - the branch lands as
     ``tiny/<universe>/<slug>`` (never the default branch; open the PR with the
-    generic call); ``{"op": "discard", "workspace": "<checkout node>"}``
-    drops it early (no consent needed). Dependency provisioning
+    generic call), and a push against a created workspace is refused because it
+    has no remote. ``{"op": "discard", "workspace": "<node>"}`` drops any
+    workspace early (no consent needed). Dependency provisioning
     (``provision`` on a checkout) is not available in this release - a
     checkout that declares it is refused ``workspace_provision_refused``; run
-    what the repository can run with the shipped Python and Node. Each
-    ``(connection, repo)`` needs TWO things, once, both
-    through the request rail: the repository SCOPE on the github connection
+    what the project can run with the shipped Python and Node.
+
+    A CHECKOUT needs TWO things per ``(connection, repo)``, once, both through
+    the request rail - a created workspace needs neither: the repository SCOPE
+    on that connection
     (``"action": {"type": "extend_http", "destination": "github", "scopes":
     ["git_read:owner/name", "git_write:owner/name"]}`` - no new endpoints
-    needed, and no key to paste) and the typed CONSENT (``"action":
-    {"type": "grant_workspace_consent", "connection_id": "<from
-    read_graph target='connections'>", "repo": "owner/name", "consents":
-    ["workspace_checkout", "workspace_push", "workspace_provision"]}``). ``read_graph
-    target="connections"`` shows both, so check what you hold before asking. The
+    needed, and no key to paste; ``destination`` is that connection's own
+    label, whatever forge it points at)
+    and the typed CONSENT (``"action": {"type": "grant_workspace_consent",
+    "connection_id": "<from read_graph target='connections'>", "repo":
+    "owner/name", "consents": ["workspace_checkout", "workspace_push"]}``).
+    ``read_graph target="connections"`` shows both, so check what you hold
+    before asking. The
     sandbox has no network and no credential; git talks to the host from a
     worker you never see. Limits are usage, not shape: a 4 GiB lease, one
     workspace job at a time per universe, 64 commands and 1 MiB of returned

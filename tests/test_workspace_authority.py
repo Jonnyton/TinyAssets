@@ -1140,3 +1140,9 @@ def test_the_served_docs_and_the_rail_agree_on_the_scope_only_shape() -> None:
     source = _Path(server.__file__).read_text(encoding="utf-8")
     assert '"type": "extend_http", "destination": "github", "scopes":' in source
     assert "no new endpoints" in source or "no endpoints" in source
+    # The example stays concrete so it can be copied, but the docs must also
+    # say the destination is the CONNECTION's - the forge is whatever host that
+    # connection declares. A github-shaped example that reads as a github-only
+    # rule is how the sink got pinned to one forge in the first place.
+    assert "whatever forge it points at" in source
+    assert "GitLab, Gitea, self-hosted" in source
