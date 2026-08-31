@@ -11,6 +11,7 @@ root rather than a module the test could monkeypatch into something else.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -685,6 +686,313 @@ def test_ws_read_max_bytes_below_the_cap_is_honoured(workspace: Path) -> None:
     assert "larger than 50 bytes" in result.output_state["result"]["message"]
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# ws.read_bytes / ws.write_bytes: the door binary artifacts leave by
+#
+# `ws.read` decodes UTF-8 and node code cannot call `open()`, so before these a
+# node could produce a video, a PNG or a zip inside the workspace and have no
+# way to hand it on -- the founder's own "make videos and post to tiktok"
+# example stopped there.
+# ──────────────────────────────────────────────────────────────────────────────
+
+#: Run by `ws.run` as a separate process, so the bytes under test are produced
+#: the way a real node produces them (ffmpeg, git, a build) rather than by the
+#: API being tested. `pathlib`, not `open()`: the node SOURCE carrying these
+#: strings is scanned by the denylist, which refuses the substring "open(".
+_MAKE_BLOB = (
+    "import os, pathlib, sys\n"
+    # A deliberate invalid-UTF-8 prefix ahead of the random tail: the point of
+    # this door is bytes that `ws.read` would mangle, and 0xff 0xfe is never
+    # valid UTF-8 whatever the random draw does.
+    "pathlib.Path(sys.argv[1]).write_bytes(bytes([255, 254, 0, 1]) + os.urandom(2044))\n"
+)
+_SHA_OF = (
+    "import hashlib, pathlib, sys\n"
+    "print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())\n"
+)
+_BLOB_BYTES = 2048
+
+
+def test_bytes_survive_a_round_trip_a_command_can_vouch_for(workspace: Path) -> None:
+    """The whole feature in one node, and the digest is the witness.
+
+    Comparing what `read_bytes` returned against what `write_bytes` wrote would
+    only prove base64 is its own inverse. So the sha256 comes from a SEPARATE
+    process reading the file off the filesystem, and the parent re-computes it
+    a third time outside the jail: three witnesses to the same bytes, only one
+    of which went through the encoding.
+    """
+    source = (
+        "import base64, hashlib\n"
+        "def run(state):\n"
+        f"    made = ws.run([{PY!r}, '-c', {_MAKE_BLOB!r}, 'clip.bin'])\n"
+        f"    told = ws.run([{PY!r}, '-c', {_SHA_OF!r}, 'clip.bin'])\n"
+        "    blob = base64.b64decode(ws.read_bytes('clip.bin'))\n"
+        "    written = ws.write_bytes(\n"
+        "        'out/copy.bin', base64.b64encode(blob).decode('ascii')\n"
+        "    )\n"
+        f"    copy = ws.run([{PY!r}, '-c', {_SHA_OF!r}, 'out/copy.bin'])\n"
+        "    return {'result': {\n"
+        "        'made_rc': made['returncode'],\n"
+        "        'told': told['stdout_tail'].strip(),\n"
+        "        'seen': hashlib.sha256(blob).hexdigest(),\n"
+        "        'copy_told': copy['stdout_tail'].strip(),\n"
+        "        'raw_len': len(blob),\n"
+        "        'written': written,\n"
+        "        'encoded_len': len(ws.read_bytes('clip.bin')),\n"
+        "        'text_would_mangle': ws.read('clip.bin').encode('utf-8') != blob,\n"
+        "    }}\n"
+    )
+    result = _run_node(workspace, source)
+    assert result.success is True, result.error
+    payload = result.output_state["result"]
+    assert payload["made_rc"] == 0, payload
+
+    on_disk = (workspace / "clip.bin").read_bytes()
+    copy_on_disk = (workspace / "out" / "copy.bin").read_bytes()
+    outside_witness = hashlib.sha256(on_disk).hexdigest()
+
+    assert payload["told"] == payload["seen"] == outside_witness, payload
+    assert payload["copy_told"] == outside_witness, payload
+    assert copy_on_disk == on_disk, "write_bytes did not reproduce the bytes"
+    assert payload["raw_len"] == payload["written"] == _BLOB_BYTES
+    # The counts are the contract: read_bytes returns the ENCODED string and
+    # write_bytes reports the RAW count, and they are not the same number.
+    assert payload["encoded_len"] == 4 * ((_BLOB_BYTES + 2) // 3)
+    # And the reason the door exists: the text door cannot carry these bytes.
+    assert payload["text_would_mangle"] is True
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux" or BWRAP is None,
+    reason="the byte doors inside the real jail need Linux and bwrap",
+)
+def test_bytes_leave_the_real_jail_with_their_digest_intact(workspace: Path) -> None:
+    """The same round trip, but through bubblewrap rather than the test launcher.
+
+    The plain launcher performs no mount, so it proves the API and not the
+    JAIL: in production the file is written inside a pid/mount namespace with
+    no network and a private tmpfs, and the bytes have to cross that boundary
+    as base64 on one JSON line. This is the only place that boundary is real,
+    which is why it runs on the Linux oracle.
+    """
+    from tinyassets.node_sandbox import BwrapLauncher
+
+    source = (
+        "import base64, hashlib\n"
+        "def run(state):\n"
+        f"    made = ws.run([{PY!r}, '-c', {_MAKE_BLOB!r}, 'clip.bin'])\n"
+        f"    told = ws.run([{PY!r}, '-c', {_SHA_OF!r}, 'clip.bin'])\n"
+        "    blob = base64.b64decode(ws.read_bytes('clip.bin'))\n"
+        "    ws.write_bytes('out/copy.bin', base64.b64encode(blob).decode('ascii'))\n"
+        "    return {'result': {\n"
+        "        'made_rc': made['returncode'],\n"
+        "        'told': told['stdout_tail'].strip(),\n"
+        "        'seen': hashlib.sha256(blob).hexdigest(),\n"
+        "        'where': ws.path,\n"
+        "    }}\n"
+    )
+    # Built the way the compiler builds it: a PATH bind must name the root it
+    # is allowed to come from, and `for_workspace` is what carries that over.
+    mount = WorkspaceMount(
+        bind_source=str(workspace), allowed_roots=(str(workspace.parent),)
+    )
+    result = NodeSandbox(
+        launcher=BwrapLauncher().for_workspace(mount), timeout=120
+    ).run_sync(
+        node_id="ws-node",
+        source_code=source,
+        input_state={},
+        input_keys=[],
+        output_keys=["result"],
+        timeout=120,
+        workspace=mount,
+    )
+    assert result.success is True, result.error
+    payload = result.output_state["result"]
+    assert payload["made_rc"] == 0, payload
+    assert payload["where"] == "/workspace", payload
+
+    # The bind is this directory, so the parent reads what the jail produced.
+    on_disk = (workspace / "clip.bin").read_bytes()
+    witness = hashlib.sha256(on_disk).hexdigest()
+    assert payload["told"] == payload["seen"] == witness, payload
+    assert (workspace / "out" / "copy.bin").read_bytes() == on_disk
+    assert len(on_disk) == _BLOB_BYTES
+
+
+def test_the_read_bytes_cap_is_the_raw_size_not_the_encoded_length(
+    workspace: Path,
+) -> None:
+    """A 2048-byte file encodes to 2732. With the cap on the encoded string a
+    node would be refused a file well inside its own limit, and every caller
+    would have to know base64's expansion to use its own configuration."""
+    (workspace / "blob.bin").write_bytes(bytes(range(256)) * 8)
+    source = (
+        PROBE + "\n"
+        "def run(state):\n"
+        "    return {'result': {\n"
+        "        'inside': probe(lambda: len(ws.read_bytes('blob.bin'))),\n"
+        "        'over': probe(lambda: ws.read_bytes('blob.bin', max_bytes=100)),\n"
+        "    }}\n"
+    )
+    result = _run_node(
+        workspace, source, limits=WorkspaceLimits(max_read_bytes=2500)
+    )
+    assert result.success is True, result.error
+    payload = result.output_state["result"]
+    assert payload["inside"]["outcome"] == "ADMITTED", payload["inside"]
+    assert payload["inside"]["value"] == "2732"
+    assert payload["over"]["outcome"] == "RuntimeError"
+    assert "larger than 100 bytes" in payload["over"]["message"]
+
+
+def test_read_bytes_max_bytes_is_clamped_to_the_cap_not_replaced(
+    workspace: Path,
+) -> None:
+    (workspace / "blob.bin").write_bytes(b"z" * 5000)
+    source = (
+        PROBE + "\n"
+        "def run(state):\n"
+        "    return {'result': probe(lambda: ws.read_bytes('blob.bin', max_bytes=10 ** 9))}\n"
+    )
+    result = _run_node(workspace, source, limits=WorkspaceLimits(max_read_bytes=100))
+    assert result.success is True, result.error
+    assert "larger than 100 bytes" in result.output_state["result"]["message"]
+
+
+def test_the_byte_doors_charge_the_node_budget_by_raw_size(workspace: Path) -> None:
+    """Charged RAW, and charged at all.
+
+    RAW is what the two numbers here separate: 2048 raw against a 2500-byte
+    budget is admitted, 2732 encoded would not be. Charging at all is what the
+    second call proves -- otherwise reading a file as bytes is a way around a
+    cap that reading it as text would hit.
+    """
+    (workspace / "blob.bin").write_bytes(bytes(range(256)) * 8)
+    source = (
+        PROBE + "\n"
+        "def run(state):\n"
+        "    first = probe(lambda: len(ws.read_bytes('blob.bin')))\n"
+        "    second = probe(lambda: len(ws.read_bytes('blob.bin')))\n"
+        "    return {'result': {'first': first, 'second': second}}\n"
+    )
+    result = _run_node(
+        workspace, source, limits=WorkspaceLimits(max_output_bytes=2500)
+    )
+    assert result.success is True, result.error
+    payload = result.output_state["result"]
+    assert payload["first"]["outcome"] == "ADMITTED", payload["first"]
+    assert payload["second"]["outcome"] == "RuntimeError"
+    assert "workspace limit" in payload["second"]["message"]
+    assert "read_bytes" in payload["second"]["message"]
+
+
+def test_a_write_bytes_over_the_budget_leaves_no_partial_file(
+    workspace: Path,
+) -> None:
+    """The charge happens before the open, so the refusal is not a half-written
+    artifact a later node would treat as finished."""
+    source = (
+        PROBE + "\n"
+        "import base64\n"
+        "def run(state):\n"
+        "    payload = base64.b64encode(bytes(3000)).decode('ascii')\n"
+        "    return {'result': probe(lambda: ws.write_bytes('out/too-big.bin', payload))}\n"
+    )
+    result = _run_node(
+        workspace, source, limits=WorkspaceLimits(max_output_bytes=2500)
+    )
+    assert result.success is True, result.error
+    outcome = result.output_state["result"]
+    assert outcome["outcome"] == "RuntimeError"
+    assert "write_bytes" in outcome["message"]
+    assert not (workspace / "out" / "too-big.bin").exists()
+
+
+NOT_BASE64 = [
+    ("plain_text", "hello, this is not base64"),
+    ("bad_alphabet", "AAAA****AAAA"),
+    ("bad_padding", "AAAAA"),
+    ("whitespace", "AAAA AAAA"),
+    ("non_ascii", "AAAAéAAA"),
+]
+
+
+@pytest.mark.parametrize(
+    "payload", [pytest.param(text, id=name) for name, text in NOT_BASE64]
+)
+def test_write_bytes_refuses_anything_but_strict_base64(
+    workspace: Path, payload: str
+) -> None:
+    """`b64decode` without `validate=True` DISCARDS characters outside the
+    alphabet, so "AAAA****AAAA" decodes happily to the wrong bytes and writes a
+    corrupt file that looks like a successful one."""
+    source = (
+        PROBE + "\n"
+        "def run(state):\n"
+        f"    return {{'result': probe(lambda: ws.write_bytes('blob.bin', {payload!r}))}}\n"
+    )
+    result = _run_node(workspace, source)
+    assert result.success is True, result.error
+    outcome = result.output_state["result"]
+    assert outcome["outcome"] == "ValueError", outcome
+    assert "strict base64" in outcome["message"], outcome
+    assert not (workspace / "blob.bin").exists()
+
+
+def test_the_byte_doors_refuse_the_types_they_are_not_given(workspace: Path) -> None:
+    source = (
+        PROBE + "\n"
+        "def run(state):\n"
+        "    return {'result': {\n"
+        "        'bytes_payload': probe(lambda: ws.write_bytes('b.bin', b'AAAA')),\n"
+        "        'int_payload': probe(lambda: ws.write_bytes('b.bin', 3)),\n"
+        "        'str_cap': probe(lambda: ws.read_bytes('README.md', max_bytes='10')),\n"
+        "        'zero_cap': probe(lambda: ws.read_bytes('README.md', max_bytes=0)),\n"
+        "    }}\n"
+    )
+    result = _run_node(workspace, source)
+    assert result.success is True, result.error
+    payload = result.output_state["result"]
+    assert payload["bytes_payload"]["outcome"] == "TypeError"
+    assert "must be a str" in payload["bytes_payload"]["message"]
+    assert payload["int_payload"]["outcome"] == "TypeError"
+    assert payload["str_cap"]["outcome"] == "TypeError"
+    assert "must be an int" in payload["str_cap"]["message"]
+    assert payload["zero_cap"]["outcome"] == "ValueError"
+    assert "must be positive" in payload["zero_cap"]["message"]
+
+
+def test_a_symlinked_leaf_cannot_be_written_through_by_write_bytes(
+    workspace: Path,
+) -> None:
+    """The same rule `ws.write` has, at the same place: the leaf is opened
+    O_NOFOLLOW, so a link planted inside the workspace is not a way to write
+    outside it."""
+    target = workspace.parent / "outside" / "secret.txt"
+    link = workspace / "secret-link.bin"
+    try:
+        os.symlink(str(target), str(link))
+    except (OSError, NotImplementedError, AttributeError) as exc:
+        pytest.skip(f"this host cannot create a file symlink: {exc}")
+
+    source = (
+        PROBE + "\n"
+        "def run(state):\n"
+        "    return {'result': {\n"
+        "        'write': probe(lambda: ws.write_bytes('secret-link.bin', 'cGxhbnRlZA==')),\n"
+        "        'read': probe(lambda: ws.read_bytes('secret-link.bin')),\n"
+        "    }}\n"
+    )
+    result = _run_node(workspace, source)
+    assert result.success is True, result.error
+    payload = result.output_state["result"]
+    assert payload["write"]["outcome"] != "ADMITTED", payload["write"]
+    assert payload["read"]["outcome"] != "ADMITTED", payload["read"]
+    assert target.read_text(encoding="utf-8") == "do not read me\n"
+
+
 @pytest.mark.skipif(os.name != "posix", reason="dir_fd resolution is POSIX-only")
 def test_a_symlinked_parent_cannot_be_walked_through(workspace: Path) -> None:
     """Codex #9: resolution opens each component NOFOLLOW from the previous
@@ -757,6 +1065,37 @@ ESCAPES = [
     ),
     ("read_empty", "ws.read('')", "non-empty string"),
     ("write_root", "ws.write('.', 'x')", "names the workspace root"),
+    # The byte doors answer to the same rules as the text doors. Rows, not a
+    # comment claiming so: read_bytes/write_bytes resolve through the same
+    # helpers, and a row is what notices if one day they do not.
+    (
+        "read_bytes_parent",
+        "ws.read_bytes('../outside/secret.txt')",
+        "may not contain",
+    ),
+    (
+        "read_bytes_absolute",
+        "ws.read_bytes('/etc/passwd')",
+        "must be relative, not absolute",
+    ),
+    ("read_bytes_drive", "ws.read_bytes('C:/Windows/win.ini')", "not a drive path"),
+    ("read_bytes_empty", "ws.read_bytes('')", "non-empty string"),
+    (
+        "write_bytes_parent",
+        "ws.write_bytes('../outside/planted.txt', 'eA==')",
+        "may not contain",
+    ),
+    (
+        "write_bytes_absolute",
+        "ws.write_bytes('/tmp/planted.txt', 'eA==')",
+        "must be relative, not absolute",
+    ),
+    (
+        "write_bytes_nested_parent",
+        "ws.write_bytes('pkg/../../outside/planted.txt', 'eA==')",
+        "may not contain",
+    ),
+    ("write_bytes_root", "ws.write_bytes('.', 'eA==')", "names the workspace root"),
 ]
 
 
@@ -967,8 +1306,12 @@ def test_the_import_allowlist_is_unaffected_by_what_ws_uses(workspace: Path) -> 
     payload = result.output_state["result"]
     for name in ("os", "glob", "threading"):
         assert payload[name]["outcome"] == "ImportError", payload[name]
+    # The whole public surface, pinned. The byte doors are here; the helpers
+    # they share with the text doors (`_read_raw`, `_write_raw`, `_charge`,
+    # `_cap_for`) are underscored precisely so this list stays the API.
     assert sorted(payload["reachable"]) == [
-        "bundle", "glob", "path", "read", "run", "write",
+        "bundle", "glob", "path", "read", "read_bytes", "run", "write",
+        "write_bytes",
     ]
 
 

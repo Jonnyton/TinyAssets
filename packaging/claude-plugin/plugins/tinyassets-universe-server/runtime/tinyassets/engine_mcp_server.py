@@ -1042,8 +1042,11 @@ def write_graph(
     "out.mp4"], timeout=600)`` -> ``{"returncode", "stdout_tail",
     "stderr_tail"}``, ``ws.read(path)`` / ``ws.write(path, text)`` for text,
     ``ws.glob("**/*.py")``, and ``ws.bundle(commit_sha)`` when the workspace is
-    a git checkout. Anything the node produces leaves the same way everything
-    else does: read it and hand it to a generic
+    a git checkout. Binary artifacts - a rendered video, a PNG, a zip - travel
+    base64: ``ws.read_bytes(path)`` returns the encoded string and
+    ``ws.write_bytes(path, b64)`` writes the raw bytes back (``import base64``
+    in the node to decode). Anything the node produces leaves the same way
+    everything else does: read it and hand it to a generic
     ``authenticated_external_call`` node on whatever connection you hold - the
     workspace neither knows nor cares which platform that is.
 
