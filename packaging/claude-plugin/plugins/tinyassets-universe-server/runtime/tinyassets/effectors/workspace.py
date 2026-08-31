@@ -345,6 +345,21 @@ def _close_handles(*handles: Any) -> None:
                 pass
 
 
+def _posix_only(exc: NotImplementedError) -> _Refused:
+    """The no-follow layer refuses off POSIX; say so as a workspace refusal.
+
+    It is a real, permanent property of the host -- not a crash. Letting a
+    ``NotImplementedError`` reach the dispatcher reports ``effector_crashed``,
+    which reads as a bug in the sink rather than "this host cannot run
+    workspaces at all".
+    """
+    return _Refused(
+        "workspace_checkout_failed",
+        f"the workspace sink needs POSIX openat semantics; this host is "
+        f"{os.name!r} ({exc})",
+    )
+
+
 def _make_lease_dir(lease_path: Path) -> Any:
     """Create the lease directory under a handle resolved without links.
 
@@ -353,9 +368,14 @@ def _make_lease_dir(lease_path: Path) -> Any:
     long-lived daemon (Codex round 2, #7).
     """
     fs = _fs()
-    parent_fd = fs.open_dir_nofollow(str(lease_path.parent))
+    try:
+        parent_fd = fs.open_dir_nofollow(str(lease_path.parent))
+    except NotImplementedError as exc:
+        raise _posix_only(exc) from None
     try:
         return fs.create_lease_dir(parent_fd, lease_path.name)
+    except NotImplementedError as exc:
+        raise _posix_only(exc) from None
     finally:
         _close_handles(parent_fd)
 
@@ -396,7 +416,10 @@ def _make_repo_dir(lease_fd: Any, repo_dir: Path) -> Any:
     is the private lease directory it just made, so the subdirectory helper is
     the honest call.
     """
-    return _fs().create_workspace_subdir(lease_fd, repo_dir.name)
+    try:
+        return _fs().create_workspace_subdir(lease_fd, repo_dir.name)
+    except NotImplementedError as exc:
+        raise _posix_only(exc) from None
 
 
 def _descriptor_or_none(handle: Any) -> int | None:
@@ -717,6 +740,13 @@ def _push(
         copied = _fs().copy_regular_file_beneath(
             mount.lease_fd, relative, destination, max_bytes=_MAX_BUNDLE_BYTES
         )
+    except NotImplementedError as exc:
+        # Same permanent host property, reported against the push's own class.
+        raise _Refused(
+            "workspace_push_refused",
+            f"the workspace sink needs POSIX openat semantics; this host is "
+            f"{os.name!r} ({exc})",
+        ) from None
     except Exception as exc:
         raise _Refused(
             "workspace_push_refused", f"the export bundle could not be read: {exc}"
