@@ -359,6 +359,13 @@ def _fire(
     )
 
 
+def _repo_path(mount: Any) -> Path:
+    """The repository on disk. ``bind_source`` is the JAIL's spelling of it -
+    ``/proc/self/fd/<n>`` where there is a descriptor - so a test that wants a
+    path uses the lease."""
+    return Path(mount.lease.path) / "repo"
+
+
 def _run_in_workspace(mount: Any, source: str, *, timeout: float = 120.0) -> Any:
     """The node, in the real sandbox, bound to the real lease.
 
@@ -374,7 +381,7 @@ def _run_in_workspace(mount: Any, source: str, *, timeout: float = 120.0) -> Any
     # through execvp's CS_PATH fallback; on Windows there is no such fallback.
     source = f"GIT = {GIT!r}\n" + source
     sandbox = NodeSandbox(
-        launcher=PlainSubprocessLauncher(workspace_bind=str(mount.bind_source)),
+        launcher=PlainSubprocessLauncher(workspace_bind=str(_repo_path(mount))),
         timeout=timeout,
     )
     return sandbox.run_sync(
@@ -384,7 +391,7 @@ def _run_in_workspace(mount: Any, source: str, *, timeout: float = 120.0) -> Any
         input_keys=[],
         output_keys=["result"],
         timeout=timeout,
-        workspace=SandboxWorkspaceMount(bind_source=str(mount.bind_source)),
+        workspace=SandboxWorkspaceMount(bind_source=str(_repo_path(mount))),
     )
 
 
@@ -472,7 +479,9 @@ def test_a_checkout_delivers_a_workspace_a_node_can_run_git_in(
 
     mount = chain.workspace_mount(CHECKOUT_NODE)
     assert mount is not None, "the checkout did not register its mount"
-    repo_dir = Path(mount.bind_source)
+    # The lease names the directory; bind_source is /proc/self/fd/<n> on POSIX
+    # and a path on Windows, so it is not what to read content through.
+    repo_dir = Path(mount.lease.path) / "repo"
     assert (repo_dir / "README.md").read_text(encoding="utf-8") == origin.readme
     assert (repo_dir / ".git").is_dir()
 
@@ -483,7 +492,7 @@ def test_a_checkout_delivers_a_workspace_a_node_can_run_git_in(
         # comparison - so compare inodes through the descriptor itself.
         through_fd = os.stat(f"/proc/self/fd/{mount.repo_fd}")
         repository = os.stat(repo_dir)
-        lease_root = os.stat(repo_dir.parent)
+        lease_root = os.stat(Path(mount.lease.path))
         assert (through_fd.st_dev, through_fd.st_ino) == (
             repository.st_dev,
             repository.st_ino,
@@ -618,7 +627,7 @@ def test_a_finished_run_releases_its_lease_and_the_next_run_is_admitted(
     _fire(_packet(), universe=universe, chain=chain, worker=worker)
     rows = _lease_rows(universe)
     assert [state for _id, state, _class in rows] == ["ACTIVE"], rows
-    lease_path = Path(chain.workspace_mount(CHECKOUT_NODE).bind_source).parent
+    lease_path = Path(chain.workspace_mount(CHECKOUT_NODE).lease.path)
     # The lifecycle proof is only worth anything if the wipe is deleting a
     # lease nobody is holding: on POSIX these are the REAL no-follow handles,
     # and on Windows this proves every git child has exited first.
@@ -694,6 +703,100 @@ def test_a_finished_run_releases_its_lease_and_the_next_run_is_admitted(
 # --------------------------------------------------------------------------
 
 
+def test_the_compiler_binds_a_DUPLICATE_and_releases_it(
+    origin: Origin,
+    universe: Universe,
+    chain: EffectChain,
+    fs_bridge,
+    short_paths,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The node runs against a descriptor NOBODY else can free under it.
+
+    Looking the mount up hands back the registry's own fds; a parallel discard
+    closes them, the next checkout is handed the same NUMBERS, and this node is
+    suddenly reading another branch's repository. So the compiler acquires -
+    and what it binds must be a dup, released when the node returns.
+    """
+    from tinyassets import graph_compiler as gc
+    from tinyassets import node_sandbox as ns
+    from tinyassets.branches import NodeDefinition
+
+    _fire(_packet(), universe=universe, chain=chain, worker=WireWorker(origin))
+    registered = chain.workspace_mount(CHECKOUT_NODE)
+    assert registered is not None
+
+    seen: dict[str, Any] = {}
+
+    def _launcher(sandbox_mount):
+        seen["bind"] = sandbox_mount.bind_source
+        seen["pass_fds"] = sandbox_mount.pass_fds
+        return PlainSubprocessLauncher(workspace_bind=str(_repo_path(registered)))
+
+    monkeypatch.setattr(ns, "WORKSPACE_LAUNCHER_FACTORY", _launcher)
+    node = NodeDefinition(
+        node_id="build",
+        display_name="Build",
+        phase="draft",
+        source_code="def run(state):\n    return {'ok': ws.read('README.md')}\n",
+        output_keys=["ok"],
+        workspace=CHECKOUT_NODE,
+    )
+    compiled = gc._build_source_code_node(
+        node,
+        event_sink=None,
+        effect_chain=chain,
+        ancestors={CHECKOUT_NODE},
+        base_path=universe.universe_dir,
+    )
+    assert compiled({})["ok"] == origin.readme
+
+    if POSIX:
+        bound_fd = int(str(seen["bind"]).rsplit("/", 1)[-1])
+        assert bound_fd != registered.repo_fd, "the compiler bound the ORIGINAL"
+        assert seen["pass_fds"] == (bound_fd,)
+        # Released: the dup is closed and the registry's own is untouched.
+        with pytest.raises(OSError):
+            os.fstat(bound_fd)
+        assert os.fstat(registered.repo_fd)
+    # No holder is left behind, so a settle closes immediately.
+    assert chain.workspace_holds.get(CHECKOUT_NODE, 0) == 0
+
+
+def test_a_discard_while_a_node_holds_the_workspace_leaves_it_readable(
+    origin: Origin,
+    universe: Universe,
+    chain: EffectChain,
+    fs_bridge,
+    short_paths,
+) -> None:
+    """The end-to-end shape of the race: the node is inside the workspace when
+    a parallel branch discards it. The capability is gone for anyone asking
+    NEXT, and the running node finishes reading."""
+    _fire(_packet(), universe=universe, chain=chain, worker=WireWorker(origin))
+    registered = chain.workspace_mount(CHECKOUT_NODE)
+    assert registered is not None
+
+    held = chain.acquire_workspace(CHECKOUT_NODE)
+    assert held is not None
+    chain.revoke_workspace(CHECKOUT_NODE)
+
+    assert chain.acquire_workspace(CHECKOUT_NODE) is None
+    # The holder can still read the repository it was given.
+    assert (
+        (Path(held.mount.lease.path) / "repo" / "README.md").read_text(encoding="utf-8")
+        == origin.readme
+    )
+    if POSIX:
+        assert os.fstat(held.mount.repo_fd)
+        assert os.fstat(registered.repo_fd), "the discard closed it under a holder"
+
+    held.release()
+    if POSIX:
+        with pytest.raises(OSError):
+            os.fstat(registered.repo_fd)
+
+
 def test_a_node_naming_a_checkout_that_never_delivered_fails_by_name(
     universe: Universe, chain: EffectChain
 ) -> None:
@@ -753,7 +856,7 @@ def test_a_compiled_workspace_node_runs_inside_the_lease(
         seen["pass_fds"] = sandbox_mount.pass_fds
         # A plain child performs no mount, so it runs against the path; what is
         # under test here is what the COMPILER handed over.
-        return PlainSubprocessLauncher(workspace_bind=str(mount.bind_source))
+        return PlainSubprocessLauncher(workspace_bind=str(_repo_path(mount)))
 
     monkeypatch.setattr(ns, "WORKSPACE_LAUNCHER_FACTORY", _launcher)
 
@@ -787,7 +890,7 @@ def test_a_compiled_workspace_node_runs_inside_the_lease(
         # No dir_fd on this host, so the path form - and THEN the roots matter,
         # derived the way the adapter derives them or a real bwrap would refuse
         # the bind it was just given.
-        assert seen["bind"] == str(mount.bind_source)
+        assert seen["bind"] == str(_repo_path(mount))
         assert seen["pass_fds"] == ()
         assert seen["roots"] == (
             str(universe.data_root / "scratch"),
@@ -971,7 +1074,10 @@ def test_the_lease_directory_is_private_to_this_user(
     _fire(_packet(), universe=universe, chain=chain, worker=WireWorker(origin))
     mount = chain.workspace_mount(CHECKOUT_NODE)
     assert mount is not None
-    lease_dir = Path(mount.bind_source).parent
+    # NOT Path(bind_source).parent: on POSIX the bind is /proc/self/fd/<n>, so
+    # that inspects /proc/self/fd and passes for the wrong reason. The lease
+    # object is the only thing that names the directory (Codex R3, P1 #9).
+    lease_dir = Path(mount.lease.path)
     mode = stat.S_IMODE(os.stat(lease_dir).st_mode)
     assert mode & 0o077 == 0, f"lease directory is {mode:#o}"
     assert len(lease_dir.name) >= 16, "the lease name must be unguessable"

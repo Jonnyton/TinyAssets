@@ -11,6 +11,7 @@ a later node reads an ancestor's FULL response, never the 4 KiB preview.
 from __future__ import annotations
 
 import json
+import os as _os
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
@@ -29,6 +30,8 @@ from tinyassets.effectors import (
     forget_effect_chain,
     register_effect_chain,
 )
+from tinyassets.effectors import EffectChain as _Chain
+from tinyassets.effectors import WorkspaceMount as _Mount
 from tinyassets.graph_compiler import _delta_view, _graph_ancestors, compile_branch
 
 SINK = "authenticated_external_call"
@@ -809,3 +812,231 @@ def test_a_universes_engine_authored_branch_is_its_own(monkeypatch, tmp_path):
     runs.initialize_runs_db(tmp_path)
     ctx = runs._execution_context_for_run(tmp_path, "nope", branch, fallback_actor="universe:u-1")
     assert ctx.caller_provenance == "public-foreign"      # no universe on a missing row
+
+
+# ---------------------------------------------------------------------------
+# Atomic capability acquisition (Codex code round 3, P0 #2)
+#
+# The bug is not "a revoked mount is still readable" - it is worse and quieter.
+# A discard closes the descriptors; the NEXT checkout opens directories and the
+# runtime hands back the same fd numbers; a node still holding them is now
+# reading another branch's repository. A dup is what makes the number
+# unreusable while it is held.
+# ---------------------------------------------------------------------------
+
+
+def _open_fd(tmp_path, name: str) -> int:
+    """A real descriptor. Not a directory one - Windows cannot open those - but
+    the refcount rules do not care what is on the other end."""
+    path = tmp_path / name
+    path.write_text(name, encoding="utf-8")
+    return _os.open(path, _os.O_RDONLY)
+
+
+def _is_open(fd: int) -> bool:
+    try:
+        _os.fstat(fd)
+        return True
+    except OSError:
+        return False
+
+
+def _registered(chain, tmp_path, key: str = "checkout"):
+    repo_fd = _open_fd(tmp_path, f"{key}-repo")
+    lease_fd = _open_fd(tmp_path, f"{key}-lease")
+    mount = _Mount(
+        node_id=key,
+        bind_source=str(tmp_path / "repo"),
+        lease_fd=lease_fd,
+        repo_fd=repo_fd,
+    )
+    chain.register_workspace(key, mount)
+    return mount
+
+
+def test_an_acquisition_hands_back_duplicates_not_the_originals(tmp_path) -> None:
+    chain = _Chain()
+    mount = _registered(chain, tmp_path)
+    with chain.acquire_workspace("checkout") as held:
+        assert held.mount is not mount
+        assert held.mount.repo_fd != mount.repo_fd
+        assert held.mount.lease_fd != mount.lease_fd
+        # Same open file, different number: that is what makes the number
+        # unreusable while this holder lives.
+        assert _os.fstat(held.mount.repo_fd).st_ino == _os.fstat(mount.repo_fd).st_ino
+        duplicate = held.mount.repo_fd
+    assert not _is_open(duplicate), "the dup outlived its release"
+    assert _is_open(mount.repo_fd), "releasing a holder closed the original"
+    chain.close_workspaces()
+
+
+def test_a_discard_during_a_held_use_does_not_close_the_dup(tmp_path) -> None:
+    """The node keeps reading. Closing under it is how the fd number gets
+    reused by the next checkout while it is still being read."""
+    chain = _Chain()
+    mount = _registered(chain, tmp_path)
+    held = chain.acquire_workspace("checkout")
+    assert held is not None
+
+    chain.revoke_workspace("checkout")
+
+    assert _is_open(held.mount.repo_fd), "the discard closed the holder's dup"
+    assert _is_open(mount.repo_fd), "the original closed with a holder outstanding"
+    # And the capability is gone for anyone asking now.
+    assert chain.workspace_mount("checkout") is None
+    assert chain.acquire_workspace("checkout") is None
+
+    held.release()
+    assert not _is_open(held.mount.repo_fd)
+    assert not _is_open(mount.repo_fd), "the deferred close never happened"
+    assert not _is_open(mount.lease_fd)
+
+
+def test_a_double_release_does_not_decrement_twice(tmp_path) -> None:
+    """Releasing twice must not close the capability under the OTHER holder.
+
+    The refcount is what a second decrement corrupts - and the damage lands on
+    a descriptor that is still in use, which is the same fd-reuse hazard by a
+    different route. (A double close alone would be masked: the mount's own
+    ``close`` nulls its fields first, so this asserts the count, not the fd.)
+    """
+    chain = _Chain()
+    mount = _registered(chain, tmp_path)
+    first = chain.acquire_workspace("checkout")
+    second = chain.acquire_workspace("checkout")
+    chain.revoke_workspace("checkout")
+
+    first.release()
+    first.release()                          # the mistake this guards
+
+    assert _is_open(mount.repo_fd), "the second release closed it under a holder"
+    assert chain.workspace_holds.get("checkout") == 1
+
+    second.release()
+    assert not _is_open(mount.repo_fd)
+    assert chain.workspace_holds.get("checkout") is None
+
+
+def test_the_originals_close_exactly_once(tmp_path) -> None:
+    """A double close lands on whatever number the runtime handed out next."""
+    chain = _Chain()
+    _registered(chain, tmp_path)
+    held = chain.acquire_workspace("checkout")
+    chain.revoke_workspace("checkout")
+    chain.revoke_workspace("checkout")      # idempotent
+    held.release()
+    chain.close_workspaces()
+
+    # A fresh descriptor would land on the freed number if anything closed it
+    # a second time; opening one and checking it survives is the assertion.
+    canary = _open_fd(tmp_path, "canary")
+    try:
+        chain.close_workspaces()
+        held.release()
+        assert _is_open(canary), "something closed a descriptor it did not own"
+    finally:
+        _os.close(canary)
+
+
+def test_a_reused_fd_number_is_not_reachable_through_a_stale_acquisition(
+    tmp_path,
+) -> None:
+    """The actual attack: discard, let the next checkout take the same number,
+    and try to reach it through the capability the first branch held."""
+    chain = _Chain()
+    first = _registered(chain, tmp_path, "checkout")
+    first_repo_fd = first.repo_fd
+
+    held = chain.acquire_workspace("checkout")
+    assert held is not None
+    held.release()
+    chain.revoke_workspace("checkout")
+    assert not _is_open(first_repo_fd)
+
+    # The next checkout, which the runtime is free to hand the same number.
+    second = _registered(chain, tmp_path, "checkout")
+    assert _is_open(second.repo_fd)
+
+    # The stale holder cannot acquire against the key it used to own without
+    # going through the chain, and the chain hands out the CURRENT mount - so
+    # there is no path from the old acquisition to the new repository.
+    assert held._released is True
+    fresh = chain.acquire_workspace("checkout")
+    assert fresh is not None
+    assert _os.fstat(fresh.mount.repo_fd).st_ino == _os.fstat(second.repo_fd).st_ino
+    fresh.release()
+    chain.close_workspaces()
+
+
+def test_acquiring_a_key_that_was_never_registered_is_none(tmp_path) -> None:
+    chain = _Chain()
+    assert chain.acquire_workspace("nobody") is None
+    assert chain.acquire_workspace("") is None
+
+
+def test_two_threads_acquire_and_release_without_a_double_close(tmp_path) -> None:
+    """Contention is the whole point of doing this under the chain's lock."""
+    import threading
+
+    chain = _Chain()
+    mount = _registered(chain, tmp_path)
+    barrier = threading.Barrier(4)
+    errors: list[BaseException] = []
+
+    def churn() -> None:
+        try:
+            barrier.wait(timeout=30)
+            for _ in range(40):
+                held = chain.acquire_workspace("checkout")
+                if held is None:
+                    return
+                assert _is_open(held.mount.repo_fd)
+                held.release()
+        except BaseException as exc:  # noqa: BLE001 - reported below
+            errors.append(exc)
+
+    def revoke() -> None:
+        try:
+            barrier.wait(timeout=30)
+            chain.revoke_workspace("checkout")
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=churn) for _ in range(3)]
+    threads.append(threading.Thread(target=revoke))
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+
+    assert errors == [], errors
+    assert chain.acquire_workspace("checkout") is None
+    assert not _is_open(mount.repo_fd), "the originals never closed"
+
+
+def test_settling_with_an_outstanding_acquisition_defers_the_close(
+    tmp_path,
+) -> None:
+    chain = _Chain()
+    mount = _registered(chain, tmp_path)
+    held = chain.acquire_workspace("checkout")
+
+    assert chain.close_workspaces() == 1
+    assert _is_open(mount.repo_fd), "settle closed a capability still in use"
+    assert chain.acquire_workspace("checkout") is None
+
+    held.release()
+    assert not _is_open(mount.repo_fd)
+    assert not _is_open(mount.lease_fd)
+
+
+def test_a_mount_without_descriptors_acquires_as_itself(tmp_path) -> None:
+    """Windows, and every test double: the path form has nothing to duplicate
+    and nothing whose number could be reused."""
+    chain = _Chain()
+    mount = _Mount(node_id="checkout", bind_source=str(tmp_path / "repo"))
+    chain.register_workspace("checkout", mount)
+    with chain.acquire_workspace("checkout") as held:
+        assert held.mount is mount
+        assert held.mount.bind_source == str(tmp_path / "repo")
+    assert chain.workspace_mount("checkout") is mount
