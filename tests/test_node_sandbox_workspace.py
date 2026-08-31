@@ -209,7 +209,11 @@ def test_the_default_factory_hands_the_descriptors_to_the_launcher(
         node_sandbox, "_probe", lambda: {"bwrap_available": True}
     )
     launcher = node_sandbox._default_workspace_launcher(
-        "/proc/self/fd/9", ("/srv/pool",), (9,)
+        WorkspaceMount(
+            bind_source="/proc/self/fd/9",
+            pass_fds=(9,),
+            allowed_roots=("/srv/pool",),
+        )
     )
     assert launcher.pass_fds == (9,)
     assert launcher.workspace_bind == "/proc/self/fd/9"
@@ -228,7 +232,9 @@ def test_the_default_factory_refuses_without_a_sandbox(
         node_sandbox, "_probe", lambda: {"bwrap_available": False, "reason": "no bwrap"}
     )
     with pytest.raises(SandboxUnavailableError):
-        node_sandbox._default_workspace_launcher("/srv/pool/x", ("/srv/pool",), ())
+        node_sandbox._default_workspace_launcher(
+            WorkspaceMount(bind_source="/srv/pool/x", allowed_roots=("/srv/pool",))
+        )
 
 
 def test_a_descriptor_bind_reaches_both_the_argv_and_the_child() -> None:
@@ -805,6 +811,61 @@ def test_ws_run_env_is_a_fixed_base_plus_screened_keys(workspace: Path) -> None:
     assert "TINYASSETS_DATA_DIR" not in child_env
 
 
+def test_the_child_env_turns_off_background_git_maintenance(
+    workspace: Path,
+) -> None:
+    """`git commit`/`fetch` fork a detached `gc --auto` that keeps
+    `.git/objects/pack` open after the node returns, which is what made the
+    lease wipe fail. Turned off through GIT_CONFIG_* rather than a config file:
+    the workspace's own `.git` is writable by node code.
+    """
+    source = (
+        "def run(state):\n"
+        f"    out = ws.run([{PY!r}, '-c', "
+        "'import os,json; print(json.dumps(dict(os.environ)))'])\n"
+        "    return {'result': out['stdout_tail']}\n"
+    )
+    result = _run_node(workspace, source)
+    assert result.success is True, result.error
+    child_env = json.loads(result.output_state["result"])
+    assert child_env["GIT_CONFIG_COUNT"] == "2"
+    assert child_env["GIT_CONFIG_KEY_0"] == "gc.auto"
+    assert child_env["GIT_CONFIG_VALUE_0"] == "0"
+    assert child_env["GIT_CONFIG_KEY_1"] == "maintenance.auto"
+    assert child_env["GIT_CONFIG_VALUE_1"] == "false"
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_GLOBAL"],
+)
+def test_a_node_cannot_override_the_git_configuration(
+    workspace: Path, key: str
+) -> None:
+    """Refused, not ignored: dropping it silently would let a node believe it
+    had turned maintenance back on."""
+    source = (
+        PROBE + "\n"
+        "def run(state):\n"
+        f"    return {{'result': probe(lambda: ws.run([{PY!r}, '-c', 'pass'], "
+        f"env={{{key!r}: '9'}}))}}\n"
+    )
+    result = _run_node(workspace, source)
+    assert result.success is True, result.error
+    outcome = result.output_state["result"]
+    assert outcome["outcome"] == "ValueError", outcome
+    assert "git configuration is fixed" in outcome["message"]
+
+
+def test_the_bundle_commands_disable_maintenance_explicitly() -> None:
+    """Belt as well as the environment: the bundle's output crosses the jail."""
+    from tinyassets import node_sandbox
+
+    runner = node_sandbox._RUNNER_SCRIPT
+    assert '"-c", "gc.auto=0",' in runner
+    assert '"-c", "maintenance.auto=false",' in runner
+
+
 def test_a_node_without_a_workspace_has_no_ws_name(workspace: Path) -> None:
     # `dir()` inside a function lists locals, and `ws` is a global of the
     # node's own namespace: the honest probe is whether the NAME resolves.
@@ -1284,15 +1345,10 @@ def test_the_descriptor_reaches_both_the_launcher_and_the_child(
     captured: dict[str, object] = {}
     real_popen = subprocess.Popen
 
-    def factory(bind_source, allowed_roots, pass_fds=()):
-        captured["factory_pass_fds"] = tuple(pass_fds or ())
-        captured["factory_bind"] = bind_source
-        launcher = BwrapLauncher(
-            bwrap_path=PY,
-            workspace_bind=bind_source,
-            allowed_workspace_roots=tuple(allowed_roots or ()),
-            pass_fds=tuple(pass_fds or ()),
-        )
+    def factory(sandbox_mount):
+        captured["factory_pass_fds"] = tuple(sandbox_mount.pass_fds or ())
+        captured["factory_bind"] = sandbox_mount.bind_source
+        launcher = BwrapLauncher(bwrap_path=PY).for_workspace(sandbox_mount)
         captured["argv"] = launcher.build_argv("print(1)", ["30", "1", ""])
         return launcher
 
@@ -1349,6 +1405,22 @@ def test_a_lease_descriptor_is_never_used_for_the_bind(
     assert built.bind_source == str(workspace)
 
 
+def test_a_published_descriptor_that_is_dead_fails_the_node(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Carrying the sink's choice through does not mean carrying it unchecked.
+
+    A closed descriptor makes `/proc/self/fd/N` name whatever this process has
+    open at N, so the bind would mount something else entirely.
+    """
+    monkeypatch.setattr(gc, "WORKSPACE_FD_BIND_SUPPORTED", True)
+    with pytest.raises(gc.CodeNodeError, match="descriptor is unusable"):
+        gc._sandbox_workspace_mount(
+            _ChainMount("/proc/self/fd/9999", repo_fd=9999, pass_fds=(9999,)),
+            "build",
+        )
+
+
 def test_a_capability_that_already_chose_the_descriptor_is_carried_through(
     workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1393,8 +1465,8 @@ def test_a_workspace_command_timeout_reaches_the_compiler_as_its_own_class(
     monkeypatch.setattr(
         node_sandbox,
         "WORKSPACE_LAUNCHER_FACTORY",
-        lambda bind_source, roots, pass_fds=(): PlainSubprocessLauncher(
-            workspace_bind=bind_source
+        lambda sandbox_mount: PlainSubprocessLauncher(
+            workspace_bind=sandbox_mount.bind_source
         ),
     )
     chain = EffectChain()

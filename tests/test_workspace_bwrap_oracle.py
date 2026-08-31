@@ -40,7 +40,7 @@ oracle = _load()
 # --------------------------------------------------------------------------- #
 
 
-def test_the_registry_names_the_six_claims_the_suite_cannot_prove() -> None:
+def test_the_registry_names_the_claims_the_suite_cannot_prove() -> None:
     assert oracle.check_names() == [
         "bind_survives_a_rename",
         "jail_kill_reaps_a_double_fork",
@@ -48,6 +48,7 @@ def test_the_registry_names_the_six_claims_the_suite_cannot_prove() -> None:
         "ws_bundle_imports_under_fsck",
         "run_git_timeout_reaps_a_descendant",
         "libcurl_multi_resolve_is_honoured",
+        "full_route",
     ]
 
 

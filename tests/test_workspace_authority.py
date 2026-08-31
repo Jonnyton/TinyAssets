@@ -893,3 +893,170 @@ def test_the_inventory_shows_the_git_scopes_and_the_consents(base) -> None:
     ]
     # No secret rode along with any of it.
     assert "credential_ref" not in json.dumps(listed)
+
+
+# --------------------------------------------------------------------------
+# a scope-only widening: the shape the served rail documents (Codex R2 #14)
+# --------------------------------------------------------------------------
+
+
+#: Copied from the served docstring in tinyassets/engine_mcp_server.py. If the
+#: two ever drift, the agent is being taught an action that cannot execute -
+#: which is precisely the defect this test exists for.
+DOCUMENTED_SCOPE_ONLY_ACTION = {
+    "type": "extend_http",
+    "destination": "github",
+    "scopes": ["git_read:octocat/hello", "git_write:octocat/hello"],
+}
+
+
+def test_the_documented_scope_only_ask_runs_end_to_end(base) -> None:
+    """The rail's own example, verbatim: no endpoints, only scopes.
+
+    A workspace checkout makes no HTTP call, so there are no endpoints to widen
+    - and requiring some meant the action the agent is told to raise could
+    never execute. The connection's STORED endpoints are what the host rule is
+    checked against.
+    """
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    deposited = _deposit("u-1")
+    assert deposited.get("connection_id"), deposited
+    assert wa.connection_git_scopes(_connection("u-1", deposited["connection_id"])) == set()
+
+    asked = _ask(
+        "u-1",
+        kind="Approval",
+        title="Let me check out and push octocat/hello",
+        body="I need the repository scope on the key you already gave.",
+        action=dict(DOCUMENTED_SCOPE_ONLY_ACTION),
+    )
+    assert asked["status"] == "pending", asked
+    assert asked["action"]["endpoints"] == []
+    assert asked["action"]["scopes"] == [
+        "git_read:octocat/hello",
+        "git_write:octocat/hello",
+    ]
+    assert asked["fields"] == [], "a scope-only ask has nothing to paste"
+
+    answered = _answer("u-1", request_id=asked["request_id"], values={})
+    assert answered["status"] == "answered", answered
+
+    connection = _connection("u-1", deposited["connection_id"])
+    assert wa.has_git_scope(connection, "git_read", "octocat/hello") is True
+    assert wa.has_git_scope(connection, "git_write", "octocat/hello") is True
+    # The endpoints it already had are untouched, and so are their verbs.
+    assert [ep.host for ep in connection.allowed_endpoints] == ["api.github.com"]
+    assert "POST" in connection.scopes
+
+
+def test_a_scope_only_extension_leaves_the_endpoints_exactly_as_they_were(base) -> None:
+    from tinyassets.api.http_connection import extend_http
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    deposited = _deposit("u-1")
+    before = [
+        ep.as_dict() for ep in _connection("u-1", deposited["connection_id"]).allowed_endpoints
+    ]
+
+    widened = extend_http(
+        universe_id="u-1",
+        payload=json.dumps(
+            {"destination": "github", "scopes": ["git_read:octocat/hello"]}
+        ),
+    )
+    assert widened["status"] == "extended", widened
+    after = [
+        ep.as_dict() for ep in _connection("u-1", deposited["connection_id"]).allowed_endpoints
+    ]
+    assert after == before
+    assert "git_read:octocat/hello" in widened["scopes"]
+
+
+def test_a_scope_only_extension_still_obeys_the_host_rule(base) -> None:
+    """The stored endpoints are what vouch for the host. A connection pointed
+    somewhere else cannot gain a git scope by leaving the endpoints out."""
+    from tinyassets.api.http_connection import extend_http
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    _deposit(
+        "u-1",
+        destination="elsewhere",
+        endpoints=[
+            {
+                "host": "api.example.com",
+                "path_template": "/v1/things",
+                "methods": ["POST"],
+            }
+        ],
+    )
+    refused = extend_http(
+        universe_id="u-1",
+        payload=json.dumps(
+            {"destination": "elsewhere", "scopes": ["git_read:octocat/hello"]}
+        ),
+    )
+    assert refused["error"] == "connection_setup_invalid", refused
+    assert "github.com" in refused["detail"]
+
+
+def test_an_ask_with_neither_endpoints_nor_scopes_is_still_refused(base) -> None:
+    """Scope-only is a NEW shape, not the removal of a check: an extend that
+    widens nothing has nothing to answer."""
+    from tinyassets.api.http_connection import extend_http
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    _deposit("u-1")
+    refused = extend_http(
+        universe_id="u-1", payload=json.dumps({"destination": "github"})
+    )
+    assert refused["error"] == "connection_setup_invalid", refused
+    assert "at least one git scope" in refused["detail"]
+
+
+def test_the_endpoint_carrying_form_still_works(base) -> None:
+    """The old shape is untouched: endpoints, or endpoints AND scopes."""
+    from tinyassets.api.http_connection import extend_http
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    deposited = _deposit("u-1")
+    widened = extend_http(
+        universe_id="u-1",
+        payload=json.dumps(
+            {
+                "destination": "github",
+                "endpoints": [
+                    {
+                        "host": "api.github.com",
+                        "path_template": "/repos/o/r/issues",
+                        "methods": ["POST"],
+                    }
+                ],
+                "scopes": ["git_write:octocat/hello"],
+            }
+        ),
+    )
+    assert widened["status"] == "extended", widened
+    connection = _connection("u-1", deposited["connection_id"])
+    assert sorted(ep.path_template for ep in connection.allowed_endpoints) == [
+        "/repos/o/r/issues",
+        "/repos/o/r/pulls",
+    ]
+    assert wa.has_git_scope(connection, "git_write", "octocat/hello") is True
+
+
+def test_the_served_docs_and_the_rail_agree_on_the_scope_only_shape() -> None:
+    """The example in the tool docstring IS the contract: an agent copying it
+    must get a tab, not a refusal. Pinned because the two live in different
+    files and only a reader would notice them drifting."""
+    from pathlib import Path as _Path
+
+    import tinyassets.engine_mcp_server as server
+
+    source = _Path(server.__file__).read_text(encoding="utf-8")
+    assert '"type": "extend_http", "destination": "github", "scopes":' in source
+    assert "no new endpoints" in source or "no endpoints" in source

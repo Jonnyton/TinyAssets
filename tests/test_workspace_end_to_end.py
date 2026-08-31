@@ -44,10 +44,7 @@ from tinyassets.node_sandbox import NodeSandbox, PlainSubprocessLauncher
 from tinyassets.storage.effector_consents import grant_consent
 from tinyassets.storage.outbound_connections import ConnectionLedger
 from tinyassets.storage.workspace_authority import workspace_consent_destination
-from tinyassets.workspace_git import (
-    git_environment,
-    verify_bundle,
-)
+from tinyassets.workspace_git import verify_bundle
 
 GIT = shutil.which("git")
 PY = sys.executable
@@ -162,6 +159,44 @@ def _make_universe(
     return Universe(data_root=data_root, universe_dir=universe_dir, pool_root=pool_root)
 
 
+_WINDOWS_MAX_PATH = 260
+#: The deepest thing a checkout puts under ``tmp_path``, measured rather than
+#: guessed - and it is the QUARANTINE spelling, which is why the failure
+#: surfaces as an OSError on ``objects\pack`` during the RELEASE rather than
+#: during the checkout:
+#:
+#:   data/scratch/.quarantine/<64 hex lease>.<gen>/repo/.git/objects/pack/pack-<40 hex>.pack
+_DEEPEST_CHECKOUT_SUFFIX = (
+    len("/data/scratch/.quarantine/")
+    + 64          # secrets.token_hex() is 32 bytes
+    + 2           # ".<generation>"
+    + len("/repo/.git/objects/pack/pack-")
+    + 40          # a pack's sha
+    + len(".pack")
+)
+#: A few characters of slack for a second-digit generation or a longer pack
+#: name. 90 on this arithmetic: pytest's default root measures 99 here and the
+#: short root the guidance recommends measures 83, so this separates exactly
+#: the two cases it is meant to.
+_MAX_SAFE_TMP_PATH_CHARS = _WINDOWS_MAX_PATH - _DEEPEST_CHECKOUT_SUFFIX - 4
+
+
+@pytest.fixture
+def short_paths(tmp_path: Path) -> None:
+    """Skip on Windows when the temp root is too long to hold a git checkout.
+
+    Requested by every test that builds a REAL repository inside a lease. It is
+    a skip and not a failure because the code is fine: the same test passes
+    with a short ``--basetemp``, and a red here would send the next reader
+    hunting a defect that is not in the tree (2026-08-30, twice).
+    """
+    if os.name == "nt" and len(str(tmp_path)) > _MAX_SAFE_TMP_PATH_CHARS:
+        pytest.skip(
+            "Windows MAX_PATH: run with "
+            "--basetemp=C:/Users/<you>/AppData/Local/Temp/ta-pt"
+        )
+
+
 @pytest.fixture
 def universe(tmp_path: Path) -> Universe:
     return _make_universe(tmp_path)
@@ -227,6 +262,7 @@ def fs_bridge(monkeypatch: pytest.MonkeyPatch) -> dict[str, list]:
 
     monkeypatch.setattr(workspace_fs, "open_dir_nofollow", open_dir_nofollow)
     monkeypatch.setattr(workspace_fs, "create_lease_dir", create_lease_dir)
+    monkeypatch.setattr(workspace_fs, "create_workspace_subdir", create_lease_dir)
     monkeypatch.setattr(
         workspace_fs, "copy_regular_file_beneath", copy_regular_file_beneath
     )
@@ -362,6 +398,45 @@ def _seed_run(universe: Universe, run_id: str = RUN_ID) -> None:
         )
 
 
+def _outbox_outcomes(universe: Universe) -> list[tuple]:
+    """What the processor recorded, verbatim - a LOST carries its exception."""
+    import sqlite3
+
+    db = runs_module.runs_db_path(universe.universe_dir)
+    if not db.exists():
+        return []
+    conn = sqlite3.connect(str(db))
+    try:
+        return list(
+            conn.execute("SELECT action, outcome, done_at FROM workspace_outbox")
+        )
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+
+def _assert_nothing_holds_the_lease(lease_dir: Path) -> None:
+    """Windows only, and it is the whole point of the check: a rename fails
+    while another process holds the file, so this proves every git child the
+    checkout started has exited before the sweep tries to delete.
+
+    POSIX renames and unlinks regardless of open handles, so there is nothing
+    to prove there.
+    """
+    if POSIX:
+        return
+    for path in sorted(p for p in lease_dir.rglob("*") if p.is_file()):
+        probe = path.with_suffix(path.suffix + ".handleprobe")
+        try:
+            os.rename(path, probe)
+            os.rename(probe, path)
+        except OSError as exc:  # pragma: no cover - only when a handle leaks
+            raise AssertionError(
+                f"{path} is still held before the terminal write: {exc}"
+            ) from exc
+
+
 def _lease_rows(universe: Universe) -> list[tuple]:
     import sqlite3
 
@@ -385,7 +460,7 @@ def _lease_rows(universe: Universe) -> list[tuple]:
 
 
 def test_a_checkout_delivers_a_workspace_a_node_can_run_git_in(
-    origin: Origin, universe: Universe, chain: EffectChain, fs_bridge
+    origin: Origin, universe: Universe, chain: EffectChain, fs_bridge, short_paths
 ) -> None:
     worker = WireWorker(origin)
     evidence = _fire(_packet(), universe=universe, chain=chain, worker=worker)
@@ -400,6 +475,23 @@ def test_a_checkout_delivers_a_workspace_a_node_can_run_git_in(
     repo_dir = Path(mount.bind_source)
     assert (repo_dir / "README.md").read_text(encoding="utf-8") == origin.readme
     assert (repo_dir / ".git").is_dir()
+
+    if POSIX:
+        # The handle the jail binds through must be the REPOSITORY. Binding the
+        # lease root instead would hand user code the export directory and any
+        # sibling the pool put there, and the difference is invisible in a path
+        # comparison - so compare inodes through the descriptor itself.
+        through_fd = os.stat(f"/proc/self/fd/{mount.repo_fd}")
+        repository = os.stat(repo_dir)
+        lease_root = os.stat(repo_dir.parent)
+        assert (through_fd.st_dev, through_fd.st_ino) == (
+            repository.st_dev,
+            repository.st_ino,
+        )
+        assert (through_fd.st_dev, through_fd.st_ino) != (
+            lease_root.st_dev,
+            lease_root.st_ino,
+        ), "the mount binds the lease root, not the repository"
 
     result = _run_in_workspace(
         mount,
@@ -490,7 +582,8 @@ def test_a_node_commit_becomes_a_bundle_the_push_leg_can_verify(
         Path(request["bundle_path"]),
         max_bytes=512 * 1024 * 1024,
         scratch_dir=scratch,
-        env=git_environment(home, path=str(Path(GIT).parent)),
+        home_dir=home,
+        path=str(Path(GIT).parent),
     )
     assert refs, "verify_bundle returned no refs"
     text = " ".join(str(ref) for ref in refs)
@@ -514,14 +607,22 @@ def test_a_finished_run_releases_its_lease_and_the_next_run_is_admitted(
     universe: Universe,
     chain: EffectChain,
     fs_bridge,
+    short_paths,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _seed_run(universe)
     worker = WireWorker(origin)
+    # Every child this test starts is waited on before the terminal write:
+    # the fake wire leg uses subprocess.run, and the adapter's populate does
+    # too. Nothing here is left exiting while the sweep deletes.
     _fire(_packet(), universe=universe, chain=chain, worker=worker)
     rows = _lease_rows(universe)
     assert [state for _id, state, _class in rows] == ["ACTIVE"], rows
     lease_path = Path(chain.workspace_mount(CHECKOUT_NODE).bind_source).parent
+    # The lifecycle proof is only worth anything if the wipe is deleting a
+    # lease nobody is holding: on POSIX these are the REAL no-follow handles,
+    # and on Windows this proves every git child has exited first.
+    _assert_nothing_holds_the_lease(lease_path)
 
     threads: list[Any] = []
     real_kick = runs_module._kick_workspace_sweep
@@ -535,9 +636,27 @@ def test_a_finished_run_releases_its_lease_and_the_next_run_is_admitted(
         if thread is not None:
             thread.join(timeout=60)
 
+    # The outcome text carries the exception when a wipe failed, so a LOST here
+    # says WHY without a second run. On Windows a delete can lose to a git child
+    # that is still exiting (sharing violation); the filesystem retries those
+    # for three seconds, and anything still failing after that is real.
     rows = _lease_rows(universe)
-    assert [state for _id, state, _class in rows] == ["AVAILABLE"], rows
-    assert not lease_path.exists(), "the lease directory outlived its lease"
+    states = [state for _id, state, _class in rows]
+    # pytest.fail, not an assert message: assertion rewriting truncates a long
+    # tuple, and the outbox outcome carries the EXCEPTION a failed wipe raised -
+    # the one thing that says whether this is a defect or a path length.
+    if states != ["AVAILABLE"]:
+        pytest.fail(
+            "the lease was not released"
+            f" | lease rows: {rows}"
+            f" | outbox: {_outbox_outcomes(universe)}"
+        )
+    if lease_path.exists():
+        pytest.fail(
+            "the lease directory outlived its lease"
+            f" | path: {lease_path}"
+            f" | outbox: {_outbox_outcomes(universe)}"
+        )
 
     import sqlite3
 
@@ -609,6 +728,7 @@ def test_a_compiled_workspace_node_runs_inside_the_lease(
     universe: Universe,
     chain: EffectChain,
     fs_bridge,
+    short_paths,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The seam this module exists for: the CHAIN's mount and the SANDBOX's are
@@ -627,15 +747,13 @@ def test_a_compiled_workspace_node_runs_inside_the_lease(
 
     seen: dict[str, Any] = {}
 
-    def _launcher(
-        bind_source: str,
-        allowed_roots: tuple[str, ...],
-        pass_fds: tuple[int, ...] = (),
-    ):
-        seen["bind"] = bind_source
-        seen["roots"] = allowed_roots
-        seen["pass_fds"] = pass_fds
-        return PlainSubprocessLauncher(workspace_bind=bind_source)
+    def _launcher(sandbox_mount):
+        seen["bind"] = sandbox_mount.bind_source
+        seen["roots"] = sandbox_mount.allowed_roots
+        seen["pass_fds"] = sandbox_mount.pass_fds
+        # A plain child performs no mount, so it runs against the path; what is
+        # under test here is what the COMPILER handed over.
+        return PlainSubprocessLauncher(workspace_bind=str(mount.bind_source))
 
     monkeypatch.setattr(ns, "WORKSPACE_LAUNCHER_FACTORY", _launcher)
 
@@ -657,14 +775,24 @@ def test_a_compiled_workspace_node_runs_inside_the_lease(
     state = compiled({})
     assert state["ok"] == origin.readme
 
-    # The bind is the lease's repo, and the roots vouching for it are the two
-    # the adapter admits into - derived the same way, or a real bwrap run would
-    # refuse the bind it was just given.
-    assert seen["bind"] == str(mount.bind_source)
-    assert seen["roots"] == (
-        str(universe.data_root / "scratch"),
-        str(universe.universe_dir / "workspaces"),
-    )
+    if POSIX:
+        # The descriptor form: the bind is the handle the checkout opened, the
+        # child is told to inherit it, and no root vouches for a string that is
+        # never resolved. A launcher built without pass_fds would leave bwrap
+        # resolving /proc/self/fd/<n> in a process that does not hold <n>.
+        assert seen["bind"] == f"/proc/self/fd/{mount.repo_fd}"
+        assert seen["pass_fds"] == (mount.repo_fd,)
+        assert seen["roots"] == ()
+    else:
+        # No dir_fd on this host, so the path form - and THEN the roots matter,
+        # derived the way the adapter derives them or a real bwrap would refuse
+        # the bind it was just given.
+        assert seen["bind"] == str(mount.bind_source)
+        assert seen["pass_fds"] == ()
+        assert seen["roots"] == (
+            str(universe.data_root / "scratch"),
+            str(universe.universe_dir / "workspaces"),
+        )
 
 
 # --------------------------------------------------------------------------
@@ -787,26 +915,51 @@ def test_the_token_appears_in_no_evidence_no_log_and_no_file(
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not POSIX, reason="the real handles are POSIX-only")
-def test_a_missing_pool_root_is_a_refusal_not_a_crash(
-    origin: Origin, tmp_path: Path
-) -> None:
-    """The pool module creates no directories and the real ``open_dir_nofollow``
-    refuses a missing parent, so SOMEONE has to create ``<data>/scratch`` before
-    the first checkout - the daemon, at startup, 0o700. The adapter's own suite
-    cannot see this because its injected helper creates the directory.
+def test_the_path_guard_still_lets_the_recommended_root_run() -> None:
+    """A guard tightened until it skips everywhere proves nothing.
 
-    Until that lands, this pins the behaviour a host would actually get: a
-    refusal carrying the reason, never a traceback out of the effector.
+    The two measurements it has to separate, on this host: pytest's default
+    root is 99 characters and the short root the conftest recommends is 83.
+    """
+    assert _MAX_SAFE_TMP_PATH_CHARS >= 85, _MAX_SAFE_TMP_PATH_CHARS
+    assert _MAX_SAFE_TMP_PATH_CHARS < 99, _MAX_SAFE_TMP_PATH_CHARS
+    assert (
+        _MAX_SAFE_TMP_PATH_CHARS + _DEEPEST_CHECKOUT_SUFFIX <= _WINDOWS_MAX_PATH
+    )
+
+
+def test_the_startup_reconciler_creates_the_pool_root_a_fresh_host_lacks(
+    origin: Origin, tmp_path: Path, fs_bridge, short_paths
+) -> None:
+    """Inverted once ``ensure_workspace_reconciled`` gained the creator.
+
+    The pool module creates no directories and the real ``open_dir_nofollow``
+    refuses a missing parent, so on a fresh host the FIRST checkout used to
+    fail - and the adapter's own suite could not see it, because its injected
+    helper makes the directory itself. The reconciler now creates
+    ``<data>/scratch`` (``base_path.parent / "scratch"``) at 0o700, and a
+    checkout on a host that has never had one succeeds.
     """
     universe = _make_universe(tmp_path)
+    shutil.rmtree(universe.pool_root)
+    assert not universe.pool_root.exists()
+
+    created = runs_module._ensure_scratch_root(universe.universe_dir)
+    assert created == universe.pool_root
+    assert universe.pool_root.is_dir()
+    if POSIX:
+        mode = stat.S_IMODE(os.stat(universe.pool_root).st_mode)
+        assert mode == 0o700, f"{mode:#o}"
+
+    # And the checkout that used to fail on a fresh host now completes - the
+    # adapter reaches the reconciler before it admits anything.
     shutil.rmtree(universe.pool_root)
     chain = EffectChain(
         run_id=RUN_ID, base_path=str(universe.data_root), universe_id=UNIVERSE
     )
     result = _fire(_packet(), universe=universe, chain=chain, worker=WireWorker(origin))
-    assert result.get("error_kind"), result
-    assert not universe.pool_root.exists()
+    assert result.get("error_kind") is None, result
+    assert universe.pool_root.is_dir()
 
 
 @pytest.mark.skipif(not POSIX, reason="the real handles are POSIX-only")

@@ -746,7 +746,21 @@ def _make_workspace(conf, remaining):
                     raise ValueError("ws.run argv contains a NUL byte")
             if timeout is not None and type(timeout) is not int and type(timeout) is not float:
                 raise TypeError("ws.run timeout must be a number")
-            child_env = {"HOME": "/tmp", "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}
+            # `git commit` and `git fetch` fork a detached `gc --auto`, which
+            # keeps `.git/objects/pack` open after the node returns and made
+            # the lease wipe fail on Windows. Turned off through GIT_CONFIG_*
+            # rather than a config file, because the workspace's own `.git`
+            # is writable by node code and a file there would not bind.
+            child_env = {
+                "HOME": "/tmp",
+                "PATH": "/usr/bin:/bin",
+                "LANG": "C.UTF-8",
+                "GIT_CONFIG_COUNT": "2",
+                "GIT_CONFIG_KEY_0": "gc.auto",
+                "GIT_CONFIG_VALUE_0": "0",
+                "GIT_CONFIG_KEY_1": "maintenance.auto",
+                "GIT_CONFIG_VALUE_1": "false",
+            }
             if env is not None:
                 if type(env) is not dict:
                     raise TypeError("ws.run env must be a dict")
@@ -760,6 +774,13 @@ def _make_workspace(conf, remaining):
                     _ws_exact_str(value, "run env value")
                     if chr(0) in value:
                         raise ValueError("ws.run env value holds a NUL byte")
+                    if key.startswith("GIT_CONFIG"):
+                        # Refused, not ignored: silently dropping it would let
+                        # a node believe it had turned maintenance back on.
+                        raise ValueError(
+                            "ws.run env may not set " + key + ": the workspace's "
+                            "git configuration is fixed"
+                        )
                     child_env[key] = value
 
             if counters["commands"] >= max_commands:
@@ -912,11 +933,20 @@ def _make_workspace(conf, remaining):
             )
             os.close(handle)
             target = os.path.join(root.path, ".tiny-export", commit_sha + ".bundle")
-            base = ["git", "-c", "core.hooksPath=/dev/null", "--no-replace-objects"]
+            # -c as well as the environment: a bundle is the one path whose
+            # output crosses the jail boundary, so its git runs with
+            # maintenance off no matter how it was invoked.
+            quiet = [
+                "-c", "gc.auto=0",
+                "-c", "maintenance.auto=false",
+            ]
+            base = ["git", "-c", "core.hooksPath=/dev/null"] + quiet + [
+                "--no-replace-objects"
+            ]
             steps = [
                 base + ["update-ref", "refs/tiny/export", commit_sha],
-                ["git", "--no-replace-objects", "bundle", "create", target,
-                 "refs/tiny/export"],
+                ["git"] + quiet + ["--no-replace-objects", "bundle", "create",
+                                   target, "refs/tiny/export"],
             ]
             try:
                 for step in steps:
@@ -1787,11 +1817,7 @@ def _default_launcher() -> Launcher:
 DEFAULT_LAUNCHER_FACTORY: Callable[[], Launcher] = _default_launcher
 
 
-def _default_workspace_launcher(
-    bind_source: str,
-    allowed_roots: tuple[str, ...],
-    pass_fds: tuple[int, ...] = (),
-) -> Launcher:
+def _default_workspace_launcher(mount: WorkspaceMount) -> Launcher:
     """The production launcher for a node that HOLDS a workspace.
 
     A bind-less :class:`BwrapLauncher` reports ``/workspace`` as its root and
@@ -1802,19 +1828,21 @@ def _default_workspace_launcher(
     """
     probe = _probe() or {}
     if probe.get("bwrap_available"):
-        return BwrapLauncher(
-            workspace_bind=bind_source,
-            allowed_workspace_roots=tuple(allowed_roots or ()),
-            pass_fds=tuple(pass_fds or ()),
-        )
+        # for_workspace carries the bind, the roots AND the descriptors the
+        # child must inherit: a launcher built from three loose arguments
+        # dropped pass_fds, and the bind then resolved to a path instead of
+        # the handle the checkout opened.
+        return BwrapLauncher().for_workspace(mount)
     reason = probe.get("reason") or "bwrap unavailable"
     raise SandboxUnavailableError(f"code nodes need the OS sandbox: {reason}")
 
 
-#: Resolves the launcher for a node with a workspace. Substituted by tests.
-WORKSPACE_LAUNCHER_FACTORY: Callable[
-    [str, tuple[str, ...], tuple[int, ...]], Launcher
-] = _default_workspace_launcher
+#: Resolves the launcher for a node with a workspace, FROM the mount. Taking
+#: the mount rather than its pieces is what keeps ``pass_fds`` from being
+#: forgotten at a call site. Substituted by tests.
+WORKSPACE_LAUNCHER_FACTORY: Callable[[WorkspaceMount], Launcher] = (
+    _default_workspace_launcher
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

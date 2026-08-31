@@ -45,6 +45,16 @@ from tinyassets.effectors.workspace import (
 )
 
 
+def _close_workspace_mount(mount: Any) -> None:
+    """Close a mount's descriptors, whatever shape it is. Never raises."""
+    closer = getattr(mount, "close", None)
+    if callable(closer):
+        try:
+            closer()
+        except Exception:  # noqa: BLE001 - teardown never fails a run
+            logging.getLogger(__name__).exception("closing a workspace mount failed")
+
+
 @dataclass
 class WorkspaceMount:
     """One workspace this run holds, resolvable ONLY through the effect chain.
@@ -52,6 +62,20 @@ class WorkspaceMount:
     A capability that can be named in state is a capability user text can
     forge, so a push or discard finds its workspace here -- by the node id of
     the checkout that created it -- and never through ``$ta.ref``.
+
+    TWO descriptors, because they are two different directories and confusing
+    them binds the wrong one:
+
+    - ``repo_fd`` is ``<lease>/repo``, the repository itself. It is the BIND
+      SOURCE, and ``bind_source``/``pass_fds`` are derived from it so
+      ``/workspace`` IS the repository rather than a directory containing it.
+    - ``lease_fd`` is the lease ROOT, one level up. Push reads the jail's
+      export through it (``repo/.tiny-export/<sha>.bundle``), which is a path
+      beneath the lease, not beneath the repo.
+
+    The authority the checkout ran under is bound here too. A later push or
+    discard DERIVES its destination and its connection from this object; a
+    packet that names a different repository is refused rather than believed.
     """
 
     node_id: str
@@ -61,6 +85,36 @@ class WorkspaceMount:
     storage_class: str = "scratch"
     repo_key: str = ""
     generation: int = 0
+    #: The repository directory's own descriptor, and what the jail binds.
+    repo_fd: Any = None
+    #: Carried to the sandbox unchanged: the child must inherit these.
+    pass_fds: tuple[int, ...] = ()
+    #: The authority this workspace was created under (Codex round 2, #6).
+    host: str = ""
+    repo: str = ""
+    connection_id: str = ""
+    grant_id: str = ""
+    _closed: bool = False
+
+    def close(self) -> None:
+        """Close both descriptors exactly once. Idempotent.
+
+        A capability that is revoked but whose descriptors stay open is a
+        lease the outbox cannot reclaim, so the chain calls this on revoke and
+        at settle, and the adapter calls it on every failure path after the
+        mount was registered.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        import os as _os
+
+        for descriptor in (self.repo_fd, self.lease_fd):
+            if isinstance(descriptor, int) and not isinstance(descriptor, bool):
+                try:
+                    _os.close(descriptor)
+                except OSError:
+                    pass
 
 
 def _authenticated_call_adapter(
@@ -315,9 +369,24 @@ class EffectChain:
 
     def revoke_workspace(self, node_key: str) -> Any:
         """Drop the capability: a later ``ws`` node in this run refuses.
-        Idempotent; returns what was dropped (None if nothing)."""
+        Idempotent; returns what was dropped (None if nothing). The mount's
+        descriptors are closed here - a capability object that outlives the
+        run would keep the lease directory open for the daemon's lifetime
+        (Codex code round 2, #7)."""
         with self.lock:
-            return self.workspaces.pop(str(node_key), None)
+            mount = self.workspaces.pop(str(node_key), None)
+        _close_workspace_mount(mount)
+        return mount
+
+    def close_workspaces(self) -> int:
+        """Revoke and close every workspace this run still holds. Called
+        when the chain settles; idempotent."""
+        with self.lock:
+            mounts = list(self.workspaces.values())
+            self.workspaces.clear()
+        for mount in mounts:
+            _close_workspace_mount(mount)
+        return len(mounts)
 
     def prior_effects(self, ancestors: set[str] | None = None) -> dict[str, dict]:
         """Full results of the nodes a reference may legally name (for
@@ -405,6 +474,10 @@ class EffectChain:
             fired = list(self.fired)
             self.settled = True
             self.settle_pending = False
+        # The run is over: nothing may hold a lease's descriptors open past
+        # here, or the outbox cannot wipe what it is owed. BEFORE the
+        # settlement, so a raise in there cannot skip the close.
+        self.close_workspaces()
         settle_engine_admission(self.run_id, fired)
 
     @property
@@ -466,6 +539,21 @@ def active_effect_chain(run_id: str) -> EffectChain | None:
 def forget_effect_chain(run_id: str) -> EffectChain | None:
     with _ACTIVE_CHAINS_LOCK:
         return _ACTIVE_CHAINS.pop(run_id, None)
+
+
+def _close_workspace_mount(mount: Any) -> None:
+    """Close a mount's descriptors exactly once; a mount without ``close`` is
+    a test double. Never raises - the run is already past the point where a
+    close failure could change its outcome, so it is logged."""
+    if mount is None:
+        return
+    closer = getattr(mount, "close", None)
+    if not callable(closer):
+        return
+    try:
+        closer()
+    except Exception:  # noqa: BLE001 - logged, never fatal at settle
+        logging.getLogger(__name__).exception("workspace mount close failed")
 
 
 def dispatch_node_effects(

@@ -128,7 +128,9 @@ class CodeNodeError(CompilerError):
 WORKSPACE_FD_BIND_SUPPORTED = os.name == "posix"
 
 
-def _sandbox_workspace_mount(mount: Any, node_id: str) -> Any:
+def _sandbox_workspace_mount(
+    mount: Any, node_id: str, allowed_roots: tuple[str, ...] = ()
+) -> Any:
     """Turn the run's workspace capability into the sandbox's mount.
 
     Prefers the held directory descriptor. ``/proc/self/fd/<n>`` is resolved
@@ -152,34 +154,33 @@ def _sandbox_workspace_mount(mount: Any, node_id: str) -> Any:
     limits = getattr(mount, "limits", None)
     if not isinstance(limits, WorkspaceLimits):
         limits = WorkspaceLimits()
-    allowed_roots = tuple(getattr(mount, "allowed_roots", ()) or ())
+    # The capability's own roots win; otherwise the caller's. Only the PATH
+    # form uses them at all -- a descriptor's identity is the fd, not a string.
+    allowed_roots = tuple(getattr(mount, "allowed_roots", ()) or ()) or tuple(
+        allowed_roots or ()
+    )
 
-    # The adapter may already have chosen the descriptor form, in which case
-    # this carries it THROUGH unchanged: re-deriving would be a second guess
-    # at which directory is meant. Note `lease_fd` is deliberately not used
-    # for the bind -- it names the LEASE, and the bind source is the repo
-    # directory inside it, so binding through it would mount the wrong tree.
-    declared = tuple(getattr(mount, "pass_fds", ()) or ())
-    if declared:
-        for descriptor in declared:
+    # The sink publishes the descriptors it wants bound. Carry them UNCHANGED:
+    # the repository's own fd is the bind source, and deriving one here from
+    # the lease root would mount the directory that CONTAINS the repository
+    # (Codex round 2, P0 #14a).
+    published = tuple(getattr(mount, "pass_fds", ()) or ())
+    if published and WORKSPACE_FD_BIND_SUPPORTED:
+        for descriptor in published:
             _require_live_directory(descriptor, node_id)
         return WorkspaceMount(
             bind_source=bind_source,
             limits=limits,
-            pass_fds=declared,
+            pass_fds=published,
             allowed_roots=allowed_roots,
         )
 
+    # `repo_fd` and nothing else. `lease_fd` names the LEASE, one level up, so
+    # falling back to it would mount the directory that contains the repository
+    # -- the case the comment above rules out -- with the rest of the lease
+    # visible to node code.
     repo_fd = getattr(mount, "repo_fd", None)
-    if repo_fd is None:
-        return WorkspaceMount(
-            bind_source=bind_source, limits=limits, allowed_roots=allowed_roots
-        )
-    if not WORKSPACE_FD_BIND_SUPPORTED:
-        # A descriptor is present and this host cannot bind through one. The
-        # path is not a substitute -- that is the swap the descriptor exists
-        # to prevent -- but the tests-only launcher is not a boundary either,
-        # so it keeps the path and says which it used.
+    if repo_fd is None or not WORKSPACE_FD_BIND_SUPPORTED:
         return WorkspaceMount(
             bind_source=bind_source, limits=limits, allowed_roots=allowed_roots
         )
@@ -2086,16 +2087,18 @@ def _build_source_code_node(
             if mount is not None:
                 from tinyassets.node_sandbox import WORKSPACE_LAUNCHER_FACTORY
 
-                # Through the translator, never straight off the capability:
-                # it is what turns a held descriptor into the bind and the
-                # pass_fds list. Building the mount here by hand dropped both,
-                # so the jail bound a PATH a rename could swap (Codex #14b).
-                sandbox_mount = _sandbox_workspace_mount(mount, node.node_id)
-                workspace_launcher = WORKSPACE_LAUNCHER_FACTORY(
-                    sandbox_mount.bind_source,
-                    _workspace_bind_roots(base_path),
-                    sandbox_mount.pass_fds,
+                # Through the translator, never inline: it is the one place
+                # that turns a held descriptor into the bind and the pass_fds
+                # list, and the one place that checks the descriptor is still a
+                # live directory. Building the mount at the call site is how
+                # both were dropped (Codex #14b). The factory takes the MOUNT so
+                # they cannot be dropped again on the way to the launcher.
+                sandbox_mount = _sandbox_workspace_mount(
+                    mount,
+                    node.node_id,
+                    allowed_roots=_workspace_bind_roots(base_path),
                 )
+                workspace_launcher = WORKSPACE_LAUNCHER_FACTORY(sandbox_mount)
             result = NodeSandbox(
                 timeout=timeout_s, launcher=workspace_launcher
             ).run_sync(

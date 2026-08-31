@@ -28,7 +28,9 @@ from __future__ import annotations
 import errno
 import os
 import stat
+import time
 from pathlib import Path
+from typing import Callable
 
 #: Present on POSIX only. The zero fallbacks are never reached: every function
 #: that would use them refuses on a non-POSIX host first.
@@ -82,6 +84,55 @@ def _unlink_link(path: str) -> None:
         os.unlink(path)
     except OSError:
         os.rmdir(path)
+
+
+#: Windows deletes lose to a process that is still exiting: 32 is a sharing
+#: violation, 5 is access denied (the read-only bit, or a handle), and 145 is
+#: "directory not empty", which here means a child reappeared under us while a
+#: git child was closing. None of these is a permanent state, and the lease
+#: going LOST for one keeps its bytes charged forever. POSIX has no equivalent:
+#: an open file unlinks fine there, which is why this is the Windows branch
+#: only.
+WINDOWS_TRANSIENT_WINERRORS = frozenset({5, 32, 145})
+#: How long a wipe keeps trying, and how often. Three seconds is longer than a
+#: git child takes to exit and far shorter than the sweep's own patience.
+WINDOWS_RETRY_TOTAL_S = 3.0
+WINDOWS_RETRY_STEP_S = 0.05
+
+
+def _is_transient_windows_error(exc: OSError) -> bool:
+    return getattr(exc, "winerror", None) in WINDOWS_TRANSIENT_WINERRORS
+
+
+def _retry_transient_windows(
+    action: Callable[[], None],
+    path: str,
+    *,
+    total_s: float,
+    step_s: float,
+    sleep: Callable[[float], None],
+    monotonic: Callable[[], float] = time.monotonic,
+) -> None:
+    """Run ``action`` until it stops failing for a reason that passes.
+
+    The read-only bit is re-cleared before every retry, not once: a git child
+    that is still writing can set it again between attempts.
+    """
+    deadline = monotonic() + max(0.0, total_s)
+    while True:
+        try:
+            action()
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            if not _is_transient_windows_error(exc) or monotonic() >= deadline:
+                raise
+        try:
+            os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+        except OSError:
+            pass
+        sleep(step_s)
 
 
 def _unlink_windows(path: str) -> None:
@@ -219,6 +270,69 @@ def _open_dir_making_one_level(path: Path) -> int:
         os.close(parent_fd)
 
 
+def _create_dir_beneath(parent_fd: int, name: str, *, mode: int) -> int:
+    """``mkdirat`` then ``openat``, and verify the handle IS what we just made.
+
+    Fresh, empty, owned by this uid, exactly the mode we asked for. The inode
+    compare closes the window after the first stat; the rest closes the one
+    before it, for a directory that was swapped rather than linked.
+    """
+    os.mkdir(name, mode, dir_fd=parent_fd)
+    created = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    fd = _open_child_dir(parent_fd, name)
+    try:
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) != (created.st_dev, created.st_ino):
+            raise UnsafePoolPath(
+                f"{name!r} was replaced between its creation and its open "
+                f"(inode {created.st_ino} became {opened.st_ino})"
+            )
+        if opened.st_uid != os.getuid():
+            raise UnsafePoolPath(
+                f"{name!r} is owned by uid {opened.st_uid}, not this process"
+            )
+        if stat.S_IMODE(opened.st_mode) != mode:
+            raise UnsafePoolPath(
+                f"{name!r} has mode {stat.S_IMODE(opened.st_mode):#o}, not the "
+                f"{mode:#o} this call created"
+            )
+        if os.listdir(fd):
+            raise UnsafePoolPath(
+                f"{name!r} is not the empty directory this call created; "
+                "something was renamed over it"
+            )
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)  # rewind: the caller gets a fresh handle
+        except OSError:
+            pass
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def create_workspace_subdir(
+    parent_fd: int, name: str, *, mode: int = _LEASE_DIR_MODE
+) -> int:
+    """Create a FIXED-name directory inside a lease this process already owns.
+
+    ``<lease>/repo`` is not a lease: its parent is the private, unguessable
+    directory ``create_lease_dir`` just made, so the entropy rule that protects
+    a name in the SHARED pool root would be cargo. What still applies is
+    everything else - the mkdirat, the openat, and the verification that the
+    handle is the fresh empty directory this call created.
+
+    It exists because the adapter was calling ``create_lease_dir`` for this and
+    the hardened name rule refused ``'repo'``, so every checkout failed on
+    POSIX (found by the end-to-end chain test, 2026-08-30). A flag on
+    ``create_lease_dir`` would have been worse: a security rule you can switch
+    off from the call site is configuration, not a rule.
+    """
+    _require_posix("create_workspace_subdir")
+    _require_component(name)
+    return _create_dir_beneath(parent_fd, name, mode=mode)
+
+
 def create_lease_dir(parent_fd: int, name: str, *, mode: int = _LEASE_DIR_MODE) -> int:
     """Create one directory under ``parent_fd`` and return a handle to IT.
 
@@ -260,38 +374,7 @@ def create_lease_dir(parent_fd: int, name: str, *, mode: int = _LEASE_DIR_MODE) 
             "the lease directory"
         )
 
-    os.mkdir(name, mode, dir_fd=parent_fd)
-    created = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    fd = _open_child_dir(parent_fd, name)
-    try:
-        opened = os.fstat(fd)
-        if (opened.st_dev, opened.st_ino) != (created.st_dev, created.st_ino):
-            raise UnsafePoolPath(
-                f"{name!r} was replaced between its creation and its open "
-                f"(inode {created.st_ino} became {opened.st_ino})"
-            )
-        if opened.st_uid != os.getuid():
-            raise UnsafePoolPath(
-                f"{name!r} is owned by uid {opened.st_uid}, not this process"
-            )
-        if stat.S_IMODE(opened.st_mode) != mode:
-            raise UnsafePoolPath(
-                f"{name!r} has mode {stat.S_IMODE(opened.st_mode):#o}, not the "
-                f"{mode:#o} this call created"
-            )
-        if os.listdir(fd):
-            raise UnsafePoolPath(
-                f"{name!r} is not the empty directory this call created; "
-                "something was renamed over it"
-            )
-        try:
-            os.lseek(fd, 0, os.SEEK_SET)  # rewind: the caller gets a fresh handle
-        except OSError:
-            pass
-    except BaseException:
-        os.close(fd)
-        raise
-    return fd
+    return _create_dir_beneath(parent_fd, name, mode=mode)
 
 
 def _open_regular_beneath(dir_fd: int, relpath: str | Path, *, max_bytes: int) -> tuple[int, int]:
@@ -485,7 +568,13 @@ def _remove_beneath(parent_fd: int, name: str, depth: int = 0) -> None:
         pass
 
 
-def _remove_tree_windows(target: str) -> None:
+def _remove_tree_windows(
+    target: str,
+    *,
+    total_s: float = WINDOWS_RETRY_TOTAL_S,
+    step_s: float = WINDOWS_RETRY_STEP_S,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
     """The Windows branch: no ``dir_fd``, so this walks paths - but it still
     refuses to descend into a symlink or a JUNCTION.
 
@@ -498,8 +587,13 @@ def _remove_tree_windows(target: str) -> None:
     if _is_link(target):
         _unlink_link(target)
         return
+    def _attempt(action: Callable[[], None], path: str) -> None:
+        _retry_transient_windows(
+            action, path, total_s=total_s, step_s=step_s, sleep=sleep
+        )
+
     if not os.path.isdir(target):
-        _unlink_windows(target)
+        _attempt(lambda: _unlink_windows(target), target)
         return
     pending: list[str] = [target]
     emptied: list[str] = []
@@ -519,12 +613,12 @@ def _remove_tree_windows(target: str) -> None:
                 elif entry.is_dir(follow_symlinks=False):
                     pending.append(child)
                 else:
-                    _unlink_windows(child)
+                    _attempt(lambda c=child: _unlink_windows(c), child)
             except FileNotFoundError:
                 continue
     for directory in reversed(emptied):
         try:
-            os.rmdir(directory)
+            _attempt(lambda d=directory: os.rmdir(d), directory)
         except FileNotFoundError:
             continue
 
@@ -538,8 +632,20 @@ class RealPoolFilesystem:
     injectable so a test can drive the Windows branch on Linux and vice versa.
     """
 
-    def __init__(self, *, posix: bool | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        posix: bool | None = None,
+        retry_total_s: float = WINDOWS_RETRY_TOTAL_S,
+        retry_step_s: float = WINDOWS_RETRY_STEP_S,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         self._posix = _POSIX if posix is None else bool(posix)
+        # Windows-branch knobs: a test drives a transient failure without
+        # waiting three real seconds for the deadline.
+        self._retry_total_s = retry_total_s
+        self._retry_step_s = retry_step_s
+        self._sleep = sleep
 
     def exists(self, path: Path) -> bool:
         """Presence WITHOUT following links: a dangling symlink is present, and
@@ -599,7 +705,12 @@ class RealPoolFilesystem:
         """
         target = Path(path)
         if not self._posix:
-            _remove_tree_windows(str(target))
+            _remove_tree_windows(
+                str(target),
+                total_s=self._retry_total_s,
+                step_s=self._retry_step_s,
+                sleep=self._sleep,
+            )
             return
         try:
             parent_fd = open_dir_nofollow(target.parent)

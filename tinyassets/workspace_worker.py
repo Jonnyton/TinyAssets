@@ -35,6 +35,7 @@ from tinyassets.workspace_git import (
 
 __all__ = [
     "MAX_BUNDLE_BYTES",
+    "reconcile_push_intents",
     "WORKSPACE_OPS",
     "execute_workspace_operation",
     "run_workspace_worker",
@@ -590,6 +591,17 @@ def handle_request(request: dict[str, Any], **injected) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Transport: the spawned child and the parent side
 # --------------------------------------------------------------------------- #
+
+
+def reconcile_push_intents(base_path: Any, **kwargs: Any) -> list[tuple[str, str]]:
+    """Settle every push whose outcome was lost. Exposed HERE because this is
+    where the caller already is: ``runs.py``'s startup reconciliation calls
+    ``workspace_worker.reconcile_push_intents(base_path)`` and the worker is
+    what asks the remote."""
+    from tinyassets.workspace_intents import reconcile_push_intents as _reconcile
+
+    kwargs.setdefault("execute", execute_workspace_operation)
+    return _reconcile(base_path, **kwargs)
 
 
 def run_workspace_worker(channel: Any) -> None:

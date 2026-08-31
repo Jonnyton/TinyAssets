@@ -677,10 +677,24 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
                       "alphanumeric",
         }
     added = document.get("endpoints")
-    if not isinstance(added, list) or not added:
+    # A SCOPE-ONLY widening carries no endpoints at all, which is exactly what
+    # the served rail documents for a git scope: the endpoints a workspace
+    # checkout needs are none - it does not make an HTTP call. Refusing that
+    # shape meant the documented action could never execute (Codex code round
+    # 2, new #14). The stored set is what the scopes are then validated
+    # against, so nothing is widened by leaving them out.
+    try:
+        requested_git_scopes = _requested_git_scopes(document)
+    except GitScopeError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
+    scope_only = not isinstance(added, list) or not added
+    if scope_only and not requested_git_scopes:
         return {
             "error": "connection_setup_invalid",
-            "detail": "endpoints must be a non-empty list",
+            "detail": (
+                "endpoints must be a non-empty list, or scopes must name at "
+                "least one git scope"
+            ),
         }
 
     connection_id, _grant_id = _ids(universe_id=uid, destination=destination)
@@ -698,16 +712,15 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
 
     stored = [e.as_dict() for e in resource.allowed_endpoints]
     try:
-        merged = _parse_allowed_endpoints([*stored, *added])
+        # Scope-only: the connection keeps exactly the endpoints it has. They
+        # still go through the parser, because they are what the ledger will
+        # validate the git scopes' host rule against.
+        merged = _parse_allowed_endpoints(stored if scope_only else [*stored, *added])
     except SsrfValidationError as exc:
         return {"error": "endpoint_not_permitted", "detail": str(exc)}
     except (ValueError, TypeError) as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
     merged_dicts = [e.as_dict() for e in merged]
-    try:
-        requested_git_scopes = _requested_git_scopes(document)
-    except GitScopeError as exc:
-        return {"error": "connection_setup_invalid", "detail": str(exc)}
     stored_git_scopes = _stored_git_scopes(resource)
     new_git_scopes = requested_git_scopes - stored_git_scopes
     # "Nothing new" has to account for a scope-only widening: adding
