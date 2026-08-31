@@ -159,6 +159,44 @@ def _make_universe(
     return Universe(data_root=data_root, universe_dir=universe_dir, pool_root=pool_root)
 
 
+_WINDOWS_MAX_PATH = 260
+#: The deepest thing a checkout puts under ``tmp_path``, measured rather than
+#: guessed - and it is the QUARANTINE spelling, which is why the failure
+#: surfaces as an OSError on ``objects\pack`` during the RELEASE rather than
+#: during the checkout:
+#:
+#:   data/scratch/.quarantine/<64 hex lease>.<gen>/repo/.git/objects/pack/pack-<40 hex>.pack
+_DEEPEST_CHECKOUT_SUFFIX = (
+    len("/data/scratch/.quarantine/")
+    + 64          # secrets.token_hex() is 32 bytes
+    + 2           # ".<generation>"
+    + len("/repo/.git/objects/pack/pack-")
+    + 40          # a pack's sha
+    + len(".pack")
+)
+#: A few characters of slack for a second-digit generation or a longer pack
+#: name. 90 on this arithmetic: pytest's default root measures 99 here and the
+#: short root the guidance recommends measures 83, so this separates exactly
+#: the two cases it is meant to.
+_MAX_SAFE_TMP_PATH_CHARS = _WINDOWS_MAX_PATH - _DEEPEST_CHECKOUT_SUFFIX - 4
+
+
+@pytest.fixture
+def short_paths(tmp_path: Path) -> None:
+    """Skip on Windows when the temp root is too long to hold a git checkout.
+
+    Requested by every test that builds a REAL repository inside a lease. It is
+    a skip and not a failure because the code is fine: the same test passes
+    with a short ``--basetemp``, and a red here would send the next reader
+    hunting a defect that is not in the tree (2026-08-30, twice).
+    """
+    if os.name == "nt" and len(str(tmp_path)) > _MAX_SAFE_TMP_PATH_CHARS:
+        pytest.skip(
+            "Windows MAX_PATH: run with "
+            "--basetemp=C:/Users/<you>/AppData/Local/Temp/ta-pt"
+        )
+
+
 @pytest.fixture
 def universe(tmp_path: Path) -> Universe:
     return _make_universe(tmp_path)
@@ -422,7 +460,7 @@ def _lease_rows(universe: Universe) -> list[tuple]:
 
 
 def test_a_checkout_delivers_a_workspace_a_node_can_run_git_in(
-    origin: Origin, universe: Universe, chain: EffectChain, fs_bridge
+    origin: Origin, universe: Universe, chain: EffectChain, fs_bridge, short_paths
 ) -> None:
     worker = WireWorker(origin)
     evidence = _fire(_packet(), universe=universe, chain=chain, worker=worker)
@@ -569,6 +607,7 @@ def test_a_finished_run_releases_its_lease_and_the_next_run_is_admitted(
     universe: Universe,
     chain: EffectChain,
     fs_bridge,
+    short_paths,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _seed_run(universe)
@@ -602,14 +641,22 @@ def test_a_finished_run_releases_its_lease_and_the_next_run_is_admitted(
     # that is still exiting (sharing violation); the filesystem retries those
     # for three seconds, and anything still failing after that is real.
     rows = _lease_rows(universe)
-    assert [state for _id, state, _class in rows] == ["AVAILABLE"], (
-        rows,
-        _outbox_outcomes(universe),
-    )
-    assert not lease_path.exists(), (
-        "the lease directory outlived its lease",
-        _outbox_outcomes(universe),
-    )
+    states = [state for _id, state, _class in rows]
+    # pytest.fail, not an assert message: assertion rewriting truncates a long
+    # tuple, and the outbox outcome carries the EXCEPTION a failed wipe raised -
+    # the one thing that says whether this is a defect or a path length.
+    if states != ["AVAILABLE"]:
+        pytest.fail(
+            "the lease was not released"
+            f" | lease rows: {rows}"
+            f" | outbox: {_outbox_outcomes(universe)}"
+        )
+    if lease_path.exists():
+        pytest.fail(
+            "the lease directory outlived its lease"
+            f" | path: {lease_path}"
+            f" | outbox: {_outbox_outcomes(universe)}"
+        )
 
     import sqlite3
 
@@ -681,6 +728,7 @@ def test_a_compiled_workspace_node_runs_inside_the_lease(
     universe: Universe,
     chain: EffectChain,
     fs_bridge,
+    short_paths,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The seam this module exists for: the CHAIN's mount and the SANDBOX's are
@@ -867,8 +915,21 @@ def test_the_token_appears_in_no_evidence_no_log_and_no_file(
 # --------------------------------------------------------------------------
 
 
+def test_the_path_guard_still_lets_the_recommended_root_run() -> None:
+    """A guard tightened until it skips everywhere proves nothing.
+
+    The two measurements it has to separate, on this host: pytest's default
+    root is 99 characters and the short root the conftest recommends is 83.
+    """
+    assert _MAX_SAFE_TMP_PATH_CHARS >= 85, _MAX_SAFE_TMP_PATH_CHARS
+    assert _MAX_SAFE_TMP_PATH_CHARS < 99, _MAX_SAFE_TMP_PATH_CHARS
+    assert (
+        _MAX_SAFE_TMP_PATH_CHARS + _DEEPEST_CHECKOUT_SUFFIX <= _WINDOWS_MAX_PATH
+    )
+
+
 def test_the_startup_reconciler_creates_the_pool_root_a_fresh_host_lacks(
-    origin: Origin, tmp_path: Path, fs_bridge
+    origin: Origin, tmp_path: Path, fs_bridge, short_paths
 ) -> None:
     """Inverted once ``ensure_workspace_reconciled`` gained the creator.
 
