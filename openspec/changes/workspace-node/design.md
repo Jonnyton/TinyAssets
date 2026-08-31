@@ -313,6 +313,28 @@ A non-zero `ws.run` exit is data; `code_node_failed` for exceptions in
 
 ## Residual after three rounds (for the founder, not a fourth round)
 
+- **Code review ledger (separate from the design's three rounds):** R1 on the
+  substrate REJECT (16 P1, all folded by module owner); R2 on the whole branch
+  REJECT - two P0 integration seams (the bind handle was the lease root, not
+  the repository; the compiler dropped `pass_fds`) and fourteen P1s
+  (provisioning advertised but unwired, no durable push-intent journal, the
+  barrier failing open, `discard` counted as a read, an import-allowlist
+  bypass through a `str` subclass, check-then-open `ws` paths, the timeout
+  class never reaching the classifier, scope-only `extend_http` unable to
+  execute, descriptor leaks, unverified staging deletion, capability lookup
+  ignoring ancestry) - all folded 2026-08-31; R3 is the cap.
+
+- **As-built deviations found at spec sync (2026-08-31), now named follow-ups
+  rather than claims:** there is no process-tree RSS watchdog (the rlimit
+  profile is the memory bound); there is no 1800 s ceiling on a workspace
+  node's `timeout_seconds` (the declared timeout governs); and
+  `workspace_provision_failed` is classified but never raised, because the
+  resolver jail is slice B - provisioning admits, stages and refuses, it does
+  not yet install. The as-built specs under `openspec/specs/` say the true
+  thing; this design keeps the intent.
+- `ws.bundle` shells out to a bare `git` and the sandbox child has no PATH
+  on Windows, so a Windows tray host cannot push yet (Linux daemon first).
+
 - Everything above is design; the build proves it. The Linux-only
   integration tests (bwrap kill cascade, bundle prerequisite refusal,
   dirfd beneath semantics) run in CI, not on the Windows dev host.

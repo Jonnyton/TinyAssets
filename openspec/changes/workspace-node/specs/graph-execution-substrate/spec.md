@@ -48,6 +48,8 @@ All other clauses of this requirement are unchanged.
 - **WHEN** a second workspace job starts while the universe's (or the host's) slot is held
 - **THEN** it waits up to its timeout and then fails as `workspace_busy` with the advice to retry
 
+## ADDED Requirements
+
 ### Requirement: Workspace jobs hold one durable lock per universe and one host-wide slot
 
 The runtime SHALL acquire, in the checkout's admission transaction, a durable job lock keyed by universe and a host-wide slot (one slot in this change), SHALL treat it as reentrant for that run's later workspace nodes and its push, and SHALL release it only through the run's terminal outbox entry.
