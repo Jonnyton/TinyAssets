@@ -49,6 +49,9 @@ from tinyassets.workspace_git import verify_bundle
 GIT = shutil.which("git")
 PY = sys.executable
 POSIX = os.name == "posix"
+#: How a descriptor names its directory to the jail. The number after it is the
+#: compiler's DUPLICATE, never the registry's own (see the bind assertions).
+_PROC_FD = "/proc/self/fd/"
 
 pytestmark = pytest.mark.skipif(GIT is None, reason="the chain is git; there is none here")
 
@@ -826,6 +829,9 @@ def test_the_compiler_binds_a_DUPLICATE_and_releases_it(
     def _launcher(sandbox_mount):
         seen["bind"] = sandbox_mount.bind_source
         seen["pass_fds"] = sandbox_mount.pass_fds
+        if str(sandbox_mount.bind_source).startswith(_PROC_FD):
+            # While it is live; the dup is closed before the assertions run.
+            seen["bound"] = os.stat(str(sandbox_mount.bind_source))
         return PlainSubprocessLauncher(workspace_bind=str(_repo_path(registered)))
 
     monkeypatch.setattr(ns, "WORKSPACE_LAUNCHER_FACTORY", _launcher)
@@ -847,9 +853,16 @@ def test_the_compiler_binds_a_DUPLICATE_and_releases_it(
     assert compiled({})["ok"] == origin.readme
 
     if POSIX:
-        bound_fd = int(str(seen["bind"]).rsplit("/", 1)[-1])
+        bind = str(seen["bind"])
+        assert bind.startswith(_PROC_FD), bind
+        bound_fd = int(bind.rsplit("/", 1)[-1])
         assert bound_fd != registered.repo_fd, "the compiler bound the ORIGINAL"
         assert seen["pass_fds"] == (bound_fd,)
+        # A different number, the same directory: that is what makes it a
+        # duplicate rather than some other handle.
+        bound = seen["bound"]
+        repository = os.stat(_repo_path(registered))
+        assert (bound.st_dev, bound.st_ino) == (repository.st_dev, repository.st_ino)
         # Released: the dup is closed and the registry's own is untouched.
         with pytest.raises(OSError):
             os.fstat(bound_fd)
@@ -949,6 +962,11 @@ def test_a_compiled_workspace_node_runs_inside_the_lease(
         seen["bind"] = sandbox_mount.bind_source
         seen["roots"] = sandbox_mount.allowed_roots
         seen["pass_fds"] = sandbox_mount.pass_fds
+        if str(sandbox_mount.bind_source).startswith(_PROC_FD):
+            # Resolved HERE, while the descriptor is live: the compiler closes
+            # the duplicate when the node returns, and after that the number
+            # names whatever this process opens next, or nothing at all.
+            seen["bound"] = os.stat(str(sandbox_mount.bind_source))
         # A plain child performs no mount, so it runs against the path; what is
         # under test here is what the COMPILER handed over.
         return PlainSubprocessLauncher(workspace_bind=str(_repo_path(mount)))
@@ -973,24 +991,49 @@ def test_a_compiled_workspace_node_runs_inside_the_lease(
     state = compiled({})
     assert state["ok"] == origin.readme
 
+    # Derived from base_path and carried whatever the bind form is; only the
+    # PATH form resolves them (a descriptor's identity is the fd, not a
+    # string), so this is the same tuple on both hosts. Asserting `()` on
+    # POSIX was a second wrong assertion behind the first one - CI never
+    # reached it, the Linux chain did.
+    assert seen["roots"] == (
+        str(universe.data_root / "scratch"),
+        str(universe.universe_dir / "workspaces"),
+    )
+
     if POSIX:
-        # The descriptor form: the bind is the handle the checkout opened, the
-        # child is told to inherit it, and no root vouches for a string that is
-        # never resolved. A launcher built without pass_fds would leave bwrap
-        # resolving /proc/self/fd/<n> in a process that does not hold <n>.
-        assert seen["bind"] == f"/proc/self/fd/{mount.repo_fd}"
-        assert seen["pass_fds"] == (mount.repo_fd,)
-        assert seen["roots"] == ()
+        # The descriptor form: the bind is a descriptor the child is told to
+        # inherit, and no root vouches for a string that is never resolved. A
+        # launcher built without pass_fds would leave bwrap resolving
+        # /proc/self/fd/<n> in a process that does not hold <n>.
+        #
+        # NOT the registry's own number. The compiler ACQUIRES the capability
+        # (Codex R3, P0 #2), so what it binds is a DUP and the number differs
+        # by design - the property is that a DIFFERENT number names the SAME
+        # repository. Ubuntu CI (33357286329) failed here on the number while
+        # the behaviour was right, which is the assertion's fault, not the
+        # code's.
+        bind = str(seen["bind"])
+        assert bind.startswith(_PROC_FD), bind
+        bound_fd = int(bind.rsplit("/", 1)[-1])
+        assert seen["pass_fds"] == (bound_fd,)
+        assert bound_fd != mount.repo_fd, "the compiler bound the ORIGINAL"
+        bound = seen["bound"]
+        repository = os.stat(_repo_path(mount))
+        assert (bound.st_dev, bound.st_ino) == (
+            repository.st_dev,
+            repository.st_ino,
+        ), "the duplicate names something other than the repository"
+        # Released with the node: the dup is closed, the registry's own is not.
+        with pytest.raises(OSError):
+            os.fstat(bound_fd)
+        assert os.fstat(mount.repo_fd), "releasing the hold closed the original"
+        assert chain.workspace_holds.get(CHECKOUT_NODE, 0) == 0
     else:
-        # No dir_fd on this host, so the path form - and THEN the roots matter,
-        # derived the way the adapter derives them or a real bwrap would refuse
-        # the bind it was just given.
+        # No dir_fd on this host, so the path form - and THEN the roots above
+        # matter, or a real bwrap would refuse the bind it was just given.
         assert seen["bind"] == str(_repo_path(mount))
         assert seen["pass_fds"] == ()
-        assert seen["roots"] == (
-            str(universe.data_root / "scratch"),
-            str(universe.universe_dir / "workspaces"),
-        )
 
 
 # --------------------------------------------------------------------------
