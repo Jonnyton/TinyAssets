@@ -1498,7 +1498,9 @@ DEFAULT_LAUNCHER_FACTORY: Callable[[], Launcher] = _default_launcher
 
 
 def _default_workspace_launcher(
-    bind_source: str, allowed_roots: tuple[str, ...]
+    bind_source: str,
+    allowed_roots: tuple[str, ...],
+    pass_fds: tuple[int, ...] = (),
 ) -> Launcher:
     """The production launcher for a node that HOLDS a workspace.
 
@@ -1511,16 +1513,18 @@ def _default_workspace_launcher(
     probe = _probe() or {}
     if probe.get("bwrap_available"):
         return BwrapLauncher(
-            workspace_bind=bind_source, allowed_workspace_roots=tuple(allowed_roots or ())
+            workspace_bind=bind_source,
+            allowed_workspace_roots=tuple(allowed_roots or ()),
+            pass_fds=tuple(pass_fds or ()),
         )
     reason = probe.get("reason") or "bwrap unavailable"
     raise SandboxUnavailableError(f"code nodes need the OS sandbox: {reason}")
 
 
 #: Resolves the launcher for a node with a workspace. Substituted by tests.
-WORKSPACE_LAUNCHER_FACTORY: Callable[[str, tuple[str, ...]], Launcher] = (
-    _default_workspace_launcher
-)
+WORKSPACE_LAUNCHER_FACTORY: Callable[
+    [str, tuple[str, ...], tuple[int, ...]], Launcher
+] = _default_workspace_launcher
 
 
 # ═══════════════════════════════════════════════════════════════════════════

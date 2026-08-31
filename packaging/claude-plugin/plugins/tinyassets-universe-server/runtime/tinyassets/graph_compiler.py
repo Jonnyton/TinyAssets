@@ -154,18 +154,53 @@ def _sandbox_workspace_mount(mount: Any, node_id: str) -> Any:
         limits = WorkspaceLimits()
     allowed_roots = tuple(getattr(mount, "allowed_roots", ()) or ())
 
-    lease_fd = getattr(mount, "lease_fd", None)
-    if lease_fd is None or not WORKSPACE_FD_BIND_SUPPORTED:
+    # The adapter may already have chosen the descriptor form, in which case
+    # this carries it THROUGH unchanged: re-deriving would be a second guess
+    # at which directory is meant. Note `lease_fd` is deliberately not used
+    # for the bind -- it names the LEASE, and the bind source is the repo
+    # directory inside it, so binding through it would mount the wrong tree.
+    declared = tuple(getattr(mount, "pass_fds", ()) or ())
+    if declared:
+        for descriptor in declared:
+            _require_live_directory(descriptor, node_id)
+        return WorkspaceMount(
+            bind_source=bind_source,
+            limits=limits,
+            pass_fds=declared,
+            allowed_roots=allowed_roots,
+        )
+
+    repo_fd = getattr(mount, "repo_fd", None)
+    if repo_fd is None:
+        return WorkspaceMount(
+            bind_source=bind_source, limits=limits, allowed_roots=allowed_roots
+        )
+    if not WORKSPACE_FD_BIND_SUPPORTED:
+        # A descriptor is present and this host cannot bind through one. The
+        # path is not a substitute -- that is the swap the descriptor exists
+        # to prevent -- but the tests-only launcher is not a boundary either,
+        # so it keeps the path and says which it used.
         return WorkspaceMount(
             bind_source=bind_source, limits=limits, allowed_roots=allowed_roots
         )
 
-    # A descriptor that is closed or is no longer a directory is a lease that
-    # went away: fail the node rather than quietly binding the path instead,
-    # which is the swap this whole mechanism exists to prevent.
+    descriptor = _require_live_directory(repo_fd, node_id)
+    return WorkspaceMount(
+        bind_source=f"/proc/self/fd/{descriptor}",
+        limits=limits,
+        pass_fds=(descriptor,),
+        allowed_roots=allowed_roots,
+    )
+
+
+def _require_live_directory(descriptor: Any, node_id: str) -> int:
+    """A descriptor that is closed or no longer a directory is a lease that went
+    away. Fail the node: quietly binding the path instead is the swap the
+    descriptor exists to prevent.
+    """
     try:
-        descriptor = int(lease_fd)
-        info = os.fstat(descriptor)
+        number = int(descriptor)
+        info = os.fstat(number)
     except (OSError, TypeError, ValueError) as exc:
         raise CodeNodeError(
             "workspace not available: checkout did not deliver / was discarded "
@@ -178,12 +213,7 @@ def _sandbox_workspace_mount(mount: Any, node_id: str) -> Any:
             "not a directory",
             node_id=node_id,
         )
-    return WorkspaceMount(
-        bind_source=f"/proc/self/fd/{descriptor}",
-        limits=limits,
-        pass_fds=(descriptor,),
-        allowed_roots=allowed_roots,
-    )
+    return number
 
 
 class WorkspaceCommandTimeout(NodeTimeoutError):
@@ -2038,20 +2068,17 @@ def _build_source_code_node(
             sandbox_mount = None
             workspace_launcher = None
             if mount is not None:
-                from tinyassets.node_sandbox import (
-                    WORKSPACE_LAUNCHER_FACTORY,
-                    WorkspaceLimits,
-                )
-                from tinyassets.node_sandbox import (
-                    WorkspaceMount as SandboxWorkspaceMount,
-                )
+                from tinyassets.node_sandbox import WORKSPACE_LAUNCHER_FACTORY
 
-                bind_source = str(getattr(mount, "bind_source", "") or "")
-                sandbox_mount = SandboxWorkspaceMount(
-                    bind_source=bind_source, limits=WorkspaceLimits()
-                )
+                # Through the translator, never straight off the capability:
+                # it is what turns a held descriptor into the bind and the
+                # pass_fds list. Building the mount here by hand dropped both,
+                # so the jail bound a PATH a rename could swap (Codex #14b).
+                sandbox_mount = _sandbox_workspace_mount(mount, node.node_id)
                 workspace_launcher = WORKSPACE_LAUNCHER_FACTORY(
-                    bind_source, _workspace_bind_roots(base_path)
+                    sandbox_mount.bind_source,
+                    _workspace_bind_roots(base_path),
+                    sandbox_mount.pass_fds,
                 )
             result = NodeSandbox(
                 timeout=timeout_s, launcher=workspace_launcher

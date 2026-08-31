@@ -11,6 +11,7 @@ root rather than a module the test could monkeypatch into something else.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -1052,11 +1053,25 @@ def test_the_workspace_is_not_serialised_into_the_node_dict() -> None:
 
 
 class _ChainMount:
-    """Stands in for the sink's capability: a path plus a held directory fd."""
+    """Stands in for the sink's capability.
 
-    def __init__(self, bind_source: str, lease_fd: int | None = None) -> None:
+    ``repo_fd`` is the descriptor of the REPOSITORY directory, which is what
+    gets bound. ``lease_fd`` names the lease one level up and is carried here
+    only to pin that it is never used for the bind: binding through it would
+    mount the wrong tree.
+    """
+
+    def __init__(
+        self,
+        bind_source: str,
+        repo_fd: int | None = None,
+        lease_fd: int | None = None,
+        pass_fds: tuple[int, ...] = (),
+    ) -> None:
         self.bind_source = bind_source
+        self.repo_fd = repo_fd
         self.lease_fd = lease_fd
+        self.pass_fds = pass_fds
         self.limits = WorkspaceLimits()
         self.allowed_roots: tuple[str, ...] = ()
 
@@ -1071,7 +1086,7 @@ def test_a_host_that_cannot_bind_a_descriptor_uses_the_path(
     workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(gc, "WORKSPACE_FD_BIND_SUPPORTED", False)
-    built = gc._sandbox_workspace_mount(_ChainMount(str(workspace), lease_fd=9), "build")
+    built = gc._sandbox_workspace_mount(_ChainMount(str(workspace), repo_fd=9), "build")
     assert built.bind_source == str(workspace)
     assert built.pass_fds == ()
 
@@ -1082,7 +1097,7 @@ def test_a_dead_lease_descriptor_fails_the_node_loudly(
     """Falling back to the path here would silently reintroduce the swap."""
     monkeypatch.setattr(gc, "WORKSPACE_FD_BIND_SUPPORTED", True)
     with pytest.raises(gc.CodeNodeError, match="lease descriptor is unusable"):
-        gc._sandbox_workspace_mount(_ChainMount(str(workspace), lease_fd=9999), "build")
+        gc._sandbox_workspace_mount(_ChainMount(str(workspace), repo_fd=9999), "build")
 
 
 def test_a_capability_naming_no_directory_fails_the_node() -> None:
@@ -1095,7 +1110,7 @@ def test_the_compiler_prefers_the_held_descriptor(workspace: Path) -> None:
     handle = os.open(str(workspace), os.O_RDONLY)
     try:
         built = gc._sandbox_workspace_mount(
-            _ChainMount(str(workspace), lease_fd=handle), "build"
+            _ChainMount(str(workspace), repo_fd=handle), "build"
         )
         assert built.bind_source == f"/proc/self/fd/{handle}"
         assert built.pass_fds == (handle,)
@@ -1162,6 +1177,90 @@ def test_a_rename_mid_run_cannot_swap_the_bound_directory(tmp_path: Path) -> Non
     assert result.output_state["result"] == "bound through the fd\n"
 
 
+def test_the_descriptor_reaches_both_the_launcher_and_the_child(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real compiler path, end to end: capability -> mount -> launcher -> Popen.
+
+    The regression this pins (Codex #14b): the compiler built the sandbox mount
+    by hand from `bind_source` alone and called the launcher factory without the
+    descriptors, so a `/proc/self/fd/N` bind was neither admitted nor inherited
+    and the jail fell back to binding a path a rename could swap.
+    """
+    from tinyassets import node_sandbox
+    from tinyassets.node_sandbox import BwrapLauncher
+
+    captured: dict[str, object] = {}
+    real_popen = subprocess.Popen
+
+    def factory(bind_source, allowed_roots, pass_fds=()):
+        captured["factory_pass_fds"] = tuple(pass_fds or ())
+        captured["factory_bind"] = bind_source
+        launcher = BwrapLauncher(
+            bwrap_path=PY,
+            workspace_bind=bind_source,
+            allowed_workspace_roots=tuple(allowed_roots or ()),
+            pass_fds=tuple(pass_fds or ()),
+        )
+        captured["argv"] = launcher.build_argv("print(1)", ["30", "1", ""])
+        return launcher
+
+    def fake_popen(argv, **kwargs):
+        captured["popen_pass_fds"] = kwargs.get("pass_fds")
+        kwargs.pop("pass_fds", None)
+        return real_popen([PY, "-c", "raise SystemExit(0)"], **kwargs)
+
+    monkeypatch.setattr(node_sandbox, "WORKSPACE_LAUNCHER_FACTORY", factory)
+    monkeypatch.setattr(node_sandbox.sys, "platform", "linux")
+    monkeypatch.setattr(node_sandbox.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(gc, "WORKSPACE_FD_BIND_SUPPORTED", True)
+    # Descriptor 9 is not open in THIS process; whether a descriptor is a live
+    # directory has its own tests. What is under test here is the plumbing.
+    monkeypatch.setattr(gc, "_require_live_directory", lambda fd, node_id: int(fd))
+
+    chain = EffectChain()
+    chain.register_workspace(
+        "checkout",
+        _ChainMount("/proc/self/fd/9", repo_fd=9, lease_fd=8, pass_fds=(9,)),
+    )
+    fn = gc._build_source_code_node(
+        _code_node(workspace="checkout"),
+        event_sink=None,
+        effect_chain=chain,
+        ancestors={"checkout"},
+    )
+    with contextlib.suppress(Exception):
+        fn({})
+
+    assert captured["factory_bind"] == "/proc/self/fd/9"
+    assert captured["factory_pass_fds"] == (9,)
+    argv = captured["argv"]
+    index = argv.index("--bind")
+    assert argv[index : index + 3] == ["--bind", "/proc/self/fd/9", "/workspace"]
+    assert captured["popen_pass_fds"] == (9,)
+
+
+def test_a_lease_descriptor_is_never_used_for_the_bind(workspace: Path) -> None:
+    """It names the lease; the bind source is the repository inside it."""
+    built = gc._sandbox_workspace_mount(
+        _ChainMount(str(workspace), lease_fd=7), "build"
+    )
+    assert built.pass_fds == ()
+    assert built.bind_source == str(workspace)
+
+
+def test_a_capability_that_already_chose_the_descriptor_is_carried_through(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gc, "WORKSPACE_FD_BIND_SUPPORTED", True)
+    monkeypatch.setattr(gc, "_require_live_directory", lambda fd, node_id: int(fd))
+    built = gc._sandbox_workspace_mount(
+        _ChainMount("/proc/self/fd/11", repo_fd=11, pass_fds=(11,)), "build"
+    )
+    assert built.bind_source == "/proc/self/fd/11"
+    assert built.pass_fds == (11,)
+
+
 def test_workspace_command_timeout_is_a_node_timeout() -> None:
     assert issubclass(gc.WorkspaceCommandTimeout, gc.NodeTimeoutError)
     error = gc.WorkspaceCommandTimeout("boom", node_id="build")
@@ -1194,7 +1293,9 @@ def test_a_workspace_command_timeout_reaches_the_compiler_as_its_own_class(
     monkeypatch.setattr(
         node_sandbox,
         "WORKSPACE_LAUNCHER_FACTORY",
-        lambda bind_source, roots: PlainSubprocessLauncher(workspace_bind=bind_source),
+        lambda bind_source, roots, pass_fds=(): PlainSubprocessLauncher(
+            workspace_bind=bind_source
+        ),
     )
     chain = EffectChain()
     chain.register_workspace("checkout", WorkspaceMount(bind_source=str(workspace)))
