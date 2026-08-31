@@ -718,8 +718,7 @@ def check_full_route(context: Context) -> Outcome:
         universe_dir,
         sink="workspace",
         destination=workspace_consent_destination(
-            "workspace_checkout", repo, connection_id="conn-git"
-        ),
+            "workspace_checkout", repo, connection_id="conn-git", host="github.com"),
         granted_by="oracle",
     )
 
