@@ -17,6 +17,7 @@ by the same startup path.
 
 from __future__ import annotations
 
+import logging
 import secrets
 import sqlite3
 import time
@@ -39,18 +40,27 @@ __all__ = [
 #: not be asked about -- it stays owed rather than being guessed either way.
 INTENT_STATES = ("sent", "done", "failed", "unknown")
 
+#: Bounded retry for an intent a pass could not settle.
+_BASE_RETRY_DELAY_S = 30.0
+_MAX_RETRY_DELAY_S = 3600.0
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS workspace_push_intents (
     intent_id        TEXT PRIMARY KEY,
     run_id           TEXT NOT NULL,
     node_id          TEXT NOT NULL,
     connection_id    TEXT NOT NULL,
+    grant_id         TEXT NOT NULL DEFAULT '',
+    universe_id      TEXT NOT NULL DEFAULT '',
+    host             TEXT NOT NULL DEFAULT '',
     repo             TEXT NOT NULL,
     remote_ref       TEXT NOT NULL,
     expected_old_sha TEXT,
     sha              TEXT NOT NULL,
     state            TEXT NOT NULL CHECK (state IN ('sent', 'done', 'failed', 'unknown')),
     observed_sha     TEXT,
+    attempts         INTEGER NOT NULL DEFAULT 0,
+    next_after       REAL,
     created_at       REAL NOT NULL,
     completed_at     REAL
 );
@@ -69,8 +79,13 @@ class PushIntent:
     remote_ref: str
     sha: str
     state: str
+    grant_id: str = ""
+    universe_id: str = ""
+    host: str = ""
     expected_old_sha: str | None = None
     observed_sha: str | None = None
+    attempts: int = 0
+    next_after: float | None = None
     created_at: float = 0.0
     completed_at: float | None = None
 
@@ -101,6 +116,9 @@ def record_push_intent(
     repo: str,
     remote_ref: str,
     sha: str,
+    host: str,
+    grant_id: str = "",
+    universe_id: str = "",
     expected_old_sha: str | None = None,
     now: Callable[[], float] = time.time,
 ) -> str:
@@ -115,13 +133,17 @@ def record_push_intent(
         ensure_schema(conn)
         conn.execute(
             "INSERT INTO workspace_push_intents (intent_id, run_id, node_id, "
-            "connection_id, repo, remote_ref, expected_old_sha, sha, state, "
-            "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?)",
+            "connection_id, grant_id, universe_id, host, repo, remote_ref, "
+            "expected_old_sha, sha, state, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?)",
             (
                 intent_id,
                 str(run_id),
                 str(node_id),
                 str(connection_id),
+                str(grant_id),
+                str(universe_id),
+                str(host),
                 str(repo),
                 str(remote_ref),
                 expected_old_sha,
@@ -180,8 +202,13 @@ def open_intents(base_path: str | Path) -> list[PushIntent]:
             remote_ref=row["remote_ref"],
             sha=row["sha"],
             state=row["state"],
+            grant_id=row["grant_id"],
+            universe_id=row["universe_id"],
+            host=row["host"],
             expected_old_sha=row["expected_old_sha"],
             observed_sha=row["observed_sha"],
+            attempts=row["attempts"],
+            next_after=row["next_after"],
             created_at=row["created_at"],
             completed_at=row["completed_at"],
         )
@@ -194,7 +221,8 @@ def reconcile_push_intents(
     *,
     execute: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     credential_ref_for: Callable[[str], str] | None = None,
-    host: str = "github.com",
+    revalidate: Callable[[PushIntent], bool] | None = None,
+    host: str = "",
     staging_root: str | Path | None = None,
 ) -> list[tuple[str, str]]:
     """Settle every open intent by ASKING the remote. Returns (intent_id, state).
@@ -222,6 +250,21 @@ def reconcile_push_intents(
     for intent in intents:
         staging = root / f"reconcile-{intent.intent_id}"
         staging.mkdir(parents=True, exist_ok=True)
+        # The AUTHORITY is revalidated before the host is contacted: a grant
+        # revoked since the push must not be used to ask about it.
+        if revalidate is not None:
+            try:
+                allowed = bool(revalidate(intent))
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "intent revalidation crashed for %s", intent.intent_id
+                )
+                allowed = False
+            if not allowed:
+                _defer(base_path, intent, reason="authority")
+                settled.append((intent.intent_id, "sent"))
+                continue
+
         credential_ref = ""
         if credential_ref_for is not None:
             try:
@@ -230,6 +273,15 @@ def reconcile_push_intents(
                 credential_ref = ""
         if not credential_ref:
             credential_ref = _credential_ref(base_path, intent.connection_id)
+
+        # The intent's OWN host, never a module default: defaulting to
+        # github.com would contact a host this push never used (round 3 P0 #1).
+        intent_host = intent.host or host
+        if not intent_host:
+            _defer(base_path, intent, reason="no host recorded")
+            settled.append((intent.intent_id, "sent"))
+            continue
+
         answer: dict[str, Any]
         try:
             answer = execute(
@@ -237,7 +289,7 @@ def reconcile_push_intents(
                     "op": "ls_remote",
                     "universe_dir": str(base_path),
                     "credential_ref": credential_ref,
-                    "host": host,
+                    "host": intent_host,
                     "owner_repo": intent.repo,
                     "remote_ref": intent.remote_ref,
                     "staging_dir": str(staging),
@@ -245,14 +297,47 @@ def reconcile_push_intents(
             )
         except Exception:
             answer = {"ok": False}
+
         if not answer.get("ok"):
-            state, observed = "unknown", None
-        else:
-            observed = str(answer.get("observed_sha") or "")
-            state = "done" if observed == intent.sha else "failed"
-        settle_push_intent(base_path, intent.intent_id, state, observed_sha=observed)
+            # A TRANSPORT failure answers nothing. Leaving it `sent` keeps it
+            # claimable by the next pass; marking it `unknown` here would
+            # retire an intent nobody ever asked about (round 3, P1 #5).
+            _defer(base_path, intent, reason="transport")
+            settled.append((intent.intent_id, "sent"))
+            continue
+
+        # A SUCCESSFUL ls-remote with no sha means the ref is absent, which is
+        # a real answer: the push did not land.
+        observed = str(answer.get("observed_sha") or "")
+        state = "done" if observed and observed == intent.sha else "failed"
+        settle_push_intent(base_path, intent.intent_id, state, observed_sha=observed or None)
         settled.append((intent.intent_id, state))
     return settled
+
+
+def _defer(base_path: str | Path, intent: PushIntent, *, reason: str) -> None:
+    """Leave an intent claimable, recording that a pass could not settle it.
+
+    ``attempts`` and ``next_after`` are the bounded-retry metadata: a pass can
+    skip one it tried moments ago without losing it.
+    """
+    delay = min(_MAX_RETRY_DELAY_S, _BASE_RETRY_DELAY_S * (2 ** min(intent.attempts, 8)))
+    conn = _connect(base_path)
+    try:
+        ensure_schema(conn)
+        conn.execute(
+            "UPDATE workspace_push_intents SET attempts = attempts + 1, "
+            "next_after = ? WHERE intent_id = ?",
+            (time.time() + delay, intent.intent_id),
+        )
+        conn.commit()
+    except Exception:
+        logging.getLogger(__name__).exception("could not defer intent %s", intent.intent_id)
+    finally:
+        conn.close()
+    logging.getLogger(__name__).info(
+        "push intent %s deferred (%s), attempt %d", intent.intent_id, reason, intent.attempts + 1
+    )
 
 
 def _credential_ref(base_path: str | Path, connection_id: str) -> str:

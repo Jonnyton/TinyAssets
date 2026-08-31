@@ -14,10 +14,13 @@ refusal is a secret-free evidence dict carrying one actionable ``error_kind``.
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
 import logging
 import os
 import re
+import secrets
 import shutil
 from pathlib import Path
 from typing import Any
@@ -26,8 +29,11 @@ from tinyassets.storage.workspace_authority import (
     CONSENT_CHECKOUT,
     CONSENT_PROVISION,
     CONSENT_PUSH,
+    GIT_SCOPE_HOST,
     WORKSPACE_SINK,
     GitScopeError,
+    connection_allows_git_scopes,
+    connection_hosts,
     has_git_scope,
     normalize_repo,
     workspace_consent_destination,
@@ -242,6 +248,42 @@ def _read_connection(
     return grant, resource
 
 
+def transport_host_for(resource: Any) -> str:
+    """The git host this connection may reach, from the STORED connection.
+
+    Never from the packet. The packet used to supply ``host`` while the scope
+    check ignored it, so a packet could point a scoped credential at a host the
+    owner never allowlisted (Codex round 3, P0 #1). The connection's declared
+    endpoints are the authority; a github pipe with no endpoints falls back to
+    the one host a git scope is allowed on at all, which
+    ``endpoints_allow_git_scopes`` has already agreed to.
+    """
+    hosts = {host for host in connection_hosts(resource) if host}
+    if not hosts:
+        if not connection_allows_git_scopes(resource):
+            raise _Refused(
+                "host_not_allowlisted",
+                "the connection declares no host a git scope may reach",
+            )
+        return GIT_SCOPE_HOST
+    if len(hosts) > 1:
+        raise _Refused(
+            "host_not_allowlisted",
+            "the connection declares several hosts; a git transport needs exactly one",
+        )
+    return hosts.pop()
+
+
+def _require_packet_host_agrees(packet: dict[str, Any], host: str) -> None:
+    """A packet may restate the derived host, never choose a different one."""
+    stated = _str_field(packet, "host")
+    if stated and stated.lower() != host.lower():
+        raise _Refused(
+            "invalid_packet",
+            "packet.host names a different host than the connection allows",
+        )
+
+
 def _require_scope(resource: Any, op: str, host: str, repo: str) -> None:
     """The connection must carry the op's git scope bound to this repository.
 
@@ -360,6 +402,42 @@ def _posix_only(exc: NotImplementedError) -> _Refused:
     )
 
 
+def _ensure_permanent_parent(universe_dir: Path, lease_path: Path) -> None:
+    """Create ``workspaces/<repo-key>`` component by component, through handles.
+
+    A universe's FIRST permanent checkout has neither directory, and the
+    no-follow layer refuses a missing parent -- so without this the first one
+    always failed (Codex round 3, P0 #3). Each component is made through the
+    handle of the one above it: ``mkdir(parents=True)`` would resolve the whole
+    path by name, which is the swap the descriptors exist to prevent.
+
+    Idempotent: an existing component is opened rather than re-created.
+    """
+    fs = _fs()
+    relative = lease_path.parent.relative_to(universe_dir)
+    try:
+        current = fs.open_dir_nofollow(str(universe_dir))
+    except NotImplementedError as exc:
+        raise _posix_only(exc) from None
+    opened = [current]
+    try:
+        for component in relative.parts:
+            try:
+                current = fs.create_workspace_subdir(current, component)
+            except NotImplementedError as exc:
+                raise _posix_only(exc) from None
+            except FileExistsError:
+                # An already-created component is OPENED through the same
+                # no-follow openat, never re-resolved by path. There is no
+                # public name for that one step yet, so this prefers one if
+                # the pool lane exports it and falls back to the primitive.
+                open_child = getattr(fs, "open_subdir_nofollow", None) or fs._open_child_dir
+                current = open_child(opened[-1], component)
+            opened.append(current)
+    finally:
+        _close_handles(*opened)
+
+
 def _make_lease_dir(lease_path: Path) -> Any:
     """Create the lease directory under a handle resolved without links.
 
@@ -378,6 +456,83 @@ def _make_lease_dir(lease_path: Path) -> Any:
         raise _posix_only(exc) from None
     finally:
         _close_handles(parent_fd)
+
+
+def _operation_id(run_id: str, node_id: str, op: str) -> str:
+    """A DETERMINISTIC id for one ledger operation.
+
+    Deterministic so a retried push charges the hour once: the pool's
+    reservation is idempotent per operation id, and a random one would let two
+    attempts of the same node bill twice.
+    """
+    return f"{run_id}:{node_id}:{op}"
+
+
+def _reserve_operation(
+    base_path: Path,
+    *,
+    universe_id: str,
+    run_id: str,
+    operation_id: str,
+    max_bytes: int,
+    refusal: str,
+) -> None:
+    """Charge the hourly ledger BEFORE the operation moves anything.
+
+    A push and a discard hold no lease, so nothing else charges for them; an
+    operation that cannot be admitted must not proceed.
+    """
+    from tinyassets import workspace_pool
+
+    try:
+        workspace_pool.reserve_operation_bytes(
+            _pool_db(base_path),
+            universe_id=universe_id,
+            run_id=str(run_id),
+            operation_id=operation_id,
+            max_bytes=int(max_bytes),
+        )
+    except Exception as exc:
+        kind = _pool_error_kind(exc)
+        raise _Refused(
+            kind if kind in _POOL_KINDS else refusal,
+            f"the operation was not admitted: {_pool_detail(exc)}",
+        ) from None
+
+
+def _reconcile_operation(base_path: Path, operation_id: str, measured: int) -> None:
+    """Settle the reservation down to what actually moved. Never raises: an
+    unreconciled operation keeps its maximum, which is the strict side."""
+    from tinyassets import workspace_pool
+
+    try:
+        workspace_pool.reconcile_operation_bytes(
+            _pool_db(base_path), operation_id, max(0, int(measured))
+        )
+    except Exception:
+        logger.exception("could not reconcile operation %s", operation_id)
+
+
+@contextlib.contextmanager
+def _acquired(chain: Any, mount: Any):
+    """Hold the capability for the duration of a use.
+
+    ``chain.acquire_workspace`` hands back a mount whose descriptors are DUP'd
+    for this use, so a concurrent ``discard`` closing the originals cannot pull
+    the descriptor out from under a copy in flight. Falls back to the mount
+    itself where the chain does not offer it yet.
+    """
+    acquire = getattr(chain, "acquire_workspace", None)
+    if acquire is None:
+        yield mount
+        return
+    with acquire(mount.node_id) as acquired:
+        if acquired is None:
+            raise _Refused(
+                "no_matching_packet",
+                f"the workspace '{mount.node_id}' was revoked before this operation",
+            )
+        yield getattr(acquired, "mount", acquired)
 
 
 def _owe_wipe(base_path: Path, lease: Any, *, run_id: str, universe_id: str) -> None:
@@ -441,12 +596,31 @@ def _descriptor_or_none(handle: Any) -> int | None:
 # --------------------------------------------------------------------------- #
 
 
+def _staging_id(value: str) -> str:
+    """An INJECTIVE, path-safe id for a graph node or run id.
+
+    Stripping unsafe characters is not injective: ``a/b`` and ``ab`` collapse
+    to the same name, so two different nodes would share a staging directory
+    and a broker socket path (Codex round 3, P2 #11). A digest of the EXACT
+    id cannot collide by construction.
+    """
+    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:16]
+
+
 def _staging_root(base_path: Path, run_id: str, node_id: str) -> Path:
     """The worker's private staging dir. Created by the PARENT, never by the
-    jail, and never inside a lease."""
-    safe_node = "".join(c for c in node_id if c.isalnum() or c in "-_") or "node"
-    safe_run = "".join(c for c in str(run_id) if c.isalnum() or c in "-_") or "run"
-    staging = base_path / ".workspace-staging" / safe_run / safe_node
+    jail, and never inside a lease.
+
+    A per-operation nonce keeps two operations of the SAME node (a checkout
+    then a push, or a retry) from sharing a directory a previous one may still
+    be tearing down.
+    """
+    staging = (
+        base_path
+        / ".workspace-staging"
+        / _staging_id(run_id)
+        / f"{_staging_id(node_id)}-{secrets.token_hex(4)}"
+    )
     staging.mkdir(parents=True, exist_ok=True)
     return staging
 
@@ -506,7 +680,9 @@ def _checkout(
             repo_key=repo_key,
             storage_class=storage,
             run_id=str(run_id),
-            max_bytes=int(packet.get("max_bytes") or _DEFAULT_MAX_CHECKOUT_BYTES),
+            # The lease bound is the platform's, never the packet's: a
+            # packet-chosen reservation is a packet choosing its own quota.
+            max_bytes=_DEFAULT_MAX_CHECKOUT_BYTES,
             pool_root=scratch_pool_root(base_path),
             universe_root=universe_workspace_root(base_path),
             **_universe_quota_kwargs(storage, base_path),
@@ -537,88 +713,114 @@ def _checkout(
                 f"workspace not admitted: {_pool_detail(retry_exc)}",
             ) from None
 
-    staging = _staging_root(base_path, run_id, node_id)
-    answer = execute(
-        {
-            "op": "checkout",
-            "universe_dir": str(base_path),
-            "credential_ref": str(getattr(resource, "credential_ref", "")),
-            "host": host,
-            "owner_repo": repo,
-            "ref": ref,
-            "staging_dir": str(staging),
-        }
-    )
-    if not answer.get("ok"):
-        raise _Refused(
-            "workspace_checkout_failed",
-            str(answer.get("error") or "checkout failed"),
-            stderr_class=str(answer.get("stderr_class") or ""),
+    # ONE owner for everything created after admission (Codex round 3, P1 #7).
+    # `owned` holds what this call opened; the mount takes them ONLY after a
+    # successful registration, and anything still owned at the end is closed.
+    # An unpublished failure also owes the lease a wipe -- a lease nobody holds
+    # and nobody wipes is a leak the pool cannot see.
+    owned: list[Any] = []
+    published = False
+    try:
+        staging = _staging_root(base_path, run_id, node_id)
+        answer = execute(
+            {
+                "op": "checkout",
+                "universe_dir": str(base_path),
+                "credential_ref": str(getattr(resource, "credential_ref", "")),
+                "host": host,
+                "owner_repo": repo,
+                "ref": ref,
+                "staging_dir": str(staging),
+            }
         )
+        if not answer.get("ok"):
+            raise _Refused(
+                "workspace_checkout_failed",
+                str(answer.get("error") or "checkout failed"),
+                stderr_class=str(answer.get("stderr_class") or ""),
+            )
 
-    bundle = staging / str(answer.get("bundle_name") or "out.bundle")
-    lease_fd = _make_lease_dir(Path(lease.path))
-    repo_dir = Path(lease.path) / "repo"
-    # The repository directory is created THROUGH the lease handle and its own
-    # descriptor is what git is pointed at AND what the jail binds -- binding
-    # the lease root would put the repository one level down from /workspace.
-    repo_fd = _make_repo_dir(lease_fd, repo_dir)
-    home = staging / "populate-home"
-    home.mkdir(parents=True, exist_ok=True)
-    checkout_ref = f"tiny/{_universe_short(universe_id)}/checkout"
-    try:
-        populate_workspace_from_bundle(
-            bundle,
-            repo_dir,
-            str(answer.get("ref_name") or "refs/tiny/export"),
-            checkout_ref,
-            home_dir=home,
-            path=_git_path(),
-            dest_fd=_descriptor_or_none(repo_fd),
+        bundle = staging / str(answer.get("bundle_name") or "out.bundle")
+        if storage == "universe":
+            # A universe's FIRST permanent checkout has no workspaces/<repo-key>
+            # yet, and the no-follow layer refuses a missing parent.
+            _ensure_permanent_parent(base_path, Path(lease.path))
+        lease_fd = _make_lease_dir(Path(lease.path))
+        owned.append(lease_fd)
+        repo_dir = Path(lease.path) / "repo"
+        # The repository directory is created THROUGH the lease handle and its
+        # own descriptor is what git is pointed at AND what the jail binds --
+        # binding the lease root would put the repository one level down from
+        # /workspace.
+        repo_fd = _make_repo_dir(lease_fd, repo_dir)
+        owned.append(repo_fd)
+        home = staging / "populate-home"
+        home.mkdir(parents=True, exist_ok=True)
+        checkout_ref = f"tiny/{_universe_short(universe_id)}/checkout"
+        try:
+            populate_workspace_from_bundle(
+                bundle,
+                repo_dir,
+                str(answer.get("ref_name") or "refs/tiny/export"),
+                checkout_ref,
+                home_dir=home,
+                path=_git_path(),
+                dest_fd=_descriptor_or_none(repo_fd),
+            )
+        except _Refused:
+            raise
+        except Exception as exc:
+            raise _Refused(
+                "workspace_checkout_failed", f"workspace could not be populated: {exc}"
+            ) from None
+
+        # Staging held the credentialed clone, the bundle and the git homes. It
+        # is deleted BEFORE the capability is published, and the deletion is
+        # CHECKED: a workspace published while staging survives is a workspace
+        # published next to the material it was supposed to replace.
+        try:
+            shutil.rmtree(staging)
+            if staging.exists():
+                raise OSError(f"{staging} still exists after rmtree")
+        except OSError as exc:
+            raise _Refused(
+                "workspace_checkout_failed",
+                f"staging could not be removed, so nothing was published: {exc}",
+            ) from None
+
+        measured = int(answer.get("bytes") or 0)
+        try:
+            workspace_pool.reconcile_bytes(db, lease.lease_id, measured)
+        except Exception:
+            logger.exception("workspace byte reconciliation failed for %s", lease.lease_id)
+
+        replaced = None
+        if storage == "universe":
+            replaced = _publish(
+                db, lease, universe_id=universe_id, repo_key=repo_key, run_id=run_id
+            )
+
+        connection_id = str(getattr(resource, "connection_id", ""))
+        mount = _register_mount(
+            chain,
+            node_id,
+            lease=lease,
+            repo_dir=repo_dir,
+            lease_fd=lease_fd,
+            repo_fd=repo_fd,
+            host=host,
+            repo=repo,
+            connection_id=connection_id,
+            grant_id=_str_field(packet, "grant_id"),
         )
-    except Exception as exc:
-        _close_handles(repo_fd, lease_fd)
-        raise _Refused("workspace_checkout_failed", f"workspace could not be populated: {exc}")
-
-    # Staging held the credentialed clone, the bundle and the git homes. It is
-    # deleted BEFORE the capability is published, and the deletion is checked:
-    # a workspace published while staging survives is a workspace published
-    # next to the material it was supposed to replace.
-    try:
-        shutil.rmtree(staging)
-        if staging.exists():
-            raise OSError(f"{staging} still exists after rmtree")
-    except OSError as exc:
-        _close_handles(repo_fd, lease_fd)
-        _owe_wipe(base_path, lease, run_id=run_id, universe_id=universe_id)
-        raise _Refused(
-            "workspace_checkout_failed",
-            f"staging could not be removed, so nothing was published: {exc}",
-        ) from None
-
-    measured = int(answer.get("bytes") or 0)
-    try:
-        workspace_pool.reconcile_bytes(db, lease.lease_id, measured)
-    except Exception:
-        logger.exception("workspace byte reconciliation failed for %s", lease.lease_id)
-
-    replaced = None
-    if storage == "universe":
-        replaced = _publish(db, lease, universe_id=universe_id, repo_key=repo_key, run_id=run_id)
-
-    connection_id = str(getattr(resource, "connection_id", ""))
-    mount = _register_mount(
-        chain,
-        node_id,
-        lease=lease,
-        repo_dir=repo_dir,
-        lease_fd=lease_fd,
-        repo_fd=repo_fd,
-        host=host,
-        repo=repo,
-        connection_id=connection_id,
-        grant_id=_str_field(packet, "grant_id"),
-    )
+        # Ownership transfers to the mount ONLY now: from here the chain closes
+        # them (on revoke or at settle), and this call must not.
+        published = True
+        owned.clear()
+    finally:
+        if not published:
+            _close_handles(*owned)
+            _owe_wipe(base_path, lease, run_id=run_id, universe_id=universe_id)
 
     evidence: dict[str, Any] = {
         "op": "checkout",
@@ -736,21 +938,37 @@ def _push(
     staging = _staging_root(base_path, run_id, node_id)
     destination = staging / "in.bundle"
     relative = f"repo/{_JAIL_EXPORT_DIR}/{commit_sha}.bundle"
-    try:
-        copied = _fs().copy_regular_file_beneath(
-            mount.lease_fd, relative, destination, max_bytes=_MAX_BUNDLE_BYTES
-        )
-    except NotImplementedError as exc:
-        # Same permanent host property, reported against the push's own class.
-        raise _Refused(
-            "workspace_push_refused",
-            f"the workspace sink needs POSIX openat semantics; this host is "
-            f"{os.name!r} ({exc})",
-        ) from None
-    except Exception as exc:
-        raise _Refused(
-            "workspace_push_refused", f"the export bundle could not be read: {exc}"
-        )
+
+    # The hourly ledger sees the push BEFORE any bytes move: a push holds no
+    # lease, so without this it charged nothing at all (Codex round 3, P1 #4).
+    operation_id = _operation_id(run_id, node_id, "push")
+    _reserve_operation(
+        base_path,
+        universe_id=universe_id,
+        run_id=run_id,
+        operation_id=operation_id,
+        max_bytes=_MAX_BUNDLE_BYTES,
+        refusal="workspace_push_refused",
+    )
+
+    # Hold the capability across the copy: a discard racing this must not be
+    # able to close the descriptor mid-read.
+    with _acquired(chain, mount) as held:
+        try:
+            copied = _fs().copy_regular_file_beneath(
+                held.lease_fd, relative, destination, max_bytes=_MAX_BUNDLE_BYTES
+            )
+        except NotImplementedError as exc:
+            # Same permanent host property, reported against push's own class.
+            raise _Refused(
+                "workspace_push_refused",
+                f"the workspace sink needs POSIX openat semantics; this host is "
+                f"{os.name!r} ({exc})",
+            ) from None
+        except Exception as exc:
+            raise _Refused(
+                "workspace_push_refused", f"the export bundle could not be read: {exc}"
+            )
 
     intent = record_push_intent(
         base_path,
@@ -760,6 +978,10 @@ def _push(
         repo=repo,
         remote_ref=remote_ref,
         sha=commit_sha,
+        host=host,
+        grant_id=mount.grant_id,
+        universe_id=universe_id,
+        expected_old_sha=_str_field(packet, "expected_old_sha") or None,
     )
     answer = execute(
         {
@@ -774,7 +996,18 @@ def _push(
             "staging_dir": str(staging),
         }
     )
-    settle_push_intent(base_path, intent, "done" if answer.get("ok") else "failed")
+    # A TIMEOUT is not a failure: the send may have landed. It stays claimable
+    # as `unknown` and the startup reconciler asks the remote (P1 #5).
+    if answer.get("ok"):
+        state = "done"
+    elif str(answer.get("stderr_class") or "") == "timeout":
+        state = "unknown"
+    else:
+        state = "failed"
+    settle_push_intent(
+        base_path, intent, state, observed_sha=str(answer.get("observed_sha") or "") or None
+    )
+    _reconcile_operation(base_path, operation_id, int(answer.get("bytes") or copied or 0))
     if not answer.get("ok"):
         raise _Refused(
             "workspace_push_refused",
@@ -782,6 +1015,7 @@ def _push(
             stderr_class=str(answer.get("stderr_class") or ""),
             observed_sha=str(answer.get("observed_sha") or ""),
             remote_ref=remote_ref,
+            intent_state=state,
         )
     return {
         "op": "push",
@@ -807,6 +1041,16 @@ def _discard(
 
     mount = _resolve_mount(chain, packet, node_id, prior_effects=prior_effects)
     _require_packet_agrees_with_mount(packet, mount)
+    # A discard holds no lease reservation of its own once it starts, so the
+    # hourly ledger sees it here -- before anything is mutated.
+    _reserve_operation(
+        base_path,
+        universe_id=universe_id,
+        run_id=run_id,
+        operation_id=_operation_id(run_id, node_id, "discard"),
+        max_bytes=0,
+        refusal="workspace_discard_failed",
+    )
     # Revoke FIRST: the capability must be gone before the bytes are owed, so
     # nothing can open the workspace between the two.
     _revoke_mount(chain, mount.node_id)
@@ -1097,7 +1341,7 @@ def _run(
             "matched_output_key": matched_key,
         }
     universe_dir = Path(base_path)
-    host = _str_field(packet, "host") or _HOST
+    host = ""
 
     if chain is None:
         from tinyassets.effectors import active_effect_chain
@@ -1145,6 +1389,10 @@ def _run(
         universe_id=universe_id,
         grant_id=grant_id,
     )
+    # The credentialed host comes from the STORED connection, not the packet.
+    # A packet may restate it; naming a different one is a refusal.
+    host = transport_host_for(resource)
+    _require_packet_host_agrees(packet, host)
     _require_scope(resource, op, host, repo)
     _require_consent(universe_dir, op, host, repo, connection_id)
 

@@ -8,6 +8,7 @@ that asserts THEY were called is what makes the seam real before the merge.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -140,14 +141,41 @@ def fs_spy(monkeypatch: pytest.MonkeyPatch):
 
     def open_dir_nofollow(path):
         calls["open_dir_nofollow"].append(str(path))
-        Path(path).mkdir(parents=True, exist_ok=True)
+        # The REAL helper refuses a missing directory -- it opens, it does not
+        # create. The old fake called `mkdir(parents=True)` here, which
+        # conjured `workspaces/<repo-key>` and hid the fact that a universe's
+        # first permanent checkout could not create them (Codex round 3, P0
+        # #3). A fake that is more permissive than the thing it stands in for
+        # is a fake that hides the bug it is standing in front of.
+        if not Path(path).is_dir():
+            raise FileNotFoundError(f"no such directory: {path}")
         return f"fd:{path}"
 
     def create_lease_dir(parent_fd, name):
         calls["create_lease_dir"].append((parent_fd, name))
-        parent = str(parent_fd).removeprefix("fd:")
-        (Path(parent) / name).mkdir(parents=True, exist_ok=True)
+        parent = Path(str(parent_fd).removeprefix("fd:"))
+        if not parent.is_dir():
+            raise FileNotFoundError(f"no such parent: {parent}")
+        (parent / name).mkdir(exist_ok=True)  # ONE component, never parents
         return f"fd:{parent}/{name}"
+
+    def create_workspace_subdir(parent_fd, name):
+        calls.setdefault("create_workspace_subdir", []).append((parent_fd, name))
+        parent = Path(str(parent_fd).removeprefix("fd:"))
+        if not parent.is_dir():
+            raise FileNotFoundError(f"no such parent: {parent}")
+        target = parent / name
+        if target.exists():
+            raise FileExistsError(str(target))
+        target.mkdir()
+        return f"fd:{target}"
+
+    def open_subdir_nofollow(parent_fd, name):
+        parent = Path(str(parent_fd).removeprefix("fd:"))
+        target = parent / name
+        if not target.is_dir():
+            raise FileNotFoundError(f"no such directory: {target}")
+        return f"fd:{target}"
 
     def copy_regular_file_beneath(dir_fd, relpath, dest_path, *, max_bytes):
         calls["copy"].append((dir_fd, relpath, str(dest_path), max_bytes))
@@ -167,7 +195,10 @@ def fs_spy(monkeypatch: pytest.MonkeyPatch):
     # "repo". A double for one and not the other lets the real one run here and
     # refuse on Windows.
     monkeypatch.setattr(
-        workspace_fs, "create_workspace_subdir", create_lease_dir, raising=False
+        workspace_fs, "create_workspace_subdir", create_workspace_subdir, raising=False
+    )
+    monkeypatch.setattr(
+        workspace_fs, "open_subdir_nofollow", open_subdir_nofollow, raising=False
     )
     monkeypatch.setattr(
         workspace_fs, "copy_regular_file_beneath", copy_regular_file_beneath, raising=False
@@ -509,8 +540,9 @@ def test_the_bind_source_is_the_repository_not_the_lease_root(
     assert mount.repo_fd is not None, "the repository's own handle must be published"
     assert mount.repo_fd != mount.lease_fd, "they are different directories"
     # the lease handle names the lease; the repo handle names <lease>/repo
-    assert str(mount.lease_fd).endswith(Path(mount.lease.path).name)
-    assert str(mount.repo_fd).endswith("/repo")
+    # (separator-agnostic: the fake joins with the host's own separator)
+    assert Path(str(mount.lease_fd).removeprefix("fd:")).name == Path(mount.lease.path).name
+    assert Path(str(mount.repo_fd).removeprefix("fd:")).name == "repo"
     assert mount.bind_source.endswith("repo") or mount.bind_source.startswith("/proc/self/fd/")
 
 
@@ -667,6 +699,127 @@ def test_the_compiler_binds_the_repository_handle_not_the_lease_handle(
     finally:
         _os.close(repo_read)
         _os.close(lease_read)
+
+
+def test_the_credentialed_host_comes_from_the_connection_not_the_packet(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
+) -> None:
+    """P0: a packet could point a scoped credential at another host.
+
+    ``packet.host`` was accepted while the scope check discarded host, so the
+    two never met. The connection's declared endpoints are the authority now.
+    """
+    _root, universe_dir = _setup(tmp_path)
+    worker = FakeWorker()
+    result = _run(
+        tmp_path,
+        _packet(host="evil.example"),
+        universe_dir=universe_dir,
+        chain=chain,
+        worker=worker,
+    )
+    assert result["error_kind"] == "invalid_packet"
+    assert "different host" in result["error"]
+    assert worker.requests == [], "nothing may be sent to a host the packet chose"
+
+
+def test_a_packet_may_restate_the_derived_host(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
+) -> None:
+    """The guard refuses a CONTRADICTION, not a redundant restatement."""
+    _root, universe_dir = _setup(tmp_path)
+    worker = FakeWorker()
+    result = _run(
+        tmp_path, _packet(host=HOST), universe_dir=universe_dir, chain=chain, worker=worker
+    )
+    assert result.get("error_kind") is None, result
+    assert worker.requests[0]["host"] == HOST
+
+
+def test_the_derived_host_is_what_reaches_the_worker_and_the_mount(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
+) -> None:
+    _root, universe_dir = _setup(tmp_path)
+    worker = FakeWorker()
+    _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain, worker=worker)
+    assert worker.requests[0]["host"] == HOST
+    assert chain.workspace_mount_or_none("n1").host == HOST
+
+
+def test_a_connection_declaring_several_hosts_has_no_git_transport(
+    tmp_path: Path, chain: EffectChain
+) -> None:
+    """One credential, one host: several is ambiguous, and ambiguity here is a
+    choice made for the owner."""
+    from tinyassets.effectors.workspace import transport_host_for
+
+    class Endpoint:
+        def __init__(self, host):
+            self.host = host
+
+    class Resource:
+        allowed_endpoints = (Endpoint("github.com"), Endpoint("gitlab.example"))
+        provider = "http"
+
+    with pytest.raises(Exception) as caught:
+        transport_host_for(Resource())
+    assert "several hosts" in str(caught.value)
+
+
+def test_a_first_permanent_checkout_creates_its_parents_through_handles(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
+) -> None:
+    """P0: a universe's FIRST permanent checkout had no workspaces/<repo-key>.
+
+    The no-follow layer refuses a missing parent, and the old fake conjured
+    them with ``mkdir(parents=True)``, so this never failed in a test while
+    always failing in production.
+    """
+    _root, universe_dir = _setup(tmp_path)
+    assert not (universe_dir / "workspaces").exists(), "the fixture must start fresh"
+    result = _run(tmp_path, _packet(storage="universe"), universe_dir=universe_dir, chain=chain)
+    assert result.get("error_kind") is None, result
+    made = [name for _fd, name in fs_spy.get("create_workspace_subdir", [])]
+    assert "workspaces" in made, "the parent must be created through a handle"
+    mount = chain.workspace_mount_or_none("n1")
+    assert Path(mount.lease.path).is_dir()
+
+
+def test_a_second_permanent_checkout_reuses_the_existing_parents(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
+) -> None:
+    """Idempotent: an existing component is OPENED, never re-created."""
+    _root, universe_dir = _setup(tmp_path)
+    first = _run(tmp_path, _packet(storage="universe"), universe_dir=universe_dir, chain=chain)
+    assert first.get("error_kind") is None, first
+    second = run_workspace_effector(
+        node_id="n2",
+        output_keys=["ws"],
+        run_state={"ws": _packet(storage="universe")},
+        base_path=universe_dir,
+        run_id="run-1",
+        chain=chain,
+        execute=FakeWorker(),
+    )
+    assert second.get("error_kind") is None, second
+    assert second["lease_generation"] != first["lease_generation"]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="the no-follow helpers are POSIX-only")
+def test_a_first_permanent_checkout_works_with_the_real_helpers(
+    tmp_path: Path, chain: EffectChain, no_real_git
+) -> None:
+    """No doubles at all: the REAL workspace_fs against a fresh universe.
+
+    This is the one that would have caught P0 #3 on its own.
+    """
+    _root, universe_dir = _setup(tmp_path)
+    (universe_dir.parent / "scratch").mkdir(exist_ok=True)
+    result = _run(tmp_path, _packet(storage="universe"), universe_dir=universe_dir, chain=chain)
+    assert result.get("error_kind") is None, result
+    mount = chain.workspace_mount_or_none("n1")
+    assert Path(mount.lease.path).is_dir()
+    assert (universe_dir / "workspaces").is_dir()
 
 
 def test_the_capability_carries_the_authority_it_was_created_under(
@@ -971,6 +1124,239 @@ def test_staging_is_already_gone_at_the_moment_of_publication(
     result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain, worker=worker)
     assert result.get("error_kind") is None, result
     assert existed_at_publish == [False], "staging outlived the capability's publication"
+
+
+def test_staging_ids_are_injective(tmp_path: Path) -> None:
+    """`a/b` and `ab` must not share a staging directory or a broker socket.
+
+    Stripping unsafe characters collapses them to the same name, which would
+    put two nodes' credentialed staging in one place (Codex round 3, P2 #11).
+    """
+    base = tmp_path / "u"
+    base.mkdir()
+    first = wse._staging_root(base, "run-1", "a/b")
+    second = wse._staging_root(base, "run-1", "ab")
+    assert first != second
+    assert first.parent == second.parent
+    assert wse._staging_id("a/b") != wse._staging_id("ab")
+    # ...and two operations of the SAME node get their own directory
+    again = wse._staging_root(base, "run-1", "a/b")
+    assert again != first
+
+
+def test_a_packet_cannot_choose_its_own_reservation(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`packet.max_bytes` is gone: a packet choosing its reservation is a
+    packet choosing its own quota (Codex round 3, P1 #4)."""
+    from tinyassets import workspace_pool
+
+    _root, universe_dir = _setup(tmp_path)
+    seen: list[int] = []
+    real_admit = workspace_pool.admit
+
+    def spy(db, **kwargs):
+        seen.append(kwargs["max_bytes"])
+        return real_admit(db, **kwargs)
+
+    monkeypatch.setattr(workspace_pool, "admit", spy)
+    result = _run(
+        tmp_path, _packet(max_bytes=1), universe_dir=universe_dir, chain=chain
+    )
+    assert result.get("error_kind") is None, result
+    assert seen == [wse._DEFAULT_MAX_CHECKOUT_BYTES], "the platform's bound, not the packet's"
+
+
+def test_a_push_reserves_the_bundle_bound_before_the_copy(
+    tmp_path: Path, chain: EffectChain, fs_spy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A push holds no lease, so without this the hour saw nothing at all."""
+    from tinyassets import workspace_pool
+
+    _root, universe_dir = _setup(tmp_path)
+    _with_mount(chain, tmp_path, host=HOST, repo=REPO)
+    order: list[str] = []
+    real_reserve = workspace_pool.reserve_operation_bytes
+
+    def spy_reserve(db, **kwargs):
+        order.append(f"reserve:{kwargs['operation_id']}:{kwargs['max_bytes']}")
+        return real_reserve(db, **kwargs)
+
+    monkeypatch.setattr(workspace_pool, "reserve_operation_bytes", spy_reserve)
+    real_copy = wse._fs().copy_regular_file_beneath
+
+    def spy_copy(*args, **kwargs):
+        order.append("copy")
+        return real_copy(*args, **kwargs)
+
+    monkeypatch.setattr(wse._fs(), "copy_regular_file_beneath", spy_copy, raising=False)
+    result = _run(
+        tmp_path,
+        _packet(op="push", commit_sha=SHA, branch_slug="slug", workspace="n0"),
+        universe_dir=universe_dir,
+        chain=chain,
+        worker=FakeWorker({"ok": True, "bytes": 11, "resolved_sha": SHA}),
+    )
+    assert result.get("error_kind") is None, result
+    assert order[0].startswith("reserve:"), "the ledger sees it BEFORE the bytes move"
+    assert "copy" in order and order.index("copy") > 0
+    assert f":{512 * 1024 * 1024}" in order[0]
+    assert "run-1:n1:push" in order[0], "the operation id is deterministic"
+
+
+def test_a_discard_reserves_one_job_before_it_mutates(
+    tmp_path: Path, chain: EffectChain, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tinyassets import workspace_pool
+
+    _root, universe_dir = _setup(tmp_path)
+    _with_mount(chain, tmp_path, host=HOST, repo=REPO)
+    order: list[str] = []
+    real_reserve = workspace_pool.reserve_operation_bytes
+
+    def spy_reserve(db, **kwargs):
+        order.append("reserve")
+        return real_reserve(db, **kwargs)
+
+    real_revoke = chain.revoke_workspace
+
+    def spy_revoke(node_key):
+        order.append("revoke")
+        return real_revoke(node_key)
+
+    monkeypatch.setattr(workspace_pool, "reserve_operation_bytes", spy_reserve)
+    monkeypatch.setattr(chain, "revoke_workspace", spy_revoke)
+    result = _run(
+        tmp_path,
+        _packet(op="discard", workspace="n0"),
+        universe_dir=universe_dir,
+        chain=chain,
+    )
+    assert result.get("error_kind") is None, result
+    assert order[:2] == ["reserve", "revoke"]
+
+
+def test_a_push_holds_the_capability_across_the_copy(
+    tmp_path: Path, chain: EffectChain, fs_spy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A discard racing the copy must not close the descriptor mid-read."""
+    _root, universe_dir = _setup(tmp_path)
+    _with_mount(chain, tmp_path, host=HOST, repo=REPO)
+    held: list[str] = []
+
+    class Acquired:
+        def __init__(self, mount):
+            self.mount = mount
+
+    @contextlib.contextmanager
+    def acquire(node_key):
+        held.append(f"enter:{node_key}")
+        try:
+            yield Acquired(chain.workspace_mount_or_none(node_key))
+        finally:
+            held.append("exit")
+
+    monkeypatch.setattr(chain, "acquire_workspace", acquire, raising=False)
+    result = _run(
+        tmp_path,
+        _packet(op="push", commit_sha=SHA, branch_slug="slug", workspace="n0"),
+        universe_dir=universe_dir,
+        chain=chain,
+        worker=FakeWorker({"ok": True, "bytes": 4, "resolved_sha": SHA}),
+    )
+    assert result.get("error_kind") is None, result
+    assert held == ["enter:n0", "exit"], "the copy runs inside the acquisition"
+
+
+def test_a_push_whose_capability_was_revoked_is_refused(
+    tmp_path: Path, chain: EffectChain, fs_spy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _root, universe_dir = _setup(tmp_path)
+    _with_mount(chain, tmp_path, host=HOST, repo=REPO)
+
+    @contextlib.contextmanager
+    def acquire(node_key):
+        yield None  # revoked between resolution and use
+
+    monkeypatch.setattr(chain, "acquire_workspace", acquire, raising=False)
+    worker = FakeWorker()
+    result = _run(
+        tmp_path,
+        _packet(op="push", commit_sha=SHA, branch_slug="slug", workspace="n0"),
+        universe_dir=universe_dir,
+        chain=chain,
+        worker=worker,
+    )
+    assert result["error_kind"] == "no_matching_packet"
+    assert worker.requests == []
+
+
+def test_a_lost_push_settles_as_unknown_never_failed(
+    tmp_path: Path, chain: EffectChain, fs_spy
+) -> None:
+    """A timeout means the send MAY have landed (Codex round 3, P1 #5)."""
+    from tinyassets.workspace_intents import open_intents
+
+    _root, universe_dir = _setup(tmp_path)
+    _with_mount(chain, tmp_path, host=HOST, repo=REPO)
+    result = _run(
+        tmp_path,
+        _packet(op="push", commit_sha=SHA, branch_slug="slug", workspace="n0"),
+        universe_dir=universe_dir,
+        chain=chain,
+        worker=FakeWorker({"ok": False, "error": "timed out", "stderr_class": "timeout"}),
+    )
+    assert result["error_kind"] == "workspace_push_refused"
+    assert result["intent_state"] == "unknown"
+    assert open_intents(universe_dir) == [], "settled, but as unknown rather than failed"
+
+
+def test_a_push_journals_the_host_grant_and_universe(
+    tmp_path: Path, chain: EffectChain, fs_spy
+) -> None:
+    """Reconciliation needs them: it must not default to github.com."""
+    import sqlite3
+
+    _root, universe_dir = _setup(tmp_path)
+    _with_mount(chain, tmp_path, host=HOST, repo=REPO)
+    _run(
+        tmp_path,
+        _packet(op="push", commit_sha=SHA, branch_slug="slug", workspace="n0"),
+        universe_dir=universe_dir,
+        chain=chain,
+        worker=FakeWorker({"ok": True, "bytes": 4, "resolved_sha": SHA}),
+    )
+    conn = sqlite3.connect(workspace_pool_db(universe_dir))
+    try:
+        row = conn.execute(
+            "SELECT host, grant_id, universe_id FROM workspace_push_intents"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row == (HOST, "grant-git", UNIVERSE)
+
+
+def test_a_failed_checkout_closes_what_it_opened_and_owes_the_wipe(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One owner: an unpublished failure leaks no descriptor and no lease."""
+    import os as _os
+
+    _root, universe_dir = _setup(tmp_path)
+    closed: list[int] = []
+    real_close = _os.close
+
+    monkeypatch.setattr(
+        _os, "close", lambda fd: (closed.append(fd), real_close(fd))[1], raising=True
+    )
+    monkeypatch.setattr(
+        wse.shutil, "rmtree", lambda path, **kw: (_ for _ in ()).throw(OSError("busy"))
+    )
+    result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
+    assert result["error_kind"] == "workspace_checkout_failed"
+    assert chain.workspace_mount_or_none("n1") is None
+    rows = _outbox_rows(workspace_pool_db(universe_dir))
+    assert any(row["action"] == "wipe_scratch" for row in rows), rows
 
 
 def test_a_lock_held_by_another_run_is_workspace_busy_not_a_quota_error(

@@ -42,6 +42,9 @@ def _record(universe: Path, **over) -> str:
         "repo": "owner/name",
         "remote_ref": "refs/heads/tiny/u/slug",
         "sha": SHA,
+        "host": "github.com",
+        "grant_id": "grant-git",
+        "universe_id": "universe-1",
     }
     fields.update(over)
     return record_push_intent(universe, **fields)
@@ -134,23 +137,112 @@ def test_a_different_sha_at_the_ref_reconciles_to_failed_and_records_it(
     assert _states(universe) == [("failed", OTHER)]
 
 
-def test_a_remote_that_cannot_be_asked_stays_unknown_not_guessed(
-    universe: Path,
-) -> None:
-    """Neither answer is safe to invent, so it stays owed."""
+def test_a_transport_failure_leaves_the_intent_claimable(universe: Path) -> None:
+    """A pass that could not ASK must not retire the intent.
+
+    Marking it `unknown` here would close a question nobody put to the remote;
+    it stays `sent` so the next pass picks it up (Codex round 3, P1 #5).
+    """
     _record(universe)
     settled = reconcile_push_intents(
         universe,
         execute=lambda request: {"ok": False, "error": "transport"},
         credential_ref_for=lambda cid: "vault://http/x",
     )
-    assert [state for _id, state in settled] == ["unknown"]
-    assert _states(universe)[0][0] == "unknown"
+    assert [state for _id, state in settled] == ["sent"]
+    assert _states(universe)[0][0] == "sent"
+    still_open = open_intents(universe)
+    assert len(still_open) == 1
+    assert still_open[0].attempts == 1, "the attempt is counted"
+    assert still_open[0].next_after, "and a retry floor is recorded"
 
 
-def test_an_execute_that_raises_is_unknown_rather_than_a_crash(
+def test_repeated_transport_failures_back_off_without_losing_the_intent(
     universe: Path,
 ) -> None:
+    _record(universe)
+    for expected in (1, 2, 3):
+        reconcile_push_intents(
+            universe,
+            execute=lambda request: {"ok": False},
+            credential_ref_for=lambda cid: "vault://http/x",
+        )
+        current = open_intents(universe)[0]
+        assert current.attempts == expected
+    assert open_intents(universe), "an unaskable intent is never dropped"
+
+
+def test_a_successful_ls_remote_with_no_ref_is_a_real_failure(universe: Path) -> None:
+    """Empty AND ok means the ref is absent: the push did not land.
+
+    That is a different fact from "the remote could not be reached", and
+    collapsing the two loses the only one that is actionable.
+    """
+    _record(universe)
+    settled = reconcile_push_intents(
+        universe,
+        execute=lambda request: {"ok": True, "observed_sha": ""},
+        credential_ref_for=lambda cid: "vault://http/x",
+    )
+    assert [state for _id, state in settled] == ["failed"]
+    assert open_intents(universe) == []
+
+
+def test_reconciliation_uses_the_intents_own_host(universe: Path) -> None:
+    """Never a module default: that would contact a host this push never used."""
+    seen: list[dict] = []
+    _record(universe, host="git.example.test")
+    reconcile_push_intents(
+        universe,
+        execute=lambda request: seen.append(request) or {"ok": True, "observed_sha": SHA},
+        credential_ref_for=lambda cid: "vault://http/x",
+    )
+    assert seen[0]["host"] == "git.example.test"
+
+
+def test_an_intent_with_no_recorded_host_is_deferred_not_guessed(
+    universe: Path,
+) -> None:
+    seen: list[dict] = []
+    _record(universe, host="")
+    settled = reconcile_push_intents(
+        universe,
+        execute=lambda request: seen.append(request) or {"ok": True, "observed_sha": SHA},
+        credential_ref_for=lambda cid: "vault://http/x",
+    )
+    assert [state for _id, state in settled] == ["sent"]
+    assert seen == [], "no host means no contact at all"
+
+
+def test_a_revoked_authority_stops_the_reconciler_before_the_host(
+    universe: Path,
+) -> None:
+    """A grant revoked since the push must not be used to ask about it."""
+    seen: list[dict] = []
+    _record(universe)
+    settled = reconcile_push_intents(
+        universe,
+        execute=lambda request: seen.append(request) or {"ok": True, "observed_sha": SHA},
+        credential_ref_for=lambda cid: "vault://http/x",
+        revalidate=lambda intent: False,
+    )
+    assert [state for _id, state in settled] == ["sent"]
+    assert seen == [], "the host is never contacted on a dead grant"
+
+
+def test_a_live_authority_lets_the_reconciler_through(universe: Path) -> None:
+    """The guard must not be one that always fires."""
+    _record(universe)
+    settled = reconcile_push_intents(
+        universe,
+        execute=lambda request: {"ok": True, "observed_sha": SHA},
+        credential_ref_for=lambda cid: "vault://http/x",
+        revalidate=lambda intent: True,
+    )
+    assert [state for _id, state in settled] == ["done"]
+
+
+def test_an_execute_that_raises_leaves_the_intent_claimable(universe: Path) -> None:
     def explode(request):
         raise OSError("the worker could not start")
 
@@ -158,7 +250,8 @@ def test_an_execute_that_raises_is_unknown_rather_than_a_crash(
     settled = reconcile_push_intents(
         universe, execute=explode, credential_ref_for=lambda cid: "vault://http/x"
     )
-    assert [state for _id, state in settled] == ["unknown"]
+    assert [state for _id, state in settled] == ["sent"]
+    assert open_intents(universe), "a crash is not an answer"
 
 
 def test_reconciliation_asks_about_the_intent_s_own_ref_and_repo(
