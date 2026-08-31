@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -313,6 +314,25 @@ def _make_lease_dir(lease_path: Path) -> Any:
     return fs.create_lease_dir(parent_fd, lease_path.name)
 
 
+def _make_repo_dir(lease_fd: Any, repo_dir: Path) -> Any:
+    """Create ``<lease>/repo`` through the lease handle and return ITS handle."""
+    return _fs().create_lease_dir(lease_fd, repo_dir.name)
+
+
+def _descriptor_or_none(handle: Any) -> int | None:
+    """A real POSIX descriptor, or None.
+
+    The pool's handles are ints on Linux, which is where this runs. On a
+    non-POSIX dev host there is no descriptor to pin to, and
+    ``unbundle_into_fresh_repo`` refuses one -- so the population falls back to
+    the path there. That is a dev-host difference, stated rather than hidden:
+    production is Linux and always takes the descriptor.
+    """
+    if os.name != "posix":
+        return None
+    return handle if isinstance(handle, int) and not isinstance(handle, bool) else None
+
+
 # --------------------------------------------------------------------------- #
 # Operations
 # --------------------------------------------------------------------------- #
@@ -348,7 +368,7 @@ def _checkout(
     execute: Any,
 ) -> dict[str, Any]:
     from tinyassets import workspace_pool
-    from tinyassets.workspace_git import git_environment, populate_workspace_from_bundle
+    from tinyassets.workspace_git import populate_workspace_from_bundle
 
     owner, name = _split_repo(repo)
     ref = _str_field(packet, "ref") or "HEAD"
@@ -370,8 +390,8 @@ def _checkout(
     except Exception:
         logger.exception("workspace startup reconciliation failed")
 
-    try:
-        lease = workspace_pool.admit(
+    def _admit() -> Any:
+        return workspace_pool.admit(
             db,
             universe_id=universe_id,
             connection_id=str(getattr(resource, "connection_id", "")),
@@ -383,8 +403,31 @@ def _checkout(
             universe_root=base_path / "workspaces",
             **_universe_quota_kwargs(storage, base_path),
         )
+
+    try:
+        lease = _admit()
     except Exception as exc:
-        raise _Refused(_pool_error_kind(exc), f"workspace not admitted: {_pool_detail(exc)}")
+        kind = _pool_error_kind(exc)
+        if kind not in _SWEEPABLE_REFUSALS:
+            raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
+        # A lock or a pool slot held by a run that has already finished is
+        # owed to the outbox, not genuinely in use. Sweep ONCE and retry ONCE:
+        # a loop here would turn a real contention into a stall, and the
+        # periodic sweeper is what handles everything this misses.
+        try:
+            from tinyassets import runs as _runs
+
+            _runs._workspace_sweep_once(base_path, claimant=f"adapter:{run_id}")
+        except Exception:
+            logger.exception("workspace sweep before retry failed")
+            raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
+        try:
+            lease = _admit()
+        except Exception as retry_exc:
+            raise _Refused(
+                _pool_error_kind(retry_exc),
+                f"workspace not admitted: {_pool_detail(retry_exc)}",
+            ) from None
 
     staging = _staging_root(base_path, run_id, node_id)
     answer = execute(
@@ -408,6 +451,10 @@ def _checkout(
     bundle = staging / str(answer.get("bundle_name") or "out.bundle")
     lease_fd = _make_lease_dir(Path(lease.path))
     repo_dir = Path(lease.path) / "repo"
+    # The repository directory is created THROUGH the lease handle and its own
+    # descriptor is what git is pointed at, so the destination cannot be
+    # swapped between creating it and writing into it.
+    repo_fd = _make_repo_dir(lease_fd, repo_dir)
     home = staging / "populate-home"
     home.mkdir(parents=True, exist_ok=True)
     checkout_ref = f"tiny/{_universe_short(universe_id)}/checkout"
@@ -417,7 +464,9 @@ def _checkout(
             repo_dir,
             str(answer.get("ref_name") or "refs/tiny/export"),
             checkout_ref,
-            env=git_environment(home, path=_git_path()),
+            home_dir=home,
+            path=_git_path(),
+            dest_fd=_descriptor_or_none(repo_fd),
         )
     except Exception as exc:
         raise _Refused("workspace_checkout_failed", f"workspace could not be populated: {exc}")
@@ -686,6 +735,11 @@ def _revoke_mount(chain: Any, node_id: str) -> None:
 _POOL_KINDS = frozenset(
     {"workspace_busy", "workspace_pool_busy", "workspace_quota_exceeded"}
 )
+
+#: Refusals a sweep can clear: a lock or a pool slot still recorded against a
+#: run that already finished. A quota is NOT here -- being over budget is not
+#: something cleanup fixes, and retrying would just fail twice.
+_SWEEPABLE_REFUSALS = frozenset({"workspace_busy", "workspace_pool_busy"})
 
 
 def _pool_error_kind(exc: Exception) -> str:

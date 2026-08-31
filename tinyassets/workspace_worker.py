@@ -24,12 +24,9 @@ from typing import Any
 from tinyassets.workspace_git import (
     CredentialBroker,
     GitResult,
+    GitTransport,
     WorkspaceGitError,
     create_bundle,
-    forced_git_options,
-    git_environment,
-    libcurl_supports_multi_resolve,
-    pin_address,
     run_git,
     scrub_text,
     unbundle_into_fresh_repo,
@@ -99,34 +96,41 @@ def _minimal_path(git_binary: str) -> str:
     return str(Path(resolved).parent)
 
 
-def _curl_version_text(request: dict[str, Any], env: dict[str, str], git_binary: str) -> str:
+def _curl_version_text(request: dict[str, Any], home: Path, path: str) -> str:
     """Text to ask :func:`libcurl_supports_multi_resolve` about.
 
     An injected ``resolver_text`` wins (the parent may know better). Otherwise
     ask ``curl -V``, whose output carries ``libcurl/X.Y.Z``. NOT
     ``git version --build-options``: on git 2.43 that carries no libcurl token
     at all, so reading it would silently answer "no multi-resolve" forever.
+
+    This is not a git invocation, so it does not go through ``run_git``; it
+    still runs from an environment built from empty and never inherits.
     """
     injected = request.get("resolver_text")
     if isinstance(injected, str) and injected.strip():
         return injected
     curl = shutil.which("curl")
     if not curl:
-        return ""
+        raise WorkspaceGitError(
+            "bad_argument",
+            "no curl to read a libcurl version from, and no resolver_text was given",
+        )
     try:
         probe = subprocess.run(
             [curl, "-V"],
-            cwd=str(Path(env["HOME"])),
-            env=env,
+            cwd=str(home),
+            env={"PATH": path, "HOME": str(home), "LANG": "C.UTF-8"},
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=15,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    del git_binary
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise WorkspaceGitError(
+            "bad_argument", f"could not read the libcurl version: {type(exc).__name__}"
+        ) from None
     return (probe.stdout or b"").decode("utf-8", "replace")
 
 
@@ -151,35 +155,43 @@ class _GitSession:
         launcher=None,
         broker_factory=None,
     ) -> None:
-        self.host = host
         self.git_binary = git_binary
-        self.launcher = launcher if launcher is not None else subprocess.run
-        self.url = _canonical_url(host, owner_repo)
+        # None means run_git's own launcher, which kills the process GROUP
+        # on a timeout. A test injects its own.
+        self.launcher = launcher
         home = staging / _HOME_DIR
         home.mkdir(parents=True, exist_ok=True)
-        self.env = git_environment(home, path=_minimal_path(git_binary))
+        self.home = home
+        self.path = _minimal_path(git_binary)
+
+        # ONE validated transport. The URL git is handed, the broker's binding
+        # and the resolve rule all come from it, so there is no second place
+        # the host or the path can be spelled differently.
+        self.transport = GitTransport.build(
+            owner_repo,
+            host=host,
+            curl_version_text=_curl_version_text(request, self.home, self.path),
+            resolver=resolver,
+            classifier=classifier,
+        )
+        self.host = self.transport.host
+        self.url = self.transport.url
+        self.addresses = self.transport.addresses
+
+        protocol, broker_host, broker_path = self.transport.broker_binding()
         make_broker = broker_factory if broker_factory is not None else CredentialBroker
-        self.broker = make_broker("https", host, owner_repo, username, secret)
+        self.broker = make_broker(protocol, broker_host, broker_path, username, secret)
         broker_dir = staging / _BROKER_DIR
         broker_dir.mkdir(parents=True, exist_ok=True)
         helper = self.broker.serve(socket_dir=broker_dir)
-        addresses = pin_address(host, resolver, classifier)
-        multi = libcurl_supports_multi_resolve(
-            _curl_version_text(request, self.env, git_binary)
-        )
-        # Below libcurl 7.59.0 one entry holds one address, so the whole
-        # operation runs against the first validated address rather than
-        # emitting a comma list that libcurl would silently ignore.
-        self.addresses = tuple(addresses) if multi else (addresses[0],)
-        self.options = forced_git_options(
-            host, self.addresses, helper, multi_resolve=multi
-        )
+        self.options = self.transport.forced_options(helper)
 
     def run(self, argv: list[str], *, cwd: Path, timeout_s: float) -> GitResult:
         return run_git(
             argv,
             cwd=cwd,
-            env=self.env,
+            home_dir=self.home,
+            path=self.path,
             options=self.options,
             timeout_s=timeout_s,
             launcher=self.launcher,
@@ -196,11 +208,11 @@ class _GitSession:
         self.close()
 
 
-def _credential_free_env(staging: Path, git_binary: str, suffix: str) -> dict[str, str]:
+def _credential_free_home(staging: Path, git_binary: str, suffix: str) -> tuple[Path, str]:
     """An environment for the git operations that must NOT have a credential."""
     home = staging / f"{_HOME_DIR}-{suffix}"
     home.mkdir(parents=True, exist_ok=True)
-    return git_environment(home, path=_minimal_path(git_binary))
+    return home, _minimal_path(git_binary)
 
 
 def _require(request: dict[str, Any], field: str) -> str:
@@ -298,7 +310,7 @@ def _handle_checkout(
 
     # Bundling is credential-free: the session is closed above, so the broker
     # is torn down before any further git runs.
-    env = _credential_free_env(staging, git_binary, "bundle")
+    home, git_path = _credential_free_home(staging, git_binary, "bundle")
     verify_dir = staging / _VERIFY_DIR
     verify_dir.mkdir(parents=True, exist_ok=True)
     bundle = staging / _OUT_BUNDLE
@@ -306,7 +318,8 @@ def _handle_checkout(
         src,
         sha,
         bundle,
-        env=env,
+        home_dir=home,
+        path=git_path,
         scratch_dir=verify_dir,
         timeout_s=timeout_s,
         launcher=launcher,
@@ -327,7 +340,7 @@ def _read_symref_head(session: _GitSession) -> str:
     """The ref the remote reports as HEAD, e.g. ``refs/heads/main``."""
     listed = session.run(
         ["ls-remote", "--symref", session.url, "HEAD"],
-        cwd=Path(session.env["HOME"]),
+        cwd=session.home,
         timeout_s=_LS_REMOTE_TIMEOUT_S,
     )
     if not listed.ok:
@@ -346,7 +359,7 @@ def _observed_ref(session: _GitSession, remote_ref: str) -> str:
     """What sha the remote currently has at ``remote_ref`` ("" when absent)."""
     listed = session.run(
         ["ls-remote", session.url, remote_ref],
-        cwd=Path(session.env["HOME"]),
+        cwd=session.home,
         timeout_s=_LS_REMOTE_TIMEOUT_S,
     )
     if not listed.ok:
@@ -377,14 +390,15 @@ def _handle_push(
 
     # 1. Credential-free verification FIRST. A crafted pack is parser input, so
     #    it is parsed with no token in the process and no network reachable.
-    env = _credential_free_env(staging, git_binary, "verify")
+    home, git_path = _credential_free_home(staging, git_binary, "verify")
     verify_dir = staging / _IMPORT_VERIFY_DIR
     verify_dir.mkdir(parents=True, exist_ok=True)
     refs = verify_bundle(
         bundle_path,
         max_bytes=int(request.get("max_bundle_bytes") or MAX_BUNDLE_BYTES),
         scratch_dir=verify_dir,
-        env=env,
+        home_dir=home,
+        path=git_path,
         timeout_s=timeout_s,
         launcher=launcher,
         git_binary=git_binary,
@@ -399,7 +413,8 @@ def _handle_push(
         bundle_path,
         import_dir,
         ref_name=ref_name,
-        env=env,
+        home_dir=home,
+        path=git_path,
         timeout_s=timeout_s,
         launcher=launcher,
         git_binary=git_binary,

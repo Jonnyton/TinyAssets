@@ -18,6 +18,7 @@ import signal
 import socket
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -169,9 +170,40 @@ def test_broker_answers_a_repeated_get_after_a_401(broker: CredentialBroker) -> 
     assert second is not None and TOKEN in second
 
 
-def test_broker_matches_the_path_with_use_http_path_semantics(broker: CredentialBroker) -> None:
-    for spelling in ("owner/repo", "owner/repo.git", "/owner/repo/", "/owner/repo.git"):
-        assert broker.answer(_get_request(path=spelling)) is not None
+def test_broker_matches_the_canonical_wire_path_exactly(broker: CredentialBroker) -> None:
+    """The path git sends is matched EXACTLY, not normalised on both sides.
+
+    Measured against git 2.43 and 2.53: for ``https://host/owner/repo.git`` the
+    credential request carries ``path=owner/repo.git``, and for a URL without
+    the suffix it carries ``path=owner/repo``. Those are different strings and
+    on some hosts different resources, so stripping ``.git`` on both sides made
+    a grant for one answer a request for the other. This layer always builds
+    the ``.git`` URL, so that is the only spelling it answers.
+    """
+    assert broker.answer(_get_request(path="owner/repo.git")) is not None
+    # git never sends a leading slash, but if it did it would still be the same
+    # resource; anything else is a different one.
+    assert broker.answer(_get_request(path="/owner/repo.git")) is not None
+    assert broker.answer(_get_request(path="owner/repo")) is None
+    assert broker.answer(_get_request(path="owner/repo.git/")) is None
+    assert broker.answer(_get_request(path="owner/repo.GIT")) is None
+
+
+def test_a_broker_bound_without_the_suffix_still_answers_the_canonical_path() -> None:
+    """The binding is derived from the identity, so both spellings of the
+    GRANT produce the one canonical path -- the asymmetry is on the REQUEST."""
+    from tinyassets.workspace_git import canonical_credential_path
+
+    assert canonical_credential_path("owner/repo") == "owner/repo.git"
+    assert canonical_credential_path("owner/repo.git") == "owner/repo.git"
+    assert canonical_credential_path("/owner/repo/") == "owner/repo.git"
+    for spelling in ("owner/repo", "owner/repo.git"):
+        made = CredentialBroker("https", "github.com", spelling, "x-access-token", TOKEN)
+        try:
+            assert made.answer(_get_request(path="owner/repo.git")) is not None
+            assert made.answer(_get_request(path="owner/repo")) is None
+        finally:
+            made.close()
 
 
 def test_broker_refuses_another_path(broker: CredentialBroker) -> None:
@@ -571,18 +603,27 @@ def test_multi_resolve_is_a_required_decision_not_a_default() -> None:
         ("libcurl/7.58.0 OpenSSL/1.1.0", False),
         ("libcurl/7.29.0", False),
         ("libcurl/6.99.99", False),
-        ("curl 8.5.0 (x86_64-pc-linux-gnu)", False),
-        ("", False),
-        ("libcurl/", False),
     ],
 )
 def test_libcurl_supports_multi_resolve(version_text: str, supported: bool) -> None:
     assert libcurl_supports_multi_resolve(version_text) is supported
 
 
-def test_libcurl_gate_is_not_fooled_by_a_non_string() -> None:
-    assert libcurl_supports_multi_resolve(None) is False
-    assert libcurl_supports_multi_resolve(75900) is False
+@pytest.mark.parametrize(
+    "unreadable",
+    ["curl 8.5.0 (x86_64-pc-linux-gnu)", "", "   ", "libcurl/", None, 75900],
+)
+def test_an_unreadable_libcurl_version_fails_loudly(unreadable) -> None:
+    """A silent False is a permanent invisible downgrade.
+
+    Answering "no multi-resolve" for text we could not read means every
+    operation quietly runs against one address forever -- working, a little
+    worse, and never reported. It is asked once per worker, so a loud failure
+    costs nothing and a silent one costs the fallback nobody chose.
+    """
+    with pytest.raises(WorkspaceGitError) as caught:
+        libcurl_supports_multi_resolve(unreadable)
+    assert caught.value.code == "bad_argument"
 
 
 # ---------------------------------------------------------------------------
@@ -595,6 +636,101 @@ def _classifier_stub(ip_text: str) -> str:
     if ip_text.startswith(("10.", "192.168.", "127.", "169.254.")):
         raise ValueError("resolved address is not globally routable")
     return ip_text
+
+
+# ---------------------------------------------------------------------------
+# 6b. GitTransport -- one validated object everything downstream reads
+# ---------------------------------------------------------------------------
+
+
+def _transport(repo: str = "owner/name", **over):
+    from tinyassets.workspace_git import GitTransport
+
+    kwargs = {
+        "curl_version_text": "libcurl/8.5.0",
+        "resolver": lambda h, p: ["140.82.121.4", "140.82.121.3"],
+        "classifier": _classifier_stub,
+    }
+    kwargs.update(over)
+    return GitTransport.build(repo, **kwargs)
+
+
+def test_the_transport_derives_url_binding_and_rule_from_one_identity() -> None:
+    """One derivation: a caller cannot pin one host and clone from another."""
+    transport = _transport()
+    assert transport.url == "https://github.com/owner/name.git"
+    assert transport.broker_binding() == ("https", "github.com", "owner/name.git")
+    assert transport.repo == "owner/name"
+    assert transport.port == 443
+    rule = [
+        option
+        for option in transport.forced_options("!broker")
+        if option.startswith("http.curloptResolve=")
+    ]
+    assert rule == ["http.curloptResolve=github.com:443:140.82.121.4,140.82.121.3"]
+    # the URL's host, the rule's host and the binding's host are the SAME string
+    assert transport.url.split("/")[2] == transport.host
+    assert rule[0].split("=")[1].split(":")[0] == transport.host
+    assert transport.broker_binding()[1] == transport.host
+
+
+def test_the_transport_canonicalises_the_host_and_the_repo() -> None:
+    transport = _transport("Owner/Name", host="GitHub.COM")
+    assert transport.host == "github.com"
+    assert transport.url.startswith("https://github.com/")
+    # the repo case is the user's; only the HOST is case-insensitive
+    assert transport.credential_path.endswith(".git")
+
+
+def test_the_transport_refuses_anything_but_https_on_443() -> None:
+    from tinyassets.workspace_git import WorkspaceGitError as Err
+
+    for kwargs in ({"port": 8443}, {"port": 80}, {"host": "not a host"}):
+        with pytest.raises(Err) as caught:
+            _transport(**kwargs)
+        assert caught.value.code == "bad_argument"
+
+
+@pytest.mark.parametrize("repo", ["", "name", "owner/name/extra", "/", "owner//name"])
+def test_the_transport_refuses_a_repo_that_is_not_owner_slash_name(repo: str) -> None:
+    from tinyassets.workspace_git import WorkspaceGitError as Err
+
+    with pytest.raises(Err) as caught:
+        _transport(repo)
+    assert caught.value.code == "bad_argument"
+
+
+def test_the_transport_refuses_a_split_dns_answer() -> None:
+    from tinyassets.workspace_git import WorkspaceGitError as Err
+
+    with pytest.raises(Err) as caught:
+        _transport(resolver=lambda h, p: ["140.82.121.4", "169.254.169.254"])
+    assert caught.value.code == "address_refused"
+
+
+def test_the_transport_pins_one_address_on_an_old_libcurl() -> None:
+    transport = _transport(curl_version_text="libcurl/7.29.0")
+    assert transport.multi_resolve is False
+    assert transport.addresses == ("140.82.121.4",)
+    rule = [
+        option
+        for option in transport.forced_options("!broker")
+        if option.startswith("http.curloptResolve=")
+    ]
+    assert rule == ["http.curloptResolve=github.com:443:140.82.121.4"]
+
+
+def test_the_transport_binding_is_what_the_broker_answers() -> None:
+    """The binding and the request git will send must be the same string."""
+    transport = _transport()
+    protocol, host, path = transport.broker_binding()
+    made = CredentialBroker(protocol, host, path, "x-access-token", TOKEN)
+    try:
+        # what git sends for transport.url, measured against git 2.43/2.53
+        assert made.answer(_get_request(host=host, path="owner/name.git")) is not None
+        assert made.answer(_get_request(host=host, path="owner/name")) is None
+    finally:
+        made.close()
 
 
 def test_pin_address_returns_every_validated_address_in_dns_order() -> None:
@@ -679,11 +815,11 @@ def test_pin_address_with_the_real_production_classifier() -> None:
 
 def test_run_git_builds_git_options_then_argv(tmp_path: Path, empty_home: Path) -> None:
     launcher = RecordingLauncher()
-    env = git_environment(empty_home, path="/usr/bin")
     run_git(
         ["clone", "--bare", "https://github.com/o/r.git", "staging"],
         cwd=tmp_path,
-        env=env,
+        home_dir=empty_home,
+        path="/usr/bin",
         options=["-c", "core.fsmonitor=false"],
         timeout_s=30,
         launcher=launcher,
@@ -699,12 +835,22 @@ def test_run_git_builds_git_options_then_argv(tmp_path: Path, empty_home: Path) 
     ]
 
 
-def test_run_git_never_inherits_and_never_offers_a_stdin(tmp_path: Path, empty_home: Path) -> None:
+def test_run_git_never_inherits_and_never_offers_a_stdin(
+    tmp_path: Path, empty_home: Path
+) -> None:
     launcher = RecordingLauncher()
-    env = git_environment(empty_home, path="/usr/bin")
-    run_git(["status"], cwd=tmp_path, env=env, timeout_s=5, launcher=launcher)
+    run_git(
+        ["status"],
+        cwd=tmp_path,
+        home_dir=empty_home,
+        path="/usr/bin",
+        timeout_s=5,
+        launcher=launcher,
+    )
     kwargs = launcher.last_kwargs
-    assert kwargs["env"] == dict(env)
+    # The environment is built INSIDE run_git from home_dir and path; a caller
+    # never supplies one, so it cannot supply an extra variable either.
+    assert kwargs["env"] == dict(git_environment(empty_home, path="/usr/bin"))
     assert set(kwargs["env"]) == set(wg.GIT_ENVIRONMENT_KEYS)
     assert kwargs["stdin"] is subprocess.DEVNULL
     assert kwargs["shell"] is False
@@ -714,8 +860,14 @@ def test_run_git_never_inherits_and_never_offers_a_stdin(tmp_path: Path, empty_h
 
 def test_run_git_disables_core_dumps_on_posix_only(tmp_path: Path, empty_home: Path) -> None:
     launcher = RecordingLauncher()
-    env = git_environment(empty_home, path="/usr/bin")
-    run_git(["status"], cwd=tmp_path, env=env, timeout_s=5, launcher=launcher)
+    run_git(
+        ["status"],
+        cwd=tmp_path,
+        home_dir=empty_home,
+        path="/usr/bin",
+        timeout_s=5,
+        launcher=launcher,
+    )
     if IS_WINDOWS:
         assert "preexec_fn" not in launcher.last_kwargs
     else:
@@ -724,14 +876,19 @@ def test_run_git_disables_core_dumps_on_posix_only(tmp_path: Path, empty_home: P
 
 def test_run_git_takes_an_injected_preexec(tmp_path: Path, empty_home: Path) -> None:
     launcher = RecordingLauncher()
-    env = git_environment(empty_home, path="/usr/bin")
     marker: list[str] = []
 
     def child_setup() -> None:
         marker.append("ran")
 
     run_git(
-        ["status"], cwd=tmp_path, env=env, timeout_s=5, launcher=launcher, preexec_fn=child_setup
+        ["status"],
+        cwd=tmp_path,
+        home_dir=empty_home,
+        path="/usr/bin",
+        timeout_s=5,
+        launcher=launcher,
+        preexec_fn=child_setup,
     )
     assert launcher.last_kwargs["preexec_fn"] is child_setup
 
@@ -741,8 +898,14 @@ def test_run_git_starts_a_new_session_on_posix(
 ) -> None:
     """A new session means kill_git can signal the group, not just the pid."""
     launcher = RecordingLauncher()
-    env = git_environment(empty_home, path="/usr/bin")
-    run_git(["status"], cwd=tmp_path, env=env, timeout_s=5, launcher=launcher)
+    run_git(
+        ["status"],
+        cwd=tmp_path,
+        home_dir=empty_home,
+        path="/usr/bin",
+        timeout_s=5,
+        launcher=launcher,
+    )
     assert launcher.last_kwargs["start_new_session"] is True
     assert launcher.last_kwargs["preexec_fn"] is wg._disable_core_dumps
 
@@ -752,25 +915,299 @@ def test_run_git_omits_posix_only_arguments_on_windows(
 ) -> None:
     """subprocess rejects both arguments there, so they must not be passed."""
     launcher = RecordingLauncher()
-    env = git_environment(empty_home, path="/usr/bin")
-    run_git(["status"], cwd=tmp_path, env=env, timeout_s=5, launcher=launcher)
+    run_git(
+        ["status"],
+        cwd=tmp_path,
+        home_dir=empty_home,
+        path="/usr/bin",
+        timeout_s=5,
+        launcher=launcher,
+    )
     assert "start_new_session" not in launcher.last_kwargs
     assert "preexec_fn" not in launcher.last_kwargs
 
 
-def test_run_git_refuses_a_trace_variable(tmp_path: Path, empty_home: Path) -> None:
-    env = git_environment(empty_home, path="/usr/bin")
-    env["GIT_TRACE_CURL"] = "1"
+def test_a_caller_cannot_hand_run_git_an_environment_at_all(
+    tmp_path: Path, empty_home: Path
+) -> None:
+    """Blindness is ENFORCED, not trusted: there is no env parameter to abuse.
+
+    Previously a caller passed a dict and run_git screened it for GIT_TRACE*.
+    Screening is weaker than not accepting: GIT_DIR, GIT_ALTERNATE_OBJECT_
+    DIRECTORIES and GIT_CONFIG_COUNT would all have passed that screen.
+    """
+    for hostile in (
+        {"GIT_TRACE_CURL": "1"},
+        {"GIT_DIR": "/etc"},
+        {"GIT_ALTERNATE_OBJECT_DIRECTORIES": "/proc"},
+        {"GIT_CONFIG_COUNT": "1"},
+    ):
+        with pytest.raises(TypeError):
+            run_git(
+                ["status"],
+                cwd=tmp_path,
+                home_dir=empty_home,
+                path="/usr/bin",
+                timeout_s=5,
+                launcher=RecordingLauncher(),
+                env=hostile,  # type: ignore[call-arg]
+            )
+    # and the environment it does build carries none of them
+    built = run_git_environment_for(tmp_path, empty_home)
+    assert not [key for key in built if key.startswith("GIT_TRACE")]
+    assert "GIT_DIR" not in built
+    assert "GIT_CONFIG_COUNT" not in built
+    assert "GIT_ALTERNATE_OBJECT_DIRECTORIES" not in built
+
+
+def run_git_environment_for(tmp_path: Path, empty_home: Path) -> dict[str, str]:
+    """The env run_git actually spawns with, captured from the launcher."""
+    launcher = RecordingLauncher()
+    run_git(
+        ["status"],
+        cwd=tmp_path,
+        home_dir=empty_home,
+        path="/usr/bin",
+        timeout_s=5,
+        launcher=launcher,
+    )
+    return dict(launcher.last_kwargs["env"])
+
+
+def test_run_git_refuses_to_spawn_when_a_secret_is_in_the_invocation(
+    tmp_path: Path, empty_home: Path
+) -> None:
+    """The broker is the ONLY path a secret may take.
+
+    A token in a URL, in a ``-c http.extraHeader``, or in the binary path all
+    defeat credential-blindness silently. Every one of them is visible before
+    the spawn, so every one of them is refused there.
+    """
+    launcher = RecordingLauncher()
+    with CredentialBroker("https", "github.com", "o/r", "x-access-token", TOKEN):
+        for argv, options, binary in (
+            (["clone", f"https://x:{TOKEN}@github.com/o/r.git"], (), "git"),
+            (["fetch"], ["-c", f"http.extraHeader=Authorization: Bearer {TOKEN}"], "git"),
+            (["fetch"], (), f"/opt/{TOKEN}/git"),
+        ):
+            with pytest.raises(WorkspaceGitError) as caught:
+                run_git(
+                    argv,
+                    cwd=tmp_path,
+                    home_dir=empty_home,
+                    path="/usr/bin",
+                    options=options,
+                    timeout_s=5,
+                    launcher=launcher,
+                    git_binary=binary,
+                )
+            assert caught.value.code == "bad_argument"
+            assert TOKEN not in str(caught.value)
+    assert launcher.calls == [], "nothing may spawn once a secret is in the invocation"
+
+
+def test_run_git_refuses_an_extra_secret_the_caller_names(
+    tmp_path: Path, empty_home: Path
+) -> None:
+    launcher = RecordingLauncher()
     with pytest.raises(WorkspaceGitError) as caught:
-        run_git(["status"], cwd=tmp_path, env=env, timeout_s=5, launcher=RecordingLauncher())
+        run_git(
+            ["fetch", "https://x:hunter2hunter2@github.com/o/r.git"],
+            cwd=tmp_path,
+            home_dir=empty_home,
+            path="/usr/bin",
+            timeout_s=5,
+            launcher=launcher,
+            extra_secrets=["hunter2hunter2"],
+        )
+    assert caught.value.code == "bad_argument"
+    assert launcher.calls == []
+
+
+def test_run_git_spawns_normally_when_no_secret_is_present(
+    tmp_path: Path, empty_home: Path
+) -> None:
+    """The guard must not be one that always fires."""
+    launcher = RecordingLauncher()
+    with CredentialBroker("https", "github.com", "o/r", "x-access-token", TOKEN):
+        result = run_git(
+            ["clone", "https://github.com/o/r.git"],
+            cwd=tmp_path,
+            home_dir=empty_home,
+            path="/usr/bin",
+            timeout_s=5,
+            launcher=launcher,
+        )
+    assert result.returncode == 0
+    assert len(launcher.calls) == 1
+
+
+def test_the_default_launcher_kills_the_process_group_on_a_timeout(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """subprocess.run's own timeout kills only the tracked pid."""
+    killed: list[object] = []
+
+    class HangingProc:
+        pid = 4321
+        returncode = None
+
+        def communicate(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="git", timeout=timeout or 0)
+
+    proc = HangingProc()
+    monkeypatch.setattr(wg.subprocess, "Popen", lambda command, **kw: proc)
+    monkeypatch.setattr(wg, "kill_git", lambda p, **kw: killed.append(p) or 0)
+    with pytest.raises(subprocess.TimeoutExpired):
+        wg._default_launcher(["git", "fetch"], timeout=1, check=False)
+    assert killed == [proc], "the timeout path must go through kill_git"
+
+
+@pytest.mark.skipif(IS_WINDOWS, reason="process groups are POSIX")
+def test_a_timeout_reaps_a_double_forked_descendant(tmp_path: Path, empty_home: Path) -> None:
+    """The whole point of the group kill: a helper git spawned must not survive.
+
+    The child backgrounds a ``sleep`` and then hangs; when run_git times out,
+    the descendant must be gone too.
+    """
+    marker = tmp_path / "pid"
+    script = (
+        f"sleep 120 & echo $! > {marker}; sleep 120"
+    )
+    with pytest.raises(WorkspaceGitError) as caught:
+        run_git(
+            ["-c", script],
+            cwd=tmp_path,
+            home_dir=empty_home,
+            path="/usr/bin:/bin",
+            timeout_s=2,
+            git_binary="/bin/sh",
+        )
+    assert caught.value.code == "timeout"
+    descendant = int(marker.read_text().strip())
+    deadline = time.time() + 5
+    while os.path.isdir(f"/proc/{descendant}") and time.time() < deadline:
+        time.sleep(0.05)
+    assert not os.path.isdir(f"/proc/{descendant}"), "the descendant outlived the kill"
+
+
+def test_run_git_refuses_an_environment_that_is_not_the_canonical_set(
+    tmp_path: Path, empty_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Defence in depth, driven: the only way this fires is git_environment
+    changing, which is exactly when a silent widening would happen."""
+    launcher = RecordingLauncher()
+    canonical = dict(git_environment(empty_home, path="/usr/bin"))
+
+    for widened in (
+        {**canonical, "GIT_DIR": "/etc"},
+        {**canonical, "GIT_TRACE_CURL": "1"},
+        {key: value for key, value in canonical.items() if key != "HOME"},
+    ):
+        monkeypatch.setattr(wg, "git_environment", lambda *a, **k: dict(widened))
+        with pytest.raises(WorkspaceGitError) as caught:
+            run_git(
+                ["status"],
+                cwd=tmp_path,
+                home_dir=empty_home,
+                path="/usr/bin",
+                timeout_s=5,
+                launcher=launcher,
+            )
+        assert caught.value.code == "bad_argument"
+    assert launcher.calls == [], "a non-canonical environment must not spawn"
+
+
+def test_run_git_uses_the_group_killing_launcher_when_none_is_injected(
+    tmp_path: Path, empty_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not subprocess.run: its timeout kills only the tracked pid."""
+    used: list[str] = []
+
+    def spy(command, **kwargs):
+        used.append("default")
+        return FakeCompleted()
+
+    monkeypatch.setattr(wg, "_default_launcher", spy)
+    run_git(["status"], cwd=tmp_path, home_dir=empty_home, path="/usr/bin", timeout_s=5)
+    assert used == ["default"]
+
+
+def test_run_git_pins_the_destination_to_a_descriptor_when_given_one(
+    tmp_path: Path, empty_home: Path, monkeypatch: pytest.MonkeyPatch, posix_mode: None
+) -> None:
+    """``dest_fd`` makes git's cwd the descriptor, not a path to re-resolve."""
+    launcher = RecordingLauncher()
+    monkeypatch.setattr(wg.os, "listdir", lambda target: [])
+    monkeypatch.setattr(wg.Path, "is_dir", lambda self: True)
+    bundle = tmp_path / "b.bundle"
+    bundle.write_bytes(b"PACK")
+    with pytest.raises(WorkspaceGitError):
+        # it will fail later (the fake launcher returns no sha), but the FIRST
+        # command must already be pinned to the descriptor
+        unbundle_into_fresh_repo(
+            bundle,
+            tmp_path / "dest",
+            ref_name="refs/tiny/export",
+            home_dir=empty_home,
+            path="/usr/bin",
+            dest_fd=7,
+            launcher=launcher,
+        )
+    first = launcher.calls[0][1]
+    assert first["cwd"] == "/proc/self/fd/7"
+    assert first["pass_fds"] == (7,), "the descriptor must survive into the child"
+
+
+def test_a_descriptor_destination_is_refused_off_posix(
+    tmp_path: Path, empty_home: Path, windows_mode: None
+) -> None:
+    """No /proc/self/fd there; a path-based imitation would be a lie."""
+    bundle = tmp_path / "b.bundle"
+    bundle.write_bytes(b"PACK")
+    with pytest.raises(WorkspaceGitError) as caught:
+        unbundle_into_fresh_repo(
+            bundle,
+            tmp_path / "dest",
+            ref_name="refs/tiny/export",
+            home_dir=empty_home,
+            path="/usr/bin",
+            dest_fd=7,
+            launcher=RecordingLauncher(),
+        )
+    assert caught.value.code == "bad_argument"
+
+
+@pytest.mark.parametrize("bad", ["7", True, 7.0, object()])
+def test_a_destination_descriptor_must_be_a_descriptor(
+    tmp_path: Path, empty_home: Path, bad
+) -> None:
+    bundle = tmp_path / "b.bundle"
+    bundle.write_bytes(b"PACK")
+    with pytest.raises(WorkspaceGitError) as caught:
+        unbundle_into_fresh_repo(
+            bundle,
+            tmp_path / "dest",
+            ref_name="refs/tiny/export",
+            home_dir=empty_home,
+            path="/usr/bin",
+            dest_fd=bad,
+            launcher=RecordingLauncher(),
+        )
     assert caught.value.code == "bad_argument"
 
 
 def test_run_git_bounds_captured_output(tmp_path: Path, empty_home: Path) -> None:
     noise = b"x" * (200 * 1024) + b"TAIL"
     launcher = RecordingLauncher(FakeCompleted(returncode=1, stdout=noise, stderr=noise))
-    env = git_environment(empty_home, path="/usr/bin")
-    result = run_git(["status"], cwd=tmp_path, env=env, timeout_s=5, launcher=launcher)
+    result = run_git(
+        ["status"],
+        cwd=tmp_path,
+        home_dir=empty_home,
+        path="/usr/bin",
+        timeout_s=5,
+        launcher=launcher,
+    )
     assert len(result.stdout_tail) == 64 * 1024
     assert len(result.stderr_scrubbed) == 64 * 1024
     assert result.stdout_tail.endswith("TAIL")
@@ -780,9 +1217,15 @@ def test_run_git_bounds_captured_output(tmp_path: Path, empty_home: Path) -> Non
 def test_run_git_scrubs_a_token_out_of_both_streams(tmp_path: Path, empty_home: Path) -> None:
     raw = f"fatal: unable to access 'https://x-access-token:{TOKEN}@github.com/o/r.git/'".encode()
     launcher = RecordingLauncher(FakeCompleted(returncode=128, stdout=raw, stderr=raw))
-    env = git_environment(empty_home, path="/usr/bin")
     with CredentialBroker("https", "github.com", "o/r", "x-access-token", TOKEN):
-        result = run_git(["fetch"], cwd=tmp_path, env=env, timeout_s=5, launcher=launcher)
+        result = run_git(
+            ["fetch"],
+            cwd=tmp_path,
+            home_dir=empty_home,
+            path="/usr/bin",
+            timeout_s=5,
+            launcher=launcher,
+        )
     assert TOKEN not in result.stderr_scrubbed
     assert TOKEN not in result.stdout_tail
     assert "[redacted]" in result.stderr_scrubbed
@@ -791,17 +1234,29 @@ def test_run_git_scrubs_a_token_out_of_both_streams(tmp_path: Path, empty_home: 
 
 def test_run_git_maps_a_timeout_to_its_own_code(tmp_path: Path, empty_home: Path) -> None:
     launcher = RecordingLauncher(raises=subprocess.TimeoutExpired(cmd="git", timeout=1))
-    env = git_environment(empty_home, path="/usr/bin")
     with pytest.raises(WorkspaceGitError) as caught:
-        run_git(["fetch"], cwd=tmp_path, env=env, timeout_s=1, launcher=launcher)
+        run_git(
+            ["fetch"],
+            cwd=tmp_path,
+            home_dir=empty_home,
+            path="/usr/bin",
+            timeout_s=1,
+            launcher=launcher,
+        )
     assert caught.value.code == "timeout"
 
 
 def test_run_git_maps_a_missing_binary_to_transport(tmp_path: Path, empty_home: Path) -> None:
     launcher = RecordingLauncher(raises=FileNotFoundError("no git"))
-    env = git_environment(empty_home, path="/usr/bin")
     with pytest.raises(WorkspaceGitError) as caught:
-        run_git(["fetch"], cwd=tmp_path, env=env, timeout_s=5, launcher=launcher)
+        run_git(
+            ["fetch"],
+            cwd=tmp_path,
+            home_dir=empty_home,
+            path="/usr/bin",
+            timeout_s=5,
+            launcher=launcher,
+        )
     assert caught.value.code == "transport"
 
 
@@ -812,10 +1267,16 @@ def test_run_git_maps_a_missing_binary_to_transport(tmp_path: Path, empty_home: 
 def test_run_git_refuses_malformed_input(
     tmp_path: Path, empty_home: Path, argv: list[str], cwd_exists: bool, timeout: float
 ) -> None:
-    env = git_environment(empty_home, path="/usr/bin")
     cwd = tmp_path if cwd_exists else tmp_path / "missing"
     with pytest.raises(WorkspaceGitError) as caught:
-        run_git(argv, cwd=cwd, env=env, timeout_s=timeout, launcher=RecordingLauncher())
+        run_git(
+            argv,
+            cwd=cwd,
+            home_dir=empty_home,
+            path="/usr/bin",
+            timeout_s=timeout,
+            launcher=RecordingLauncher(),
+        )
     assert caught.value.code == "bad_argument"
 
 
@@ -956,8 +1417,14 @@ def test_git_result_carries_the_class(tmp_path: Path, empty_home: Path) -> None:
     launcher = RecordingLauncher(
         FakeCompleted(returncode=128, stderr=CLASS_FIXTURES["auth"].encode())
     )
-    env = git_environment(empty_home, path="/usr/bin")
-    result = run_git(["fetch"], cwd=tmp_path, env=env, timeout_s=5, launcher=launcher)
+    result = run_git(
+        ["fetch"],
+        cwd=tmp_path,
+        home_dir=empty_home,
+        path="/usr/bin",
+        timeout_s=5,
+        launcher=launcher,
+    )
     assert isinstance(result, GitResult)
     assert result.stderr_class == "auth"
     assert result.ok is False
@@ -991,6 +1458,8 @@ def real_git(tmp_path: Path):
     env = _real_env(home)
 
     def run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess:
+        # A direct subprocess call, NOT run_git: the fixture builds the source
+        # repository, so it supplies the env dict itself.
         return subprocess.run(
             [GIT_BINARY, *argv],
             cwd=str(cwd),
@@ -1013,7 +1482,14 @@ def real_git(tmp_path: Path):
         repo,
     )
     sha = run(["rev-parse", "HEAD"], repo).stdout.strip()
-    return {"env": env, "repo": repo, "sha": sha, "run": run}
+    return {
+        "env": env,
+        "home": home,
+        "path": str(Path(GIT_BINARY).parent),
+        "repo": repo,
+        "sha": sha,
+        "run": run,
+    }
 
 
 @needs_git
@@ -1022,7 +1498,9 @@ def test_create_bundle_refuses_a_sha_that_is_not_40_hex(tmp_path: Path, real_git
         with pytest.raises(WorkspaceGitError) as caught:
             create_bundle(
                 real_git["repo"], bad, tmp_path / "b.bundle",
-                env=real_git["env"], scratch_dir=_fresh_scratch(tmp_path),
+                home_dir=real_git["home"], path=real_git["path"], scratch_dir=_fresh_scratch(
+                    tmp_path,
+                ),
             )
         assert caught.value.code == "bad_argument"
 
@@ -1034,7 +1512,7 @@ def test_create_bundle_refuses_to_overwrite(tmp_path: Path, real_git) -> None:
     with pytest.raises(WorkspaceGitError) as caught:
         create_bundle(
             real_git["repo"], real_git["sha"], existing,
-            env=real_git["env"], scratch_dir=_fresh_scratch(tmp_path),
+            home_dir=real_git["home"], path=real_git["path"], scratch_dir=_fresh_scratch(tmp_path),
         )
     assert caught.value.code == "bad_argument"
     assert existing.read_bytes() == b"old"
@@ -1044,7 +1522,7 @@ def test_create_bundle_refuses_to_overwrite(tmp_path: Path, real_git) -> None:
 def test_create_bundle_deletes_its_temporary_ref(tmp_path: Path, real_git) -> None:
     create_bundle(
         real_git["repo"], real_git["sha"], tmp_path / "b.bundle",
-        env=real_git["env"], scratch_dir=_fresh_scratch(tmp_path),
+        home_dir=real_git["home"], path=real_git["path"], scratch_dir=_fresh_scratch(tmp_path),
     )
     listed = subprocess.run(
         [GIT_BINARY, "for-each-ref", "--format=%(refname)"],
@@ -1063,11 +1541,17 @@ def test_verify_bundle_returns_the_refs_it_carries(tmp_path: Path, real_git) -> 
     bundle = tmp_path / "b.bundle"
     create_bundle(
         real_git["repo"], real_git["sha"], bundle,
-        env=real_git["env"], scratch_dir=_fresh_scratch(tmp_path),
+        home_dir=real_git["home"], path=real_git["path"], scratch_dir=_fresh_scratch(tmp_path),
     )
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    refs = verify_bundle(bundle, max_bytes=10_000_000, scratch_dir=scratch, env=real_git["env"])
+    refs = verify_bundle(
+        bundle,
+        max_bytes=10_000_000,
+        scratch_dir=scratch,
+        home_dir=real_git["home"],
+        path=real_git["path"],
+    )
     assert refs == ["refs/tiny/export"]
 
 
@@ -1076,12 +1560,18 @@ def test_verify_bundle_refuses_an_oversized_bundle(tmp_path: Path, real_git) -> 
     bundle = tmp_path / "b.bundle"
     create_bundle(
         real_git["repo"], real_git["sha"], bundle,
-        env=real_git["env"], scratch_dir=_fresh_scratch(tmp_path),
+        home_dir=real_git["home"], path=real_git["path"], scratch_dir=_fresh_scratch(tmp_path),
     )
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     with pytest.raises(WorkspaceGitError) as caught:
-        verify_bundle(bundle, max_bytes=16, scratch_dir=scratch, env=real_git["env"])
+        verify_bundle(
+            bundle,
+            max_bytes=16,
+            scratch_dir=scratch,
+            home_dir=real_git["home"],
+            path=real_git["path"],
+        )
     assert caught.value.code == "verification"
 
 
@@ -1095,7 +1585,13 @@ def test_verify_bundle_refuses_something_that_is_not_a_regular_file(
     scratch.mkdir()
     for candidate in (directory, tmp_path / "missing.bundle"):
         with pytest.raises(WorkspaceGitError) as caught:
-            verify_bundle(candidate, max_bytes=1000, scratch_dir=scratch, env=real_git["env"])
+            verify_bundle(
+                candidate,
+                max_bytes=1000,
+                scratch_dir=scratch,
+                home_dir=real_git["home"],
+                path=real_git["path"],
+            )
         assert caught.value.code == "verification"
 
 
@@ -1106,7 +1602,13 @@ def test_verify_bundle_rejects_a_file_that_is_not_a_bundle(tmp_path: Path, real_
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     with pytest.raises(WorkspaceGitError) as caught:
-        verify_bundle(fake, max_bytes=1000, scratch_dir=scratch, env=real_git["env"])
+        verify_bundle(
+            fake,
+            max_bytes=1000,
+            scratch_dir=scratch,
+            home_dir=real_git["home"],
+            path=real_git["path"],
+        )
     assert caught.value.code == "verification"
 
 
@@ -1115,11 +1617,11 @@ def test_unbundle_leaves_no_remote_and_no_host_path(tmp_path: Path, real_git) ->
     bundle = tmp_path / "b.bundle"
     create_bundle(
         real_git["repo"], real_git["sha"], bundle,
-        env=real_git["env"], scratch_dir=_fresh_scratch(tmp_path),
+        home_dir=real_git["home"], path=real_git["path"], scratch_dir=_fresh_scratch(tmp_path),
     )
     dest = tmp_path / "workspace"
     sha = unbundle_into_fresh_repo(
-        bundle, dest, ref_name="refs/tiny/export", env=real_git["env"]
+        bundle, dest, ref_name="refs/tiny/export", home_dir=real_git["home"], path=real_git["path"]
     )
     assert sha == real_git["sha"]
 
@@ -1147,13 +1649,19 @@ def test_unbundle_refuses_a_non_empty_destination(tmp_path: Path, real_git) -> N
     bundle = tmp_path / "b.bundle"
     create_bundle(
         real_git["repo"], real_git["sha"], bundle,
-        env=real_git["env"], scratch_dir=_fresh_scratch(tmp_path),
+        home_dir=real_git["home"], path=real_git["path"], scratch_dir=_fresh_scratch(tmp_path),
     )
     dest = tmp_path / "workspace"
     dest.mkdir()
     (dest / "squatter").write_text("x", encoding="utf-8")
     with pytest.raises(WorkspaceGitError) as caught:
-        unbundle_into_fresh_repo(bundle, dest, ref_name="refs/tiny/export", env=real_git["env"])
+        unbundle_into_fresh_repo(
+            bundle,
+            dest,
+            ref_name="refs/tiny/export",
+            home_dir=real_git["home"],
+            path=real_git["path"],
+        )
     assert caught.value.code == "bad_argument"
 
 
@@ -1164,7 +1672,8 @@ def test_unbundle_refuses_a_missing_bundle(tmp_path: Path, real_git) -> None:
             tmp_path / "missing.bundle",
             tmp_path / "workspace",
             ref_name="refs/tiny/export",
-            env=real_git["env"],
+            home_dir=real_git["home"],
+            path=real_git["path"],
         )
     assert caught.value.code == "verification"
 
@@ -1176,11 +1685,16 @@ def test_populate_workspace_checks_the_commit_out_on_a_local_branch(
     bundle = tmp_path / "b.bundle"
     create_bundle(
         real_git["repo"], real_git["sha"], bundle,
-        env=real_git["env"], scratch_dir=_fresh_scratch(tmp_path),
+        home_dir=real_git["home"], path=real_git["path"], scratch_dir=_fresh_scratch(tmp_path),
     )
     dest = tmp_path / "workspace"
     sha = populate_workspace_from_bundle(
-        bundle, dest, "refs/tiny/export", "tiny/u-abc/slug", env=real_git["env"]
+        bundle,
+        dest,
+        "refs/tiny/export",
+        "tiny/u-abc/slug",
+        home_dir=real_git["home"],
+        path=real_git["path"],
     )
     assert sha == real_git["sha"]
     assert (dest / "README.md").read_text(encoding="utf-8") == "workspace\n"
@@ -1216,9 +1730,17 @@ def deep_repo(tmp_path_factory) -> dict:
     repo.mkdir()
 
     def run(argv: list[str], cwd: Path) -> subprocess.CompletedProcess:
+        # A direct subprocess call, NOT run_git: the fixture is building the
+        # source repository, so it passes the env dict itself.
         return subprocess.run(
-            [GIT_BINARY, *argv], cwd=str(cwd), env=env, stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, timeout=120, check=True,
+            [GIT_BINARY, *argv],
+            cwd=str(cwd),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=True,
         )
 
     run(["init", "--quiet", "."], repo)
@@ -1232,7 +1754,16 @@ def deep_repo(tmp_path_factory) -> dict:
     parent = run(["rev-parse", "HEAD~1"], repo).stdout.strip()
     count = run(["rev-list", "--count", "HEAD"], repo).stdout.strip()
     assert count == str(DEEP_HISTORY_COMMITS), count
-    return {"env": env, "repo": repo, "sha": sha, "parent": parent, "run": run, "root": root}
+    return {
+        "env": env,
+        "home": home,
+        "path": str(Path(GIT_BINARY).parent),
+        "repo": repo,
+        "sha": sha,
+        "parent": parent,
+        "run": run,
+        "root": root,
+    }
 
 
 @needs_git
@@ -1241,16 +1772,25 @@ def test_a_bundle_of_a_deep_history_carries_all_of_it(tmp_path: Path, deep_repo)
     bundle = tmp_path / "deep.bundle"
     create_bundle(
         deep_repo["repo"], deep_repo["sha"], bundle,
-        env=deep_repo["env"], scratch_dir=_fresh_scratch(tmp_path),
+        home_dir=deep_repo["home"], path=deep_repo["path"], scratch_dir=_fresh_scratch(tmp_path),
     )
     refs = verify_bundle(
-        bundle, max_bytes=50_000_000, scratch_dir=_fresh_scratch(tmp_path), env=deep_repo["env"]
+        bundle,
+        max_bytes=50_000_000,
+        scratch_dir=_fresh_scratch(tmp_path),
+        home_dir=deep_repo["home"],
+        path=deep_repo["path"],
     )
     assert refs == ["refs/tiny/export"]
 
     dest = tmp_path / "workspace"
     sha = populate_workspace_from_bundle(
-        bundle, dest, "refs/tiny/export", "tiny/u/deep", env=deep_repo["env"]
+        bundle,
+        dest,
+        "refs/tiny/export",
+        "tiny/u/deep",
+        home_dir=deep_repo["home"],
+        path=deep_repo["path"],
     )
     assert sha == deep_repo["sha"]
     counted = subprocess.run(
@@ -1277,10 +1817,82 @@ def test_verify_bundle_refuses_a_bundle_that_needs_objects_it_lacks(
     with pytest.raises(WorkspaceGitError) as caught:
         verify_bundle(
             thin, max_bytes=50_000_000, scratch_dir=_fresh_scratch(tmp_path),
-            env=deep_repo["env"],
+            home_dir=deep_repo["home"],
+            path=deep_repo["path"],
         )
     assert caught.value.code == "verification"
     assert "prerequisite" in str(caught.value)
+
+
+@needs_git
+def test_a_bundle_from_a_shallow_clone_is_refused(tmp_path: Path, deep_repo) -> None:
+    """The real shape D1 forbids: a shallow source cannot cross the bridge.
+
+    A bundle cannot represent a shallow boundary, so a clone made with
+    ``--depth 1`` must not be able to produce one this layer accepts -- either
+    git refuses to bundle it, or the bundle it makes fails verification in an
+    empty repository. Both are the same answer; neither may silently pass.
+    """
+    shallow = tmp_path / "shallow"
+    clone = subprocess.run(
+        [
+            GIT_BINARY, "clone", "--depth", "1", "--no-local",
+            deep_repo["repo"].as_uri(), str(shallow),
+        ],
+        env=deep_repo["env"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if clone.returncode != 0:
+        pytest.skip(f"this git will not make a shallow local clone: {clone.stderr[:120]}")
+    assert (shallow / ".git" / "shallow").exists(), "the clone is not actually shallow"
+
+    sha = subprocess.run(
+        [GIT_BINARY, "rev-parse", "HEAD"],
+        cwd=str(shallow), env=deep_repo["env"], stdin=subprocess.DEVNULL,
+        capture_output=True, text=True, timeout=60,
+    ).stdout.strip()
+
+    bundle = tmp_path / "shallow.bundle"
+    try:
+        create_bundle(
+            shallow, sha, bundle,
+            home_dir=deep_repo["home"],
+            path=deep_repo["path"],
+            scratch_dir=_fresh_scratch(tmp_path),
+        )
+    except WorkspaceGitError as caught:
+        assert caught.code == "verification", caught
+        assert not bundle.exists(), "a refused bundle must not be left behind"
+        return
+
+    # MEASURED (git 2.53): git happily bundles a shallow clone, and
+    # `bundle verify` in an empty repo ACCEPTS it -- it reports the ref and
+    # says nothing about the parent it cannot reach. So verification alone is
+    # NOT proof of self-containedness for a shallow source.
+    refs = verify_bundle(
+        bundle,
+        max_bytes=50_000_000,
+        scratch_dir=_fresh_scratch(tmp_path),
+        home_dir=deep_repo["home"],
+        path=deep_repo["path"],
+    )
+    assert refs == ["refs/tiny/export"]
+
+    # The fsck-checked IMPORT is what catches it, which is exactly why the push
+    # path runs both and never treats `bundle verify` as the whole answer.
+    with pytest.raises(WorkspaceGitError) as caught:
+        unbundle_into_fresh_repo(
+            bundle,
+            tmp_path / "from-shallow",
+            ref_name="refs/tiny/export",
+            home_dir=deep_repo["home"],
+            path=deep_repo["path"],
+        )
+    assert caught.value.code == "verification"
+    assert "necessary objects" in str(caught.value) or "traverse" in str(caught.value)
 
 
 class PrerequisiteReportingLauncher:
@@ -1319,7 +1931,7 @@ def test_create_bundle_refuses_and_deletes_its_own_thin_output(
     with pytest.raises(WorkspaceGitError) as caught:
         create_bundle(
             repo, "0" * 40, bundle,
-            env=git_environment(empty_home, path="/usr/bin"),
+            home_dir=empty_home, path="/usr/bin",
             scratch_dir=_fresh_scratch(tmp_path),
             launcher=PrerequisiteReportingLauncher(bundle),
         )
@@ -1337,7 +1949,7 @@ def test_create_bundle_verifies_a_good_bundle_without_complaint(
     bundle = tmp_path / "b.bundle"
     returned = create_bundle(
         real_git["repo"], real_git["sha"], bundle,
-        env=real_git["env"], scratch_dir=_fresh_scratch(tmp_path),
+        home_dir=real_git["home"], path=real_git["path"], scratch_dir=_fresh_scratch(tmp_path),
     )
     assert returned == bundle
     assert bundle.is_file()
@@ -1351,7 +1963,7 @@ def test_create_bundle_needs_an_empty_scratch_dir(tmp_path: Path, real_git) -> N
     with pytest.raises(WorkspaceGitError) as caught:
         create_bundle(
             real_git["repo"], real_git["sha"], tmp_path / "b.bundle",
-            env=real_git["env"], scratch_dir=dirty,
+            home_dir=real_git["home"], path=real_git["path"], scratch_dir=dirty,
         )
     assert caught.value.code == "bad_argument"
 
@@ -1404,7 +2016,7 @@ def test_unbundle_refuses_a_populated_repo_that_carries_a_remote(
             bundle,
             dest,
             ref_name="refs/tiny/export",
-            env=git_environment(empty_home, path="/usr/bin"),
+            home_dir=empty_home, path="/usr/bin",
             launcher=launcher,
         )
     assert caught.value.code == "verification"
@@ -1425,7 +2037,7 @@ def test_unbundle_refuses_a_populated_repo_that_records_the_bundle_path(
             bundle,
             dest,
             ref_name="refs/tiny/export",
-            env=git_environment(empty_home, path="/usr/bin"),
+            home_dir=empty_home, path="/usr/bin",
             launcher=launcher,
         )
     assert caught.value.code == "verification"
@@ -1442,7 +2054,7 @@ def test_unbundle_accepts_a_clean_population(tmp_path: Path, empty_home: Path) -
         bundle,
         dest,
         ref_name="refs/tiny/export",
-        env=git_environment(empty_home, path="/usr/bin"),
+        home_dir=empty_home, path="/usr/bin",
         launcher=launcher,
     )
     assert sha == "0" * 40
@@ -1466,8 +2078,11 @@ def test_bundle_helpers_never_touch_the_real_subprocess_by_default() -> None:
                      populate_workspace_from_bundle, run_git):
         parameters = inspect.signature(function).parameters
         assert "launcher" in parameters
-        assert parameters["launcher"].default is subprocess.run
-        assert "env" in parameters
+        # None means run_git's own launcher, which kills the process GROUP
+        # on a timeout rather than only the tracked pid.
+        assert parameters["launcher"].default is None
+        assert "home_dir" in parameters and "path" in parameters
+        assert "env" not in parameters, "a caller must not be able to hand in an env"
 
 
 def test_python_is_recent_enough_for_the_typing_used() -> None:
