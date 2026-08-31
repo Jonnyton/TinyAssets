@@ -562,6 +562,50 @@ def test_ws_read_refuses_a_file_over_the_cap(workspace: Path) -> None:
     assert "workspace limit" in result.output_state["result"]["message"]
 
 
+def test_ws_read_max_bytes_is_clamped_to_the_cap_not_replaced(workspace: Path) -> None:
+    """Asking for more than the limits allow does not raise the node's cap."""
+    (workspace / "big.txt").write_text("z" * 5000, encoding="utf-8")
+    source = (
+        PROBE + "\n"
+        "def run(state):\n"
+        "    return {'result': probe(lambda: ws.read('big.txt', max_bytes=10 ** 9))}\n"
+    )
+    result = _run_node(workspace, source, limits=WorkspaceLimits(max_read_bytes=100))
+    assert result.success is True, result.error
+    outcome = result.output_state["result"]
+    assert outcome["outcome"] == "RuntimeError"
+    assert "larger than 100 bytes" in outcome["message"]
+
+
+def test_ws_read_max_bytes_below_the_cap_is_honoured(workspace: Path) -> None:
+    (workspace / "big.txt").write_text("z" * 5000, encoding="utf-8")
+    source = (
+        PROBE + "\n"
+        "def run(state):\n"
+        "    return {'result': probe(lambda: ws.read('big.txt', max_bytes=50))}\n"
+    )
+    result = _run_node(workspace, source, limits=WorkspaceLimits(max_read_bytes=100000))
+    assert result.success is True, result.error
+    assert "larger than 50 bytes" in result.output_state["result"]["message"]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="dir_fd resolution is POSIX-only")
+def test_a_symlinked_parent_cannot_be_walked_through(workspace: Path) -> None:
+    """Codex #9: resolution opens each component NOFOLLOW from the previous
+    descriptor, so a symlinked parent is not a door -- there is no name left to
+    swap after the first open."""
+    outside = workspace.parent / "outside"
+    (workspace / "escape").symlink_to(outside, target_is_directory=True)
+    source = (
+        PROBE + "\n"
+        "def run(state):\n"
+        "    return {'result': probe(lambda: ws.read('escape/secret.txt'))}\n"
+    )
+    result = _run_node(workspace, source)
+    assert result.success is True, result.error
+    assert result.output_state["result"]["outcome"] == "ValueError"
+
+
 def test_ws_glob_returns_relative_paths(workspace: Path) -> None:
     source = (
         "def run(state):\n"
@@ -616,7 +660,7 @@ ESCAPES = [
         "must be relative, not absolute",
     ),
     ("read_empty", "ws.read('')", "non-empty string"),
-    ("write_root", "ws.write('.', 'x')", "not the workspace root"),
+    ("write_root", "ws.write('.', 'x')", "names the workspace root"),
 ]
 
 
@@ -701,8 +745,14 @@ def test_ws_run_refuses_a_shell_string_and_a_bad_env(workspace: Path) -> None:
     )
     result = _run_node(workspace, source)
     assert result.success is True, result.error
-    for key, outcome in result.output_state["result"].items():
-        assert outcome["outcome"] == "ValueError", (key, outcome)
+    # A shell string and an empty list are shape errors; a non-str argv element
+    # and a non-str env value are TYPE errors, refused before any method on the
+    # caller's object is called (Codex #8).
+    outcomes = result.output_state["result"]
+    assert outcomes["string"]["outcome"] == "ValueError", outcomes["string"]
+    assert outcomes["empty"]["outcome"] == "ValueError", outcomes["empty"]
+    assert outcomes["nonstr"]["outcome"] == "TypeError", outcomes["nonstr"]
+    assert outcomes["badenv"]["outcome"] == "ValueError", outcomes["badenv"]
 
 
 def test_ws_run_env_is_a_fixed_base_plus_screened_keys(workspace: Path) -> None:
@@ -771,53 +821,59 @@ def test_the_import_allowlist_is_unaffected_by_what_ws_uses(workspace: Path) -> 
     ]
 
 
-def test_every_ws_method_raises_the_import_depth_around_its_internals() -> None:
-    """A lazy import inside the internals must not be checked against the node's
-    allowlist. On POSIX ``subprocess.Popen`` imports ``warnings`` on first use,
-    at depth 0 while the allowlist is installed, so without this guard every
-    ``ws.run`` raises ImportError on Linux while passing on Windows.
-    """
-    import ast
+def test_a_str_subclass_cannot_run_node_code_inside_path_validation(
+    workspace: Path,
+) -> None:
+    """Codex #8, the property: no method of a caller's object is ever called.
 
+    The old shape raised the import depth around ws internals so that
+    `subprocess`'s lazy imports would not be checked -- and `_ws_resolve` then
+    called `.replace()` on the caller's argument INSIDE that window, so a `str`
+    subclass overriding `replace` ran node code with the allowlist suspended.
+    Codex imported `os` that way. Arguments are now checked to the EXACT builtin
+    type first, so `replace` is never reached, and the depth escape is gone
+    entirely (the modules are preloaded before the allowlist is installed).
+    """
+    source = (
+        PROBE + "\n"
+        "def run(state):\n"
+        "    seen = []\n"
+        "    class Sneaky(str):\n"
+        "        def replace(self, *a, **k):\n"
+        "            seen.append('replace')\n"
+        "            try:\n"
+        "                import os\n"
+        "                seen.append('IMPORTED')\n"
+        "            except ImportError:\n"
+        "                seen.append('blocked')\n"
+        "            return str.replace(self, *a, **k)\n"
+        "    outcomes = [\n"
+        "        probe(lambda: ws.read(Sneaky('README.md')))['outcome'],\n"
+        "        probe(lambda: ws.write(Sneaky('x.txt'), 'y'))['outcome'],\n"
+        "        probe(lambda: ws.glob(Sneaky('*')))['outcome'],\n"
+        "    ]\n"
+        "    return {'result': {'outcomes': outcomes, 'seen': seen}}\n"
+    )
+    result = _run_node(workspace, source)
+    assert result.success is True, result.error
+    payload = result.output_state["result"]
+    assert payload["outcomes"] == ["TypeError", "TypeError", "TypeError"]
+    assert payload["seen"] == [], "a method of the caller's object was called"
+
+
+def test_the_runner_holds_no_import_depth_counter_at_all() -> None:
+    """A counter says how deep the stack is, not whose code is running.
+
+    Anything that called into user code while it was raised handed node code an
+    unchecked import, which is Codex #8. The allowlist now asks whether the
+    importing frame's globals ARE the node's namespace -- a fact no call can
+    hold open.
+    """
     from tinyassets import node_sandbox
 
-    tree = ast.parse(node_sandbox._RUNNER_SCRIPT)
-    workspace_class = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ClassDef) and node.name == "_Workspace"
-    )
-    methods = {
-        node.name: node
-        for node in workspace_class.body
-        if isinstance(node, ast.FunctionDef)
-    }
-    def guarded_blocks(node):
-        return [
-            block
-            for block in ast.walk(node)
-            if isinstance(block, ast.With)
-            and any(
-                isinstance(item.context_expr, ast.Call)
-                and getattr(item.context_expr.func, "id", "") == "_ws_internals"
-                for item in block.items
-            )
-        ]
-
-    for name in ("run", "read", "write", "glob", "bundle"):
-        assert guarded_blocks(methods[name]), (
-            f"ws.{name} does not raise the import depth"
-        )
-
-    # The spawn is the one that matters: Popen is where the lazy import is.
-    spawn_calls = [
-        call
-        for block in guarded_blocks(methods["run"])
-        for call in ast.walk(block)
-        if isinstance(call, ast.Call)
-        and getattr(call.func, "attr", "") == "_spawn"
-    ]
-    assert spawn_calls, "ws.run spawns outside the raised import depth"
+    assert "_ws_internals" not in node_sandbox._RUNNER_SCRIPT
+    assert "_import_depth" not in node_sandbox._RUNNER_SCRIPT
+    assert "f_globals is namespace" in node_sandbox._RUNNER_SCRIPT
 
 
 def test_ws_run_works_when_the_node_allowlist_is_minimal(
@@ -869,7 +925,9 @@ def test_bundle_refuses_anything_that_is_not_a_commit_sha(workspace: Path) -> No
     )
     result = _run_node(workspace, source)
     assert result.success is True, result.error
-    assert result.output_state["result"] == ["ValueError"] * 5
+    # The last is a TYPE error: `7` is not a str, and that is checked before
+    # anything is asked of it.
+    assert result.output_state["result"] == ["ValueError"] * 4 + ["TypeError"]
 
 
 @pytest.mark.skipif(

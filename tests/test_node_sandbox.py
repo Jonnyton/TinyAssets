@@ -32,6 +32,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
 import pytest
@@ -1131,7 +1132,23 @@ class _FakeResourceLauncher:
             "fake.setrlimit = _refuse\n"
             "sys.modules['resource'] = fake\n"
         )
-        return [sys.executable, "-c", prelude + runner_script, *args]
+        # Delivered as a FILE, like PlainSubprocessLauncher: `python -c` is
+        # capped near 32 KiB of command line on Windows and the runner is
+        # larger than that. Same text, different delivery.
+        handle, path = tempfile.mkstemp(prefix="ta-test-runner-", suffix=".py")
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(prelude + runner_script)
+        self._script_path = path
+        return [sys.executable, path, *args]
+
+    def cleanup(self) -> None:
+        path = getattr(self, "_script_path", "")
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            self._script_path = ""
 
     def env(self, home_dir: str) -> dict[str, str]:
         return PlainSubprocessLauncher().env(home_dir)

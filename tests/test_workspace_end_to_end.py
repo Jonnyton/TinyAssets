@@ -627,9 +627,14 @@ def test_a_compiled_workspace_node_runs_inside_the_lease(
 
     seen: dict[str, Any] = {}
 
-    def _launcher(bind_source: str, allowed_roots: tuple[str, ...]):
+    def _launcher(
+        bind_source: str,
+        allowed_roots: tuple[str, ...],
+        pass_fds: tuple[int, ...] = (),
+    ):
         seen["bind"] = bind_source
         seen["roots"] = allowed_roots
+        seen["pass_fds"] = pass_fds
         return PlainSubprocessLauncher(workspace_bind=bind_source)
 
     monkeypatch.setattr(ns, "WORKSPACE_LAUNCHER_FACTORY", _launcher)

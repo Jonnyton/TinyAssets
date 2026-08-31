@@ -401,45 +401,270 @@ def _apply_rlimits(resource_module, timeout, profile=None):
 # top of the runner, BEFORE the import allowlist is installed, so the allowlist
 # still refuses the same names to node code.
 _WORKSPACE_HELPER = '''
-class _ws_internals(object):
-    """Raise the import depth for the duration of a ws call.
+def _ws_exact_str(value, label):
+    """EXACTLY ``str``, never a subclass.
 
-    ``subprocess.Popen`` imports lazily on POSIX (``warnings`` on the first
-    call), and those imports happen while the node's allowlist is installed,
-    at depth 0 -- so without this EVERY ws.run raises ImportError on Linux
-    while passing on Windows, whose Popen takes another path. This is the
-    same rule the allowlist already applies to an allowlisted module's own
-    imports: no node code runs at depth > 0, so it is not a bypass. A ws
-    method takes data, never a callable, so nothing of the node's runs here.
+    A ``str`` subclass can override ``replace``, ``__str__`` or ``__fspath__``
+    and run node code inside path validation. Nothing below calls a method on a
+    caller's object before its type is known to be the built-in, so there is no
+    user code between a check and the open it guards.
     """
-
-    def __enter__(self):
-        _import_depth[0] += 1
-        return self
-
-    def __exit__(self, kind, value, trace):
-        _import_depth[0] -= 1
-        return False
+    if type(value) is not str:
+        raise TypeError(
+            "ws " + label + " must be a str, not " + type(value).__name__
+        )
+    return value
 
 
-def _ws_resolve(root, relpath, kind):
-    """One rule for every path ws touches: relative, no '..', beneath the root."""
-    if not isinstance(relpath, str) or not relpath.strip():
+def _ws_exact_int(value, label):
+    if type(value) is not int or type(value) is bool:
+        raise TypeError(
+            "ws " + label + " must be an int, not " + type(value).__name__
+        )
+    return value
+
+
+def _ws_split(relpath, kind):
+    """Validate a relative path and return its components."""
+    _ws_exact_str(relpath, kind)
+    if not relpath.strip():
         raise ValueError("workspace " + kind + " must be a non-empty string")
     if chr(0) in relpath:
         raise ValueError("workspace " + kind + " contains a NUL byte")
     norm = relpath.replace(chr(92), "/")
     if norm.startswith("/"):
-        raise ValueError("workspace " + kind + " must be relative, not absolute: " + relpath)
+        raise ValueError(
+            "workspace " + kind + " must be relative, not absolute: " + relpath
+        )
     if len(norm) > 1 and norm[1] == ":":
-        raise ValueError("workspace " + kind + " must be relative, not a drive path: " + relpath)
-    parts = [p for p in norm.split("/") if p not in ("", ".")]
-    if any(p == ".." for p in parts):
-        raise ValueError("workspace " + kind + " may not contain '..': " + relpath)
-    target = os.path.realpath(os.path.join(root, *parts)) if parts else root
-    if target != root and not target.startswith(root + os.sep):
-        raise ValueError("workspace " + kind + " escapes the workspace: " + relpath)
-    return target
+        raise ValueError(
+            "workspace " + kind + " must be relative, not a drive path: " + relpath
+        )
+    parts = []
+    for piece in norm.split("/"):
+        if piece == "..":
+            raise ValueError(
+                "workspace " + kind + " may not contain " + chr(39) + ".." + chr(39)
+                + ": " + relpath
+            )
+        if piece not in ("", "."):
+            parts.append(piece)
+    return parts
+
+
+_WS_DIR_FD_OPS = getattr(os, "supports_dir_fd", set())
+_WS_HAS_DIR_FD = (
+    hasattr(os, "O_DIRECTORY")
+    and os.open in _WS_DIR_FD_OPS
+    and os.mkdir in _WS_DIR_FD_OPS
+)
+_WS_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_WS_BINARY = getattr(os, "O_BINARY", 0)
+_WS_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+_WS_MAX_DEPTH = 64
+
+
+class _WsRoot(object):
+    """The workspace, held open.
+
+    On a host with ``dir_fd`` support every component is opened relative to the
+    previous descriptor with ``O_NOFOLLOW``, so a path is never validated as a
+    string and then opened by name: there is no window in which a component can
+    be swapped for a link, because after the first open there is no name left to
+    swap. Where the platform has no ``dir_fd`` (Windows, and therefore only the
+    tests-only launcher, which is not a security boundary) the same rules are
+    enforced against resolved paths.
+    """
+
+    def __init__(self, path):
+        self.path = os.path.realpath(path)
+        self.fd = None
+        if _WS_HAS_DIR_FD:
+            self.fd = os.open(self.path, os.O_RDONLY | _WS_DIRECTORY)
+
+    # -- resolution ----------------------------------------------------------
+
+    def _walk(self, parts, kind, make_parents=False):
+        """Return ``(parent_fd, owned)`` for the directory holding the leaf."""
+        if len(parts) > _WS_MAX_DEPTH:
+            raise ValueError("workspace " + kind + " is nested too deeply")
+        current = self.fd
+        owned = False
+        try:
+            for part in parts:
+                flags = os.O_RDONLY | _WS_DIRECTORY | _WS_NOFOLLOW
+                try:
+                    nxt = os.open(part, flags, dir_fd=current)
+                except FileNotFoundError:
+                    if not make_parents:
+                        raise
+                    os.mkdir(part, 448, dir_fd=current)
+                    nxt = os.open(part, flags, dir_fd=current)
+                if owned:
+                    os.close(current)
+                current = nxt
+                owned = True
+        except OSError as exc:
+            if owned:
+                os.close(current)
+            raise ValueError(
+                "workspace " + kind + " cannot be resolved beneath the workspace: "
+                + str(exc)
+            )
+        return current, owned
+
+    def open_leaf(self, parts, kind, flags, mode=None, make_parents=False):
+        """Open the last component with O_NOFOLLOW, relative to its parent."""
+        if not parts:
+            raise ValueError("workspace " + kind + " names the workspace root")
+        parent, owned = self._walk(parts[:-1], kind, make_parents=make_parents)
+        try:
+            if mode is None:
+                return os.open(parts[-1], flags | _WS_NOFOLLOW, dir_fd=parent)
+            return os.open(parts[-1], flags | _WS_NOFOLLOW, mode, dir_fd=parent)
+        except OSError as exc:
+            raise ValueError(
+                "workspace " + kind + " cannot be opened beneath the workspace: "
+                + str(exc)
+            )
+        finally:
+            if owned:
+                os.close(parent)
+
+    def dir_reference(self, parts, kind):
+        """A path the child can chdir to, naming an OPENED directory."""
+        parent, owned = self._walk(parts, kind)
+        try:
+            return "/proc/self/fd/" + str(parent), parent, owned
+        except BaseException:
+            if owned:
+                os.close(parent)
+            raise
+
+    def scan(self, limit):
+        """Every relative path beneath the root, links neither followed nor listed."""
+        found = []
+        stack = [(self.fd, "", 0)]
+        owned = set()
+        try:
+            while stack and len(found) < limit:
+                handle, prefix, depth = stack.pop()
+                if depth > _WS_MAX_DEPTH:
+                    continue
+                try:
+                    entries = list(os.scandir(handle))
+                except OSError:
+                    continue
+                for entry in entries:
+                    if entry.is_symlink():
+                        continue
+                    name = prefix + entry.name
+                    found.append(name)
+                    if len(found) >= limit:
+                        break
+                    if entry.is_dir(follow_symlinks=False):
+                        try:
+                            child = os.open(
+                                entry.name,
+                                os.O_RDONLY | _WS_DIRECTORY | _WS_NOFOLLOW,
+                                dir_fd=handle,
+                            )
+                        except OSError:
+                            continue
+                        owned.add(child)
+                        stack.append((child, name + "/", depth + 1))
+        finally:
+            for handle in owned:
+                try:
+                    os.close(handle)
+                except OSError:
+                    pass
+        return found
+
+    def close(self):
+        if self.fd is not None:
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+            self.fd = None
+
+
+class _WsPathRoot(_WsRoot):
+    """The no-``dir_fd`` stand-in. Not a boundary: only the tests-only launcher
+    reaches it, and that launcher performs no isolation of any kind."""
+
+    def __init__(self, path):
+        self.path = os.path.realpath(path)
+        self.fd = None
+
+    def _resolve(self, parts, kind, make_parents=False):
+        target = os.path.realpath(os.path.join(self.path, *parts)) if parts else self.path
+        if target != self.path and not target.startswith(self.path + os.sep):
+            raise ValueError(
+                "workspace " + kind + " escapes the workspace: " + "/".join(parts)
+            )
+        if make_parents:
+            parent = os.path.dirname(target)
+            if parent and parent != self.path and not os.path.isdir(parent):
+                os.makedirs(parent)
+        return target
+
+    def open_leaf(self, parts, kind, flags, mode=None, make_parents=False):
+        if not parts:
+            raise ValueError("workspace " + kind + " names the workspace root")
+        target = self._resolve(parts, kind, make_parents=make_parents)
+        try:
+            if mode is None:
+                return os.open(target, flags | _WS_NOFOLLOW | _WS_BINARY)
+            return os.open(target, flags | _WS_NOFOLLOW | _WS_BINARY, mode)
+        except OSError as exc:
+            raise ValueError(
+                "workspace " + kind + " cannot be opened beneath the workspace: "
+                + str(exc)
+            )
+
+    def dir_reference(self, parts, kind):
+        return self._resolve(parts, kind), None, False
+
+    def scan(self, limit):
+        found = []
+        stack = [(self.path, "")]
+        while stack and len(found) < limit:
+            here, prefix = stack.pop()
+            try:
+                entries = list(os.scandir(here))
+            except OSError:
+                continue
+            for entry in entries:
+                if entry.is_symlink():
+                    continue
+                name = prefix + entry.name
+                found.append(name)
+                if len(found) >= limit:
+                    break
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append((entry.path, name + "/"))
+        return found
+
+
+def _ws_match(parts, pattern_parts):
+    """Glob semantics where ``*`` does not cross a separator and ``**`` does."""
+    if not pattern_parts:
+        return not parts
+    head = pattern_parts[0]
+    if head == "**":
+        if len(pattern_parts) == 1:
+            return True
+        for index in range(len(parts) + 1):
+            if _ws_match(parts[index:], pattern_parts[1:]):
+                return True
+        return False
+    if not parts:
+        return False
+    if not fnmatch.fnmatchcase(parts[0], head):
+        return False
+    return _ws_match(parts[1:], pattern_parts[1:])
 
 
 class _WorkspaceTail(object):
@@ -483,7 +708,7 @@ class _WorkspaceTail(object):
 
 def _make_workspace(conf, remaining):
     """Return the `ws` object bound to one workspace root."""
-    root = os.path.realpath(conf["root"])
+    root = _WsRoot(conf["root"]) if _WS_HAS_DIR_FD else _WsPathRoot(conf["root"])
     limits = conf.get("limits") or {}
     max_commands = int(limits.get("max_commands", 64))
     max_output = int(limits.get("max_output_bytes", 1048576))
@@ -496,43 +721,59 @@ def _make_workspace(conf, remaining):
     class _Workspace(object):
         """The checked-out project, and nothing else."""
 
-        path = root
+        path = root.path
 
         def run(self, argv, timeout=None, cwd=None, env=None):
-            if not isinstance(argv, (list, tuple)) or not argv:
+            # Types FIRST, before a single method is called on any of it.
+            if type(argv) is not list and type(argv) is not tuple:
                 raise ValueError("ws.run needs a non-empty argv list")
             argv = list(argv)
+            if not argv:
+                raise ValueError("ws.run needs a non-empty argv list")
             for item in argv:
-                if not isinstance(item, str):
-                    raise ValueError("ws.run argv must be a list of str")
+                _ws_exact_str(item, "run argv element")
                 if chr(0) in item:
                     raise ValueError("ws.run argv contains a NUL byte")
+            if timeout is not None and type(timeout) is not int and type(timeout) is not float:
+                raise TypeError("ws.run timeout must be a number")
+            child_env = {"HOME": "/tmp", "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}
+            if env is not None:
+                if type(env) is not dict:
+                    raise TypeError("ws.run env must be a dict")
+                for key in sorted(env):
+                    _ws_exact_str(key, "run env name")
+                    if not _WS_ENV_NAME.match(key):
+                        raise ValueError(
+                            "ws.run env name is not an env name: " + repr(key)
+                        )
+                    value = env[key]
+                    _ws_exact_str(value, "run env value")
+                    if chr(0) in value:
+                        raise ValueError("ws.run env value holds a NUL byte")
+                    child_env[key] = value
+
             if counters["commands"] >= max_commands:
                 raise RuntimeError(
                     "workspace limit: at most %d commands per node" % max_commands
                 )
             counters["commands"] += 1
 
-            with _ws_internals():
-                work = root if cwd is None else _ws_resolve(root, cwd, "cwd")
-            child_env = {"HOME": "/tmp", "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}
-            for key, value in sorted((env or {}).items()):
-                if not isinstance(key, str) or not _WS_ENV_NAME.match(key):
-                    raise ValueError("ws.run env name is not an env name: %r" % (key,))
-                if not isinstance(value, str) or chr(0) in value:
-                    raise ValueError("ws.run env value must be a NUL-free str")
-                child_env[key] = value
-
-            budget = remaining()
-            if default_timeout is not None:
-                budget = min(budget, float(default_timeout))
-            if timeout is not None:
-                budget = min(budget, float(timeout))
-            if budget <= 0:
-                raise RuntimeError("workspace limit: no time left in the node budget")
-
-            with _ws_internals():
+            parts = [] if cwd is None else _ws_split(cwd, "cwd")
+            work, handle, owned = root.dir_reference(parts, "cwd")
+            try:
+                budget = remaining()
+                if default_timeout is not None:
+                    budget = min(budget, float(default_timeout))
+                if timeout is not None:
+                    budget = min(budget, float(timeout))
+                if budget <= 0:
+                    raise RuntimeError(
+                        "workspace limit: no time left in the node budget"
+                    )
                 return self._spawn(argv, work, child_env, budget)
+            finally:
+                if owned and handle is not None:
+                    os.close(handle)
 
         def _spawn(self, argv, work, child_env, budget):
             popen_kwargs = {}
@@ -568,9 +809,6 @@ def _make_workspace(conf, remaining):
             err.thread.join(timeout=2.0)
 
             if timed_out:
-                # The runner exits here rather than returning: the parent must
-                # SIGKILL the tracked supervisor so the whole PID namespace --
-                # including anything double-forked -- dies with it.
                 _ws_exit_on_timeout(argv, budget, out.text(), err.text())
 
             result = {
@@ -588,23 +826,25 @@ def _make_workspace(conf, remaining):
             return result
 
         def read(self, relpath, max_bytes=None):
-            cap = max_read if max_bytes is None else int(max_bytes)
-            with _ws_internals():
-                target = _ws_resolve(root, relpath, "path")
-                flags = (
-                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-                    | getattr(os, "O_BINARY", 0)
-                )
-                handle = os.open(target, flags)
-                try:
-                    data = b""
-                    while len(data) <= cap:
-                        chunk = os.read(handle, 65536)
-                        if not chunk:
-                            break
-                        data += chunk
-                finally:
-                    os.close(handle)
+            parts = _ws_split(relpath, "path")
+            if max_bytes is None:
+                cap = max_read
+            else:
+                # CLAMPED, not replaced: a caller cannot raise the node's cap by
+                # asking for more than the limits allow.
+                cap = min(_ws_exact_int(max_bytes, "read max_bytes"), max_read)
+            if cap <= 0:
+                raise ValueError("ws.read max_bytes must be positive")
+            handle = root.open_leaf(parts, "path", os.O_RDONLY | _WS_BINARY)
+            try:
+                data = b""
+                while len(data) <= cap:
+                    chunk = os.read(handle, 65536)
+                    if not chunk:
+                        break
+                    data += chunk
+            finally:
+                os.close(handle)
             if len(data) > cap:
                 raise RuntimeError(
                     "workspace limit: %s is larger than %d bytes" % (relpath, cap)
@@ -612,61 +852,56 @@ def _make_workspace(conf, remaining):
             return data.decode("utf-8", "replace")
 
         def write(self, relpath, text):
-            if not isinstance(text, str):
-                raise TypeError("ws.write needs str, got %s" % type(text).__name__)
-            with _ws_internals():
-                target = _ws_resolve(root, relpath, "path")
-                if target == root:
-                    raise ValueError(
-                        "ws.write needs a file path, not the workspace root"
-                    )
-                parent = os.path.dirname(target)
-                if parent and parent != root and not os.path.isdir(parent):
-                    os.makedirs(parent)
-                data = text.encode("utf-8")
-                flags = (
-                    os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-                    | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
-                )
-                handle = os.open(target, flags, 384)
-                try:
-                    written = 0
-                    while written < len(data):
-                        written += os.write(handle, data[written:])
-                finally:
-                    os.close(handle)
-                return len(data)
+            _ws_exact_str(text, "write text")
+            parts = _ws_split(relpath, "path")
+            data = text.encode("utf-8")
+            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _WS_BINARY
+            handle = root.open_leaf(
+                parts, "path", flags, mode=384, make_parents=True
+            )
+            try:
+                written = 0
+                while written < len(data):
+                    written += os.write(handle, data[written:])
+            finally:
+                os.close(handle)
+            return len(data)
 
         def glob(self, pattern):
-            if not isinstance(pattern, str) or not pattern.strip():
+            _ws_exact_str(pattern, "glob pattern")
+            if not pattern.strip():
                 raise ValueError("ws.glob needs a non-empty pattern")
             norm = pattern.replace(chr(92), "/")
             if norm.startswith("/") or (len(norm) > 1 and norm[1] == ":"):
                 raise ValueError("ws.glob pattern must be relative: " + pattern)
-            if any(p == ".." for p in norm.split("/")):
-                raise ValueError("ws.glob pattern may not contain '..': " + pattern)
+            pattern_parts = [p for p in norm.split("/") if p not in ("", ".")]
+            if any(p == ".." for p in pattern_parts):
+                raise ValueError(
+                    "ws.glob pattern may not contain " + chr(39) + ".." + chr(39)
+                    + ": " + pattern
+                )
             found = []
-            with _ws_internals():
-                pattern_path = os.path.join(root, *norm.split("/"))
-                for hit in glob.iglob(pattern_path, recursive=True):
-                    real = os.path.realpath(hit)
-                    # A link that leaves the workspace is not in the workspace.
-                    if real != root and not real.startswith(root + os.sep):
-                        continue
-                    found.append(os.path.relpath(real, root).replace(os.sep, "/"))
+            for name in root.scan(max_glob * 4):
+                if _ws_match(name.split("/"), pattern_parts):
+                    found.append(name)
                     if len(found) >= max_glob:
                         break
             return sorted(set(found))
 
         def bundle(self, commit_sha):
-            if not isinstance(commit_sha, str) or not _WS_SHA.match(commit_sha):
+            _ws_exact_str(commit_sha, "bundle commit sha")
+            if not _WS_SHA.match(commit_sha):
                 raise ValueError("ws.bundle needs a 40-character hex commit sha")
-            with _ws_internals():
-                export_dir = _ws_resolve(root, ".tiny-export", "path")
-                if not os.path.isdir(export_dir):
-                    os.makedirs(export_dir)
-                relative = ".tiny-export/" + commit_sha + ".bundle"
-                target = _ws_resolve(root, relative, "path")
+            relative = ".tiny-export/" + commit_sha + ".bundle"
+            handle = root.open_leaf(
+                _ws_split(relative, "path"),
+                "path",
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _WS_BINARY,
+                mode=384,
+                make_parents=True,
+            )
+            os.close(handle)
+            target = os.path.join(root.path, ".tiny-export", commit_sha + ".bundle")
             base = ["git", "-c", "core.hooksPath=/dev/null", "--no-replace-objects"]
             steps = [
                 base + ["update-ref", "refs/tiny/export", commit_sha],
@@ -697,7 +932,7 @@ def _make_workspace(conf, remaining):
 # 5. Write one result JSON object to the real stdout.
 
 _RUNNER_SCRIPT = textwrap.dedent('''\
-    import glob
+    import fnmatch
     import json
     import os
     import re
@@ -863,32 +1098,44 @@ _RUNNER_SCRIPT = textwrap.dedent('''\
         _ws = _make_workspace(msg["workspace"], _ws_remaining)
 
     # ---- 4. Import allowlist ----------------------------------------------
+    # The node executes in THIS dict. It is created here, before the hook, so
+    # the hook can recognise an import made BY node code by identity.
+    namespace = {}
     _original_import = (
         __builtins__.__import__
         if hasattr(__builtins__, "__import__")
         else __import__
     )
 
-    # Only imports the node source asks for directly are name-checked. An
-    # allowlisted module's own module-level imports (base64 -> binascii,
-    # statistics -> random) run at depth > 0 and are permitted, otherwise
-    # half the allowlist would be unimportable. No node code ever executes
-    # at depth > 0, so this is not a bypass.
-    _import_depth = [0]
+    # Only imports made BY NODE CODE are name-checked, and the test for that is
+    # the calling frame's globals: node code runs in `namespace` and nothing
+    # else does. An allowlisted module's own imports (base64 -> binascii) come
+    # from that module's globals and are permitted, otherwise half the
+    # allowlist would be unimportable; the same is true of the lazy imports
+    # `subprocess.Popen` makes on POSIX while `ws` is running.
+    #
+    # This replaces a recursion COUNTER (Codex #8). A counter says how deep
+    # the stack is, not whose code is running, so anything that called into
+    # user code while it was raised -- `ws` calling `.replace()` on a `str`
+    # subclass -- handed node code an unchecked import. A frame cannot be
+    # held open across a call the way a counter can.
+    _get_frame = getattr(sys, "_getframe", None)
 
     def _restricted_import(name, *args, **kwargs):
-        if _import_depth[0] == 0:
+        by_node = True
+        if _get_frame is not None:
+            try:
+                by_node = _get_frame(1).f_globals is namespace
+            except ValueError:
+                by_node = True
+        if by_node:
             top_level = name.split(".")[0]
             if top_level not in allowed_imports:
                 raise ImportError(
                     f"Import '{name}' is not allowed in sandboxed nodes. "
                     f"Allowed: {sorted(allowed_imports)}"
                 )
-        _import_depth[0] += 1
-        try:
-            return _original_import(name, *args, **kwargs)
-        finally:
-            _import_depth[0] -= 1
+        return _original_import(name, *args, **kwargs)
 
     if hasattr(__builtins__, "__import__"):
         __builtins__.__import__ = _restricted_import
@@ -943,10 +1190,8 @@ _RUNNER_SCRIPT = textwrap.dedent('''\
     # Execute the node source to define the function. A failure here (a
     # blocked module-level import, a raised exception) is the node's failure,
     # reported structurally rather than as a bare traceback on stderr.
-    namespace = {
-        "__builtins__": __builtins__,
-        "invoke_mcp_action": invoke_mcp_action,
-    }
+    namespace["__builtins__"] = __builtins__
+    namespace["invoke_mcp_action"] = invoke_mcp_action
     if _ws is not None:
         namespace["ws"] = _ws
     load_error = None
@@ -1307,6 +1552,17 @@ def _launcher_for_workspace(launcher: Any, mount: WorkspaceMount) -> Any:
     return specialise(mount)
 
 
+def _launcher_cleanup(launcher: Any) -> None:
+    """Let a launcher drop anything it created to start the child."""
+    cleanup = getattr(launcher, "cleanup", None)
+    if cleanup is None:
+        return
+    try:
+        cleanup()
+    except Exception:
+        logger.exception("launcher cleanup raised")
+
+
 def _launcher_pass_fds(launcher: Any) -> tuple[int, ...]:
     """Descriptors the child must inherit for its bind to resolve."""
     return tuple(getattr(launcher, "pass_fds", ()) or ())
@@ -1444,6 +1700,8 @@ class PlainSubprocessLauncher:
         self.workspace_bind = workspace_bind
         #: No jail, no bind, nothing to inherit.
         self.pass_fds: tuple[int, ...] = ()
+        #: Where :meth:`build_argv` last wrote the runner, for cleanup.
+        self._script_path = ""
 
     def for_workspace(self, mount: WorkspaceMount) -> PlainSubprocessLauncher:
         """The path, never the descriptor: there is no bind to resolve it in."""
@@ -1455,7 +1713,29 @@ class PlainSubprocessLauncher:
         return type(self)(workspace_bind=mount.bind_source)
 
     def build_argv(self, runner_script: str, args: list[str]) -> list[str]:
-        return [sys.executable, "-c", runner_script, *args]
+        """Deliver the runner as a FILE, not as ``-c``.
+
+        Windows caps a command line at about 32 KiB and the runner is larger
+        than that; the jail's platform has no such limit, so production keeps
+        ``-c``. The text executed is the same shipped string either way -- only
+        how it reaches the interpreter differs, which is why this stays in the
+        launcher rather than shrinking what runs.
+        """
+        handle, path = tempfile.mkstemp(prefix="ta-node-runner-", suffix=".py")
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(runner_script)
+        self._script_path = path
+        return [sys.executable, path, *args]
+
+    def cleanup(self) -> None:
+        """Remove the delivered script; the parent calls this when the run ends."""
+        path = getattr(self, "_script_path", "")
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            self._script_path = ""
 
     def workspace_root(self) -> str:
         if not self.workspace_bind:
@@ -1980,6 +2260,7 @@ class NodeSandbox:
             except subprocess.TimeoutExpired:
                 pass
         finally:
+            _launcher_cleanup(launcher)
             shutil.rmtree(work_dir, ignore_errors=True)
 
         duration = time.monotonic() - start_time
