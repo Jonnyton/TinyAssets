@@ -286,6 +286,35 @@ bound to the exact `(host, owner/name)`; the transport SHALL use HTTPS on 443
 with the address pinned in git's transport (`http.curloptResolve`) to addresses
 the outbound driver's classification validated as public unicast.
 
+**The host SHALL be derived from the STORED connection, never from the packet.**
+A packet that names a host SHALL be refused unless it agrees with the
+connection's declared endpoints. The packet used to supply the host while the
+scope check ignored it, which pointed a scoped credential at a host the owner
+never allowlisted; the connection's endpoints are the authority, and a
+connection with none falls back to the single host a git scope is permitted on
+at all.
+
+A `push` SHALL journal its intent — `(connection, repo, remote ref, sha,
+expected old sha, host, grant, universe)` — before anything reaches the wire,
+and SHALL reconcile it with `ls-remote` on resume: the same SHA already at the
+ref is success, anything else is `workspace_push_refused` naming the observed
+ref. A pass that cannot reach the remote SHALL leave the intent CLAIMABLE rather
+than settling it unknown, because a settled-unknown intent is one no later pass
+will finish.
+
+Worker staging directories and broker socket paths SHALL be named by a digest of
+the exact run and node id. Stripping unsafe characters is not injective — `a/b`
+and `ab` collapse — so two different nodes would otherwise share a staging
+directory and a credential broker's socket.
+
+#### Scenario: a packet cannot choose the host its credential is used against
+- **WHEN** a `checkout` or `push` packet names a host that the connection's endpoints do not declare
+- **THEN** it is refused before any transport is opened, and the host used is the one the stored connection declares
+
+#### Scenario: a push whose outcome is unknown stays claimable
+- **WHEN** the daemon dies between sending a push and recording its receipt, and the resuming pass cannot reach the remote either
+- **THEN** the journaled intent is left claimable rather than settled, and a later pass reconciles it with `ls-remote`
+
 `checkout`, `push` and provisioning SHALL each require a typed consent record
 (`workspace_checkout`, `workspace_push`, `workspace_provision`). The consent's
 destination key SHALL include the **connection id** as well as the repository

@@ -200,11 +200,24 @@ loads, because such a node holds the universe's job lock and the host-wide slot
 for its whole run. The bound is read from the DECLARED value: a zero reads as
 "unset" elsewhere, so a node must say how long it may hold the slot.
 
-The capability SHALL be resolved once, when the node starts. A `discard`
-between nodes SHALL make the next workspace node fail, naming the discard.
-Revoking a capability **inside** a node that is already running is not built in
-this change — it needs a parent-to-child signal on the runner's existing pipe —
-and is a named residual.
+The capability SHALL be ACQUIRED for the length of one use, not merely read:
+the decision that it is still live and the taking of it SHALL happen under one
+lock, so an acquisition cannot straddle a `discard`, and what the caller holds
+SHALL be duplicated descriptors rather than the registry's own. A parallel
+discard closes the originals and the next checkout is handed the same descriptor
+numbers back, so a holder still using the originals would be reading another
+branch's repository; a duplicate cannot be reused while it is held. Release
+SHALL happen in a `finally` under a single owner, and the registry's descriptors
+SHALL be closed only when the run ends.
+
+A `discard` between nodes SHALL make the next workspace node fail, naming the
+discard. Revoking a capability **inside** a node that is already running is not
+built in this change — it needs a parent-to-child signal on the runner's
+existing pipe — and is a named residual.
+
+#### Scenario: a discard during acquisition cannot hand out a stale descriptor
+- **WHEN** a `discard` runs concurrently with a node acquiring the same workspace, and a later checkout reopens directories onto the same descriptor numbers
+- **THEN** the acquisition either takes duplicated descriptors that remain valid for its whole use, or fails naming the discard, and never reads the directory the reused numbers now name
 
 #### Scenario: a str subclass cannot run node code inside path validation
 - **WHEN** a node passes `ws.read` a `str` subclass whose `replace` imports a module the allowlist refuses

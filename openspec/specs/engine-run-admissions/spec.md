@@ -178,6 +178,18 @@ ledger and SHALL NOT be charged to the HTTP usage budgets of change
 `run-usage-budgets` (500 dispatches / 256 MiB per root run, 5,000 / 2 GiB per
 universe-hour), which bound `authenticated_external_call` only.
 
+A `push` and a `discard` hold no lease, so nothing else accounts for them: each
+SHALL reserve its own maximum charge against this ledger under a DETERMINISTIC
+operation id derived from the run, the node and the operation, so a retried push
+charges the hour once rather than once per attempt, and SHALL reconcile downward
+to measured bytes afterwards. The maximum SHALL come from the runtime's own
+bound and never from the packet: a caller-supplied ceiling would let a packet
+choose how much of its universe's hour it spends.
+
+#### Scenario: a retried push does not charge the hour twice
+- **WHEN** a push is retried after a transport failure within the same run and node
+- **THEN** both attempts reserve under the same operation id and the hour is charged once, reconciled to the bytes that actually moved
+
 #### Scenario: the hourly workspace bytes are exhausted
 - **WHEN** a universe's checkouts in the rolling hour have reserved 20 GiB
 - **THEN** the next `checkout` is refused as `workspace_quota_exceeded`, naming the bytes bound and when it clears, before any bytes move
