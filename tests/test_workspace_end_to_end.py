@@ -155,8 +155,7 @@ def _make_universe(
             universe_dir,
             sink=EXTERNAL_WRITE_SINK_WORKSPACE,
             destination=workspace_consent_destination(
-                f"workspace_{op}", REPO, connection_id="conn-git"
-            ),
+                f"workspace_{op}", REPO, connection_id="conn-git", host="github.com"),
             granted_by="founder",
         )
     return Universe(data_root=data_root, universe_dir=universe_dir, pool_root=pool_root)
@@ -1039,6 +1038,82 @@ def test_a_compiled_workspace_node_runs_inside_the_lease(
 # --------------------------------------------------------------------------
 # 5. no consent, no lease
 # --------------------------------------------------------------------------
+
+
+def test_a_created_workspace_runs_a_code_node_with_no_connection_in_the_run(
+    universe: Universe,
+    chain: EffectChain,
+    fs_bridge,
+    short_paths,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A workflow with no repository still gets a filesystem to work in.
+
+    The whole route: the sink admits a lease, the compiler binds it, and the
+    node writes a file and reads it back -- with no connection, no grant, no
+    consent and no git anywhere in the run. Before this, a workspace could only
+    be born from a github clone, so a render, scrape or dataset workflow could
+    not get one at all (founder, 2026-08-31: it is channel- and workflow-
+    agnostic).
+    """
+    from tinyassets import graph_compiler as gc
+    from tinyassets import node_sandbox as ns
+    from tinyassets.branches import NodeDefinition
+
+    made = run_workspace_effector(
+        node_id="scratch",
+        output_keys=["ws"],
+        run_state={
+            "ws": {
+                "sink": EXTERNAL_WRITE_SINK_WORKSPACE,
+                "op": "create",
+                "storage": "scratch",
+            }
+        },
+        base_path=universe.universe_dir,
+        run_id=RUN_ID,
+        chain=chain,
+        execute=_no_worker,
+    )
+    assert made.get("error_kind") is None, made
+
+    mount = chain.workspace_mount_or_none("scratch")
+    assert mount is not None
+    assert (mount.host, mount.repo, mount.connection_id) == ("", "", "")
+
+    def _launcher(sandbox_mount):
+        return PlainSubprocessLauncher(workspace_bind=str(_repo_path(mount)))
+
+    monkeypatch.setattr(ns, "WORKSPACE_LAUNCHER_FACTORY", _launcher)
+
+    node = NodeDefinition(
+        node_id="render",
+        display_name="Render",
+        phase="draft",
+        source_code=(
+            "def run(state):\n"
+            "    ws.write('shotlist.txt', 'scene one')\n"
+            "    return {'ok': ws.read('shotlist.txt')}\n"
+        ),
+        output_keys=["ok"],
+        workspace="scratch",
+    )
+    compiled = gc._build_source_code_node(
+        node,
+        event_sink=None,
+        effect_chain=chain,
+        ancestors={"scratch"},
+        base_path=universe.universe_dir,
+    )
+    state = compiled({})
+
+    assert state["ok"] == "scene one"
+    assert (_repo_path(mount) / "shotlist.txt").read_text(encoding="utf-8") == "scene one"
+
+
+def _no_worker(request: dict[str, Any]) -> dict[str, Any]:
+    """A worker that must never be called: a create reaches nothing."""
+    raise AssertionError(f"a create spawned a worker: {request}")
 
 
 def test_a_checkout_without_its_consent_creates_no_lease(

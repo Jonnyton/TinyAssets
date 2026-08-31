@@ -2,8 +2,9 @@
 
 A connection SCOPE says what the deposited credential may do: an http connection's
 scopes are its HTTP verbs, and a git one carries ``git_read:owner/name`` or
-``git_write:owner/name`` bound to exactly one repository on exactly one host
-(``github.com`` in this slice; the sink is host-agnostic later). A typed CONSENT
+``git_write:owner/name`` bound to exactly one repository on exactly one host --
+**the host that connection declares**, whatever it is. GitHub, GitLab, Gitea, a
+self-hosted forge: the platform never names one. A typed CONSENT
 says the universe's owner agreed to this kind of work on that repository at all -
 ``workspace_checkout``, ``workspace_push``, ``workspace_provision``, recorded per
 universe by :mod:`tinyassets.storage.effector_consents` under a destination this
@@ -31,8 +32,11 @@ GIT_SCOPE_READ = "git_read"
 GIT_SCOPE_WRITE = "git_write"
 GIT_SCOPE_KINDS = (GIT_SCOPE_READ, GIT_SCOPE_WRITE)
 
-#: The one host a git scope may bind to in this slice.
-GIT_SCOPE_HOST = "github.com"
+#: Providers whose OAuth pipe implies exactly one host even with no declared
+#: endpoints. This is NOT a list of hosts git scopes may use -- any host a
+#: connection declares works. It exists only because a pipe connection has no
+#: endpoint list to read the host off, so the provider has to supply it.
+PROVIDER_PIPE_HOSTS = {"github": "github.com"}
 
 #: The effector-consent sink the workspace operations record under.
 WORKSPACE_SINK = "workspace"
@@ -149,9 +153,8 @@ def require_git_scope(value: Any) -> tuple[str, str]:
     return kind, normalize_repo(repo)
 
 
-def _is_github_host(host: Any) -> bool:
-    text = _text(host).lower().rstrip(".")
-    return text == GIT_SCOPE_HOST or text.endswith("." + GIT_SCOPE_HOST)
+def _normalize_host(host: Any) -> str:
+    return _text(host).lower().rstrip(".")
 
 
 def connection_hosts(connection: Any) -> tuple[str, ...]:
@@ -160,26 +163,51 @@ def connection_hosts(connection: Any) -> tuple[str, ...]:
     return tuple(_text(getattr(endpoint, "host", "")).lower() for endpoint in endpoints)
 
 
-def endpoints_allow_git_scopes(hosts: Iterable[str], provider: Any = "") -> bool:
-    """Whether a connection with these endpoint hosts may carry a git scope.
+def git_host_for_endpoints(hosts: Iterable[str], provider: Any = "") -> str:
+    """The ONE host a git scope on these endpoints binds to, or ``""``.
 
-    Every declared endpoint must be on ``github.com``: a connection that can also
-    reach elsewhere would be lending the same credential to another host under a
-    git-shaped name. A connection with NO declared endpoints qualifies only when
-    its provider IS github - that is the OAuth pipe, whose destination is a
-    github repository by construction.
+    ``git_read:owner/name`` names a repository, and a repository only means
+    something together with a host. The connection supplies it: every declared
+    endpoint must be on the SAME host, and that host is the answer. Two hosts is
+    not "pick one" - the scope would be ambiguous, and honouring it would lend
+    one credential to whichever host the caller preferred, which is the thing a
+    scope exists to stop.
+
+    Which host it is, is none of the platform's business. github.com, an
+    internal GitLab, a Gitea box: a workspace is workflow- and channel-agnostic,
+    and pinning our own demo's host here is what stopped every other forge from
+    working at all.
+
+    A connection with NO declared endpoints is a provider pipe; only a provider
+    in :data:`PROVIDER_PIPE_HOSTS` can say what its host is.
     """
-    host_list = [_text(host).lower() for host in hosts]
+    host_list = [_normalize_host(host) for host in hosts if _normalize_host(host)]
     if host_list:
-        return all(_is_github_host(host) for host in host_list)
-    return _text(provider).lower() == "github"
+        unique = set(host_list)
+        return host_list[0] if len(unique) == 1 else ""
+    return PROVIDER_PIPE_HOSTS.get(_text(provider).lower(), "")
+
+
+def endpoints_allow_git_scopes(hosts: Iterable[str], provider: Any = "") -> bool:
+    """Whether a connection with these endpoint hosts may carry a git scope."""
+    return bool(git_host_for_endpoints(hosts, provider))
+
+
+def connection_git_host(connection: Any) -> str:
+    """The one git host a stored connection binds its scopes to, or ``""``.
+
+    The single source for "which host": the sink's transport, the consent
+    destination the rail writes, and the inventory the agent reads all take it
+    from here, so none of them can spell a different one.
+    """
+    return git_host_for_endpoints(
+        connection_hosts(connection), getattr(connection, "provider", "")
+    )
 
 
 def connection_allows_git_scopes(connection: Any) -> bool:
-    """:func:`endpoints_allow_git_scopes` for a stored connection object."""
-    return endpoints_allow_git_scopes(
-        connection_hosts(connection), getattr(connection, "provider", "")
-    )
+    """:func:`git_host_for_endpoints` for a stored connection object."""
+    return bool(connection_git_host(connection))
 
 
 def validate_git_scopes(
@@ -188,8 +216,9 @@ def validate_git_scopes(
     """Raise unless every git-shaped scope is well formed and legal here.
 
     Called at every write of a scope tuple, so no stored row can carry a git
-    scope on a connection that is not provably a github one - the check cannot
-    be skipped by a caller that assembles its own tuple.
+    scope on a connection whose host is ambiguous - the check cannot be skipped
+    by a caller that assembles its own tuple. "Ambiguous", not "not github":
+    the forge is the connection's to name.
     """
     git_scopes = [scope for scope in scopes if is_git_scope(scope)]
     if not git_scopes:
@@ -199,8 +228,8 @@ def validate_git_scopes(
     if not endpoints_allow_git_scopes(hosts, provider):
         raise GitScopeError(
             "a git scope needs a connection whose declared endpoints are all on "
-            f"{GIT_SCOPE_HOST} (or a github pipe with none); "
-            f"got {sorted(set(_text(host).lower() for host in hosts)) or 'no endpoints'}"
+            "ONE host (any host), or a provider pipe that names one; got "
+            f"{sorted(set(_normalize_host(host) for host in hosts)) or 'no endpoints'}"
         )
 
 
@@ -256,14 +285,20 @@ def require_connection_token(connection_id: Any) -> str:
 
 
 def workspace_consent_destination(
-    consent: Any, repo: Any, *, connection_id: Any, host: str = GIT_SCOPE_HOST
+    consent: Any, repo: Any, *, connection_id: Any, host: str
 ) -> str:
     """The ``effector_consents`` destination for one operation on one repo
     through ONE connection.
 
-    ``("workspace_checkout", "o/n", connection_id="http_ab")`` ->
-    ``"checkout:http_ab:github.com/o/n"``. One spelling, in one place, because
-    the rail writes it and the sink reads it.
+    ``("workspace_checkout", "o/n", connection_id="http_ab",
+    host="github.com")`` -> ``"checkout:http_ab:github.com/o/n"``. One spelling,
+    in one place, because the rail writes it and the sink reads it.
+
+    ``host`` is REQUIRED, with no default. It used to default to github.com
+    while the sink passed the host it derived from the connection, so a consent
+    granted for a repository on any other forge was written at a key the sink
+    would never look up - the grant appeared to work and authorized nothing.
+    Both sides now take it from :func:`connection_git_host`.
 
     The connection is IN the key, not merely checked when the consent is
     granted: the delta binds a typed consent to ``(connection, repo)``, and a
@@ -278,7 +313,10 @@ def workspace_consent_destination(
             f"consent must be one of {WORKSPACE_CONSENTS}, got {consent!r}"
         )
     token = require_connection_token(connection_id)
-    return f"{operation}:{token}:{_text(host).lower()}/{normalize_repo(repo)}"
+    normalized_host = _normalize_host(host)
+    if not normalized_host:
+        raise GitScopeError("a workspace consent destination needs the connection's host")
+    return f"{operation}:{token}:{normalized_host}/{normalize_repo(repo)}"
 
 
 def parse_workspace_consent_destination(destination: Any) -> dict[str, str] | None:
@@ -316,17 +354,19 @@ __all__ = [
     "CONSENT_OPERATIONS",
     "CONSENT_PROVISION",
     "CONSENT_PUSH",
-    "GIT_SCOPE_HOST",
     "GIT_SCOPE_KINDS",
     "GIT_SCOPE_READ",
     "GIT_SCOPE_WRITE",
     "GitScopeError",
     "WORKSPACE_CONSENTS",
     "WORKSPACE_SINK",
+    "PROVIDER_PIPE_HOSTS",
     "connection_allows_git_scopes",
+    "connection_git_host",
     "connection_git_scopes",
     "connection_hosts",
     "endpoints_allow_git_scopes",
+    "git_host_for_endpoints",
     "format_git_scope",
     "has_git_scope",
     "is_git_scope",

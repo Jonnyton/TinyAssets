@@ -12,8 +12,8 @@ from typing import Any
 from tinyassets.api.helpers import _base_path, _request_universe, _universe_dir
 from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
 from tinyassets.storage.workspace_authority import (
-    GIT_SCOPE_HOST,
     WORKSPACE_SINK,
+    connection_git_host,
     connection_git_scopes,
     parse_workspace_consent_destination,
 )
@@ -83,7 +83,7 @@ def _project(resource: Any, grant: Any) -> dict[str, Any]:
         # without having to know the scope grammar. A universe that can read
         # what it holds stops asking for what it already has.
         "git_scopes": [
-            {"kind": kind, "repo": repo, "host": GIT_SCOPE_HOST}
+            {"kind": kind, "repo": repo, "host": connection_git_host(resource)}
             for kind, repo in sorted(connection_git_scopes(resource))
         ],
         "status": "connected",

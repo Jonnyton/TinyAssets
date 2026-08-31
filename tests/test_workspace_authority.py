@@ -96,8 +96,9 @@ def _make_universe(base, uid, *, admin=""):
     return udir
 
 
+ENDPOINT_HOST = "api.github.com"
 GITHUB_ENDPOINT = {
-    "host": "api.github.com",
+    "host": ENDPOINT_HOST,
     "path_template": "/repos/o/r/pulls",
     "methods": ["POST"],
 }
@@ -211,22 +212,46 @@ def test_anything_git_shaped_is_recognised_as_a_git_scope() -> None:
     assert wa.is_git_scope(None) is False
 
 
-def test_a_git_scope_needs_a_connection_that_only_reaches_github() -> None:
+def test_a_git_scope_needs_a_connection_that_reaches_exactly_one_host() -> None:
+    """ANY one host. The platform does not name the forge (founder, 2026-08-31).
+
+    A workspace is channel- and workflow-agnostic; ``github.com`` was our own
+    demo's host, and pinning it here meant a GitLab, Gitea or self-hosted user
+    could not check anything out at all. What the rule actually protects is
+    UNAMBIGUITY: ``git_read:owner/name`` names a repository, and a repository
+    only means something together with a host.
+    """
     wa.validate_git_scopes(["git_read:o/n"], hosts=["api.github.com"])
     wa.validate_git_scopes(["git_read:o/n"], hosts=["github.com"])
-    # A pipe declares no endpoints; its provider is what pins the host.
+    wa.validate_git_scopes(["git_read:o/n"], hosts=["gitlab.example.com"])
+    wa.validate_git_scopes(["git_read:o/n"], hosts=["git.internal"])
+    # The same host twice is still one host.
+    wa.validate_git_scopes(["git_read:o/n"], hosts=["git.internal", "git.internal"])
+    # A pipe declares no endpoints; its provider is what supplies the host.
     wa.validate_git_scopes(["git_read:o/n"], hosts=[], provider="github")
-    with pytest.raises(wa.GitScopeError, match="github.com"):
-        wa.validate_git_scopes(["git_read:o/n"], hosts=["api.example.com"])
-    with pytest.raises(wa.GitScopeError, match="github.com"):
-        # Mixed: the same credential could then be spent on another host.
+    with pytest.raises(wa.GitScopeError, match="ONE host"):
+        # Two hosts: the same credential could be spent on whichever the
+        # caller preferred, which is what the scope exists to stop.
         wa.validate_git_scopes(["git_read:o/n"], hosts=["api.github.com", "evil.com"])
-    with pytest.raises(wa.GitScopeError, match="github.com"):
+    with pytest.raises(wa.GitScopeError, match="ONE host"):
+        wa.validate_git_scopes(["git_read:o/n"], hosts=["gitlab.example.com", "evil.com"])
+    with pytest.raises(wa.GitScopeError, match="ONE host"):
+        # No endpoints and no pipe provider: nothing says what the host is.
         wa.validate_git_scopes(["git_read:o/n"], hosts=[], provider="http")
-    with pytest.raises(wa.GitScopeError, match="github.com.evil.com"):
-        wa.validate_git_scopes(["git_read:o/n"], hosts=["github.com.evil.com"])
     # An HTTP-only scope tuple is not this rule's business.
     wa.validate_git_scopes(["POST", "GET"], hosts=["api.example.com"])
+
+
+def test_a_lookalike_host_is_just_a_host_the_owner_declared() -> None:
+    """``github.com.evil.com`` used to be refused as a near-miss of the pin.
+
+    With no pin there is nothing to near-miss: it is one host, on the owner's
+    own connection, with the owner's own credential, and the transport pins to
+    the address it resolves to. Treating it specially would be the platform
+    having an opinion about which forges are real.
+    """
+    wa.validate_git_scopes(["git_read:o/n"], hosts=["github.com.evil.com"])
+    assert wa.git_host_for_endpoints(["github.com.evil.com"]) == "github.com.evil.com"
 
 
 def test_the_scope_binding_is_exactly_one_repository() -> None:
@@ -242,16 +267,22 @@ def test_the_scope_binding_is_exactly_one_repository() -> None:
     assert wa.has_git_scope(None, "git_read", "octocat/hello") is False
 
 
-def test_a_revoked_or_off_host_connection_grants_no_git_scope() -> None:
+def test_a_revoked_or_ambiguous_connection_grants_no_git_scope() -> None:
     revoked = _Connection(
         scopes=("git_read:o/n",), hosts=("api.github.com",), revoked_at=1.0
     )
     assert wa.has_git_scope(revoked, "git_read", "o/n") is False
-    # A row that somehow holds a git scope with a non-github endpoint grants
+    # A row that somehow holds a git scope while reaching TWO hosts grants
     # nothing at READ time either: the check does not rely on the write path
     # having been the only way in.
-    off_host = _Connection(scopes=("git_read:o/n",), hosts=("api.example.com",))
-    assert wa.has_git_scope(off_host, "git_read", "o/n") is False
+    ambiguous = _Connection(
+        scopes=("git_read:o/n",), hosts=("api.github.com", "api.example.com")
+    )
+    assert wa.has_git_scope(ambiguous, "git_read", "o/n") is False
+    # One host that is not github is a perfectly good git connection.
+    self_hosted = _Connection(scopes=("git_read:o/n",), hosts=("git.internal",))
+    assert wa.has_git_scope(self_hosted, "git_read", "o/n") is True
+    assert wa.connection_git_host(self_hosted) == "git.internal"
 
 
 def test_a_malformed_stored_scope_is_dropped_not_raised() -> None:
@@ -264,25 +295,45 @@ def test_a_malformed_stored_scope_is_dropped_not_raised() -> None:
 def test_the_consent_destination_has_one_spelling() -> None:
     assert (
         wa.workspace_consent_destination(
-            "workspace_checkout", "octocat/hello", connection_id="http_ab"
+            "workspace_checkout",
+            "octocat/hello",
+            connection_id="http_ab",
+            host="github.com",
         )
         == "checkout:http_ab:github.com/octocat/hello"
     )
     assert (
         wa.workspace_consent_destination(
-            "workspace_provision", "octocat/hello", connection_id="http_ab"
+            "workspace_provision",
+            "octocat/hello",
+            connection_id="http_ab",
+            host="github.com",
         )
         == "provision:http_ab:github.com/octocat/hello"
     )
     assert wa.parse_workspace_consent_destination(
-        "push:http_ab:github.com/octocat/hello"
-    ) == {
+        "push:http_ab:github.com/octocat/hello") == {
         "consent": "workspace_push",
         "operation": "push",
         "connection_id": "http_ab",
         "host": "github.com",
         "repo": "octocat/hello",
     }
+    # Any host, spelled by the caller: the grammar has no opinion about forges.
+    assert (
+        wa.workspace_consent_destination(
+            "workspace_checkout",
+            "octocat/hello",
+            connection_id="http_ab",
+            host="git.internal.example",
+        )
+        == "checkout:http_ab:git.internal.example/octocat/hello"
+    )
+    with pytest.raises(wa.GitScopeError, match="host"):
+        # No host at all is a key the sink would never look up.
+        wa.workspace_consent_destination(
+            "workspace_checkout", "octocat/hello", connection_id="http_ab", host=""
+        )
     assert wa.parse_workspace_consent_destination("api.github.com/repos") is None
     # The pre-connection spelling is not one of ours any more, so an old row
     # reads as absent rather than as a consent for every connection.
@@ -292,8 +343,7 @@ def test_the_consent_destination_has_one_spelling() -> None:
     )
     with pytest.raises(wa.GitScopeError):
         wa.workspace_consent_destination(
-            "workspace_delete", "octocat/hello", connection_id="http_ab"
-        )
+            "workspace_delete", "octocat/hello", connection_id="http_ab", host=ENDPOINT_HOST)
 
 
 @pytest.mark.parametrize(
@@ -304,8 +354,7 @@ def test_a_connection_id_that_could_forge_a_key_is_refused(connection_id) -> Non
     would make the row ambiguous, and an ambiguous row is a forgeable one."""
     with pytest.raises(wa.GitScopeError):
         wa.workspace_consent_destination(
-            "workspace_checkout", "octocat/hello", connection_id=connection_id
-        )
+            "workspace_checkout", "octocat/hello", connection_id=connection_id, host=ENDPOINT_HOST)
 
 
 # --------------------------------------------------------------------------
@@ -342,14 +391,15 @@ def test_the_ledger_stores_a_git_scope_on_a_github_connection(tmp_path) -> None:
     assert wa.has_git_scope(view, "git_read", "octocat/hello") is True
 
 
-def test_the_ledger_refuses_a_git_scope_on_a_connection_that_reaches_elsewhere(
+def test_the_ledger_refuses_a_git_scope_on_a_connection_that_reaches_two_hosts(
     tmp_path,
 ) -> None:
-    with pytest.raises(wa.GitScopeError, match="github.com"):
+    with pytest.raises(wa.GitScopeError, match="ONE host"):
         _create(
             _ledger(tmp_path),
             scopes=("POST", "git_read:octocat/hello"),
             endpoints=(
+                GITHUB_ENDPOINT,
                 {
                     "host": "api.example.com",
                     "path_template": "/v1/things",
@@ -359,6 +409,23 @@ def test_the_ledger_refuses_a_git_scope_on_a_connection_that_reaches_elsewhere(
         )
 
 
+def test_the_ledger_stores_a_git_scope_on_a_self_hosted_forge(tmp_path) -> None:
+    """The connection names the forge; the platform does not."""
+    view = _create(
+        _ledger(tmp_path),
+        scopes=("POST", "git_read:octocat/hello"),
+        endpoints=(
+            {
+                "host": "git.internal.example",
+                "path_template": "/octocat/hello",
+                "methods": ["POST"],
+            },
+        ),
+    )
+    assert wa.has_git_scope(view, "git_read", "octocat/hello") is True
+    assert wa.connection_git_host(view) == "git.internal.example"
+
+
 def test_the_ledger_refuses_a_malformed_git_scope(tmp_path) -> None:
     with pytest.raises(wa.GitScopeError):
         _create(_ledger(tmp_path), scopes=("POST", "git_read:octocat/hello.git"))
@@ -366,18 +433,27 @@ def test_the_ledger_refuses_a_malformed_git_scope(tmp_path) -> None:
         _create(_ledger(tmp_path), scopes=("POST", "git_write:../../etc"))
 
 
-def test_the_scope_extension_refuses_a_git_scope_off_github(tmp_path) -> None:
+def test_the_scope_extension_refuses_a_git_scope_once_two_hosts_are_reachable(
+    tmp_path,
+) -> None:
+    """The extension writes the UNION, so the union is what has to be one host.
+
+    This is the widening that matters now that any host is allowed: a
+    connection legitimately scoped for one forge must not gain a second forge
+    while keeping the scope.
+    """
     ledger = _ledger(tmp_path)
     _create(ledger, scopes=("POST",))
-    with pytest.raises(wa.GitScopeError, match="github.com"):
+    with pytest.raises(wa.GitScopeError, match="ONE host"):
         ledger.extend_http_connection_endpoints(
             connection_id="conn-1",
             endpoints=[
+                GITHUB_ENDPOINT,
                 {
                     "host": "api.example.com",
                     "path_template": "/v1/things",
                     "methods": ["POST"],
-                }
+                },
             ],
             scopes=("POST", "git_read:octocat/hello"),
             expected_endpoints_json=json.dumps(
@@ -465,7 +541,8 @@ def test_the_rail_accepts_a_git_scope_on_a_github_ask(base) -> None:
     ]
 
 
-def test_the_rail_refuses_a_git_scope_on_an_ask_that_reaches_elsewhere(base) -> None:
+def test_the_rail_refuses_a_git_scope_on_an_ask_that_reaches_two_hosts(base) -> None:
+    """One host is fine whatever it is; two make the scope ambiguous."""
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
     asked = _ask(
@@ -481,13 +558,14 @@ def test_the_rail_refuses_a_git_scope_on_an_ask_that_reaches_elsewhere(base) -> 
                     "host": "api.example.com",
                     "path_template": "/v1/things",
                     "methods": ["POST"],
-                }
+                },
+                GITHUB_ENDPOINT,
             ],
             "scopes": ["git_read:octocat/hello"],
         },
     )
     assert asked["error"] == "request_invalid"
-    assert "github.com" in asked["detail"]
+    assert "ONE host" in asked["detail"]
 
 
 def test_the_rail_refuses_an_http_verb_smuggled_in_as_a_scope(base) -> None:
@@ -641,10 +719,14 @@ def test_granting_the_consents_writes_one_row_per_operation(base) -> None:
     answered = _answer("u-1", request_id=asked["request_id"], values={})
     assert answered["status"] == "answered", answered
     conn = deposited["connection_id"]
+    # The connection declares api.github.com, so that is the key. It used to
+    # be written as github.com by a default while the SINK derived
+    # api.github.com from the same endpoints -- the owner's yes was recorded
+    # where nothing would ever look for it.
     expected = [
-        f"checkout:{conn}:github.com/octocat/hello",
-        f"provision:{conn}:github.com/octocat/hello",
-        f"push:{conn}:github.com/octocat/hello",
+        f"checkout:{conn}:{ENDPOINT_HOST}/octocat/hello",
+        f"provision:{conn}:{ENDPOINT_HOST}/octocat/hello",
+        f"push:{conn}:{ENDPOINT_HOST}/octocat/hello",
     ]
     assert sorted(answered["destinations"]) == expected
     rows = list_consents(udir, sink="workspace")
@@ -661,22 +743,17 @@ def test_a_consent_is_active_only_for_the_exact_operation_and_repo(base) -> None
 
     conn = deposited["connection_id"]
     checkout = wa.workspace_consent_destination(
-        "workspace_checkout", "octocat/hello", connection_id=conn
-    )
+        "workspace_checkout", "octocat/hello", connection_id=conn, host=ENDPOINT_HOST)
     assert is_consent_active(udir, sink="workspace", destination=checkout) is True
     for other in (
         wa.workspace_consent_destination(
-            "workspace_push", "octocat/hello", connection_id=conn
-        ),
+            "workspace_push", "octocat/hello", connection_id=conn, host=ENDPOINT_HOST),
         wa.workspace_consent_destination(
-            "workspace_checkout", "octocat/hello2", connection_id=conn
-        ),
+            "workspace_checkout", "octocat/hello2", connection_id=conn, host=ENDPOINT_HOST),
         wa.workspace_consent_destination(
-            "workspace_checkout", "octocat2/hello", connection_id=conn
-        ),
+            "workspace_checkout", "octocat2/hello", connection_id=conn, host=ENDPOINT_HOST),
         wa.workspace_consent_destination(
-            "workspace_checkout", "octocat/hello", connection_id="http_other"
-        ),
+            "workspace_checkout", "octocat/hello", connection_id="http_other", host=ENDPOINT_HOST),
         f"checkout:{conn}:gitlab.com/octocat/hello",
         f"checkout:{conn}:github.com/octocat/hello/extra",
         "checkout:github.com/octocat/hello",
@@ -706,7 +783,10 @@ def test_two_connections_to_the_same_repo_hold_independent_consents(base) -> Non
             udir,
             sink="workspace",
             destination=wa.workspace_consent_destination(
-                "workspace_checkout", repo, connection_id=connection["connection_id"]
+                "workspace_checkout",
+                repo,
+                connection_id=connection["connection_id"],
+                host=ENDPOINT_HOST,
             ),
         )
 
@@ -725,8 +805,7 @@ def test_two_connections_to_the_same_repo_hold_independent_consents(base) -> Non
         destination=wa.workspace_consent_destination(
             "workspace_checkout",
             "octocat/hello",
-            connection_id=first["connection_id"],
-        ),
+            connection_id=first["connection_id"], host=ENDPOINT_HOST),
     )
     assert active(first) is False
     assert active(second) is True
@@ -847,8 +926,7 @@ def test_a_remix_carries_neither_the_consents_nor_the_scopes(base, monkeypatch) 
                 destination=wa.workspace_consent_destination(
                     consent,
                     "octocat/hello",
-                    connection_id=deposited["connection_id"],
-                ),
+                    connection_id=deposited["connection_id"], host=ENDPOINT_HOST),
             )
             is False
         )
@@ -878,7 +956,7 @@ def test_the_inventory_shows_the_git_scopes_and_the_consents(base) -> None:
     assert listed["count"] == 1
     row = listed["connections"][0]
     assert row["git_scopes"] == [
-        {"kind": "git_read", "repo": "octocat/hello", "host": "github.com"}
+        {"kind": "git_read", "repo": "octocat/hello", "host": ENDPOINT_HOST}
     ]
     assert "git_read:octocat/hello" in row["scopes"]
     assert listed["workspace_consents"] == [
@@ -886,7 +964,7 @@ def test_the_inventory_shows_the_git_scopes_and_the_consents(base) -> None:
             "consent": "workspace_checkout",
             "operation": "checkout",
             "connection_id": deposited["connection_id"],
-            "host": "github.com",
+            "host": ENDPOINT_HOST,
             "repo": "octocat/hello",
             "granted_at": listed["workspace_consents"][0]["granted_at"],
         }
@@ -992,14 +1070,16 @@ def test_a_scope_only_extension_still_obeys_the_host_rule(base) -> None:
             }
         ],
     )
-    refused = extend_http(
+    allowed = extend_http(
         universe_id="u-1",
         payload=json.dumps(
             {"destination": "elsewhere", "scopes": ["git_read:octocat/hello"]}
         ),
     )
-    assert refused["error"] == "connection_setup_invalid", refused
-    assert "github.com" in refused["detail"]
+    # ONE host, so the scope is unambiguous and the extension stands. It used
+    # to be refused for not being github, which is what stopped every other
+    # forge from working at all.
+    assert allowed.get("error") is None, allowed
 
 
 def test_an_ask_with_neither_endpoints_nor_scopes_is_still_refused(base) -> None:

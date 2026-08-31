@@ -29,10 +29,9 @@ from tinyassets.storage.workspace_authority import (
     CONSENT_CHECKOUT,
     CONSENT_PROVISION,
     CONSENT_PUSH,
-    GIT_SCOPE_HOST,
     WORKSPACE_SINK,
     GitScopeError,
-    connection_allows_git_scopes,
+    connection_git_host,
     connection_hosts,
     has_git_scope,
     normalize_repo,
@@ -52,11 +51,22 @@ _SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 EXTERNAL_WRITE_SINK_WORKSPACE = WORKSPACE_SINK
 
 #: The operations the sink offers, and the consent each one needs.
+#:
+#: ``create`` needs none, and takes no connection at all: it makes an EMPTY
+#: directory in the universe's own storage. There is no credential to authorize
+#: and no far side to reach, so the gates that exist for a credentialed clone
+#: would be asking the owner to approve their own scratch space. It is bounded
+#: by exactly the same lease, pool, quota and hourly-job machinery.
 _CONSENT_FOR_OP = {
+    "create": "",  # the universe's own space: nothing to authorize
     "checkout": CONSENT_CHECKOUT,
     "push": CONSENT_PUSH,
     "discard": "",  # discarding what you already hold needs no new consent
 }
+
+#: The operations that need a credentialed connection. Everything else runs on
+#: the universe's own storage with no authority to check.
+_CONNECTED_OPS = frozenset({"checkout", "push"})
 
 #: The connection scope each operation requires, bound to (host, owner/name).
 _SCOPE_FOR_OP = {"checkout": "git_read", "push": "git_write"}
@@ -68,15 +78,24 @@ _SCOPE_FOR_OP = {"checkout": "git_read", "push": "git_write"}
 #: generation and enqueues an irreversible wipe -- local, but a change, and the
 #: settlement asks "could this run have changed anything", not "did it touch
 #: the network".
+#: ``create`` joins it: an empty directory in this universe's own storage
+#: reaches nothing and changes nothing anywhere.
 WORKSPACE_READ_EFFECTS = frozenset(
-    {(EXTERNAL_WRITE_SINK_WORKSPACE, "checkout")}
+    {
+        (EXTERNAL_WRITE_SINK_WORKSPACE, "checkout"),
+        (EXTERNAL_WRITE_SINK_WORKSPACE, "create"),
+    }
 )
 
-_HOST = "github.com"
 _MAX_BUNDLE_BYTES = 512 * 1024 * 1024
 #: What one checkout may move before the pool refuses it (D4's lease bound).
 _DEFAULT_MAX_CHECKOUT_BYTES = 4 * 1024 * 1024 * 1024
 _JAIL_EXPORT_DIR = ".tiny-export"
+#: The one directory inside a lease that becomes ``/workspace``. ONE name for
+#: every operation: the lease layout is what the pool wipes, the outbox
+#: reclaims and the compiler binds, and a second spelling would be a second
+#: shape for all three to know about. Named for its first use.
+_CONTENT_DIR = "repo"
 
 
 class _Refused(Exception):
@@ -162,6 +181,34 @@ def _split_repo(repo: str) -> tuple[str, str]:
 def repo_key_for(host: str, owner: str, name: str) -> str:
     """The pool's path-safe key for one repository."""
     return f"{host}--{owner}--{name}".replace("/", "-")
+
+
+#: A create workspace's name: one component, no ``--``, so a created workspace
+#: and a checked-out repository can never share a pool key. ``repo_key_for``
+#: always joins with ``--``; this never contains one, and that is the whole
+#: separation.
+_WORKSPACE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+#: The key every unnamed scratch workspace shares. Scratch leases are keyed by
+#: lease id on disk, so this only groups them in the pool's ledger.
+DEFAULT_WORKSPACE_KEY = "scratch"
+
+
+def workspace_key_for(slug: str) -> str:
+    """The pool key for a CREATED workspace, validated.
+
+    ``ws.<slug>``. Kept in a namespace of its own so that naming a workspace
+    ``owner/name`` cannot address, replace or discard the generation a real
+    checkout of that repository published.
+    """
+    text = (slug or "").strip()
+    if not _WORKSPACE_KEY_RE.match(text) or "--" in text:
+        raise _Refused(
+            "invalid_packet",
+            "packet.workspace_key must be 1-64 chars of [A-Za-z0-9._-], start "
+            "alphanumeric and contain no '--'",
+        )
+    return f"ws.{text}"
 
 
 def scratch_pool_root(universe_dir: Path) -> Path:
@@ -253,25 +300,26 @@ def transport_host_for(resource: Any) -> str:
 
     Never from the packet. The packet used to supply ``host`` while the scope
     check ignored it, so a packet could point a scoped credential at a host the
-    owner never allowlisted (Codex round 3, P0 #1). The connection's declared
-    endpoints are the authority; a github pipe with no endpoints falls back to
-    the one host a git scope is allowed on at all, which
-    ``endpoints_allow_git_scopes`` has already agreed to.
+    owner never allowlisted (Codex round 3, P0 #1).
+
+    WHICH host is the connection's business, not the platform's: github.com, a
+    company GitLab, a Gitea box. ``connection_git_host`` owns that derivation
+    and every other surface reads it from there, so the consent the rail writes
+    and the transport the sink builds cannot name two different forges.
     """
     hosts = {host for host in connection_hosts(resource) if host}
-    if not hosts:
-        if not connection_allows_git_scopes(resource):
-            raise _Refused(
-                "host_not_allowlisted",
-                "the connection declares no host a git scope may reach",
-            )
-        return GIT_SCOPE_HOST
     if len(hosts) > 1:
         raise _Refused(
             "host_not_allowlisted",
             "the connection declares several hosts; a git transport needs exactly one",
         )
-    return hosts.pop()
+    host = connection_git_host(resource)
+    if not host:
+        raise _Refused(
+            "host_not_allowlisted",
+            "the connection declares no host a git scope may reach",
+        )
+    return host
 
 
 def _require_packet_host_agrees(packet: dict[str, Any], host: str) -> None:
@@ -806,7 +854,7 @@ def _checkout(
         else:
             lease_fd = _make_scratch_lease_dir(Path(lease.path))
         owned.append(lease_fd)
-        repo_dir = Path(lease.path) / "repo"
+        repo_dir = Path(lease.path) / _CONTENT_DIR
         # The repository directory is created THROUGH the lease handle and its
         # own descriptor is what git is pointed at AND what the jail binds --
         # binding the lease root would put the repository one level down from
@@ -961,6 +1009,180 @@ def _publish(db: Path, lease: Any, *, universe_id: str, repo_key: str, run_id: s
         raise
     finally:
         conn.close()
+
+
+def _create(
+    *,
+    packet: dict[str, Any],
+    node_id: str,
+    base_path: Path,
+    run_id: str,
+    universe_id: str,
+    chain: Any,
+) -> dict[str, Any]:
+    """An EMPTY workspace, born from nothing but the universe's own storage.
+
+    The sink's other operations start from a git clone, which made a repository
+    the only way to get a filesystem: a workflow that renders video, scrapes a
+    site or assembles a dataset could not get one at all. It is the same lease,
+    the same pool, the same quota, the same hourly job and the same outbox
+    release -- only the population step is missing, because there is nothing to
+    populate it with. The node writes it.
+
+    No connection, no scope, no consent: there is no credential in play and no
+    far side to reach. A gate here would ask the owner to approve their own
+    scratch directory.
+    """
+    from tinyassets import workspace_pool
+
+    storage = _str_field(packet, "storage") or "scratch"
+    if storage not in ("scratch", "universe"):
+        raise _Refused("invalid_packet", "packet.storage must be 'scratch' or 'universe'")
+    stated_key = _str_field(packet, "workspace_key")
+    if storage == "universe":
+        if not stated_key:
+            raise _Refused(
+                "invalid_packet",
+                "packet.workspace_key is required for a permanent workspace: it is "
+                "the name a later run opens it by",
+            )
+        repo_key = workspace_key_for(stated_key)
+    else:
+        # Scratch lives and dies with the run, so a name would only be
+        # decoration. Said out loud rather than silently ignored.
+        repo_key = workspace_key_for(DEFAULT_WORKSPACE_KEY)
+    db = _pool_db(base_path)
+
+    try:
+        from tinyassets import runs as _runs
+
+        _runs.ensure_workspace_reconciled(base_path)
+    except Exception as exc:
+        logger.exception("workspace startup reconciliation failed")
+        raise _Refused(
+            "workspace_pool_busy",
+            f"startup reconciliation failed: {type(exc).__name__}",
+        ) from None
+
+    if storage == "universe":
+        # Publishing REPLACES, and the replaced generation is enqueued for an
+        # irreversible wipe. For a checkout that is correct -- the remote is
+        # the source of truth and the old copy is disposable. For a created
+        # workspace the content exists nowhere else, so a second create under
+        # the same name would destroy the work the first one holds. Refuse and
+        # say so; re-opening an existing permanent workspace is a capability
+        # this release does not have.
+        conn = workspace_pool._connect(db)
+        try:
+            existing = workspace_pool.published_generation(
+                conn, universe_id=universe_id, repo_key=repo_key
+            )
+        finally:
+            conn.close()
+        if existing is not None:
+            raise _Refused(
+                "workspace_exists",
+                f"a permanent workspace named {stated_key!r} already exists "
+                f"(generation {existing}); creating it again would replace and wipe "
+                "it, and re-opening one is not available in this release",
+            )
+
+    def _admit() -> Any:
+        return workspace_pool.admit(
+            db,
+            universe_id=universe_id,
+            # No connection: a created workspace is not credentialed. The pool
+            # keys its ledger by universe, so an empty id charges the same
+            # universe the same way.
+            connection_id="",
+            repo_key=repo_key,
+            storage_class=storage,
+            run_id=str(run_id),
+            max_bytes=_DEFAULT_MAX_CHECKOUT_BYTES,
+            pool_root=scratch_pool_root(base_path),
+            universe_root=universe_workspace_root(base_path),
+            **_universe_quota_kwargs(storage, base_path),
+        )
+
+    try:
+        lease = _admit()
+    except Exception as exc:
+        kind = _pool_error_kind(exc)
+        if kind not in _SWEEPABLE_REFUSALS:
+            raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
+        try:
+            from tinyassets import runs as _runs
+
+            _runs._workspace_sweep_once(base_path, claimant=f"adapter:{run_id}")
+        except Exception:
+            logger.exception("workspace sweep before retry failed")
+            raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
+        try:
+            lease = _admit()
+        except Exception as retry_exc:
+            raise _Refused(
+                _pool_error_kind(retry_exc),
+                f"workspace not admitted: {_pool_detail(retry_exc)}",
+            ) from None
+
+    owned: list[Any] = []
+    published = False
+    try:
+        if storage == "universe":
+            lease_fd = _make_permanent_generation_dir(base_path, Path(lease.path))
+        else:
+            lease_fd = _make_scratch_lease_dir(Path(lease.path))
+        owned.append(lease_fd)
+        content_dir = Path(lease.path) / _CONTENT_DIR
+        content_fd = _make_repo_dir(lease_fd, content_dir)
+        owned.append(content_fd)
+
+        # Nothing was transferred, and the hourly ledger has to be TOLD that:
+        # the admission reserved the full lease bound, and an unreconciled
+        # reservation would keep charging for bytes this workspace never used.
+        try:
+            workspace_pool.reconcile_bytes(db, lease.lease_id, 0)
+        except Exception:
+            logger.exception("workspace byte reconciliation failed for %s", lease.lease_id)
+
+        replaced = None
+        if storage == "universe":
+            replaced = _publish(
+                db, lease, universe_id=universe_id, repo_key=repo_key, run_id=run_id
+            )
+
+        # No host, no repo, no connection, no grant: this capability carries no
+        # authority because none was used to make it. `push` reads exactly that
+        # and refuses -- there is no remote to push to.
+        _register_mount(
+            chain,
+            node_id,
+            lease=lease,
+            repo_dir=content_dir,
+            lease_fd=lease_fd,
+            repo_fd=content_fd,
+            host="",
+            repo="",
+            connection_id="",
+            grant_id="",
+        )
+        published = True
+        owned.clear()
+    finally:
+        if not published:
+            _close_handles(*owned)
+            _owe_wipe(base_path, lease, run_id=run_id, universe_id=universe_id)
+
+    evidence: dict[str, Any] = {
+        "op": "create",
+        "storage": storage,
+        "bytes": 0,
+        "lease_generation": lease.generation,
+        "workspace_key": stated_key if storage == "universe" else "",
+    }
+    if replaced is not None:  # unreachable while a second create is refused
+        evidence["replaced_generation"] = replaced
+    return evidence
 
 
 def _push(
@@ -1394,7 +1616,10 @@ def _run(
         }
     op = _str_field(packet, "op")
     if op not in _CONSENT_FOR_OP:
-        raise _Refused("invalid_packet", f"packet.op must be checkout, push or discard: {op!r}")
+        raise _Refused(
+            "invalid_packet",
+            "packet.op must be one of " + ", ".join(sorted(_CONSENT_FOR_OP)) + f": {op!r}",
+        )
 
     repo = _str_field(packet, "repo")
     universe_id = _universe_id(base_path)
@@ -1412,6 +1637,28 @@ def _run(
         from tinyassets.effectors import active_effect_chain
 
         chain = active_effect_chain(str(run_id))
+
+    if op == "create":
+        # No connection, no repository, no consent: everything below this line
+        # gates a CREDENTIAL, and a created workspace has none.
+        if dry_run:
+            return {
+                "dry_run": True,
+                "op": op,
+                "storage": _str_field(packet, "storage") or "scratch",
+                "workspace_key": _str_field(packet, "workspace_key"),
+                "matched_output_key": matched_key,
+            }
+        evidence = _create(
+            packet=packet,
+            node_id=node_id,
+            base_path=universe_dir,
+            run_id=run_id,
+            universe_id=universe_id,
+            chain=chain,
+        )
+        evidence["matched_output_key"] = matched_key
+        return evidence
 
     if op == "discard":
         if dry_run:
@@ -1433,10 +1680,17 @@ def _run(
         # the reader looking for a missing grant that is not the problem.
         early = _resolve_mount(chain, packet, node_id, prior_effects=prior_effects)
         _require_packet_agrees_with_mount(packet, early)
-        if early.repo:
-            repo = early.repo
-        if early.host:
-            host = early.host
+        # A CREATED workspace carries no host and no repository, because no
+        # remote was ever contacted to make it. Falling through would let the
+        # packet supply both and push the universe's own scratch space at a
+        # repository nobody checked out.
+        if not early.repo or not early.host:
+            raise _Refused(
+                "workspace_push_refused",
+                "this workspace has no git remote; check out a repository to push",
+            )
+        repo = early.repo
+        host = early.host
 
     if not repo:
         raise _Refused("invalid_packet", "packet.repo is required")

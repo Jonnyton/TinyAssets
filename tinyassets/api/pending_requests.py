@@ -236,8 +236,9 @@ def _validated_git_scopes(
         [str(endpoint.get("host") or "") for endpoint in endpoints]
     ):
         raise ValueError(
-            "a git scope needs every endpoint of the same ask to be on "
-            "github.com; ask for the git scope on the github connection"
+            "a git scope needs every endpoint of the same ask to be on ONE host "
+            "(any host); ask for the git scope on the connection that reaches "
+            "the forge"
         )
     return sorted(set(scopes))
 
@@ -451,18 +452,19 @@ def _grant_sentence(row: dict[str, Any]) -> str:
     """For a credential ask, the exact grant in one line. Empty otherwise."""
     action = row.get("action") or {}
     if action.get("type") == "grant_workspace_consent":
-        from tinyassets.storage.workspace_authority import (
-            CONSENT_OPERATIONS,
-            GIT_SCOPE_HOST,
-        )
+        from tinyassets.storage.workspace_authority import CONSENT_OPERATIONS
 
         operations = [
             CONSENT_OPERATIONS.get(consent, consent)
             for consent in (action.get("consents") or [])
         ]
+        # The host is the CONNECTION's, so the sentence shows what was asked
+        # for rather than a host the platform assumed. An older row that
+        # predates the field says "the connection's host" rather than guessing.
+        host = str(action.get("host") or "").strip() or "the connection's host"
         return (
             "Let this universe " + ", ".join(operations) + " "
-            f"{GIT_SCOPE_HOST}/{action.get('repo')} with the key you already "
+            f"{host}/{action.get('repo')} with the key you already "
             "gave. Nothing to paste; this is the yes."
         )
     if action.get("type") == "extend_http":
@@ -646,6 +648,7 @@ def _grant_workspace_consent(
     from tinyassets.storage.pending_requests import resolve_request
     from tinyassets.storage.workspace_authority import (
         WORKSPACE_SINK,
+        connection_git_host,
         workspace_consent_destination,
     )
 
@@ -667,8 +670,17 @@ def _grant_workspace_consent(
         return {"error": "not_found", "resource": "connection"}
 
     repo = action["repo"]
+    # The host the consent is keyed under is the connection's own, exactly as
+    # the sink derives it. A default here (it used to be github.com) writes the
+    # row at a key the sink never looks up for any other forge: the owner says
+    # yes and nothing is authorized.
+    host = connection_git_host(connection)
+    if not host:
+        return {"error": "not_found", "resource": "connection"}
     destinations = [
-        workspace_consent_destination(consent, repo, connection_id=connection_id)
+        workspace_consent_destination(
+            consent, repo, connection_id=connection_id, host=host
+        )
         for consent in action["consents"]
     ]
     for destination in destinations:

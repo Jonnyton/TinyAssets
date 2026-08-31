@@ -916,6 +916,25 @@ def reconcile_operation_bytes(
 # --------------------------------------------------------------------------
 
 
+def published_generation(
+    conn: sqlite3.Connection, *, universe_id: str, repo_key: str
+) -> int | None:
+    """The generation currently published for a key, or None.
+
+    The read half of :func:`publish_generation`. A caller that must not REPLACE
+    an existing generation needs to know before it admits: publishing is what
+    enqueues the previous one for an irreversible wipe, so "did this already
+    exist" cannot be answered after the fact.
+    """
+    _require_path_key("repo_key", repo_key)
+    row = conn.execute(
+        "SELECT generation FROM workspace_generations "
+        "WHERE universe_id = ? AND repo_key = ?",
+        (universe_id, repo_key),
+    ).fetchone()
+    return int(row[0]) if row is not None else None
+
+
 def publish_generation(
     conn: sqlite3.Connection,
     *,

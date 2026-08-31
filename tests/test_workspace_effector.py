@@ -43,6 +43,7 @@ def _setup(
     scopes=(f"git_read:{REPO}", f"git_write:{REPO}"),
     destination=f"github.com/{REPO}",
     endpoints=None,
+    consent_host=HOST,
     grant_universe=None,
     consents=("checkout", "push"),
 ) -> tuple[Path, Path]:
@@ -79,7 +80,7 @@ def _setup(
             universe_dir,
             sink=EXTERNAL_WRITE_SINK_WORKSPACE,
             destination=workspace_consent_destination(
-                f"workspace_{op}", REPO, connection_id="conn-git"
+                f"workspace_{op}", REPO, connection_id="conn-git", host=consent_host
             ),
             granted_by="test",
         )
@@ -243,9 +244,10 @@ def _run(
     chain: EffectChain,
     worker: FakeWorker | None = None,
     dry_run: bool | None = None,
+    node_id: str = "n1",
 ) -> dict[str, Any]:
     return run_workspace_effector(
-        node_id="n1",
+        node_id=node_id,
         output_keys=["ws"],
         run_state={"ws": packet},
         base_path=universe_dir,
@@ -398,19 +400,84 @@ def test_a_scope_for_a_repo_whose_name_extends_this_one_is_not_a_match(
     assert result["error_kind"] == "scope_not_granted"
 
 
-def test_a_git_scope_on_a_non_github_connection_is_refused_at_creation(
+def test_a_git_scope_on_a_connection_reaching_two_hosts_is_refused_at_creation(
     tmp_path: Path,
 ) -> None:
-    """The host check moved EARLIER than the sink: a connection carrying a git
-    scope whose endpoints are not github cannot be created at all, so the sink
-    never has to refuse one."""
+    """The host check is EARLIER than the sink, and it is about ambiguity.
+
+    ``git_read:owner/name`` only means something together with a host, and the
+    connection supplies it. Two hosts is not "pick one": the scope would name a
+    repository on either, and honouring it would lend one credential to
+    whichever the caller preferred.
+    """
     from tinyassets.storage.workspace_authority import GitScopeError
 
     with pytest.raises((GitScopeError, ValueError)):
         _setup(
             tmp_path,
-            endpoints=[{"host": "gitlab.example", "path_template": "/x", "methods": ["GET"]}],
+            endpoints=[
+                {"host": "gitlab.example", "path_template": "/x", "methods": ["GET"]},
+                {"host": "github.com", "path_template": "/y", "methods": ["GET"]},
+            ],
         )
+
+
+def test_a_checkout_runs_against_a_forge_that_is_not_github(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
+) -> None:
+    """A workspace is channel-agnostic: the host is whatever the connection says.
+
+    github.com was pinned in the authority module, so a GitLab, Gitea or
+    self-hosted user could not check anything out at all -- our own demo's host
+    had become the platform's rule (founder, 2026-08-31).
+    """
+    worker = FakeWorker()
+    _root, universe_dir = _setup(
+        tmp_path,
+        destination=f"gitlab.example.com/{REPO}",
+        endpoints=[
+            {"host": "gitlab.example.com", "path_template": "/owner/name", "methods": ["GET"]}
+        ],
+        consent_host="gitlab.example.com",
+    )
+    result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain, worker=worker)
+
+    assert result.get("error_kind") is None, result
+    assert worker.requests[0]["host"] == "gitlab.example.com"
+    mount = chain.workspace_mount_or_none("n1")
+    assert mount.host == "gitlab.example.com"
+
+
+def test_a_consent_granted_for_one_forge_does_not_authorize_another(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
+) -> None:
+    """The host is IN the consent key, so the two forges cannot share a yes."""
+    _root, universe_dir = _setup(
+        tmp_path,
+        destination=f"gitlab.example.com/{REPO}",
+        endpoints=[
+            {"host": "gitlab.example.com", "path_template": "/owner/name", "methods": ["GET"]}
+        ],
+        consent_host="github.com",  # the yes was given for the OTHER forge
+    )
+    result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
+
+    assert result["error_kind"] == "missing_consent", result
+
+
+def test_a_github_scoped_connection_cannot_serve_another_hosts_packet(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
+) -> None:
+    """A packet may restate the derived host, never choose a different one."""
+    _root, universe_dir = _setup(tmp_path)
+    result = _run(
+        tmp_path,
+        _packet(host="gitlab.example.com"),
+        universe_dir=universe_dir,
+        chain=chain,
+    )
+    assert result["error_kind"] == "invalid_packet", result
+    assert "different host" in result["error"]
 
 
 def test_a_checkout_without_its_consent_is_refused(tmp_path: Path, chain: EffectChain) -> None:
@@ -441,11 +508,9 @@ def test_a_checkout_consent_does_not_authorize_a_push(
     """The consents are typed per op: one is never the other."""
     _root, universe_dir = _setup(tmp_path, consents=("checkout",))
     checkout_dest = workspace_consent_destination(
-        "workspace_checkout", REPO, connection_id="conn-git"
-    )
+        "workspace_checkout", REPO, connection_id="conn-git", host="github.com")
     push_dest = workspace_consent_destination(
-        "workspace_push", REPO, connection_id="conn-git"
-    )
+        "workspace_push", REPO, connection_id="conn-git", host="github.com")
     assert checkout_dest != push_dest
     from tinyassets.storage.effector_consents import is_consent_active
 
@@ -467,8 +532,7 @@ def test_a_consent_for_another_repository_does_not_authorize_this_one(
         universe_dir,
         sink=EXTERNAL_WRITE_SINK_WORKSPACE,
         destination=workspace_consent_destination(
-            "workspace_checkout", "someone/else", connection_id="conn-git"
-        ),
+            "workspace_checkout", "someone/else", connection_id="conn-git", host="github.com"),
         granted_by="test",
     )
     result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
@@ -1030,6 +1094,333 @@ def test_a_bad_component_from_the_no_follow_layer_is_also_a_refusal(
 
     assert result["error_kind"] == "workspace_checkout_failed", result
     assert result["error_kind"] != "effector_crashed"
+
+
+# --------------------------------------------------------------------------- #
+# op: create -- an empty workspace, for a workflow that has no repository
+# --------------------------------------------------------------------------- #
+
+
+def _empty_universe(tmp_path: Path) -> tuple[Path, Path]:
+    """A universe with NO connection, NO grant and NO consent of any kind.
+
+    The point of the create op: a workflow that renders video, scrapes a site
+    or assembles a dataset has no repository and no credential, and used to be
+    unable to get a filesystem at all.
+    """
+    data_root = tmp_path / "data"
+    universe_dir = data_root / UNIVERSE
+    universe_dir.mkdir(parents=True)
+    (data_root / "scratch").mkdir(exist_ok=True)
+    from tinyassets import runs
+
+    runs.initialize_runs_db(universe_dir)
+    return data_root, universe_dir
+
+
+def _create_packet(**over: Any) -> dict[str, Any]:
+    packet = {"sink": EXTERNAL_WRITE_SINK_WORKSPACE, "op": "create", "storage": "scratch"}
+    packet.update(over)
+    return packet
+
+
+def test_a_create_needs_no_connection_grant_or_consent(
+    tmp_path: Path, chain: EffectChain, fs_spy
+) -> None:
+    """Nothing in the run names a credential, and the workspace still appears."""
+    _root, universe_dir = _empty_universe(tmp_path)
+
+    result = _run(tmp_path, _create_packet(), universe_dir=universe_dir, chain=chain)
+
+    assert result.get("error_kind") is None, result
+    assert result["op"] == "create"
+    assert result["bytes"] == 0
+    mount = chain.workspace_mount_or_none("n1")
+    assert mount is not None
+    # It carries no authority, because none was used to make it.
+    assert (mount.host, mount.repo, mount.connection_id, mount.grant_id) == ("", "", "", "")
+
+
+def test_a_created_workspace_is_an_empty_directory_a_node_can_write_in(
+    tmp_path: Path, chain: EffectChain, fs_spy
+) -> None:
+    """The node's ``/workspace`` is a real, empty, writable directory."""
+    _root, universe_dir = _empty_universe(tmp_path)
+
+    result = _run(tmp_path, _create_packet(), universe_dir=universe_dir, chain=chain)
+    assert result.get("error_kind") is None, result
+
+    mount = chain.workspace_mount_or_none("n1")
+    content = Path(str(mount.bind_source).removeprefix("fd:"))
+    assert content.is_dir()
+    assert list(content.iterdir()) == [], "a created workspace starts empty"
+    (content / "frame-001.png").write_bytes(b"not really a png")
+    assert (content / "frame-001.png").read_bytes() == b"not really a png"
+
+
+def test_a_create_spawns_no_worker_at_all(
+    tmp_path: Path, chain: EffectChain, fs_spy
+) -> None:
+    """No clone, no broker, no git: there is no far side to reach."""
+    _root, universe_dir = _empty_universe(tmp_path)
+    worker = FakeWorker()
+
+    result = _run(
+        tmp_path, _create_packet(), universe_dir=universe_dir, chain=chain, worker=worker
+    )
+
+    assert result.get("error_kind") is None, result
+    assert worker.requests == []
+
+
+def test_a_create_is_charged_exactly_like_a_checkout(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
+) -> None:
+    """Same lease, same pool, same hourly job, same reservation.
+
+    The workspace is free of a credential, not free of a quota: a universe that
+    could make unlimited empty workspaces would have found the way around the
+    bound that checkout pays.
+    """
+    from tinyassets import workspace_pool
+
+    _root, created_dir = _empty_universe(tmp_path)
+    create = _run(tmp_path, _create_packet(), universe_dir=created_dir, chain=chain)
+    assert create.get("error_kind") is None, create
+
+    other = tmp_path / "checkout-side"
+    other.mkdir()
+    _root2, checkout_dir = _setup(other)
+    (checkout_dir.parent / "scratch").mkdir(exist_ok=True)
+    checkout = _run(
+        other, _packet(), universe_dir=checkout_dir, chain=EffectChain(
+            run_id="run-1", base_path=str(checkout_dir)
+        )
+    )
+    assert checkout.get("error_kind") is None, checkout
+
+    def ledger_rows(universe_dir: Path) -> list[tuple[str, int, int]]:
+        conn = workspace_pool._connect(wse._pool_db(universe_dir))
+        try:
+            return sorted(
+                (kind, int(amount), int(reserved))
+                for kind, amount, reserved in conn.execute(
+                    "SELECT kind, amount, reserved FROM workspace_ledger"
+                )
+            )
+        finally:
+            conn.close()
+
+    created_rows = ledger_rows(created_dir)
+    checkout_rows = ledger_rows(checkout_dir)
+    # The same KINDS, one job each, and both reconciled: what differs is only
+    # the bytes actually moved, which is 0 for a workspace nothing populated.
+    assert [kind for kind, _a, _r in created_rows] == ["bytes", "jobs"]
+    assert [kind for kind, _a, _r in checkout_rows] == ["bytes", "jobs"]
+    assert [r for _k, _a, r in created_rows] == [r for _k, _a, r in checkout_rows] == [0, 0], (
+        "an unreconciled reservation would charge the hour for bytes nobody moved"
+    )
+    assert dict((k, a) for k, a, _r in created_rows)["jobs"] == 1
+    assert dict((k, a) for k, a, _r in created_rows)["bytes"] == 0
+
+
+def test_a_create_admits_one_job_at_the_platforms_bound_not_the_packets(
+    tmp_path: Path, chain: EffectChain, fs_spy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The admission is where the job and the byte bound are charged.
+
+    The bound is the platform's: a packet that could name its own reservation
+    would be a packet choosing its own quota, which is the same finding that
+    took packet authority off the checkout (Codex round 3, P1 #4).
+    """
+    from tinyassets import workspace_pool
+
+    _root, universe_dir = _empty_universe(tmp_path)
+    calls: list[dict[str, Any]] = []
+    real_admit = workspace_pool.admit
+
+    def spy(db, **kwargs):
+        calls.append(kwargs)
+        return real_admit(db, **kwargs)
+
+    monkeypatch.setattr(workspace_pool, "admit", spy)
+    result = _run(
+        tmp_path,
+        _create_packet(max_bytes=1),
+        universe_dir=universe_dir,
+        chain=chain,
+    )
+
+    assert result.get("error_kind") is None, result
+    assert len(calls) == 1, "a create is admitted exactly once"
+    assert calls[0]["max_bytes"] == wse._DEFAULT_MAX_CHECKOUT_BYTES
+    assert calls[0]["storage_class"] == "scratch"
+    assert calls[0]["universe_id"] == UNIVERSE
+
+
+def test_a_create_that_the_pool_refuses_is_refused_by_the_same_code(
+    tmp_path: Path, chain: EffectChain, fs_spy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tinyassets import workspace_pool
+
+    _root, universe_dir = _empty_universe(tmp_path)
+
+    def refuse(*_a: Any, **_k: Any):
+        raise workspace_pool.WorkspacePoolRefused(
+            "workspace_busy", "the universe already holds a workspace job"
+        )
+
+    monkeypatch.setattr(workspace_pool, "admit", refuse)
+    monkeypatch.setattr(wse, "_SWEEPABLE_REFUSALS", frozenset())
+    result = _run(tmp_path, _create_packet(), universe_dir=universe_dir, chain=chain)
+
+    assert result["error_kind"] == "workspace_busy", result
+
+
+def test_a_push_against_a_created_workspace_is_refused_by_name(
+    tmp_path: Path, chain: EffectChain, fs_spy
+) -> None:
+    """There is no remote. Falling through would let the PACKET name one."""
+    _root, universe_dir = _empty_universe(tmp_path)
+    created = _run(
+        tmp_path, _create_packet(), universe_dir=universe_dir, chain=chain, node_id="n0"
+    )
+    assert created.get("error_kind") is None, created
+
+    result = _run(
+        tmp_path,
+        _packet(
+            op="push",
+            commit_sha=SHA,
+            branch_slug="slug",
+            workspace="n0",
+            repo=REPO,
+            connection_id="conn-git",
+            grant_id="grant-git",
+        ),
+        universe_dir=universe_dir,
+        chain=chain,
+    )
+
+    assert result["error_kind"] == "workspace_push_refused", result
+    assert "no git remote" in result["error"]
+
+
+def test_a_created_workspace_can_be_discarded(
+    tmp_path: Path, chain: EffectChain, fs_spy
+) -> None:
+    _root, universe_dir = _empty_universe(tmp_path)
+    created = _run(
+        tmp_path, _create_packet(), universe_dir=universe_dir, chain=chain, node_id="n0"
+    )
+    assert created.get("error_kind") is None, created
+
+    result = _run(
+        tmp_path,
+        {"sink": EXTERNAL_WRITE_SINK_WORKSPACE, "op": "discard", "workspace": "n0"},
+        universe_dir=universe_dir,
+        chain=chain,
+    )
+
+    assert result.get("error_kind") is None, result
+    assert chain.workspace_mount_or_none("n0") is None
+
+
+def test_a_permanent_create_needs_a_name_and_uses_its_own_key_namespace(
+    tmp_path: Path, chain: EffectChain, fs_spy
+) -> None:
+    """``ws.<slug>``: a created workspace can never address a repository's key."""
+    _root, universe_dir = _empty_universe(tmp_path)
+
+    unnamed = _run(
+        tmp_path, _create_packet(storage="universe"), universe_dir=universe_dir, chain=chain
+    )
+    assert unnamed["error_kind"] == "invalid_packet", unnamed
+    assert "workspace_key" in unnamed["error"]
+
+    named = _run(
+        tmp_path,
+        _create_packet(storage="universe", workspace_key="render-cache"),
+        universe_dir=universe_dir,
+        chain=chain,
+    )
+    assert named.get("error_kind") is None, named
+    assert named["workspace_key"] == "render-cache"
+    mount = chain.workspace_mount_or_none("n1")
+    assert mount.repo_key == "ws.render-cache"
+    assert "--" not in mount.repo_key, "a repo key always has --; a workspace key never does"
+
+
+@pytest.mark.parametrize("bad", ["a/b", "../x", "", "-lead", "a--b", "x" * 65])
+def test_a_workspace_key_that_could_escape_or_collide_is_refused(
+    tmp_path: Path, chain: EffectChain, fs_spy, bad: str
+) -> None:
+    _root, universe_dir = _empty_universe(tmp_path)
+    result = _run(
+        tmp_path,
+        _create_packet(storage="universe", workspace_key=bad),
+        universe_dir=universe_dir,
+        chain=chain,
+    )
+    assert result["error_kind"] == "invalid_packet", result
+
+
+def test_a_second_permanent_create_refuses_rather_than_wiping_the_first(
+    tmp_path: Path, chain: EffectChain, fs_spy
+) -> None:
+    """Publishing REPLACES, and the replaced generation is wiped.
+
+    For a checkout that is right: the remote is the source of truth. A created
+    workspace's content exists nowhere else, so the same move would destroy the
+    work. Refuse and say so.
+    """
+    _root, universe_dir = _empty_universe(tmp_path)
+    first = _run(
+        tmp_path,
+        _create_packet(storage="universe", workspace_key="dataset"),
+        universe_dir=universe_dir,
+        chain=chain,
+        node_id="n0",
+    )
+    assert first.get("error_kind") is None, first
+    kept = Path(chain.workspace_mount_or_none("n0").lease.path)
+    (kept / "repo" / "rows.csv").write_text("1,2,3", encoding="utf-8")
+
+    second = _run(
+        tmp_path,
+        _create_packet(storage="universe", workspace_key="dataset"),
+        universe_dir=universe_dir,
+        chain=chain,
+    )
+
+    assert second["error_kind"] == "workspace_exists", second
+    assert "dataset" in second["error"]
+    assert (kept / "repo" / "rows.csv").read_text(encoding="utf-8") == "1,2,3"
+
+
+def test_a_created_workspace_counts_as_a_read_for_settlement(
+    tmp_path: Path, chain: EffectChain, fs_spy
+) -> None:
+    """It reaches nothing and changes nothing anywhere."""
+    assert (EXTERNAL_WRITE_SINK_WORKSPACE, "create") in WORKSPACE_READ_EFFECTS
+
+
+def test_a_dry_run_create_describes_and_makes_nothing(
+    tmp_path: Path, chain: EffectChain, fs_spy
+) -> None:
+    _root, universe_dir = _empty_universe(tmp_path)
+    result = _run(
+        tmp_path,
+        _create_packet(storage="universe", workspace_key="cache"),
+        universe_dir=universe_dir,
+        chain=chain,
+        dry_run=True,
+    )
+    assert result["dry_run"] is True
+    assert result["op"] == "create"
+    assert result["workspace_key"] == "cache"
+    assert chain.workspace_mount_or_none("n1") is None
+    assert not (universe_dir / "workspaces").exists()
 
 
 def test_the_worker_request_carries_a_reference_never_a_secret(
@@ -1745,9 +2136,16 @@ def _with_mount(
     tmp_path: Path,
     *,
     node_id: str = "n0",
-    host: str = "",
-    repo: str = "",
+    host: str = HOST,
+    repo: str = REPO,
 ) -> Path:
+    """A mount shaped like the one a CHECKOUT registers.
+
+    The default used to be a mount with no host and no repository, which no
+    checkout can produce -- a created workspace is the only thing that looks
+    like that, and push refuses it by name. Tests that want that shape ask for
+    it (``host="", repo=""``).
+    """
     lease_dir = tmp_path / "lease"
     (lease_dir / "repo" / ".tiny-export").mkdir(parents=True)
     (lease_dir / "repo" / ".tiny-export" / f"{SHA}.bundle").write_bytes(b"PACK-export")
