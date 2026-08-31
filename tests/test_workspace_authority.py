@@ -263,24 +263,49 @@ def test_a_malformed_stored_scope_is_dropped_not_raised() -> None:
 
 def test_the_consent_destination_has_one_spelling() -> None:
     assert (
-        wa.workspace_consent_destination("workspace_checkout", "octocat/hello")
-        == "checkout:github.com/octocat/hello"
+        wa.workspace_consent_destination(
+            "workspace_checkout", "octocat/hello", connection_id="http_ab"
+        )
+        == "checkout:http_ab:github.com/octocat/hello"
     )
     assert (
-        wa.workspace_consent_destination("workspace_provision", "octocat/hello")
-        == "provision:github.com/octocat/hello"
+        wa.workspace_consent_destination(
+            "workspace_provision", "octocat/hello", connection_id="http_ab"
+        )
+        == "provision:http_ab:github.com/octocat/hello"
     )
     assert wa.parse_workspace_consent_destination(
-        "push:github.com/octocat/hello"
+        "push:http_ab:github.com/octocat/hello"
     ) == {
         "consent": "workspace_push",
         "operation": "push",
+        "connection_id": "http_ab",
         "host": "github.com",
         "repo": "octocat/hello",
     }
     assert wa.parse_workspace_consent_destination("api.github.com/repos") is None
+    # The pre-connection spelling is not one of ours any more, so an old row
+    # reads as absent rather than as a consent for every connection.
+    assert (
+        wa.parse_workspace_consent_destination("checkout:github.com/octocat/hello")
+        is None
+    )
     with pytest.raises(wa.GitScopeError):
-        wa.workspace_consent_destination("workspace_delete", "octocat/hello")
+        wa.workspace_consent_destination(
+            "workspace_delete", "octocat/hello", connection_id="http_ab"
+        )
+
+
+@pytest.mark.parametrize(
+    "connection_id", ["", "http:ab", "http/ab", "conn ab", "x" * 201, None]
+)
+def test_a_connection_id_that_could_forge_a_key_is_refused(connection_id) -> None:
+    """It sits between two separators in the destination: a colon or a slash
+    would make the row ambiguous, and an ambiguous row is a forgeable one."""
+    with pytest.raises(wa.GitScopeError):
+        wa.workspace_consent_destination(
+            "workspace_checkout", "octocat/hello", connection_id=connection_id
+        )
 
 
 # --------------------------------------------------------------------------
@@ -615,17 +640,15 @@ def test_granting_the_consents_writes_one_row_per_operation(base) -> None:
 
     answered = _answer("u-1", request_id=asked["request_id"], values={})
     assert answered["status"] == "answered", answered
-    assert sorted(answered["destinations"]) == [
-        "checkout:github.com/octocat/hello",
-        "provision:github.com/octocat/hello",
-        "push:github.com/octocat/hello",
+    conn = deposited["connection_id"]
+    expected = [
+        f"checkout:{conn}:github.com/octocat/hello",
+        f"provision:{conn}:github.com/octocat/hello",
+        f"push:{conn}:github.com/octocat/hello",
     ]
+    assert sorted(answered["destinations"]) == expected
     rows = list_consents(udir, sink="workspace")
-    assert sorted(row["destination"] for row in rows) == [
-        "checkout:github.com/octocat/hello",
-        "provision:github.com/octocat/hello",
-        "push:github.com/octocat/hello",
-    ]
+    assert sorted(row["destination"] for row in rows) == expected
     assert all(row["granted_by"] == "alice" for row in rows)
 
 
@@ -636,18 +659,84 @@ def test_a_consent_is_active_only_for_the_exact_operation_and_repo(base) -> None
     asked = _consent_ask("u-1", deposited, consents=["workspace_checkout"])
     _answer("u-1", request_id=asked["request_id"], values={})
 
-    checkout = wa.workspace_consent_destination("workspace_checkout", "octocat/hello")
+    conn = deposited["connection_id"]
+    checkout = wa.workspace_consent_destination(
+        "workspace_checkout", "octocat/hello", connection_id=conn
+    )
     assert is_consent_active(udir, sink="workspace", destination=checkout) is True
     for other in (
-        wa.workspace_consent_destination("workspace_push", "octocat/hello"),
-        wa.workspace_consent_destination("workspace_checkout", "octocat/hello2"),
-        wa.workspace_consent_destination("workspace_checkout", "octocat2/hello"),
-        "checkout:gitlab.com/octocat/hello",
-        "checkout:github.com/octocat/hello/extra",
+        wa.workspace_consent_destination(
+            "workspace_push", "octocat/hello", connection_id=conn
+        ),
+        wa.workspace_consent_destination(
+            "workspace_checkout", "octocat/hello2", connection_id=conn
+        ),
+        wa.workspace_consent_destination(
+            "workspace_checkout", "octocat2/hello", connection_id=conn
+        ),
+        wa.workspace_consent_destination(
+            "workspace_checkout", "octocat/hello", connection_id="http_other"
+        ),
+        f"checkout:{conn}:gitlab.com/octocat/hello",
+        f"checkout:{conn}:github.com/octocat/hello/extra",
+        "checkout:github.com/octocat/hello",
     ):
         assert is_consent_active(udir, sink="workspace", destination=other) is False
     # And it is not a consent for some other sink's destination either.
     assert is_consent_active(udir, sink="github_pr", destination=checkout) is False
+
+
+def test_two_connections_to_the_same_repo_hold_independent_consents(base) -> None:
+    """The delta binds a consent to ``(connection, repo)``. A universe can hold a
+    second key under another destination label, and a yes given for one
+    credential must not authorize work under the other."""
+    from tinyassets.storage.effector_consents import revoke_consent
+
+    udir = _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    first = _deposit("u-1", destination="github")
+    second = _deposit("u-1", destination="github-two")
+    assert first["connection_id"] != second["connection_id"]
+
+    asked = _consent_ask("u-1", first, consents=["workspace_checkout"])
+    _answer("u-1", request_id=asked["request_id"], values={})
+
+    def active(connection, repo="octocat/hello"):
+        return is_consent_active(
+            udir,
+            sink="workspace",
+            destination=wa.workspace_consent_destination(
+                "workspace_checkout", repo, connection_id=connection["connection_id"]
+            ),
+        )
+
+    assert active(first) is True
+    assert active(second) is False
+
+    asked_two = _consent_ask("u-1", second, consents=["workspace_checkout"])
+    _answer("u-1", request_id=asked_two["request_id"], values={})
+    assert active(first) is True
+    assert active(second) is True
+
+    # Revoking one leaves the other exactly as it was.
+    revoke_consent(
+        udir,
+        sink="workspace",
+        destination=wa.workspace_consent_destination(
+            "workspace_checkout",
+            "octocat/hello",
+            connection_id=first["connection_id"],
+        ),
+    )
+    assert active(first) is False
+    assert active(second) is True
+
+    from tinyassets.api.cloud_connections import cloud_connections
+
+    listed = cloud_connections(action="list", universe_id="u-1")
+    assert [row["connection_id"] for row in listed["workspace_consents"]] == [
+        second["connection_id"]
+    ]
 
 
 def test_a_consent_ask_names_a_connection_this_owner_holds(base) -> None:
@@ -752,7 +841,11 @@ def test_a_remix_carries_neither_the_consents_nor_the_scopes(base, monkeypatch) 
             is_consent_active(
                 target_dir,
                 sink="workspace",
-                destination=wa.workspace_consent_destination(consent, "octocat/hello"),
+                destination=wa.workspace_consent_destination(
+                    consent,
+                    "octocat/hello",
+                    connection_id=deposited["connection_id"],
+                ),
             )
             is False
         )
@@ -789,6 +882,7 @@ def test_the_inventory_shows_the_git_scopes_and_the_consents(base) -> None:
         {
             "consent": "workspace_checkout",
             "operation": "checkout",
+            "connection_id": deposited["connection_id"],
             "host": "github.com",
             "repo": "octocat/hello",
             "granted_at": listed["workspace_consents"][0]["granted_at"],
