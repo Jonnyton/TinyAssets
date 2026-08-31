@@ -1,30 +1,33 @@
-"""A connection declares where it makes API calls. Git may live elsewhere.
+"""The git host is whatever the connection declares — with no table of forges.
 
-Found live on 2026-08-31, blocking the founder's universe after five earlier
-gates. The GitHub connection declares ten endpoints, all ``api.github.com``, so
-the derived git host was ``api.github.com`` and two things broke at once:
+Four revisions, and the history is the specification:
 
-    fatal: unable to access 'https://api.github.com/jonnyton/tinyassets.git/':
-    The requested URL returned error: 403
+1. The rail defaulted the host to ``github.com`` while the sink derived it from
+   the connection's endpoints; the owner's consent was written at a key nothing
+   ever looked up.
+2. Both sides were made to agree on the endpoint host. Consistent, and still
+   wrong: a connection declaring ``api.github.com`` cloned from
+   ``https://api.github.com/owner/name.git``, which GitHub answers ``403``.
+3. A table — ``FORGE_GIT_HOSTS = {"api.github.com": "github.com"}`` — fixed the
+   clone and was the wrong SHAPE. Ruled out by the acceptance test: *"if we test
+   anything else like another outside connection and another task we shouldnt
+   have to do another patch"*.
+4. Relaxing to multi-host connections, so one connection could carry an API host
+   and a git host with the packet choosing. **Rejected on cross-family review**,
+   for a reason that checked out: the packet-chosen host was consent-checked,
+   then ``_push`` replaced it with the mount's host, so a consent for one host
+   authorised a push to another.
 
-and, from the same wrong value used as the consent key:
-
-    no active workspace_checkout consent for
-    checkout:http_7931…:api.github.com/jonnyton/tinyassets
-
-The owner's `github.com` consent was correct the whole time; the lookup had
-moved.
-
-The fix is a small explicit table, and the tests below are mostly about what it
-must NOT do: a workspace is forge-agnostic, so every host we do not know about
-has to pass straight through.
+What holds: **a connection declares one host and that host is the answer.** A
+forge whose git lives apart from its API is two connections — the user deposits
+one for the API and one for git, each unambiguous. The user builds what they
+need; the platform does not guess.
 """
 from __future__ import annotations
 
 import pytest
 
 from tinyassets.storage.workspace_authority import (
-    FORGE_GIT_HOSTS,
     connection_git_host,
     git_host_for_endpoints,
     workspace_consent_destination,
@@ -42,41 +45,42 @@ class _Connection:
         self.provider = provider
 
 
-def test_the_github_api_host_maps_to_the_git_host() -> None:
-    """The exact failure: ten api.github.com endpoints, one wrong clone URL."""
-    assert git_host_for_endpoints(["api.github.com"] * 10) == "github.com"
+def test_there_is_no_table_of_forges() -> None:
+    """The deleted table must not come back.
 
+    Asserted by behaviour as well as by absence: a connection declaring only an
+    API host resolves to THAT host, because the platform holds no opinion about
+    which company serves git where. A user whose git is elsewhere deposits a
+    connection naming it.
+    """
+    import tinyassets.storage.workspace_authority as mod
 
-def test_a_connection_object_derives_the_git_host_too() -> None:
-    """The live shape — this is what the effector and the rail both call."""
-    assert connection_git_host(_Connection(["api.github.com"] * 10)) == "github.com"
+    assert not hasattr(mod, "FORGE_GIT_HOSTS")
+    assert git_host_for_endpoints(["api.github.com"]) == "api.github.com"
 
 
 @pytest.mark.parametrize(
     "host",
     [
-        "git.internal.example",   # self-hosted, API and git on one host
+        "github.com",              # a connection deposited FOR git
+        "git.internal.example",    # self-hosted, API and git together
         "gitea.example.org",
-        "gitlab.com",             # API lives at gitlab.com/api/v4 — SAME host
+        "gitlab.com",              # API at gitlab.com/api/v4 — same host
         "codeberg.org",
+        "git.sr.ht",
     ],
 )
-def test_every_other_forge_passes_straight_through(host: str) -> None:
-    """The property that matters more than the fix: pinning our demo's forge
-    here is what stopped every other one from working before."""
+def test_whatever_the_connection_declares_is_the_git_host(host: str) -> None:
+    """The property that matters more than any fix: pinning our own forge here
+    is what stopped every other one from working."""
     assert git_host_for_endpoints([host]) == host
+    assert connection_git_host(_Connection([host])) == host
 
 
-def test_the_table_is_not_a_prefix_rule() -> None:
-    """"Strip the api. prefix" works for GitHub and is wrong for GitLab, whose
-    API is on the same host as its git. A table cannot make that mistake."""
-    assert "gitlab.com" not in FORGE_GIT_HOSTS
-    assert git_host_for_endpoints(["api.gitlab.example"]) == "api.gitlab.example"
-
-
-def test_two_hosts_are_still_ambiguous_and_refused() -> None:
-    """Unchanged: a scope over two hosts would lend one credential to whichever
-    the caller preferred."""
+def test_two_hosts_remain_ambiguous_and_refused() -> None:
+    """Unchanged, and deliberately so after the multi-host attempt was rejected:
+    a scope over two hosts would lend one credential to whichever the caller
+    preferred, and the push path proved that gap was reachable."""
     assert git_host_for_endpoints(["a.example", "b.example"]) == ""
 
 
@@ -86,13 +90,13 @@ def test_a_pipe_connection_still_uses_its_provider() -> None:
     assert git_host_for_endpoints([], "nobody") == ""
 
 
-def test_the_consent_key_uses_the_git_host_not_the_api_host(monkeypatch) -> None:
-    """The second half of the bug: the same wrong host was written into the
-    consent destination, so a correct grant read as missing."""
+def test_the_consent_key_uses_the_declared_host(monkeypatch) -> None:
+    """The key contains the host, so a connection deposited for git writes and
+    reads the same one — which is the whole failure this family kept having."""
     import tinyassets.storage.workspace_authority as mod
 
     monkeypatch.setattr(mod, "require_connection_token", lambda cid: str(cid))
-    host = connection_git_host(_Connection(["api.github.com"]))
+    host = connection_git_host(_Connection(["github.com"]))
     assert (
         workspace_consent_destination(
             "workspace_checkout", "owner/name", connection_id="c1", host=host

@@ -38,25 +38,27 @@ GIT_SCOPE_KINDS = (GIT_SCOPE_READ, GIT_SCOPE_WRITE)
 #: endpoint list to read the host off, so the provider has to supply it.
 PROVIDER_PIPE_HOSTS = {"github": "github.com"}
 
-#: Forges that serve their API and their git transport on DIFFERENT hosts.
+#: NOTE: there is deliberately NO table of forges here.
 #:
-#: A connection declares the host it makes API calls to. For most forges -- a
-#: self-hosted Gitea, an internal GitLab -- that is also the host git clones
-#: from, and this table is empty for them by design: the pass-through default
-#: is what keeps a workspace forge-agnostic.
+#: One existed for about an hour on 2026-08-31 --
+#: ``FORGE_GIT_HOSTS = {"api.github.com": "github.com"}`` -- because a
+#: connection declaring GitHub's API host derived the wrong git host and the
+#: clone returned 403. It worked, and it was the wrong shape: one company's
+#: products living in the platform, needing a new entry for every forge that
+#: serves git and its API on different hosts. The founder ruled it out with the
+#: acceptance test -- "if we test anything else like another outside connection
+#: and another task we shouldnt have to do another patch".
 #:
-#: GitHub is the exception, and it cost a live run to find. The founder's
-#: connection declares ten endpoints, all ``api.github.com``, so the derived
-#: git host was ``api.github.com`` and the clone became
-#: ``https://api.github.com/owner/name.git`` -- which GitHub answers 403. The
-#: same wrong value was also written into the consent key, so the owner's
-#: perfectly good ``github.com`` consent looked missing.
+#: A connection declares ONE host and that host is the answer, whatever it is.
+#: A forge whose git lives apart from its API is simply two connections: the
+#: user deposits one for the API and one for git, each unambiguous, each
+#: carrying only the scopes it needs. That is the user building what they need
+#: rather than the platform guessing.
 #:
-#: A TABLE, not a heuristic. "Strip the api. prefix" happens to work for GitHub
-#: and is wrong for GitLab, whose API lives at ``gitlab.com/api/v4`` on the very
-#: same host. An explicit fact about one forge is honest; a rule inferred from
-#: one example is how the platform ends up shaped like our demo again.
-FORGE_GIT_HOSTS = {"api.github.com": "github.com"}
+#: Relaxing this to multi-host connections WAS attempted and rejected on
+#: review: the packet-chosen host was consent-checked, then ``_push`` replaced
+#: it with the mount's host, so a consent for one host authorised a push to
+#: another. See the note in ``docs/concerns/``.
 
 #: The effector-consent sink the workspace operations record under.
 WORKSPACE_SINK = "workspace"
@@ -206,10 +208,7 @@ def git_host_for_endpoints(hosts: Iterable[str], provider: Any = "") -> str:
         unique = set(host_list)
         if len(unique) != 1:
             return ""
-        # The declared host is where the connection makes API CALLS. Git may
-        # live somewhere else on the same forge; unknown hosts pass straight
-        # through, which is what keeps every other forge working.
-        return FORGE_GIT_HOSTS.get(host_list[0], host_list[0])
+        return host_list[0]
     return PROVIDER_PIPE_HOSTS.get(_text(provider).lower(), "")
 
 
