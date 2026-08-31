@@ -704,11 +704,10 @@ def _resolve_mount(chain: Any, packet: dict[str, Any], node_id: str) -> Any:
     target = _str_field(packet, "workspace")
     if not target:
         raise _Refused("invalid_packet", "packet.workspace must name the checkout node")
+    # The registry answers "absent" with None under either name; what to DO
+    # about absent is the caller's, and an effect adapter's answer is a
+    # structured refusal, never a raise into the completion path.
     lookup = getattr(chain, "workspace_mount_or_none", None)
-    if lookup is None:
-        lookup = getattr(chain, "workspace_mount_or_none", None)
-        if lookup is None:
-            lookup = getattr(chain, "workspace_mount", None)
     mount = lookup(target) if lookup is not None else None
     if mount is None:
         raise _Refused(
