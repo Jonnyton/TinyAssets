@@ -313,6 +313,17 @@ A non-zero `ws.run` exit is data; `code_node_failed` for exceptions in
 
 ## Residual after three rounds (for the founder, not a fourth round)
 
+- **As-built deviations found at spec sync (2026-08-31), now named follow-ups
+  rather than claims:** there is no process-tree RSS watchdog (the rlimit
+  profile is the memory bound); there is no 1800 s ceiling on a workspace
+  node's `timeout_seconds` (the declared timeout governs); and
+  `workspace_provision_failed` is classified but never raised, because the
+  resolver jail is slice B - provisioning admits, stages and refuses, it does
+  not yet install. The as-built specs under `openspec/specs/` say the true
+  thing; this design keeps the intent.
+- `ws.bundle` shells out to a bare `git` and the sandbox child has no PATH
+  on Windows, so a Windows tray host cannot push yet (Linux daemon first).
+
 - Everything above is design; the build proves it. The Linux-only
   integration tests (bwrap kill cascade, bundle prerequisite refusal,
   dirfd beneath semantics) run in CI, not on the Windows dev host.
