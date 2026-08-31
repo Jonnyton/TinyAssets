@@ -71,6 +71,8 @@
         padding:.45rem;border-radius:8px;border:1px solid var(--line);
         background:var(--surface);color:inherit;margin-top:.25rem}
     .rtab-label{display:block;font-size:.78rem;color:var(--muted);margin-top:.5rem}
+    .rtab-help{display:block;font-size:.72rem;color:var(--muted);opacity:.85;margin:.15rem 0 .1rem;line-height:1.35}
+    .rtab-link{display:inline-block;font-size:.72rem;margin:0 0 .3rem;text-decoration:underline}
     .rtab-row{display:flex;gap:.4rem;margin-top:.6rem}
     .rtab-row .btn{padding:.4rem .7rem;font-size:.82rem}
     .rtab-mute{display:flex;align-items:center;gap:.4rem;font-size:.76rem;
@@ -2053,6 +2055,29 @@
     (req.fields||[]).forEach(f=>{
       const lab = document.createElement("label");
       lab.className = "rtab-label"; lab.textContent = f.label || f.name;
+      // Directions and a link, when the agent supplied them. Without these the
+      // owner is told a name and left to work out where that value lives -- the
+      // guessing this rail exists to end (founder 2026-08-31).
+      if(f.help){
+        const hint = document.createElement("span");
+        hint.className = "rtab-help"; hint.textContent = f.help;
+        lab.appendChild(hint);
+      }
+      if(f.url){
+        const a = document.createElement("a");
+        a.className = "rtab-link";
+        a.href = f.url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        // The visible text is the HOST, not friendly words. The agent composes
+        // this link and may be running code the owner pulled from the commons,
+        // so the owner must be able to SEE where a click goes before taking it
+        // while they are being asked for a secret.
+        let where = f.url;
+        try { where = new URL(f.url).host; } catch (_e) { /* show it raw */ }
+        a.textContent = "Get it from " + where;
+        lab.appendChild(a);
+      }
       lab.appendChild(railFieldControl(f, req.request_id));
       box.appendChild(lab);
     });

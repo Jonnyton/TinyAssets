@@ -1283,3 +1283,34 @@ def test_nothing_is_offered_until_the_page_knows_its_universe(tmp_path):
     assert out["converseCalls"] == []
     assert not any("Still waiting" in n["text"] for n in out["notes"])
     assert out["savedAfter"][0]["message"] == line
+
+
+def test_the_rail_renders_directions_and_a_link_for_each_credential() -> None:
+    """A field's `help` and `url` must reach the owner's screen.
+
+    They were added to the request model and the served docs and rendered
+    nowhere, which is the same shape as every gate this week: a capability that
+    exists, is documented, and cannot be reached. The owner would have been
+    shown a name like "API Key Secret" and left to work out where it lives.
+    """
+    from tinyassets.onboarding import render_app_html
+
+    page, _csp = render_app_html()
+    assert "f.help" in page, "the rail never renders a field's directions"
+    assert "f.url" in page, "the rail never renders a field's link"
+    assert "rtab-help" in page and "rtab-link" in page, "no styles for either"
+
+
+def test_a_credential_link_shows_where_it_goes_and_cannot_reach_back() -> None:
+    """The owner is invited to click this WHILE being asked for a secret, and
+    the agent composing it may be running code pulled from the commons.
+
+    So the visible text is the HOST rather than friendly words -- someone who
+    is about to paste a key can see they are being sent to `evil.example` --
+    and the tab cannot reach back into the opener.
+    """
+    from tinyassets.onboarding import render_app_html
+
+    page, _csp = render_app_html()
+    assert 'new URL(f.url).host' in page, "the link does not show its host"
+    assert '"noopener noreferrer"' in page
