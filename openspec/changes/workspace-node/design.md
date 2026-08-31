@@ -171,7 +171,11 @@ succeed.
   *(R1)*.
 - `ws.run(argv, timeout=, cwd=, env=)`, `ws.read`, `ws.write`, `ws.glob`,
   `ws.bundle(commit_sha)`; relative beneath-only paths; bounded incremental
-  drains; cumulative caps (64 commands, 1 MiB per node) *(R1)*.
+  drains; cumulative caps (64 commands, 1 MiB per node) *(R1)*. The export
+  path is a contract between the jail and the sink: `ws.bundle(sha)` writes
+  `/workspace/.tiny-export/<sha>.bundle` and returns that relative path; the
+  push reads exactly `repo/.tiny-export/<sha>.bundle` through the held lease
+  handle (builder finding, 2026-08-31).
 - **Whole-jail termination** *(R2, R3)*: bwrap installs its own trivial PID
   1 reaper and runs as a tracked supervisor with `--die-with-parent`; on a
   command timeout the parent SIGKILLs the **tracked bwrap supervisor**,
@@ -258,7 +262,14 @@ No user code ever runs with both network and the checkout *(R1)*.
 ### D5. Authority and consent
 
 Typed consents per `(connection, canonical repo)`: `workspace_checkout`,
-`workspace_push`, `workspace_provision`; a remix re-requests all three. The
+`workspace_push`, `workspace_provision`, keyed as
+`<op>:<connection_id>:<host>/<owner>/<name>` so two connections to one
+repository hold independent consents; a remix re-requests all three.
+`discard` needs no consent — dropping what you already hold is not a new
+reach (builder finding, 2026-08-31). Git scopes are `git_read:owner/name`
+/ `git_write:owner/name` on the connection, validated at the storage
+boundary, preserved across the endpoint-derived scope rewrite, and never
+accepted as HTTP verbs. The
 authorship gate is unchanged; a workspace is never shared across universes;
 the model never sees a token; the jail never has a token or network. No new
 MCP handle.
