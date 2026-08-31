@@ -39,7 +39,8 @@ No → it is the user's, whatever it is protecting them from.
 | `RLIMIT_AS` + aggregate-RSS watchdog | host memory is shared; nothing else bounds a process tree's sum |
 | Resource share / per-tenant quota | one tenant starving another is the failure |
 | Identity — you cannot act as someone else | the invariant, on the identity axis |
-| The commons is an interaction surface, so it needs a trust model | the only sanctioned user-to-user path |
+| **Credential blindness — the vault, always** | if a secret escapes, someone else's workflow reaches your accounts; this is what makes remix safe |
+| The commons as a sanctioned user-to-user path | still an interaction surface — but the vault, scopes and cancellation bound it, so it needs no reputation gate |
 
 ### Not platform — the user's, and currently taken from them
 
@@ -54,7 +55,6 @@ No → it is the user's, whatever it is protecting them from.
 | Branch naming, "never the default branch" | your git workflow |
 | Retry / resume / recovery policy | your workflow's error handling |
 | No network in the jail | **contested — see below** |
-| Credential blindness inside your own universe | your own credential, from your own agent |
 
 ### The `ws.__globals__` finding inverts
 
@@ -73,23 +73,62 @@ with string concatenation, and protects nobody but the author from themselves.
 **Delete the allowlist and the denylist. Do not fix the leak.** That concern
 file needs rewriting to say so.
 
-### Network and credentials — the two that need care
+### Credentials: the vault is absolute, and it is what makes the commons work
 
-Neither is settled by the floor alone, and neither is settled by the old
-answer.
+Founder, 2026-08-31:
 
-**Network.** "You are god in your own universe" says your code should have it.
-The cross-tenant edge is real but narrow: shared egress IP reputation, and
+> "credentials should never beable to exape a vault. so even if a user uses
+> someone elses workflow credentials should not be stealable and the agent can
+> always edit or cancel the workflow and an agent wouldnt use an uninspected
+> workflow it didnt test and come to trust first"
+
+An earlier draft of this document called credential blindness "the author's
+call inside their own universe". **That was wrong**, and it is wrong on this
+document's own test. If a credential can escape, then running someone else's
+workflow lets *them* reach *your* accounts — a user-to-user effect. Credential
+blindness therefore **passes** the floor test and is platform, non-optional,
+first-party code included.
+
+It is also the property that makes a commons possible at all. Remix is safe
+**by construction**: no workflow, yours or anyone's, can read a secret. That is
+a far stronger foundation than a reputation or review system, and it means the
+commons does **not** need the heavy trust model this document previously
+treated as load-bearing.
+
+The existing design is already this and stays: the in-memory broker over a unix
+socket, `git_environment` built from empty, `http.curloptResolve` address
+pinning, bundles as the only object transfer, and no credential mount in the
+jail. Do not relax any of it while deleting the guards that never mattered.
+
+#### What the vault does NOT do — state it, because it changes what to build
+
+**The vault stops theft, not use.** A workflow that cannot read your token can
+still *call* the API with it while it runs, including calling somewhere you did
+not intend. Secrecy bounds the permanent loss; it does not bound the live blast
+radius.
+
+Two things bound that, and they are the founder's own points 2 and 3:
+
+* **Scope** — what the connection is allowed to do at all. This is why
+  `git_read:owner/name` / `git_write:owner/name` being per-repository matters,
+  and why scopes deserve more attention than secrecy now that secrecy is
+  settled.
+* **Revocation and control** — "the agent can always edit or cancel the
+  workflow". Cancellation must therefore be real and immediate, not advisory,
+  and it must be reachable while a run is in flight.
+
+And trust is established the way the founder describes: *"an agent wouldnt use
+an uninspected workflow it didnt test and come to trust first."* Inspection and
+testing are the user's judgement, not a platform gate. The platform's job is to
+make the worst case survivable, which the vault does.
+
+### Network — the one still open
+
+"You are god in your own universe" says your code should have outbound network.
+The cross-tenant edge is narrow but real: shared egress IP reputation, and
 abuse attributable to the platform. That is an *arbitration* problem — rate,
-quota, attribution — not a reason the owner cannot make an outbound request.
-
-**Credentials.** Blindness protects your credential from your own agent, which
-the floor says is your call. But the commons complicates it: importing someone
-else's library means running their code next to your credential, and the
-commons *is* a sanctioned interaction surface, so harm through it is
-cross-user. The answer is therefore not "expose credentials" or "hide them"
-but **whose code is running** — first-party vs. imported — which lands in the
-commons trust model, not here.
+quota, attribution — not a reason the owner cannot make a request. Unresolved
+here.
 
 ## The chain, now visibly a chain
 
@@ -127,14 +166,25 @@ Entry point: `run_script(source)`. Nothing else.
 
 ## Open questions
 
-1. **The commons trust model** is now the load-bearing question — imported code
-   running beside your credentials is the one genuinely cross-user path. Its
-   own change.
-2. **Per-tenant arbitration must exist before the host-wide slot is removed.**
-   This is the one item that is a build, not a delete.
-3. **Network egress attribution** — what the platform owes when a tenant's
-   traffic is abusive.
-4. **Migration.** `write_graph` keeps working until the script path is proven
+1. **Cancellation must be real.** "The agent can always edit or cancel the
+   workflow" is now load-bearing: with the vault settled, revocation is what
+   bounds a borrowed workflow's live blast radius. Verify that cancel actually
+   stops a run mid-flight — including one inside `ws.run` — rather than being
+   advisory. If it is advisory today, that is a P1 in the founder's terms and
+   not in mine.
+2. **Scopes deserve the attention secrecy no longer needs.** A borrowed
+   workflow cannot read a token but can use it; the connection's scope is the
+   ceiling on that. Per-repository git scopes already exist; audit whether
+   every other connection type is as narrow.
+3. **Per-tenant arbitration must exist before the host-wide slot is removed**,
+   or the one remaining shared-resource invariant is unenforced. The only item
+   here that is a build rather than a delete.
+4. **Network egress** — the owner should have it; attribution and rate for
+   abuse is the open piece.
+5. **Where libraries live** — naming, versioning, import. Still its own change,
+   but much lighter than feared: the vault means it is a distribution problem,
+   not a safety one.
+6. **Migration.** `write_graph` keeps working until the script path is proven
    live. Deprecating it stays a founder call.
 
 ## How this gets proven
