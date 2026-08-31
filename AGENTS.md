@@ -245,7 +245,17 @@ Enforced vs judgement: **[`docs/reference/executable-gates.md`](docs/reference/e
   (`tests/test_match_scale.py`).
 - **A local Windows run is not an oracle on its own.** Pin the tree and
   set-compare against the same suite at base before calling anything a
-  regression.
+  regression. **Run the Linux oracle before pushing anything that touches the
+  sandbox, the filesystem helpers, process limits or the workspace:**
+  `python scripts/linux_oracle.py -- -q tests/<file>.py` runs the WORKING TREE
+  (uncommitted changes included) in a container with CI's Python 3.11, git 2.47
+  and bubblewrap — the two things this host cannot supply at all being a real
+  jail and POSIX descriptor semantics. It is not a CI replacement; CI stays
+  authoritative. It exists because six CI rounds on `workspace-node` were spent
+  on failures of one shape: the behaviour changed, Windows went green, and a
+  test encoding the OLD contract survived because its assertion only runs on
+  POSIX. A green Windows suite that skipped 40 tests is not a green suite —
+  `python scripts/skip_census.py` says what a run did not cover.
 
 ## Configuration -- environment variables
 
