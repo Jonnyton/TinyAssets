@@ -623,6 +623,97 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     return _project(resource, grant)
 
 
+def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
+    """Remove a deposited http connection: the secret, the connection, its grants.
+
+    The missing half of deposit. A user who pasted a key -- including one pasted
+    against a host they did not intend -- had no way to withdraw it through any
+    surface they could reach
+    (``docs/concerns/2026-08-27-no-reachable-remove-for-http-connections.md``).
+
+    DELETES rather than revokes, and that is the whole design decision. A
+    connection id is deterministic on ``(universe_id, destination)``, and
+    ``connect_http`` refuses any re-provision of a row whose ``revoked_at`` is
+    set, so stamping a revoke would burn that destination name for that universe
+    FOREVER: remove ``github`` and you could never deposit ``github`` again. A
+    remove the user cannot undo is not a remove, it is a trap.
+
+    Order is deliberate: the SECRET goes first. If the ledger delete then fails,
+    what is left is a connection whose credential no longer resolves -- inert,
+    and cleaned up by a retry. The reverse order would leave a secret in the
+    vault with nothing pointing at it, which is the failure that matters.
+
+    Idempotent: removing something already gone reports ``removed`` with zero
+    counts rather than an error, because "take this away" and "it is already
+    away" are the same outcome to the caller.
+    """
+    from tinyassets.api import permissions
+    from tinyassets.credential_vault import forget_credential
+    from tinyassets.daemon_server import list_universe_acl
+
+    # Same gate as connect_http, deliberately: removing a credential is at
+    # least as sensitive as depositing one.
+    if not permissions.is_authenticated_request():
+        return {"error": "authentication_required", "resource": "connection"}
+    actor = permissions.current_actor_id().strip()
+    if not actor or actor == "anonymous":
+        return {"error": "authentication_required", "resource": "connection"}
+
+    uid = _request_universe(universe_id)
+    base = _base_path()
+    admin = [
+        row
+        for row in list_universe_acl(base, universe_id=uid)
+        if row.get("actor_id") == actor and row.get("permission") == "admin"
+    ]
+    if not admin:
+        return dict(_NOT_FOUND)
+
+    try:
+        document = _payload(payload)
+    except ValueError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
+
+    destination = str(document.get("destination") or "").strip().lower()
+    if not _DESTINATION_RE.match(destination):
+        return {
+            "error": "connection_setup_invalid",
+            "detail": "destination must name the connection to remove",
+        }
+
+    connection_id, grant_id = _ids(universe_id=uid, destination=destination)
+
+    ledger = ConnectionLedger(
+        Path(base) / "outbound.db",
+        verify_authenticated_principal=lambda: actor,
+    )
+    resource = ledger._get_connection_resource(connection_id)
+    if resource is not None and resource.owner_user_id != actor:
+        # Mirrors extend_http: an admin may act on the universe, but not on
+        # another principal's deposited credential.
+        return dict(_NOT_FOUND)
+
+    secrets_removed = forget_credential(
+        _universe_dir(uid), credential_type="http", destination=destination
+    )
+    rows_removed = ledger.delete_connection(connection_id)
+
+    return {
+        "status": "removed",
+        "destination": destination,
+        "connection_id": connection_id,
+        "grant_id": grant_id,
+        "secrets_removed": secrets_removed,
+        "connection_removed": bool(rows_removed),
+        # Say it plainly: the point of deleting rather than revoking is that
+        # the name is free again, and the user should not have to infer that.
+        "next": (
+            f"the destination {destination!r} is free -- deposit it again "
+            "whenever you like"
+        ),
+    }
+
+
 def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
     """Add endpoints to an EXISTING connection, reusing the stored credential.
 

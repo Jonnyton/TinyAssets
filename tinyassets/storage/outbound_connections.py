@@ -3152,6 +3152,34 @@ class ConnectionLedger:
             )
         return cursor.rowcount > 0
 
+    def delete_connection(self, connection_id: str) -> bool:
+        """HARD-delete a connection and every grant on it. Returns True if a
+        row went away.
+
+        Not a revoke. ``revoke_connection`` stamps ``revoked_at``, and because
+        a connection id is DETERMINISTIC on ``(universe_id, destination)``, a
+        revoked row makes that destination unusable forever: every
+        re-provision then trips the ``revoked_at is not None`` conflict, so a
+        user who removes ``github`` could never deposit ``github`` again. That
+        is documented in
+        ``docs/concerns/2026-08-27-no-reachable-remove-for-http-connections.md``
+        and it is why removal deletes rather than flags.
+
+        Grants go first so no window exists where a grant outlives the
+        connection it authorises. The caller is responsible for the VAULT
+        record; this owns only the ledger rows.
+        """
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM outbound_connection_grants WHERE connection_id = ?",
+                (connection_id,),
+            )
+            cursor = connection.execute(
+                "DELETE FROM outbound_connections WHERE connection_id = ?",
+                (connection_id,),
+            )
+        return cursor.rowcount > 0
+
     def resolve_scoped_proxy(
         self,
         *,

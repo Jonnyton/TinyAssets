@@ -776,6 +776,12 @@ def write_graph(
             subscription) the universe's automations can run on — registration
             only, no secret (the credential is deposited out of band via the
             secure browser form / connect_http); owner-only, see payload_json.
+            Also with target=connection, remove_http TAKES BACK a deposited http
+            connection: it deletes the secret from the vault and the connection
+            and its grants from the ledger, and the destination name is free to
+            deposit again afterwards. Pass {"destination": "<name>"}. Use it when
+            the owner asks you to remove a credential, or when a key was pasted
+            against a destination they did not intend (owner-only).
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
@@ -1082,6 +1088,24 @@ def write_graph(
 
             return json.dumps(
                 connect_http(
+                    universe_id=graph_id,
+                    payload=payload_json,
+                )
+            )
+        if connection_operation == "remove_http":
+            # The other half of connect_http. Without it a user who pasted a key
+            # -- including one pasted against a host they did not intend -- had
+            # no way to take it back through any surface they could reach
+            # (docs/concerns/2026-08-27-no-reachable-remove-for-http-connections).
+            # DELETES the secret and the ledger rows rather than stamping a
+            # revoke, because connection ids are deterministic on
+            # (universe, destination) and a revoked row makes that destination
+            # unusable forever. A new OPERATION on the pinned write_graph
+            # handle, so the advertised tool catalog is unchanged (Hard Rule 11).
+            from tinyassets.api.http_connection import remove_http
+
+            return json.dumps(
+                remove_http(
                     universe_id=graph_id,
                     payload=payload_json,
                 )

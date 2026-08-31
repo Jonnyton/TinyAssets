@@ -550,6 +550,55 @@ def _restore_owner_rows(
     conn.commit()
 
 
+def forget_credential(
+    universe_dir: str | Path,
+    *,
+    credential_type: str,
+    destination: str,
+) -> int:
+    """Remove every vault record matching ``(credential_type, destination)``.
+
+    Returns how many records went away; zero is not an error, because "remove
+    this" and "it was already gone" are the same outcome for the caller.
+
+    Why this exists at all: :func:`write_credential_vault` MERGES. It deposits
+    the records it is given and deliberately leaves untouched ones alone, so
+    there was no way to take a credential back — a user who pasted a key,
+    including one pasted against a host they did not intend, could not withdraw
+    it through any surface they could reach
+    (``docs/concerns/2026-08-27-no-reachable-remove-for-http-connections.md``).
+
+    Under the SAME exclusive admission lock a deposit takes, and reusing the
+    same atomic writer, so a remove racing a deposit cannot interleave and a
+    crash mid-remove leaves the previous vault intact rather than a truncated
+    one.
+
+    The ledger rows are the caller's business. This owns only the secret.
+    """
+    universe = Path(universe_dir).resolve(strict=False)
+    wanted_type = (credential_type or "").strip().lower()
+    wanted_destination = (destination or "").strip()
+    if not wanted_type or not wanted_destination:
+        raise ValueError("forget_credential needs a credential_type and destination")
+
+    from tinyassets.provider_assignment import provider_assignment_admission
+
+    with provider_assignment_admission().exclusive(universe):
+        records = load_credential_vault(universe)
+        kept = [
+            record
+            for record in records
+            if not (
+                str(record.get("credential_type") or "").strip().lower() == wanted_type
+                and str(record.get("destination") or "").strip() == wanted_destination
+            )
+        ]
+        removed = len(records) - len(kept)
+        if removed:
+            _persist_credential_vault_file(universe, kept)
+    return removed
+
+
 def write_credential_vault(
     universe_dir: str | Path,
     credentials: list[dict[str, Any]] | dict[str, Any],
