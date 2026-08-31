@@ -251,3 +251,137 @@ dispatch.
 #### Scenario: a code node's output feeds the next packet
 - **WHEN** a code node returns `{"content": <text>, "sha": <sha>}` under its declared `output_keys` and the next node's packet body uses `{"$ta.base64": {"$ta.ref": "content"}}` with `content` in its `input_keys`
 - **THEN** the write carries the code node's text, base64-encoded by the effector, and the model never carried the bytes
+
+### Requirement: The `workspace` sink checks out, pushes and discards a repository through the credential-blind worker
+
+The runtime SHALL provide the effect sink `workspace` with operations `checkout`, `push` and `discard`, and SHALL perform every credentialed git operation in the outbound worker against a worker-private staging repository that is never mounted into a jail.
+A `checkout` packet carries `repo` (canonical `owner/name`), `ref`, `storage`
+(`"scratch"` default or `"universe"`) and optional `provision`; there is no
+`depth`: the worker SHALL clone the full history of the requested ref
+(`--single-branch --no-recurse-submodules`) and both directions SHALL use
+prerequisite-free bundles. A `push` packet carries the workspace capability, a
+local commit SHA and a branch slug; `discard` carries the capability.
+
+The boundary SHALL be: no credentialed git process ever opens a workspace or
+reads its `.git`; no host-side git process opens a workspace's `.git` after the
+workspace is published to user code; a host-side, credential-free initializer
+MAY populate a fresh, unpublished generation from a verified bundle (`git init`,
+fetch from the bundle, checkout, strict `fsck`), and publication SHALL happen
+only after fetch, checkout, `fsck` and staging deletion all succeed, leaving
+`.git/config` with no remote, no host path and no credential.
+
+For `push`, the worker SHALL accept only a bundle the jail created from one
+synthetic ref at the exact commit, copied as a bounded regular file through the
+held directory handle with beneath/no-symlink semantics, and SHALL verify it
+credential-free in fresh staging. `bundle verify` alone SHALL NOT be treated as
+the gate: measured on git 2.53, a bundle made from a shallow clone passes it,
+because the shallow boundary is not a declared prerequisite. The fsck-checked
+import is what catches that, so the push path SHALL run both, in that order —
+`bundle verify` refusing declared prerequisites, then an fsck-checked
+`index-pack`/fetch into an empty repository, then a strict `fsck` — and nothing
+SHALL cross the boundary on a `verify` alone.
+
+The connection SHALL carry the `git_read` (checkout) or `git_write` (push) scope
+bound to the exact `(host, owner/name)`; the transport SHALL use HTTPS on 443
+with the address pinned in git's transport (`http.curloptResolve`) to addresses
+the outbound driver's classification validated as public unicast.
+
+`checkout`, `push` and provisioning SHALL each require a typed consent record
+(`workspace_checkout`, `workspace_push`, `workspace_provision`). The consent's
+destination key SHALL include the **connection id** as well as the repository
+(`<operation>:<connection_id>:<host>/<owner>/<name>`): a universe can hold more
+than one connection to the same host, and keying on the repository alone would
+let a consent given for one credential authorize work under another. A remix
+SHALL re-request all three under the remixer's connection. `discard` SHALL
+require no new consent — discarding a capability the run already holds grants
+nothing — and SHALL immediately revoke that capability and enqueue the storage
+transition through the outbox; a failure of the discard itself is
+`workspace_discard_failed`. Evidence SHALL be bounded and SHALL never contain
+the token or a host path.
+
+#### Scenario: a checkout populates a scratch lease without a credential in reach of user code
+- **WHEN** a `checkout` packet for `owner/name@main` is dispatched under a connection with `git_read` for that repository and a `workspace_checkout` consent
+- **THEN** the worker clones into staging with the broker and the pinned address, bundles, deletes staging, populates a fresh repository in the lease from the bundle, and the evidence records repo, ref, resolved SHA and bytes — never the token, never a host path
+
+#### Scenario: a shallow bundle does not cross the boundary on a passing verify
+- **WHEN** a push presents a bundle built from a shallow clone, which `bundle verify` accepts because the shallow boundary is not a declared prerequisite
+- **THEN** the fsck-checked import into an empty repository refuses it for not carrying all necessary objects, and no bytes are pushed
+
+#### Scenario: a consent granted for one connection does not authorize another
+- **WHEN** a universe holds `workspace_push` for `owner/name` through one connection and dispatches a push for the same repository through a second connection
+- **THEN** the second is refused for a missing consent, because the connection id is part of the consent's destination
+
+#### Scenario: a gitfile or alternates in the workspace cannot make the worker read another repository
+- **WHEN** code in the workspace replaces `.git` with a gitfile pointing elsewhere, adds alternates or replace refs, and the branch then pushes
+- **THEN** the worker reads only the bundle file the jail produced, verifies it credential-free, and nothing outside the bundle's objects is read or sent
+
+#### Scenario: a discard needs no consent of its own
+- **WHEN** a run discards a workspace it holds
+- **THEN** the capability is revoked and the storage transition is enqueued without any consent lookup, because discarding what you already hold authorizes nothing new
+
+#### Scenario: provisioning without its consent is refused
+- **WHEN** a `checkout` declares `provision` and the connection has no `workspace_provision` consent for the repository
+- **THEN** the checkout completes without provisioning and the node's evidence records `workspace_provision_refused` naming the missing consent
+
+### Requirement: Branch policy for workspace pushes is fixed
+
+The sink SHALL resolve the remote `HEAD` before any push and SHALL refuse that ref unconditionally, SHALL push only branches named `tiny/<universe-short>/<slug>` by exact commit SHA as a fast-forward refspec, and SHALL never force-push or delete a ref.
+Host branch protection remains an additional remote refusal, reported as a
+fixed error class.
+
+#### Scenario: the default branch cannot be pushed to
+- **WHEN** a push targets the branch the remote reports as `HEAD`
+- **THEN** it is refused as `workspace_push_refused` and no bytes are sent
+
+### Requirement: Provisioning admits only registry-pinned dependencies through a canonicalising grammar and never executes build code with network
+
+The runtime SHALL admit for provisioning only Python requirement records that, after refusing option lines, includes, direct URLs, local paths, VCS schemes and `${VAR}` references, parse under `packaging` as a PEP 508 requirement with no URL, exactly one `==` specifier with no wildcard and a PEP 440 version, at least one `--hash=sha256:<64 hex>`, optional extras, and an optional marker using only `python_version`, `python_full_version`, `sys_platform`, `platform_machine`, `platform_system`, `implementation_name` and `os_name`; and only Node projects whose `package-lock.json` (version 2 or 3) has no `workspaces` key and no `link:` entry and whose every installable entry carries a `resolved` parsing exactly to an `https://registry.npmjs.org/…tgz` URL with no userinfo, query or fragment, and a `sha512-` integrity, with every dependency section (`dependencies`, `devDependencies`, `optionalDependencies`, `peerDependencies`, at the top level and inside each lockfile entry) holding node-semver ranges only — a dist-tag such as `latest` is not a range.
+The pinned version SHALL be validated and then carried **verbatim**: rewriting
+it would hand the installer a string the manifest never wrote. A marker SHALL be
+canonicalised from the ORIGINAL text rather than from `str(Marker)`, which
+re-quotes every literal with double quotes and so moves the clause boundaries of
+a literal containing one; the canonical form SHALL be re-parsed and refused
+unless it yields the same tree.
+
+The resolver SHALL receive only **reconstructed** canonical texts — sorted
+canonical requirement records, and canonical JSON rebuilt field by field from
+what admission validated — never the original files. Reconstruction is what
+prevents a version 2 lockfile's second, v1-shaped `dependencies` graph from
+reaching the installer with a URL the `packages` map never mentioned; the rebuilt
+lockfile always declares `lockfileVersion` 3 and carries no legacy graph. A field
+that is present but does not validate SHALL be refused, never dropped, and
+`scripts` SHALL NOT be carried into the reconstructed manifest at all, so the
+offline install cannot run a lifecycle script the root manifest asked for.
+
+Manifests SHALL be read through the held directory handle with
+beneath/no-symlink semantics as bounded regular files. The staged text SHALL be
+written, read back, and refused unless the sha256 of the bytes on disk equals
+the admitted plan's digest, and the commands SHALL be built with every
+dash-leading element restricted to the fixed flags the builders emit, so a cache
+or manifest path cannot be read as an option. Python wheels SHALL be fetched
+with `--only-binary=:all:` and `--require-hashes` (and without `--no-deps`, so
+an incomplete closure fails rather than silently resolving an unpinned
+transitive dependency) and Node tarballs with `--ignore-scripts`; the offline
+install SHALL use no index at all. The jail that runs those commands — holding
+no checkout, with egress permitted only to the declared registry hosts after
+per-address validation — is the named follow-up and is not built in this change,
+so provisioning currently admits, stages and refuses but does not install.
+Admission and consent refusals are `workspace_provision_refused`; resolver
+transport, cache-bound and offline-install failures are
+`workspace_provision_failed`.
+
+#### Scenario: an sdist-only or URL requirement is refused before any network
+- **WHEN** the requirements file contains `git+https://…`, a local path, `-r other.txt`, or `pkg>=1.0`
+- **THEN** provisioning is refused as `workspace_provision_refused` naming the offending line, and no resolver command is built
+
+#### Scenario: a lockfile resolution outside the registry is refused
+- **WHEN** the lockfile carries an entry resolved to `git+https://…`, `file:…`, `https://registry.npmjs.org.evil.example/…`, `https://cdn.registry.npmjs.org/…`, or one with a `sha256-` integrity
+- **THEN** provisioning is refused as `workspace_provision_refused` naming the entry
+
+#### Scenario: a version 2 lockfile's legacy graph cannot reach the installer
+- **WHEN** a version 2 lockfile's `packages` map is clean and its top-level `dependencies` tree names a tarball on another host
+- **THEN** the staged lockfile is rebuilt from validated fields only, declares `lockfileVersion` 3, and carries no legacy graph and no such URL
+
+#### Scenario: the staged text is bound to what was admitted
+- **WHEN** the bytes that land on disk differ from the admitted plan for any reason
+- **THEN** staging refuses, because the digest is recomputed from the file the installer would read rather than from what was intended
