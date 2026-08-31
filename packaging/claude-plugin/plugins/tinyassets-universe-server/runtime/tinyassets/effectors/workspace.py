@@ -20,6 +20,17 @@ import re
 from pathlib import Path
 from typing import Any
 
+from tinyassets.storage.workspace_authority import (
+    CONSENT_CHECKOUT,
+    CONSENT_PROVISION,
+    CONSENT_PUSH,
+    WORKSPACE_SINK,
+    GitScopeError,
+    has_git_scope,
+    normalize_repo,
+    workspace_consent_destination,
+)
+
 logger = logging.getLogger(__name__)
 
 #: One path-safe branch segment. The remote ref is built, never taken: a slug
@@ -27,13 +38,14 @@ logger = logging.getLogger(__name__)
 #: the packet appears to.
 _SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 
-#: The sink name. A new external-write sink, registered in ``_EFFECTORS``.
-EXTERNAL_WRITE_SINK_WORKSPACE = "workspace"
+#: The sink name. One spelling, owned by the authority module, so the rail that
+#: WRITES a consent and the sink that READS it cannot drift apart.
+EXTERNAL_WRITE_SINK_WORKSPACE = WORKSPACE_SINK
 
 #: The operations the sink offers, and the consent each one needs.
 _CONSENT_FOR_OP = {
-    "checkout": "workspace_checkout",
-    "push": "workspace_push",
+    "checkout": CONSENT_CHECKOUT,
+    "push": CONSENT_PUSH,
     "discard": "",  # discarding what you already hold needs no new consent
 }
 
@@ -122,14 +134,18 @@ def _str_field(source: Any, key: str) -> str:
 
 
 def _split_repo(repo: str) -> tuple[str, str]:
-    """``owner/name`` -> the two halves. Anything else is an invalid packet."""
-    parts = [part for part in repo.split("/") if part]
-    if len(parts) != 2 or repo.startswith("/") or repo.endswith("/"):
-        raise _Refused("invalid_packet", "packet.repo must be exactly 'owner/name'")
-    for part in parts:
-        if part in (".", "..") or any(c in part for c in "\\:@ \t\n"):
-            raise _Refused("invalid_packet", "packet.repo has an invalid component")
-    return parts[0], parts[1]
+    """``owner/name`` -> the two halves, through the authority module's grammar.
+
+    ``normalize_repo`` is the ONE parser. A second reading of what counts as a
+    repository is how a scope bound to one repo comes to cover another, so this
+    module does not have its own.
+    """
+    try:
+        normalized = normalize_repo(repo)
+    except GitScopeError as exc:
+        raise _Refused("invalid_packet", f"packet.repo is not 'owner/name': {exc}") from None
+    owner, _, name = normalized.partition("/")
+    return owner, name
 
 
 def repo_key_for(host: str, owner: str, name: str) -> str:
@@ -204,52 +220,49 @@ def _read_connection(
 def _require_scope(resource: Any, op: str, host: str, repo: str) -> None:
     """The connection must carry the op's git scope bound to this repository.
 
-    A scope is ``git_read``/``git_write``, and the binding is the connection's
-    allowlisted endpoint host plus its destination naming the repo. A
-    connection scoped to another repository cannot be borrowed for this one.
+    ``has_git_scope`` owns the grammar (``git_read:owner/name``), the exact
+    repo binding, the host check and the revoked-connection rule. This module
+    does not re-implement any of it: two readings of one scope string is how a
+    scope silently widens.
     """
     needed = _SCOPE_FOR_OP.get(op, "")
     if not needed:
         return
-    scopes = {str(s).strip() for s in (getattr(resource, "scopes", ()) or ())}
-    if needed not in scopes:
+    if not has_git_scope(resource, needed, repo):
         raise _Refused(
             "scope_not_granted",
-            f"the connection does not carry the {needed} scope",
+            f"the connection does not carry {needed} for this repository",
         )
-    hosts = {
-        str(getattr(ep, "host", "") or "").strip().lower()
-        for ep in (getattr(resource, "allowed_endpoints", ()) or ())
-    }
-    hosts.discard("")
-    if hosts and host.lower() not in hosts:
-        raise _Refused(
-            "host_not_allowlisted",
-            "the connection is not allowlisted for this host",
-        )
-    destination = str(getattr(resource, "destination", "") or "").strip()
-    if destination and repo.lower() not in destination.lower():
-        raise _Refused(
-            "repo_not_in_connection",
-            "the connection is bound to a different repository",
-        )
+    del host
 
 
-def consent_destination(op: str, host: str, repo: str) -> str:
-    """The typed consent destination string for one op on one repository."""
-    return f"{op}:{host}/{repo}"
+def _consent_destination(consent: str, repo: str, connection_id: str, host: str) -> str:
+    """The consent key, built by the authority module and never here.
+
+    The key is `(operation, connection, repo)`: the same repository through a
+    DIFFERENT connection is a different consent, because the credential behind
+    it is different.
+    """
+    return workspace_consent_destination(
+        consent, repo, connection_id=connection_id, host=host
+    )
 
 
-def _require_consent(universe_dir: Path, op: str, host: str, repo: str) -> None:
+def _require_consent(
+    universe_dir: Path, op: str, host: str, repo: str, connection_id: str
+) -> None:
     consent = _CONSENT_FOR_OP.get(op, "")
     if not consent:
         return
-    destination = consent_destination(op, host, repo)
+    try:
+        destination = _consent_destination(consent, repo, connection_id, host)
+    except GitScopeError as exc:
+        raise _Refused("invalid_packet", f"consent destination could not be built: {exc}")
     try:
         from tinyassets.storage.effector_consents import is_consent_active
 
         active = is_consent_active(
-            universe_dir, sink=EXTERNAL_WRITE_SINK_WORKSPACE, destination=destination
+            universe_dir, sink=WORKSPACE_SINK, destination=destination
         )
     except Exception:
         logger.exception("workspace consent lookup crashed")
@@ -263,7 +276,9 @@ def _require_consent(universe_dir: Path, op: str, host: str, repo: str) -> None:
         )
 
 
-def _check_provision_consent(universe_dir: Path, host: str, repo: str) -> bool:
+def _check_provision_consent(
+    universe_dir: Path, host: str, repo: str, connection_id: str
+) -> bool:
     """Provisioning is separately consented; its absence is NOT a checkout
     failure (D-spec scenario: the checkout completes, provisioning does not)."""
     try:
@@ -271,8 +286,8 @@ def _check_provision_consent(universe_dir: Path, host: str, repo: str) -> bool:
 
         return is_consent_active(
             universe_dir,
-            sink=EXTERNAL_WRITE_SINK_WORKSPACE,
-            destination=consent_destination("provision", host, repo),
+            sink=WORKSPACE_SINK,
+            destination=_consent_destination(CONSENT_PROVISION, repo, connection_id, host),
         )
     except Exception:
         logger.exception("workspace provision consent lookup crashed")
@@ -343,6 +358,17 @@ def _checkout(
     repo_key = repo_key_for(host, owner, name)
     db = _pool_db(base_path)
     data_root = base_path.parent
+
+    # The startup barrier: finish every outbox entry an earlier process left
+    # before admitting anything new. Once per process and cheap after that, but
+    # a run that is the FIRST thing to touch the runs DB must still not admit
+    # past an unreconciled entry.
+    try:
+        from tinyassets import runs as _runs
+
+        _runs.ensure_workspace_reconciled(base_path)
+    except Exception:
+        logger.exception("workspace startup reconciliation failed")
 
     try:
         lease = workspace_pool.admit(
@@ -420,12 +446,13 @@ def _checkout(
     if replaced is not None:
         evidence["replaced_generation"] = replaced
     if _str_field(packet, "provision") or packet.get("provision"):
-        if not _check_provision_consent(base_path, host, repo):
+        connection_id = str(getattr(resource, "connection_id", ""))
+        if not _check_provision_consent(base_path, host, repo, connection_id):
             # The checkout still completed: provisioning is its own consent.
             evidence["provision"] = "workspace_provision_refused"
             evidence["provision_hint"] = (
                 "grant workspace_provision for "
-                f"{consent_destination('provision', host, repo)}"
+                f"{_consent_destination(CONSENT_PROVISION, repo, connection_id, host)}"
             )
     return evidence
 
@@ -791,7 +818,7 @@ def _run(
         grant_id=grant_id,
     )
     _require_scope(resource, op, host, repo)
-    _require_consent(universe_dir, op, host, repo)
+    _require_consent(universe_dir, op, host, repo, connection_id)
 
     if dry_run:
         # Describe, never spawn. Every gate above has already run, so a dry run
