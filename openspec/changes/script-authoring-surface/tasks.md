@@ -37,21 +37,34 @@ works.
 - [ ] Live proof: README fix end to end — checkout, real compile check, edit,
       push, PR — as one `.py`, uncoached, gate count zero.
 
-## Slice 3 — retire the policy that was never ours
+## Slice 3 — retire the policy that was never ours, in the ONLY safe order
 
-Each removal needs the live proof above first, or it is a guess.
+Sequencing corrected 2026-08-31 after measuring what cancel actually does; see
+`docs/concerns/2026-08-31-cancel-is-advisory-and-the-timeout-is-doing-its-job.md`.
+An earlier draft of this list had step 2 before step 1 and would have removed
+the only working stop.
 
-- [ ] Per-tenant arbitration replaces the host-wide workspace slot. **Build
-      this before removing the slot**, or primitive 4 is unenforced.
-- [ ] Then delete `MAX_WORKSPACE_TIMEOUT_SECONDS` — interruption is the user's
-      call, and the ceiling only existed to protect the slot.
+- [ ] **Make cancellation real.** Today it is advisory and checked only between
+      nodes (`runs.py:2795`), and `node_sandbox.py` never hears about it at
+      all. Reach the running child, kill the whole jail (reuse the timeout
+      path's process-group kill), and still release lease, ledger and lock.
+      **Prerequisite for everything below** — with the vault absolute,
+      cancellation is what bounds a borrowed workflow.
+- [ ] Per-tenant arbitration replaces the host-wide workspace slot. Build this
+      before removing the slot, or the shared-resource invariant is unenforced.
+- [ ] **Only then** delete `MAX_WORKSPACE_TIMEOUT_SECONDS`. It is currently the
+      sole mechanism that terminates a runaway node, so it can only go once the
+      user has a real stop and the platform has real arbitration. Quota bounds
+      a tenant's share; it does not stop one stuck run.
+- [ ] Delete `ALLOWED_IMPORTS` and `FORBIDDEN_PATTERNS` — theatre, walked past
+      by `'sub' + 'process'`, protecting nobody but the author from themselves.
 - [ ] Delete `MAX_RPC_CALLS` and `MAX_WORKSPACE_COMMANDS`; they bound DSL node
       shape, which no longer exists.
 - [ ] Branch naming and "never the default branch" move into library code the
       user can fork.
 - [ ] Keep and re-verify: `/data` never bound, `RLIMIT_AS` + aggregate-RSS
-      watchdog, protocol bounds, credential blindness. These are enforced
-      *against* the author and stay.
+      watchdog, protocol bounds, and **credential blindness — the vault is
+      absolute, first-party code included**.
 
 ## Not in this change
 
