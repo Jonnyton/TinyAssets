@@ -25,15 +25,22 @@ Exit codes: ``0`` clean, ``1`` a gate failed, ``2`` the report cannot be read
 or was produced on a different kind of host than the baseline.
 
 Classification is lexical, and deliberately so: the reason string is the only
-thing a skip is required to carry. The question each class answers is *what
-would make this test run here*, so the SPECIFIC signal is checked first:
-missing tool (a tool name AND an absence phrase, or a phrase that names an
-installable dependency on its own such as "not installed"), then platform,
-then environment, then other. "no git on this Windows box" is a tool that can be
-installed here, not a hole another host has to cover, even though it says
-Windows; "no bwrap on this host" is platform, because no amount of installing
-puts bwrap on Windows. Ordering platform first put the first one in the
-headline, where it would have been someone else's problem forever.
+thing a skip is required to carry. Order: platform, then missing tool, then
+environment, then other. A reason naming a platform fact is host-shaped
+whatever else it mentions, and the headline's claim -- that another host covers
+these -- stays TRUE for it either way.
+
+That order was measured, not assumed. Checking the tool first reads better in
+the abstract ("no git on this Windows box" is fixed by installing git HERE),
+but on this suite's real reasons it drops host-shaped holes out of the count:
+
+    ws.bundle shells out to a BARE git, which resolves only through execvp's
+    CS_PATH fallback; the sandbox child is given no PATH
+
+names a tool and an absence, and git is already installed -- the hole is
+Windows process creation, and Linux covers it. Tool-first moved three such
+tests out of the headline. Platform-first's opposite error only ever moves a
+test INTO a count another host really does cover, which is the safe direction.
 
 The known limit is a reason using a platform word in an unrelated sense ("the
 sliding windows overlap"); word boundaries stop the substring case
@@ -59,8 +66,7 @@ CLASS_PLATFORM = "platform"
 CLASS_MISSING_TOOL = "missing-tool"
 CLASS_ENV = "env"
 CLASS_OTHER = "other"
-#: Printed in this order; the first is the one the headline counts. The
-#: CLASSIFIER's order is the reverse of the first two (see `classify_reason`).
+#: Checked and printed in this order; the first is what the headline counts.
 CLASS_ORDER = (CLASS_PLATFORM, CLASS_MISSING_TOOL, CLASS_ENV, CLASS_OTHER)
 
 #: Whole words. ``\b`` is what keeps "windowsill" and "point" out of the
@@ -102,6 +108,10 @@ _PLATFORM_FRAGMENTS = (
     "/bin/",
     "/usr/",
     "/dev/",
+    # A case-insensitive filesystem is a property of the host, not of a tool:
+    # this suite skips three case-coexistence tests on it.
+    "case-insensitive",
+    "case insensitive",
 )
 
 #: Tools that COULD be installed on any host. A Linux-only facility (bwrap,
@@ -153,6 +163,10 @@ _INSTALLABLE_FRAGMENTS = (
     "not importable",
     "no such binary",
     "is missing",
+    # pytest.importorskip's own words, and the shape every optional-dependency
+    # skip in this suite takes.
+    "could not import",
+    "no module named",
 )
 
 _ENV_WORDS = (
@@ -168,6 +182,8 @@ _ENV_WORDS = (
     "dns",
     "deployed",
     "droplet",
+    "dsn",
+    "postgres",
 )
 _ENV_FRAGMENTS = (
     "api key",
@@ -189,6 +205,12 @@ def _word_pattern(words: Sequence[str]) -> re.Pattern[str]:
     return re.compile(r"\b(?:" + "|".join(re.escape(w) for w in words) + r")\b")
 
 
+#: A SCREAMING_SNAKE token in the ORIGINAL reason: the general form of "this
+#: host was not configured for it". 22 skips in this suite say only
+#: "TINYASSETS_TEST_POSTGRES_DSN is required", naming no word any list has.
+#: Matched after platform, so MAX_PATH and O_NOFOLLOW are already spoken for.
+_ENV_VAR_RE = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b")
+
 _PLATFORM_RE = _word_pattern(_PLATFORM_WORDS)
 _TOOL_RE = _word_pattern(_TOOL_WORDS)
 _ENV_RE = _word_pattern(_ENV_WORDS)
@@ -197,20 +219,25 @@ _ENV_RE = _word_pattern(_ENV_WORDS)
 def classify_reason(reason: str) -> str:
     """Which kind of hole this skip is.
 
-    Most specific first. A missing tool needs TWO signals (a tool name and an
-    absence phrase), so it beats the single platform token that may be sitting
-    next to it: "no git on this Windows box" is fixed by installing git HERE,
-    and putting it in the platform headline would hand it to a host that is not
-    the one with the problem. See the module docstring.
+    Platform first: a reason that names a platform fact is host-shaped even
+    when it also names an absent tool, and the tests that proved it on this
+    suite are the ones where the tool is INSTALLED and the platform is what
+    breaks it (see the module docstring). A missing tool is then a tool name
+    with an absence phrase, or a phrase that names an installable dependency on
+    its own ("pyyaml not installed" names a library no list could enumerate).
     """
     text = (reason or "").lower()
+    if _PLATFORM_RE.search(text) or any(f in text for f in _PLATFORM_FRAGMENTS):
+        return CLASS_PLATFORM
     if any(f in text for f in _INSTALLABLE_FRAGMENTS) or (
         _TOOL_RE.search(text) and any(f in text for f in _ABSENCE_FRAGMENTS)
     ):
         return CLASS_MISSING_TOOL
-    if _PLATFORM_RE.search(text) or any(f in text for f in _PLATFORM_FRAGMENTS):
-        return CLASS_PLATFORM
-    if _ENV_RE.search(text) or any(f in text for f in _ENV_FRAGMENTS):
+    if (
+        _ENV_RE.search(text)
+        or any(f in text for f in _ENV_FRAGMENTS)
+        or _ENV_VAR_RE.search(reason or "")
+    ):
         return CLASS_ENV
     return CLASS_OTHER
 
@@ -268,6 +295,31 @@ class Census:
     @property
     def os_name(self) -> str:
         return str(self.host.get("os_name", "unknown"))
+
+
+#: An absolute path anywhere in a reason. A skip that formats an OSError
+#: carries pytest's per-run temp directory, which is different on every run.
+_VOLATILE_PATH_RE = re.compile(
+    r"(?:[A-Za-z]:[\\/]|/(?:tmp|var|home|mnt|private|Users)/)[^\s'\"]*"
+)
+_BASELINE_REASON_CHARS = 240
+
+
+def normalize_reason(reason: str) -> str:
+    """The reason with per-run paths removed, for storing in the baseline.
+
+    Committed and diffed at review time, so it must be identical across two
+    runs of an unchanged tree. Without this, seven entries carry
+    ``...\\ta-pt\\cf\\test_x0\\target.tar.gz`` and the baseline is a new file
+    every time anyone regenerates it -- which is how a review artifact becomes
+    noise nobody reads. Classification always uses the FULL reason; only what
+    is written here is normalized.
+    """
+    collapsed = " ".join(str(reason or "").split())
+    replaced = _VOLATILE_PATH_RE.sub("<path>", collapsed)
+    if len(replaced) > _BASELINE_REASON_CHARS:
+        replaced = replaced[: _BASELINE_REASON_CHARS - 3].rstrip() + "..."
+    return replaced
 
 
 def load_report(path: Path) -> Census:
@@ -334,7 +386,12 @@ def baseline_document(census: Census) -> dict[str, Any]:
             ".github/platform-skip-baseline.json"
         ),
         "platform_skips": [
-            {"nodeid": e.nodeid, "file": e.file, "kind": e.kind, "reason": e.reason}
+            {
+                "nodeid": e.nodeid,
+                "file": e.file,
+                "kind": e.kind,
+                "reason": normalize_reason(e.reason),
+            }
             for e in sorted(census.of_class(CLASS_PLATFORM), key=lambda e: e.nodeid)
         ],
     }

@@ -86,19 +86,26 @@ def test_the_classifier_reads_the_reason_not_a_substring(reason: str, expected: 
     assert sc.classify_reason(reason) == expected
 
 
-def test_an_installable_tool_beats_an_incidental_platform_word() -> None:
-    """The precedence, and the case that decides it.
+def test_a_platform_word_wins_when_the_reason_names_a_tool_too() -> None:
+    """The precedence, and the REAL reason that decided it.
 
-    Both reasons name a host and an absent thing. Only one of them is fixed by
-    installing something HERE, and that one must not sit in the headline count
-    a Linux run is supposed to answer for. Platform-first classified the git
-    row as a hole another host covers, which is how a fixable local gap becomes
-    permanent.
+    This suite skips three tests because git - which is installed - cannot be
+    resolved by a sandbox child that is given no PATH, and says so in a
+    sentence that names git, an absence and Windows. Checking the tool first
+    filed all three as "install something here", which is both false and the
+    wrong host: Linux runs them. The opposite error only ever moves a test into
+    a count another host really does cover.
     """
-    assert sc.classify_reason("no git on this Windows box") == sc.CLASS_MISSING_TOOL
-    assert sc.classify_reason("no bwrap on this host") == sc.CLASS_PLATFORM
-    # A platform word with no tool in it is untouched by the precedence.
-    assert sc.classify_reason("no dir_fd on this host") == sc.CLASS_PLATFORM
+    windows_git = (
+        "ws.bundle shells out to a BARE git, which resolves only through "
+        "execvp's CS_PATH fallback; the sandbox child is given no PATH, and on "
+        "Windows CreateProcess searches the child's own environment"
+    )
+    assert sc.classify_reason(windows_git) == sc.CLASS_PLATFORM
+    assert sc.classify_reason("no git on this Windows box") == sc.CLASS_PLATFORM
+    # With no platform word, the same shape is a tool that can be installed.
+    assert sc.classify_reason("no git on this host") == sc.CLASS_MISSING_TOOL
+    assert sc.classify_reason("pyyaml not installed") == sc.CLASS_MISSING_TOOL
 
 
 def test_a_tool_name_alone_is_not_a_missing_tool() -> None:
@@ -132,6 +139,20 @@ def test_a_tool_name_alone_is_not_a_missing_tool() -> None:
         ("pre-commit hook is a bash script; no bash on PATH", sc.CLASS_MISSING_TOOL),
         ("requires the installed Docker Compose CLI grammar", sc.CLASS_MISSING_TOOL),
         ("the chain is git; there is none here", sc.CLASS_MISSING_TOOL),
+        ("could not import 'sklearn': No module named 'sklearn'", sc.CLASS_MISSING_TOOL),
+        # 22 skips say only this: no tool, no platform, just a variable nobody
+        # set. Without the env-var rule they landed in "other", where an
+        # unconfigured host reads as an unexplained hole.
+        ("TINYASSETS_TEST_POSTGRES_DSN is required for PostgreSQL proof", sc.CLASS_ENV),
+        (
+            "set TINYASSETS_REAL_CODEX_TEST_UNIVERSE and "
+            "TINYASSETS_REAL_CODEX_TEST_SNAPSHOT for the true Codex integration",
+            sc.CLASS_ENV,
+        ),
+        ("Filesystem is case-insensitive; case-coexistence scenarios collapse.", sc.CLASS_PLATFORM),
+        # Still "other", and correctly: nothing about the host explains them.
+        ("ASP engine is available; stub test not applicable", sc.CLASS_OTHER),
+        ("awaits live persona-step replay implementation per host directive", sc.CLASS_OTHER),
     ],
 )
 def test_the_classifier_on_reasons_this_suite_really_uses(reason: str, expected: str) -> None:
@@ -278,6 +299,41 @@ def test_a_baseline_document_is_stable_and_carries_only_platform_skips() -> None
     # No timestamp, or the file changes on every run and nobody reviews it.
     assert "generated_at" not in document
     assert json.dumps(document) == json.dumps(sc.baseline_document(census))
+
+
+def test_two_runs_of_an_unchanged_tree_write_the_same_baseline() -> None:
+    """Seven real entries format an OSError that carries pytest's per-run temp
+    directory. Left alone, regenerating the baseline rewrites the file with no
+    change in meaning, and the diff a reviewer is supposed to read is noise."""
+    first = sc.census_from_document(
+        _document(
+            _entry(
+                "tests/test_backup_script.py::one",
+                "symlink creation unavailable: [WinError 1314] A required privilege "
+                "is not held by the client: "
+                "'C:\\\\Users\\\\me\\\\AppData\\\\Local\\\\Temp\\\\ta-pt\\\\cf\\\\test_one0\\\\a.gz'",
+            )
+        )
+    )
+    second = sc.census_from_document(
+        _document(
+            _entry(
+                "tests/test_backup_script.py::one",
+                "symlink creation unavailable: [WinError 1314] A required privilege "
+                "is not held by the client: "
+                "'C:\\\\Users\\\\me\\\\AppData\\\\Local\\\\Temp\\\\pytest-99\\\\test_one0\\\\a.gz'",
+            )
+        )
+    )
+    assert sc.baseline_document(first) == sc.baseline_document(second)
+    stored = sc.baseline_document(first)["platform_skips"][0]["reason"]
+    assert "<path>" in stored and "ta-pt" not in stored
+    # A POSIX temp root normalizes the same way, or a Linux baseline churns.
+    assert sc.normalize_reason("needs /tmp/pytest-of-me/pytest-3/x") == "needs <path>"
+    # A reason with no path in it is left exactly as it was.
+    assert sc.normalize_reason("the real handles are POSIX-only") == (
+        "the real handles are POSIX-only"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +485,11 @@ def _pytest_json(tmp_path: Path, body: str) -> dict:
     )
     assert out.exists(), completed.stdout + completed.stderr
     document = json.loads(out.read_text(encoding="utf-8"))
-    document["_stdout"] = completed.stdout
+    # Carried so every assertion below can say what the RUN did, not only what
+    # the census says about it. An empty census reads as "the plugin missed it"
+    # when it can equally mean the subprocess never saw the file -- and pytest
+    # exits 5 here legitimately, because a module-level skip collects nothing.
+    document["_stdout"] = completed.stdout + completed.stderr
     return document
 
 
@@ -508,8 +568,11 @@ def test_a_module_level_skip_is_counted_as_a_whole_file(tmp_path: Path) -> None:
         'pytest.skip("the real handles are POSIX-only", allow_module_level=True)\n\n\n'
         'def test_never_collected():\n    raise AssertionError\n',
     )
+    # pytest's own summary first: it says whether the run SAW the skip at all,
+    # which separates a plugin that missed it from a run that never collected.
+    assert "1 skipped" in document["_stdout"], document["_stdout"]
     entries = document["entries"]
-    assert len(entries) == 1, entries
+    assert len(entries) == 1, (entries, document["_stdout"])
     assert entries[0]["kind"] == "collect-skip"
     assert entries[0]["reason"] == "the real handles are POSIX-only"
     assert sc.classify_reason(entries[0]["reason"]) == sc.CLASS_PLATFORM

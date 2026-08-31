@@ -1,0 +1,1488 @@
+{
+  "schema": "platform-skip-baseline/1",
+  "host": {
+    "os_name": "nt",
+    "sys_platform": "win32",
+    "python": "3.14.3",
+    "machine": "AMD64"
+  },
+  "note": "Platform skips accepted on this host. A NEW entry means a change added a test that does not execute here; either that is intended and the baseline moves in the same commit, or the test should not be host-conditional. Regenerate with: python -m pytest -p tests.skip_census_plugin --skip-census-out census.json && python scripts/skip_census.py census.json --write-baseline .github/platform-skip-baseline.json",
+  "platform_skips": [
+    {
+      "nodeid": "tests/test_backup_script.py::test_local_backup_file_rejects_symlink_source",
+      "file": "tests/test_backup_script.py",
+      "kind": "skip",
+      "reason": "symlink creation unavailable: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_bootstrap_env.py::TestProbeEnvReadability::test_unreadable_file_emits_warning",
+      "file": "tests/test_bootstrap_env.py",
+      "kind": "skip",
+      "reason": "chmod 000 permission denial not enforced on Windows"
+    },
+    {
+      "nodeid": "tests/test_bootstrap_env.py::TestProbeEnvReadability::test_unreadable_file_returns_false",
+      "file": "tests/test_bootstrap_env.py",
+      "kind": "skip",
+      "reason": "chmod 000 permission denial not enforced on Windows"
+    },
+    {
+      "nodeid": "tests/test_bootstrap_env.py::TestProbeEnvReadability::test_warning_includes_fix_command",
+      "file": "tests/test_bootstrap_env.py",
+      "kind": "skip",
+      "reason": "chmod 000 permission denial not enforced on Windows"
+    },
+    {
+      "nodeid": "tests/test_canon_containment_sites.py::test_commit_read_canon_excerpts_skips_symlink",
+      "file": "tests/test_canon_containment_sites.py",
+      "kind": "skip",
+      "reason": "symlink unsupported on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_canon_containment_sites.py::test_memory_ingestion_find_files_skips_symlinked_subdir",
+      "file": "tests/test_canon_containment_sites.py",
+      "kind": "skip",
+      "reason": "symlink unsupported on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_canon_containment_sites.py::test_orient_read_canon_context_skips_symlink",
+      "file": "tests/test_canon_containment_sites.py",
+      "kind": "skip",
+      "reason": "symlink unsupported on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_canon_containment_sites.py::test_plan_constraint_synthesis_skips_symlink",
+      "file": "tests/test_canon_containment_sites.py",
+      "kind": "skip",
+      "reason": "symlink unsupported on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_canon_containment_sites.py::test_raptor_read_canon_paragraphs_skips_symlink",
+      "file": "tests/test_canon_containment_sites.py",
+      "kind": "skip",
+      "reason": "symlink unsupported on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_canon_containment_sites.py::test_reflect_collect_reviewable_skips_symlink",
+      "file": "tests/test_canon_containment_sites.py",
+      "kind": "skip",
+      "reason": "symlink unsupported on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_canon_containment_sites.py::test_select_task_count_canon_skips_symlink",
+      "file": "tests/test_canon_containment_sites.py",
+      "kind": "skip",
+      "reason": "symlink unsupported on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_canon_containment_sites.py::test_universe_list_canon_skips_symlink",
+      "file": "tests/test_canon_containment_sites.py",
+      "kind": "skip",
+      "reason": "symlink unsupported on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_canon_containment_sites.py::test_universe_list_sources_skips_symlinked_sources_dir",
+      "file": "tests/test_canon_containment_sites.py",
+      "kind": "skip",
+      "reason": "symlink unsupported on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_canon_containment_sites.py::test_universe_read_canon_rejects_symlink",
+      "file": "tests/test_canon_containment_sites.py",
+      "kind": "skip",
+      "reason": "symlink unsupported on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_canon_containment_sites.py::test_universe_read_source_rejects_symlinked_sources_dir",
+      "file": "tests/test_canon_containment_sites.py",
+      "kind": "skip",
+      "reason": "symlink unsupported on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_canon_containment_sites.py::test_work_targets_manifest_read_rejects_symlink",
+      "file": "tests/test_canon_containment_sites.py",
+      "kind": "skip",
+      "reason": "symlink unsupported on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_canon_containment_sites.py::test_worldbuild_scan_existing_skips_symlink",
+      "file": "tests/test_canon_containment_sites.py",
+      "kind": "skip",
+      "reason": "symlink unsupported on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_canon_containment_sites.py::test_writer_tools_render_canon_skips_symlink",
+      "file": "tests/test_canon_containment_sites.py",
+      "kind": "skip",
+      "reason": "symlink unsupported on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_canon_io.py::TestIterCanonFiles::test_symlinked_file_escaping_is_skipped",
+      "file": "tests/test_canon_io.py",
+      "kind": "skip",
+      "reason": "symlink unsupported on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_canon_io.py::TestIterCanonFiles::test_symlinked_subdir_escaping_is_skipped_recursive",
+      "file": "tests/test_canon_io.py",
+      "kind": "skip",
+      "reason": "symlink unsupported on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_canon_io.py::TestIterCanonFilesSubdir::test_symlinked_file_inside_legit_subdir_is_skipped",
+      "file": "tests/test_canon_io.py",
+      "kind": "skip",
+      "reason": "symlink unsupported on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_canon_io.py::TestIterCanonFilesSubdir::test_symlinked_subdir_root_is_rejected",
+      "file": "tests/test_canon_io.py",
+      "kind": "skip",
+      "reason": "symlink unsupported on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_canon_io.py::TestReadWriteHelpers::test_read_canon_text_rejects_symlink_escape",
+      "file": "tests/test_canon_io.py",
+      "kind": "skip",
+      "reason": "symlink unsupported on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_canon_io.py::TestReadWriteHelpers::test_write_canon_text_rejects_symlink_escape",
+      "file": "tests/test_canon_io.py",
+      "kind": "skip",
+      "reason": "symlink unsupported on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_canon_io.py::TestSafeCanonPath::test_symlinked_target_outside_rejected",
+      "file": "tests/test_canon_io.py",
+      "kind": "skip",
+      "reason": "symlink unsupported on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_conversation_custody.py::test_grant_cannot_be_consumed_in_fork_child_and_parent",
+      "file": "tests/test_conversation_custody.py",
+      "kind": "skip",
+      "reason": "POSIX fork is unavailable"
+    },
+    {
+      "nodeid": "tests/test_credential_fail_closed.py::test_vault_source_symlink_is_rejected_before_any_helper_side_effect",
+      "file": "tests/test_credential_fail_closed.py",
+      "kind": "skip",
+      "reason": "file symlinks unavailable: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_credential_vault.py::test_snapshot_directory_and_files_are_owner_only",
+      "file": "tests/test_credential_vault.py",
+      "kind": "skip",
+      "reason": "Windows does not enforce POSIX modes"
+    },
+    {
+      "nodeid": "tests/test_data_dir_resolver.py::test_linux_mac_default_dot_workflow_under_home",
+      "file": "tests/test_data_dir_resolver.py",
+      "kind": "skip",
+      "reason": "test targets non-Windows default branch"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_a_missing_root_compose_row_is_not_satisfied_by_the_deploy_row",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_a_snapshot_without_a_manifest_is_refused",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_absent_bundle_is_an_image_only_deploy",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_an_earlier_extension_block_named_daemon_does_not_satisfy_the_check",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_an_empty_marker_blocks_a_normal_deploy",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_an_empty_marker_makes_restore_bundle_refuse_not_fall_through",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_back_to_back_deploys_get_distinct_snapshots",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_changed_vector_inputs_force_recreate_the_logs_container",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_daemon_reload_failure_is_fatal_and_leaves_the_dirty_marker",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_dirty_marker_blocks_the_next_normal_deploy",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_env_write_failure_after_install_restores_the_bundle",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_failed_candidate_preflight_leaves_the_bundle_uninstalled",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_failed_converge_rolls_back_instead_of_accepting",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_failed_image_pull_leaves_the_bundle_uninstalled",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_failed_install_restores_the_snapshot_and_leaves_the_pointer_alone",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "the install(1) wrapper needs the real binary at /usr/bin/install"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_fake_docker_rejects_a_compose_file_it_cannot_parse",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_image_only_failed_deploy_leaves_an_older_pointer_alone",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_install_ownership_defaults_match_the_unit_contract",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_invalid_bundle_is_refused_before_any_install[a vector mount dropped-      - /opt/tinyassets/deploy/vector-betterstack.yaml:/etc/vector/vector-betterstack.yaml:ro\\n-]",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_invalid_bundle_is_refused_before_any_install[a vector mount is writable-/etc/vector/vector-entrypoint.sh:ro-/etc/vector/vector-entrypoint.sh]",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_invalid_bundle_is_refused_before_any_install[arbitrary cloudflared image-image: cloudflare/cloudflared:-image: attacker/cloudflared-but-not-really:]",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_invalid_bundle_is_refused_before_any_install[daemon environment loses TINYASSETS_DATA_DIR-      TINYASSETS_DATA_DIR: /data\\n-]",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_invalid_bundle_is_refused_before_any_install[daemon image pinned instead of interpolated-image: ${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE to an immutable ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest> ref}-image: ghcr.io/jonnyton/tinyassets-daemon:latest]",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_invalid_bundle_is_refused_before_any_install[daemon image pinned via a different variable-image: ${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE to an immutable ghcr.io/jonnyton/tinyassets-daemon@sha256:<digest> ref}-image: ${SOME_OTHER_IMAGE:-ghcr.io/jonnyton/tinyassets-daemon@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}]",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_invalid_bundle_is_refused_before_any_install[daemon loses its /data volume-    volumes:\\n      - tinyassets-data:/data\\n-    volumes:\\n      - tinyassets-data:/somewhere-else\\n]",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_invalid_bundle_is_refused_before_any_install[daemon loses its env_file-    env_file:\\n      - /etc/tinyassets/env\\n-    env_file:\\n]",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_invalid_bundle_is_refused_before_any_install[daemon loses its healthcheck-    healthcheck:\\n      # Use the same canary shape as Layer-1 / tier-3 / docker-build-    x-healthcheck-removed:\\n      # Use the same canary shape as Layer-1 / tier-3 / docker-build]",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_invalid_bundle_is_refused_before_any_install[daemon restart policy weakened-    container_name: tinyassets-daemon\\n    restart: unless-stopped-    container_name: tinyassets-daemon\\n    restart: 'no']",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_invalid_bundle_is_refused_before_any_install[no daemon memory limit-\\n    mem_limit: 4g\\n-\\n]",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_invalid_bundle_is_refused_before_any_install[unpinned vector image-image: timberio/vector:0.40.0-alpine@sha256:7a81fdd62e056321055a9e4bdec4073d752ecf68f4c192e676b85001721523c2-image: timberio/vector:latest]",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_invalid_bundle_is_refused_before_any_install[wrong logs container name-container_name: tinyassets-logs-container_name: tinyassets-logging]",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_logs_container_that_will_not_run_after_recreate_fails_the_deploy",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_logs_that_exits_after_being_seen_running_fails_the_deploy",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_logs_that_stays_dead_through_the_rollback_is_rollback_failed",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_marker_that_will_not_clear_is_terminal",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "the rm(1) wrapper needs /bin/rm"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_partial_bundle_is_refused_rather_than_half_installed",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_pointer_does_not_advance_when_the_bundle_is_refused",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_pointer_is_written_atomically",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_pointer_write_failure_restores_the_snapshot_and_refuses",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_restore_bundle_clears_the_dirty_marker",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_restore_bundle_does_not_reinstall_the_still_staged_bundle",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_restore_bundle_on_a_virgin_box_still_rolls_the_image_back",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_restore_bundle_reinstalls_the_pointed_snapshot_then_converges",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_restore_bundle_with_a_missing_snapshot_reports_rollback_failed",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_restore_bundle_without_a_pointer_but_with_history_refuses",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_restore_of_an_incomplete_snapshot_reports_rollback_failed",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_restore_passes_the_manifest_uid_and_gid_to_install",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "the install(1) wrapper needs the real binary at /usr/bin/install"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_restore_puts_back_the_recorded_mode_not_the_install_contract",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_retention_keeps_the_pointed_snapshot_when_it_sorts_oldest",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_retention_never_deletes_the_pointed_snapshot",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_rollback_converge_failure_is_rollback_failed",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_snapshot_records_a_manifest_row_per_bundle_file",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_snapshot_retention_keeps_the_last_five",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_the_decoy_fixture_is_otherwise_valid",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_the_private_copy_is_what_gets_installed",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_the_private_work_copy_is_removed_on_exit",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_unchanged_vector_inputs_do_not_recreate_the_logs_container",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_unhealthy_candidate_restores_the_bundle_and_the_previous_image",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_valid_bundle_snapshots_installs_and_advances_the_pointer",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_deploy_bundle_transaction.py::test_variable_in_a_trailing_comment_does_not_satisfy_the_source_check",
+      "file": "tests/test_deploy_bundle_transaction.py",
+      "kind": "skip",
+      "reason": "deploy_fail_safe.sh drives install(1)/flock/sha256sum and POSIX ownership; Linux CI is the oracle for this suite"
+    },
+    {
+      "nodeid": "tests/test_engine_admissions.py::test_a_symlinked_ledger_is_refused_by_every_entry_point",
+      "file": "tests/test_engine_admissions.py",
+      "kind": "skip",
+      "reason": "symlinks unavailable here"
+    },
+    {
+      "nodeid": "tests/test_engine_mcp_server.py::test_engine_run_admit_refuses_symlinked_ledger",
+      "file": "tests/test_engine_mcp_server.py",
+      "kind": "skip",
+      "reason": "symlinks not creatable on this host"
+    },
+    {
+      "nodeid": "tests/test_engine_mcp_server.py::test_read_brain_does_not_follow_symlinked_section",
+      "file": "tests/test_engine_mcp_server.py",
+      "kind": "skip",
+      "reason": "symlinks not creatable on this host"
+    },
+    {
+      "nodeid": "tests/test_engine_mcp_server.py::test_write_brain_refuses_parent_dir_symlink_escape",
+      "file": "tests/test_engine_mcp_server.py",
+      "kind": "skip",
+      "reason": "symlinks not creatable on this host"
+    },
+    {
+      "nodeid": "tests/test_execution_evidence_store.py::test_closing_second_store_does_not_release_first_store_lock",
+      "file": "tests/test_execution_evidence_store.py",
+      "kind": "skip",
+      "reason": "POSIX SQLite lock semantics"
+    },
+    {
+      "nodeid": "tests/test_execution_evidence_store.py::test_failed_second_construction_preserves_lock_without_fd_leak",
+      "file": "tests/test_execution_evidence_store.py",
+      "kind": "skip",
+      "reason": "POSIX SQLite lock semantics"
+    },
+    {
+      "nodeid": "tests/test_execution_evidence_store.py::test_store_rejects_symlinked_database_path",
+      "file": "tests/test_execution_evidence_store.py",
+      "kind": "skip",
+      "reason": "this host cannot create file symlinks: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_host_uptime_installers.py::test_bash_path_does_not_follow_symlinks",
+      "file": "tests/test_host_uptime_installers.py",
+      "kind": "skip",
+      "reason": "symlink creation not permitted here: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_assert_absent_rejects_every_compose_assignment_shape[  TARGET =secret]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_assert_absent_rejects_every_compose_assignment_shape[  export TARGET : secret]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_assert_absent_rejects_every_compose_assignment_shape[TARGET: secret]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_assert_absent_rejects_every_compose_assignment_shape[TARGET=secret]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_assert_absent_rejects_every_compose_assignment_shape[export TARGET=secret]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_atomic_write_failure_preserves_original_file",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "requires a POSIX file-size limit and real shell write failure"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u1680-leading-export]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u1680-leading]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2000-leading-export]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2000-leading]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2001-leading-export]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2001-leading]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2002-leading-export]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2002-leading]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2003-leading-export]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2003-leading]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2004-leading-export]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2004-leading]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2005-leading-export]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2005-leading]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2006-leading-export]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2006-leading]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2007-leading-export]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2007-leading]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2008-leading-export]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2008-leading]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2009-leading-export]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2009-leading]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u200a-leading-export]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u200a-leading]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2028-leading-export]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2028-leading]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2029-leading-export]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u2029-leading]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u202f-leading-export]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u202f-leading]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u205f-leading-export]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u205f-leading]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u3000-leading-export]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\u3000-leading]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\x85-delimiter]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\x85-export-delimiter]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\x85-leading-export]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\x85-leading]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\xa0-delimiter]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\xa0-export-delimiter]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\xa0-leading-export]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_compose_unicode_space_cannot_bypass_protected_key_operations[\\xa0-leading]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_delete_bootstraps_from_legacy_env",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_delete_removes_every_compose_recognized_assignment_shape",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_parent_only_term_while_stdin_open_leaves_no_secret_reader",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "requires Linux /proc child inspection and POSIX signals"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_set_creates_empty_env_when_no_legacy_file_exists",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_set_once_refuses_secret_rotation_without_exposing_values",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_set_once_rejects_duplicate_assignments_before_mutation[  TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=old-secret]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_set_once_rejects_duplicate_assignments_before_mutation[  export TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY : old-secret]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_set_once_rejects_duplicate_assignments_before_mutation[TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY =old-secret]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_set_once_rejects_duplicate_assignments_before_mutation[TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY: old-secret]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_set_once_rejects_duplicate_assignments_before_mutation[TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=old-secret]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_set_once_rejects_duplicate_assignments_before_mutation[\\texport\\tTINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY\\t=old-secret]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_set_once_rejects_duplicate_assignments_before_mutation[export TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=old-secret]",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_install_tinyassets_env.py::test_utf8_bom_first_assignment_cannot_bypass_protected_key_operations",
+      "file": "tests/test_install_tinyassets_env.py",
+      "kind": "skip",
+      "reason": "shell helper is exercised on POSIX CI; Windows test stays structural"
+    },
+    {
+      "nodeid": "tests/test_log_aggregation.py::test_ship_logs_archives_stopped_members_and_fails_closed[None]",
+      "file": "tests/test_log_aggregation.py",
+      "kind": "skip",
+      "reason": "bash not available on Windows"
+    },
+    {
+      "nodeid": "tests/test_log_aggregation.py::test_ship_logs_archives_stopped_members_and_fails_closed[missing]",
+      "file": "tests/test_log_aggregation.py",
+      "kind": "skip",
+      "reason": "bash not available on Windows"
+    },
+    {
+      "nodeid": "tests/test_log_aggregation.py::test_ship_logs_archives_stopped_members_and_fails_closed[recreated-earlier]",
+      "file": "tests/test_log_aggregation.py",
+      "kind": "skip",
+      "reason": "bash not available on Windows"
+    },
+    {
+      "nodeid": "tests/test_log_aggregation.py::test_ship_logs_archives_stopped_members_and_fails_closed[recreated]",
+      "file": "tests/test_log_aggregation.py",
+      "kind": "skip",
+      "reason": "bash not available on Windows"
+    },
+    {
+      "nodeid": "tests/test_log_aggregation.py::test_ship_logs_archives_stopped_members_and_fails_closed[unreadable]",
+      "file": "tests/test_log_aggregation.py",
+      "kind": "skip",
+      "reason": "bash not available on Windows"
+    },
+    {
+      "nodeid": "tests/test_log_aggregation.py::test_ship_logs_dry_run_exits_0",
+      "file": "tests/test_log_aggregation.py",
+      "kind": "skip",
+      "reason": "bash not available on Windows"
+    },
+    {
+      "nodeid": "tests/test_log_aggregation.py::test_ship_logs_dry_run_prints_indicator",
+      "file": "tests/test_log_aggregation.py",
+      "kind": "skip",
+      "reason": "bash not available on Windows"
+    },
+    {
+      "nodeid": "tests/test_log_aggregation.py::test_ship_logs_missing_log_dest_exits_1",
+      "file": "tests/test_log_aggregation.py",
+      "kind": "skip",
+      "reason": "bash not available on Windows"
+    },
+    {
+      "nodeid": "tests/test_node_sandbox.py::test_jail_cannot_read_the_hosts_process_environment",
+      "file": "tests/test_node_sandbox.py",
+      "kind": "skip",
+      "reason": "needs a host with bwrap: bwrap is Linux-only (win32 host)"
+    },
+    {
+      "nodeid": "tests/test_node_sandbox.py::test_jail_cannot_read_unbound_host_files",
+      "file": "tests/test_node_sandbox.py",
+      "kind": "skip",
+      "reason": "needs a host with bwrap: bwrap is Linux-only (win32 host)"
+    },
+    {
+      "nodeid": "tests/test_node_sandbox.py::test_jail_cannot_see_the_data_dir",
+      "file": "tests/test_node_sandbox.py",
+      "kind": "skip",
+      "reason": "needs a host with bwrap: bwrap is Linux-only (win32 host)"
+    },
+    {
+      "nodeid": "tests/test_node_sandbox.py::test_jail_has_no_network",
+      "file": "tests/test_node_sandbox.py",
+      "kind": "skip",
+      "reason": "needs a host with bwrap: bwrap is Linux-only (win32 host)"
+    },
+    {
+      "nodeid": "tests/test_node_sandbox.py::test_jail_runs_a_node_at_all",
+      "file": "tests/test_node_sandbox.py",
+      "kind": "skip",
+      "reason": "needs a host with bwrap: bwrap is Linux-only (win32 host)"
+    },
+    {
+      "nodeid": "tests/test_node_sandbox.py::test_jail_working_directory_is_the_private_tmpfs",
+      "file": "tests/test_node_sandbox.py",
+      "kind": "skip",
+      "reason": "needs a host with bwrap: bwrap is Linux-only (win32 host)"
+    },
+    {
+      "nodeid": "tests/test_node_sandbox_workspace.py::test_a_double_forked_sleeper_dies_with_the_jail",
+      "file": "tests/test_node_sandbox_workspace.py",
+      "kind": "skip",
+      "reason": "the jail cascade needs Linux and bwrap"
+    },
+    {
+      "nodeid": "tests/test_node_sandbox_workspace.py::test_a_rename_mid_run_cannot_swap_the_bound_directory",
+      "file": "tests/test_node_sandbox_workspace.py",
+      "kind": "skip",
+      "reason": "binding through a descriptor needs Linux and bwrap"
+    },
+    {
+      "nodeid": "tests/test_node_sandbox_workspace.py::test_a_symlink_out_of_the_workspace_is_not_a_way_out",
+      "file": "tests/test_node_sandbox_workspace.py",
+      "kind": "skip",
+      "reason": "this host cannot create a directory symlink: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_node_sandbox_workspace.py::test_a_symlinked_leaf_cannot_be_written_through",
+      "file": "tests/test_node_sandbox_workspace.py",
+      "kind": "skip",
+      "reason": "this host cannot create a file symlink: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_node_sandbox_workspace.py::test_a_symlinked_parent_cannot_be_walked_through",
+      "file": "tests/test_node_sandbox_workspace.py",
+      "kind": "skip",
+      "reason": "dir_fd resolution is POSIX-only"
+    },
+    {
+      "nodeid": "tests/test_node_sandbox_workspace.py::test_bundle_produces_a_prerequisite_free_bundle",
+      "file": "tests/test_node_sandbox_workspace.py",
+      "kind": "skip",
+      "reason": "needs git resolvable from the sandbox child; the tests-only launcher gives the runner no PATH, and on Windows CreateProcess searches the child's own environment rather than the jail's fixed /usr/bi<path>"
+    },
+    {
+      "nodeid": "tests/test_node_sandbox_workspace.py::test_the_compiler_prefers_the_held_descriptor",
+      "file": "tests/test_node_sandbox_workspace.py",
+      "kind": "skip",
+      "reason": "a directory descriptor is POSIX-only"
+    },
+    {
+      "nodeid": "tests/test_node_sandbox_workspace.py::test_the_plain_launcher_honours_a_descriptor_the_child_inherits",
+      "file": "tests/test_node_sandbox_workspace.py",
+      "kind": "skip",
+      "reason": "/proc and fd inheritance are POSIX"
+    },
+    {
+      "nodeid": "tests/test_node_sandbox_workspace.py::test_the_real_reader_sees_this_process_tree",
+      "file": "tests/test_node_sandbox_workspace.py",
+      "kind": "skip",
+      "reason": "/proc is POSIX"
+    },
+    {
+      "nodeid": "tests/test_provider_served_router.py::test_served_turn_spawns_fake_codex_through_full_os_sandbox_command",
+      "file": "tests/test_provider_served_router.py",
+      "kind": "skip",
+      "reason": "bubblewrap is a POSIX sandbox"
+    },
+    {
+      "nodeid": "tests/test_provider_served_router.py::test_two_concurrent_served_none_max_tokens_calls_both_reach_provider",
+      "file": "tests/test_provider_served_router.py",
+      "kind": "skip",
+      "reason": "Windows admission uses exclusive msvcrt file locks that serialize even shared readers, so two same-universe calls cannot overlap in-flight here; concurrent readers (fcntl LOCK_SH) run on the Linux prod/CI host, which is where the concurr..."
+    },
+    {
+      "nodeid": "tests/test_provider_stream_and_classify.py::TestFailureTaxonomy::test_bwrap_failure_on_stderr_raises_sandbox_unavailable",
+      "file": "tests/test_provider_stream_and_classify.py",
+      "kind": "skip",
+      "reason": "bwrap is Linux-only"
+    },
+    {
+      "nodeid": "tests/test_refresh_session_hardening.py::test_a_stored_session_is_not_readable_by_anyone_else",
+      "file": "tests/test_refresh_session_hardening.py",
+      "kind": "skip",
+      "reason": "POSIX modes: os.chmod on Windows only toggles the read-only bit, so this asserts nothing there. Production and CI are Linux, which is where it counts."
+    },
+    {
+      "nodeid": "tests/test_refresh_session_hardening.py::test_the_store_directory_is_not_traversable_by_anyone_else",
+      "file": "tests/test_refresh_session_hardening.py",
+      "kind": "skip",
+      "reason": "POSIX directory modes"
+    },
+    {
+      "nodeid": "tests/test_universe_nodes.py::TestWorldbuildCanonGeneration::test_handle_contradiction_rejects_symlinked_existing_file",
+      "file": "tests/test_universe_nodes.py",
+      "kind": "skip",
+      "reason": "symlink creation not permitted on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_universe_nodes.py::TestWorldbuildCanonGeneration::test_handle_expansion_rejects_symlinked_existing_file",
+      "file": "tests/test_universe_nodes.py",
+      "kind": "skip",
+      "reason": "symlink creation not permitted on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_universe_nodes.py::TestWorldbuildCanonGeneration::test_handle_synthesize_source_rejects_symlinked_source",
+      "file": "tests/test_universe_nodes.py",
+      "kind": "skip",
+      "reason": "symlink creation not permitted on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_universe_nodes.py::TestWorldbuildCanonGeneration::test_maybe_generate_premise_skips_symlinked_canon",
+      "file": "tests/test_universe_nodes.py",
+      "kind": "skip",
+      "reason": "symlink creation not permitted on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_universe_nodes.py::TestWorldbuildCanonGeneration::test_record_synthesis_failure_rejects_symlinked_manifest",
+      "file": "tests/test_universe_nodes.py",
+      "kind": "skip",
+      "reason": "symlink creation not permitted on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_universe_nodes.py::TestWorldbuildCanonGeneration::test_scan_existing_canon_skips_symlinked_escape",
+      "file": "tests/test_universe_nodes.py",
+      "kind": "skip",
+      "reason": "symlink creation not permitted on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_universe_nodes.py::TestWorldbuildCanonGeneration::test_trigger_kg_reindex_skips_symlinked_canon",
+      "file": "tests/test_universe_nodes.py",
+      "kind": "skip",
+      "reason": "symlink creation not permitted on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_universe_nodes.py::TestWorldbuildCanonGeneration::test_write_canon_file_rejects_marker_symlink_escape",
+      "file": "tests/test_universe_nodes.py",
+      "kind": "skip",
+      "reason": "symlink creation not permitted on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_universe_nodes.py::TestWorldbuildCanonGeneration::test_write_canon_marker_rejects_symlink_escape",
+      "file": "tests/test_universe_nodes.py",
+      "kind": "skip",
+      "reason": "symlink creation not permitted on this platform: [WinError 1314] A required privilege is not held by the client: '<path>' -> '<path>'"
+    },
+    {
+      "nodeid": "tests/test_wiki_alias_corner_cases.py::TestResolveBugsCanonical::test_uppercase_preferred_over_lowercase_duplicate",
+      "file": "tests/test_wiki_alias_corner_cases.py",
+      "kind": "skip",
+      "reason": "Filesystem is case-insensitive; case-coexistence scenarios collapse."
+    },
+    {
+      "nodeid": "tests/test_wiki_alias_corner_cases.py::TestResolveBugsCanonical::test_uppercase_trailing_hyphen_preferred",
+      "file": "tests/test_wiki_alias_corner_cases.py",
+      "kind": "skip",
+      "reason": "Filesystem is case-insensitive; case-coexistence scenarios collapse."
+    },
+    {
+      "nodeid": "tests/test_wiki_alias_corner_cases.py::TestWikiWriteAliasResolution::test_write_routes_to_uppercase_canonical_over_lowercase_duplicate",
+      "file": "tests/test_wiki_alias_corner_cases.py",
+      "kind": "skip",
+      "reason": "Filesystem is case-insensitive; case-coexistence scenarios collapse."
+    },
+    {
+      "nodeid": "tests/test_workspace_effector.py::test_a_first_permanent_checkout_works_with_the_real_helpers",
+      "file": "tests/test_workspace_effector.py",
+      "kind": "skip",
+      "reason": "the no-follow helpers are POSIX-only"
+    },
+    {
+      "nodeid": "tests/test_workspace_effector.py::test_the_descent_closes_every_handle_above_the_one_it_returns",
+      "file": "tests/test_workspace_effector.py",
+      "kind": "skip",
+      "reason": "the no-follow helpers are POSIX-only"
+    },
+    {
+      "nodeid": "tests/test_workspace_end_to_end.py::test_the_lease_directory_is_private_to_this_user",
+      "file": "tests/test_workspace_end_to_end.py",
+      "kind": "skip",
+      "reason": "the real handles are POSIX-only"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_a_directory_swapped_in_before_the_first_stat_is_still_refused",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_a_tree_deeper_than_the_cap_is_refused_rather_than_recursed",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_bind_target_names_the_descriptor_and_resolves_to_its_inode",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_bind_target_refuses_a_non_descriptor",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_copy_is_byte_exact_and_private",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_copy_refuses_a_symlink_planted_at_the_destination",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_copy_refuses_a_symlinked_source_leaf",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_copy_refuses_an_existing_destination",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_copy_refuses_an_oversize_source_without_creating_the_destination",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_copy_removes_the_partial_destination_when_the_bound_is_hit",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_create_lease_dir_refuses_a_directory_swapped_in_after_the_create",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_create_lease_dir_refuses_a_group_writable_parent",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_create_lease_dir_refuses_a_guessable_name",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_create_lease_dir_refuses_a_name_that_is_not_one_component",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_create_lease_dir_refuses_a_parent_anyone_could_write_to",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_create_lease_dir_refuses_an_existing_name",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_create_lease_dir_returns_a_handle_on_the_inode_it_created",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_open_dir_nofollow_hands_back_the_directory_it_named",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_open_dir_nofollow_refuses_a_relative_path",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_open_dir_nofollow_refuses_a_symlinked_component",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_open_dir_nofollow_refuses_a_symlinked_final_component",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_open_dir_nofollow_refuses_a_traversal_component",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_open_subdir_nofollow_descends_exactly_one_level",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_open_subdir_nofollow_refuses_a_file",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_open_subdir_nofollow_refuses_a_symlinked_child",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_open_subdir_nofollow_refuses_anything_but_one_component",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_open_subdir_nofollow_reports_a_missing_child_as_itself",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_read_does_not_trust_the_size_the_stat_reported",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_read_refuses_a_directory_leaf",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_read_refuses_a_fifo_leaf",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_read_refuses_a_symlinked_directory_component",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_read_refuses_a_symlinked_leaf",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_read_refuses_an_oversize_file",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_read_refuses_traversals_absolutes_and_empty_components",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_read_returns_the_bytes_of_a_regular_file",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_removing_something_that_is_already_gone_is_a_no_op",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_the_copy_cleanup_never_deletes_a_file_it_did_not_create",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_the_created_lease_dir_is_private_and_empty",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_the_fstat_is_what_refuses_a_file_where_O_DIRECTORY_is_absent",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_the_posix_branch_does_not_retry",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "the POSIX branch needs POSIX"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_the_posix_branch_never_touches_a_path_after_it_resolves_one",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_fs.py::test_the_posix_branch_unlinks_a_link_and_leaves_its_target",
+      "file": "tests/test_workspace_fs.py",
+      "kind": "skip",
+      "reason": "POSIX openat semantics (O_NOFOLLOW + dir_fd); the workspace sink runs on Linux"
+    },
+    {
+      "nodeid": "tests/test_workspace_git.py::test_a_timeout_reaps_a_double_forked_descendant",
+      "file": "tests/test_workspace_git.py",
+      "kind": "skip",
+      "reason": "process groups are POSIX"
+    },
+    {
+      "nodeid": "tests/test_workspace_git.py::test_serve_answers_over_the_unix_socket",
+      "file": "tests/test_workspace_git.py",
+      "kind": "skip",
+      "reason": "unix domain sockets"
+    },
+    {
+      "nodeid": "tests/test_workspace_pool.py::test_a_forked_child_re_anchors_the_startup_barrier",
+      "file": "tests/test_workspace_pool.py",
+      "kind": "skip",
+      "reason": "fork is POSIX only; there is no inherited-import problem elsewhere"
+    }
+  ]
+}
