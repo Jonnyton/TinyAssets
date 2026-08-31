@@ -139,8 +139,9 @@ property of the jail (no network, cleared environment, no data directory, the
 authorship gate, the request's context on RPC) is unchanged.
 
 The runner SHALL expose `ws.run(argv, timeout=, cwd=, env=)`,
-`ws.read(relpath, max_bytes=)`, `ws.write(relpath, text)`, `ws.glob(pattern)`
-and `ws.bundle(commit_sha)` (a self-contained, prerequisite-free bundle from
+`ws.read(relpath, max_bytes=)`, `ws.write(relpath, text)`,
+`ws.read_bytes(relpath, max_bytes=)`, `ws.write_bytes(relpath, b64)`,
+`ws.glob(pattern)` and `ws.bundle(commit_sha)` (a self-contained, prerequisite-free bundle from
 one synthetic ref at that commit, hooks and replacements disabled, created
 without credentials inside the jail; its reading of the workspace's own `.git`
 is accepted residual parser input because the process stays in the jail and its
@@ -174,6 +175,20 @@ descriptor and `ws.write` SHALL create parents relative to it. Where the
 platform provides no `dir_fd` the same rules SHALL be enforced against resolved
 paths, which is the tests-only launcher and never the jail.
 `ws.read(max_bytes=)` SHALL CLAMP to the configured cap rather than replace it.
+
+Binary artifacts SHALL have a way out of the workspace: the result channel is
+JSON lines and node code cannot call `open()`, so `ws.read_bytes` SHALL return
+the file's bytes base64-encoded and `ws.write_bytes` SHALL write the bytes of a
+base64 string, both under the same relative-path, no-`..`, `O_NOFOLLOW`
+resolution as their text counterparts. Their `max_bytes` and their charge
+against the node's cumulative output cap SHALL both be measured in RAW bytes,
+never in the encoded length, so the 4/3 expansion neither shrinks what a node
+may read nor overcharges what it moved, and reading a file as bytes is not a
+way around a cap that reading it as text would hit. `ws.write_bytes` SHALL
+decode STRICTLY and refuse a non-base64 payload by name rather than discarding
+the characters outside the alphabet, which would write a corrupt file that
+looks like a successful one, and SHALL charge the budget before it opens the
+destination so a refused write leaves no partial artifact.
 
 On a command timeout the runner SHALL leave without giving the node a chance to
 catch it, and the parent SHALL SIGKILL the tracked process and confirm its exit
@@ -264,8 +279,20 @@ existing pipe — and is a named residual.
 - **THEN** the runner leaves, the parent SIGKILLs the tracked bwrap supervisor and confirms its exit, the pid namespace ends every descendant with it, and the node fails as `workspace_command_timeout`
 
 #### Scenario: a path that leaves the workspace refuses, and a link out is not a way out
-- **WHEN** `ws.read`, `ws.write`, `ws.glob` or a `ws.run` cwd names `..`, an absolute path, or a symlink pointing outside the workspace
+- **WHEN** `ws.read`, `ws.read_bytes`, `ws.write`, `ws.write_bytes`, `ws.glob` or a `ws.run` cwd names `..`, an absolute path, or a symlink pointing outside the workspace
 - **THEN** the call raises inside `run()` naming the rule that refused it, and nothing outside the workspace is read or written
+
+#### Scenario: a binary artifact a command produced leaves the workspace intact
+- **WHEN** a node produces a file with `ws.run`, reads it with `ws.read_bytes`, and writes it back with `ws.write_bytes`
+- **THEN** the sha256 a separate command computes over the produced file equals the sha256 of the decoded bytes and of the rewritten copy, while `ws.read` of the same file would not reproduce them
+
+#### Scenario: the byte doors are bounded and charged in raw bytes
+- **WHEN** a node reads a 2048-byte file whose base64 form is 2732 bytes, under a 2500-byte read cap and a 2500-byte cumulative output cap
+- **THEN** the first read is admitted because both bounds count RAW bytes, and a second read is refused as a workspace limit naming `read_bytes`
+
+#### Scenario: a payload that is not strict base64 is refused rather than silently truncated
+- **WHEN** `ws.write_bytes` is given a string containing characters outside the base64 alphabet
+- **THEN** it raises naming strict base64 and creates no file, instead of decoding the surviving characters into a corrupt artifact
 
 ### Requirement: Runs are checkpointed LangGraph executions with a fixed terminal status set
 The runs engine (`tinyassets.runs`) SHALL execute a compiled branch as a checkpointed LangGraph run using a synchronous `SqliteSaver` (never `AsyncSqliteSaver`, per Hard Rule #1) persisted at `.langgraph_runs.db`, with the LangGraph `thread_id` equal to the `run_id`. A run's lifecycle status SHALL be one of `queued`, `running`, `completed`, `failed`, `cancelled`, `interrupted`, or `resumed`. The graph SHALL be invoked with a recursion ceiling defaulting to `DEFAULT_RECURSION_LIMIT = 100` (raised from LangGraph's stock 25 to accommodate multi-iteration gate loops), overridable per call within validated bounds.

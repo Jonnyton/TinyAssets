@@ -879,16 +879,25 @@ def _make_workspace(conf, remaining):
                 )
             return result
 
-        def read(self, relpath, max_bytes=None):
-            parts = _ws_split(relpath, "path")
+        def _cap_for(self, max_bytes, label):
             if max_bytes is None:
                 cap = max_read
             else:
-                # CLAMPED, not replaced: a caller cannot raise the node's cap by
-                # asking for more than the limits allow.
-                cap = min(_ws_exact_int(max_bytes, "read max_bytes"), max_read)
+                # CLAMPED, not replaced: a caller cannot raise the node's cap
+                # by asking for more than the limits allow.
+                cap = min(_ws_exact_int(max_bytes, label + " max_bytes"), max_read)
             if cap <= 0:
-                raise ValueError("ws.read max_bytes must be positive")
+                raise ValueError("ws." + label + " max_bytes must be positive")
+            return cap
+
+        def _read_raw(self, relpath, cap):
+            """The bytes of one leaf, resolved and bounded.
+
+            Shared by `read` and `read_bytes` rather than copied, so the
+            component-wise NOFOLLOW resolution and the cap cannot drift apart
+            between the text door and the binary one.
+            """
+            parts = _ws_split(relpath, "path")
             handle = root.open_leaf(parts, "path", os.O_RDONLY | _WS_BINARY)
             try:
                 data = b""
@@ -903,12 +912,34 @@ def _make_workspace(conf, remaining):
                 raise RuntimeError(
                     "workspace limit: %s is larger than %d bytes" % (relpath, cap)
                 )
+            return data
+
+        def _charge(self, size, label):
+            """Count RAW bytes against the node's cumulative output budget.
+
+            RAW, not encoded: base64 is 4/3 the size, so charging the encoded
+            length would bill a node a third more than it moved, and capping
+            the encoded length would silently shrink what it may read.
+            """
+            counters["bytes"] += size
+            if counters["bytes"] > max_output:
+                raise RuntimeError(
+                    "workspace limit: %s passed %d bytes for this node"
+                    % (label, max_output)
+                )
+
+        def read(self, relpath, max_bytes=None):
+            cap = self._cap_for(max_bytes, "read")
+            data = self._read_raw(relpath, cap)
             return data.decode("utf-8", "replace")
 
         def write(self, relpath, text):
             _ws_exact_str(text, "write text")
             parts = _ws_split(relpath, "path")
             data = text.encode("utf-8")
+            return self._write_raw(parts, data)
+
+        def _write_raw(self, parts, data):
             flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _WS_BINARY
             handle = root.open_leaf(
                 parts, "path", flags, mode=384, make_parents=True
@@ -920,6 +951,57 @@ def _make_workspace(conf, remaining):
             finally:
                 os.close(handle)
             return len(data)
+
+        def read_bytes(self, relpath, max_bytes=None):
+            """The file's BYTES, base64-encoded into an ASCII str.
+
+            The channel out of this jail is JSON lines, which carries no bytes
+            type, and node code cannot call ``open()`` -- so without this a
+            node can produce a PNG, a video or a zip and have no way to hand it
+            on. Decode it with the allowlisted ``base64`` module::
+
+                import base64
+                blob = base64.b64decode(ws.read_bytes("out/clip.mp4"))
+
+            ``max_bytes`` bounds the RAW file, never the encoded string: the
+            4/3 expansion is this method's business, not the caller's. It
+            CLAMPS to the configured cap exactly as ``ws.read`` does, and the
+            raw size is charged to the node's cumulative output budget, so
+            reading a file as bytes is not a way around a cap that reading it
+            as text would hit.
+            """
+            cap = self._cap_for(max_bytes, "read_bytes")
+            data = self._read_raw(relpath, cap)
+            self._charge(len(data), "read_bytes")
+            return base64.b64encode(data).decode("ascii")
+
+        def write_bytes(self, relpath, b64):
+            """Write the bytes of a base64 string; returns the RAW count.
+
+            The inverse of :meth:`read_bytes`, with the same path rules as
+            ``ws.write`` -- relative, no ``..``, every component opened
+            ``O_NOFOLLOW``, parents created beneath the root.
+
+            The decode is STRICT (``validate=True``): a string carrying
+            anything outside the base64 alphabet is refused by name rather
+            than silently truncated at the first bad character, which is what
+            ``b64decode`` does by default and would write a corrupt file that
+            looks like a successful one.
+
+            The decoded size is charged BEFORE the open, so a payload that
+            exceeds the node's budget leaves no partial file behind.
+            """
+            _ws_exact_str(b64, "write_bytes b64")
+            parts = _ws_split(relpath, "path")
+            try:
+                data = base64.b64decode(b64, validate=True)
+            except Exception as exc:
+                raise ValueError(
+                    "ws.write_bytes needs strict base64 (see ws.read_bytes): "
+                    + str(exc)
+                )
+            self._charge(len(data), "write_bytes")
+            return self._write_raw(parts, data)
 
         def glob(self, pattern):
             _ws_exact_str(pattern, "glob pattern")
@@ -999,6 +1081,7 @@ def _make_workspace(conf, remaining):
 # 5. Write one result JSON object to the real stdout.
 
 _RUNNER_SCRIPT = textwrap.dedent('''\
+    import base64
     import fnmatch
     import json
     import os
@@ -1011,6 +1094,9 @@ _RUNNER_SCRIPT = textwrap.dedent('''\
     # Imported HERE, at the top, before the allowlist below replaces
     # __import__: `ws` needs them and node code must still be refused them.
     # The node executes in its own namespace dict and never sees these names.
+    # (`base64` is the exception that proves it: `ws.read_bytes` encodes with
+    # it here, and node code is separately allowed to import its own copy to
+    # decode -- it is on the allowlist, unlike `subprocess` or `signal`.)
     _WS_ENV_NAME = re.compile("^[A-Z_][A-Z0-9_]*$")
     _WS_SHA = re.compile("^[0-9a-f]{40}$")
 
