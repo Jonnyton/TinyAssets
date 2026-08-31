@@ -1,17 +1,23 @@
 """Credential-blind git layer for the workspace effect sink.
 
-A credentialed git child started through this module never reads a directory
-user code can write and never receives the token through argv, through its
-environment, or through a file: the secret lives only in this process and is
-handed to git one request at a time by an in-memory broker that answers for
-exactly one ``(protocol, host, path)`` and refuses every other repository.
-Every child runs from an environment built from empty with system and global
-git configuration disabled, hooks and fsmonitor off, redirects refused, every
-protocol but HTTPS refused, and the remote address pinned in the transport to
-an address the outbound driver's classifier validated as public unicast.
-Nothing returned from here carries the secret: output is bounded, scrubbed of
-every registered secret plus generic credential patterns, reduced to one fixed
-error class, and the same scrubbing runs over every exception message.
+No credentialed git ever opens a workspace. No host-side git opens a
+workspace's ``.git`` after the workspace is published to user code. A
+host-side, credential-free initializer may populate a fresh, unpublished
+directory from a verified bundle.
+
+That boundary is what the pieces here exist to hold. The token never reaches
+argv, an environment or a file: it lives in this process and is handed to git
+one request at a time by an in-memory broker bound to exactly one
+``(protocol, host, path)``. Every child runs from an environment built from
+empty with system and global git configuration disabled, hooks and fsmonitor
+off, redirects refused, every protocol but HTTPS refused, and the remote
+address pinned in the transport to addresses the outbound driver's classifier
+validated as public unicast. Bundles are the only way objects cross between a
+workspace and staging, and they must be prerequisite-free so that importing
+one into an empty repository is a complete transfer. Nothing returned from
+here carries the secret: output is bounded, scrubbed of every registered
+secret plus generic credential patterns, reduced to one fixed error class, and
+the same scrubbing runs over every exception message.
 
 This module reads no environment variables. Callers pass the environment, the
 minimal ``PATH``, the resolver, the classifier and the process launcher in;
@@ -24,6 +30,7 @@ import ipaddress
 import os
 import re
 import shlex
+import signal
 import socket
 import stat
 import subprocess
@@ -42,6 +49,8 @@ __all__ = [
     "create_bundle",
     "forced_git_options",
     "git_environment",
+    "kill_git",
+    "libcurl_supports_multi_resolve",
     "pin_address",
     "populate_workspace_from_bundle",
     "run_git",
@@ -60,6 +69,9 @@ __all__ = [
 _IS_WINDOWS = os.name == "nt"
 NULL_DEVICE = "NUL" if _IS_WINDOWS else "/dev/null"
 FALSE_BINARY = "NUL" if _IS_WINDOWS else "/bin/false"
+# SIGKILL does not exist on Windows, where the process-group path is unreachable
+# anyway. Resolved once here so referencing it cannot raise at kill time.
+_KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
 
 #: Every code ``WorkspaceGitError.code`` may carry.
 ERROR_CODES: frozenset[str] = frozenset(
@@ -521,25 +533,80 @@ def git_environment(home_dir: str | os.PathLike[str], *, path: str) -> dict[str,
     }
 
 
-def forced_git_options(host: str, validated_ip: str, broker_helper_cmd: str) -> list[str]:
+#: libcurl gained comma-separated addresses in one ``CURLOPT_RESOLVE`` entry
+#: in 7.59.0. Below that, one entry holds one address.
+_MULTI_RESOLVE_MINIMUM = (7, 59, 0)
+_LIBCURL_VERSION_RE = re.compile(r"libcurl/(\d+)\.(\d+)(?:\.(\d+))?")
+
+
+def libcurl_supports_multi_resolve(curl_version_text: str) -> bool:
+    """Whether this libcurl accepts several addresses in one resolve entry.
+
+    Takes the version TEXT (``git version --build-options`` and ``curl -V``
+    both carry a ``libcurl/X.Y.Z`` token) rather than running anything: the
+    caller knows which binary it is about to run, and parsing a build-options
+    blob for the git version is not the same question. Unparseable text is
+    False -- the single-address fallback is always correct, just slower.
+    """
+    if not isinstance(curl_version_text, str):
+        return False
+    found = _LIBCURL_VERSION_RE.search(curl_version_text)
+    if found is None:
+        return False
+    major, minor, patch = found.group(1), found.group(2), found.group(3)
+    return (int(major), int(minor), int(patch or 0)) >= _MULTI_RESOLVE_MINIMUM
+
+
+def _resolve_rule_addresses(validated_ips: str | Sequence[str]) -> list[str]:
+    """Normalise addresses for a curl resolve entry; IPv6 is bracketed."""
+    if isinstance(validated_ips, str):
+        candidates: list[str] = [validated_ips]
+    else:
+        candidates = list(validated_ips)
+    if not candidates:
+        raise WorkspaceGitError("bad_argument", "no pinned address to resolve to")
+    formatted: list[str] = []
+    for candidate in candidates:
+        try:
+            address = ipaddress.ip_address(candidate)
+        except ValueError:
+            raise WorkspaceGitError(
+                "bad_argument", "pinned address is not an ip address"
+            ) from None
+        # curl's resolve syntax brackets a literal IPv6 address.
+        formatted.append(f"[{address.compressed}]" if address.version == 6 else address.compressed)
+    return formatted
+
+
+def forced_git_options(
+    host: str,
+    validated_ips: str | Sequence[str],
+    broker_helper_cmd: str,
+) -> list[str]:
     """The ``-c key=value`` arguments every credentialed git child carries.
 
     The two ``credential.helper`` entries are ordered: the empty one RESETS
     the inherited helper list, and only then is the broker appended. Reversing
     them would leave a system helper in front of the broker.
+
+    ``validated_ips`` may be one address or several (what :func:`pin_address`
+    returns). Several are emitted as ONE comma-joined resolve entry, which
+    libcurl 7.59.0 and later accept and try in order -- so a dead first
+    address does not fail an operation whose host has healthy siblings. A
+    caller on an older libcurl checks :func:`libcurl_supports_multi_resolve`
+    and passes ONE address per whole operation instead. The host is
+    lower-cased: the resolve entry is matched against the URL's host
+    case-insensitively by curl, but an upper-cased entry is not canonical and
+    a mismatched entry silently does nothing.
     """
     if not _HOSTNAME_RE.match(host or ""):
         raise WorkspaceGitError("bad_argument", "pinned host is not a hostname")
-    try:
-        address = ipaddress.ip_address(validated_ip)
-    except ValueError:
-        raise WorkspaceGitError("bad_argument", "pinned address is not an ip address") from None
+    canonical_host = host.lower()
+    pinned = ",".join(_resolve_rule_addresses(validated_ips))
     if not isinstance(broker_helper_cmd, str) or not broker_helper_cmd:
         raise WorkspaceGitError("bad_argument", "broker helper command must be a non-empty str")
     if "\n" in broker_helper_cmd or "\r" in broker_helper_cmd or "\x00" in broker_helper_cmd:
         raise WorkspaceGitError("bad_argument", "broker helper command has a forbidden character")
-    # curl's resolve syntax brackets a literal IPv6 address.
-    pinned = f"[{address.compressed}]" if address.version == 6 else address.compressed
     settings = (
         f"core.hooksPath={NULL_DEVICE}",
         "core.fsmonitor=false",
@@ -553,7 +620,7 @@ def forced_git_options(host: str, validated_ip: str, broker_helper_cmd: str) -> 
         "transfer.fsckObjects=true",
         "fetch.fsckObjects=true",
         "receive.fsckObjects=true",
-        f"http.curloptResolve={host}:443:{pinned}",
+        f"http.curloptResolve={canonical_host}:443:{pinned}",
     )
     options: list[str] = []
     for setting in settings:
@@ -584,13 +651,18 @@ def pin_address(
     classifier: Callable[[str], str] | None = None,
     *,
     port: int = 443,
-) -> str:
-    """Resolve ``hostname`` and return the one address git may connect to.
+) -> tuple[str, ...]:
+    """Resolve ``hostname`` and return every address git may connect to.
 
     EVERY resolved address must classify as public unicast. A host that
     answers with a mix of public and private addresses is an attack signal,
     not a host with one usable address: the whole resolution is refused rather
     than narrowed to the public subset.
+
+    All of them come back, in the resolver's order, because pinning only the
+    first would fail an operation whose host has other healthy addresses.
+    The order is the resolver's -- getaddrinfo already applies the platform's
+    address-selection rules, and reordering here would discard them.
 
     The classifier follows the outbound driver's contract: it RETURNS the
     normalised address when the address is globally routable and RAISES
@@ -624,7 +696,7 @@ def pin_address(
                 "is not globally routable",
             )
         validated.append(classified)
-    return validated[0]
+    return tuple(validated)
 
 
 # ---------------------------------------------------------------------------
@@ -775,12 +847,18 @@ def run_git(
     launcher: Callable[..., object] = subprocess.run,
     git_binary: str = "git",
     extra_secrets: Sequence[str] = (),
+    preexec_fn: Callable[[], None] | None = None,
 ) -> GitResult:
     """Run ``git <options...> <argv...>`` and return a bounded, scrubbed result.
 
     The child never inherits this process's environment, never gets a stdin,
-    and on POSIX cannot write a core dump. Output is truncated to the last
+    and on POSIX cannot write a core dump and starts in a NEW SESSION -- so it
+    leads its own process group and :func:`kill_git` can take down anything it
+    spawned, not just the git process itself. Output is truncated to the last
     64 KiB of each stream and scrubbed before it is returned or classified.
+
+    ``preexec_fn`` is injectable so a test can observe that the child-side
+    setup runs; the default on POSIX is :func:`_disable_core_dumps`.
     """
     if not isinstance(argv, Sequence) or isinstance(argv, (str, bytes)) or not argv:
         raise WorkspaceGitError("bad_argument", "run_git needs a non-empty argv sequence")
@@ -808,8 +886,15 @@ def run_git(
         "check": False,
         "shell": False,
     }
+    child_setup = preexec_fn if preexec_fn is not None else (
+        None if _IS_WINDOWS else _disable_core_dumps
+    )
+    if child_setup is not None:
+        kwargs["preexec_fn"] = child_setup
     if not _IS_WINDOWS:
-        kwargs["preexec_fn"] = _disable_core_dumps
+        # Its own session, so kill_git can signal the whole process group; a
+        # git that spawned a helper must not leave the helper behind.
+        kwargs["start_new_session"] = True
     try:
         completed = launcher(command, **kwargs)
     except subprocess.TimeoutExpired:
@@ -825,6 +910,40 @@ def run_git(
         stderr_class=classify_stderr(stderr_scrubbed),
         stderr_scrubbed=stderr_scrubbed,
     )
+
+
+def kill_git(proc: object, *, timeout_s: float = 5.0) -> int:
+    """SIGKILL a git started by :func:`run_git` and everything it spawned.
+
+    ``run_git`` puts the child in its own session on POSIX, so signalling the
+    process GROUP reaches a helper git double-forked away -- killing only the
+    tracked pid would leave it running. Raises ``timeout`` if the tracked
+    process has still not exited: a caller must never be told a process is
+    gone while it holds a lease or a credential.
+    """
+    pid = getattr(proc, "pid", None)
+    if pid is None or not hasattr(proc, "wait"):
+        raise WorkspaceGitError("bad_argument", "kill_git needs a started process")
+    if not _IS_WINDOWS:
+        try:
+            os.killpg(os.getpgid(pid), _KILL_SIGNAL)
+        except (ProcessLookupError, PermissionError):
+            # Already reaped, or never had its own group: fall back to the pid.
+            try:
+                proc.kill()
+            except (ProcessLookupError, OSError):
+                pass
+    else:  # pragma: no cover - production is Linux; no process groups here
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    try:
+        return int(proc.wait(timeout=float(timeout_s)))
+    except subprocess.TimeoutExpired:
+        raise WorkspaceGitError(
+            "timeout", f"git did not exit within {timeout_s}s of SIGKILL"
+        ) from None
 
 
 def _require_ok(result: GitResult, what: str, fallback: str = "other") -> GitResult:
@@ -855,6 +974,72 @@ def _require_ref(ref_name: str, label: str) -> str:
     return ref_name
 
 
+# git 2.43 and 2.53 both say "Repository lacks these prerequisite commits" on
+# stderr and fail; older and newer wordings ("requires these refs") are matched
+# too, so a git that warns instead of failing is still caught.
+_PREREQUISITE_RE = re.compile(r"(?i)(prerequisite|requires th(?:is|ese) ref|lacks these)")
+
+
+def _verify_prerequisite_free(
+    target: Path,
+    *,
+    scratch_dir: str | os.PathLike[str],
+    env: Mapping[str, str],
+    timeout_s: float,
+    launcher: Callable[..., object],
+    git_binary: str,
+) -> list[str]:
+    """Verify a bundle in a FRESH EMPTY bare repo; return the refs it carries.
+
+    Empty is the whole point: a bundle that needs objects it does not carry
+    cannot verify against a repository that has none, so verifying here proves
+    the bundle is self-contained. A thin or shallow bundle would import
+    partially somewhere else and look fine.
+    """
+    scratch = Path(scratch_dir)
+    if not scratch.is_dir():
+        raise WorkspaceGitError(
+            "bad_argument", "bundle verification scratch_dir must be a directory"
+        )
+    if any(scratch.iterdir()):
+        raise WorkspaceGitError("bad_argument", "bundle verification scratch_dir must be empty")
+    bare = scratch / "verify.git"
+    bare.mkdir()
+
+    def _run(argv: list[str]) -> GitResult:
+        return run_git(
+            argv,
+            cwd=bare,
+            env=env,
+            timeout_s=timeout_s,
+            launcher=launcher,
+            git_binary=git_binary,
+        )
+
+    _require_ok(_run(["init", "--bare", "--quiet", "."]), "init bare", "verification")
+    verified = _run(["bundle", "verify", str(target)])
+    combined = f"{verified.stdout_tail}\n{verified.stderr_scrubbed}"
+    if _PREREQUISITE_RE.search(combined):
+        raise WorkspaceGitError(
+            "verification",
+            "bundle is not prerequisite-free: it needs objects it does not carry",
+        )
+    _require_ok(verified, "bundle verify", "verification")
+    # ``bundle verify`` prints prose; ``list-heads`` prints "<sha> <ref>" and is
+    # what the ref list is read from.
+    heads = _require_ok(
+        _run(["bundle", "list-heads", str(target)]), "bundle list-heads", "verification"
+    )
+    refs: list[str] = []
+    for line in heads.stdout_tail.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            refs.append(parts[1].strip())
+    if not refs:
+        raise WorkspaceGitError("verification", "bundle carries no ref")
+    return refs
+
+
 def create_bundle(
     repo_dir: str | os.PathLike[str],
     commit_sha: str,
@@ -862,6 +1047,7 @@ def create_bundle(
     *,
     ref_name: str = "refs/tiny/export",
     env: Mapping[str, str],
+    scratch_dir: str | os.PathLike[str],
     timeout_s: float = 120.0,
     launcher: Callable[..., object] = subprocess.run,
     git_binary: str = "git",
@@ -869,7 +1055,11 @@ def create_bundle(
     """Bundle exactly one commit from ``repo_dir`` into ``bundle_path``.
 
     Runs with hooks disabled and object replacement off, so a replace ref or a
-    hook planted in the repository cannot change what is exported.
+    hook planted in the repository cannot change what is exported, and then
+    verifies its OWN output in a fresh empty bare repo (``scratch_dir``): a
+    bundle that carries prerequisites is refused and deleted here rather than
+    failing later on the far side of the boundary, where the failure is a
+    half-populated workspace.
     """
     _require_sha(commit_sha)
     _require_ref(ref_name, "bundle ref")
@@ -903,6 +1093,23 @@ def create_bundle(
         _run(["update-ref", "-d", ref_name])
     if not target.is_file():
         raise WorkspaceGitError("verification", "bundle create produced no file")
+    try:
+        _verify_prerequisite_free(
+            target,
+            scratch_dir=scratch_dir,
+            env=env,
+            timeout_s=timeout_s,
+            launcher=launcher,
+            git_binary=git_binary,
+        )
+    except WorkspaceGitError:
+        # An unverifiable bundle must not survive where a caller could pick it
+        # up; the exception is the report, the unlink is the cleanup.
+        try:
+            target.unlink()
+        except OSError:
+            pass
+        raise
     return target
 
 
@@ -934,38 +1141,14 @@ def verify_bundle(
     if info.st_size > int(max_bytes):
         raise WorkspaceGitError("verification", "bundle exceeds the permitted size")
 
-    scratch = Path(scratch_dir)
-    if not scratch.is_dir():
-        raise WorkspaceGitError("bad_argument", "verify_bundle scratch_dir must be a directory")
-    if any(scratch.iterdir()):
-        raise WorkspaceGitError("bad_argument", "verify_bundle scratch_dir must be empty")
-    bare = scratch / "verify.git"
-    bare.mkdir()
-
-    def _run(argv: list[str], cwd: Path) -> GitResult:
-        return run_git(
-            argv,
-            cwd=cwd,
-            env=env,
-            timeout_s=timeout_s,
-            launcher=launcher,
-            git_binary=git_binary,
-        )
-
-    _require_ok(_run(["init", "--bare", "--quiet", "."], bare), "init bare", "verification")
-    _require_ok(_run(["bundle", "verify", str(target)], bare), "bundle verify", "verification")
-    # ``bundle verify`` prints prose; ``list-heads`` prints "<sha> <ref>" and is
-    # what the ref list is read from.
-    heads = _require_ok(_run(["bundle", "list-heads", str(target)], bare), "bundle list-heads",
-                        "verification")
-    refs: list[str] = []
-    for line in heads.stdout_tail.splitlines():
-        parts = line.split(None, 1)
-        if len(parts) == 2:
-            refs.append(parts[1].strip())
-    if not refs:
-        raise WorkspaceGitError("verification", "bundle carries no ref")
-    return refs
+    return _verify_prerequisite_free(
+        target,
+        scratch_dir=scratch_dir,
+        env=env,
+        timeout_s=timeout_s,
+        launcher=launcher,
+        git_binary=git_binary,
+    )
 
 
 def unbundle_into_fresh_repo(
