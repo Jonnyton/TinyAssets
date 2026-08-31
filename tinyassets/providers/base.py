@@ -1166,52 +1166,31 @@ def probe_sandbox_available() -> dict[str, object]:
 
     Returns {bwrap_available: bool, reason: str | None}.  Cached at
     module level after first call so get_status probes once at startup.
+
+    This is a THIN adapter over :func:`tinyassets.sandbox.detect.detect_bwrap`
+    and deliberately owns no probe of its own. It used to carry a second,
+    divergent one -- ``bwrap --ro-bind / / /bin/sh -c true`` -- which asks a
+    different question than the launcher does. #2736 fixed that in
+    ``sandbox/detect.py`` and this copy survived, so the two answered
+    differently on the same host: measured 2026-08-31 in the Linux oracle
+    container, the old probe here exited 1 ("Creating new namespace failed:
+    Operation not permitted") while the launcher's real argv exited 0.
+
+    Two consequences, both silent. ``get_status`` would advertise the sandbox
+    as unavailable on a host where every code node in fact runs; and
+    ``tests/test_node_sandbox.py`` gates ``requires_bwrap`` on THIS function,
+    so the six hostile-code jail tests -- including the positive control that
+    proves the jail runs a node at all -- skipped on CI and on the oracle
+    rather than failing. A boundary test that skips is a boundary that is
+    never checked.
+
+    One probe, one answer. The dict shape is kept because callers and the
+    status surface read these keys.
     """
-    import shutil as _shutil
-    import subprocess as _subprocess
-    import sys as _sys
+    from tinyassets.sandbox.detect import detect_bwrap
 
-    if _sys.platform == "win32":
-        return {"bwrap_available": False, "reason": "bwrap is Linux-only (win32 host)"}
-
-    bwrap_path = _shutil.which("bwrap")
-    if not bwrap_path:
-        return {"bwrap_available": False, "reason": "bwrap not found on PATH"}
-
-    try:
-        version_result = _subprocess.run(
-            [bwrap_path, "--version"],
-            capture_output=True, text=True, check=False, timeout=5,
-        )
-        if version_result.returncode != 0:
-            return {
-                "bwrap_available": False,
-                "reason": (
-                    f"bwrap --version exited {version_result.returncode}: "
-                    f"{version_result.stderr[:200]}"
-                ),
-            }
-
-        launch_result = _subprocess.run(
-            [bwrap_path, "--ro-bind", "/", "/", "/bin/sh", "-c", "true"],
-            capture_output=True, text=True, check=False, timeout=5,
-        )
-        if launch_result.returncode == 0:
-            return {"bwrap_available": True, "reason": None}
-        excerpt = (
-            launch_result.stderr.strip()
-            or launch_result.stdout.strip()
-            or "no output"
-        )
-        return {
-            "bwrap_available": False,
-            "reason": (
-                f"bwrap functional probe exited {launch_result.returncode}: "
-                f"{excerpt[:200]}"
-            ),
-        }
-    except Exception as exc:  # noqa: BLE001
-        return {"bwrap_available": False, "reason": f"probe error: {exc}"}
+    status = detect_bwrap()
+    return {"bwrap_available": status.available, "reason": status.reason}
 
 
 # Module-level cache populated on first get_status call.
