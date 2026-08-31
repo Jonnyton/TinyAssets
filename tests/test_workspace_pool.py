@@ -748,24 +748,81 @@ def test_a_still_authoritative_permanent_lease_is_release_lock_only(
 # --------------------------------------------------------------------------
 
 
-def test_pending_entries_block_admission_until_the_startup_sweep(
+CRASH_TIME = 1_000_000.0
+RESTART_TIME = CRASH_TIME + 60
+
+
+def test_entries_from_before_process_start_block_admission_until_the_sweep(
     db: Path, roots: Roots
 ) -> None:
-    lease = admit_scratch(db, roots, lease_id_factory=_ids("lease1"))
+    """A crash left a wipe owed; the startup sweeper runs to completion before
+    any new workspace job is admitted."""
+    lease = admit_scratch(
+        db, roots, lease_id_factory=_ids("lease1"), process_started_at=CRASH_TIME
+    )
     with terminal_txn(db) as conn:
-        wp.enqueue_terminal(conn, run_id="run-1", universe_id="u1", lease=lease)
-    assert wp.admission_open(db) is False
+        wp.enqueue_terminal(
+            conn, run_id="run-1", universe_id="u1", lease=lease, now=lambda: CRASH_TIME + 1
+        )
+    assert wp.admission_open(db, process_started_at=RESTART_TIME) is False
     with pytest.raises(wp.WorkspacePoolRefused) as exc:
-        admit_scratch(db, roots, universe_id="u2", run_id="run-2", lease_id_factory=_ids("x"))
+        admit_scratch(
+            db,
+            roots,
+            universe_id="u2",
+            run_id="run-2",
+            lease_id_factory=_ids("x"),
+            process_started_at=RESTART_TIME,
+        )
     assert exc.value.code == wp.REFUSED_POOL_BUSY
     assert "startup reconciliation pending" in exc.value.detail
 
     assert wp.startup_sweep(db, fs=FakeFs(present=(lease.path,)), claimant="startup") == 1
-    assert wp.admission_open(db) is True
+    assert wp.admission_open(db, process_started_at=RESTART_TIME) is True
     admitted = admit_scratch(
-        db, roots, universe_id="u2", run_id="run-2", lease_id_factory=_ids("lease2")
+        db,
+        roots,
+        universe_id="u2",
+        run_id="run-2",
+        lease_id_factory=_ids("lease2"),
+        process_started_at=RESTART_TIME,
     )
     assert admitted.state == wp.STATE_ACTIVE
+
+
+def test_an_entry_created_after_process_start_never_refuses_a_new_job(
+    db: Path, roots: Roots
+) -> None:
+    """The other side of the boundary: a run that just ended is the periodic
+    processor's backlog, and must not close the pool to every universe."""
+    with terminal_txn(db) as conn:
+        wp.enqueue_terminal(
+            conn,
+            run_id="just-finished",
+            universe_id="u9",
+            lease=None,
+            now=lambda: RESTART_TIME + 5,
+        )
+    assert wp.admission_open(db, process_started_at=RESTART_TIME) is True
+    lease = admit_scratch(
+        db, roots, lease_id_factory=_ids("lease1"), process_started_at=RESTART_TIME
+    )
+    assert lease.state == wp.STATE_ACTIVE
+    # ... and it is still owed: the barrier moved, the work did not.
+    assert rows(db, "SELECT done_at FROM workspace_outbox") == [(None,)]
+
+
+def test_the_barrier_defaults_to_this_processs_import_time(db: Path, roots: Roots) -> None:
+    """No caller has to remember the parameter for the barrier to exist: the
+    default is import time, so a pre-restart entry still refuses."""
+    with terminal_txn(db) as conn:
+        wp.enqueue_terminal(
+            conn, run_id="crashed", universe_id="u9", lease=None, now=lambda: CRASH_TIME
+        )
+    assert wp.admission_open(db) is False
+    with pytest.raises(wp.WorkspacePoolRefused) as exc:
+        admit_scratch(db, roots, lease_id_factory=_ids("x"))
+    assert exc.value.code == wp.REFUSED_POOL_BUSY
 
 
 def test_the_startup_sweep_takes_over_a_dead_processors_claim(db: Path, roots: Roots) -> None:
