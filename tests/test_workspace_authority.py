@@ -97,6 +97,10 @@ def _make_universe(base, uid, *, admin=""):
 
 
 ENDPOINT_HOST = "api.github.com"
+#: Where git actually lives for that connection. GitHub serves its API on
+#: api.github.com and its git on github.com, so the consent key and the clone
+#: URL both use THIS one -- cloning from the API host returns 403.
+GIT_HOST = "github.com"
 GITHUB_ENDPOINT = {
     "host": ENDPOINT_HOST,
     "path_template": "/repos/o/r/pulls",
@@ -343,7 +347,7 @@ def test_the_consent_destination_has_one_spelling() -> None:
     )
     with pytest.raises(wa.GitScopeError):
         wa.workspace_consent_destination(
-            "workspace_delete", "octocat/hello", connection_id="http_ab", host=ENDPOINT_HOST)
+            "workspace_delete", "octocat/hello", connection_id="http_ab", host=GIT_HOST)
 
 
 @pytest.mark.parametrize(
@@ -354,7 +358,7 @@ def test_a_connection_id_that_could_forge_a_key_is_refused(connection_id) -> Non
     would make the row ambiguous, and an ambiguous row is a forgeable one."""
     with pytest.raises(wa.GitScopeError):
         wa.workspace_consent_destination(
-            "workspace_checkout", "octocat/hello", connection_id=connection_id, host=ENDPOINT_HOST)
+            "workspace_checkout", "octocat/hello", connection_id=connection_id, host=GIT_HOST)
 
 
 # --------------------------------------------------------------------------
@@ -719,14 +723,19 @@ def test_granting_the_consents_writes_one_row_per_operation(base) -> None:
     answered = _answer("u-1", request_id=asked["request_id"], values={})
     assert answered["status"] == "answered", answered
     conn = deposited["connection_id"]
-    # The connection declares api.github.com, so that is the key. It used to
-    # be written as github.com by a default while the SINK derived
-    # api.github.com from the same endpoints -- the owner's yes was recorded
-    # where nothing would ever look for it.
+    # The key is the GIT host, not the API host the connection declares.
+    #
+    # Two earlier revisions of this got it wrong in opposite directions. First
+    # the rail defaulted to github.com while the sink derived api.github.com
+    # from the endpoints, so the owner's yes was recorded where nothing looked
+    # for it. Then both sides were made to agree on api.github.com -- CONSISTENT,
+    # and still wrong, because git does not live there: the clone came back
+    # `403` from https://api.github.com/owner/name.git and the consent looked
+    # missing for a repo the owner had plainly granted.
     expected = [
-        f"checkout:{conn}:{ENDPOINT_HOST}/octocat/hello",
-        f"provision:{conn}:{ENDPOINT_HOST}/octocat/hello",
-        f"push:{conn}:{ENDPOINT_HOST}/octocat/hello",
+        f"checkout:{conn}:{GIT_HOST}/octocat/hello",
+        f"provision:{conn}:{GIT_HOST}/octocat/hello",
+        f"push:{conn}:{GIT_HOST}/octocat/hello",
     ]
     assert sorted(answered["destinations"]) == expected
     rows = list_consents(udir, sink="workspace")
@@ -743,17 +752,17 @@ def test_a_consent_is_active_only_for_the_exact_operation_and_repo(base) -> None
 
     conn = deposited["connection_id"]
     checkout = wa.workspace_consent_destination(
-        "workspace_checkout", "octocat/hello", connection_id=conn, host=ENDPOINT_HOST)
+        "workspace_checkout", "octocat/hello", connection_id=conn, host=GIT_HOST)
     assert is_consent_active(udir, sink="workspace", destination=checkout) is True
     for other in (
         wa.workspace_consent_destination(
-            "workspace_push", "octocat/hello", connection_id=conn, host=ENDPOINT_HOST),
+            "workspace_push", "octocat/hello", connection_id=conn, host=GIT_HOST),
         wa.workspace_consent_destination(
-            "workspace_checkout", "octocat/hello2", connection_id=conn, host=ENDPOINT_HOST),
+            "workspace_checkout", "octocat/hello2", connection_id=conn, host=GIT_HOST),
         wa.workspace_consent_destination(
-            "workspace_checkout", "octocat2/hello", connection_id=conn, host=ENDPOINT_HOST),
+            "workspace_checkout", "octocat2/hello", connection_id=conn, host=GIT_HOST),
         wa.workspace_consent_destination(
-            "workspace_checkout", "octocat/hello", connection_id="http_other", host=ENDPOINT_HOST),
+            "workspace_checkout", "octocat/hello", connection_id="http_other", host=GIT_HOST),
         f"checkout:{conn}:gitlab.com/octocat/hello",
         f"checkout:{conn}:github.com/octocat/hello/extra",
         "checkout:github.com/octocat/hello",
@@ -786,7 +795,7 @@ def test_two_connections_to_the_same_repo_hold_independent_consents(base) -> Non
                 "workspace_checkout",
                 repo,
                 connection_id=connection["connection_id"],
-                host=ENDPOINT_HOST,
+                host=GIT_HOST,
             ),
         )
 
@@ -805,7 +814,7 @@ def test_two_connections_to_the_same_repo_hold_independent_consents(base) -> Non
         destination=wa.workspace_consent_destination(
             "workspace_checkout",
             "octocat/hello",
-            connection_id=first["connection_id"], host=ENDPOINT_HOST),
+            connection_id=first["connection_id"], host=GIT_HOST),
     )
     assert active(first) is False
     assert active(second) is True
@@ -926,7 +935,7 @@ def test_a_remix_carries_neither_the_consents_nor_the_scopes(base, monkeypatch) 
                 destination=wa.workspace_consent_destination(
                     consent,
                     "octocat/hello",
-                    connection_id=deposited["connection_id"], host=ENDPOINT_HOST),
+                    connection_id=deposited["connection_id"], host=GIT_HOST),
             )
             is False
         )
@@ -956,7 +965,7 @@ def test_the_inventory_shows_the_git_scopes_and_the_consents(base) -> None:
     assert listed["count"] == 1
     row = listed["connections"][0]
     assert row["git_scopes"] == [
-        {"kind": "git_read", "repo": "octocat/hello", "host": ENDPOINT_HOST}
+        {"kind": "git_read", "repo": "octocat/hello", "host": GIT_HOST}
     ]
     assert "git_read:octocat/hello" in row["scopes"]
     assert listed["workspace_consents"] == [
@@ -964,7 +973,7 @@ def test_the_inventory_shows_the_git_scopes_and_the_consents(base) -> None:
             "consent": "workspace_checkout",
             "operation": "checkout",
             "connection_id": deposited["connection_id"],
-            "host": ENDPOINT_HOST,
+            "host": GIT_HOST,
             "repo": "octocat/hello",
             "granted_at": listed["workspace_consents"][0]["granted_at"],
         }

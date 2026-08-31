@@ -1096,8 +1096,10 @@ def write_graph(
     ``"workspace_key": "<slug>"``, and re-using a name is refused rather than
     overwriting what is there). A REPOSITORY one clones a git remote:
     ``{"sink": "workspace", "op": "checkout", "connection_id": "<an http
-    connection to the forge>", "repo": "owner/name", "ref": "main", "storage":
-    "scratch"}``. The forge is whatever host that connection declares - GitHub,
+    connection to the forge>", "grant_id": "<that connection's grant_id>",
+    "repo": "owner/name", "ref": "main", "storage": "scratch"}`` - both ids are
+    REQUIRED and are the exact ones ``read_graph target="connections"`` reports.
+    The forge is whatever host that connection declares - GitHub,
     GitLab, Gitea, self-hosted - not a fixed one. To publish, a node returns
     ``{"sink": "workspace", "op": "push", "workspace": "<checkout node>",
     "commit_sha": "<40 hex>", "branch_slug": "fix-readme"}`` - the branch lands
