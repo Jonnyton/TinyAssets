@@ -1455,7 +1455,6 @@ def populate_workspace_from_bundle(
     *,
     home_dir: str | os.PathLike[str],
     path: str,
-    dest_fd: int | None = None,
     timeout_s: float = 300.0,
     launcher: Callable[..., object] | None = None,
     git_binary: str = "git",

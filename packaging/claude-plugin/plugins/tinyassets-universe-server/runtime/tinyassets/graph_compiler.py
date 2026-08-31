@@ -2061,13 +2061,26 @@ def _build_source_code_node(
                     WorkspaceMount as SandboxWorkspaceMount,
                 )
 
-                bind_source = str(getattr(mount, "bind_source", "") or "")
-                sandbox_mount = SandboxWorkspaceMount(
-                    bind_source=bind_source, limits=WorkspaceLimits()
-                )
-                workspace_launcher = WORKSPACE_LAUNCHER_FACTORY(
-                    bind_source, _workspace_bind_roots(base_path)
-                )
+                # The DESCRIPTOR form when the checkout left one: the bind is
+                # the handle it opened on <lease>/repo, the child inherits it,
+                # and no path is re-resolved between the check and the mount.
+                # The path form stays for a mount that carries no descriptor
+                # (Windows, and every test double), and only IT needs roots -
+                # a descriptor's identity is the fd, not the string.
+                repo_fd = getattr(mount, "repo_fd", None)
+                if isinstance(repo_fd, int) and not isinstance(repo_fd, bool):
+                    sandbox_mount = SandboxWorkspaceMount(
+                        bind_source=f"/proc/self/fd/{repo_fd}",
+                        limits=WorkspaceLimits(),
+                        pass_fds=(repo_fd,),
+                    )
+                else:
+                    sandbox_mount = SandboxWorkspaceMount(
+                        bind_source=str(getattr(mount, "bind_source", "") or ""),
+                        limits=WorkspaceLimits(),
+                        allowed_roots=_workspace_bind_roots(base_path),
+                    )
+                workspace_launcher = WORKSPACE_LAUNCHER_FACTORY(sandbox_mount)
             result = NodeSandbox(
                 timeout=timeout_s, launcher=workspace_launcher
             ).run_sync(

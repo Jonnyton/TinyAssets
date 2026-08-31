@@ -378,6 +378,27 @@ def _outbox_outcomes(universe: Universe) -> list[tuple]:
         conn.close()
 
 
+def _assert_nothing_holds_the_lease(lease_dir: Path) -> None:
+    """Windows only, and it is the whole point of the check: a rename fails
+    while another process holds the file, so this proves every git child the
+    checkout started has exited before the sweep tries to delete.
+
+    POSIX renames and unlinks regardless of open handles, so there is nothing
+    to prove there.
+    """
+    if POSIX:
+        return
+    for path in sorted(p for p in lease_dir.rglob("*") if p.is_file()):
+        probe = path.with_suffix(path.suffix + ".handleprobe")
+        try:
+            os.rename(path, probe)
+            os.rename(probe, path)
+        except OSError as exc:  # pragma: no cover - only when a handle leaks
+            raise AssertionError(
+                f"{path} is still held before the terminal write: {exc}"
+            ) from exc
+
+
 def _lease_rows(universe: Universe) -> list[tuple]:
     import sqlite3
 
@@ -416,6 +437,23 @@ def test_a_checkout_delivers_a_workspace_a_node_can_run_git_in(
     repo_dir = Path(mount.bind_source)
     assert (repo_dir / "README.md").read_text(encoding="utf-8") == origin.readme
     assert (repo_dir / ".git").is_dir()
+
+    if POSIX:
+        # The handle the jail binds through must be the REPOSITORY. Binding the
+        # lease root instead would hand user code the export directory and any
+        # sibling the pool put there, and the difference is invisible in a path
+        # comparison - so compare inodes through the descriptor itself.
+        through_fd = os.stat(f"/proc/self/fd/{mount.repo_fd}")
+        repository = os.stat(repo_dir)
+        lease_root = os.stat(repo_dir.parent)
+        assert (through_fd.st_dev, through_fd.st_ino) == (
+            repository.st_dev,
+            repository.st_ino,
+        )
+        assert (through_fd.st_dev, through_fd.st_ino) != (
+            lease_root.st_dev,
+            lease_root.st_ino,
+        ), "the mount binds the lease root, not the repository"
 
     result = _run_in_workspace(
         mount,
@@ -542,6 +580,10 @@ def test_a_finished_run_releases_its_lease_and_the_next_run_is_admitted(
     rows = _lease_rows(universe)
     assert [state for _id, state, _class in rows] == ["ACTIVE"], rows
     lease_path = Path(chain.workspace_mount(CHECKOUT_NODE).bind_source).parent
+    # The lifecycle proof is only worth anything if the wipe is deleting a
+    # lease nobody is holding: on POSIX these are the REAL no-follow handles,
+    # and on Windows this proves every git child has exited first.
+    _assert_nothing_holds_the_lease(lease_path)
 
     threads: list[Any] = []
     real_kick = runs_module._kick_workspace_sweep
@@ -657,10 +699,13 @@ def test_a_compiled_workspace_node_runs_inside_the_lease(
 
     seen: dict[str, Any] = {}
 
-    def _launcher(bind_source: str, allowed_roots: tuple[str, ...]):
-        seen["bind"] = bind_source
-        seen["roots"] = allowed_roots
-        return PlainSubprocessLauncher(workspace_bind=bind_source)
+    def _launcher(sandbox_mount):
+        seen["bind"] = sandbox_mount.bind_source
+        seen["roots"] = sandbox_mount.allowed_roots
+        seen["pass_fds"] = sandbox_mount.pass_fds
+        # A plain child performs no mount, so it runs against the path; what is
+        # under test here is what the COMPILER handed over.
+        return PlainSubprocessLauncher(workspace_bind=str(mount.bind_source))
 
     monkeypatch.setattr(ns, "WORKSPACE_LAUNCHER_FACTORY", _launcher)
 
@@ -682,14 +727,24 @@ def test_a_compiled_workspace_node_runs_inside_the_lease(
     state = compiled({})
     assert state["ok"] == origin.readme
 
-    # The bind is the lease's repo, and the roots vouching for it are the two
-    # the adapter admits into - derived the same way, or a real bwrap run would
-    # refuse the bind it was just given.
-    assert seen["bind"] == str(mount.bind_source)
-    assert seen["roots"] == (
-        str(universe.data_root / "scratch"),
-        str(universe.universe_dir / "workspaces"),
-    )
+    if POSIX:
+        # The descriptor form: the bind is the handle the checkout opened, the
+        # child is told to inherit it, and no root vouches for a string that is
+        # never resolved. A launcher built without pass_fds would leave bwrap
+        # resolving /proc/self/fd/<n> in a process that does not hold <n>.
+        assert seen["bind"] == f"/proc/self/fd/{mount.repo_fd}"
+        assert seen["pass_fds"] == (mount.repo_fd,)
+        assert seen["roots"] == ()
+    else:
+        # No dir_fd on this host, so the path form - and THEN the roots matter,
+        # derived the way the adapter derives them or a real bwrap would refuse
+        # the bind it was just given.
+        assert seen["bind"] == str(mount.bind_source)
+        assert seen["pass_fds"] == ()
+        assert seen["roots"] == (
+            str(universe.data_root / "scratch"),
+            str(universe.universe_dir / "workspaces"),
+        )
 
 
 # --------------------------------------------------------------------------
@@ -812,26 +867,38 @@ def test_the_token_appears_in_no_evidence_no_log_and_no_file(
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not POSIX, reason="the real handles are POSIX-only")
-def test_a_missing_pool_root_is_a_refusal_not_a_crash(
-    origin: Origin, tmp_path: Path
+def test_the_startup_reconciler_creates_the_pool_root_a_fresh_host_lacks(
+    origin: Origin, tmp_path: Path, fs_bridge
 ) -> None:
-    """The pool module creates no directories and the real ``open_dir_nofollow``
-    refuses a missing parent, so SOMEONE has to create ``<data>/scratch`` before
-    the first checkout - the daemon, at startup, 0o700. The adapter's own suite
-    cannot see this because its injected helper creates the directory.
+    """Inverted once ``ensure_workspace_reconciled`` gained the creator.
 
-    Until that lands, this pins the behaviour a host would actually get: a
-    refusal carrying the reason, never a traceback out of the effector.
+    The pool module creates no directories and the real ``open_dir_nofollow``
+    refuses a missing parent, so on a fresh host the FIRST checkout used to
+    fail - and the adapter's own suite could not see it, because its injected
+    helper makes the directory itself. The reconciler now creates
+    ``<data>/scratch`` (``base_path.parent / "scratch"``) at 0o700, and a
+    checkout on a host that has never had one succeeds.
     """
     universe = _make_universe(tmp_path)
+    shutil.rmtree(universe.pool_root)
+    assert not universe.pool_root.exists()
+
+    created = runs_module._ensure_scratch_root(universe.universe_dir)
+    assert created == universe.pool_root
+    assert universe.pool_root.is_dir()
+    if POSIX:
+        mode = stat.S_IMODE(os.stat(universe.pool_root).st_mode)
+        assert mode == 0o700, f"{mode:#o}"
+
+    # And the checkout that used to fail on a fresh host now completes - the
+    # adapter reaches the reconciler before it admits anything.
     shutil.rmtree(universe.pool_root)
     chain = EffectChain(
         run_id=RUN_ID, base_path=str(universe.data_root), universe_id=UNIVERSE
     )
     result = _fire(_packet(), universe=universe, chain=chain, worker=WireWorker(origin))
-    assert result.get("error_kind"), result
-    assert not universe.pool_root.exists()
+    assert result.get("error_kind") is None, result
+    assert universe.pool_root.is_dir()
 
 
 @pytest.mark.skipif(not POSIX, reason="the real handles are POSIX-only")
