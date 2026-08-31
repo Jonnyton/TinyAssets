@@ -10,10 +10,13 @@ the no-follow deletion against real bytes under ``tmp_path``.
 from __future__ import annotations
 
 import contextlib
+import multiprocessing
 import os
+import re
 import sqlite3
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -962,4 +965,435 @@ def test_the_module_creates_no_directories_and_reads_no_env_vars() -> None:
     source = Path(wp.__file__).read_text(encoding="utf-8")
     for forbidden in ("environ", "mkdir", "makedirs", "getenv"):
         assert forbidden not in source, forbidden
-    assert "import os" not in source
+    # This used to assert `import os` was absent, which was a PROXY for the
+    # rule. The module now imports os for exactly one thing - re-anchoring the
+    # startup barrier in a forked child - so the assertion is the rule itself:
+    # every attribute it touches on os, by name.
+    assert set(re.findall(r"os\.[a-z_]+", source)) == {"os.register_at_fork"}
+
+
+# --------------------------------------------------------------------------
+# the permanent quota is transactional (Codex P1 #1)
+# --------------------------------------------------------------------------
+
+
+def test_two_permanent_admissions_cannot_cross_the_quota_before_any_bytes_move(
+    db: Path, roots: Roots
+) -> None:
+    """The filesystem still says 0 while a generation is being fetched, so a
+    quota measured only from disk would let two 6 GiB checkouts reserve 12
+    against a 10 GiB quota."""
+    first = admit_universe(
+        db,
+        roots,
+        max_bytes=6 * GIB,
+        universe_quota_bytes=10 * GIB,
+        universe_used_bytes_fn=lambda _u: 0,
+        lease_id_factory=_ids("lease1"),
+    )
+    assert first.reserved_bytes == 6 * GIB
+    with pytest.raises(wp.WorkspacePoolRefused) as exc:
+        admit_universe(
+            db,
+            roots,
+            max_bytes=6 * GIB,
+            universe_quota_bytes=10 * GIB,
+            universe_used_bytes_fn=lambda _u: 0,
+            lease_id_factory=_ids("lease2"),
+        )
+    assert exc.value.code == wp.REFUSED_QUOTA
+    assert "reserved" in exc.value.detail
+    assert rows(db, "SELECT lease_id FROM workspace_leases") == [("lease1",)]
+
+
+def test_a_reconciled_generation_is_not_charged_twice(db: Path, roots: Roots) -> None:
+    """Once the transfer is measured the bytes ARE on disk, so the filesystem
+    measurement covers them: keeping the reservation on top would halve the
+    quota for as long as the generation exists."""
+    lease = admit_universe(
+        db,
+        roots,
+        max_bytes=6 * GIB,
+        universe_quota_bytes=10 * GIB,
+        universe_used_bytes_fn=lambda _u: 0,
+        lease_id_factory=_ids("lease1"),
+    )
+    wp.reconcile_bytes(db, lease.lease_id, 6 * GIB)
+    second = admit_universe(
+        db,
+        roots,
+        max_bytes=4 * GIB,
+        universe_quota_bytes=10 * GIB,
+        universe_used_bytes_fn=lambda _u: 6 * GIB,  # now visible on disk
+        lease_id_factory=_ids("lease2"),
+    )
+    assert second.generation == 2
+
+
+def test_a_scratch_lease_is_not_counted_against_a_universe_quota(
+    db: Path, roots: Roots
+) -> None:
+    admit_scratch(db, roots, max_bytes=4 * GIB, lease_id_factory=_ids("scratch1"))
+    permanent = admit_universe(
+        db,
+        roots,
+        max_bytes=9 * GIB,
+        universe_quota_bytes=10 * GIB,
+        universe_used_bytes_fn=lambda _u: 0,
+        lease_id_factory=_ids("lease1"),
+    )
+    assert permanent.reserved_bytes == 9 * GIB
+
+
+# --------------------------------------------------------------------------
+# the bounded wait on the job lock (Codex P1 #2)
+# --------------------------------------------------------------------------
+
+
+def test_without_a_wait_a_held_lock_refuses_at_once(db: Path, roots: Roots) -> None:
+    admit_scratch(db, roots, lease_id_factory=_ids("lease1"))
+    slept: list[float] = []
+    with pytest.raises(wp.WorkspacePoolRefused) as exc:
+        admit_scratch(
+            db,
+            roots,
+            run_id="run-2",
+            lease_id_factory=_ids("lease2"),
+            sleep=slept.append,
+        )
+    assert exc.value.code == wp.REFUSED_BUSY
+    assert slept == []
+
+
+def test_a_bounded_wait_retries_until_the_lock_is_released(
+    db: Path, roots: Roots
+) -> None:
+    lease = admit_scratch(db, roots, lease_id_factory=_ids("lease1"))
+    with terminal_txn(db) as conn:
+        wp.enqueue_terminal(conn, run_id="run-1", universe_id="u1", lease=lease)
+    entry = wp.claim_next(db, claimant="test")
+    assert entry is not None
+
+    clock = [1_000_000.0]
+    slept: list[float] = []
+
+    def _sleep(seconds: float) -> None:
+        slept.append(seconds)
+        clock[0] += seconds
+        if len(slept) == 2:
+            # The run that held the lock finishes while we are waiting.
+            wp.process_entry(db, entry, fs=FakeFs(present=(lease.path,)))
+
+    admitted = admit_scratch(
+        db,
+        roots,
+        universe_id="u2",
+        run_id="run-2",
+        lease_id_factory=_ids("lease2"),
+        wait_s=10.0,
+        now=lambda: clock[0],
+        sleep=_sleep,
+        process_started_at=clock[0] - 1,
+    )
+    assert admitted.state == wp.STATE_ACTIVE
+    assert slept == [wp.LOCK_POLL_S, wp.LOCK_POLL_S]
+
+
+def test_a_bounded_wait_gives_up_at_its_deadline(db: Path, roots: Roots) -> None:
+    admit_scratch(db, roots, lease_id_factory=_ids("lease1"))
+    clock = [1_000_000.0]
+    slept: list[float] = []
+
+    def _sleep(seconds: float) -> None:
+        slept.append(seconds)
+        clock[0] += seconds
+
+    with pytest.raises(wp.WorkspacePoolRefused) as exc:
+        admit_scratch(
+            db,
+            roots,
+            universe_id="u2",
+            run_id="run-2",
+            lease_id_factory=_ids("lease2"),
+            wait_s=1.2,
+            now=lambda: clock[0],
+            sleep=_sleep,
+        )
+    assert exc.value.code == wp.REFUSED_BUSY
+    # 0.5 + 0.5 + the 0.2 that is left, then the deadline is past.
+    assert slept == [0.5, 0.5, pytest.approx(0.2)]
+
+
+def test_a_quota_refusal_is_never_waited_on(db: Path, roots: Roots) -> None:
+    """A lock clears when a run ends; an exhausted hour does not clear inside a
+    node's timeout, and sleeping on it would turn a refusal into a hang."""
+    slept: list[float] = []
+    with pytest.raises(wp.WorkspacePoolRefused) as exc:
+        admit_scratch(
+            db,
+            roots,
+            jobs_per_hour=0,
+            wait_s=30.0,
+            sleep=slept.append,
+            lease_id_factory=_ids("lease1"),
+        )
+    assert exc.value.code == wp.REFUSED_QUOTA
+    assert slept == []
+
+
+# --------------------------------------------------------------------------
+# operation-scoped reservations (Codex P1 #2)
+# --------------------------------------------------------------------------
+
+
+def test_an_operation_reserves_its_maximum_before_the_wire(db: Path, roots: Roots) -> None:
+    """A push and a provisioning hold no lease, so nothing was charging the
+    hourly ledger for the bytes they moved."""
+    reserved = wp.reserve_operation_bytes(
+        db,
+        universe_id="u1",
+        run_id="run-1",
+        operation_id="push-1",
+        max_bytes=2 * GIB,
+    )
+    assert reserved == 2 * GIB
+    usage = wp.ledger_usage(db, "u1")
+    assert usage.bytes == 2 * GIB
+    assert usage.jobs == 1
+
+
+def test_an_operation_is_charged_once_however_often_it_is_retried(
+    db: Path, roots: Roots
+) -> None:
+    for _ in range(3):
+        assert (
+            wp.reserve_operation_bytes(
+                db,
+                universe_id="u1",
+                run_id="run-1",
+                operation_id="push-1",
+                max_bytes=2 * GIB,
+            )
+            == 2 * GIB
+        )
+    usage = wp.ledger_usage(db, "u1")
+    assert usage.bytes == 2 * GIB
+    assert usage.jobs == 1
+
+
+def test_an_operation_reconciles_downward_only(db: Path, roots: Roots) -> None:
+    wp.reserve_operation_bytes(
+        db,
+        universe_id="u1",
+        run_id="run-1",
+        operation_id="push-1",
+        max_bytes=2 * GIB,
+    )
+    assert wp.reconcile_operation_bytes(db, "push-1", 3 * GIB) == 2 * GIB
+    assert wp.reconcile_operation_bytes(db, "push-1", GIB) == GIB
+    assert wp.ledger_usage(db, "u1").bytes == GIB
+    assert wp.reconcile_operation_bytes(db, "push-1", 2 * GIB) == GIB
+
+
+def test_an_interrupted_operation_keeps_its_maximum_charged(db: Path, roots: Roots) -> None:
+    wp.reserve_operation_bytes(
+        db,
+        universe_id="u1",
+        run_id="run-1",
+        operation_id="push-1",
+        max_bytes=2 * GIB,
+    )
+    # The push dies; reconcile_operation_bytes is never called.
+    assert wp.ledger_usage(db, "u1").bytes == 2 * GIB
+    assert rows(
+        db, "SELECT reserved FROM workspace_ledger WHERE kind = 'bytes'"
+    ) == [(1,)]
+
+
+def test_an_operation_is_refused_when_the_hour_is_spent(db: Path, roots: Roots) -> None:
+    with pytest.raises(wp.WorkspacePoolRefused) as exc:
+        wp.reserve_operation_bytes(
+            db,
+            universe_id="u1",
+            run_id="run-1",
+            operation_id="push-1",
+            max_bytes=6 * GIB,
+            bytes_per_hour=5 * GIB,
+        )
+    assert exc.value.code == wp.REFUSED_QUOTA
+    assert "bytes per hour" in exc.value.detail
+    assert wp.ledger_usage(db, "u1").bytes == 0
+
+
+def test_a_checkout_and_a_push_share_one_hourly_ledger(db: Path, roots: Roots) -> None:
+    admit_scratch(db, roots, max_bytes=2 * GIB, lease_id_factory=_ids("lease1"))
+    wp.reserve_operation_bytes(
+        db,
+        universe_id="u1",
+        run_id="run-1",
+        operation_id="push-1",
+        max_bytes=GIB,
+    )
+    usage = wp.ledger_usage(db, "u1")
+    assert usage.bytes == 3 * GIB
+    assert usage.jobs == 2
+
+
+def test_reconciling_an_unknown_operation_is_a_loud_error(db: Path) -> None:
+    with pytest.raises(ValueError, match="no bytes reservation"):
+        wp.reconcile_operation_bytes(db, "nope", 1)
+
+
+# --------------------------------------------------------------------------
+# indexes (Codex P1 #3)
+# --------------------------------------------------------------------------
+
+
+def test_the_hot_lookups_are_indexed(db: Path, roots: Roots) -> None:
+    """Each of these is a scan of a table that only grows, on a path every run
+    takes."""
+    admit_scratch(db, roots, lease_id_factory=_ids("lease1"))
+    names = {
+        row[0]
+        for row in rows(db, "SELECT name FROM sqlite_master WHERE type = 'index'")
+    }
+    assert {
+        "workspace_leases_state_run",
+        "workspace_leases_universe_class_state",
+        "workspace_outbox_run",
+        "workspace_outbox_age",
+        "workspace_ledger_operation",
+    } <= names
+
+
+# --------------------------------------------------------------------------
+# the startup barrier survives a fork (Codex P1 #4)
+# --------------------------------------------------------------------------
+
+
+def test_mark_process_started_re_anchors_the_barrier() -> None:
+    original = wp.PROCESS_STARTED_AT
+    try:
+        assert wp.mark_process_started(1_234.5) == 1_234.5
+        assert wp.PROCESS_STARTED_AT == 1_234.5
+        moved = wp.mark_process_started()
+        assert moved > 1_234.5
+    finally:
+        wp.mark_process_started(original)
+
+
+def _report_process_started_at(queue) -> None:
+    """Runs in the forked child."""
+    from tinyassets import workspace_pool as child_wp
+
+    queue.put(child_wp.PROCESS_STARTED_AT)
+
+
+@pytest.mark.skipif(
+    "fork" not in multiprocessing.get_all_start_methods(),
+    reason="fork is POSIX only; there is no inherited-import problem elsewhere",
+)
+def test_a_forked_child_re_anchors_the_startup_barrier() -> None:
+    """Import time is process start only for the process that imported. A worker
+    forked from a parent that imported hours ago would otherwise treat the
+    parent's own outbox entries as pre-restart and refuse every admission."""
+    original = wp.PROCESS_STARTED_AT
+    try:
+        wp.mark_process_started(1_000_000.0)  # the parent's stale instant
+        ctx = multiprocessing.get_context("fork")
+        queue = ctx.Queue()
+        child = ctx.Process(target=_report_process_started_at, args=(queue,))
+        forked_at = time.time()
+        child.start()
+        child.join(timeout=60)
+        assert child.exitcode == 0
+        child_started_at = queue.get(timeout=10)
+        assert child_started_at > 1_000_000.0
+        assert child_started_at >= forked_at
+    finally:
+        wp.mark_process_started(original)
+
+
+# --------------------------------------------------------------------------
+# the pool bound holds across PROCESSES, not just threads (Codex P2)
+# --------------------------------------------------------------------------
+
+
+def _admit_in_child(
+    db_path: str,
+    pool_root: str,
+    universe_root: str,
+    name: str,
+    barrier,
+    queue,
+) -> None:
+    """Runs in a separate PROCESS: its own sqlite connection, its own GIL."""
+    from pathlib import Path as _Path
+
+    from tinyassets import workspace_pool as child_wp
+
+    try:
+        barrier.wait(timeout=60)
+        lease = child_wp.admit(
+            _Path(db_path),
+            universe_id=f"u-{name}",
+            connection_id="c1",
+            repo_key="repo",
+            storage_class=child_wp.STORAGE_SCRATCH,
+            run_id=f"run-{name}",
+            max_bytes=4 * child_wp.GIB,
+            pool_root=_Path(pool_root),
+            universe_root=_Path(universe_root),
+            pool_bytes_cap=5 * child_wp.GIB,
+            lease_bytes_cap=4 * child_wp.GIB,
+            lease_id_factory=lambda: f"lease{name}",
+        )
+        queue.put(("admitted", lease.lease_id))
+    except child_wp.WorkspacePoolRefused as refusal:
+        queue.put(("refused", refusal.code))
+    except BaseException as exc:  # pragma: no cover - a child that broke
+        queue.put(("error", repr(exc)))
+
+
+def _mp_context():
+    methods = multiprocessing.get_all_start_methods()
+    return multiprocessing.get_context("fork" if "fork" in methods else "spawn")
+
+
+def test_two_processes_cannot_oversubscribe_the_pool(db: Path, roots: Roots) -> None:
+    """Threads share a GIL and a process; the daemon does not. The bound is
+    sqlite's BEGIN IMMEDIATE, and only two real processes prove that is what is
+    holding it rather than the interpreter."""
+    # Create the schema first so neither child pays for it in the race.
+    admit_scratch(db, roots, lease_id_factory=_ids("seed"), max_bytes=0)
+    with terminal_txn(db) as conn:
+        conn.execute("DELETE FROM workspace_leases")
+        conn.execute("DELETE FROM workspace_locks")
+        conn.execute("DELETE FROM workspace_ledger")
+
+    ctx = _mp_context()
+    barrier = ctx.Barrier(2)
+    queue = ctx.Queue()
+    children = [
+        ctx.Process(
+            target=_admit_in_child,
+            args=(str(db), str(roots.pool), str(roots.universe), name, barrier, queue),
+        )
+        for name in ("a", "b")
+    ]
+    for child in children:
+        child.start()
+    try:
+        results = [queue.get(timeout=120) for _ in range(2)]
+    finally:
+        for child in children:
+            child.join(timeout=60)
+            if child.is_alive():  # pragma: no cover - a hung child
+                child.terminate()
+
+    kinds = sorted(kind for kind, _ in results)
+    assert kinds == ["admitted", "refused"], results
+    refusal = next(detail for kind, detail in results if kind == "refused")
+    assert refusal == wp.REFUSED_POOL_BUSY, results
+    assert wp.pool_usage(db).reserved_bytes == 4 * GIB
+    assert len(rows(db, "SELECT lease_id FROM workspace_leases")) == 1

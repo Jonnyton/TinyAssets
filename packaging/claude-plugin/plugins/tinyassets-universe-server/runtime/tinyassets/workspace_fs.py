@@ -6,20 +6,21 @@ It lives outside ``workspace_pool`` on purpose. That module computes paths and
 never touches the filesystem, which its tests assert by reading its source; the
 bytes move here, where the no-follow rules are one small reviewable place.
 
-Nothing here trusts a path a second time. A path is resolved once, component by
-component, from an already-open ancestor descriptor, and every later access goes
-through the descriptor that resolution produced - so a rename or a symlink
-swapped in afterwards cannot redirect it. Deletion never follows a link: a
-symlink, or on Windows a junction, inside a lease is unlinked rather than walked,
-so a lease containing a link to the host's data directory cannot make the sweeper
-delete that directory. This is why the walk is an explicit ``scandir`` stack
-rather than ``os.walk``: ``os.walk`` decides what to descend into from
-``is_dir(follow_symlinks=False)``, which is TRUE for a Windows junction, and a
-junction needs no privilege to create.
+**Nothing here trusts a path twice.** On POSIX a path is resolved once, component
+by component, from an already-open ancestor descriptor, and every later step goes
+through descriptors: ``mkdir``/``rename``/``unlink``/``rmdir`` all take
+``dir_fd``, and directories are listed through an open handle. A path-based call
+after a path-based check is a TOCTOU by construction - the name can be re-pointed
+in between - so there are none on that branch.
 
-The descriptor helpers are POSIX; on Windows they raise ``NotImplementedError``.
-The sink runs on Linux, and there is no Windows equivalent of ``O_NOFOLLOW`` +
-``dir_fd`` that would be safe rather than merely present.
+Windows has no ``O_NOFOLLOW`` and no ``dir_fd``, so it keeps the path-based
+implementation behind a platform branch: deletion walks with ``scandir`` and
+refuses to descend into a symlink OR a junction. That distinction matters -
+``os.walk`` would descend into a junction, which any unprivileged user can
+create inside a lease.
+
+The descriptor helpers are POSIX only; on Windows they raise
+``NotImplementedError`` rather than imitate a guarantee they cannot make.
 """
 
 from __future__ import annotations
@@ -35,14 +36,26 @@ _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 
+#: True when this host can do openat-style work at all.
+_POSIX = os.name == "posix" and os.open in os.supports_dir_fd
+
 _COPY_CHUNK = 1024 * 1024
 _LEASE_DIR_MODE = 0o700
 _COPY_DEST_MODE = 0o600
+#: A lease directory's name must be unguessable: the parent is shared, and an
+#: attacker who can predict the name can create it first. 16 hex chars is 64
+#: bits, which is what ``secrets.token_hex(8)`` and up produce.
+MIN_LEASE_NAME_CHARS = 16
+_HEX = frozenset("0123456789abcdefABCDEF")
+#: A workspace tree deeper than this is not a repository, and unbounded
+#: recursion through descriptors is a stack overflow waiting for a fixture.
+_MAX_TREE_DEPTH = 64
 
 
 class UnsafePoolPath(OSError):
     """A path was refused before it was used: a link where a real directory or
-    file was required, a traversal, or a file larger than the caller's bound.
+    file was required, a traversal, a file larger than the caller's bound, or a
+    directory that is not the one this call created.
 
     An ``OSError`` so that a caller which already treats filesystem failure as
     failure - the outbox processor marking a lease ``LOST`` - keeps working
@@ -71,72 +84,6 @@ def _unlink_link(path: str) -> None:
         os.rmdir(path)
 
 
-class RealPoolFilesystem:
-    """``exists``/``rename``/``remove_tree_no_follow`` against the real disk."""
-
-    def exists(self, path: Path) -> bool:
-        """Presence WITHOUT following links: a dangling symlink is present, and
-        the processor still owes its removal."""
-        return os.path.lexists(str(path))
-
-    def rename(self, src: Path, dst: Path) -> None:
-        """Move a workspace to its deterministic quarantine name.
-
-        The quarantine parent is created here when missing - the pool module
-        creates no directories, and a rename into a missing parent would leave
-        the bytes in place with the entry marked done.
-        """
-        parent = os.path.dirname(str(dst))
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        os.replace(str(src), str(dst))
-
-    def remove_tree_no_follow(self, path: Path) -> None:
-        """Delete a tree bottom-up, never descending into a link or junction.
-
-        A path that is already gone is not an error: the processor is
-        at-least-once, so a repeat has to be a no-op. Anything else propagates as
-        ``OSError`` and the lease becomes ``LOST`` with its bytes still charged.
-        """
-        target = str(path)
-        if not os.path.lexists(target):
-            return
-        if _is_link(target):
-            _unlink_link(target)
-            return
-        if not os.path.isdir(target):
-            os.unlink(target)
-            return
-        # Post-order without recursion: push a directory, then its children;
-        # a directory is removed only after everything under it is gone.
-        pending: list[str] = [target]
-        emptied: list[str] = []
-        while pending:
-            current = pending.pop()
-            emptied.append(current)
-            try:
-                with os.scandir(current) as entries:
-                    children = list(entries)
-            except FileNotFoundError:
-                continue
-            for entry in children:
-                child = entry.path
-                try:
-                    if entry.is_symlink() or _is_link(child):
-                        _unlink_link(child)
-                    elif entry.is_dir(follow_symlinks=False):
-                        pending.append(child)
-                    else:
-                        os.unlink(child)
-                except FileNotFoundError:
-                    continue
-        for directory in reversed(emptied):
-            try:
-                os.rmdir(directory)
-            except FileNotFoundError:
-                continue
-
-
 # --------------------------------------------------------------------------
 # no-follow directory handles (POSIX)
 # --------------------------------------------------------------------------
@@ -146,7 +93,7 @@ def _require_posix(what: str) -> None:
     """Refuse loudly rather than pretend. A Windows fallback here would be a
     path-based imitation of a descriptor-based guarantee, which is the bug this
     module exists to prevent."""
-    if os.name != "posix" or os.open not in os.supports_dir_fd:
+    if not _POSIX:
         raise NotImplementedError(
             f"{what} needs POSIX openat semantics (O_NOFOLLOW + dir_fd); "
             f"this host is {os.name!r}. The workspace sink runs on Linux; "
@@ -233,16 +180,67 @@ def open_dir_nofollow(path: str | Path) -> int:
     return current
 
 
+def _open_dir_making_one_level(path: Path) -> int:
+    """Open ``path``, creating that ONE last component if it is missing.
+
+    The quarantine directory is the only thing the processor may have to create,
+    and it creates it through its parent's descriptor - ``mkdir(name,
+    dir_fd=...)``, never ``makedirs`` on a string. A missing grandparent is an
+    error, not something to conjure: the pool root is the caller's to make.
+    """
+    parent_fd = open_dir_nofollow(path.parent)
+    try:
+        name = _require_component(path.name)
+        try:
+            os.mkdir(name, _LEASE_DIR_MODE, dir_fd=parent_fd)
+        except FileExistsError:
+            pass
+        return _open_child_dir(parent_fd, name)
+    finally:
+        os.close(parent_fd)
+
+
 def create_lease_dir(parent_fd: int, name: str, *, mode: int = _LEASE_DIR_MODE) -> int:
     """Create one directory under ``parent_fd`` and return a handle to IT.
 
-    The handle is verified: the inode the open descriptor reports must be the
-    inode the create produced. Without that check a race could replace the fresh
-    directory with a symlink between ``mkdir`` and ``open`` and hand back a
-    handle to somewhere else entirely.
+    What the inode compare actually proves is narrow, and it is worth saying
+    plainly: it closes the window between the ``stat`` and the ``open`` only. A
+    rename that lands BEFORE the first stat is invisible to it - both calls would
+    then see the intruder.
+
+    The guarantee therefore rests on three things, all enforced here:
+
+    * the parent must be **owned by this uid and not group- or world-writable**,
+      so no other principal can rename anything into it;
+    * the name must be **at least 16 random hex characters**, so it cannot be
+      created or targeted before we get there; and
+    * the opened handle must be a **fresh, empty directory** owned by this uid
+      with exactly the mode we asked for - a swapped-in directory with any
+      content, any other owner, or a looser mode is refused.
+
+    Together those close the pre-stat window too, and none of them depends on
+    winning a race.
     """
     _require_posix("create_lease_dir")
     _require_component(name)
+    if len(name) < MIN_LEASE_NAME_CHARS or any(char not in _HEX for char in name):
+        raise UnsafePoolPath(
+            f"a lease directory name must be at least {MIN_LEASE_NAME_CHARS} "
+            f"random hex characters (secrets.token_hex(8) or wider), got {name!r}"
+        )
+    parent = os.fstat(parent_fd)
+    if parent.st_uid != os.getuid():
+        raise UnsafePoolPath(
+            f"the pool parent is owned by uid {parent.st_uid}, not this process "
+            f"({os.getuid()}): another user could rename over the name we create"
+        )
+    if parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise UnsafePoolPath(
+            f"the pool parent is group- or world-writable (mode "
+            f"{stat.S_IMODE(parent.st_mode):#o}): anyone could create or replace "
+            "the lease directory"
+        )
+
     os.mkdir(name, mode, dir_fd=parent_fd)
     created = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     fd = _open_child_dir(parent_fd, name)
@@ -253,6 +251,24 @@ def create_lease_dir(parent_fd: int, name: str, *, mode: int = _LEASE_DIR_MODE) 
                 f"{name!r} was replaced between its creation and its open "
                 f"(inode {created.st_ino} became {opened.st_ino})"
             )
+        if opened.st_uid != os.getuid():
+            raise UnsafePoolPath(
+                f"{name!r} is owned by uid {opened.st_uid}, not this process"
+            )
+        if stat.S_IMODE(opened.st_mode) != mode:
+            raise UnsafePoolPath(
+                f"{name!r} has mode {stat.S_IMODE(opened.st_mode):#o}, not the "
+                f"{mode:#o} this call created"
+            )
+        if os.listdir(fd):
+            raise UnsafePoolPath(
+                f"{name!r} is not the empty directory this call created; "
+                "something was renamed over it"
+            )
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)  # rewind: the caller gets a fresh handle
+        except OSError:
+            pass
     except BaseException:
         os.close(fd)
         raise
@@ -325,6 +341,25 @@ def read_regular_file_beneath(dir_fd: int, relpath: str | Path, *, max_bytes: in
     return data
 
 
+def _unlink_if_same_inode(dest: str, created: os.stat_result) -> None:
+    """Remove ``dest`` only while it is still the file this call created.
+
+    Cleanup that unlinks by NAME would delete whatever now answers to it. If the
+    destination was replaced after we created it, deleting it is destroying
+    somebody else's file to tidy up after ourselves.
+    """
+    try:
+        current = os.lstat(dest)
+    except OSError:
+        return
+    if (current.st_dev, current.st_ino) != (created.st_dev, created.st_ino):
+        return
+    try:
+        os.unlink(dest)
+    except OSError:
+        pass
+
+
 def copy_regular_file_beneath(
     dir_fd: int, relpath: str | Path, dest_path: str | Path, *, max_bytes: int
 ) -> int:
@@ -333,8 +368,9 @@ def copy_regular_file_beneath(
     The destination is created ``O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW`` at
     mode 0o600, so an existing file or a symlink planted at the destination is a
     refusal rather than an overwrite of whatever it points at. A partial
-    destination is removed on ANY failure, the bound included: half a manifest
-    left behind would be read later as a whole one.
+    destination is removed on ANY failure, the bound included - half a manifest
+    left behind would be read later as a whole one - but only after an inode
+    compare proves it is still the file this call created.
     """
     fd, _size = _open_regular_beneath(dir_fd, relpath, max_bytes=max_bytes)
     dest = str(dest_path)
@@ -347,6 +383,7 @@ def copy_regular_file_beneath(
     except BaseException:
         os.close(fd)
         raise
+    created = os.fstat(dest_fd)
     try:
         try:
             while True:
@@ -365,10 +402,7 @@ def copy_regular_file_beneath(
         finally:
             os.close(dest_fd)
     except BaseException:
-        try:
-            os.unlink(dest)
-        except OSError:
-            pass
+        _unlink_if_same_inode(dest, created)
         raise
     finally:
         os.close(fd)
@@ -388,3 +422,171 @@ def bind_target_for(dir_fd: int) -> str:
     if not isinstance(dir_fd, int) or isinstance(dir_fd, bool) or dir_fd < 0:
         raise ValueError(f"dir_fd must be a non-negative descriptor, got {dir_fd!r}")
     return f"/proc/self/fd/{dir_fd}"
+
+
+# --------------------------------------------------------------------------
+# the PoolFilesystem the outbox processor drives
+# --------------------------------------------------------------------------
+
+
+def _remove_beneath(parent_fd: int, name: str, depth: int = 0) -> None:
+    """Delete ``name`` under ``parent_fd``, never following a link.
+
+    Every step is an ``*at`` call through a descriptor we opened with
+    ``O_NOFOLLOW``, so there is no window in which the name could be re-pointed
+    between a check and the act. A symlink is unlinked; only a real directory is
+    descended into, through its own handle.
+    """
+    if depth > _MAX_TREE_DEPTH:
+        raise UnsafePoolPath(
+            f"workspace tree deeper than {_MAX_TREE_DEPTH} at {name!r}: refusing "
+            "to recurse further"
+        )
+    try:
+        info = os.lstat(name, dir_fd=parent_fd)
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(info.st_mode):
+        # Regular files, devices, FIFOs and SYMLINKS (lstat, so a link to a
+        # directory lands here) are unlinked, not walked.
+        try:
+            os.unlink(name, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+        return
+    child_fd = _open_child_dir(parent_fd, name)
+    try:
+        for entry in os.listdir(child_fd):
+            _remove_beneath(child_fd, entry, depth + 1)
+    finally:
+        os.close(child_fd)
+    try:
+        os.rmdir(name, dir_fd=parent_fd)
+    except FileNotFoundError:
+        pass
+
+
+def _remove_tree_windows(target: str) -> None:
+    """The Windows branch: no ``dir_fd``, so this walks paths - but it still
+    refuses to descend into a symlink or a JUNCTION.
+
+    ``os.walk`` decides what to descend into from ``is_dir(follow_symlinks=
+    False)``, which is TRUE for a junction, and a junction needs no privilege to
+    create. Hence the explicit ``scandir`` stack.
+    """
+    if not os.path.lexists(target):
+        return
+    if _is_link(target):
+        _unlink_link(target)
+        return
+    if not os.path.isdir(target):
+        os.unlink(target)
+        return
+    pending: list[str] = [target]
+    emptied: list[str] = []
+    while pending:
+        current = pending.pop()
+        emptied.append(current)
+        try:
+            with os.scandir(current) as entries:
+                children = list(entries)
+        except FileNotFoundError:
+            continue
+        for entry in children:
+            child = entry.path
+            try:
+                if entry.is_symlink() or _is_link(child):
+                    _unlink_link(child)
+                elif entry.is_dir(follow_symlinks=False):
+                    pending.append(child)
+                else:
+                    os.unlink(child)
+            except FileNotFoundError:
+                continue
+    for directory in reversed(emptied):
+        try:
+            os.rmdir(directory)
+        except FileNotFoundError:
+            continue
+
+
+class RealPoolFilesystem:
+    """``exists``/``rename``/``remove_tree_no_follow`` against the real disk.
+
+    On POSIX every step goes through a descriptor opened without following
+    links; on Windows, where there is no ``dir_fd``, the path-based
+    implementation is used behind an explicit platform branch. ``posix`` is
+    injectable so a test can drive the Windows branch on Linux and vice versa.
+    """
+
+    def __init__(self, *, posix: bool | None = None) -> None:
+        self._posix = _POSIX if posix is None else bool(posix)
+
+    def exists(self, path: Path) -> bool:
+        """Presence WITHOUT following links: a dangling symlink is present, and
+        the processor still owes its removal."""
+        target = Path(path)
+        if not self._posix:
+            return os.path.lexists(str(target))
+        try:
+            parent_fd = open_dir_nofollow(target.parent)
+        except (OSError, UnsafePoolPath):
+            # No parent, or a parent that is a link: nothing of ours is there.
+            return False
+        try:
+            os.lstat(target.name, dir_fd=parent_fd)
+            return True
+        except OSError:
+            return False
+        finally:
+            os.close(parent_fd)
+
+    def rename(self, src: Path, dst: Path) -> None:
+        """Move a workspace to its deterministic quarantine name.
+
+        The quarantine parent is created here when missing - the pool module
+        creates no directories, and a rename into a missing parent would leave
+        the bytes in place with the entry marked done.
+        """
+        source = Path(src)
+        target = Path(dst)
+        if not self._posix:
+            parent = os.path.dirname(str(target))
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            os.replace(str(source), str(target))
+            return
+        src_fd = open_dir_nofollow(source.parent)
+        try:
+            dst_fd = _open_dir_making_one_level(target.parent)
+            try:
+                os.rename(
+                    _require_component(source.name),
+                    _require_component(target.name),
+                    src_dir_fd=src_fd,
+                    dst_dir_fd=dst_fd,
+                )
+            finally:
+                os.close(dst_fd)
+        finally:
+            os.close(src_fd)
+
+    def remove_tree_no_follow(self, path: Path) -> None:
+        """Delete a tree bottom-up, never descending into a link or junction.
+
+        A path that is already gone is not an error: the processor is
+        at-least-once, so a repeat has to be a no-op. Anything else propagates as
+        ``OSError`` and the lease becomes ``LOST`` with its bytes still charged.
+        """
+        target = Path(path)
+        if not self._posix:
+            _remove_tree_windows(str(target))
+            return
+        try:
+            parent_fd = open_dir_nofollow(target.parent)
+        except FileNotFoundError:
+            return
+        try:
+            _remove_beneath(parent_fd, _require_component(target.name))
+        finally:
+            os.close(parent_fd)
