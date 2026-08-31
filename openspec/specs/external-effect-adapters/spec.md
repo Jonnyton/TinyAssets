@@ -353,25 +353,35 @@ that is present but does not validate SHALL be refused, never dropped, and
 `scripts` SHALL NOT be carried into the reconstructed manifest at all, so the
 offline install cannot run a lifecycle script the root manifest asked for.
 
-Manifests SHALL be read through the held directory handle with
-beneath/no-symlink semantics as bounded regular files. The staged text SHALL be
-written, read back, and refused unless the sha256 of the bytes on disk equals
-the admitted plan's digest, and the commands SHALL be built with every
-dash-leading element restricted to the fixed flags the builders emit, so a cache
-or manifest path cannot be read as an option. Python wheels SHALL be fetched
-with `--only-binary=:all:` and `--require-hashes` (and without `--no-deps`, so
-an incomplete closure fails rather than silently resolving an unpinned
-transitive dependency) and Node tarballs with `--ignore-scripts`; the offline
-install SHALL use no index at all. The jail that runs those commands — holding
-no checkout, with egress permitted only to the declared registry hosts after
-per-address validation — is the named follow-up and is not built in this change,
-so provisioning currently admits, stages and refuses but does not install.
-Admission and consent refusals are `workspace_provision_refused`; resolver
-transport, cache-bound and offline-install failures are
-`workspace_provision_failed`.
+**Provisioning is wholly unavailable in this release.** A `checkout` that
+declares `provision` SHALL complete as a checkout and SHALL refuse the
+provisioning half as `workspace_provision_refused` **before any manifest is
+read** — no file is opened through the lease handle, no grammar runs, no command
+is built, and no consent is consulted. The refusal SHALL say that provisioning
+is unavailable rather than name a missing consent, because a hint naming a
+consent implies that granting it would make provisioning run.
+
+The grammar (`tinyassets.workspace_provision`) and the command layer
+(`tinyassets.workspace_resolver`) exist as LIBRARY CODE WITH NO CALLER, so their
+rules bind nothing yet and are recorded here as what slice B will wire, not as
+what this release does: only Python records that parse as a PEP 508 requirement
+with no URL, one `==` specifier, a PEP 440 version, at least one
+`--hash=sha256:<64 hex>` and a marker over the seven admitted variables; only
+Node projects whose lockfile (version 2 or 3) has no `workspaces` key and no
+`link:` entry and whose every installable entry resolves to an
+`https://registry.npmjs.org/…tgz` with a `sha512-` integrity; reconstructed
+canonical texts rather than the original files; a staged digest recomputed from
+the bytes on disk; `--only-binary=:all:` with `--require-hashes` and without
+`--no-deps`; `--ignore-scripts`; and an offline install with no index.
+`workspace_provision_failed` is classified in the taxonomy and is not raised by
+anything in this release.
+
+#### Scenario: a checkout that asks for provisioning gets a checkout and a refusal
+- **WHEN** a `checkout` packet declares `provision`
+- **THEN** the checkout completes, the evidence records `workspace_provision_refused` saying provisioning is unavailable in this release, no manifest is opened and no consent is looked up
 
 #### Scenario: an sdist-only or URL requirement is refused before any network
-- **WHEN** the requirements file contains `git+https://…`, a local path, `-r other.txt`, or `pkg>=1.0`
+- **WHEN** slice B wires the grammar and the requirements file contains `git+https://…`, a local path, `-r other.txt`, or `pkg>=1.0`
 - **THEN** provisioning is refused as `workspace_provision_refused` naming the offending line, and no resolver command is built
 
 #### Scenario: a lockfile resolution outside the registry is refused

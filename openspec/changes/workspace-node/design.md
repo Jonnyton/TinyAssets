@@ -323,15 +323,41 @@ A non-zero `ws.run` exit is data; `code_node_failed` for exceptions in
   class never reaching the classifier, scope-only `extend_http` unable to
   execute, descriptor leaks, unverified staging deletion, capability lookup
   ignoring ancestry) - all folded 2026-08-31; R3 is the cap.
+- **R3 (the cap) REJECT — three P0s, six P1s, two P2s.** Fixed before
+  landing (no fourth review round, per `AGENTS.md`): the packet could still
+  choose the credentialed git HOST (only repo/kind were checked; intents
+  defaulted replays to github.com) → host derived from the stored
+  connection, journaled, revalidated; descriptors had a use-after-revoke /
+  fd-number-reuse race across parallel branches → atomic acquisition under
+  the chain lock with dup'd descriptors, refcount, deferred close; a first
+  permanent checkout could not create `workspaces/<repo-key>` → created
+  through owned no-follow handles, tested with the real helpers; push and
+  discard now charge the workspace ledger and `packet.max_bytes` no longer
+  exists; a reconciliation timeout stays claimable and `expected_old_sha`
+  is journaled; one `try/finally` owns the post-admission lifecycle;
+  provisioning's as-built contract says "wholly unavailable in this
+  release"; specs resynced after the sandbox commits; the POSIX
+  lease-privacy test inspects the lease, not `/proc/self/fd`; the oracle's
+  `full_route` runs a compiled graph through the production launcher
+  factory with the canary credential on the real broker path; staging ids
+  are an injective hash plus nonce.
+- **Founder decision recorded as residual (R3 P2 #10):** a RESUMED run
+  cannot continue past a pre-interrupt checkout - the workspace capability
+  lives in the run's chain and is not persisted; a downstream workspace
+  node fails loudly as `code_node_failed` ("workspace not available").
+  Persisting a generation-checked capability across an interrupt is a
+  named follow-up, not silently attempted.
 
-- **As-built deviations found at spec sync (2026-08-31), now named follow-ups
-  rather than claims:** there is no process-tree RSS watchdog (the rlimit
-  profile is the memory bound); there is no 1800 s ceiling on a workspace
-  node's `timeout_seconds` (the declared timeout governs); and
-  `workspace_provision_failed` is classified but never raised, because the
-  resolver jail is slice B - provisioning admits, stages and refuses, it does
-  not yet install. The as-built specs under `openspec/specs/` say the true
-  thing; this design keeps the intent.
+- **As-built deviations found at spec sync (2026-08-31), and what became of
+  them.** Two are now BUILT, after Codex code round 2: the aggregate
+  process-tree RSS watchdog (2 GiB, failing the node as `code_node_failed`
+  naming the cap, since D6 has no memory class) and the `0 < timeout_seconds
+  <= 1800` ceiling for a workspace node, enforced at compile time and again
+  when a persisted definition loads.
+- **Provisioning** *(R3, corrected 2026-08-31)*: as-built it is wholly
+  unavailable in this release - see
+  `openspec/specs/external-effect-adapters/spec.md`, which is where the
+  deviation lives; the design above keeps the intent.
 - `ws.bundle` shells out to a bare `git` and the sandbox child has no PATH
   on Windows, so a Windows tray host cannot push yet (Linux daemon first).
 

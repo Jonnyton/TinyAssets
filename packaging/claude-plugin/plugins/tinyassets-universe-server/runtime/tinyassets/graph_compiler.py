@@ -2045,6 +2045,7 @@ def _build_source_code_node(
             # Resolved HERE, per run, not at compile time: the checkout has
             # to have delivered, and a discard may have revoked it since.
             mount = None
+            acquired = None
             if workspace_node:
                 if effect_chain is None:
                     raise CodeNodeError(
@@ -2053,7 +2054,16 @@ def _build_source_code_node(
                         "run has no effect chain",
                         node_id=node.node_id,
                     )
-                raw_mount = effect_chain.workspace_mount(workspace_node)
+                # ACQUIRED, not looked up: the lookup hands back the registry's
+                # own mount, and a parallel discard closes its descriptors
+                # while this node is using them - after which the next
+                # checkout gets the same fd NUMBERS and the node is reading
+                # another branch's repository (Codex code round 3, P0 #2). An
+                # acquisition holds dups for the length of the run and is
+                # decided inside the chain's lock, so it cannot straddle a
+                # revoke.
+                acquired = effect_chain.acquire_workspace(workspace_node)
+                raw_mount = None if acquired is None else acquired.mount
                 if raw_mount is None:
                     # The checkout never delivered, or a discard revoked it.
                     # Neither is recoverable for a node that declared a
@@ -2113,6 +2123,12 @@ def _build_source_code_node(
                 workspace=sandbox_mount,
             )
         finally:
+            # Before the tracker: the capability is the scarcer resource, and
+            # releasing it is what lets a revoke's deferred close finally
+            # happen. It runs on every path out of the node, including the
+            # sandbox raising.
+            if acquired is not None:
+                acquired.release()
             if concurrency_tracker is not None:
                 concurrency_tracker.release()
         stderr_tail = getattr(result, "stderr_tail", "") or (result.stderr or "")[-2048:]

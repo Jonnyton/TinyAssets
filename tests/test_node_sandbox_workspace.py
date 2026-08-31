@@ -11,7 +11,6 @@ root rather than a module the test could monkeypatch into something else.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import shutil
@@ -1365,26 +1364,50 @@ def test_the_descriptor_reaches_both_the_launcher_and_the_child(
     # directory has its own tests. What is under test here is the plumbing.
     monkeypatch.setattr(gc, "_require_live_directory", lambda fd, node_id: int(fd))
 
+    # REAL descriptors, not chosen numbers: the compiler ACQUIRES the
+    # capability now (Codex R3, P0 #2), which os.dup()s what it was given, and
+    # a dup of a number nobody opened is EBADF. What the plumbing carries is
+    # therefore the DUP - which is the point of the acquisition, since the
+    # original's number is what a parallel discard would free.
+    repo_fd = os.open(str(workspace / "README.md"), os.O_RDONLY)
+    lease_fd = os.open(str(workspace / "README.md"), os.O_RDONLY)
     chain = EffectChain()
     chain.register_workspace(
         "checkout",
-        _ChainMount("/proc/self/fd/9", repo_fd=9, lease_fd=8, pass_fds=(9,)),
+        _ChainMount(
+            f"/proc/self/fd/{repo_fd}",
+            repo_fd=repo_fd,
+            lease_fd=lease_fd,
+            pass_fds=(repo_fd,),
+        ),
     )
-    fn = gc._build_source_code_node(
-        _code_node(workspace="checkout"),
-        event_sink=None,
-        effect_chain=chain,
-        ancestors={"checkout"},
-    )
-    with contextlib.suppress(Exception):
-        fn({})
+    try:
+        fn = gc._build_source_code_node(
+            _code_node(workspace="checkout"),
+            event_sink=None,
+            effect_chain=chain,
+            ancestors={"checkout"},
+        )
+        try:
+            fn({})
+        except Exception as exc:  # noqa: BLE001 - the child is a stub; see below
+            # Recorded, not swallowed: this test asserts on a dict, and an
+            # exception before the factory turns into a KeyError three lines
+            # down that says nothing about what actually went wrong.
+            captured["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        chain.close_workspaces()
 
-    assert captured["factory_bind"] == "/proc/self/fd/9"
-    assert captured["factory_pass_fds"] == (9,)
+    assert "factory_bind" in captured, captured.get("error")
+    bound = str(captured["factory_bind"])
+    assert bound.startswith("/proc/self/fd/")
+    bound_fd = int(bound.rsplit("/", 1)[-1])
+    assert bound_fd != repo_fd, "the compiler bound the registry's own descriptor"
+    assert captured["factory_pass_fds"] == (bound_fd,)
     argv = captured["argv"]
     index = argv.index("--bind")
-    assert argv[index : index + 3] == ["--bind", "/proc/self/fd/9", "/workspace"]
-    assert captured["popen_pass_fds"] == (9,)
+    assert argv[index : index + 3] == ["--bind", bound, "/workspace"]
+    assert captured["popen_pass_fds"] == (bound_fd,)
 
 
 def test_a_lease_descriptor_is_never_used_for_the_bind(
