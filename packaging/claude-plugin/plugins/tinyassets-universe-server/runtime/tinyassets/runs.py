@@ -2900,6 +2900,11 @@ def _invoke_graph(
             # Threaded so an invoke node can hand it to its CHILD launch;
             # the child is where a nested prompt's provider call happens.
             on_node_status=on_node_status,
+            # Polled INSIDE a running node, so the owner's cancel reaches the
+            # child process and kills its jail. The inter-node check below is
+            # unchanged and still catches a cancel between nodes; this is the
+            # one that stops a node already 20 minutes into `ws.run`.
+            should_cancel=lambda: is_cancel_requested(base_path, run_id),
         )
     except (UnapprovedNodeError, CompilerError) as exc:
         update_run_status(
@@ -3471,11 +3476,25 @@ def _collect_external_write_errors(
 
 
 def _is_cancel_exception(exc: BaseException) -> bool:
-    """Detect a wrapped RunCancelledError in a chain."""
+    """Detect a wrapped cancellation in a chain.
+
+    Two classes count. ``RunCancelledError`` is raised here, between nodes.
+    ``NodeCancelledError`` is raised by `graph_compiler` when the cancel
+    reached a node's child process mid-run and killed its jail — matched by
+    NAME because `graph_compiler` cannot import this module (it imports
+    `compile_branch` from there), which is the same duck-typing
+    `graph_compiler._is_cancel_exception` already uses in the other direction.
+
+    Without the second name an in-node cancellation unwinds as a generic node
+    failure, and the owner is told their workflow broke when in fact they
+    stopped it.
+    """
     seen: set[int] = set()
     cur: BaseException | None = exc
     while cur is not None and id(cur) not in seen:
         if isinstance(cur, RunCancelledError):
+            return True
+        if type(cur).__name__ == "NodeCancelledError":
             return True
         seen.add(id(cur))
         cur = cur.__cause__ or cur.__context__
@@ -4508,6 +4527,7 @@ def _invoke_graph_resume(
             event_sink=_on_node,
             effect_chain=effect_chain,
             execution_context=resume_context,
+            should_cancel=lambda: is_cancel_requested(base_path, run_id),
         )
     except (UnapprovedNodeError, CompilerError) as exc:
         update_run_status(

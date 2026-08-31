@@ -168,6 +168,29 @@ _LAUNCH_PATH = "/usr/bin:/bin"
 _READ_CHUNK = 65536
 _POLL_SECONDS = 0.02
 
+#: How often the cancel predicate is asked. The wait loop spins at
+#: ``_POLL_SECONDS``; the predicate typically reads a database, so it gets its
+#: own slower clock. This is the worst-case delay between the owner pressing
+#: cancel and the jail dying, and it is a latency knob, not a policy: making it
+#: larger never lets a run continue that the owner did not stop.
+_CANCEL_POLL_SECONDS = 0.5
+
+
+def _cancel_requested(predicate: Callable[[], bool]) -> bool:
+    """Ask the owner's cancel predicate, and never let it kill the run.
+
+    A predicate that raises -- a closed database handle, a transient IO error --
+    must not take down a node that is running fine. It is asked again on the
+    next tick, and a genuine cancellation is not lost, only delayed by one
+    interval. Failing the other way (treating an error as "cancelled") would
+    let an unrelated fault kill the owner's work.
+    """
+    try:
+        return bool(predicate())
+    except Exception:
+        logger.exception("cancel predicate raised; treating as not cancelled")
+        return False
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Execution Result
@@ -277,6 +300,11 @@ class SandboxResult:
     #: A ``ws.run`` command outlived its budget. Carried as a flag, not a
     #: message the caller has to grep, so the compiler can classify it.
     workspace_timeout: bool = False
+    #: The owner cancelled while this node was running. A FLAG for the same
+    #: reason as above: the compiler has to tell "the owner stopped this" apart
+    #: from "the node failed", and matching on an error string is how that
+    #: distinction rots.
+    cancelled: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -2288,11 +2316,26 @@ class NodeSandbox:
         timeout: float = 30.0,
         max_output_bytes: int = MAX_OUTPUT_BYTES,
         launcher: Launcher | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> None:
         self.default_timeout = timeout
         self.max_output_bytes = max_output_bytes
         #: ``None`` means "resolve the production launcher at run time".
         self.launcher = launcher
+        #: Polled while the child runs; True means the owner asked to stop.
+        #:
+        #: INJECTED, not read from a global, so a test drives the real loop
+        #: rather than a stub of it. ``None`` means "no owner is watching" --
+        #: the historical behaviour, where only the timeout could stop a node.
+        #:
+        #: Cancellation used to be checked ONLY between nodes
+        #: (`runs.py`: "cancelled between nodes"), and this module had no idea
+        #: it existed. A node 25 minutes into `ws.run(["make", "-j8"])` kept
+        #: going after the owner pressed cancel, and the run timeout was the
+        #: only thing that ever stopped it. With the credential vault absolute,
+        #: cancellation is what bounds a workflow the owner did not write, so
+        #: it has to reach the child.
+        self.should_cancel = should_cancel
 
     def validate_source(self, source_code: str) -> list[str]:
         """Pre-validate source code before execution.
@@ -2560,6 +2603,9 @@ class NodeSandbox:
                 ).start()
 
             deadline = start_time + timeout
+            # The cancel predicate usually reads a database, and this loop
+            # spins every 20ms, so it is polled on its own slower clock.
+            next_cancel_poll = start_time
             while True:
                 if breaches:
                     outcome = "too-large"
@@ -2570,7 +2616,14 @@ class NodeSandbox:
                     break
                 except subprocess.TimeoutExpired:
                     pass
-                if time.monotonic() >= deadline:
+                now = time.monotonic()
+                if self.should_cancel is not None and now >= next_cancel_poll:
+                    next_cancel_poll = now + _CANCEL_POLL_SECONDS
+                    if _cancel_requested(self.should_cancel):
+                        outcome = "cancelled"
+                        _terminate_child(proc, launcher)
+                        break
+                if now >= deadline:
                     outcome = "timeout"
                     _terminate_child(proc, launcher)
                     break
@@ -2626,6 +2679,17 @@ class NodeSandbox:
                 duration_seconds=duration,
                 stdout_tail=_tail(stdout_text),
                 stderr_tail=stderr_tail,
+            )
+
+        if outcome == "cancelled":
+            return SandboxResult(
+                node_id=node_id,
+                success=False,
+                error="cancelled by the run's owner",
+                duration_seconds=duration,
+                stdout_tail=_tail(stdout_text),
+                stderr_tail=stderr_tail,
+                cancelled=True,
             )
 
         if outcome == "timeout":

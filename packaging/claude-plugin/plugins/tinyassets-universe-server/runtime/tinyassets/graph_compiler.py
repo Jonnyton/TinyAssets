@@ -228,6 +228,20 @@ class WorkspaceCommandTimeout(NodeTimeoutError):
     """
 
 
+class NodeCancelledError(CompilerError):
+    """The owner cancelled while this node's child process was running.
+
+    Its own class, not a `CodeNodeError`, because "the owner stopped this" and
+    "the node failed" must not land in the same terminal status: a cancelled
+    run reported as failed tells the owner their workflow is broken.
+
+    `runs._is_cancel_exception` recognises it by name alongside
+    ``RunCancelledError``, which is the same deliberate duck-typing the rest of
+    this boundary uses -- `graph_compiler` cannot import `runs`, because `runs`
+    imports `compile_branch` from here.
+    """
+
+
 class EmptyResponseError(CompilerError):
     """Raised when an LLM provider returns an empty response.
 
@@ -1940,6 +1954,7 @@ def _build_source_code_node(
     effect_chain: Any = None,
     state_schema: list[dict[str, Any]] | None = None,
     ancestors: set[str] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
     execution_context: "BranchExecutionContext | None" = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Return a node function that runs the node's ``source_code`` in the OS
@@ -2110,7 +2125,9 @@ def _build_source_code_node(
                 )
                 workspace_launcher = WORKSPACE_LAUNCHER_FACTORY(sandbox_mount)
             result = NodeSandbox(
-                timeout=timeout_s, launcher=workspace_launcher
+                timeout=timeout_s,
+                launcher=workspace_launcher,
+                should_cancel=should_cancel,
             ).run_sync(
                 node_id=node.node_id,
                 source_code=src,
@@ -2135,6 +2152,13 @@ def _build_source_code_node(
         stdout_tail = getattr(result, "stdout_tail", "") or (result.stdout or "")[-2048:]
         if not result.success:
             error = result.error or "code node failed"
+            if getattr(result, "cancelled", False):
+                # Checked FIRST: a cancelled node is not a failed one, and the
+                # owner's stop must not be reported as their workflow breaking.
+                raise NodeCancelledError(
+                    f"Node '{node.node_id}' (code): {error}",
+                    node_id=node.node_id,
+                )
             if getattr(result, "workspace_timeout", False):
                 raise WorkspaceCommandTimeout(
                     f"Node '{node.node_id}' (code): {error}",
@@ -3225,6 +3249,7 @@ def _build_node(
     effect_chain: Any = None,
     ancestors: set[str] | None = None,
     merge_fields: set[str] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
     graph_node_id: str = "",
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Build the node function for ``node``: the inner adapter, then the
@@ -3250,6 +3275,7 @@ def _build_node(
         on_node_status=on_node_status,
         effect_chain=effect_chain,
         ancestors=ancestors,
+        should_cancel=should_cancel,
     )
     if merge_fields is not None:
         inner = _guard_single_writer_merge_outputs(
@@ -3282,6 +3308,7 @@ def _build_node_inner(
     execution_context: "BranchExecutionContext | None" = None,
     on_node_status: Callable[[str, str], None] | None = None,
     effect_chain: Any = None,
+    should_cancel: Callable[[], bool] | None = None,
     ancestors: set[str] | None = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Dispatch a NodeDefinition to the right adapter.
@@ -3314,6 +3341,7 @@ def _build_node_inner(
             enqueue_budget=enqueue_budget,
             effect_chain=effect_chain, state_schema=state_schema,
             ancestors=ancestors, execution_context=execution_context,
+            should_cancel=should_cancel,
         )
         return _wrap_with_checkpoints(inner, node, event_sink)
     if has_template:
@@ -3482,6 +3510,7 @@ def compile_branch(
     execution_context: "BranchExecutionContext | None" = None,
     on_node_status: Callable[[str, str], None] | None = None,
     effect_chain: Any = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> CompiledBranch:
     """Compile a validated BranchDefinition into a StateGraph.
 
@@ -3624,6 +3653,7 @@ def compile_branch(
             ancestors=ancestors_by_gid.get(gn.id, set()) if effect_chain is not None else None,
             merge_fields=merge_fields,
             graph_node_id=gn.id,
+            should_cancel=should_cancel,
         )
         graph.add_node(gn.id, fn)
 
