@@ -1817,6 +1817,21 @@ def _build_node_mcp_invoker(
     return _invoke_mcp_action
 
 
+def _workspace_bind_roots(base_path: str | Path | None) -> tuple[str, ...]:
+    """The two roots a workspace bind may live under, derived the way the
+    adapter derives them: the shared scratch pool beside the universe, and the
+    universe's own workspaces. An unknown base path vouches for nothing, and an
+    empty tuple refuses every bind - the fail-closed direction.
+    """
+    if not base_path:
+        return ()
+    universe_dir = Path(base_path)
+    return (
+        str(universe_dir.parent / "scratch"),
+        str(universe_dir / "workspaces"),
+    )
+
+
 def _build_source_code_node(
     node: NodeDefinition,
     *,
@@ -1942,7 +1957,37 @@ def _build_source_code_node(
                     effect_chain.rpc_permit()
                 return request_ctx.run(invoke_mcp_action, action, **dict(kwargs or {}))
 
-            result = NodeSandbox(timeout=timeout_s).run_sync(
+            # The chain's mount and the sandbox's are DIFFERENT objects with
+            # the same name: the chain's carries the lease identity a push
+            # resolves through (node_id, lease_fd, generation), the sandbox's
+            # carries the jail profile. Handing one to the other raised
+            # AttributeError on `limits` for every workspace node - the seam
+            # neither lane's own suite could see (found by the end-to-end
+            # chain test, 2026-08-30). And a launcher built with no bind
+            # reports /workspace as its root while emitting no --bind for it,
+            # so the node would have run against a mount point that does not
+            # exist.
+            sandbox_mount = None
+            workspace_launcher = None
+            if mount is not None:
+                from tinyassets.node_sandbox import (
+                    WORKSPACE_LAUNCHER_FACTORY,
+                    WorkspaceLimits,
+                )
+                from tinyassets.node_sandbox import (
+                    WorkspaceMount as SandboxWorkspaceMount,
+                )
+
+                bind_source = str(getattr(mount, "bind_source", "") or "")
+                sandbox_mount = SandboxWorkspaceMount(
+                    bind_source=bind_source, limits=WorkspaceLimits()
+                )
+                workspace_launcher = WORKSPACE_LAUNCHER_FACTORY(
+                    bind_source, _workspace_bind_roots(base_path)
+                )
+            result = NodeSandbox(
+                timeout=timeout_s, launcher=workspace_launcher
+            ).run_sync(
                 node_id=node.node_id,
                 source_code=src,
                 input_state=dict(state),
@@ -1951,7 +1996,7 @@ def _build_source_code_node(
                 timeout=timeout_s,
                 effects=effects,
                 invoke=_invoke,
-                workspace=mount,
+                workspace=sandbox_mount,
             )
         finally:
             if concurrency_tracker is not None:
