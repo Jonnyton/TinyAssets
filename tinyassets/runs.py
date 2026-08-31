@@ -339,6 +339,24 @@ def _workspace_sweep_once(base_path: str | Path, *, claimant: str) -> int:
     return workspace_pool.periodic_sweep(db, fs=RealPoolFilesystem(), claimant=claimant)
 
 
+def _reconcile_push_intents(base_path: str | Path, *, when: str) -> int:
+    """Settle every push whose outcome was lost (a crash between the wire and
+    the receipt): ``ls-remote`` through the worker decides done/failed
+    (workspace-node D1, Codex code round 2 #4). Best-effort on each pass -
+    the next sweep retries what this one could not reach - and never
+    blocks a startup on the network."""
+    try:
+        from tinyassets.workspace_worker import reconcile_push_intents
+
+        settled = reconcile_push_intents(base_path)
+    except Exception:  # noqa: BLE001 - retried on the next pass
+        logger.exception("push intent reconciliation failed (%s)", when)
+        return 0
+    if settled:
+        logger.info("push intents reconciled (%s): %s", when, settled)
+    return len(settled)
+
+
 def _kick_workspace_sweep(base_path: str | Path) -> threading.Thread:
     """Run one sweep pass now, on its own thread: a finished run's lock and
     lease are released within seconds, not at the next periodic tick."""
@@ -411,6 +429,7 @@ def ensure_workspace_reconciled(
         )
         if done:
             logger.info("workspace startup sweep finished %d outbox entries", done)
+        _reconcile_push_intents(base_path, when="startup")
         if start_sweeper:
             threading.Thread(
                 target=_workspace_sweeper_loop, args=(base_path, interval_s),
