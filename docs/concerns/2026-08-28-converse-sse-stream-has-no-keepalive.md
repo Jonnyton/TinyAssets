@@ -3,7 +3,7 @@
 **Filed:** 2026-08-28. **Premise corrected:** 2026-08-29.
 **Verified:** the ORIGIN side is proven (`tests/test_mcp_sse_keepalive.py`); the
 end-to-end side is not — that is the part that stays open.
-**Severity:** P2 — the client survives a cut stream (PR #2640: it invalidates
+**Severity:** P2 for the transport, but see 2026-08-31: the client can report "the reply did not arrive" for a turn that COMPLETED and already asked the user a question — the client survives a cut stream (PR #2640: it invalidates
 the session, reports a sentence, offers **Send again**); this is "find out
 whether long turns are still being cut, and by what".
 
@@ -51,6 +51,52 @@ cut a minutes-long turn. That premise is **false**:
    FastMCP settings (`FASTMCP_JSON_RESPONSE`) decide the mode; a JSON response
    has no stream to ping. The test asserts the response's content type at
    runtime; keep that guard, not a source-string one.
+
+## Observed again 2026-08-31: two cuts, and only ONE of them was a deploy
+
+Both happened during the workspace acceptance test on the founder's universe,
+minutes apart, and the container's `StartedAt` separates them — which is the
+discriminator this file asked for.
+
+**Cut 1, ~07:00Z — the deploy.** `deploy-prod` for `f47c01e2` ran
+06:59:22Z–07:02:01Z and the daemon's `StartedAt` is **07:01:37Z**. The turn in
+flight died with it; the client said *"That didn't get through — the reply was
+cut off in transit."* This is
+`2026-08-29-a-deploy-kills-in-flight-turns-silently.md`, third recorded
+occurrence, now with a container timestamp attached.
+
+**Cut 2, ~07:04Z — NOT a deploy.** The next message was sent after the daemon
+reported healthy. No deploy ran after 07:02:01Z and `StartedAt` stayed
+07:01:37Z for the rest of the window, so the container never moved. The client
+reported *"This message was never confirmed — the reply did not arrive."*
+
+**The origin finished the work anyway.** That turn completed server-side: it
+produced its reply (~270–360s after the send, per the turn watcher) and
+created a request-rail item, `Compile-check path for README fix`, which was
+present and answerable in the UI while the thread still showed the
+never-confirmed notice. So for cut 2 the work was **not** lost — only its
+delivery — which is the opposite of the deploy case and needs a different fix.
+
+### What this excludes, and what it does not
+
+* The deploy candidate is **excluded for cut 2**: the container did not restart.
+* A turn of roughly 4–6 minutes is therefore being cut somewhere between the
+  origin and the browser while the origin is still working.
+* NOT established: whether `: ping` comments were arriving on that stream, and
+  which hop dropped it. No raw response capture and no tunnel log for the
+  request id were taken — the run was a live acceptance test and re-running it
+  to capture bytes would have cost the test. That capture is still the missing
+  evidence.
+
+### What the user sees, which is its own defect
+
+The thread showed "never confirmed / the reply did not arrive" for a turn that
+had in fact completed and had already asked the user a question in the rail.
+A client that says nothing arrived, next to a rail item proving something did,
+teaches the user to distrust the surface. Whatever the transport cause, the
+client's reconciliation on reconnect should prefer the stored turn over its own
+optimistic verdict — see [[webapp-send-is-not-proof-of-delivery]] for the
+mirror-image failure.
 
 ## How to resolve this file
 
