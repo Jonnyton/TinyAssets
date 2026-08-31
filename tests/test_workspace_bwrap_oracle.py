@@ -384,3 +384,156 @@ def test_the_checks_only_reach_the_network_through_loopback() -> None:
     assert source.count("1.1.1.1") == 1
     assert "127.0.0.1" in source, "the curloptResolve pin is loopback"
     assert "example.invalid" in source, "and the pinned name is reserved"
+
+
+# --------------------------------------------------------------------------- #
+# The libcurl version: read from the library git links, never from a binary
+# --------------------------------------------------------------------------- #
+
+
+class _FakeCurlLib:
+    """A loaded shared library that answers ``curl_version()``."""
+
+    def __init__(self, text: bytes) -> None:
+        self._text = text
+
+    @property
+    def curl_version(self):
+        holder = self
+
+        class _Fn:
+            restype = None
+
+            def __call__(_self):
+                return holder._text
+
+        return _Fn()
+
+
+def test_the_libcurl_version_comes_from_the_library_and_names_which_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The production image has no curl binary; the library must answer."""
+    import ctypes
+
+    def _cdll(name: str, *args, **kwargs):
+        if name != "libcurl-gnutls.so.4":
+            raise OSError(f"no {name}")
+        return _FakeCurlLib(b"libcurl/8.14.1 GnuTLS/3.8.3 zlib/1.3")
+
+    monkeypatch.setattr(ctypes, "CDLL", _cdll)
+    monkeypatch.setattr(oracle.shutil, "which", lambda _name, **_kw: None)
+
+    text, source = oracle._libcurl_version_and_source()
+
+    assert "libcurl/8.14.1" in text
+    assert source == "libcurl-gnutls.so.4", "the library git links must be named"
+
+
+def test_the_libcurl_source_names_the_binary_when_no_library_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ctypes
+    import subprocess
+
+    monkeypatch.setattr(
+        ctypes, "CDLL", lambda name, *a, **k: (_ for _ in ()).throw(OSError(name))
+    )
+    monkeypatch.setattr(oracle.shutil, "which", lambda name, **_kw: "/usr/bin/curl")
+
+    class _Probe:
+        stdout = b"curl 8.5.0 (x86_64) libcurl/8.5.0 OpenSSL/3.0.13"
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Probe())
+
+    text, source = oracle._libcurl_version_and_source()
+
+    assert "libcurl/8.5.0" in text
+    assert source == "/usr/bin/curl", "a binary answer must not be reported as a library"
+
+
+def test_a_library_that_loads_but_cannot_answer_is_not_reported_as_the_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A loaded-but-silent libcurl must not be credited with the answer."""
+    import ctypes
+
+    class _Mute:
+        def __getattr__(self, _name):
+            raise AttributeError("curl_version")
+
+    def _cdll(name: str, *args, **kwargs):
+        if name == "libcurl-gnutls.so.4":
+            return _Mute()
+        if name == "libcurl.so.4":
+            return _FakeCurlLib(b"libcurl/8.14.1 OpenSSL/3.0.13")
+        raise OSError(name)
+
+    monkeypatch.setattr(ctypes, "CDLL", _cdll)
+    monkeypatch.setattr(oracle.shutil, "which", lambda _name, **_kw: None)
+
+    _text, source = oracle._libcurl_version_and_source()
+
+    assert source == "libcurl.so.4"
+
+
+def test_no_check_shells_out_to_a_curl_binary_to_read_a_version() -> None:
+    """Measured on the production container 2026-08-31: there is no ``curl``.
+
+    A binary-only probe made check 6 a permanent FAIL there for the wrong
+    reason, so the whole script must read through the library-first reader.
+    """
+    source = _SCRIPT.read_text(encoding="utf-8")
+    for shape in ('which("curl")', "which('curl')", '"curl", "-V"', "'curl', '-V'"):
+        assert shape not in source, f"the script still shells out to curl: {shape}"
+
+
+def test_the_multi_resolve_check_reads_through_the_shared_reader() -> None:
+    import inspect
+
+    body = inspect.getsource(oracle.check_libcurl_multi_resolve_is_honoured)
+    assert "_libcurl_version_and_source()" in body
+    # The discrimination that makes the check mean anything is _pin_verdict,
+    # tested behaviourally below -- asserting the two phrases here passed on
+    # the COMMENT that explains them, which is a guard that cannot go red.
+    assert "_pin_verdict(" in body
+
+
+@pytest.mark.parametrize(
+    ("stderr", "expected"),
+    [
+        ("fatal: unable to access ...: Could not resolve host: example.invalid", (True, False)),
+        ("fatal: unable to access ...: Failed to connect to example.invalid", (False, True)),
+        ("fatal: unable to access ...: Connection refused", (False, True)),
+        ("fatal: something else entirely", (False, False)),
+    ],
+)
+def test_the_pin_verdict_separates_an_ignored_pin_from_a_used_one(
+    stderr: str, expected: tuple[bool, bool]
+) -> None:
+    """Only "failed to connect" proves libcurl took the curloptResolve entry."""
+    assert oracle._pin_verdict(stderr) == expected
+
+
+def test_an_unrelated_git_failure_does_not_count_as_the_pin_being_honoured() -> None:
+    ignored, used = oracle._pin_verdict("fatal: repository not found")
+    assert not used, "a check that accepts any failure proves nothing"
+    assert not ignored
+
+
+def test_the_full_route_worker_reads_a_version_through_the_same_reader() -> None:
+    """Otherwise the route billed as production would not catch the reader failing.
+
+    ``libcurl_version_text`` refusing in the image refuses every checkout, so
+    the check that exists to prove the production route must exercise it.
+    """
+    import inspect
+
+    body = inspect.getsource(oracle.check_full_route)
+    assert "_libcurl_version_and_source()" in body
+    assert "GitTransport.build(" in body, "the transport derives the binding"
+    assert "transport.broker_binding()" in body
+    assert (
+        'request["owner_repo"] + ".git"' not in body
+    ), "the wire path must be derived, not hand-spelled on both sides"
+    assert "the route never read a libcurl version" in body, "and it is asserted"

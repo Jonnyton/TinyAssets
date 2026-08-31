@@ -216,6 +216,87 @@ def _marker_is_running(marker: str) -> bool:
     return False
 
 
+def _libcurl_version_and_source() -> tuple[str, str]:
+    """The libcurl version text, and the name of whatever answered.
+
+    Reads through the SAME function the worker uses
+    (:func:`workspace_git.libcurl_version_text`), instrumented only to record
+    which candidate answered -- there is no second reader here to drift from
+    production.
+
+    "Which one" is the fact worth printing in this image: it ships no ``curl``
+    binary at all, and ``git-remote-https`` links ``libcurl-gnutls.so.4`` while
+    ``find_library('curl')`` answers the OpenSSL build. A version read off the
+    wrong libcurl decides the multi-resolve rule for a library git never calls.
+    """
+    import ctypes
+
+    from tinyassets.workspace_git import libcurl_version_text
+
+    loaded: list[str] = []
+    binaries: list[str] = []
+
+    def _load(name: str) -> Any:
+        library = ctypes.CDLL(name)  # raises OSError, which the reader skips
+        loaded.append(name)
+        return library
+
+    def _which(name: str) -> str | None:
+        # Only reached when no library answered, so a hit here IS the source.
+        found = shutil.which(name)
+        if found:
+            binaries.append(found)
+        return found
+
+    text = libcurl_version_text(load_library=_load, which=_which)
+    if binaries:
+        return text, binaries[-1]
+    return text, (loaded[-1] if loaded else "?")
+
+
+def _pin_verdict(stderr_text: str) -> tuple[bool, bool]:
+    """``(ignored_the_pin, used_the_pin)``, read off git's own words.
+
+    The whole discrimination in check 6: pin a name to an address nothing
+    listens on and see WHICH failure comes back. "could not resolve" means git
+    asked DNS and ``http.curloptResolve`` was ignored; "failed to connect" or
+    "connection refused" means it took the pinned address and tried it. Only
+    the second proves the pin is honoured -- a check that accepted any failure
+    would pass on a libcurl that silently dropped the entry.
+    """
+    lowered = (stderr_text or "").lower()
+    ignored = "could not resolve" in lowered
+    used = "failed to connect" in lowered or "connection refused" in lowered
+    return ignored, used
+
+
+def _git_links_libcurl() -> str:
+    """Which libcurl ``git-remote-https`` links, for the evidence line.
+
+    Best effort: it is a cross-check on :func:`_libcurl_version_and_source`,
+    never a gate -- ``ldd`` is absent from some images and a static build links
+    none at all.
+    """
+    try:
+        exec_path = subprocess.run(
+            ["git", "--exec-path"], capture_output=True, text=True, timeout=30,
+            check=False,
+        ).stdout.strip()
+        helper = Path(exec_path) / "git-remote-https"
+        if not exec_path or not helper.exists():
+            return "?"
+        listed = subprocess.run(
+            ["ldd", str(helper)], capture_output=True, text=True, timeout=30,
+            check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return "?"
+    for line in listed.splitlines():
+        if "libcurl" in line:
+            return line.strip().split(" ")[0]
+    return "?"
+
+
 def _git_env(home: Path, git_binary: str) -> dict[str, str]:
     from tinyassets.workspace_git import git_environment
 
@@ -532,16 +613,15 @@ def check_libcurl_multi_resolve_is_honoured(context: Context) -> Outcome:
     scratch = context.scratch("libcurl")
     home = scratch / "home"
     home.mkdir()
-    curl = shutil.which("curl")
-    if curl is None:
-        return Outcome(False, "no curl in the image to read a libcurl version from")
-    version_text = subprocess.run(
-        [curl, "-V"], capture_output=True, text=True, timeout=30, check=False
-    ).stdout
+    # NOT `curl -V`: this image has no curl binary, so a binary-only probe
+    # would fail this check for the wrong reason (and, in the worker, refuse
+    # every checkout). The library git links is the one that decides.
+    version_text, answered_by = _libcurl_version_and_source()
     supported = libcurl_supports_multi_resolve(version_text)
     token = next(
         (part for part in version_text.split() if part.startswith("libcurl/")), "?"
     )
+    git_links = _git_links_libcurl()
 
     # Pin a name that does not resolve to loopback and observe which failure we
     # get: "could not resolve" means the pin was ignored, "failed to connect"
@@ -562,13 +642,12 @@ def check_libcurl_multi_resolve_is_honoured(context: Context) -> Outcome:
         timeout_s=60,
         git_binary=context.git_binary,
     )
-    stderr = result.stderr_scrubbed.lower()
-    ignored_the_pin = "could not resolve" in stderr
-    used_the_pin = "failed to connect" in stderr or "connection refused" in stderr
+    ignored_the_pin, used_the_pin = _pin_verdict(result.stderr_scrubbed)
     return Outcome(
         supported and used_the_pin and not ignored_the_pin,
-        f"{token} multi_resolve={supported}; pinned example.invalid to 127.0.0.1 and "
-        f"git said {result.stderr_scrubbed.strip()[:160]!r}",
+        f"{token} multi_resolve={supported} read from {answered_by!r} "
+        f"(git-remote-https links {git_links}); pinned example.invalid to "
+        f"127.0.0.1 and git said {result.stderr_scrubbed.strip()[:160]!r}",
     )
 
 
@@ -648,6 +727,7 @@ def check_full_route(context: Context) -> Outcome:
     git_env = _git_env(scratch / "seed-home", context.git_binary)
     sha = _seed_repo(source_repo, context.git_binary, git_env)
     broker_seen: list[str] = []
+    route_libcurl: list[str] = []
 
     def worker_with_a_real_broker(request: dict[str, Any]) -> dict[str, Any]:
         """The worker's shape, with the REAL credential path exercised.
@@ -659,24 +739,43 @@ def check_full_route(context: Context) -> Outcome:
         from tinyassets.storage.outbound_connections import (
             _GeneralVaultCredentialResolver,
         )
-        from tinyassets.workspace_git import CredentialBroker, create_bundle
+        from tinyassets.workspace_git import (
+            CredentialBroker,
+            GitTransport,
+            create_bundle,
+        )
 
         staging = Path(request["staging_dir"])
         secret = _GeneralVaultCredentialResolver(universe_dir=universe_dir)(
             request["credential_ref"]
         )
+        # The same reader the worker uses, in this image, on this route: if
+        # `libcurl_version_text` cannot answer here it cannot answer in a real
+        # checkout either, and GitTransport.build refuses without it.
+        version_text, answered_by = _libcurl_version_and_source()
+        route_libcurl.append(answered_by)
+        transport = GitTransport.build(
+            request["owner_repo"],
+            host=request["host"],
+            curl_version_text=version_text,
+            # Loopback, so nothing leaves the box: this route serves the broker
+            # and bundles a local repository, it never reaches the wire.
+            resolver=lambda hostname, port: ["127.0.0.1"],
+            classifier=lambda ip_text: ip_text,
+        )
         broker_dir = staging / "broker"
         broker_dir.mkdir(parents=True, exist_ok=True)
+        protocol, broker_host, broker_path = transport.broker_binding()
         broker = CredentialBroker(
-            "https", request["host"], request["owner_repo"], "x-access-token", secret
+            protocol, broker_host, broker_path, "x-access-token", secret
         )
         try:
             broker.serve(socket_dir=broker_dir)
             wanted = (
                 "operation=get" + chr(10)
-                + "protocol=https" + chr(10)
-                + "host=" + request["host"] + chr(10)
-                + "path=" + request["owner_repo"] + ".git" + chr(10)
+                + "protocol=" + protocol + chr(10)
+                + "host=" + broker_host + chr(10)
+                + "path=" + broker_path + chr(10)
             )
             answered = broker.answer(wanted)
             broker_seen.append(
@@ -728,6 +827,8 @@ def check_full_route(context: Context) -> Outcome:
         return Outcome(False, f"the real adapter refused: {evidence}")
     if broker_seen != ["answered"]:
         return Outcome(False, f"the real broker path did not run: {broker_seen}")
+    if not route_libcurl:
+        return Outcome(False, "the route never read a libcurl version")
 
     mount = chain.workspace_mount_or_none("checkout-node")
     if mount is None:
@@ -804,8 +905,8 @@ def check_full_route(context: Context) -> Outcome:
         ok,
         f"bind={sandbox_mount.bind_source} renamed={renamed.is_set()} "
         f"is_repo={workspace_is_the_repo} lease_hidden={lease_not_visible} "
-        f"original={read_the_original} leaked={leaked} broker={broker_seen}; "
-        f"node saw {payload[:140]}",
+        f"original={read_the_original} leaked={leaked} broker={broker_seen} "
+        f"libcurl={route_libcurl[-1]!r}; node saw {payload[:140]}",
     )
 
 
