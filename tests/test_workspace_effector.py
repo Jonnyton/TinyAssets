@@ -522,7 +522,7 @@ def test_a_failed_checkout_is_workspace_checkout_failed(
     result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain, worker=worker)
     assert result["error_kind"] == "workspace_checkout_failed"
     assert result["stderr_class"] == "auth"
-    assert chain.workspace_mount("n1") is None
+    assert chain.workspace_mount_or_none("n1") is None
 
 
 def test_a_universe_checkout_publishes_a_generation(
@@ -601,6 +601,112 @@ def test_a_lock_held_by_another_run_is_workspace_busy_not_a_quota_error(
         execute=FakeWorker(),
     )
     assert second["error_kind"] == "workspace_busy"
+
+
+def test_a_busy_pool_is_swept_once_then_retried_once(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lock still recorded against a FINISHED run is owed to the outbox, not
+    in use. One sweep, one retry -- never a loop."""
+    from tinyassets import runs as _runs
+    from tinyassets import workspace_pool
+    from tinyassets.workspace_pool import WorkspacePoolRefused
+
+    _root, universe_dir = _setup(tmp_path)
+    real_admit = workspace_pool.admit
+    calls: list[str] = []
+
+    def flaky_admit(*args, **kwargs):
+        calls.append("admit")
+        if len(calls) == 1:
+            raise WorkspacePoolRefused("workspace_busy", "held by a finished run")
+        return real_admit(*args, **kwargs)
+
+    swept: list[str] = []
+    monkeypatch.setattr(workspace_pool, "admit", flaky_admit)
+    monkeypatch.setattr(
+        _runs, "_workspace_sweep_once",
+        lambda base, *, claimant: swept.append(claimant) or 1,
+    )
+    result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
+    assert result.get("error_kind") is None, result
+    assert calls == ["admit", "admit"], "exactly one retry"
+    assert swept == ["adapter:run-1"], swept
+
+
+def test_the_retry_happens_at_most_once(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pool that is genuinely busy must refuse, not stall in a sweep loop."""
+    from tinyassets import runs as _runs
+    from tinyassets import workspace_pool
+    from tinyassets.workspace_pool import WorkspacePoolRefused
+
+    _root, universe_dir = _setup(tmp_path)
+    calls: list[str] = []
+    swept: list[str] = []
+
+    def always_busy(*args, **kwargs):
+        calls.append("admit")
+        raise WorkspacePoolRefused("workspace_busy", "really held")
+
+    monkeypatch.setattr(workspace_pool, "admit", always_busy)
+    monkeypatch.setattr(
+        _runs, "_workspace_sweep_once",
+        lambda base, *, claimant: swept.append(claimant) or 0,
+    )
+    result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
+    assert result["error_kind"] == "workspace_busy"
+    assert calls == ["admit", "admit"], "one retry and no more"
+    assert len(swept) == 1
+
+
+def test_a_quota_refusal_is_not_swept(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cleanup does not create quota. Sweeping here would fail twice for nothing."""
+    from tinyassets import runs as _runs
+    from tinyassets import workspace_pool
+    from tinyassets.workspace_pool import WorkspacePoolRefused
+
+    _root, universe_dir = _setup(tmp_path)
+    calls: list[str] = []
+    swept: list[str] = []
+
+    def over_quota(*args, **kwargs):
+        calls.append("admit")
+        raise WorkspacePoolRefused("workspace_quota_exceeded", "hourly bytes exhausted")
+
+    monkeypatch.setattr(workspace_pool, "admit", over_quota)
+    monkeypatch.setattr(
+        _runs, "_workspace_sweep_once",
+        lambda base, *, claimant: swept.append(claimant) or 0,
+    )
+    result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
+    assert result["error_kind"] == "workspace_quota_exceeded"
+    assert calls == ["admit"], "no retry for a quota refusal"
+    assert swept == []
+
+
+def test_a_sweep_that_itself_fails_reports_the_original_refusal(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tinyassets import runs as _runs
+    from tinyassets import workspace_pool
+    from tinyassets.workspace_pool import WorkspacePoolRefused
+
+    _root, universe_dir = _setup(tmp_path)
+
+    def busy(*args, **kwargs):
+        raise WorkspacePoolRefused("workspace_pool_busy", "pool full")
+
+    def broken_sweep(base, *, claimant):
+        raise OSError("the runs db is locked")
+
+    monkeypatch.setattr(workspace_pool, "admit", busy)
+    monkeypatch.setattr(_runs, "_workspace_sweep_once", broken_sweep)
+    result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
+    assert result["error_kind"] == "workspace_pool_busy"
 
 
 @pytest.mark.parametrize(
@@ -768,7 +874,7 @@ def test_a_discard_revokes_the_capability_then_owes_the_bytes(
         chain=chain,
     )
     assert result["op"] == "discard"
-    assert chain.workspace_mount("n0") is None, "the capability must be gone"
+    assert chain.workspace_mount_or_none("n0") is None, "the capability must be gone"
     rows = _outbox_rows(workspace_pool_db(universe_dir))
     assert any(row["action"] == "wipe_scratch" for row in rows), rows
 
@@ -790,7 +896,7 @@ def test_dry_run_describes_and_spawns_nothing(
     assert result["op"] == "checkout"
     assert worker.requests == []
     assert fs_spy["create_lease_dir"] == []
-    assert chain.workspace_mount("n1") is None
+    assert chain.workspace_mount_or_none("n1") is None
 
 
 def test_dry_run_still_reports_a_refusal_a_live_run_would_hit(
@@ -841,7 +947,7 @@ def test_a_checkout_without_the_posix_helpers_fails_as_a_workspace_refusal(
     _root, universe_dir = _setup(tmp_path)
     result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
     assert result["error_kind"] in ("workspace_checkout_failed", "effector_crashed")
-    assert chain.workspace_mount("n1") is None
+    assert chain.workspace_mount_or_none("n1") is None
 
 
 def test_the_sink_is_registered_and_exported() -> None:

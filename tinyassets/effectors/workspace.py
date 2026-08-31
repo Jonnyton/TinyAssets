@@ -370,8 +370,8 @@ def _checkout(
     except Exception:
         logger.exception("workspace startup reconciliation failed")
 
-    try:
-        lease = workspace_pool.admit(
+    def _admit() -> Any:
+        return workspace_pool.admit(
             db,
             universe_id=universe_id,
             connection_id=str(getattr(resource, "connection_id", "")),
@@ -383,8 +383,31 @@ def _checkout(
             universe_root=base_path / "workspaces",
             **_universe_quota_kwargs(storage, base_path),
         )
+
+    try:
+        lease = _admit()
     except Exception as exc:
-        raise _Refused(_pool_error_kind(exc), f"workspace not admitted: {_pool_detail(exc)}")
+        kind = _pool_error_kind(exc)
+        if kind not in _SWEEPABLE_REFUSALS:
+            raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
+        # A lock or a pool slot held by a run that has already finished is
+        # owed to the outbox, not genuinely in use. Sweep ONCE and retry ONCE:
+        # a loop here would turn a real contention into a stall, and the
+        # periodic sweeper is what handles everything this misses.
+        try:
+            from tinyassets import runs as _runs
+
+            _runs._workspace_sweep_once(base_path, claimant=f"adapter:{run_id}")
+        except Exception:
+            logger.exception("workspace sweep before retry failed")
+            raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
+        try:
+            lease = _admit()
+        except Exception as retry_exc:
+            raise _Refused(
+                _pool_error_kind(retry_exc),
+                f"workspace not admitted: {_pool_detail(retry_exc)}",
+            ) from None
 
     staging = _staging_root(base_path, run_id, node_id)
     answer = execute(
@@ -684,6 +707,11 @@ def _revoke_mount(chain: Any, node_id: str) -> None:
 _POOL_KINDS = frozenset(
     {"workspace_busy", "workspace_pool_busy", "workspace_quota_exceeded"}
 )
+
+#: Refusals a sweep can clear: a lock or a pool slot still recorded against a
+#: run that already finished. A quota is NOT here -- being over budget is not
+#: something cleanup fixes, and retrying would just fail twice.
+_SWEEPABLE_REFUSALS = frozenset({"workspace_busy", "workspace_pool_busy"})
 
 
 def _pool_error_kind(exc: Exception) -> str:
