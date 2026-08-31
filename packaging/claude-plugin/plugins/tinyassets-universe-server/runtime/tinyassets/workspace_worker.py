@@ -1,0 +1,679 @@
+"""The credential-blind git worker: a spawned child, one operation, no token out.
+
+The token exists only inside this child. The parent passes a credential
+REFERENCE (``vault://http/<key>``), never a secret; the child resolves it with
+the vault resolver, hands it to git one request at a time through an in-memory
+broker, and answers with a sha, a byte count and a fixed error class. Nothing
+that crosses back carries the token or a host path: paths in the response are
+names relative to the staging directory the parent created, so the parent joins
+them itself and the child never tells it where anything is.
+
+Design D1 of the ``workspace-node`` change. The staging directory is
+worker-private and is never a workspace: no credentialed git here ever opens a
+directory user code can write.
+"""
+
+from __future__ import annotations
+
+import multiprocessing
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Any
+
+from tinyassets.workspace_git import (
+    CredentialBroker,
+    GitResult,
+    WorkspaceGitError,
+    create_bundle,
+    forced_git_options,
+    git_environment,
+    libcurl_supports_multi_resolve,
+    pin_address,
+    run_git,
+    scrub_text,
+    unbundle_into_fresh_repo,
+    verify_bundle,
+)
+
+__all__ = [
+    "MAX_BUNDLE_BYTES",
+    "WORKSPACE_OPS",
+    "execute_workspace_operation",
+    "run_workspace_worker",
+]
+
+#: Operations the child answers. Anything else is refused without spawning git.
+WORKSPACE_OPS = frozenset({"checkout", "push", "ls_remote"})
+
+#: The bundle bound (D4's per-lease disk bound is the real limit; this is the
+#: parser bound on a file that is attacker-influenced input).
+MAX_BUNDLE_BYTES = 512 * 1024 * 1024
+
+#: Names inside the worker-private staging dir. The parent knows these names,
+#: never absolute paths from the child.
+_SRC_DIR = "src.git"
+_OUT_BUNDLE = "out.bundle"
+_HOME_DIR = "home"
+_BROKER_DIR = "broker"
+_VERIFY_DIR = "verify"
+_IMPORT_DIR = "import"
+_IMPORT_VERIFY_DIR = "import-verify"
+
+_DEFAULT_TIMEOUT_S = 900.0
+_LS_REMOTE_TIMEOUT_S = 120.0
+_EXPORT_REF = "refs/tiny/export"
+
+
+# --------------------------------------------------------------------------- #
+# Child helpers
+# --------------------------------------------------------------------------- #
+
+
+def _safe_error(exc: BaseException) -> str:
+    """A message that cannot carry the token, whatever raised.
+
+    ``WorkspaceGitError`` is already scrubbed at construction; anything else is
+    an exception this module did not shape, so only its class name and a
+    scrubbed message cross back.
+    """
+    if isinstance(exc, WorkspaceGitError):
+        return scrub_text(str(exc))
+    return scrub_text(f"{type(exc).__name__}: {exc}")
+
+
+def _error_code(exc: BaseException) -> str:
+    return exc.code if isinstance(exc, WorkspaceGitError) else "other"
+
+
+def _canonical_url(host: str, owner_repo: str) -> str:
+    """The canonical https URL. Never a stored remote, never user text."""
+    return f"https://{host}/{owner_repo}.git"
+
+
+def _minimal_path(git_binary: str) -> str:
+    """The PATH the git child searches: the directory holding git, only."""
+    resolved = shutil.which(git_binary) if not Path(git_binary).is_absolute() else git_binary
+    if not resolved:
+        raise WorkspaceGitError("transport", "git is not on PATH in the worker")
+    return str(Path(resolved).parent)
+
+
+def _curl_version_text(request: dict[str, Any], env: dict[str, str], git_binary: str) -> str:
+    """Text to ask :func:`libcurl_supports_multi_resolve` about.
+
+    An injected ``resolver_text`` wins (the parent may know better). Otherwise
+    ask ``curl -V``, whose output carries ``libcurl/X.Y.Z``. NOT
+    ``git version --build-options``: on git 2.43 that carries no libcurl token
+    at all, so reading it would silently answer "no multi-resolve" forever.
+    """
+    injected = request.get("resolver_text")
+    if isinstance(injected, str) and injected.strip():
+        return injected
+    curl = shutil.which("curl")
+    if not curl:
+        return ""
+    try:
+        probe = subprocess.run(
+            [curl, "-V"],
+            cwd=str(Path(env["HOME"])),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    del git_binary
+    return (probe.stdout or b"").decode("utf-8", "replace")
+
+
+class _GitSession:
+    """One credentialed git session: broker, pinned address, forced options.
+
+    Everything that needs the token lives here and dies with ``close()``.
+    """
+
+    def __init__(
+        self,
+        *,
+        staging: Path,
+        host: str,
+        owner_repo: str,
+        secret: str,
+        username: str,
+        git_binary: str,
+        request: dict[str, Any],
+        resolver=None,
+        classifier=None,
+        launcher=None,
+        broker_factory=None,
+    ) -> None:
+        self.host = host
+        self.git_binary = git_binary
+        self.launcher = launcher if launcher is not None else subprocess.run
+        self.url = _canonical_url(host, owner_repo)
+        home = staging / _HOME_DIR
+        home.mkdir(parents=True, exist_ok=True)
+        self.env = git_environment(home, path=_minimal_path(git_binary))
+        make_broker = broker_factory if broker_factory is not None else CredentialBroker
+        self.broker = make_broker("https", host, owner_repo, username, secret)
+        broker_dir = staging / _BROKER_DIR
+        broker_dir.mkdir(parents=True, exist_ok=True)
+        helper = self.broker.serve(socket_dir=broker_dir)
+        addresses = pin_address(host, resolver, classifier)
+        multi = libcurl_supports_multi_resolve(
+            _curl_version_text(request, self.env, git_binary)
+        )
+        # Below libcurl 7.59.0 one entry holds one address, so the whole
+        # operation runs against the first validated address rather than
+        # emitting a comma list that libcurl would silently ignore.
+        self.addresses = tuple(addresses) if multi else (addresses[0],)
+        self.options = forced_git_options(
+            host, self.addresses, helper, multi_resolve=multi
+        )
+
+    def run(self, argv: list[str], *, cwd: Path, timeout_s: float) -> GitResult:
+        return run_git(
+            argv,
+            cwd=cwd,
+            env=self.env,
+            options=self.options,
+            timeout_s=timeout_s,
+            launcher=self.launcher,
+            git_binary=self.git_binary,
+        )
+
+    def close(self) -> None:
+        self.broker.close()
+
+    def __enter__(self) -> _GitSession:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+
+def _credential_free_env(staging: Path, git_binary: str, suffix: str) -> dict[str, str]:
+    """An environment for the git operations that must NOT have a credential."""
+    home = staging / f"{_HOME_DIR}-{suffix}"
+    home.mkdir(parents=True, exist_ok=True)
+    return git_environment(home, path=_minimal_path(git_binary))
+
+
+def _require(request: dict[str, Any], field: str) -> str:
+    value = request.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise WorkspaceGitError("bad_argument", f"request.{field} is required")
+    return value.strip()
+
+
+def _resolve_secret(request: dict[str, Any]) -> str:
+    from tinyassets.storage.outbound_connections import _GeneralVaultCredentialResolver
+
+    universe_dir = _require(request, "universe_dir")
+    credential_ref = _require(request, "credential_ref")
+    resolver = _GeneralVaultCredentialResolver(universe_dir=universe_dir)
+    try:
+        secret = resolver(credential_ref)
+    except Exception as exc:  # the vault's own messages never carry the secret
+        raise WorkspaceGitError(
+            "auth", f"credential could not be resolved: {type(exc).__name__}"
+        ) from None
+    if not isinstance(secret, str) or not secret.strip():
+        raise WorkspaceGitError("auth", "credential reference resolved to nothing")
+    return secret
+
+
+def _staging_dir(request: dict[str, Any]) -> Path:
+    staging = Path(_require(request, "staging_dir"))
+    if not staging.is_dir():
+        raise WorkspaceGitError("bad_argument", "staging_dir must be an existing directory")
+    return staging
+
+
+# --------------------------------------------------------------------------- #
+# Operations
+# --------------------------------------------------------------------------- #
+
+
+def _handle_checkout(
+    request: dict[str, Any],
+    *,
+    git_binary: str,
+    launcher=None,
+    broker_factory=None,
+    **injected,
+) -> dict[str, Any]:
+    """Clone into private staging, bundle it, delete the clone.
+
+    The bundle is the ONLY thing that leaves staging, and
+    :func:`create_bundle` has already proved it prerequisite-free.
+    """
+    staging = _staging_dir(request)
+    host = _require(request, "host")
+    owner_repo = _require(request, "owner_repo")
+    ref = _require(request, "ref")
+    timeout_s = float(request.get("timeout_s") or _DEFAULT_TIMEOUT_S)
+    secret = _resolve_secret(request)
+
+    with _GitSession(
+        staging=staging,
+        host=host,
+        owner_repo=owner_repo,
+        secret=secret,
+        username=str(request.get("username") or "x-access-token"),
+        git_binary=git_binary,
+        request=request,
+        launcher=launcher,
+        broker_factory=broker_factory,
+        **injected,
+    ) as session:
+        clone = session.run(
+            [
+                "clone",
+                "--bare",
+                "--single-branch",
+                "--no-recurse-submodules",
+                "--branch",
+                ref,
+                session.url,
+                _SRC_DIR,
+            ],
+            cwd=staging,
+            timeout_s=timeout_s,
+        )
+        if not clone.ok:
+            raise WorkspaceGitError(
+                clone.stderr_class if clone.stderr_class != "other" else "transport",
+                f"clone failed: {clone.stderr_scrubbed}",
+            )
+        src = staging / _SRC_DIR
+        resolved = session.run(["rev-parse", "HEAD"], cwd=src, timeout_s=_LS_REMOTE_TIMEOUT_S)
+        if not resolved.ok:
+            raise WorkspaceGitError("verification", "could not resolve the cloned head")
+        sha = resolved.stdout_tail.strip()
+
+    # Bundling is credential-free: the session is closed above, so the broker
+    # is torn down before any further git runs.
+    env = _credential_free_env(staging, git_binary, "bundle")
+    verify_dir = staging / _VERIFY_DIR
+    verify_dir.mkdir(parents=True, exist_ok=True)
+    bundle = staging / _OUT_BUNDLE
+    create_bundle(
+        src,
+        sha,
+        bundle,
+        env=env,
+        scratch_dir=verify_dir,
+        timeout_s=timeout_s,
+        launcher=launcher,
+        git_binary=git_binary,
+    )
+    # Staging's clone holds the remote and is deleted before anything else runs.
+    shutil.rmtree(src, ignore_errors=True)
+    return {
+        "ok": True,
+        "resolved_sha": sha,
+        "bytes": bundle.stat().st_size,
+        "bundle_name": _OUT_BUNDLE,
+        "ref_name": _EXPORT_REF,
+    }
+
+
+def _read_symref_head(session: _GitSession) -> str:
+    """The ref the remote reports as HEAD, e.g. ``refs/heads/main``."""
+    listed = session.run(
+        ["ls-remote", "--symref", session.url, "HEAD"],
+        cwd=Path(session.env["HOME"]),
+        timeout_s=_LS_REMOTE_TIMEOUT_S,
+    )
+    if not listed.ok:
+        raise WorkspaceGitError(
+            listed.stderr_class if listed.stderr_class != "other" else "transport",
+            f"could not read the remote HEAD: {listed.stderr_scrubbed}",
+        )
+    for line in listed.stdout_tail.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0] == "ref:" and parts[2] == "HEAD":
+            return parts[1]
+    raise WorkspaceGitError("verification", "the remote reported no HEAD")
+
+
+def _observed_ref(session: _GitSession, remote_ref: str) -> str:
+    """What sha the remote currently has at ``remote_ref`` ("" when absent)."""
+    listed = session.run(
+        ["ls-remote", session.url, remote_ref],
+        cwd=Path(session.env["HOME"]),
+        timeout_s=_LS_REMOTE_TIMEOUT_S,
+    )
+    if not listed.ok:
+        return ""
+    for line in listed.stdout_tail.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == remote_ref:
+            return parts[0]
+    return ""
+
+
+def _handle_push(
+    request: dict[str, Any],
+    *,
+    git_binary: str,
+    launcher=None,
+    broker_factory=None,
+    **injected,
+) -> dict[str, Any]:
+    """Verify a jail-made bundle credential-free, then push from fresh staging."""
+    staging = _staging_dir(request)
+    host = _require(request, "host")
+    owner_repo = _require(request, "owner_repo")
+    remote_ref = _require(request, "remote_ref")
+    commit_sha = _require(request, "commit_sha")
+    bundle_path = Path(_require(request, "bundle_path"))
+    timeout_s = float(request.get("timeout_s") or _DEFAULT_TIMEOUT_S)
+
+    # 1. Credential-free verification FIRST. A crafted pack is parser input, so
+    #    it is parsed with no token in the process and no network reachable.
+    env = _credential_free_env(staging, git_binary, "verify")
+    verify_dir = staging / _IMPORT_VERIFY_DIR
+    verify_dir.mkdir(parents=True, exist_ok=True)
+    refs = verify_bundle(
+        bundle_path,
+        max_bytes=int(request.get("max_bundle_bytes") or MAX_BUNDLE_BYTES),
+        scratch_dir=verify_dir,
+        env=env,
+        timeout_s=timeout_s,
+        launcher=launcher,
+        git_binary=git_binary,
+    )
+    ref_name = str(request.get("ref_name") or _EXPORT_REF)
+    if ref_name not in refs:
+        raise WorkspaceGitError(
+            "verification", "the bundle does not carry the expected export ref"
+        )
+    import_dir = staging / _IMPORT_DIR
+    imported_sha = unbundle_into_fresh_repo(
+        bundle_path,
+        import_dir,
+        ref_name=ref_name,
+        env=env,
+        timeout_s=timeout_s,
+        launcher=launcher,
+        git_binary=git_binary,
+    )
+    if imported_sha != commit_sha:
+        raise WorkspaceGitError(
+            "verification", "the bundle's commit is not the one the packet named"
+        )
+
+    # 2. Only now does a credential exist in this process.
+    secret = _resolve_secret(request)
+    with _GitSession(
+        staging=staging,
+        host=host,
+        owner_repo=owner_repo,
+        secret=secret,
+        username=str(request.get("username") or "x-access-token"),
+        git_binary=git_binary,
+        request=request,
+        launcher=launcher,
+        broker_factory=broker_factory,
+        **injected,
+    ) as session:
+        head_ref = _read_symref_head(session)
+        if remote_ref == head_ref:
+            raise WorkspaceGitError(
+                "protected", "the remote's default branch is never a push target"
+            )
+        # Exact sha to an exact ref, fast-forward only. No refspec leading '+',
+        # no --force, no --delete: the branch policy is in the argv itself.
+        pushed = session.run(
+            ["push", session.url, f"{commit_sha}:{remote_ref}"],
+            cwd=import_dir,
+            timeout_s=timeout_s,
+        )
+        if pushed.ok:
+            return {
+                "ok": True,
+                "resolved_sha": commit_sha,
+                "remote_ref": remote_ref,
+                "bytes": bundle_path.stat().st_size,
+                "head_ref": head_ref,
+            }
+        raise WorkspaceGitError(pushed.stderr_class, f"push refused: {pushed.stderr_scrubbed}")
+
+
+def _reconcile_push(
+    request: dict[str, Any],
+    *,
+    git_binary: str,
+    launcher=None,
+    broker_factory=None,
+    **injected,
+) -> dict[str, Any]:
+    """Resolve an ambiguous push: what does the remote actually hold now?
+
+    D1's crash-safety rule. The same sha already at the ref is success (a
+    repeated non-force push of the same sha is not a failure); anything else is
+    a refusal that names what was observed.
+    """
+    staging = _staging_dir(request)
+    host = _require(request, "host")
+    owner_repo = _require(request, "owner_repo")
+    remote_ref = _require(request, "remote_ref")
+    commit_sha = _require(request, "commit_sha")
+    secret = _resolve_secret(request)
+    with _GitSession(
+        staging=staging,
+        host=host,
+        owner_repo=owner_repo,
+        secret=secret,
+        username=str(request.get("username") or "x-access-token"),
+        git_binary=git_binary,
+        request=request,
+        launcher=launcher,
+        broker_factory=broker_factory,
+        **injected,
+    ) as session:
+        observed = _observed_ref(session, remote_ref)
+    if observed == commit_sha:
+        return {
+            "ok": True,
+            "resolved_sha": commit_sha,
+            "remote_ref": remote_ref,
+            "reconciled": True,
+            "bytes": 0,
+        }
+    return {
+        "ok": False,
+        "error": "the push outcome was lost and the remote does not hold this commit",
+        "stderr_class": "non_fast_forward",
+        "observed_sha": observed,
+        "remote_ref": remote_ref,
+        "reconciled": True,
+    }
+
+
+def _handle_ls_remote(
+    request: dict[str, Any],
+    *,
+    git_binary: str,
+    launcher=None,
+    broker_factory=None,
+    **injected,
+) -> dict[str, Any]:
+    staging = _staging_dir(request)
+    host = _require(request, "host")
+    owner_repo = _require(request, "owner_repo")
+    remote_ref = str(request.get("remote_ref") or "").strip()
+    secret = _resolve_secret(request)
+    with _GitSession(
+        staging=staging,
+        host=host,
+        owner_repo=owner_repo,
+        secret=secret,
+        username=str(request.get("username") or "x-access-token"),
+        git_binary=git_binary,
+        request=request,
+        launcher=launcher,
+        broker_factory=broker_factory,
+        **injected,
+    ) as session:
+        head_ref = _read_symref_head(session)
+        observed = _observed_ref(session, remote_ref) if remote_ref else ""
+    return {"ok": True, "head_ref": head_ref, "observed_sha": observed, "bytes": 0}
+
+
+_HANDLERS = {
+    "checkout": _handle_checkout,
+    "push": _handle_push,
+    "ls_remote": _handle_ls_remote,
+}
+
+
+def handle_request(request: dict[str, Any], **injected) -> dict[str, Any]:
+    """Execute one request in-process and return a secret-free response.
+
+    Separated from the transport so the whole worker is testable without
+    spawning: the child is this function plus a pipe.
+    """
+    if not isinstance(request, dict):
+        return {"ok": False, "error": "request must be a mapping", "stderr_class": "bad_argument"}
+    op = str(request.get("op") or "").strip()
+    if op not in WORKSPACE_OPS:
+        return {
+            "ok": False,
+            "error": f"unknown workspace worker op: {op or '(none)'}",
+            "stderr_class": "bad_argument",
+        }
+    git_binary = str(request.get("git_binary") or "git")
+    try:
+        if op == "push" and bool(request.get("reconcile_only")):
+            return _reconcile_push(request, git_binary=git_binary, **injected)
+        return _HANDLERS[op](request, git_binary=git_binary, **injected)
+    except WorkspaceGitError as exc:
+        if op == "push" and exc.code == "timeout":
+            # D1 crash safety: the send may have landed. Ask the remote rather
+            # than reporting a failure that already succeeded.
+            try:
+                return _reconcile_push(request, git_binary=git_binary, **injected)
+            except Exception as reconcile_exc:  # noqa: BLE001 - report the original
+                return {
+                    "ok": False,
+                    "error": _safe_error(exc),
+                    "stderr_class": exc.code,
+                    "reconcile_error": _safe_error(reconcile_exc),
+                }
+        return {"ok": False, "error": _safe_error(exc), "stderr_class": exc.code}
+    except Exception as exc:  # noqa: BLE001 - Hard Rule 8: loud, but never leaky
+        return {"ok": False, "error": _safe_error(exc), "stderr_class": _error_code(exc)}
+
+
+# --------------------------------------------------------------------------- #
+# Transport: the spawned child and the parent side
+# --------------------------------------------------------------------------- #
+
+
+def run_workspace_worker(channel: Any) -> None:
+    """Child entry point. Sanitize, answer ONE request, exit."""
+    from tinyassets.storage.outbound_connections import _sanitize_child_environment
+
+    _sanitize_child_environment()
+    try:
+        channel.send({"op": "ready"})
+        request = channel.recv()
+        channel.send(handle_request(request))
+    except Exception as exc:  # noqa: BLE001 - a child that dies silently is worse
+        try:
+            channel.send({"ok": False, "error": _safe_error(exc), "stderr_class": "other"})
+        except Exception:  # pragma: no cover - the pipe is already gone
+            pass
+    finally:
+        try:
+            channel.close()
+        except Exception:  # pragma: no cover
+            pass
+
+
+def execute_workspace_operation(
+    request: dict[str, Any],
+    *,
+    timeout_s: float = _DEFAULT_TIMEOUT_S,
+    startup_timeout_s: float = 30.0,
+    spawn: Any = None,
+) -> dict[str, Any]:
+    """Spawn the worker, run one operation, and always tear the child down.
+
+    ``spawn`` is injectable so a test can drive the whole parent side without a
+    real process. The response is whatever the child sent; a child that dies or
+    never answers is a refusal, never a silent success.
+    """
+    if spawn is not None:
+        return spawn(request)
+    context = multiprocessing.get_context("spawn")
+    parent_channel, child_channel = context.Pipe(duplex=True)
+    worker = context.Process(
+        target=run_workspace_worker,
+        args=(child_channel,),
+        daemon=True,
+        name="workspace-git-worker",
+    )
+    try:
+        worker.start()
+    except Exception as exc:
+        parent_channel.close()
+        child_channel.close()
+        return {
+            "ok": False,
+            "error": f"workspace worker could not be spawned: {type(exc).__name__}",
+            "stderr_class": "transport",
+        }
+    child_channel.close()
+    try:
+        if not parent_channel.poll(startup_timeout_s):
+            return {
+                "ok": False,
+                "error": "workspace worker did not start",
+                "stderr_class": "transport",
+            }
+        hello = parent_channel.recv()
+        if not isinstance(hello, dict) or hello.get("op") != "ready":
+            return {
+                "ok": False,
+                "error": "workspace worker did not hand shake",
+                "stderr_class": "transport",
+            }
+        parent_channel.send(request)
+        # The child's own git timeout is shorter; this is the backstop for a
+        # child that hangs outside git.
+        if not parent_channel.poll(timeout_s + startup_timeout_s):
+            return {
+                "ok": False,
+                "error": "workspace worker did not answer in time",
+                "stderr_class": "timeout",
+            }
+        answer = parent_channel.recv()
+        if not isinstance(answer, dict):
+            return {
+                "ok": False,
+                "error": "workspace worker sent a malformed answer",
+                "stderr_class": "other",
+            }
+        return answer
+    except (EOFError, OSError) as exc:
+        return {
+            "ok": False,
+            "error": f"workspace worker died: {type(exc).__name__}",
+            "stderr_class": "transport",
+        }
+    finally:
+        try:
+            parent_channel.close()
+        except Exception:  # pragma: no cover
+            pass
+        if worker.is_alive():
+            worker.terminate()
+        worker.join(timeout=10)

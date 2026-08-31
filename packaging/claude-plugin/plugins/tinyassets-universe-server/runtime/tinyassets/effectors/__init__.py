@@ -37,6 +37,30 @@ from tinyassets.effectors.wiki_write_back import (
     EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK,
     run_wiki_write_back_effector,
 )
+from tinyassets.effectors.workspace import (
+    EXTERNAL_WRITE_SINK_WORKSPACE,
+    WORKSPACE_READ_EFFECTS,
+    packet_op,
+    run_workspace_effector,
+)
+
+
+@dataclass
+class WorkspaceMount:
+    """One workspace this run holds, resolvable ONLY through the effect chain.
+
+    A capability that can be named in state is a capability user text can
+    forge, so a push or discard finds its workspace here -- by the node id of
+    the checkout that created it -- and never through ``$ta.ref``.
+    """
+
+    node_id: str
+    bind_source: str
+    lease_fd: Any = None
+    lease: Any = None
+    storage_class: str = "scratch"
+    repo_key: str = ""
+    generation: int = 0
 
 
 def _authenticated_call_adapter(
@@ -71,9 +95,26 @@ def _wiki_write_back_adapter(
 # Every external-write sink the platform knows -> its effector adapter. Only
 # channel-agnostic sinks exist: the generic authenticated call and the internal
 # wiki write-back. No GitHub/Slack/X/desktop sink lives here by design.
+def _workspace_adapter(
+    *, node_id, output_keys, run_state, base_path, run_id, dry_run,
+    allowed_state_keys=None, prior_effects=None,
+):
+    return run_workspace_effector(
+        node_id=node_id,
+        output_keys=output_keys,
+        run_state=run_state,
+        base_path=base_path,
+        run_id=run_id,
+        dry_run=dry_run,
+        allowed_state_keys=allowed_state_keys,
+        prior_effects=prior_effects,
+    )
+
+
 _EFFECTORS = {
     EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL: _authenticated_call_adapter,
     EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK: _wiki_write_back_adapter,
+    EXTERNAL_WRITE_SINK_WORKSPACE: _workspace_adapter,
 }
 
 
@@ -236,6 +277,27 @@ class EffectChain:
     universe_id: str = ""
     dispatches: int = 0
     bytes_out: int = 0
+    #: Workspaces this run holds: checkout node_id -> WorkspaceMount. Run
+    #: scoped and in memory only -- a workspace is never shared across runs or
+    #: universes, and a capability that outlived its run would outlive the
+    #: lease that backs it. Workspace bytes are the pool ledger's, NOT
+    #: ``bytes_out``: the HTTP usage budget bounds outbound calls only (D4).
+    workspaces: dict[str, Any] = field(default_factory=dict)
+
+    def register_workspace(self, node_id: str, mount: Any) -> None:
+        """Record the workspace a checkout produced, under its node id."""
+        with self.lock:
+            self.workspaces[str(node_id)] = mount
+
+    def workspace_mount(self, node_id: str) -> Any:
+        """The workspace a node holds, or None. The ONLY resolution path."""
+        with self.lock:
+            return self.workspaces.get(str(node_id))
+
+    def revoke_workspace(self, node_id: str) -> Any:
+        """Drop the capability. Idempotent; returns what was dropped."""
+        with self.lock:
+            return self.workspaces.pop(str(node_id), None)
 
     def prior_effects(self, ancestors: set[str] | None = None) -> dict[str, dict]:
         """Full results of the nodes a reference may legally name (for
@@ -591,6 +653,11 @@ def _fire_node_effects(
                 # Refused before the wire (a gate, a bad packet): the verb the
                 # packet DECLARED still says whether it could have written.
                 verb = packet_verb(output_keys=output_keys, run_state=run_state)
+            elif not verb and sink == EXTERNAL_WRITE_SINK_WORKSPACE:
+                # Same rule for the workspace sink: the op the packet declared
+                # is what says whether the far side could have changed. An op
+                # we cannot read stays None, which settles as a write.
+                verb = packet_op(output_keys=output_keys, run_state=run_state)
             with chain.lock:
                 chain.fired.append((sink, verb))
         if sink == EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL and isinstance(result, dict):
@@ -687,7 +754,11 @@ def settle_engine_admission(run_id, fired) -> None:
     try:
         from tinyassets.engine_admissions import fired_only_reads, reclassify_read, settle_write
 
-        if fired_only_reads(list(fired), read_sink=EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL):
+        if fired_only_reads(
+            list(fired),
+            read_sink=EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+            read_effects=WORKSPACE_READ_EFFECTS,
+        ):
             reclassify_read(str(run_id))
         else:
             # Final: a status rewritten to FAILED after these effects fired
@@ -707,7 +778,11 @@ __all__ = [
     "forget_effect_chain",
     "EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL",
     "EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK",
+    "EXTERNAL_WRITE_SINK_WORKSPACE",
+    "WORKSPACE_READ_EFFECTS",
+    "WorkspaceMount",
     "run_authenticated_external_call_effector",
     "run_wiki_write_back_effector",
+    "run_workspace_effector",
     "run_effects_for_branch",
 ]

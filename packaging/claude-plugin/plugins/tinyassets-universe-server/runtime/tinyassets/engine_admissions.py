@@ -57,6 +57,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import NamedTuple
 
@@ -380,15 +381,31 @@ def settle_write(run_id: str, *, db: Path | None = None) -> bool:
     return settle(run_id, KIND_WRITE, db=db)
 
 
-def fired_only_reads(fired: list[tuple[str, str | None]], *, read_sink: str) -> bool:
+def fired_only_reads(
+    fired: list[tuple[str, str | None]],
+    *,
+    read_sink: str,
+    read_effects: Iterable[tuple[str, str]] = (),
+) -> bool:
     """True when nothing in ``fired`` could have changed the far side.
 
     ``fired`` is one ``(sink, verb)`` per effect the dispatcher ran; ``verb``
     is what the adapter reports it used (None when the result named none).
     Fail closed: another sink, or a verb outside ``READ_VERBS`` - including an
     unnamed one - is a write. An empty list (no effect ran) is read-only.
+
+    ``read_effects`` is an explicit allowlist of ``(sink, verb)`` pairs that are
+    reads for sinks whose verbs are not HTTP methods - the workspace sink's
+    ``checkout`` and ``discard``, whose ``push`` remains a write. The caller
+    supplies it so this module keeps no knowledge of which sinks exist; the
+    default is empty, which is exactly the previous behaviour.
     """
+    allowed = {
+        (str(sink), str(verb).strip().lower()) for sink, verb in read_effects
+    }
     for sink, verb in fired:
+        if (str(sink), str(verb or "").strip().lower()) in allowed:
+            continue
         if sink != read_sink:
             return False
         if not verb or str(verb).strip().upper() not in READ_VERBS:
