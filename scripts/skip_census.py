@@ -581,8 +581,10 @@ def main(argv: Sequence[str] | None = None, *, out: Any = None) -> int:
     if args.write_baseline is not None:
         document = baseline_document(census)
         args.write_baseline.parent.mkdir(parents=True, exist_ok=True)
+        # LF explicitly: a committed baseline regenerated on Windows must not
+        # differ from the same baseline regenerated on Linux by its endings.
         args.write_baseline.write_text(
-            json.dumps(document, indent=2) + "\n", encoding="utf-8"
+            json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n"
         )
         emit(
             [

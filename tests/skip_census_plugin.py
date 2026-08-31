@@ -240,8 +240,13 @@ class SkipCensusRecorder:
     def pytest_sessionfinish(self, session: Any, exitstatus: Any) -> None:
         document = self.document()
         self.out_path.parent.mkdir(parents=True, exist_ok=True)
+        # LF explicitly: this file is diffed against one committed from another
+        # host, and text-mode translation would make every Windows run of an
+        # unchanged tree look like a rewrite.
         self.out_path.write_text(
-            json.dumps(document, indent=2, sort_keys=False) + "\n", encoding="utf-8"
+            json.dumps(document, indent=2, sort_keys=False) + "\n",
+            encoding="utf-8",
+            newline="\n",
         )
 
     def pytest_terminal_summary(self, terminalreporter: Any, *args: Any) -> None:
