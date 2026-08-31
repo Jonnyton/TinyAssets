@@ -310,6 +310,24 @@ def _workspace_sweep_once(base_path: str | Path, *, claimant: str) -> int:
     return workspace_pool.periodic_sweep(db, fs=RealPoolFilesystem(), claimant=claimant)
 
 
+def _kick_workspace_sweep(base_path: str | Path) -> threading.Thread:
+    """Run one sweep pass now, on its own thread: a finished run's lock and
+    lease are released within seconds, not at the next periodic tick."""
+    thread = threading.Thread(
+        target=_workspace_sweep_kick_body, args=(base_path,),
+        name="workspace-sweep-kick", daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+def _workspace_sweep_kick_body(base_path: str | Path) -> None:
+    try:
+        _workspace_sweep_once(base_path, claimant=f"kick:{os.getpid()}")
+    except Exception:  # noqa: BLE001 - the periodic sweeper retries
+        logger.exception("workspace sweep kick failed")
+
+
 def _workspace_sweeper_loop(base_path: str | Path, interval_s: float) -> None:
     claimant = f"sweeper:{os.getpid()}"
     while True:
@@ -1135,14 +1153,22 @@ def update_run_status(
             f"UPDATE runs SET {', '.join(sets)} WHERE run_id = ?",
             params,
         )
+        owed = 0
         if status in _TERMINAL_STATUSES:
             # The lease this run held is released THROUGH the outbox, in this
             # same transaction (workspace-node D0): never a direct delete, so
             # a crash after the commit still leaves the work owed on record.
             try:
-                _enqueue_workspace_terminal(conn, base_path, run_id)
+                owed = _enqueue_workspace_terminal(conn, base_path, run_id)
             except Exception:  # noqa: BLE001 - the sweeper repairs an orphan
                 logger.exception("workspace outbox enqueue failed for run %s", run_id)
+        if owed:
+            # Release promptly, not at the sweeper's next tick: the job lock
+            # this run held would otherwise refuse the universe's next checkout
+            # as workspace_busy for up to the sweep interval (lane B finding).
+            # After the commit (the connection context exits before the
+            # thread's first sweep reaches the row), off the caller's path.
+            _kick_workspace_sweep(base_path)
         # Phase 2 emit-site (Task #72): on terminal status transition, emit
         # one execute_step contribution event for attribution. Wrapped in
         # try/except so emit failure (malformed metadata, table missing,

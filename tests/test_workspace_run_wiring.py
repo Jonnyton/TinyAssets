@@ -69,21 +69,50 @@ def _pending(base: Path, run_id: str) -> list[tuple]:
         conn.close()
 
 
-def test_a_terminal_status_enqueues_the_lease_in_the_same_write(tmp_path):
+def test_a_terminal_status_enqueues_the_lease_in_the_same_write(tmp_path, monkeypatch):
     base = tmp_path / "data"
     _seed_run(base, "r1")
     lease = _admit(base, tmp_path, "r1")
+    kicks: list[Path] = []
+    monkeypatch.setattr(runs, "_kick_workspace_sweep", lambda p: kicks.append(Path(p)))
     assert _pending(base, "r1") == []
     runs.update_run_status(base, "r1", status="running", last_node_id="n1")
     assert _pending(base, "r1") == [], "a non-terminal status owes nothing"
+    assert kicks == [], "nothing owed, nothing kicked"
     runs.update_run_status(base, "r1", status="completed", finished_at=time.time())
     assert _pending(base, "r1") == [("wipe_scratch", lease.lease_id)]
+    assert kicks == [base], "a finished run's release is kicked, not left to the tick"
 
 
-def test_a_run_holding_only_the_lock_releases_it(tmp_path):
+def test_the_kick_releases_the_lock_within_the_same_second(tmp_path, monkeypatch):
+    base = tmp_path / "data"
+    _seed_run(base, "r1b")
+    lease = _admit(base, tmp_path, "r1b")
+    monkeypatch.setattr("tinyassets.workspace_fs.RealPoolFilesystem", _NoopFs)
+    threads: list = []
+    real_kick = runs._kick_workspace_sweep
+    monkeypatch.setattr(runs, "_kick_workspace_sweep", lambda p: threads.append(real_kick(p)))
+    runs.update_run_status(base, "r1b", status="completed", finished_at=time.time())
+    for t in threads:
+        t.join(timeout=10)
+    assert _pending(base, "r1b") == []
+    after = workspace_pool.get_lease(runs.runs_db_path(base), lease.lease_id)
+    assert after is not None and after.state == "AVAILABLE"
+    conn = sqlite3.connect(runs.runs_db_path(base))
+    try:
+        held = conn.execute(
+            "SELECT COUNT(*) FROM workspace_locks WHERE run_id = ?", ("r1b",)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert held == 0, "both locks are released by the kicked sweep"
+
+
+def test_a_run_holding_only_the_lock_releases_it(tmp_path, monkeypatch):
     base = tmp_path / "data"
     _seed_run(base, "r2")
     lease = _admit(base, tmp_path, "r2")
+    monkeypatch.setattr(runs, "_kick_workspace_sweep", lambda p: None)
     # Simulate a lease that already left ACTIVE (a discard) while the run's
     # universe lock is still held: the terminal write owes a lock release.
     conn = sqlite3.connect(runs.runs_db_path(base))
@@ -131,6 +160,7 @@ def test_the_reconciler_runs_once_and_finishes_old_entries(tmp_path, monkeypatch
     base = tmp_path / "data"
     _seed_run(base, "r6")
     lease = _admit(base, tmp_path, "r6")
+    monkeypatch.setattr(runs, "_kick_workspace_sweep", lambda p: None)
     runs.update_run_status(base, "r6", status="completed")
     assert _pending(base, "r6")
     monkeypatch.setattr("tinyassets.workspace_fs.RealPoolFilesystem", _NoopFs)
