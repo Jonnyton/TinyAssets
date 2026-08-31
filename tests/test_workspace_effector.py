@@ -159,6 +159,13 @@ def fs_spy(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(workspace_fs, "open_dir_nofollow", open_dir_nofollow, raising=False)
     monkeypatch.setattr(workspace_fs, "create_lease_dir", create_lease_dir, raising=False)
+    # <lease>/repo goes through the SUBDIR helper, not create_lease_dir: the
+    # entropy rule that protects a name in the shared pool root would refuse
+    # "repo". A double for one and not the other lets the real one run here and
+    # refuse on Windows.
+    monkeypatch.setattr(
+        workspace_fs, "create_workspace_subdir", create_lease_dir, raising=False
+    )
     monkeypatch.setattr(
         workspace_fs, "copy_regular_file_beneath", copy_regular_file_beneath, raising=False
     )
