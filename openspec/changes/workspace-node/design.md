@@ -354,16 +354,10 @@ A non-zero `ws.run` exit is data; `code_node_failed` for exceptions in
   naming the cap, since D6 has no memory class) and the `0 < timeout_seconds
   <= 1800` ceiling for a workspace node, enforced at compile time and again
   when a persisted definition loads.
-- **Provisioning is wholly unavailable in this release** *(R3, corrected
-  2026-08-31)*. The earlier wording here and in the synced spec said
-  provisioning "admits, stages and refuses" - it does not: nothing calls the
-  grammar or the command layer, `_check_provision_consent` has no caller, and a
-  `checkout` declaring `provision` completes as a checkout while the
-  provisioning half is refused before any manifest is read. The grammar
-  (`workspace_provision`) and the command layer (`workspace_resolver`) are
-  library code awaiting slice B's wiring, and `workspace_provision_failed` is
-  classified but unraised. The as-built specs under `openspec/specs/` say the
-  true thing; this design keeps the intent.
+- **Provisioning** *(R3, corrected 2026-08-31)*: as-built it is wholly
+  unavailable in this release - see
+  `openspec/specs/external-effect-adapters/spec.md`, which is where the
+  deviation lives; the design above keeps the intent.
 - `ws.bundle` shells out to a bare `git` and the sandbox child has no PATH
   on Windows, so a Windows tray host cannot push yet (Linux daemon first).
 
