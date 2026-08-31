@@ -1216,7 +1216,13 @@ def test_the_token_appears_in_no_evidence_no_log_and_no_file(
     for name, text in surfaces.items():
         assert TOKEN not in text, f"the token reached the {name}"
 
-    lease_root = Path(mount.bind_source).parent
+    # The LEASE, not the bind source. On POSIX `bind_source` is
+    # `/proc/self/fd/<n>`, so `.parent` is the process's descriptor TABLE: the
+    # scan walked file descriptors instead of the workspace (proving nothing
+    # when it passed) and raised FileNotFoundError as soon as one of them
+    # closed between listing and reading, which is why it failed only when
+    # other files had run first and shifted the numbers.
+    lease_root = mount.lease.path
     staging_root = universe.universe_dir / ".workspace-staging"
     scanned = 0
     for path in _files_under(lease_root) + _files_under(staging_root):
