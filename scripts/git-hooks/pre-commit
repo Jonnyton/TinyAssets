@@ -132,12 +132,55 @@ else
     exit 1
   fi
 
-  # shellcheck disable=SC2086  # word splitting is how the staged list is passed
-  if ! ${MIRROR_PYTHON} scripts/check_mirror_parity.py ${STAGED_CANONICAL}; then
-    echo "" >&2
-    echo "${RED}pre-commit: plugin-mirror parity broken.${RESET}" >&2
-    echo "Override with --no-verify if this is an intentional one-sided edit." >&2
-    exit 1
+  if [ ! -f "scripts/check_mirror_parity.py" ]; then
+    # THE INSTALLED HOOK IS SHARED BY EVERY WORKTREE. Linked worktrees use the
+    # main repo's .git/hooks, so this file can be NEWER than the checkout it is
+    # running in: a worktree on a branch that predates the shared checker has no
+    # scripts/check_mirror_parity.py, and execing it there failed every commit
+    # with "can't open file" (2026-08-30, four lanes blocked at once).
+    #
+    # Degrade to the comparison this hook did before the checker existed, and
+    # say so. A worktree behind the gate stays gated - it just cannot see the
+    # missing-counterpart case until it picks the script up.
+    echo "${YELLOW}pre-commit: scripts/check_mirror_parity.py is not in this worktree;${RESET}" >&2
+    echo "${YELLOW}  falling back to the legacy divergence-only comparison. Rebase onto a${RESET}" >&2
+    echo "${YELLOW}  branch that has the script for the full check.${RESET}" >&2
+
+    LEGACY_MIRROR_PREFIX="packaging/claude-plugin/plugins/tinyassets-universe-server/runtime"
+    LEGACY_MISMATCHES=()
+    for canon in ${STAGED_CANONICAL}; do
+      legacy_mirror="${LEGACY_MIRROR_PREFIX}/${canon}"
+      if [ ! -f "${legacy_mirror}" ]; then
+        continue
+      fi
+      if ! cmp -s "${canon}" "${legacy_mirror}"; then
+        LEGACY_MISMATCHES+=("${canon}")
+      fi
+    done
+
+    if [ "${#LEGACY_MISMATCHES[@]}" -gt 0 ]; then
+      echo "${RED}pre-commit: plugin-mirror parity broken.${RESET}" >&2
+      echo "" >&2
+      echo "These staged canonical files diverge from their plugin-mirror copies:" >&2
+      for f in "${LEGACY_MISMATCHES[@]}"; do
+        echo "  ${f}" >&2
+        echo "    mirror: ${LEGACY_MIRROR_PREFIX}/${f}" >&2
+      done
+      echo "" >&2
+      echo "Rebuild the mirror and stage it in the same commit:" >&2
+      echo "  python packaging/claude-plugin/build_plugin.py" >&2
+      echo "Override with --no-verify if this is an intentional one-sided edit." >&2
+      exit 1
+    fi
+    echo "${GREEN}pre-commit: mirror parity verified (legacy comparison)${RESET}"
+  else
+    # shellcheck disable=SC2086  # word splitting is how the staged list is passed
+    if ! ${MIRROR_PYTHON} scripts/check_mirror_parity.py ${STAGED_CANONICAL}; then
+      echo "" >&2
+      echo "${RED}pre-commit: plugin-mirror parity broken.${RESET}" >&2
+      echo "Override with --no-verify if this is an intentional one-sided edit." >&2
+      exit 1
+    fi
   fi
 fi
 
