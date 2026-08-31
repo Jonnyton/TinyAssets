@@ -47,6 +47,12 @@ dependencies = [
     # with ModuleNotFoundError. Declare what we actually import.
     "typing-extensions>=4.0",
 
+    # workspace_provision parses requirement records with the same library the index
+    # and pip use, so admission cannot disagree with the installer about what a line
+    # means. Transitive today (via langchain/pip's vendor tree); declared for the same
+    # reason as typing-extensions above.
+    "packaging>=23.0",
+
     # MCP/server entry points and Tier-3 structural smoke imports
     "fastmcp>=3.0",
     "uvicorn[standard]>=0.30",
