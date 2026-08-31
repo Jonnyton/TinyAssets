@@ -1083,21 +1083,28 @@ def write_graph(
     ``authenticated_external_call`` node on whatever connection you hold - the
     workspace neither knows nor cares which platform that is.
 
+    EVERY workspace packet carries ``"sink": "workspace"``. That field is what
+    the runtime matches on, exactly as the channel node's packet carries
+    ``"sink": "authenticated_external_call"``; a packet without it is not seen
+    as a workspace packet at all and the node is refused
+    ``no_matching_packet``.
+
     TWO WAYS TO GET ONE. An EMPTY one needs nothing at all - no connection, no
     credential, no consent, because it is your own scratch space:
-    ``{"op": "create", "storage": "scratch"}`` (``"universe"`` keeps it in your
-    permanent space; name it with ``"workspace_key": "<slug>"``, and re-using a
-    name is refused rather than overwriting what is there). A REPOSITORY one
-    clones a git remote: ``{"op": "checkout", "connection_id": "<an http
+    ``{"sink": "workspace", "op": "create", "storage": "scratch"}``
+    (``"universe"`` keeps it in your permanent space; name it with
+    ``"workspace_key": "<slug>"``, and re-using a name is refused rather than
+    overwriting what is there). A REPOSITORY one clones a git remote:
+    ``{"sink": "workspace", "op": "checkout", "connection_id": "<an http
     connection to the forge>", "repo": "owner/name", "ref": "main", "storage":
     "scratch"}``. The forge is whatever host that connection declares - GitHub,
     GitLab, Gitea, self-hosted - not a fixed one. To publish, a node returns
-    ``{"op": "push", "workspace": "<checkout node>", "commit_sha": "<40 hex>",
-    "branch_slug": "fix-readme"}`` - the branch lands as
-    ``tiny/<universe>/<slug>`` (never the default branch; open the PR with the
-    generic call), and a push against a created workspace is refused because it
-    has no remote. ``{"op": "discard", "workspace": "<node>"}`` drops any
-    workspace early (no consent needed). Dependency provisioning
+    ``{"sink": "workspace", "op": "push", "workspace": "<checkout node>",
+    "commit_sha": "<40 hex>", "branch_slug": "fix-readme"}`` - the branch lands
+    as ``tiny/<universe>/<slug>`` (never the default branch; open the PR with
+    the generic call), and a push against a created workspace is refused
+    because it has no remote. ``{"sink": "workspace", "op": "discard",
+    "workspace": "<node>"}`` drops any workspace early (no consent needed). Dependency provisioning
     (``provision`` on a checkout) is not available in this release - a
     checkout that declares it is refused ``workspace_provision_refused``; run
     what the project can run with the shipped Python and Node.
