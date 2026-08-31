@@ -9,8 +9,14 @@ import re
 from pathlib import Path
 from typing import Any
 
-from tinyassets.api.helpers import _base_path, _request_universe
+from tinyassets.api.helpers import _base_path, _request_universe, _universe_dir
 from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
+from tinyassets.storage.workspace_authority import (
+    GIT_SCOPE_HOST,
+    WORKSPACE_SINK,
+    connection_git_scopes,
+    parse_workspace_consent_destination,
+)
 from tinyassets.workos_pipes import WorkOSPipesClient, WorkOSPipesError
 
 _REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
@@ -72,8 +78,34 @@ def _project(resource: Any, grant: Any) -> dict[str, Any]:
             if grant.unprompted_action_cap is not None
             else None
         ),
+        # The git scopes, split out of the flat ``scopes`` list above so the
+        # agent can SEE which repositories this connection may clone or push
+        # without having to know the scope grammar. A universe that can read
+        # what it holds stops asking for what it already has.
+        "git_scopes": [
+            {"kind": kind, "repo": repo, "host": GIT_SCOPE_HOST}
+            for kind, repo in sorted(connection_git_scopes(resource))
+        ],
         "status": "connected",
     }
+
+
+def _workspace_consents(uid: str) -> list[dict[str, Any]]:
+    """The universe's active workspace consents, in the shape the agent asked in.
+
+    A malformed or foreign destination row is skipped rather than rendered: this
+    is a read the agent uses to decide whether to ask, and a row it cannot act on
+    is noise.
+    """
+    from tinyassets.storage.effector_consents import list_consents
+
+    found: list[dict[str, Any]] = []
+    for row in list_consents(_universe_dir(uid), sink=WORKSPACE_SINK):
+        parsed = parse_workspace_consent_destination(row.get("destination"))
+        if parsed is None:
+            continue
+        found.append({**parsed, "granted_at": row.get("granted_at")})
+    return sorted(found, key=lambda item: (item["repo"], item["operation"]))
 
 
 def _ledger(actor: str) -> ConnectionLedger:
@@ -208,7 +240,17 @@ def cloud_connections(
             resource = ledger.get_connection(grant.connection_id)
             if resource is not None:
                 rows.append(_project(resource, grant))
-        return {"universe_id": uid, "connections": rows, "count": len(rows)}
+        return {
+            "universe_id": uid,
+            "connections": rows,
+            "count": len(rows),
+            # Consents are per UNIVERSE, not per connection, so they ride
+            # alongside the rows rather than inside them. Both halves of the
+            # workspace authority are visible here: the scope on the connection
+            # (the credential may reach the repository) and the consent here
+            # (the owner agreed to this kind of work on it).
+            "workspace_consents": _workspace_consents(uid),
+        }
     return {
         "error": "unknown_connection_action",
         "allowed_actions": ["connect", "reconcile", "list"],
