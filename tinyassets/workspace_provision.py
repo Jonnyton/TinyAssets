@@ -16,8 +16,12 @@ installer use -- so admission cannot disagree with pip about what a line means. 
 pre-checks (option lines, includes, direct references, paths, VCS schemes, ``${VAR}``)
 run *before* that parse so each one keeps its precise reason, and the marker allowlist
 runs *after* it, because ``packaging`` accepts PEP 508 variables this sink cannot reason
-about. Node manifests are parsed as JSON with duplicate keys and non-finite numbers
-refused, since either lets the admitted document differ from the installed one.
+about. The pinned version is validated by ``packaging`` and then kept **verbatim** --
+rewriting it would hand pip a string the manifest never wrote -- while the marker is
+re-serialised from this module's own parse tree, which is what makes two spellings of
+one condition one digest. Node manifests are parsed as JSON with duplicate keys and
+non-finite numbers refused, since either lets the admitted document differ from the
+installed one.
 
 The module is pure: it parses text and returns an admitted plan or raises
 :class:`ProvisionRefused`. No process is started, no network address is opened, no file
@@ -87,6 +91,7 @@ REFUSAL_REASONS: Final[frozenset[str]] = frozenset(
         "file_dependency",
         "url_dependency",
         "workspace_dependency",
+        "bundled_dependency",
         "lockfile_version",
         # Shared byte-level admission
         "too_large",
@@ -145,6 +150,14 @@ _MARKER_VARIABLES: Final[frozenset[str]] = frozenset(
         "os_name",
     }
 )
+_MARKER_FLIP: Final[Mapping[str, str]] = {
+    "==": "==",
+    "!=": "!=",
+    ">=": "<=",
+    "<=": ">=",
+    "<": ">",
+    ">": "<",
+}
 _MARKER_KEYWORDS: Final[frozenset[str]] = frozenset({"and", "or", "not", "in"})
 _MARKER_TOKEN = re.compile(
     r"(?P<lparen>\()"
@@ -393,8 +406,7 @@ def _parse_requirement(line: str, line_no: int) -> PythonRecord:
     version = _admitted_version(requirement, line, line_no)
     marker = None
     if requirement.marker is not None:
-        marker = str(requirement.marker)
-        _check_marker_variables(marker, line_no)
+        marker = _canonical_marker(str(requirement.marker), line_no)
     extras = tuple(sorted(canonicalize_name(extra) for extra in requirement.extras))
     hashes = _parse_hashes(hash_text, line, line_no)
     return PythonRecord(
@@ -465,7 +477,13 @@ def _check_head(head: str, line: str, line_no: int) -> None:
 
 
 def _admitted_version(requirement: Requirement, line: str, line_no: int) -> str:
-    """Require exactly one ``==`` specifier holding a wildcard-free PEP 440 version."""
+    """Require exactly one ``==`` specifier holding a wildcard-free PEP 440 version.
+
+    The version is *validated* by ``Version`` and then returned **verbatim**.
+    Rewriting it to its normalized form would hand pip a string the manifest never
+    wrote, and the wheel filename the hash pins is built from the version as the
+    project published it.
+    """
     specifiers = list(requirement.specifier)
     if len(specifiers) != 1:
         _refuse("unpinned", line, line_no)
@@ -473,9 +491,10 @@ def _admitted_version(requirement: Requirement, line: str, line_no: int) -> str:
     if specifier.operator != "==" or "*" in specifier.version:
         _refuse("unpinned", line, line_no)
     try:
-        return str(Version(specifier.version))
+        Version(specifier.version)
     except InvalidVersion:
         _refuse("unpinned", line, line_no)
+    return specifier.version
 
 
 def _parse_hashes(hash_text: str, line: str, line_no: int) -> tuple[str, ...]:
@@ -519,20 +538,23 @@ def _marker_parses(text: str) -> bool:
     return True
 
 
-def _check_marker_variables(text: str, line_no: int) -> None:
-    """Refuse a marker outside the sink's subset, after ``packaging`` has accepted it.
+def _canonical_marker(text: str, line_no: int) -> str:
+    """Refuse a marker outside the sink's subset and return its canonical text.
 
-    ``packaging`` admits every PEP 508 variable, including ``extra`` and the
-    ``platform_*`` strings the resolver jail cannot answer for. This re-reads the
-    normalized marker with a small recursive-descent validator -- never interpreting it
-    as Python -- and requires every comparison to put one allowed variable against one
-    plain ASCII literal.
+    ``packaging`` has already accepted the marker by this point, but it admits every
+    PEP 508 variable -- including ``extra`` and the ``platform_*`` strings the
+    resolver jail cannot answer for. This re-reads it with a small recursive-descent
+    parser -- never interpreting it as Python -- requires every comparison to put one
+    allowed variable against one plain ASCII literal, and re-serialises the tree: a
+    comparison written literal-first is flipped to variable-first with the operator
+    inverted, and commutative operands are ordered, so two spellings of one condition
+    produce one digest.
     """
     stripped = text.strip()
     if not stripped or len(stripped) > _MAX_MARKER_CHARS:
         _refuse("bad_marker", text, line_no)
     tokens = _tokenise_marker(stripped, line_no)
-    _MarkerValidator(tokens, stripped, line_no).validate()
+    return _marker_text(_MarkerParser(tokens, stripped, line_no).parse())
 
 
 def _tokenise_marker(text: str, line_no: int) -> list[tuple[str, str]]:
@@ -553,7 +575,7 @@ def _tokenise_marker(text: str, line_no: int) -> list[tuple[str, str]]:
     return tokens
 
 
-class _MarkerValidator:
+class _MarkerParser:
     """Recursive descent over ``or`` > ``and`` > parenthesised term > comparison."""
 
     def __init__(self, tokens: Sequence[tuple[str, str]], text: str, line_no: int) -> None:
@@ -562,10 +584,11 @@ class _MarkerValidator:
         self._line_no = line_no
         self._index = 0
 
-    def validate(self) -> None:
-        self._or()
+    def parse(self) -> tuple[Any, ...]:
+        node = self._or()
         if self._peek() is not None:
             _refuse("bad_marker", self._text, self._line_no)
+        return node
 
     def _peek(self) -> tuple[str, str] | None:
         if self._index >= len(self._tokens):
@@ -579,29 +602,31 @@ class _MarkerValidator:
         self._index += 1
         return token
 
-    def _or(self) -> None:
-        self._and()
+    def _or(self) -> tuple[Any, ...]:
+        parts = [self._and()]
         while self._peek() == ("word", "or"):
             self._index += 1
-            self._and()
+            parts.append(self._and())
+        return _combine("or", parts)
 
-    def _and(self) -> None:
-        self._term()
+    def _and(self) -> tuple[Any, ...]:
+        parts = [self._term()]
         while self._peek() == ("word", "and"):
             self._index += 1
-            self._term()
+            parts.append(self._term())
+        return _combine("and", parts)
 
-    def _term(self) -> None:
+    def _term(self) -> tuple[Any, ...]:
         if self._peek() == ("lparen", "("):
             self._index += 1
-            self._or()
+            node = self._or()
             if self._peek() != ("rparen", ")"):
                 _refuse("bad_marker", self._text, self._line_no)
             self._index += 1
-            return
-        self._comparison()
+            return node
+        return self._comparison()
 
-    def _comparison(self) -> None:
+    def _comparison(self) -> tuple[Any, ...]:
         left = self._operand()
         operator = self._take()
         if operator[0] != "op":
@@ -609,8 +634,11 @@ class _MarkerValidator:
         right = self._operand()
         # One side must be a literal: variable-to-variable says nothing the sink can act
         # on, and the resolver jail would have to answer for both sides.
-        if {left[0], right[0]} != {"var", "lit"}:
-            _refuse("bad_marker", self._text, self._line_no)
+        if left[0] == "var" and right[0] == "lit":
+            return ("cmp", left[1], operator[1], right[1])
+        if left[0] == "lit" and right[0] == "var":
+            return ("cmp", right[1], _MARKER_FLIP[operator[1]], left[1])
+        _refuse("bad_marker", self._text, self._line_no)
 
     def _operand(self) -> tuple[str, str]:
         kind, value = self._take()
@@ -624,6 +652,33 @@ class _MarkerValidator:
                 _refuse("bad_marker", value, self._line_no)
             return ("var", value)
         _refuse("bad_marker", value, self._line_no)
+
+
+def _combine(kind: str, parts: Sequence[tuple[Any, ...]]) -> tuple[Any, ...]:
+    """Flatten same-kind children and order them: ``and``/``or`` are commutative."""
+    if len(parts) == 1:
+        return parts[0]
+    flattened: list[tuple[Any, ...]] = []
+    for part in parts:
+        if part[0] == kind:
+            flattened.extend(part[1])
+        else:
+            flattened.append(part)
+    return (kind, tuple(sorted(flattened, key=_marker_text)))
+
+
+def _marker_text(node: tuple[Any, ...]) -> str:
+    """Serialise the tree: variable, operator, double-quoted literal, minimal parens."""
+    if node[0] == "cmp":
+        return f'{node[1]} {node[2]} "{node[3]}"'
+    joiner = " and " if node[0] == "and" else " or "
+    parts = []
+    for child in node[1]:
+        text = _marker_text(child)
+        if node[0] == "and" and child[0] == "or":
+            text = f"({text})"
+        parts.append(text)
+    return joiner.join(parts)
 
 
 # --------------------------------------------------------------------------------------
@@ -782,7 +837,9 @@ def _admit_manifest_dependencies(manifest: Mapping[str, Any]) -> dict[str, tuple
     _check_no_workspaces(manifest, "package.json")
     for field in ("bundleDependencies", "bundledDependencies"):
         if field in manifest:
-            _refuse("url_dependency", f"package.json declares {field}")
+            # Its own class: a bundled dependency ships inside another tarball, so
+            # it is neither pinned by the lockfile nor fetched from the registry.
+            _refuse("bundled_dependency", f"package.json declares {field}")
     return _check_dependency_map(manifest, _NPM_DEPENDENCY_FIELDS, "")
 
 

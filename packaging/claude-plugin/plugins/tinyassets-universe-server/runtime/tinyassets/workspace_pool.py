@@ -42,6 +42,13 @@ WINDOW_S = 3600
 #: One host-wide slot in this change; the runner sidecar is what lifts it.
 HOST_SLOT = "slot-0"
 DEFAULT_CLAIM_TTL_S = 300
+#: Import time, which is process start for every real caller. The startup
+#: barrier is relative to it: an unfinished entry created BEFORE this instant
+#: belongs to a previous process and has to be swept before anything new is
+#: admitted; one created after is the live processor's ordinary backlog and
+#: must not refuse new jobs. Callers with a truer process-start timestamp pass
+#: it explicitly; the default can only ever be conservative, never absent.
+PROCESS_STARTED_AT = time.time()
 #: A negative TTL steals every claim: used by the startup sweep, where nothing
 #: else is running and a claim can only be a dead process's.
 STEAL_ALL_TTL_S = -1.0
@@ -80,7 +87,8 @@ OUTCOME_LOST_CLAIM = "lost_claim"
 OUTCOME_ALREADY_DONE = "already_done"
 #: The entry names a generation this module has no lease row for, so its bytes
 #: cannot be located. Recorded, not silently dropped, and never retried forever -
-#: a wedged entry would block every admission (see ``admission_open``).
+#: an entry wedged from before process start holds the startup barrier shut
+#: against every universe (see ``admission_open``).
 OUTCOME_UNKNOWN_TARGET = "unknown_target"
 
 QUARANTINE_DIR = ".quarantine"
@@ -431,6 +439,7 @@ def admit(
     host_slot: str = HOST_SLOT,
     now: Callable[[], float] = time.time,
     lease_id_factory: Callable[[], str] = secrets.token_hex,
+    process_started_at: float | None = None,
 ) -> Lease:
     """Admit one workspace job in ONE ``BEGIN IMMEDIATE`` transaction.
 
@@ -465,6 +474,7 @@ def admit(
 
     ts = float(now())
     cutoff = ts - WINDOW_S
+    started_at = PROCESS_STARTED_AT if process_started_at is None else float(process_started_at)
     lease_id = _require_path_key("lease_id", lease_id_factory())
 
     conn = _connect(db)
@@ -473,19 +483,18 @@ def admit(
             conn.execute("BEGIN IMMEDIATE")
             ensure_schema(conn)
 
-            # The startup barrier. "No new workspace job is admitted until every
-            # old entry reached AVAILABLE or LOST" - a directory is never
-            # recycled in place and there is no grace-window reuse.
-            pending = int(
-                conn.execute(
-                    "SELECT COUNT(*) FROM workspace_outbox WHERE done_at IS NULL"
-                ).fetchone()[0]
-            )
+            # The STARTUP barrier: "a startup sweeper runs to completion
+            # before any new workspace job is admitted". Only entries a
+            # previous process left behind hold it - the periodic processor's
+            # own backlog is not a reason to refuse a new job, or every
+            # terminal entry would briefly close the pool to every universe.
+            pending = _unswept_before(conn, started_at)
             if pending:
                 raise WorkspacePoolRefused(
                     REFUSED_POOL_BUSY,
                     f"startup reconciliation pending: {pending} outbox entr"
-                    f"{'y' if pending == 1 else 'ies'} not yet AVAILABLE or LOST",
+                    f"{'y' if pending == 1 else 'ies'} from before "
+                    f"{started_at} not yet AVAILABLE or LOST",
                 )
 
             # (a) the rolling-hour workspace ledger.
@@ -892,17 +901,32 @@ def _entry_from_row(row: sqlite3.Row | tuple) -> OutboxEntry:
     )
 
 
-def admission_open(db: Path) -> bool:
-    """False while any outbox entry is unfinished. ``admit`` refuses then."""
+def _unswept_before(conn: sqlite3.Connection, started_at: float) -> int:
+    """Unfinished entries a PREVIOUS process left behind. Call inside the
+    caller's transaction."""
+    return int(
+        conn.execute(
+            "SELECT COUNT(*) FROM workspace_outbox WHERE done_at IS NULL AND created_at < ?",
+            (started_at,),
+        ).fetchone()[0]
+    )
+
+
+def admission_open(db: Path, *, process_started_at: float | None = None) -> bool:
+    """False while an entry from BEFORE ``process_started_at`` is unfinished.
+
+    That is the whole barrier: the startup sweep has to finish before a new
+    workspace job is admitted. Entries this process created since - a run that
+    just ended and is waiting on the periodic processor - leave admission open,
+    because refusing on those would take the pool away from every universe for
+    the length of every wipe.
+    """
+    started_at = PROCESS_STARTED_AT if process_started_at is None else float(process_started_at)
     conn = _connect(db)
     try:
         conn.execute("BEGIN IMMEDIATE")
         ensure_schema(conn)
-        pending = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM workspace_outbox WHERE done_at IS NULL"
-            ).fetchone()[0]
-        )
+        pending = _unswept_before(conn, started_at)
         conn.commit()
         return pending == 0
     finally:
