@@ -258,7 +258,9 @@ No user code ever runs with both network and the checkout *(R1)*.
   (one in this change), acquired in the checkout's admission transaction,
   reentrant for that run, released only by the outbox processor;
   `workspace_busy` when unavailable within the node's timeout.
-- Jail limits for workspace nodes: `RLIMIT_AS` 1.5 GiB, `RLIMIT_NPROC` 128,
+- Jail limits for workspace nodes: `RLIMIT_AS` 1.5 GiB, `RLIMIT_NPROC` 1024
+  (raised toward, never lowered - it is per-UID, and 128 broke any host whose
+  uid was already busy; CI, 2026-08-31),
   `RLIMIT_NOFILE` 1024, `RLIMIT_FSIZE` 512 MiB, `RLIMIT_CORE` 0; RSS
   watchdog at 2 GiB *(R1)*.
 - **Disk**: 4 GiB per lease, 20 GiB pool, best-effort enforcement with

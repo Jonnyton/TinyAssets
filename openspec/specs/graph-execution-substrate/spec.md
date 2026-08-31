@@ -184,9 +184,17 @@ double-forked `setsid` one; the node fails as `workspace_command_timeout`,
 classified from a flag on the result rather than a phrase in a message.
 
 A workspace node SHALL run under the workspace limits profile (`RLIMIT_AS`
-1.5 GiB, `RLIMIT_NPROC` 128, `RLIMIT_NOFILE` 1024, `RLIMIT_FSIZE` 512 MiB,
+1.5 GiB, `RLIMIT_NPROC` 1024, `RLIMIT_NOFILE` 1024, `RLIMIT_FSIZE` 512 MiB,
 `RLIMIT_CORE` 0), applied and read back in the child before its message is
-parsed, and under an aggregate process-tree RSS cap of 2 GiB. `RLIMIT_AS` bounds
+parsed, and under an aggregate process-tree RSS cap of 2 GiB. `RLIMIT_NPROC`
+SHALL be RAISED toward its cap and never lowered: it is per-UID rather than
+per-process, so lowering it bounds every process the host's user already runs,
+and on a host whose uid is past the number the next `fork` fails with EAGAIN —
+which is not a bound on the node but a broken host. A limit already tighter than
+the cap is somebody else's decision and stands, so on a permissive host this
+limit binds nothing and the memory watchdog and the jail are what bound a
+process explosion. Any git the runtime spawns inside the jail SHALL pass
+`pack.threads=1` for the same reason. `RLIMIT_AS` bounds
 each process and nothing bounds their sum, so a parent-side watchdog SHALL sample
 the tracked process's whole tree and, on passing the cap, kill the tracked
 supervisor exactly as the timeout path does; the node then fails as
