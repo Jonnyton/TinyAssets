@@ -105,7 +105,10 @@ def _workspace_consents(uid: str) -> list[dict[str, Any]]:
         if parsed is None:
             continue
         found.append({**parsed, "granted_at": row.get("granted_at")})
-    return sorted(found, key=lambda item: (item["repo"], item["operation"]))
+    return sorted(
+        found,
+        key=lambda item: (item["repo"], item["connection_id"], item["operation"]),
+    )
 
 
 def _ledger(actor: str) -> ConnectionLedger:

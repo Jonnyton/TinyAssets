@@ -612,7 +612,10 @@ def _grant_workspace_consent(
 
     The named connection must exist, belong to this owner and not be revoked:
     consent to check out a repository through a connection that is not theirs is
-    not a thing the owner can give. It does NOT require the git scope to exist
+    not a thing the owner can give. It is also IN the key, so a second key
+    deposited under another destination label starts with no consent of its own.
+
+    It does NOT require the git scope to exist
     yet - the scope ask and the consent ask are two tabs and the owner may
     answer them in either order, and a consent with no scope behind it grants
     nothing, because the sink requires both.
@@ -648,7 +651,7 @@ def _grant_workspace_consent(
 
     repo = action["repo"]
     destinations = [
-        workspace_consent_destination(consent, repo)
+        workspace_consent_destination(consent, repo, connection_id=connection_id)
         for consent in action["consents"]
     ]
     for destination in destinations:
