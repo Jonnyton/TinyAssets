@@ -53,6 +53,8 @@ CONSENT_OPERATIONS = {
 _NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,100}")
 #: A dot-run is a traversal wherever this string is later split on "/".
 _DOTS_ONLY_RE = re.compile(r"[.]+")
+#: A connection id, as it appears inside a consent destination.
+_CONNECTION_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,200}")
 
 
 class GitScopeError(ValueError):
@@ -237,13 +239,37 @@ def has_git_scope(connection: Any, kind: Any, repo: Any) -> bool:
     return (normalized_kind, normalized_repo) in connection_git_scopes(connection)
 
 
-def workspace_consent_destination(
-    consent: Any, repo: Any, *, host: str = GIT_SCOPE_HOST
-) -> str:
-    """The ``effector_consents`` destination for one operation on one repo.
+def require_connection_token(connection_id: Any) -> str:
+    """One safe token: a connection id that is about to key a consent row.
 
-    ``("workspace_checkout", "o/n")`` -> ``"checkout:github.com/o/n"``. One
-    spelling, in one place, because the rail writes it and the sink reads it.
+    It sits between two ``:`` separators in the destination, so a value carrying
+    a colon or a slash would make the row ambiguous to parse and could forge a
+    different repository's key.
+    """
+    text = _text(connection_id)
+    if not text or not _CONNECTION_ID_RE.fullmatch(text):
+        raise GitScopeError(
+            f"connection_id must be 1-200 chars of [A-Za-z0-9._-], got "
+            f"{connection_id!r}"
+        )
+    return text
+
+
+def workspace_consent_destination(
+    consent: Any, repo: Any, *, connection_id: Any, host: str = GIT_SCOPE_HOST
+) -> str:
+    """The ``effector_consents`` destination for one operation on one repo
+    through ONE connection.
+
+    ``("workspace_checkout", "o/n", connection_id="http_ab")`` ->
+    ``"checkout:http_ab:github.com/o/n"``. One spelling, in one place, because
+    the rail writes it and the sink reads it.
+
+    The connection is IN the key, not merely checked when the consent is
+    granted: the delta binds a typed consent to ``(connection, repo)``, and a
+    universe can hold more than one connection to the same host - a second key
+    deposited under another destination label. Keying on the repository alone
+    would let a consent given for one credential authorize work under another.
     """
     text = _text(consent).lower()
     operation = CONSENT_OPERATIONS.get(text, text)
@@ -251,7 +277,8 @@ def workspace_consent_destination(
         raise GitScopeError(
             f"consent must be one of {WORKSPACE_CONSENTS}, got {consent!r}"
         )
-    return f"{operation}:{_text(host).lower()}/{normalize_repo(repo)}"
+    token = require_connection_token(connection_id)
+    return f"{operation}:{token}:{_text(host).lower()}/{normalize_repo(repo)}"
 
 
 def parse_workspace_consent_destination(destination: Any) -> dict[str, str] | None:
@@ -260,7 +287,14 @@ def parse_workspace_consent_destination(destination: Any) -> dict[str, str] | No
     operation, separator, rest = text.partition(":")
     if not separator or operation not in CONSENT_OPERATIONS.values():
         return None
-    host, _, repo = rest.partition("/")
+    connection_id, separator, address = rest.partition(":")
+    if not separator:
+        return None
+    try:
+        token = require_connection_token(connection_id)
+    except GitScopeError:
+        return None
+    host, _, repo = address.partition("/")
     try:
         normalized_repo = normalize_repo(repo)
     except GitScopeError:
@@ -271,6 +305,7 @@ def parse_workspace_consent_destination(destination: Any) -> dict[str, str] | No
     return {
         "consent": consent,
         "operation": operation,
+        "connection_id": token,
         "host": host.lower(),
         "repo": normalized_repo,
     }
@@ -299,6 +334,7 @@ __all__ = [
     "parse_git_scope",
     "parse_repo",
     "parse_workspace_consent_destination",
+    "require_connection_token",
     "require_git_scope",
     "validate_git_scopes",
     "workspace_consent_destination",
