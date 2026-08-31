@@ -371,8 +371,15 @@ def _ensure_scratch_root(base: Path) -> Path:
     """The scratch pool's parent, created once, mode 0700, never with
     ``parents=True``: the data root itself must already exist. The no-follow
     lease helpers refuse a missing parent, so a fresh host needs this before
-    its first checkout (lane E finding)."""
-    root = base / "scratch"
+    its first checkout (lane E finding).
+
+    ``base`` is the UNIVERSE directory, and the pool is shared across
+    universes, so the root is ``<data>/scratch`` -- the same directory the
+    sink admits against (``effectors.workspace.scratch_pool_root``). Creating
+    ``<universe>/scratch`` here would admit a lease in one place and write it
+    in another (Codex round 2, P0 #1); a test pins the two together.
+    """
+    root = base.parent / "scratch"
     if not root.exists():
         root.mkdir(mode=0o700)
     if os.name == "posix":

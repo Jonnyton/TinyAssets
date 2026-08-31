@@ -3,7 +3,7 @@
 
     docker exec <daemon> python /app/scripts/workspace_bwrap_oracle.py
 
-Six things cannot be proved on a developer box: they need Linux, a real
+Seven things cannot be proved on a developer box: they need Linux, a real
 ``bwrap``, a real ``git`` and this image's libcurl. The suite skips them, so
 they are asserted here instead -- against the SHIPPED modules, with a real
 :class:`BwrapLauncher`, on the machine that actually runs them.
@@ -31,6 +31,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 #: Where a temp root may live. ``/data`` is the daemon's; this never touches it.
 TEMP_PARENT = "/tmp"
@@ -571,6 +572,208 @@ def check_libcurl_multi_resolve_is_honoured(context: Context) -> Outcome:
     )
 
 
+def check_full_route(context: Context) -> Outcome:
+    """(7) The REAL adapter -> chain -> compiler -> bwrap, end to end.
+
+    Only the network legs are faked (the worker's git is not run against a
+    remote). Everything else is production: the sink admits against the pool,
+    creates the lease through the no-follow handles, populates it, publishes a
+    capability, and a code node runs in a real jail bound to it.
+
+    This is the check that must pass before any production claim, because it is
+    the only one that answers "is /workspace the repository?" rather than
+    "does each piece work in isolation?".
+    """
+    from tinyassets import runs
+    from tinyassets.effectors import EffectChain
+    from tinyassets.effectors.workspace import run_workspace_effector
+    from tinyassets.node_sandbox import BwrapLauncher, NodeSandbox
+    from tinyassets.storage.effector_consents import grant_consent
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+    from tinyassets.storage.workspace_authority import workspace_consent_destination
+
+    scratch = context.scratch("full-route")
+    data_root = scratch / "data"
+    universe_dir = data_root / "universe-oracle"
+    universe_dir.mkdir(parents=True)
+    runs.initialize_runs_db(universe_dir)
+
+    repo = "owner/name"
+    secret = "ghp_ORACLECANARY0123456789ABCDEFGHIJ"
+    ledger = ConnectionLedger(
+        data_root / "outbound.db", verify_authenticated_principal=lambda: "user-1"
+    )
+    ledger.create_connection(
+        connection_id="conn-git",
+        owner_user_id="user-1",
+        connection_class="outbound-http",
+        scopes=(f"git_read:{repo}", f"git_write:{repo}"),
+        provider="http",
+        destination=f"github.com/{repo}",
+        credential_ref="vault://http/github",
+        connection_type="http",
+        auth_scheme="bearer",
+        allowed_endpoints=[
+            {"host": "github.com", "path_template": "/owner/name", "methods": ["GET"]}
+        ],
+    )
+    ledger.grant_connection(
+        grant_id="grant-git",
+        connection_id="conn-git",
+        owner_user_id="user-1",
+        universe_id="universe-oracle",
+    )
+    grant_consent(
+        universe_dir,
+        sink="workspace",
+        destination=workspace_consent_destination(
+            "workspace_checkout", repo, connection_id="conn-git"
+        ),
+        granted_by="oracle",
+    )
+
+    # The only fake: the worker's network leg. It produces a REAL bundle from a
+    # REAL repository, exactly as the credentialed clone would have.
+    source_repo = scratch / "source"
+    git_env = _git_env(scratch / "seed-home", context.git_binary)
+    sha = _seed_repo(source_repo, context.git_binary, git_env)
+
+    def fake_worker(request: dict[str, Any]) -> dict[str, Any]:
+        from tinyassets.workspace_git import create_bundle
+
+        staging = Path(request["staging_dir"])
+        verify = staging / "verify"
+        verify.mkdir(parents=True, exist_ok=True)
+        bundle = staging / "out.bundle"
+        create_bundle(
+            source_repo,
+            sha,
+            bundle,
+            home_dir=staging / "bundle-home",
+            path=str(Path(shutil.which(context.git_binary) or "git").parent),
+            scratch_dir=verify,
+            git_binary=context.git_binary,
+        )
+        return {
+            "ok": True,
+            "resolved_sha": sha,
+            "bytes": bundle.stat().st_size,
+            "bundle_name": "out.bundle",
+            "ref_name": "refs/tiny/export",
+        }
+
+    chain = EffectChain(run_id="oracle-run", base_path=str(universe_dir))
+    packet = {
+        "sink": "workspace",
+        "op": "checkout",
+        "connection_id": "conn-git",
+        "grant_id": "grant-git",
+        "repo": repo,
+        "ref": "main",
+        "storage": "scratch",
+    }
+    evidence = run_workspace_effector(
+        node_id="checkout-node",
+        output_keys=["ws"],
+        run_state={"ws": packet},
+        base_path=universe_dir,
+        run_id="oracle-run",
+        chain=chain,
+        execute=fake_worker,
+    )
+    if evidence.get("error_kind"):
+        return Outcome(False, f"the real adapter refused: {evidence}")
+
+    mount = chain.workspace_mount_or_none("checkout-node")
+    if mount is None:
+        return Outcome(False, "the adapter published no capability")
+    lease_root = Path(mount.lease.path)
+
+    # Rename the lease away mid-run and leave a decoy: the fd-bound mount must
+    # still be the original repository.
+    import threading
+
+    renamed = threading.Event()
+
+    def swap() -> None:
+        time.sleep(1.0)
+        decoy = lease_root.parent / f"{lease_root.name}-decoy"
+        (decoy / "repo").mkdir(parents=True, exist_ok=True)
+        (decoy / "repo" / "README.md").write_text("the wrong tree\n", encoding="utf-8")
+        os.rename(str(lease_root), str(lease_root.parent / f"{lease_root.name}-moved"))
+        os.rename(str(decoy), str(lease_root))
+        renamed.set()
+
+    probe = (
+        "import json, os\n"
+        "print(json.dumps({\n"
+        "    'entries': sorted(os.listdir('/workspace'))[:12],\n"
+        "    'readme': open('/workspace/README.md').read(),\n"
+        "    'has_git': os.path.isdir('/workspace/.git'),\n"
+        "}))\n"
+    )
+    node_source = (
+        "def run(state):\n"
+        f"    import time; time.sleep(3)\n"
+        f"    return {{'result': ws.run([{_python()!r}, '-c', {probe!r}])}}\n"
+    )
+    mover = threading.Thread(target=swap, daemon=True)
+    mover.start()
+    from tinyassets import graph_compiler as gc
+
+    sandbox_mount = gc._sandbox_workspace_mount(mount, "code-node")
+    launcher = BwrapLauncher(
+        bwrap_path=context.bwrap_path,
+        workspace_bind=sandbox_mount.bind_source,
+        allowed_workspace_roots=tuple(sandbox_mount.allowed_roots or ()),
+        pass_fds=tuple(sandbox_mount.pass_fds or ()),
+    )
+    result = NodeSandbox(launcher=launcher, timeout=90).run_sync(
+        node_id="code-node",
+        source_code=node_source,
+        input_state={},
+        input_keys=[],
+        output_keys=["result"],
+        timeout=90,
+        workspace=sandbox_mount,
+    )
+    if not result.success:
+        return Outcome(False, f"the code node failed: {result.error}")
+    payload = str(result.output_state.get("result") or "")
+
+    workspace_is_the_repo = "README.md" in payload and '"has_git": true' in payload.lower()
+    lease_not_visible = '"repo"' not in payload
+    read_the_original = "oracle" in payload and "the wrong tree" not in payload
+    inherited_fd = sandbox_mount.bind_source.startswith("/proc/self/fd/")
+
+    # No credential anywhere the node or the host can see.
+    leaked = secret in payload or secret in str(evidence)
+    for path in (universe_dir, lease_root.parent):
+        for found in path.rglob("*"):
+            if leaked:
+                break
+            try:
+                if found.is_file() and secret.encode() in found.read_bytes():
+                    leaked = True
+            except OSError:
+                continue
+
+    ok = (
+        workspace_is_the_repo
+        and lease_not_visible
+        and read_the_original
+        and inherited_fd
+        and renamed.is_set()
+        and not leaked
+    )
+    return Outcome(
+        ok,
+        f"bind={sandbox_mount.bind_source} renamed={renamed.is_set()} "
+        f"is_repo={workspace_is_the_repo} lease_hidden={lease_not_visible} "
+        f"original={read_the_original} leaked={leaked}; node saw {payload[:160]}",
+    )
+
+
 #: Every check, in the order the report prints them.
 CHECKS: tuple[Check, ...] = (
     Check(
@@ -602,6 +805,11 @@ CHECKS: tuple[Check, ...] = (
         "libcurl_multi_resolve_is_honoured",
         "this libcurl takes the comma list and honours the curloptResolve pin",
         check_libcurl_multi_resolve_is_honoured,
+    ),
+    Check(
+        "full_route",
+        "the real adapter -> chain -> compiler -> bwrap: /workspace IS the repo",
+        check_full_route,
     ),
 )
 
