@@ -253,33 +253,29 @@
           <details class="connect-advanced" id="http-manual"><summary>Fill it in myself</summary>
           <label class="field"><span>Name (a label you'll recognize)
               <span class="muted">(letters, numbers and . _ : - &mdash; no spaces)</span></span>
-            <input id="http-destination" type="text" placeholder="e.g. openrouter or slack-webhook" /></label>
-          <div class="preset-row">
-            <span class="muted">Doing a common one? Fill it in for me:</span>
-            <button type="button" class="btn btn--link" id="preset-x">X / Twitter (post)</button>
-            <button type="button" class="btn btn--link" id="preset-openrouter">OpenRouter (free LLMs)</button>
-            <button type="button" class="btn btn--link" id="preset-slack">Slack webhook</button>
-          </div>
+            <input id="http-destination" type="text" placeholder="a short name you will recognise later" /></label>
           <label class="field"><span>API host</span>
-            <input id="http-host" type="text" placeholder="e.g. openrouter.ai or api.x.com" /></label>
+            <input id="http-host" type="text" placeholder="the API hostname, e.g. api.example.com" /></label>
           <label class="field"><span>Path it may call
               <span class="muted">(required; one exact path starting with /)</span></span>
             <input id="http-path" type="text" placeholder="e.g. /api/v1/chat/completions or /2/tweets" /></label>
           <label class="field"><span>Methods <span class="muted">(comma-separated)</span></span>
             <input id="http-methods" type="text" placeholder="POST, GET" value="POST" /></label>
           <label class="field"><span>How it authenticates
-              <span class="muted">(X/Twitter needs "OAuth 1.0a - 4 keys"; most other APIs use a bearer token)</span></span>
+              <span class="muted">(most APIs use a bearer token; OAuth 1.0a needs four values &mdash; the service you are connecting tells you which)</span></span>
             <select id="http-auth-scheme">
               <option value="bearer" selected>API key / bearer token (most APIs, webhooks)</option>
               <option value="basic">Username &amp; password (basic auth)</option>
-              <option value="oauth1a">OAuth 1.0a — 4 keys (X/Twitter and similar)</option>
+              <option value="oauth1a">OAuth 1.0a — 4 keys</option>
             </select></label>
           <label class="field" id="http-secret-field"><span id="http-secret-label">API key / token</span>
             <textarea id="http-secret" rows="2" placeholder="Your API key or bearer token"></textarea></label>
           <div id="http-oauth1a" hidden>
-            <p class="muted">The four values your provider's developer portal shows for your app
-              (X/Twitter: Developer Portal &rarr; your app &rarr; <em>Keys and tokens</em>; the app
-              needs Read and Write permission). Each goes in its own box:</p>
+            <p class="muted">The four values your provider's developer portal shows for your
+              app, each in its own box. Your provider names them &mdash; some say
+              &ldquo;Consumer Key&rdquo; where others say &ldquo;API Key&rdquo; &mdash; and it may
+              also need the app itself to have write permission. If your agent asked you for
+              these, its request says exactly where each one lives.</p>
             <label class="field"><span>API Key <span class="muted">(also called Consumer Key)</span></span>
               <input id="http-oauth1a-api-key" type="password" autocomplete="off" /></label>
             <label class="field"><span>API Key Secret <span class="muted">(Consumer Secret)</span></span>
@@ -1762,36 +1758,20 @@
     // confusing where goes what"). These presets fill the generic form the user
     // could fill by hand - no per-service code path, the deposit is the same
     // connect_http for every service.
-    function applyPreset(values){
-      const scheme=$("http-auth-scheme");
-      Object.entries(values).forEach(([id,value])=>{ const el=$(id); if(el) el.value=value; });
-      scheme.dispatchEvent(new Event("change"));
-      const first=values["http-auth-scheme"]==="oauth1a" ? $("http-oauth1a-api-key") : $("http-secret");
-      if(first) first.focus();
-    }
-    $("preset-x").addEventListener("click",()=>applyPreset({
-      "http-destination":"x:posting", "http-host":"api.x.com", "http-path":"/2/tweets",
-      "http-methods":"POST", "http-auth-scheme":"oauth1a",
-    }));
-    $("preset-openrouter").addEventListener("click",()=>applyPreset({
-      "http-destination":"openrouter", "http-host":"openrouter.ai",
-      "http-path":"/api/v1/chat/completions", "http-methods":"POST", "http-auth-scheme":"bearer",
-    }));
-    $("preset-slack").addEventListener("click",()=>applyPreset({
-      "http-destination":"slack-webhook", "http-host":"hooks.slack.com",
-      "http-path":"", "http-methods":"POST", "http-auth-scheme":"bearer",
-    }));
-    // Typing an X host is the same signal: switch to the four labelled boxes rather
-    // than letting someone paste four secrets into one bearer field.
-    $("http-host").addEventListener("input",()=>{
-      const host=$("http-host").value.trim().toLowerCase();
-      const isX=/(^|\.)(x\.com|twitter\.com)$/.test(host)||host==="api.x.com"||host==="api.twitter.com";
-      const scheme=$("http-auth-scheme");
-      if(isX && scheme.value!=="oauth1a"){
-        scheme.value="oauth1a"; scheme.dispatchEvent(new Event("change"));
-        $("http-result").textContent="X/Twitter posting uses OAuth 1.0a - switched to the four-key form below.";
-      }
-    });
+    // NOTE: no host sniffing here, and no per-service presets above.
+    //
+    // There were three named buttons (X, OpenRouter, Slack) and a rule that
+    // switched the form to OAuth 1.0a when it recognised an x.com host. Both
+    // were conveniences over the generic form and both were service knowledge
+    // living in the platform -- and worse for the thing this is now measured
+    // by: a shortcut for the services we happened to think of makes a test of
+    // those services prove nothing about the next one. The founder's bar is
+    // "another outside connection and another task ... without any patches",
+    // and a preset is a patch with a nicer name.
+    //
+    // The scheme comes from the ask the agent raised, or from the owner's own
+    // choice in the select. A service nobody has enumerated now gets exactly
+    // the same path as a famous one.
     $("http-auth-scheme").addEventListener("change",()=>{
       const scheme=$("http-auth-scheme").value;
       const h=secretHints[scheme]||secretHints.bearer;

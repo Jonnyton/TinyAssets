@@ -92,6 +92,18 @@ _CRED = {
     "action": {"type": "connect_http", "destination": "github",
                "host": "api.github.com", "path_template": "/repos/o/r/pulls",
                "methods": ["POST"], "auth_scheme": "bearer"},
+    # One field per value the service asks for, labelled the way that service
+    # labels it. There is no unlabelled fallback any more: a credential ask that
+    # forgets its fields is refused, so every fixture states them like the agent
+    # must (founder 2026-08-31).
+    "fields": [
+        # The NAME is just an identifier the answer keys on; the LABEL is what
+        # stops the owner guessing, which is why it is the label that carries
+        # the service's own wording.
+        {"name": "secret", "type": "secret", "label": "Personal access token",
+         "help": "Settings -> Developer settings -> Personal access tokens",
+         "url": "https://github.com/settings/tokens"},
+    ],
 }
 
 
@@ -681,7 +693,7 @@ def test_extending_a_grant_needs_no_secret_and_no_new_field(base):
 
     ask = _ask("u-1", kind="API", title="Also let me write the theme file",
                body="one more endpoint on the key you already gave",
-               action={"type": "extend_http", "destination": "github",
+               fields=[], action={"type": "extend_http", "destination": "github",
                        "endpoints": [{"host": "api.github.com",
                                       "path_template": "/repos/o/r/contents/t.json",
                                       "methods": ["GET", "PUT"]}]})
@@ -716,7 +728,7 @@ def test_extending_never_writes_a_second_vault_record(base):
     before = [r for r in load_credential_vault(udir) if r["credential_type"] == "http"]
 
     ask = _ask("u-1", kind="API", title="one more endpoint",
-               action={"type": "extend_http", "destination": "github",
+               fields=[], action={"type": "extend_http", "destination": "github",
                        "endpoints": [{"host": "api.github.com",
                                       "path_template": "/repos/o/r/contents/t.json",
                                       "methods": ["PUT"]}]})
@@ -731,7 +743,7 @@ def test_extending_a_connection_that_does_not_exist_is_refused(base):
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
     ask = _ask("u-1", kind="API", title="widen nothing",
-               action={"type": "extend_http", "destination": "nope",
+               fields=[], action={"type": "extend_http", "destination": "nope",
                        "endpoints": [{"host": "api.github.com",
                                       "path_template": "/x", "methods": ["PUT"]}]})
     out = _answer("u-1", request_id=ask["request_id"], values={})

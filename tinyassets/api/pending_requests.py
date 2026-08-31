@@ -353,11 +353,26 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
 
     fields = raw if isinstance(raw, list) else []
     if not fields:
-        # A credential ask has an obvious single field; anything else must say
-        # what it wants rather than presenting an empty tab.
+        # NO unlabelled fallback for a credential ask.
+        #
+        # This used to synthesise one box labelled "Paste the key", which is
+        # exactly the guessing the founder ruled out on 2026-08-31: "no more the
+        # user having to guess what they need to put where. each single
+        # indevidual credential will have its own indevidually labled request".
+        # Leaving it in place would also make the new path untestable -- an ask
+        # that forgot its fields would still LOOK fine, so a green test would
+        # prove nothing about whether the agent had done the work.
+        #
+        # The agent knows what the service needs; if it does not, that is the
+        # thing to fix, not paper over with a box the owner has to interpret.
         if action["type"] == "connect_http":
-            fields = [{"name": "secret", "label": "Paste the key", "type": "secret"}]
-        elif action["type"] in ("extend_http", "grant_workspace_consent"):
+            raise ValueError(
+                "a credential request needs one field per value the service "
+                "asks for, each with the label THAT SERVICE uses (and ideally "
+                "'help' saying where to find it and a 'url' to that page) -- "
+                "not one unlabelled box for the owner to work out"
+            )
+        if action["type"] in ("extend_http", "grant_workspace_consent"):
             # Nothing to type. The key is already in the vault; this is a yes/no.
             return []
         else:
