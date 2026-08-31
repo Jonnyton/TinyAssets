@@ -667,14 +667,28 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
                 # terms the comment above sets: it arrives WITH the channel /
                 # consent + budget slice the earlier sinks lacked. Typed
                 # consents per (op, connection, repo) answered on the request
-                # rail; a `workspace` admission ledger charging jobs and bytes
-                # per universe-hour with the maximum reserved BEFORE the wire;
-                # one job at a time per universe and one host-wide slot; and
-                # effects fire at most once per node per run, so the "dispatched
-                # many times from a single admitted run" objection does not
-                # apply. Everything else stays refused - this is still an
-                # allowlist, and channels stay USER-built over the one
-                # channel-agnostic node.
+                # rail -- and ONLY there, since `source_channel` now refuses to
+                # self-approve this sink; plus a `workspace` admission ledger
+                # charging jobs and bytes per universe-hour with the maximum
+                # reserved BEFORE the wire. Everything else stays refused -
+                # this is still an allowlist, and channels stay USER-built over
+                # the one channel-agnostic node.
+                #
+                # Stated narrowly on purpose. A Codex refute review falsified
+                # the two stronger claims an earlier draft of this comment made,
+                # and both are real:
+                #   * the job locks are REENTRANT on `run_id`, deliberately, so
+                #     a run can check out and then push. "One job per universe"
+                #     therefore holds ACROSS runs, not within one.
+                #   * the byte ledger is accounting, not enforcement: nothing
+                #     measures the tree while a node writes to it, and inside
+                #     the jail the only disk bound is a 512 MiB per-file
+                #     RLIMIT_FSIZE.
+                # Neither is introduced here -- both predate this widening --
+                # and both are bounded today by the vetted-founder gate. They
+                # are written up with reproduction notes in
+                # docs/concerns/2026-08-31-workspace-admission-claims-are-narrower-than-stated.md
+                # Fix them there, and tighten this comment when they land.
                 served_sinks = {
                     EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
                     EXTERNAL_WRITE_SINK_WORKSPACE,
