@@ -655,17 +655,36 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
                 from tinyassets.effectors.authenticated_external_call import (
                     EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
                 )
+                from tinyassets.effectors.workspace import (
+                    EXTERNAL_WRITE_SINK_WORKSPACE,
+                )
 
                 if not isinstance(effects, list) or not all(
                     isinstance(e, str) for e in effects
                 ):
                     raise ValueError("node 'effects' must be a JSON array of strings")
+                # `workspace` joined the allowlist on 2026-08-31, on the same
+                # terms the comment above sets: it arrives WITH the channel /
+                # consent + budget slice the earlier sinks lacked. Typed
+                # consents per (op, connection, repo) answered on the request
+                # rail; a `workspace` admission ledger charging jobs and bytes
+                # per universe-hour with the maximum reserved BEFORE the wire;
+                # one job at a time per universe and one host-wide slot; and
+                # effects fire at most once per node per run, so the "dispatched
+                # many times from a single admitted run" objection does not
+                # apply. Everything else stays refused - this is still an
+                # allowlist, and channels stay USER-built over the one
+                # channel-agnostic node.
+                served_sinks = {
+                    EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+                    EXTERNAL_WRITE_SINK_WORKSPACE,
+                }
                 for sink in effects:
-                    if sink != EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL:
+                    if sink not in served_sinks:
                         raise ValueError(
                             f"effect sink '{sink}' is not available on the served build "
-                            "surface; only the channel-agnostic "
-                            f"'{EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL}' node is allowed"
+                            "surface; allowed: "
+                            + ", ".join(f"'{name}'" for name in sorted(served_sinks))
                         )
                 # The run-time effector dispatches EVERY entry in the list, so a single
                 # node with N duplicate sinks fires N outbound calls — bypassing a
@@ -675,8 +694,8 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
                 # one dispatch, so the effect-node cap is the true outbound ceiling.
                 if len(effects) > 1:
                     raise ValueError(
-                        "a node may declare the channel sink at most once; use a "
-                        "separate node per outbound call"
+                        "a node may declare at most one effect sink; use a "
+                        "separate node per outbound call or workspace operation"
                     )
                 if effects:
                     effect_nodes += 1

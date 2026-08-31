@@ -1568,8 +1568,9 @@ def test_served_write_graph_effects_must_be_string_list(monkeypatch):
 
 def test_served_write_graph_rejects_duplicate_effect_sinks(monkeypatch):
     """One node with duplicate sink entries fires N outbound calls at run time,
-    bypassing the node-count cap (Codex #1). A node may declare the channel sink at
-    most once — [] or [authenticated_external_call]."""
+    bypassing the node-count cap (Codex #1). A node may declare at most ONE
+    effect sink — the wording moved from "the channel sink at most once" when
+    `workspace` joined the allowlist (2026-08-31); the rule did not."""
     import tinyassets.api.extensions as ext
     import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
@@ -1584,7 +1585,7 @@ def test_served_write_graph_rejects_duplicate_effect_sinks(monkeypatch):
     ]}]}
     out = json.loads(s.write_graph(target="branch", operation="create",
                                    payload_json=json.dumps(dup)))
-    assert "at most once" in out.get("error", "")
+    assert "at most one effect sink" in out.get("error", "")
     assert calls["n"] == 0
 
 
