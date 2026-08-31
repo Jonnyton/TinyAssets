@@ -891,11 +891,35 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             "secret_reused": True,
         }
     if action.get("type") == "connect_http":
-        secret = next(
-            (str(values.get(n) or "") for n in secret_names if values.get(n)), ""
-        )
-        if not secret.strip():
+        # ONE secret field -> its value. SEVERAL -> a JSON object keyed by field
+        # name, which is the encoding a multi-value scheme's vault string uses.
+        #
+        # This used to be `next(...)`: the FIRST secret field's value, with every
+        # other one silently discarded. Harmless while a credential ask was one
+        # unlabelled box, and broken the moment asks became one field per value
+        # -- an OAuth 1.0a owner would fill four boxes, three would vanish, and
+        # the deposit would refuse a malformed bundle with nothing to explain it.
+        # Found on 2026-08-31 by checking this seam rather than assuming it.
+        supplied = [
+            (name, str(values.get(name) or ""))
+            for name in sorted(secret_names)
+            if str(values.get(name) or "").strip()
+        ]
+        if not supplied:
             return _bad("the key is required")
+        if len(supplied) == 1:
+            secret = supplied[0][1]
+        else:
+            missing = sorted(secret_names - {name for name, _ in supplied})
+            if missing:
+                # Partial is worse than refused: a bundle short one value
+                # deposits a credential that cannot sign, and the owner is told
+                # later, by a failing call, with no idea which box was empty.
+                return _bad(
+                    "this needs every value: still missing "
+                    + ", ".join(repr(name) for name in missing)
+                )
+            secret = json.dumps(dict(supplied))
         deposited = connect_http(
             universe_id=universe_id,
             payload=json.dumps(
