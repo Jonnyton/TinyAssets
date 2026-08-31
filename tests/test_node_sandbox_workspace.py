@@ -31,6 +31,7 @@ from tinyassets.node_sandbox import (
     WorkspaceLimits,
     WorkspaceMount,
     _bwrap_argv,
+    _launcher_for_workspace,
     _validate_workspace_bind,
 )
 
@@ -143,6 +144,20 @@ def test_a_universe_workspaces_root_under_data_is_bindable() -> None:
     assert argv[argv.index("--bind") + 2] == WORKSPACE_MOUNT_POINT
 
 
+def test_a_bind_that_only_resolves_into_a_root_still_refuses() -> None:
+    """Both checks earn their keep, and in opposite directions.
+
+    The realpath check catches a path INSIDE a root that leaves it. This one
+    catches the reverse: a path outside every root that resolves into one, ie
+    a symlink pointing into the pool. Neither is a lease the caller vouched
+    for, and only the literal check refuses this shape.
+    """
+    with pytest.raises(ValueError, match="not beneath an allowed root"):
+        _validate_workspace_bind(
+            "/tmp/sneaky", ("/srv/pool",), lambda p: "/srv/pool/lease-1"
+        )
+
+
 def test_a_symlinked_bind_source_that_leaves_the_root_refuses() -> None:
     with pytest.raises(ValueError, match="resolves to"):
         _validate_workspace_bind(
@@ -153,26 +168,181 @@ def test_a_symlinked_bind_source_that_leaves_the_root_refuses() -> None:
 
 
 def test_a_held_directory_handle_is_an_accepted_spelling() -> None:
+    """No root and no realpath: what vouches for it is the inherited fd."""
     resolved = _validate_workspace_bind(
-        "/proc/self/fd/7", ("/proc/self/fd",), lambda p: pytest.fail("not resolved")
+        "/proc/self/fd/7",
+        (),
+        lambda p: pytest.fail("a descriptor bind must not be realpath-ed"),
+        pass_fds=(7,),
     )
     assert resolved == "/proc/self/fd/7"
 
 
-def test_a_held_directory_handle_still_needs_its_root() -> None:
-    """The proc spelling skips the realpath check, so the literal check is
-    the only thing standing between it and any directory on the host.
+def test_a_held_directory_handle_needs_that_descriptor_inherited() -> None:
+    """``/proc/self/fd/7`` in a process that was not given fd 7 names whatever
+    that process has open at 7. The bind is only meaningful when the child
+    inherits it, so the pass_fds list is what admits the spelling.
     """
-    with pytest.raises(ValueError, match="not beneath an allowed root"):
+    with pytest.raises(ValueError, match="does not inherit"):
         _validate_workspace_bind(
-            "/proc/self/fd/7", ("/srv/pool",), lambda p: p
+            "/proc/self/fd/7", ("/srv/pool",), lambda p: p, pass_fds=(3,)
         )
+    with pytest.raises(ValueError, match="does not inherit"):
+        _validate_workspace_bind("/proc/self/fd/7", (), lambda p: p)
 
 
 def test_empty_roots_refuse_by_name() -> None:
     """Fail closed, and say which condition closed it."""
     with pytest.raises(ValueError, match="no allowed workspace roots"):
         _validate_workspace_bind("/srv/pool/repo", (), lambda p: p)
+
+
+def test_a_descriptor_bind_reaches_both_the_argv_and_the_child() -> None:
+    """The bind names an fd; the child must actually be given that fd."""
+    from tinyassets.node_sandbox import BwrapLauncher
+
+    mount = WorkspaceMount(bind_source="/proc/self/fd/9", pass_fds=(9,))
+    launcher = BwrapLauncher(bwrap_path="/usr/bin/bwrap").for_workspace(mount)
+    assert launcher.pass_fds == (9,)
+    argv = launcher.build_argv("print(1)", ["30", "1", ""])
+    index = argv.index("--bind")
+    assert argv[index : index + 3] == ["--bind", "/proc/self/fd/9", "/workspace"]
+    assert argv[argv.index("--chdir") + 1] == "/workspace"
+
+
+def test_a_descriptor_bind_the_child_does_not_inherit_refuses() -> None:
+    from tinyassets.node_sandbox import BwrapLauncher
+
+    mount = WorkspaceMount(bind_source="/proc/self/fd/9", pass_fds=())
+    launcher = BwrapLauncher(bwrap_path="/usr/bin/bwrap").for_workspace(mount)
+    with pytest.raises(ValueError, match="does not inherit"):
+        launcher.build_argv("print(1)", ["30", "1", ""])
+
+
+def test_the_mount_reaches_the_launcher_not_just_the_runner() -> None:
+    """A default-resolved jail used to bind NOTHING: the mount reached the
+    runner (told its root is /workspace) but never the launcher, so the node
+    found an empty mount point. run_sync specialises the launcher now.
+    """
+    from tinyassets.node_sandbox import BwrapLauncher
+
+    plain = BwrapLauncher(bwrap_path="/usr/bin/bwrap")
+    assert "--bind" not in plain.build_argv("x", ["30", "1", ""])
+
+    # The path form, checked on the launcher rather than through argv: a POSIX
+    # bind path does not survive a Windows host's realpath, and what is under
+    # test here is that the mount reaches the launcher at all.
+    path_mount = WorkspaceMount(
+        bind_source="/srv/pool/lease-1", allowed_roots=("/srv/pool",)
+    )
+    bound = _launcher_for_workspace(plain, path_mount)
+    assert bound.workspace_bind == "/srv/pool/lease-1"
+    assert bound.allowed_workspace_roots == ("/srv/pool",)
+    assert bound is not plain
+
+    # The descriptor form all the way to argv: it never touches realpath.
+    fd_bound = _launcher_for_workspace(
+        plain, WorkspaceMount(bind_source="/proc/self/fd/9", pass_fds=(9,))
+    )
+    argv = fd_bound.build_argv("x", ["30", "1", ""])
+    assert argv[argv.index("--bind") + 1] == "/proc/self/fd/9"
+
+
+def test_the_plain_launcher_refuses_a_descriptor_bind() -> None:
+    """It performs no mount, so /proc/self/fd/<n> would name ITS own fd."""
+    from tinyassets.providers.base import SandboxUnavailableError
+
+    with pytest.raises(SandboxUnavailableError):
+        PlainSubprocessLauncher().for_workspace(
+            WorkspaceMount(bind_source="/proc/self/fd/9", pass_fds=(9,))
+        )
+
+
+def test_run_sync_specialises_the_launcher_for_the_mount(workspace: Path) -> None:
+    """Without this the bind never leaves the mount: argv would carry none."""
+    seen: dict[str, object] = {}
+
+    class _Capture(PlainSubprocessLauncher):
+        def build_argv(self, runner_script: str, args: list[str]) -> list[str]:
+            seen["workspace_bind"] = self.workspace_bind
+            return [PY, "-c", "raise SystemExit(0)"]
+
+    NodeSandbox(launcher=_Capture(), timeout=5).run_sync(
+        node_id="n",
+        source_code="def run(state):\n    return {}\n",
+        input_state={},
+        input_keys=[],
+        output_keys=[],
+        timeout=5,
+        workspace=WorkspaceMount(bind_source=str(workspace)),
+    )
+    assert seen["workspace_bind"] == str(workspace)
+
+
+def test_the_inherited_descriptors_reach_popen(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """argv naming /proc/self/fd/N is meaningless unless the child is given N."""
+    from tinyassets import node_sandbox
+
+    captured: dict[str, object] = {}
+    real_popen = subprocess.Popen
+
+    class _Launcher(PlainSubprocessLauncher):
+        def __init__(self, workspace_bind: str | None = None) -> None:
+            super().__init__(workspace_bind=workspace_bind)
+            self.pass_fds = (7,)
+
+        def build_argv(self, runner_script: str, args: list[str]) -> list[str]:
+            return [PY, "-c", "raise SystemExit(0)"]
+
+    def fake_popen(argv, **kwargs):
+        captured.update(kwargs)
+        kwargs.pop("pass_fds", None)
+        return real_popen(argv, **kwargs)
+
+    monkeypatch.setattr(node_sandbox.sys, "platform", "linux")
+    monkeypatch.setattr(node_sandbox.subprocess, "Popen", fake_popen)
+    NodeSandbox(launcher=_Launcher(), timeout=5).run_sync(
+        node_id="n",
+        source_code="def run(state):\n    return {}\n",
+        input_state={},
+        input_keys=[],
+        output_keys=[],
+        timeout=5,
+        workspace=WorkspaceMount(bind_source=str(workspace), pass_fds=(7,)),
+    )
+    assert captured["pass_fds"] == (7,)
+    assert captured["close_fds"] is True
+
+
+def test_inherited_descriptors_are_refused_on_windows(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Popen cannot pass a descriptor there; dropping it silently would leave a
+    bind naming an fd the child never got."""
+    from tinyassets import node_sandbox
+    from tinyassets.providers.base import SandboxUnavailableError
+
+    class _Launcher(PlainSubprocessLauncher):
+        def __init__(self, workspace_bind: str | None = None) -> None:
+            super().__init__(workspace_bind=workspace_bind)
+            self.pass_fds = (7,)
+
+        def build_argv(self, runner_script: str, args: list[str]) -> list[str]:
+            return [PY, "-c", "raise SystemExit(0)"]
+
+    monkeypatch.setattr(node_sandbox.sys, "platform", "win32")
+    with pytest.raises(SandboxUnavailableError, match="POSIX-only"):
+        NodeSandbox(launcher=_Launcher(), timeout=5).run_sync(
+            node_id="n",
+            source_code="def run(state):\n    return {}\n",
+            input_state={},
+            input_keys=[],
+            output_keys=[],
+            timeout=5,
+            workspace=WorkspaceMount(bind_source=str(workspace), pass_fds=(7,)),
+        )
 
 
 def test_the_rlimit_profile_rides_in_the_third_argv_slot() -> None:
@@ -879,6 +1049,117 @@ def test_the_workspace_is_not_serialised_into_the_node_dict() -> None:
     node = _code_node(workspace="checkout")
     assert node.to_dict()["workspace"] == "checkout"
     assert NodeDefinition.from_dict(node.to_dict()).workspace == "checkout"
+
+
+class _ChainMount:
+    """Stands in for the sink's capability: a path plus a held directory fd."""
+
+    def __init__(self, bind_source: str, lease_fd: int | None = None) -> None:
+        self.bind_source = bind_source
+        self.lease_fd = lease_fd
+        self.limits = WorkspaceLimits()
+        self.allowed_roots: tuple[str, ...] = ()
+
+
+def test_without_a_descriptor_the_compiler_uses_the_path(workspace: Path) -> None:
+    built = gc._sandbox_workspace_mount(_ChainMount(str(workspace)), "build")
+    assert built.bind_source == str(workspace)
+    assert built.pass_fds == ()
+
+
+def test_a_host_that_cannot_bind_a_descriptor_uses_the_path(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gc, "WORKSPACE_FD_BIND_SUPPORTED", False)
+    built = gc._sandbox_workspace_mount(_ChainMount(str(workspace), lease_fd=9), "build")
+    assert built.bind_source == str(workspace)
+    assert built.pass_fds == ()
+
+
+def test_a_dead_lease_descriptor_fails_the_node_loudly(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Falling back to the path here would silently reintroduce the swap."""
+    monkeypatch.setattr(gc, "WORKSPACE_FD_BIND_SUPPORTED", True)
+    with pytest.raises(gc.CodeNodeError, match="lease descriptor is unusable"):
+        gc._sandbox_workspace_mount(_ChainMount(str(workspace), lease_fd=9999), "build")
+
+
+def test_a_capability_naming_no_directory_fails_the_node() -> None:
+    with pytest.raises(gc.CodeNodeError, match="names no directory"):
+        gc._sandbox_workspace_mount(_ChainMount(""), "build")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="a directory descriptor is POSIX-only")
+def test_the_compiler_prefers_the_held_descriptor(workspace: Path) -> None:
+    handle = os.open(str(workspace), os.O_RDONLY)
+    try:
+        built = gc._sandbox_workspace_mount(
+            _ChainMount(str(workspace), lease_fd=handle), "build"
+        )
+        assert built.bind_source == f"/proc/self/fd/{handle}"
+        assert built.pass_fds == (handle,)
+    finally:
+        os.close(handle)
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux" or BWRAP is None,
+    reason="binding through a descriptor needs Linux and bwrap",
+)
+def test_a_rename_mid_run_cannot_swap_the_bound_directory(tmp_path: Path) -> None:
+    """The bind resolves through the fd, so the path it came from may move.
+
+    A path bind would follow the name; this one follows the descriptor, which is
+    the whole reason production uses it.
+    """
+    import threading
+
+    from tinyassets.node_sandbox import BwrapLauncher
+
+    lease = tmp_path / "lease-1"
+    lease.mkdir()
+    (lease / "README.md").write_text("bound through the fd\n", encoding="utf-8")
+    decoy = tmp_path / "lease-2"
+    decoy.mkdir()
+    (decoy / "README.md").write_text("the wrong directory\n", encoding="utf-8")
+
+    handle = os.open(str(lease), os.O_RDONLY)
+    renamed = threading.Event()
+
+    def rename_after_a_moment() -> None:
+        time.sleep(1.0)
+        os.rename(str(lease), str(tmp_path / "lease-1-moved"))
+        os.rename(str(decoy), str(lease))
+        renamed.set()
+
+    mover = threading.Thread(target=rename_after_a_moment, daemon=True)
+    source = (
+        "def run(state):\n"
+        f"    ws.run([{PY!r}, '-c', 'import time; time.sleep(3)'])\n"
+        "    return {'result': ws.read('README.md')}\n"
+    )
+    try:
+        mover.start()
+        launcher = BwrapLauncher(
+            workspace_bind=f"/proc/self/fd/{handle}", pass_fds=(handle,)
+        )
+        result = NodeSandbox(launcher=launcher, timeout=60).run_sync(
+            node_id="ws-node",
+            source_code=source,
+            input_state={},
+            input_keys=[],
+            output_keys=["result"],
+            timeout=60,
+            workspace=WorkspaceMount(
+                bind_source=f"/proc/self/fd/{handle}", pass_fds=(handle,)
+            ),
+        )
+    finally:
+        os.close(handle)
+    assert renamed.is_set(), "the rename never happened; the test proves nothing"
+    assert result.success is True, result.error
+    assert result.output_state["result"] == "bound through the fd\n"
 
 
 def test_workspace_command_timeout_is_a_node_timeout() -> None:

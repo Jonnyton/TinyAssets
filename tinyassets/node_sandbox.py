@@ -166,7 +166,7 @@ _POLL_SECONDS = 0.02
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-_PROC_FD_BIND = re.compile(r"^/proc/self/fd/[0-9]+$")
+_PROC_FD_BIND = re.compile(r"^/proc/self/fd/([0-9]+)$")
 
 
 class SandboxTerminationError(RuntimeError):
@@ -232,6 +232,14 @@ class WorkspaceMount:
 
     bind_source: str
     limits: WorkspaceLimits = field(default_factory=WorkspaceLimits)
+    #: Descriptors the child must inherit. When ``bind_source`` is
+    #: ``/proc/self/fd/<n>`` this holds ``n``: the bind then resolves in the
+    #: bwrap process, which inherited it, to the directory the fd was opened
+    #: on -- not to whatever the path names by the time bwrap looks.
+    pass_fds: tuple[int, ...] = ()
+    #: Roots a PLAIN path may sit beneath. The descriptor form needs none:
+    #: its identity is the fd, not the string.
+    allowed_roots: tuple[str, ...] = ()
 
 
 @dataclass
@@ -1077,14 +1085,24 @@ def _validate_workspace_bind(
     path: str,
     allowed_roots: tuple[str, ...],
     realpath: Callable[[str], str],
+    pass_fds: tuple[int, ...] = (),
 ) -> str:
     """Check the one extra bind against the roots the caller vouches for.
 
-    One rule, no exceptions: an absolute POSIX path (``/proc/self/fd/<n>`` is
-    an accepted spelling for a held directory handle) that is beneath a root
-    the caller passed in. The roots are what makes ``/data/...`` bindable at
-    all -- a universe's workspaces live under it -- so an empty root tuple
-    refuses everything rather than falling back to the never-bind list.
+    Two shapes, each vouched for by the thing that identifies it.
+
+    ``/proc/self/fd/<n>`` is a held directory handle: it is admitted only when
+    ``n`` is one of the descriptors the child will inherit, because that is
+    what makes the string resolve, inside the bwrap process, to the directory
+    the fd was opened on. Requiring it to sit beneath a root as well would be
+    theatre -- the path names a descriptor, not a location.
+
+    Any other path must be absolute and beneath a root the caller passed in,
+    checked literally and after ``realpath``. The roots are what makes
+    ``/data/...`` bindable at all -- a universe's workspaces live under it --
+    so an empty root tuple refuses everything rather than falling back to the
+    never-bind list. A plain path is also swappable by a rename between this
+    check and the mount; the descriptor form is the one production uses.
     """
     if not isinstance(path, str) or not path.strip():
         raise ValueError("workspace bind must be a non-empty path")
@@ -1097,6 +1115,17 @@ def _validate_workspace_bind(
     if any(part == ".." for part in path.split("/")):
         raise ValueError(f"workspace bind may not contain '..': {path!r}")
     trimmed = path.rstrip("/") or "/"
+
+    handle = _PROC_FD_BIND.match(trimmed)
+    if handle is not None:
+        number = int(handle.group(1))
+        if number not in tuple(pass_fds or ()):
+            raise ValueError(
+                f"workspace bind {path!r} names a descriptor the child does not "
+                f"inherit (pass_fds={tuple(pass_fds or ())!r})"
+            )
+        return trimmed
+
     roots = tuple(
         r for r in (allowed_roots or ())
         if isinstance(r, str) and r.startswith("/") and r.strip()
@@ -1110,14 +1139,13 @@ def _validate_workspace_bind(
         raise ValueError(
             f"workspace bind {path!r} is not beneath an allowed root {roots!r}"
         )
-    if not _PROC_FD_BIND.match(trimmed):
-        # A symlinked bind source would otherwise smuggle in any directory.
-        resolved = realpath(trimmed)
-        if not _beneath_any(resolved, roots):
-            raise ValueError(
-                f"workspace bind {path!r} resolves to {resolved!r}, "
-                f"outside the allowed roots {roots!r}"
-            )
+    # A symlinked bind source would otherwise smuggle in any directory.
+    resolved = realpath(trimmed)
+    if not _beneath_any(resolved, roots):
+        raise ValueError(
+            f"workspace bind {path!r} resolves to {resolved!r}, "
+            f"outside the allowed roots {roots!r}"
+        )
     return trimmed
 
 
@@ -1127,6 +1155,7 @@ def _bwrap_argv(
     realpath: Callable[[str], str] | None = None,
     workspace_bind: str | None = None,
     allowed_workspace_roots: tuple[str, ...] = (),
+    pass_fds: tuple[int, ...] = (),
 ) -> list[str]:
     """Build the bubblewrap prefix for a code-node child process.
 
@@ -1157,7 +1186,10 @@ def _bwrap_argv(
     bind_target = None
     if workspace_bind is not None:
         bind_target = _validate_workspace_bind(
-            workspace_bind, tuple(allowed_workspace_roots or ()), realpath
+            workspace_bind,
+            tuple(allowed_workspace_roots or ()),
+            realpath,
+            tuple(pass_fds or ()),
         )
 
     argv: list[str] = [
@@ -1259,6 +1291,27 @@ def _is_jail(launcher: Any) -> bool:
     return bool(getattr(launcher, "is_jail", False))
 
 
+def _launcher_for_workspace(launcher: Any, mount: WorkspaceMount) -> Any:
+    """The launcher that actually binds *mount*.
+
+    Without this the mount reached the runner (which was told its root is
+    ``/workspace``) but never the launcher, so a default-resolved jail bound
+    nothing and the node found an empty mount point.
+    """
+    specialise = getattr(launcher, "for_workspace", None)
+    if specialise is None:
+        raise SandboxUnavailableError(
+            f"launcher {getattr(launcher, 'name', launcher)!r} cannot host a "
+            "workspace: it cannot bind one"
+        )
+    return specialise(mount)
+
+
+def _launcher_pass_fds(launcher: Any) -> tuple[int, ...]:
+    """Descriptors the child must inherit for its bind to resolve."""
+    return tuple(getattr(launcher, "pass_fds", ()) or ())
+
+
 def _launcher_workspace_root(launcher: Any) -> str:
     """Where the launcher makes the workspace visible to the child."""
     getter = getattr(launcher, "workspace_root", None)
@@ -1327,10 +1380,23 @@ class BwrapLauncher:
         bwrap_path: str | None = None,
         workspace_bind: str | None = None,
         allowed_workspace_roots: tuple[str, ...] = (),
+        pass_fds: tuple[int, ...] = (),
     ) -> None:
         self.bwrap_path = bwrap_path
         self.workspace_bind = workspace_bind
         self.allowed_workspace_roots = tuple(allowed_workspace_roots or ())
+        self.pass_fds = tuple(pass_fds or ())
+
+    def for_workspace(self, mount: WorkspaceMount) -> BwrapLauncher:
+        """A launcher that binds *mount*, inheriting whatever fds it names."""
+        return type(self)(
+            bwrap_path=self.bwrap_path,
+            workspace_bind=mount.bind_source,
+            allowed_workspace_roots=(
+                mount.allowed_roots or self.allowed_workspace_roots
+            ),
+            pass_fds=mount.pass_fds,
+        )
 
     def build_argv(self, runner_script: str, args: list[str]) -> list[str]:
         return [
@@ -1338,6 +1404,7 @@ class BwrapLauncher:
                 bwrap_path=self.bwrap_path,
                 workspace_bind=self.workspace_bind,
                 allowed_workspace_roots=self.allowed_workspace_roots,
+                pass_fds=self.pass_fds,
             ),
             sys.executable, "-c", runner_script, *args,
         ]
@@ -1375,6 +1442,17 @@ class PlainSubprocessLauncher:
         #: mount, so the directory keeps its real path and the child is
         #: started inside it.
         self.workspace_bind = workspace_bind
+        #: No jail, no bind, nothing to inherit.
+        self.pass_fds: tuple[int, ...] = ()
+
+    def for_workspace(self, mount: WorkspaceMount) -> PlainSubprocessLauncher:
+        """The path, never the descriptor: there is no bind to resolve it in."""
+        if mount.bind_source.startswith("/proc/self/fd/"):
+            raise SandboxUnavailableError(
+                "the tests-only launcher cannot bind a descriptor: it performs "
+                "no mount, so /proc/self/fd/<n> would name this process's fd"
+            )
+        return type(self)(workspace_bind=mount.bind_source)
 
     def build_argv(self, runner_script: str, args: list[str]) -> list[str]:
         return [sys.executable, "-c", runner_script, *args]
@@ -1721,6 +1799,7 @@ class NodeSandbox:
         launcher = self.resolve_launcher()
         rlimit_profile_arg = ""
         if workspace is not None:
+            launcher = _launcher_for_workspace(launcher, workspace)
             payload["workspace"] = {
                 "root": _launcher_workspace_root(launcher),
                 "limits": workspace.limits.as_message(),
@@ -1746,6 +1825,17 @@ class NodeSandbox:
             # Not preexec_fn: start_new_session is done by the C layer, which
             # is the only fork-time work that is safe in a threaded parent.
             popen_kwargs["start_new_session"] = True
+
+        inherited = _launcher_pass_fds(launcher)
+        if inherited:
+            if sys.platform == "win32":
+                raise SandboxUnavailableError(
+                    "descriptor inheritance is POSIX-only; this launcher asked "
+                    f"to pass {inherited!r} on win32"
+                )
+            # close_fds stays True: pass_fds is the exception list, and the
+            # bind resolves only because the bwrap process holds these.
+            popen_kwargs["pass_fds"] = inherited
 
         try:
             try:
