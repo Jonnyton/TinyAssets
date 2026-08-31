@@ -54,7 +54,7 @@ No → it is the user's, whatever it is protecting them from.
 | `MAX_WORKSPACE_TIMEOUT_SECONDS = 1800` | see the chain below |
 | Branch naming, "never the default branch" | your git workflow |
 | Retry / resume / recovery policy | your workflow's error handling |
-| No network in the jail | **contested — see below** |
+| No network in the jail | nothing — resolved below: arbitrate (rate, quota, per-tenant egress), never prohibit |
 
 ### The `ws.__globals__` finding inverts
 
@@ -122,13 +122,42 @@ an uninspected workflow it didnt test and come to trust first."* Inspection and
 testing are the user's judgement, not a platform gate. The platform's job is to
 make the worst case survivable, which the vault does.
 
-### Network — the one still open
+### Network — resolved: arbitrate, never prohibit
 
-"You are god in your own universe" says your code should have outbound network.
-The cross-tenant edge is narrow but real: shared egress IP reputation, and
-abuse attributable to the platform. That is an *arbitration* problem — rate,
-quota, attribution — not a reason the owner cannot make a request. Unresolved
-here.
+Two corrections got this to a settled answer.
+
+**There are no anonymous actors.** Founder, 2026-08-31: *"there are no
+anoymous unsers. universes can only be created by users, and only universes can
+do anything on the plateform."* An earlier draft of this section argued against
+"raw anonymous sockets from the shared IP". That framing was wrong and
+contradicts a rule already recorded in this project: every execution is
+attached to a universe, and every universe to a user. Nothing here is
+unattributable.
+
+**So the problem is shared fate, not anonymity.** Every universe's traffic
+leaves from one public IP. Services judge by IP, so one universe that gets the
+address rate-limited or blocklisted degrades every other universe on the host.
+Attribution identifies who did it; it does not un-blocklist anyone. That
+collateral damage is a real user-to-user effect and is the only part of network
+access the floor lets the platform touch.
+
+**Therefore: arbitrate, never prohibit.** Because every action already has an
+owner, the platform has what it needs — per-tenant egress rate and quota,
+attribution (which already exists: `/data/.outbound-proxy/<connection>/audit.jsonl`),
+and, when a use case demands it, **per-tenant egress identity**, which removes
+shared fate outright. A prohibition on sockets is the wrong instrument; it
+denies the owner a capability to solve a problem that arbitration solves.
+
+**Why it is not urgent.** Outbound today goes through
+`authenticated_external_call` on a connection the user holds, so reputation
+attaches to the user's own provider account rather than to the droplet. Email —
+the case where a blocklist does lasting damage — travels via the user's own
+email provider. The shared-IP exposure is therefore small in the current shape.
+
+**Scoping decision, not a safety one.** Slice 1 needs no raw sockets, because
+everything it does is authenticated anyway. That is "not needed yet", **not**
+"not allowed". When a use case arrives, build per-tenant egress; do not build a
+proxy pool speculatively, and do not write a prohibition into the surface.
 
 ## The chain, now visibly a chain
 
@@ -179,8 +208,8 @@ Entry point: `run_script(source)`. Nothing else.
 3. **Per-tenant arbitration must exist before the host-wide slot is removed**,
    or the one remaining shared-resource invariant is unenforced. The only item
    here that is a build rather than a delete.
-4. **Network egress** — the owner should have it; attribution and rate for
-   abuse is the open piece.
+4. **Per-tenant egress identity** — build when a use case needs raw sockets;
+   it removes shared-IP fate outright. Not speculative work.
 5. **Where libraries live** — naming, versioning, import. Still its own change,
    but much lighter than feared: the vault means it is a distribution problem,
    not a safety one.
