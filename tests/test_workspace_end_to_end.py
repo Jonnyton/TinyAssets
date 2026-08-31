@@ -231,38 +231,106 @@ def chain(universe: Universe) -> EffectChain:
 @pytest.fixture
 def fs_bridge(monkeypatch: pytest.MonkeyPatch) -> dict[str, list]:
     """POSIX runs the REAL no-follow handles. Windows has neither ``dir_fd`` nor
-    ``O_NOFOLLOW``, so there the helpers are injected exactly as the adapter's
-    own suite injects them - the Linux leg of this file is what proves the real
-    ones work."""
+    ``O_NOFOLLOW``, so there they are injected - but the doubles carry the real
+    helpers' REFUSALS, not just their effects.
+
+    That distinction is the whole point. A double that copies the effect and
+    drops the refusal cannot tell two helpers apart, and the adapter creating
+    ``<lease>/repo`` with ``create_lease_dir`` - whose name rule refuses
+    ``'repo'`` - passed here and failed on Ubuntu CI (2026-08-30). Every rule
+    below is imported from the module under test or written against the same
+    predicate, so the double cannot drift from it.
+
+    What CANNOT be simulated here is the half that is POSIX by nature: the
+    parent's uid and its group/other write bits. Windows has no equivalent, and
+    the Linux leg of this file runs the real helper - so those live there and
+    are named here rather than faked.
+    """
     calls: dict[str, list] = {"open_dir_nofollow": [], "create_lease_dir": [], "copy": []}
     if POSIX:
         return calls
 
     from tinyassets import workspace_fs
 
+    def _fd_path(handle) -> Path:
+        return Path(str(handle).removeprefix("fd:"))
+
     def open_dir_nofollow(path):
         calls["open_dir_nofollow"].append(str(path))
-        Path(path).mkdir(parents=True, exist_ok=True)
-        return f"fd:{path}"
+        target = Path(path)
+        # The real one refuses a missing parent - which is how the whole
+        # "<data>/scratch has no creator" finding surfaced. Creating it here
+        # would hide the same class again.
+        if not target.is_dir():
+            raise FileNotFoundError(str(target))
+        return f"fd:{target}"
 
-    def create_lease_dir(parent_fd, name):
+    def create_lease_dir(parent_fd, name, *, mode=0o700):
+        """The SHARED pool root's rule: an unguessable name."""
         calls["create_lease_dir"].append((parent_fd, name))
-        parent = str(parent_fd).removeprefix("fd:")
-        (Path(parent) / name).mkdir(parents=True, exist_ok=True)
-        return f"fd:{parent}/{name}"
+        workspace_fs._require_component(name)
+        if len(name) < workspace_fs.MIN_LEASE_NAME_CHARS or any(
+            char not in workspace_fs._HEX for char in name
+        ):
+            raise workspace_fs.UnsafePoolPath(
+                f"a lease directory name must be at least "
+                f"{workspace_fs.MIN_LEASE_NAME_CHARS} random hex characters, got {name!r}"
+            )
+        target = _fd_path(parent_fd) / name
+        target.mkdir(parents=True)          # not exist_ok: the real one is mkdirat
+        return f"fd:{target}"
+
+    def create_workspace_subdir(parent_fd, name, *, mode=0o700):
+        """The OWNED lease's rule: one safe component, and no entropy demand -
+        the parent is already private and unguessable."""
+        calls.setdefault("create_workspace_subdir", []).append((parent_fd, name))
+        workspace_fs._require_component(name)
+        target = _fd_path(parent_fd) / name
+        target.mkdir(parents=True)
+        return f"fd:{target}"
+
+    def open_subdir_nofollow(parent_fd, name):
+        calls.setdefault("open_subdir_nofollow", []).append((parent_fd, name))
+        workspace_fs._require_component(name)
+        target = _fd_path(parent_fd) / name
+        if workspace_fs._is_link(str(target)):
+            raise workspace_fs.UnsafePoolPath(f"{name!r} is a link")
+        if not target.is_dir():
+            if not target.exists():
+                raise FileNotFoundError(str(target))
+            raise workspace_fs.UnsafePoolPath(f"{name!r} is not a directory")
+        return f"fd:{target}"
 
     def copy_regular_file_beneath(dir_fd, relpath, dest_path, *, max_bytes):
         calls["copy"].append((dir_fd, relpath, str(dest_path), max_bytes))
-        source = Path(str(dir_fd).removeprefix("fd:")) / relpath
+        root = _fd_path(dir_fd)
+        # The real one refuses an absolute path, a traversal, an empty
+        # component, and a link at ANY step - beneath-and-no-symlink is the
+        # contract, and a double that just joins the path grants an escape the
+        # real helper would refuse.
+        parts = workspace_fs._split_relpath(relpath)
+        source = root
+        for part in parts:
+            source = source / part
+            if workspace_fs._is_link(str(source)):
+                raise workspace_fs.UnsafePoolPath(f"{part!r} is a link")
+        if not source.is_file():
+            raise workspace_fs.UnsafePoolPath(f"{str(relpath)!r} is not a regular file")
+        if source.stat().st_size > max_bytes:
+            raise workspace_fs.UnsafePoolPath(
+                f"{str(relpath)!r} is over the {max_bytes} bound"
+            )
+        destination = Path(dest_path)
+        if destination.exists() or workspace_fs._is_link(str(destination)):
+            raise FileExistsError(str(destination))   # the real one uses O_EXCL
         data = source.read_bytes()
-        if len(data) > max_bytes:
-            raise ValueError("bundle exceeds max_bytes")
-        Path(dest_path).write_bytes(data)
+        destination.write_bytes(data)
         return len(data)
 
     monkeypatch.setattr(workspace_fs, "open_dir_nofollow", open_dir_nofollow)
     monkeypatch.setattr(workspace_fs, "create_lease_dir", create_lease_dir)
-    monkeypatch.setattr(workspace_fs, "create_workspace_subdir", create_lease_dir)
+    monkeypatch.setattr(workspace_fs, "create_workspace_subdir", create_workspace_subdir)
+    monkeypatch.setattr(workspace_fs, "open_subdir_nofollow", open_subdir_nofollow)
     monkeypatch.setattr(
         workspace_fs, "copy_regular_file_beneath", copy_regular_file_beneath
     )
@@ -464,6 +532,33 @@ def _lease_rows(universe: Universe) -> list[tuple]:
 # --------------------------------------------------------------------------
 # 1. checkout, then a node runs inside it
 # --------------------------------------------------------------------------
+
+
+def test_the_two_directory_helpers_are_not_interchangeable(
+    origin: Origin, universe: Universe, chain: EffectChain, fs_bridge, short_paths
+) -> None:
+    """Which helper creates WHAT is the distinction that reached Ubuntu CI.
+
+    The lease sits in the SHARED pool root, so its name must be unguessable and
+    ``create_lease_dir`` demands that. ``<lease>/repo`` and a permanent
+    generation sit inside a directory this process already owns, where the same
+    rule refuses ``'repo'`` and ``'1'`` and protects nothing - they go through
+    ``create_workspace_subdir``. A double that answers both the same way cannot
+    see the difference, which is exactly how it shipped.
+    """
+    if POSIX:
+        pytest.skip("the recording doubles are the Windows half; POSIX runs the real ones")
+    _fire(_packet(), universe=universe, chain=chain, worker=WireWorker(origin))
+
+    lease_names = [name for _fd, name in fs_bridge["create_lease_dir"]]
+    subdir_names = [name for _fd, name in fs_bridge.get("create_workspace_subdir", [])]
+    assert len(lease_names) == 1, lease_names
+    assert len(lease_names[0]) >= 16, "the lease name is not unguessable"
+    assert "repo" in subdir_names, subdir_names
+    assert "repo" not in lease_names, (
+        "the repository directory went through the pool-root helper; its name "
+        "rule refuses 'repo' on POSIX"
+    )
 
 
 def test_a_checkout_delivers_a_workspace_a_node_can_run_git_in(
