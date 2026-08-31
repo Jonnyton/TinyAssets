@@ -80,9 +80,41 @@ carry a reference to the runner's module namespace at all:
 * drop `subprocess`, `os` and `_original_import` from the runner's module
   globals once the closures that need them are built.
 
-Both need the same audit: **`ws` is not the only object injected into the node
-namespace**, and every injected callable leaks its defining module the same
-way. Enumerate the injected set before choosing.
+## The audit, done — and it rules out the obvious fix
+
+`ws` is **not** the only door. Exactly two names are injected
+(`node_sandbox.py:1261-1263`): `invoke_mcp_action` and `ws`. Measured in the
+jail on the Linux oracle:
+
+```
+run.__globals__                 ->  4 names, subprocess: False
+invoke_mcp_action.__globals__   -> 68 names, subprocess: True, _original_import: True
+                                   is ws.read.__func__.__globals__: True
+```
+
+Three things follow, and the third is the one that matters:
+
+1. The node's OWN namespace is clean — `run.__globals__` holds 4 names and no
+   modules. `exec(source_code, namespace)` is doing its job.
+2. `invoke_mcp_action` is an equally good door, and it is a plain function, so
+   it has no `__func__` indirection to remove.
+3. **Both doors are the SAME dict.** So any fix aimed at `ws` alone — a proxy
+   object, a `__getattr__` wrapper, hiding `__func__` — achieves nothing,
+   because `invoke_mcp_action.__globals__` still reaches the identical
+   namespace. The leak is the shared runner module, not either object.
+
+That kills the "wrap `ws`" family of fixes. What is left:
+
+* **Shrink the runner namespace itself** — `del` the module references once the
+  closures that need them are built, so there is nothing worth reaching. Needs
+  care: `_original_import` is used by `_restricted_import`, so it has to become
+  a closure cell or a default argument rather than a module global.
+* **Build both injected callables in a minimal namespace** — `exec` their
+  definitions in a dict holding only what they need, so `__globals__` is inert
+  for both. Costs a restructure of the runner script.
+
+The first is smaller and probably sufficient; the second is the one that stays
+correct when a third injected name is added.
 
 A fix is not proven until it is asserted by a test that runs *inside* bwrap on
 the Linux oracle, and that goes red on the tree above.
