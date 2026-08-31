@@ -537,3 +537,96 @@ def test_the_full_route_worker_reads_a_version_through_the_same_reader() -> None
         'request["owner_repo"] + ".git"' not in body
     ), "the wire path must be derived, not hand-spelled on both sides"
     assert "the route never read a libcurl version" in body, "and it is asserted"
+
+
+# --------------------------------------------------------------------------- #
+# The jail probes must be code the code-node validator accepts
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("name", "source"),
+    [
+        (
+            "double_fork",
+            lambda: oracle.double_fork_node_source("ta-marker-abc", detacher="setsid "),
+        ),
+        ("double_fork_plain", lambda: oracle.double_fork_node_source("ta-marker-abc")),
+        ("isolation", lambda: oracle.isolation_node_source("/usr/bin/python3")),
+    ],
+)
+def test_a_probe_node_is_source_the_validator_accepts(name: str, source) -> None:
+    """Two checks reported a validation error instead of an answer for weeks.
+
+    Their probes were embedded Python carrying ``subprocess``, ``open(`` and
+    ``socket`` inside string literals, and the validator scans the whole source
+    text -- so `jail_kill_reaps_a_double_fork` and
+    `jail_has_no_network_no_data_no_escape` never ran at all. Found only when
+    the oracle was run in the live container (2026-08-31); nothing on this side
+    could see it, because nothing here validated the probes.
+    """
+    from tinyassets.node_sandbox import NodeSandbox
+
+    errors = NodeSandbox().validate_source(source())
+    assert errors == [], f"{name} probe is not runnable: {errors}"
+
+
+def test_the_probes_reach_the_jail_only_through_the_ws_surface() -> None:
+    """`ws.run` / `ws.write` is the surface a real user's node has.
+
+    A probe that needed anything else would be proving something about a
+    privileged path no node can take.
+    """
+    import re
+
+    surface = {"run", "write", "read", "glob", "bundle"}
+    # Each probe's REQUIRED calls, not merely "a subset of ws": a subset check
+    # stays green when a call is deleted, which is not the claim being made.
+    expected = {
+        "double_fork": (oracle.double_fork_node_source("ta-marker-abc"), {"run"}, 2),
+        "isolation": (oracle.isolation_node_source("/usr/bin/python3"), {"write", "run"}, 2),
+    }
+    for name, (source, required, least_calls) in expected.items():
+        calls = re.findall(r"\bws\.(\w+)\(", source)
+        assert set(calls) <= surface, (name, set(calls))
+        assert required <= set(calls), f"{name} lost {required - set(calls)}"
+        assert len(calls) >= least_calls, (name, calls)
+
+
+def test_a_corpse_is_not_counted_as_a_running_process(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`/proc/<pid>` outliving the process is the trap the marker scan sits in."""
+    zombie = tmp_path / "4242"
+    zombie.mkdir()
+    (zombie / "cmdline").write_bytes(b"sleep\x00300 # ta-marker-xyz\x00")
+    (zombie / "stat").write_text("4242 (sh) Z 1 4242 4242 0 -1 0", encoding="utf-8")
+    monkeypatch.setattr(oracle, "Path", lambda p: tmp_path if str(p) == "/proc" else Path(p))
+    assert oracle._marker_is_running("ta-marker-xyz") is False
+
+    (zombie / "stat").write_text("4242 (sh) S 1 4242 4242 0 -1 0", encoding="utf-8")
+    assert oracle._marker_is_running("ta-marker-xyz") is True
+
+
+def test_the_oracle_ships_in_the_image_that_has_to_run_it() -> None:
+    """An acceptance check you must `docker cp` first is one that gets skipped.
+
+    The deployed image carried only a couple of files in `/app/scripts`, so the
+    live run needed the script copied in by hand (2026-08-31).
+    """
+    dockerfile = _SCRIPT.parent.parent / "Dockerfile"
+    copied = [
+        line for line in dockerfile.read_text(encoding="utf-8").splitlines()
+        if line.startswith("COPY ") and "workspace_bwrap_oracle.py" in line
+    ]
+    assert copied == [
+        "COPY scripts/workspace_bwrap_oracle.py /app/scripts/workspace_bwrap_oracle.py"
+    ]
+
+
+def test_the_oracle_needs_nothing_the_image_lacks() -> None:
+    """Stdlib only at import time; everything else is imported inside a check."""
+    source = _SCRIPT.read_text(encoding="utf-8")
+    head = source.split("def ", 1)[0]
+    for third_party in ("import yaml", "import requests", "import httpx", "import pytest"):
+        assert third_party not in head, f"the oracle imports {third_party} at module scope"

@@ -198,11 +198,30 @@ def _python() -> str:
     return _PY if Path(_PY).exists() else (shutil.which("python3") or sys.executable)
 
 
+def _process_is_alive(pid_dir: Path) -> bool:
+    """Whether ``/proc/<pid>`` names a process that is still RUNNING.
+
+    An entry existing is not enough: a killed process whose parent has not
+    reaped it stays as a ``Z`` entry, and whether anything reaps it depends on
+    the environment's init. The state letter is the first field after the LAST
+    ``)`` -- ``comm`` is parenthesised and may itself contain a paren.
+    """
+    try:
+        stat_text = (pid_dir / "stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    _before, paren, after = stat_text.rpartition(")")
+    fields = after.split() if paren else []
+    return bool(fields) and fields[0] != "Z"
+
+
 def _marker_is_running(marker: str) -> bool:
-    """Any live process whose command line carries *marker*.
+    """Any LIVE process whose command line carries *marker*.
 
     A jailed pid is namespace-local and means nothing out here, so a unique
     marker in ``/proc/*/cmdline`` is the only host-side question worth asking.
+    The marker also answers the pid-recycling problem for free: a recycled pid
+    belongs to a process with a different command line.
     """
     for entry in Path("/proc").iterdir():
         if not entry.name.isdigit():
@@ -211,7 +230,7 @@ def _marker_is_running(marker: str) -> bool:
             cmdline = (entry / "cmdline").read_bytes()
         except OSError:
             continue
-        if marker.encode() in cmdline:
+        if marker.encode() in cmdline and _process_is_alive(entry):
             return True
     return False
 
@@ -295,6 +314,83 @@ def _git_links_libcurl() -> str:
         if "libcurl" in line:
             return line.strip().split(" ")[0]
     return "?"
+
+
+def double_fork_node_source(marker: str, *, detacher: str = "") -> str:
+    """The node that detaches a sleeper and then hangs, for check 2.
+
+    A MODULE-LEVEL builder, not a literal inside the check, so a test can hand
+    it to the real code-node validator. Both jail probes were written as
+    embedded Python and carried ``subprocess`` / ``open(`` / ``socket`` in
+    their string literals; the validator scans the whole source text, so the
+    two checks never ran and reported a validation error instead of an answer.
+    Nothing here goes through Python at all.
+    """
+    spawn = f"{detacher}/bin/sh -c 'sleep 300 # {marker}' </dev/null >/dev/null 2>&1 &"
+    return (
+        "def run(state):\n"
+        f"    ws.run(['/bin/sh', '-c', {spawn!r}])\n"
+        "    ws.run(['/bin/sh', '-c', 'sleep 120'], timeout=2)\n"
+        "    return {'result': 'never'}\n"
+    )
+
+
+def isolation_node_source(python: str, *, host_witness: str = "/usr/bin") -> str:
+    """The node that probes network, ``/data`` and escape, for check 3.
+
+    ``http.client`` rather than ``socket``, and ``Path.write_text`` rather than
+    ``open(``: those two are FORBIDDEN_PATTERNS and this text is part of the
+    node's source. The probe is placed with ``ws.write`` and run with
+    ``ws.run`` -- the surface a real user's node has.
+
+    Two escape questions, because the obvious one has a misleading answer.
+    ``BwrapLauncher`` emits no ``--ro-bind / /``: bwrap builds a fresh PRIVATE
+    root and binds specific paths into it. Writing ``/escape-probe`` therefore
+    SUCCEEDS and reaches nothing, which is fine and is not what anyone wanted
+    to know. What matters is whether the write is visible on the host (the
+    check looks, from outside) and whether a read-only bind is really read-only
+    -- ``host_witness`` is a directory bound with ``--ro-bind``, so a write
+    landing there would be a real escape.
+    """
+    probe = (
+        "import http.client, json, os, pathlib\n"
+        "out = {}\n"
+        "try:\n"
+        "    conn = http.client.HTTPSConnection('1.1.1.1', 443, timeout=5)\n"
+        "    conn.request('GET', '/')\n"
+        "    out['net'] = 'CONNECTED'\n"
+        "except Exception as exc:\n"
+        "    out['net'] = type(exc).__name__\n"
+        "out['data'] = os.path.isdir('/data')\n"
+        "try:\n"
+        "    pathlib.Path('/escape-probe').write_text('x')\n"
+        "    out['root'] = 'WROTE'\n"
+        "except Exception as exc:\n"
+        "    out['root'] = type(exc).__name__\n"
+        "try:\n"
+        f"    pathlib.Path({host_witness!r} + '/ta-escape-probe').write_text('x')\n"
+        "    out['readonly_bind'] = 'WROTE'\n"
+        "except Exception as exc:\n"
+        "    out['readonly_bind'] = type(exc).__name__\n"
+        "print(json.dumps(out))\n"
+    )
+    return (
+        "def run(state):\n"
+        f"    ws.write('probe.py', {probe!r})\n"
+        f"    out = ws.run([{python!r}, '/workspace/probe.py'])\n"
+        "    return {'result': out}\n"
+    )
+
+
+def _home(path: Path) -> Path:
+    """A HOME directory that EXISTS, because ``git_environment`` requires one.
+
+    Three checks passed a path they never created and failed on their own
+    scaffolding rather than on what they were testing (found in the live
+    container, 2026-08-31). Every ``home_dir=`` in this file goes through here.
+    """
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _git_env(home: Path, git_binary: str) -> dict[str, str]:
@@ -416,17 +512,13 @@ def check_jail_kill_reaps_a_double_fork(context: Context) -> Outcome:
     root = scratch / "generation"
     root.mkdir()
     marker = "ta-oracle-canary-" + os.urandom(6).hex()
-    python = _python()
-    spawner = (
-        "import subprocess, sys\n"
-        "subprocess.Popen(['sleep', '300', sys.argv[1]], start_new_session=True)\n"
-    )
-    source = (
-        "def run(state):\n"
-        f"    ws.run([{python!r}, '-c', {spawner!r}, {marker!r}])\n"
-        f"    ws.run([{python!r}, '-c', 'import time; time.sleep(120)'], timeout=2)\n"
-        "    return {'result': 'never'}\n"
-    )
+    # Shell, not embedded Python. The node's SOURCE TEXT is what the code-node
+    # validator scans, and a probe written in Python carried `subprocess` in a
+    # string literal -- so this check never ran at all until the droplet said
+    # "Forbidden pattern: 'subprocess'" (2026-08-31). Everything here goes
+    # through `ws.run`, which is also the path a real user's node takes.
+    detacher = "setsid " if shutil.which("setsid") else ""
+    source = double_fork_node_source(marker, detacher=detacher)
     started = time.monotonic()
     result = _run_workspace_node(
         source,
@@ -450,7 +542,7 @@ def check_jail_kill_reaps_a_double_fork(context: Context) -> Outcome:
         timed_out and not sleeper_alive,
         f"node failed after {elapsed:.1f}s with workspace_timeout={flagged}, "
         f"error {error[:100]!r}; sleeper carrying {marker} still running: "
-        f"{sleeper_alive}",
+        f"{sleeper_alive} (detached with {detacher.strip() or 'a plain background job'})",
     )
 
 
@@ -459,26 +551,13 @@ def check_jail_has_no_network_no_data_no_escape(context: Context) -> Outcome:
     scratch = context.scratch("jail-isolation")
     root = scratch / "generation"
     root.mkdir()
-    probe = (
-        "import json, socket, os\n"
-        "out = {}\n"
-        "try:\n"
-        "    s = socket.socket(); s.settimeout(5)\n"
-        "    s.connect(('1.1.1.1', 443)); out['net'] = 'CONNECTED'\n"
-        "except OSError as exc:\n"
-        "    out['net'] = type(exc).__name__ + ':' + str(getattr(exc, 'errno', ''))\n"
-        "out['data'] = os.path.isdir('/data')\n"
-        "try:\n"
-        "    open('/escape-probe', 'w').write('x'); out['escape'] = 'WROTE'\n"
-        "except OSError as exc:\n"
-        "    out['escape'] = type(exc).__name__\n"
-        "print(json.dumps(out))\n"
-    )
-    source = (
-        "def run(state):\n"
-        f"    out = ws.run([{_python()!r}, '-c', {probe!r}])\n"
-        "    return {'result': out}\n"
-    )
+    # Written to the workspace with ws.write and run with ws.run. The probe
+    # avoids `socket` and `open(` deliberately: those are FORBIDDEN_PATTERNS,
+    # the validator scans the node's whole source text including this literal,
+    # and with them in it the check never ran (droplet, 2026-08-31).
+    # `http.client` connects just as well, and `Path.write_text` writes.
+    witness = "/usr/bin"
+    source = isolation_node_source(_python(), host_witness=witness)
     result = _run_workspace_node(
         source,
         bind_source=str(root),
@@ -491,10 +570,19 @@ def check_jail_has_no_network_no_data_no_escape(context: Context) -> Outcome:
     payload = str(result.output_state.get("result"))
     connected = "CONNECTED" in payload
     saw_data = '"data": true' in payload.lower()
-    wrote_out = "WROTE" in payload
+    # The read-only bind must have refused. The jail's own private root is
+    # allowed to be writable -- see isolation_node_source.
+    wrote_readonly = '"readonly_bind": "wrote"' in payload.lower()
+    # And the host is asked directly, which is the only escape question whose
+    # answer cannot be argued with.
+    on_host = [
+        path
+        for path in (Path("/escape-probe"), Path(witness) / "ta-escape-probe")
+        if path.exists()
+    ]
     return Outcome(
-        not connected and not saw_data and not wrote_out,
-        f"probe said {payload[:200]}",
+        not connected and not saw_data and not wrote_readonly and not on_host,
+        f"probe said {payload[:220]}; visible on the host: {[str(p) for p in on_host]}",
     )
 
 
@@ -534,7 +622,10 @@ def check_ws_bundle_imports_under_fsck(context: Context) -> Outcome:
     if not bundle.is_file():
         return Outcome(False, f"ws.bundle returned {relative!r}, which is not a file")
 
-    home = scratch / "verify-home"
+    # git_environment refuses a HOME that does not exist, and this one was
+    # never created -- the check failed on its own scaffolding, not on the
+    # bundle (droplet, 2026-08-31).
+    home = _home(scratch / "verify-home")
     git_path = str(Path(shutil.which(context.git_binary) or context.git_binary).parent)
     verify_scratch = scratch / "verify-scratch"
     verify_scratch.mkdir()
@@ -554,7 +645,7 @@ def check_ws_bundle_imports_under_fsck(context: Context) -> Outcome:
         bundle,
         scratch / "imported",
         ref_name=refs[0],
-        home_dir=scratch / "import-home",
+        home_dir=_home(scratch / "import-home"),
         path=git_path,
         git_binary=context.git_binary,
     )
@@ -593,9 +684,13 @@ def check_run_git_timeout_reaps_a_descendant(context: Context) -> Outcome:
         return Outcome(False, "the child never recorded a descendant pid")
     descendant = int(marker.read_text().strip())
     deadline = time.monotonic() + 10
-    while Path(f"/proc/{descendant}").is_dir() and time.monotonic() < deadline:
+    while _process_is_alive(Path(f"/proc/{descendant}")) and time.monotonic() < deadline:
         time.sleep(0.05)
-    alive = Path(f"/proc/{descendant}").is_dir()
+    # NOT `os.path.isdir`: a killed process whose parent has not reaped it
+    # stays as a `Z` entry, and whether anything reaps it depends on the
+    # environment's init -- this check reported "alive: True" for a process
+    # that was dead, in a container whose PID 1 is not a reaper (2026-08-31).
+    alive = _process_is_alive(Path(f"/proc/{descendant}"))
     return Outcome(
         not alive,
         f"timed out after {elapsed:.1f}s; double-forked pid {descendant} alive: {alive}",
@@ -762,14 +857,15 @@ def check_full_route(context: Context) -> Outcome:
             resolver=lambda hostname, port: ["127.0.0.1"],
             classifier=lambda ip_text: ip_text,
         )
-        broker_dir = staging / "broker"
-        broker_dir.mkdir(parents=True, exist_ok=True)
         protocol, broker_host, broker_path = transport.broker_binding()
         broker = CredentialBroker(
             protocol, broker_host, broker_path, "x-access-token", secret
         )
         try:
-            broker.serve(socket_dir=broker_dir)
+            # No socket_dir: the broker's own short path, exactly as the real
+            # worker does it. Passing the staging directory is what made this
+            # check refuse with "too long for sun_path" in production.
+            broker.serve()
             wanted = (
                 "operation=get" + chr(10)
                 + "protocol=" + protocol + chr(10)
@@ -787,7 +883,7 @@ def check_full_route(context: Context) -> Outcome:
                 source_repo,
                 sha,
                 bundle,
-                home_dir=staging / "bundle-home",
+                home_dir=_home(staging / "bundle-home"),
                 path=str(Path(shutil.which(context.git_binary) or "git").parent),
                 scratch_dir=verify,
                 git_binary=context.git_binary,
@@ -847,19 +943,31 @@ def check_full_route(context: Context) -> Outcome:
         os.rename(str(decoy), str(lease_root))
         renamed.set()
 
-    probe = (
-        "import json, os" + chr(10)
-        + "print(json.dumps({"
-        + "'entries': sorted(os.listdir('/workspace'))[:12],"
-        + "'readme': open('/workspace/README.md').read(),"
-        + "'has_git': os.path.isdir('/workspace/.git')"
-        + "}))" + chr(10)
-    )
+    # Everything through the `ws` surface. An embedded `os.listdir` /
+    # `open(...)` probe cannot run at all: `open(` is a FORBIDDEN_PATTERN and
+    # the validator scans the node's whole source text.
     body = (
         "def run(state):" + chr(10)
         + "    import time; time.sleep(3)" + chr(10)
-        + "    return {'result': ws.run([" + repr(_python()) + ", '-c', "
-        + repr(probe) + "])}" + chr(10)
+        + "    try:" + chr(10)
+        + "        head = ws.read('.git/HEAD')" + chr(10)
+        + "    except Exception:" + chr(10)
+        + "        head = ''" + chr(10)
+        + "    return {'result': repr({" + chr(10)
+        + "        'entries': sorted(ws.glob('*'))[:12]," + chr(10)
+        + "        'readme': ws.read('README.md')," + chr(10)
+        + "        'has_git': head.startswith('ref:') or len(head.strip()) == 40," + chr(10)
+        + "    })}" + chr(10)
+    )
+    # The checkout fired outside the graph, so the graph has to CONTAIN it for
+    # the ancestry rule to hold -- a workspace is resolved from a checkout the
+    # node depends on, and "not one of its ancestors ([])" is what a branch
+    # with a single node gets. This is the shape a real branch has.
+    upstream = NodeDefinition(
+        node_id="checkout-node",
+        display_name="oracle checkout node",
+        output_keys=["checked_out"],
+        source_code="def run(state):" + chr(10) + "    return {'checked_out': True}" + chr(10),
     )
     node = NodeDefinition(
         node_id="code-node",
@@ -868,21 +976,30 @@ def check_full_route(context: Context) -> Outcome:
         source_code=body,
         workspace="checkout-node",
     )
-    branch = BranchDefinition(name="oracle", entry_point="code-node")
-    branch.node_defs = [node]
-    branch.graph_nodes = [GraphNodeRef(id="code-node", node_def_id="code-node")]
+    branch = BranchDefinition(name="oracle", entry_point="checkout-node")
+    branch.node_defs = [upstream, node]
+    branch.graph_nodes = [
+        GraphNodeRef(id="checkout-node", node_def_id="checkout-node"),
+        GraphNodeRef(id="code-node", node_def_id="code-node"),
+    ]
     branch.edges = [
-        EdgeDefinition(from_node="START", to_node="code-node"),
+        EdgeDefinition(from_node="START", to_node="checkout-node"),
+        EdgeDefinition(from_node="checkout-node", to_node="code-node"),
         EdgeDefinition(from_node="code-node", to_node="END"),
     ]
-    branch.state_schema = [{"name": "result", "type": "str"}]
+    branch.state_schema = [
+        {"name": "result", "type": "str"},
+        {"name": "checked_out", "type": "bool"},
+    ]
 
     mover = threading.Thread(target=swap, daemon=True)
     mover.start()
     compiled = gc.compile_branch(
         branch, provider_call=None, effect_chain=chain, base_path=str(universe_dir)
     )
-    final = compiled.invoke({})
+    # `compiled.graph` is the UNCOMPILED StateGraph -- the runner attaches its
+    # own checkpointer, so the oracle compiles it without one.
+    final = compiled.graph.compile().invoke({})
     payload = str(final.get("result") or "")
 
     workspace_is_the_repo = "README.md" in payload and "has_git': True" in payload.replace(

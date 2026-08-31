@@ -101,9 +101,15 @@ class LocalBroker(CredentialBroker):
         self.served = False
         LocalBroker.made.append(self)
 
-    def serve(self, *, socket_dir, python_executable=None):
+    def serve(self, *, socket_dir=None, python_executable=None):
+        # Same signature as the real one, DEFAULT INCLUDED: production stopped
+        # passing socket_dir (the broker picks its own short path now), and a
+        # stub that still required it failed 15 tests with a TypeError the
+        # product does not have.
         self.served = True
-        self._helper_command = f"!python {socket_dir}/credential_helper.py"
+        self.socket_dir = socket_dir
+        root = socket_dir if socket_dir is not None else "/tmp/tabk-stub"
+        self._helper_command = f"!python {root}/credential_helper.py"
         return self._helper_command
 
 
@@ -719,3 +725,41 @@ def test_the_module_never_returns_a_raw_git_stderr_field(staging: Path) -> None:
     # scrubbed GitResult field
     assert "stderr_scrubbed" in source
     assert not re.search(r'"error":\s*str\(exc\)', source)
+
+
+def test_the_broker_stub_has_the_signature_of_the_thing_it_stands_in_for() -> None:
+    """A double whose signature drifts fails the SUITE, not the product.
+
+    When production stopped passing ``socket_dir``, this stub still required
+    it: 15 tests failed with a TypeError describing the test double rather than
+    anything shipped (2026-08-31).
+    """
+    import inspect
+
+    real = inspect.signature(CredentialBroker.serve)
+    stub = inspect.signature(LocalBroker.serve)
+    assert stub.parameters.keys() == real.parameters.keys()
+    for name, parameter in real.parameters.items():
+        if name == "self":
+            continue
+        assert stub.parameters[name].kind == parameter.kind, name
+        assert stub.parameters[name].default == parameter.default, (
+            f"{name}: the stub must accept exactly what the real broker accepts"
+        )
+
+
+def test_the_worker_lets_the_broker_choose_where_its_socket_lives(
+    staging: Path,
+) -> None:
+    """The caller's depth must not decide whether a checkout is possible.
+
+    The worker used to hand the broker `<staging>/broker`, and a unix socket
+    address is 108 bytes: in the deployed container that path measured 144 and
+    refused the checkout outright (2026-08-31).
+    """
+    git = FakeGit()
+    _checkout(staging, git)
+    assert LocalBroker.made, "no broker was built"
+    assert LocalBroker.made[0].socket_dir is None, (
+        "the worker chose the socket directory; that is what made the address too long"
+    )

@@ -53,7 +53,6 @@ MAX_BUNDLE_BYTES = 512 * 1024 * 1024
 _SRC_DIR = "src.git"
 _OUT_BUNDLE = "out.bundle"
 _HOME_DIR = "home"
-_BROKER_DIR = "broker"
 _VERIFY_DIR = "verify"
 _IMPORT_DIR = "import"
 _IMPORT_VERIFY_DIR = "import-verify"
@@ -179,9 +178,13 @@ class _GitSession:
         protocol, broker_host, broker_path = self.transport.broker_binding()
         make_broker = broker_factory if broker_factory is not None else CredentialBroker
         self.broker = make_broker(protocol, broker_host, broker_path, username, secret)
-        broker_dir = staging / _BROKER_DIR
-        broker_dir.mkdir(parents=True, exist_ok=True)
-        helper = self.broker.serve(socket_dir=broker_dir)
+        # The broker picks its own SHORT directory. It used to go under the
+        # staging path -- `<data>/.workspace-staging/<run>/<node>/broker` --
+        # and a unix socket address is 108 bytes, so in production that
+        # refused the checkout outright (144 bytes, measured in the deployed
+        # container 2026-08-31). Where the socket lives is the broker's
+        # business, not the caller's depth.
+        helper = self.broker.serve()
         self.options = self.transport.forced_options(helper)
 
     def run(self, argv: list[str], *, cwd: Path, timeout_s: float) -> GitResult:

@@ -9,6 +9,7 @@ Spec: docs/vetted-specs.md §Loud sandbox-unavailable surface for dev/checker ex
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 
 # ── Exception ─────────────────────────────────────────────────────────────────
@@ -69,6 +70,25 @@ def check_bwrap_output(output_text: str) -> None:
             )
 
 
+def _functional_probe_argv(bwrap_path: str) -> list[str]:
+    """The probe must ask the question the LAUNCHER asks.
+
+    It used to run ``bwrap --ro-bind / / /bin/sh -c true`` while the launcher
+    runs ``--die-with-parent --new-session --unshare-all --clearenv`` with its
+    own binds. Those are different questions, and measured side by side on one
+    host the probe failed ("Creating new namespace failed: Operation not
+    permitted") while the real launch succeeded - so a host where the jail
+    works exactly as we use it could be declared unavailable and every code
+    node refused. Building the probe from the launcher's own argv is what stops
+    the two drifting again; ``python -c ""`` is the command because that
+    interpreter is a directory the launcher already binds, whereas ``/bin/sh``
+    need not exist inside a private root at all.
+    """
+    from tinyassets.node_sandbox import _bwrap_argv
+
+    return [*_bwrap_argv(bwrap_path=bwrap_path), sys.executable, "-c", ""]
+
+
 def detect_bwrap() -> SandboxStatus:
     """Probe whether bwrap is present and executable on the current host.
 
@@ -121,7 +141,7 @@ def detect_bwrap() -> SandboxStatus:
 
     try:
         launch_result = subprocess.run(
-            [bwrap_path, "--ro-bind", "/", "/", "/bin/sh", "-c", "true"],
+            _functional_probe_argv(bwrap_path),
             capture_output=True,
             text=True,
             timeout=5,

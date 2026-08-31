@@ -13,9 +13,11 @@ from __future__ import annotations
 import itertools
 import os
 import re
+import secrets
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -306,6 +308,109 @@ def test_broker_refuses_a_malformed_construction(kwargs: dict[str, str]) -> None
 def test_serve_refuses_loudly_on_windows(tmp_path: Path, broker: CredentialBroker) -> None:
     with pytest.raises(WorkspaceGitError) as caught:
         broker.serve(socket_dir=tmp_path)
+    assert caught.value.code == "transport"
+
+
+#: A caller directory as deep as production's staging path gets. The socket
+#: used to live inside it, so this is what broke: `sun_path` is 108 bytes.
+_PATHOLOGICAL_CALLER_DIR = (
+    "/data/universes/universe-0f8c2a1b/.workspace-staging/"
+    "run-2026-08-31T04-55-12-4f2a9c/checkout-the-monorepo-node/broker"
+)
+
+
+@pytest.mark.skipif(IS_WINDOWS, reason="unix domain sockets")
+def test_the_broker_picks_a_socket_path_short_enough_for_any_caller(
+    broker: CredentialBroker,
+) -> None:
+    """The address limit must not depend on how deeply the CALLER is nested.
+
+    Found live on the droplet, 2026-08-31: `full_route` refused with
+    "broker socket path is too long for sun_path" because the socket went
+    inside `<data>/.workspace-staging/<run>/<node>/`. A longer run id would
+    have refused every checkout in production, with a message naming a C
+    struct field no user could act on.
+    """
+    helper = broker.serve()
+    try:
+        socket_path = Path(helper.rsplit(" ", 1)[-1])
+        assert socket_path.is_socket()
+        assert len(str(socket_path).encode()) <= wg._MAX_SOCKET_PATH_BYTES
+        # Short with room to spare, not merely inside the limit today.
+        assert len(str(socket_path).encode()) < 60, socket_path
+        assert socket_path.parent.name.startswith(wg._BROKER_DIR_PREFIX)
+        assert stat.S_IMODE(socket_path.parent.stat().st_mode) == 0o700
+        # The caller's own directory has nothing to do with it, however deep.
+        assert _PATHOLOGICAL_CALLER_DIR not in str(socket_path)
+        assert len(_PATHOLOGICAL_CALLER_DIR.encode()) > wg._MAX_SOCKET_PATH_BYTES, (
+            "the fixture must be long enough to have been the bug"
+        )
+    finally:
+        broker.close()
+
+
+@pytest.mark.skipif(IS_WINDOWS, reason="unix domain sockets")
+def test_the_broker_removes_the_directory_it_made(broker: CredentialBroker) -> None:
+    helper = broker.serve()
+    directory = Path(helper.rsplit(" ", 1)[-1]).parent
+    assert directory.is_dir()
+    broker.close()
+    assert not directory.exists(), "a directory the broker made is the broker's to remove"
+
+
+@pytest.mark.skipif(IS_WINDOWS, reason="unix domain sockets")
+def test_the_broker_leaves_a_directory_the_caller_passed(
+    broker: CredentialBroker,
+) -> None:
+    """An override is the caller's; deleting it would be a surprise."""
+    caller_dir = Path("/tmp") / f"wgb-caller-{os.getpid()}-{secrets.token_hex(3)}"
+    caller_dir.mkdir(parents=True)
+    try:
+        broker.serve(socket_dir=caller_dir)
+        broker.close()
+        assert caller_dir.is_dir(), "the caller's directory survives"
+        assert not (caller_dir / "credential.sock").exists(), "but the socket does not"
+        assert not (caller_dir / "credential_helper.py").exists()
+    finally:
+        for name in ("credential.sock", "credential_helper.py"):
+            (caller_dir / name).unlink(missing_ok=True)
+        caller_dir.rmdir()
+
+
+@pytest.mark.skipif(IS_WINDOWS, reason="unix domain sockets")
+def test_an_override_too_long_for_sun_path_is_refused_with_the_number(
+    tmp_path: Path, broker: CredentialBroker
+) -> None:
+    """The guard stays for the override path, and now says what to do."""
+    deep = tmp_path / ("d" * 60) / ("e" * 60)
+    deep.mkdir(parents=True)
+    with pytest.raises(WorkspaceGitError) as caught:
+        broker.serve(socket_dir=deep)
+    assert caught.value.code == "bad_argument"
+    assert "shorter socket_dir" in str(caught.value)
+    assert str(wg._MAX_SOCKET_PATH_BYTES) in str(caught.value)
+
+
+@pytest.mark.skipif(IS_WINDOWS, reason="unix domain sockets")
+def test_two_brokers_do_not_share_a_socket_directory() -> None:
+    first = CredentialBroker("https", "github.com", "owner/name", "x-access-token", TOKEN)
+    second = CredentialBroker("https", "github.com", "owner/name2", "x-access-token", TOKEN)
+    try:
+        one = Path(first.serve().rsplit(" ", 1)[-1]).parent
+        two = Path(second.serve().rsplit(" ", 1)[-1]).parent
+        assert one != two
+    finally:
+        first.close()
+        second.close()
+
+
+@pytest.mark.skipif(IS_WINDOWS, reason="unix domain sockets")
+def test_a_missing_socket_root_fails_loudly_rather_than_falling_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fallback would silently reintroduce a caller-length-dependent path."""
+    with pytest.raises(WorkspaceGitError) as caught:
+        wg.broker_socket_dir("/no/such/root/for/a/socket")
     assert caught.value.code == "transport"
 
 
@@ -1063,17 +1168,103 @@ def test_the_default_launcher_kills_the_process_group_on_a_timeout(
     assert killed == [proc], "the timeout path must go through kill_git"
 
 
+#: What :func:`process_state` reports for a process that cannot still be
+#: running: no entry, an unreaped corpse, or somebody else's process wearing a
+#: recycled pid.
+NOT_RUNNING = frozenset({"gone", "zombie", "recycled"})
+
+
+def process_state(pid: int, *, marker: str = "") -> str:
+    """``"gone"``, ``"zombie"``, ``"recycled"``, or the live state letter.
+
+    ``os.path.isdir(f"/proc/{pid}")`` is NOT a liveness test, in two directions:
+
+    * A killed process whose parent never reaps it stays as a ``Z`` entry.
+      Whether anything reaps it is a property of the environment's init -- the
+      CI runner does, a container whose PID 1 is pytest does not -- so an
+      existence check passes on CI and fails in a container for a process that
+      is equally dead in both (found by the Linux oracle, 2026-08-31).
+    * A pid is recycled. An entry that exists may be an unrelated process that
+      started after the kill, which makes the existence check pass FALSELY.
+      The caller's ``marker`` is what separates those: a recycled pid has a
+      different command line.
+
+    The state letter is the first field after the LAST ``)``: ``comm`` is
+    parenthesised and may itself contain spaces and a closing paren.
+    """
+    try:
+        stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "gone"
+    _before, paren, after = stat_text.rpartition(")")
+    fields = after.split() if paren else []
+    state = fields[0] if fields else ""
+    if state == "Z":
+        return "zombie"
+    if marker:
+        try:
+            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except OSError:
+            return "gone"
+        if marker.encode() not in cmdline:
+            return "recycled"
+    return state or "gone"
+
+
+@pytest.mark.skipif(IS_WINDOWS, reason="/proc is Linux")
+def test_the_liveness_helper_separates_alive_from_dead_unreaped_and_recycled() -> None:
+    """The decoy, and the trap itself, on a process this test owns.
+
+    A helper that called everything dead would pass every use of it, so it has
+    to be shown seeing a LIVE process. And the zombie branch is the whole
+    reason this exists: the ``/proc`` entry of a killed-but-unreaped child is
+    still there, which is exactly what an existence check reads as "alive".
+    """
+    assert process_state(os.getpid()) not in NOT_RUNNING, "this very process is alive"
+    assert process_state(0) == "gone", "pid 0 is never an entry"
+
+    token = "tinyassets-probe-" + secrets.token_hex(6)
+    child = subprocess.Popen(["/bin/sh", "-c", f"sleep 30 # {token}"])
+    try:
+        deadline = time.time() + 5
+        while process_state(child.pid, marker=token) in NOT_RUNNING and time.time() < deadline:
+            time.sleep(0.05)
+        assert process_state(child.pid, marker=token) not in NOT_RUNNING, "the child is alive"
+        # The same LIVE pid, asked about a different process: not it.
+        assert process_state(child.pid, marker="not-in-this-cmdline") == "recycled"
+
+        child.kill()
+        deadline = time.time() + 5
+        while process_state(child.pid, marker=token) != "zombie" and time.time() < deadline:
+            time.sleep(0.02)
+        # Nothing has reaped it yet -- this test is its parent and has not
+        # waited. The entry is still on disk, and that is the trap.
+        assert process_state(child.pid, marker=token) == "zombie"
+        assert os.path.isdir(f"/proc/{child.pid}"), (
+            "the /proc entry outlives the process; an existence check reads it as alive"
+        )
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=5)
+
+
 @pytest.mark.skipif(IS_WINDOWS, reason="process groups are POSIX")
 def test_a_timeout_reaps_a_double_forked_descendant(tmp_path: Path, empty_home: Path) -> None:
     """The whole point of the group kill: a helper git spawned must not survive.
 
-    The child backgrounds a ``sleep`` and then hangs; when run_git times out,
-    the descendant must be gone too.
+    The child backgrounds a sleeper and then hangs; when run_git times out, the
+    descendant must be dead. DEAD, not "missing from /proc": see
+    :func:`process_state` for why those are different questions and why the
+    difference is environment-dependent.
+
+    The sleeper carries a unique token in its command line so that a pid
+    recycled between the kill and the check reads as ``recycled`` rather than
+    as a survivor.
     """
+    token = "tinyassets-descendant-" + secrets.token_hex(6)
     marker = tmp_path / "pid"
-    script = (
-        f"sleep 120 & echo $! > {marker}; sleep 120"
-    )
+    script = f"/bin/sh -c 'sleep 120 # {token}' & echo $! > {marker}; sleep 120"
     with pytest.raises(WorkspaceGitError) as caught:
         run_git(
             ["-c", script],
@@ -1086,9 +1277,10 @@ def test_a_timeout_reaps_a_double_forked_descendant(tmp_path: Path, empty_home: 
     assert caught.value.code == "timeout"
     descendant = int(marker.read_text().strip())
     deadline = time.time() + 5
-    while os.path.isdir(f"/proc/{descendant}") and time.time() < deadline:
+    while process_state(descendant, marker=token) not in NOT_RUNNING and time.time() < deadline:
         time.sleep(0.05)
-    assert not os.path.isdir(f"/proc/{descendant}"), "the descendant outlived the kill"
+    state = process_state(descendant, marker=token)
+    assert state in NOT_RUNNING, f"the descendant outlived the kill (state {state!r})"
 
 
 def test_run_git_refuses_an_environment_that_is_not_the_canonical_set(

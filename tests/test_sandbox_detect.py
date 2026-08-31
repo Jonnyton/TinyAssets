@@ -200,3 +200,34 @@ class TestDetectBwrap:
             with patch("subprocess.run", return_value=mock_result):
                 status = detect_bwrap()
         assert status.available is False
+
+
+def test_the_functional_probe_asks_what_the_launcher_asks() -> None:
+    """A probe that runs different flags than the launcher answers a different
+    question. This one used to run ``bwrap --ro-bind / / /bin/sh -c true``
+    while the launcher runs ``--unshare-all --clearenv`` with its own binds;
+    measured side by side, the probe failed with "Creating new namespace
+    failed" on a host where the real launch succeeded, so every code node would
+    have been refused on a host where the jail works.
+    """
+    import sys
+
+    from tinyassets.node_sandbox import _bwrap_argv
+    from tinyassets.sandbox.detect import _functional_probe_argv
+
+    argv = _functional_probe_argv("/usr/bin/bwrap")
+    launcher = _bwrap_argv(bwrap_path="/usr/bin/bwrap")
+
+    assert argv[: len(launcher)] == launcher, (
+        "the probe must be built from the launcher's own argv, not a "
+        "hand-written approximation of it"
+    )
+    assert argv[len(launcher) :] == [sys.executable, "-c", ""]
+    for flag in ("--unshare-all", "--clearenv", "--die-with-parent"):
+        assert flag in argv, f"the probe lost the launcher's {flag}"
+    # The old spelling asked an easier question and a different one.
+    assert argv[1:3] != ["--ro-bind", "/"], "the probe reverted to the loose root bind"
+    assert "/bin/sh" not in argv, (
+        "/bin/sh need not exist inside a private root; probe with the "
+        "interpreter the launcher already binds"
+    )

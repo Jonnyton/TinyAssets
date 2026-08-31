@@ -210,6 +210,17 @@ COPY data/world_rules.lp /app/data/world_rules.lp
 # surface. Copied directly (not via the builder stage) because the
 # script is pure stdlib — no compilation needed.
 COPY scripts/mcp_public_canary.py /app/scripts/mcp_public_canary.py
+
+# The workspace jail's acceptance proofs. They assert Linux-only, bwrap-only
+# behaviour that no developer box and no CI runner can answer, so they run
+# INSIDE the deployed container after a deploy:
+#
+#     docker exec <daemon> python /app/scripts/workspace_bwrap_oracle.py
+#
+# Shipped rather than copied in on the day: an acceptance check you have to
+# `docker cp` before you can run it is one that gets skipped. Stdlib-only and
+# read-only against a temp root under /tmp; it never touches /data.
+COPY scripts/workspace_bwrap_oracle.py /app/scripts/workspace_bwrap_oracle.py
 COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
 
 ENV PATH=/opt/venv/bin:$PATH \
