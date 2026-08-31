@@ -402,8 +402,38 @@ def _posix_only(exc: NotImplementedError) -> _Refused:
     )
 
 
-def _ensure_permanent_parent(universe_dir: Path, lease_path: Path) -> None:
-    """Create ``workspaces/<repo-key>`` component by component, through handles.
+@contextlib.contextmanager
+def _fs_refusals(what: str):
+    """No-follow layer failures while *what* are refusals, never crashes.
+
+    The layer refuses by RAISING: ``UnsafePoolPath`` (an ``OSError``) for a
+    link, a traversal, a name it will not create or a directory that is not the
+    one it made, and ``ValueError`` for a name that is not one safe component.
+    Every one of those means "this run cannot have a workspace", which the
+    contract already has a recoverable code for. Letting them reach the
+    dispatcher reports ``effector_crashed``, which tells the graph author their
+    sink is broken when in fact their checkout was refused -- and that is how
+    the generation-directory bug surfaced on Ubuntu CI (run 33355481278).
+
+    ``NotImplementedError`` keeps its own mapping: that one says the HOST
+    cannot run workspaces at all, which is a different sentence to write.
+    """
+    try:
+        yield
+    except _Refused:
+        raise
+    except NotImplementedError as exc:
+        raise _posix_only(exc) from None
+    except (OSError, ValueError) as exc:
+        raise _Refused(
+            "workspace_checkout_failed",
+            f"the workspace directory could not be created ({what}): "
+            f"{type(exc).__name__}: {exc}",
+        ) from None
+
+
+def _open_permanent_parent(universe_dir: Path, lease_path: Path) -> Any:
+    """Open ``workspaces/<repo-key>``, creating it, and return ITS handle.
 
     A universe's FIRST permanent checkout has neither directory, and the
     no-follow layer refuses a missing parent -- so without this the first one
@@ -411,49 +441,75 @@ def _ensure_permanent_parent(universe_dir: Path, lease_path: Path) -> None:
     handle of the one above it: ``mkdir(parents=True)`` would resolve the whole
     path by name, which is the swap the descriptors exist to prevent.
 
+    The LAST handle is returned rather than closed, so the generation directory
+    beneath it is created through a descriptor this process walked open itself
+    -- re-opening the parent by path afterwards would hand back the window
+    every step above just closed. Every handle above it has done its job and is
+    closed here; the caller owns the one it gets.
+
     Idempotent: an existing component is opened rather than re-created.
     """
     fs = _fs()
     relative = lease_path.parent.relative_to(universe_dir)
+    opened: list[Any] = []
+    with _fs_refusals(f"opening {relative.as_posix()!r}"):
+        try:
+            opened.append(fs.open_dir_nofollow(str(universe_dir)))
+            for component in relative.parts:
+                try:
+                    child = fs.create_workspace_subdir(opened[-1], component)
+                except FileExistsError:
+                    # An already-created component is OPENED through the same
+                    # no-follow openat, never re-resolved by path.
+                    child = fs.open_subdir_nofollow(opened[-1], component)
+                opened.append(child)
+        except BaseException:
+            _close_handles(*opened)
+            raise
+    _close_handles(*opened[:-1])
+    return opened[-1]
+
+
+def _make_permanent_generation_dir(universe_dir: Path, lease_path: Path) -> Any:
+    """Create ``workspaces/<repo-key>/<generation>`` and return its handle.
+
+    NOT ``create_lease_dir``. That helper's rule -- a name of at least 16
+    random hex characters -- is what makes a directory in the SHARED scratch
+    pool root untargetable by another universe. A generation is a small integer
+    inside this universe's own tree, under a parent this process just walked
+    open through its own descriptors, so the rule protects nothing there and
+    refuses everything: ``'1'`` is not 16 hex characters, and every permanent
+    checkout failed on Linux until this split (Ubuntu CI run 33355481278; the
+    Windows double was permissive enough to hide it).
+
+    Same shape as ``<lease>/repo``, and for the same reason.
+    """
+    parent_fd = _open_permanent_parent(universe_dir, lease_path)
     try:
-        current = fs.open_dir_nofollow(str(universe_dir))
-    except NotImplementedError as exc:
-        raise _posix_only(exc) from None
-    opened = [current]
-    try:
-        for component in relative.parts:
-            try:
-                current = fs.create_workspace_subdir(current, component)
-            except NotImplementedError as exc:
-                raise _posix_only(exc) from None
-            except FileExistsError:
-                # An already-created component is OPENED through the same
-                # no-follow openat, never re-resolved by path. There is no
-                # public name for that one step yet, so this prefers one if
-                # the pool lane exports it and falls back to the primitive.
-                open_child = getattr(fs, "open_subdir_nofollow", None) or fs._open_child_dir
-                current = open_child(opened[-1], component)
-            opened.append(current)
+        with _fs_refusals(f"creating generation {lease_path.name!r}"):
+            return _fs().create_workspace_subdir(parent_fd, lease_path.name)
     finally:
-        _close_handles(*opened)
+        _close_handles(parent_fd)
 
 
-def _make_lease_dir(lease_path: Path) -> Any:
-    """Create the lease directory under a handle resolved without links.
+def _make_scratch_lease_dir(lease_path: Path) -> Any:
+    """Create a lease directory in the SHARED pool root, under a no-follow handle.
+
+    This is the one the entropy rule is for: the parent is shared between
+    universes, so the name has to be one nobody could have created or targeted
+    first. ``create_lease_dir`` enforces that, and this call site is the only
+    place it is used.
 
     The PARENT handle is closed here: it was only needed to create the child
     safely, and leaking one per checkout exhausts the descriptor table on a
     long-lived daemon (Codex round 2, #7).
     """
     fs = _fs()
-    try:
+    with _fs_refusals(f"opening the pool root {lease_path.parent.name!r}"):
         parent_fd = fs.open_dir_nofollow(str(lease_path.parent))
-    except NotImplementedError as exc:
-        raise _posix_only(exc) from None
     try:
-        return fs.create_lease_dir(parent_fd, lease_path.name)
-    except NotImplementedError as exc:
-        raise _posix_only(exc) from None
+        with _fs_refusals(f"creating lease {lease_path.name!r}"):
+            return fs.create_lease_dir(parent_fd, lease_path.name)
     finally:
         _close_handles(parent_fd)
 
@@ -574,10 +630,8 @@ def _make_repo_dir(lease_fd: Any, repo_dir: Path) -> Any:
     is the private lease directory it just made, so the subdirectory helper is
     the honest call.
     """
-    try:
+    with _fs_refusals(f"creating {repo_dir.name!r} in the lease"):
         return _fs().create_workspace_subdir(lease_fd, repo_dir.name)
-    except NotImplementedError as exc:
-        raise _posix_only(exc) from None
 
 
 def _descriptor_or_none(handle: Any) -> int | None:
@@ -745,10 +799,12 @@ def _checkout(
 
         bundle = staging / str(answer.get("bundle_name") or "out.bundle")
         if storage == "universe":
-            # A universe's FIRST permanent checkout has no workspaces/<repo-key>
-            # yet, and the no-follow layer refuses a missing parent.
-            _ensure_permanent_parent(base_path, Path(lease.path))
-        lease_fd = _make_lease_dir(Path(lease.path))
+            # A permanent generation lives inside this universe's own tree
+            # (whose parents may not exist yet), so it is a SUBDIRECTORY under
+            # a handle we walked open -- not a lease in the shared pool root.
+            lease_fd = _make_permanent_generation_dir(base_path, Path(lease.path))
+        else:
+            lease_fd = _make_scratch_lease_dir(Path(lease.path))
         owned.append(lease_fd)
         repo_dir = Path(lease.path) / "repo"
         # The repository directory is created THROUGH the lease handle and its
