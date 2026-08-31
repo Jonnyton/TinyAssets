@@ -582,6 +582,8 @@ def forced_git_options(
     host: str,
     validated_ips: str | Sequence[str],
     broker_helper_cmd: str,
+    *,
+    multi_resolve: bool,
 ) -> list[str]:
     """The ``-c key=value`` arguments every credentialed git child carries.
 
@@ -590,19 +592,30 @@ def forced_git_options(
     them would leave a system helper in front of the broker.
 
     ``validated_ips`` may be one address or several (what :func:`pin_address`
-    returns). Several are emitted as ONE comma-joined resolve entry, which
-    libcurl 7.59.0 and later accept and try in order -- so a dead first
-    address does not fail an operation whose host has healthy siblings. A
-    caller on an older libcurl checks :func:`libcurl_supports_multi_resolve`
-    and passes ONE address per whole operation instead. The host is
-    lower-cased: the resolve entry is matched against the URL's host
-    case-insensitively by curl, but an upper-cased entry is not canonical and
-    a mismatched entry silently does nothing.
+    returns). ``multi_resolve`` is REQUIRED and says whether the libcurl that
+    will run accepts several addresses in one resolve entry -- ask
+    :func:`libcurl_supports_multi_resolve` about the version text of the curl
+    that is actually going to run. With it True, several addresses become ONE
+    comma-joined entry which libcurl tries in order, so a dead first address
+    does not fail an operation whose host has healthy siblings. With it False,
+    passing more than one address is REFUSED rather than quietly emitting an
+    entry an old libcurl would mis-parse: the caller runs one address per
+    whole operation, and that has to be its own decision.
+
+    The host is lower-cased: curl matches the entry against the URL's host,
+    and a non-canonical entry does not error -- it silently does nothing,
+    which would drop the pin and let git resolve the host itself.
     """
     if not _HOSTNAME_RE.match(host or ""):
         raise WorkspaceGitError("bad_argument", "pinned host is not a hostname")
     canonical_host = host.lower()
-    pinned = ",".join(_resolve_rule_addresses(validated_ips))
+    addresses = _resolve_rule_addresses(validated_ips)
+    if not multi_resolve and len(addresses) > 1:
+        raise WorkspaceGitError(
+            "bad_argument",
+            f"this libcurl takes one address per operation, got {len(addresses)}",
+        )
+    pinned = ",".join(addresses)
     if not isinstance(broker_helper_cmd, str) or not broker_helper_cmd:
         raise WorkspaceGitError("bad_argument", "broker helper command must be a non-empty str")
     if "\n" in broker_helper_cmd or "\r" in broker_helper_cmd or "\x00" in broker_helper_cmd:
