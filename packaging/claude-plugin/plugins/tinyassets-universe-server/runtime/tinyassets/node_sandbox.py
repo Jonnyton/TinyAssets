@@ -202,7 +202,9 @@ class WorkspaceLimits:
     max_glob_results: int = MAX_WORKSPACE_GLOB_RESULTS
     tail_bytes: int = WORKSPACE_TAIL_BYTES
     rlimit_as: int = 1536 * 1024 * 1024
-    rlimit_nproc: int = 128
+    #: Per-UID, not per-process. 128 was a guess that any host sharing a uid
+    #: with other work breaks; it is a bound, not a promise about the host.
+    rlimit_nproc: int = 1024
     rlimit_nofile: int = 1024
     rlimit_fsize: int = 512 * 1024 * 1024
     rlimit_core: int = 0
@@ -363,6 +365,14 @@ def _apply_rlimits(resource_module, timeout, profile=None):
     ceiling below the target, and a silently ignored call are all failures.
     The caller decides whether a failure is fatal (bwrap: yes) or a warning
     (the tests-only launcher on a platform with no `resource`).
+
+    RLIMIT_NPROC is the exception, because it is per-UID rather than
+    per-process: lowering it bounds every process the user already runs, not
+    just this child. On a host whose uid is already past our number -- a CI
+    runner, a shared account -- setting it makes the very next fork fail with
+    EAGAIN, which is not a bound on the node, it is a broken host. So it is
+    RAISED toward the cap and never lowered: a limit already tighter than
+    ours is somebody else's decision and stands.
     """
     if resource_module is None:
         return ["all limits (this platform has no 'resource' module)"]
@@ -387,12 +397,25 @@ def _apply_rlimits(resource_module, timeout, profile=None):
     for name, want in wanted:
         try:
             res = getattr(resource_module, name)
-            _soft, hard = resource_module.getrlimit(res)
+            soft, hard = resource_module.getrlimit(res)
             if hard == resource_module.RLIM_INFINITY:
                 new_hard = want
             else:
                 new_hard = min(want, hard)
             target = min(want, new_hard)
+            if name == "RLIMIT_NPROC":
+                unlimited = soft == resource_module.RLIM_INFINITY
+                if unlimited or soft >= target:
+                    # Already at least as permissive as the cap, and it is
+                    # per-UID: leaving it is the whole point.
+                    continue
+                resource_module.setrlimit(res, (target, max(new_hard, soft)))
+                applied = resource_module.getrlimit(res)[0]
+                if applied < target:
+                    failures.append(
+                        f"{name} (asked for {target}, reads {applied})"
+                    )
+                continue
             resource_module.setrlimit(res, (target, new_hard))
             applied = resource_module.getrlimit(res)[0]
             if applied != target:
@@ -939,6 +962,10 @@ def _make_workspace(conf, remaining):
             quiet = [
                 "-c", "gc.auto=0",
                 "-c", "maintenance.auto=false",
+                # One pack thread: RLIMIT_NPROC is per-UID, so on a host whose
+                # uid already runs hundreds of processes git's thread pool
+                # fails with EAGAIN before it packs anything.
+                "-c", "pack.threads=1",
             ]
             base = ["git", "-c", "core.hooksPath=/dev/null"] + quiet + [
                 "--no-replace-objects"
@@ -1744,13 +1771,36 @@ class PlainSubprocessLauncher:
         self._script_path = ""
 
     def for_workspace(self, mount: WorkspaceMount) -> PlainSubprocessLauncher:
-        """The path, never the descriptor: there is no bind to resolve it in."""
-        if mount.bind_source.startswith("/proc/self/fd/"):
-            raise SandboxUnavailableError(
-                "the tests-only launcher cannot bind a descriptor: it performs "
-                "no mount, so /proc/self/fd/<n> would name this process's fd"
-            )
-        return type(self)(workspace_bind=mount.bind_source)
+        """Honour a descriptor bind by INHERITING it, since there is no mount.
+
+        There is no bind to resolve ``/proc/self/fd/<n>`` in, but there does
+        not need to be: the child inherits ``n``, so in the CHILD that path
+        names the very directory the checkout opened, and starting the child
+        there is enough. Popen changes directory in the child after the fork,
+        which is why this works at all -- and it keeps the property that
+        matters, that renaming the lease cannot change what the node sees.
+
+        Refused only when the descriptor is one the child will NOT inherit
+        (the path would then name whatever this process has open at that
+        number), or on Windows, which has neither the proc filesystem nor
+        descriptor inheritance.
+        """
+        descriptors = tuple(mount.pass_fds or ())
+        handle = _PROC_FD_BIND.match(mount.bind_source or "")
+        if handle is not None:
+            if sys.platform == "win32":
+                raise SandboxUnavailableError(
+                    "this launcher cannot bind a descriptor on Windows: there "
+                    "is no /proc and no descriptor inheritance"
+                )
+            if int(handle.group(1)) not in descriptors:
+                raise SandboxUnavailableError(
+                    "this launcher was asked to bind a descriptor the child "
+                    "does not inherit, which would name another directory"
+                )
+        launcher = type(self)(workspace_bind=mount.bind_source)
+        launcher.pass_fds = descriptors
+        return launcher
 
     def build_argv(self, runner_script: str, args: list[str]) -> list[str]:
         """Deliver the runner as a FILE, not as ``-c``.
@@ -1782,6 +1832,10 @@ class PlainSubprocessLauncher:
             raise SandboxUnavailableError(
                 "this launcher was built without a workspace bind"
             )
+        if _PROC_FD_BIND.match(self.workspace_bind):
+            # Resolved in the CHILD, which holds the descriptor. Resolving it
+            # here would name whatever THIS process has open at that number.
+            return self.workspace_bind
         return os.path.realpath(self.workspace_bind)
 
     def child_cwd(self, work_dir: str) -> str:
@@ -2268,7 +2322,11 @@ class NodeSandbox:
         work_dir = tempfile.mkdtemp(prefix="ta-node-sandbox-")
         popen_kwargs: dict[str, Any] = {}
         if sys.platform == "win32":
-            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            # getattr, because a test may force win32 on a POSIX host to
+            # exercise the refusal path, and the constant is Windows-only.
+            flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            if flags:
+                popen_kwargs["creationflags"] = flags
         else:
             # Not preexec_fn: start_new_session is done by the C layer, which
             # is the only fork-time work that is safe in a threaded parent.

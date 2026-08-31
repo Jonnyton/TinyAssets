@@ -409,7 +409,7 @@ def test_the_rlimit_profile_rides_in_the_third_argv_slot() -> None:
         "RLIMIT_CORE": 0,
         "RLIMIT_FSIZE": 512 * 1024 * 1024,
         "RLIMIT_NOFILE": 1024,
-        "RLIMIT_NPROC": 128,
+        "RLIMIT_NPROC": 1024,
     }
 
 
@@ -420,7 +420,7 @@ def test_the_workspace_profile_is_the_one_the_design_names() -> None:
         "RLIMIT_CORE": 0,
         "RLIMIT_FSIZE": 512 * 1024 * 1024,
         "RLIMIT_NOFILE": 1024,
-        "RLIMIT_NPROC": 128,
+        "RLIMIT_NPROC": 1024,
     }
     assert limits.max_commands == 64
     assert limits.max_output_bytes == 1024 * 1024
@@ -1081,7 +1081,13 @@ def test_bundle_produces_a_prerequisite_free_bundle(tmp_path: Path) -> None:
     assert bundle.is_file()
     scratch = tmp_path / "verify"
     scratch.mkdir()
-    refs = verify_bundle(bundle, max_bytes=10_000_000, scratch_dir=scratch, env=env)
+    refs = verify_bundle(
+        bundle,
+        max_bytes=10_000_000,
+        scratch_dir=scratch,
+        home_dir=home,
+        path=str(Path(GIT_BINARY).parent),
+    )
     assert refs == ["refs/tiny/export"]
 
     # The synthetic ref is deleted: the workspace is left as it was found.
