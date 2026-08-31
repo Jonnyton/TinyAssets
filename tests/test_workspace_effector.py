@@ -170,7 +170,7 @@ def no_real_git(monkeypatch: pytest.MonkeyPatch):
     """The host-side population is workspace_git's job and is tested there."""
     populated: list[tuple] = []
 
-    def populate(bundle, dest, ref_name, checkout_ref, *, env, **kwargs):
+    def populate(bundle, dest, ref_name, checkout_ref, *, home_dir, path, **kwargs):
         populated.append((str(bundle), str(dest), ref_name, checkout_ref))
         Path(dest).mkdir(parents=True, exist_ok=True)
         (Path(dest) / ".git").mkdir(exist_ok=True)
@@ -180,7 +180,6 @@ def no_real_git(monkeypatch: pytest.MonkeyPatch):
     import tinyassets.workspace_git as wg
 
     monkeypatch.setattr(wg, "populate_workspace_from_bundle", populate)
-    monkeypatch.setattr(wg, "git_environment", lambda home, *, path: {"HOME": str(home)})
     return populated
 
 

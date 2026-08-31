@@ -27,6 +27,7 @@ tests substitute them by parameter, never by an environment switch.
 from __future__ import annotations
 
 import ipaddress
+import logging
 import os
 import re
 import shlex
@@ -40,6 +41,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 __all__ = [
     "CredentialBroker",
@@ -850,45 +852,110 @@ def _tail_text(raw: object) -> str:
     return data.decode("utf-8", "replace")
 
 
+def _reject_secrets_in(
+    command: Sequence[str], env: Mapping[str, str], extra: Sequence[str]
+) -> None:
+    """Refuse to spawn if any known secret is in argv, options, env or binary.
+
+    The invariant this module exists for is that the token reaches git ONLY
+    through the broker. A URL with userinfo, a ``-c http.extraHeader=...``, or
+    a secret that found its way into the environment would all defeat that
+    silently -- and every one of them is visible right here, before the spawn.
+    """
+    secrets = [s for s in (*_registered_secrets(), *extra) if s]
+    if not secrets:
+        return
+    haystacks = list(command) + list(env.values()) + list(env.keys())
+    for secret in secrets:
+        for value in haystacks:
+            if secret in value:
+                raise WorkspaceGitError(
+                    "bad_argument",
+                    "a credential appears in the git invocation; the broker is the "
+                    "only path a secret may take",
+                )
+
+
+def _default_launcher(command: Sequence[str], **kwargs: Any) -> Any:
+    """Spawn, wait bounded, and on timeout kill the whole process GROUP.
+
+    ``subprocess.run``'s own timeout kills only the tracked pid, so a git that
+    double-forked a helper would leave it running with the operation's file
+    descriptors. This is the seam every production call goes through; a test
+    injects its own launcher instead.
+    """
+    timeout = kwargs.pop("timeout", None)
+    kwargs.pop("check", None)
+    proc = subprocess.Popen(command, **kwargs)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # The process group, not the pid: see kill_git.
+        try:
+            kill_git(proc, timeout_s=10.0)
+        except WorkspaceGitError:
+            logging.getLogger(__name__).error("git survived SIGKILL after a timeout")
+        raise
+    return subprocess.CompletedProcess(list(command), proc.returncode, stdout, stderr)
+
+
 def run_git(
     argv: Sequence[str],
     *,
     cwd: str | os.PathLike[str],
-    env: Mapping[str, str],
+    home_dir: str | os.PathLike[str],
+    path: str,
     options: Sequence[str] = (),
     timeout_s: float,
-    launcher: Callable[..., object] = subprocess.run,
+    launcher: Callable[..., object] | None = None,
     git_binary: str = "git",
     extra_secrets: Sequence[str] = (),
     preexec_fn: Callable[[], None] | None = None,
+    pass_fds: Sequence[int] = (),
 ) -> GitResult:
     """Run ``git <options...> <argv...>`` and return a bounded, scrubbed result.
 
+    The environment is built HERE, from ``home_dir`` and ``path`` -- a caller
+    cannot hand in a dict, so it cannot hand in ``GIT_DIR``,
+    ``GIT_ALTERNATE_OBJECT_DIRECTORIES``, ``GIT_CONFIG_COUNT`` or a
+    ``GIT_TRACE*``. Blindness is enforced rather than trusted: the key set is
+    asserted against :data:`GIT_ENVIRONMENT_KEYS` and every known secret is
+    rejected out of argv, options, the environment and the binary path before
+    anything spawns.
+
     The child never inherits this process's environment, never gets a stdin,
     and on POSIX cannot write a core dump and starts in a NEW SESSION -- so it
-    leads its own process group and :func:`kill_git` can take down anything it
-    spawned, not just the git process itself. Output is truncated to the last
-    64 KiB of each stream and scrubbed before it is returned or classified.
-
-    ``preexec_fn`` is injectable so a test can observe that the child-side
-    setup runs; the default on POSIX is :func:`_disable_core_dumps`.
+    leads its own process group and a timeout takes down anything it spawned.
+    Output is truncated to the last 64 KiB of each stream and scrubbed before
+    it is returned or classified.
     """
     if not isinstance(argv, Sequence) or isinstance(argv, (str, bytes)) or not argv:
         raise WorkspaceGitError("bad_argument", "run_git needs a non-empty argv sequence")
     for item in (*argv, *options):
         if not isinstance(item, str):
             raise WorkspaceGitError("bad_argument", "git arguments must all be str")
+    if not isinstance(git_binary, str) or not git_binary:
+        raise WorkspaceGitError("bad_argument", "git_binary must be a non-empty str")
     if not Path(cwd).is_dir():
         raise WorkspaceGitError("bad_argument", "run_git cwd must be an existing directory")
-    for key, value in env.items():
-        if not isinstance(key, str) or not isinstance(value, str):
-            raise WorkspaceGitError("bad_argument", "the git environment must be str to str")
-        if key.startswith("GIT_TRACE"):
-            raise WorkspaceGitError("bad_argument", "GIT_TRACE* would print the request headers")
+    for descriptor in pass_fds:
+        if not isinstance(descriptor, int) or isinstance(descriptor, bool):
+            raise WorkspaceGitError("bad_argument", "pass_fds must be descriptors")
     if timeout_s is None or float(timeout_s) <= 0:
         raise WorkspaceGitError("bad_argument", "run_git needs a positive timeout")
 
+    env = git_environment(home_dir, path=path)
+    # Defence in depth: git_environment is the only builder, so this can fail
+    # only if IT changes. That is exactly when a silent widening would happen.
+    if set(env) != set(GIT_ENVIRONMENT_KEYS):
+        raise WorkspaceGitError("bad_argument", "the git environment key set is not canonical")
+    for key in env:
+        if key.startswith("GIT_") and key not in GIT_ENVIRONMENT_KEYS:
+            raise WorkspaceGitError("bad_argument", f"{key} is not a permitted GIT_* variable")
+
     command = [git_binary, *options, *argv]
+    _reject_secrets_in(command, env, extra_secrets)
+    run = launcher if launcher is not None else _default_launcher
     kwargs: dict[str, object] = {
         "cwd": str(cwd),
         "env": dict(env),
@@ -899,6 +966,10 @@ def run_git(
         "check": False,
         "shell": False,
     }
+    if pass_fds:
+        # The descriptor must survive into the child, or /proc/self/fd/<n>
+        # in its cwd names nothing.
+        kwargs["pass_fds"] = tuple(pass_fds)
     child_setup = preexec_fn if preexec_fn is not None else (
         None if _IS_WINDOWS else _disable_core_dumps
     )
@@ -909,8 +980,9 @@ def run_git(
         # git that spawned a helper must not leave the helper behind.
         kwargs["start_new_session"] = True
     try:
-        completed = launcher(command, **kwargs)
+        completed = run(command, **kwargs)
     except subprocess.TimeoutExpired:
+        # The launcher has already killed the process group by here.
         raise WorkspaceGitError("timeout", f"git {argv[0]} exceeded {timeout_s}s") from None
     except OSError as exc:
         raise WorkspaceGitError("transport", f"git could not be started: {exc}") from None
@@ -997,7 +1069,8 @@ def _verify_prerequisite_free(
     target: Path,
     *,
     scratch_dir: str | os.PathLike[str],
-    env: Mapping[str, str],
+    home_dir: str | os.PathLike[str],
+    path: str,
     timeout_s: float,
     launcher: Callable[..., object],
     git_binary: str,
@@ -1023,7 +1096,8 @@ def _verify_prerequisite_free(
         return run_git(
             argv,
             cwd=bare,
-            env=env,
+            home_dir=home_dir,
+            path=path,
             timeout_s=timeout_s,
             launcher=launcher,
             git_binary=git_binary,
@@ -1059,10 +1133,11 @@ def create_bundle(
     bundle_path: str | os.PathLike[str],
     *,
     ref_name: str = "refs/tiny/export",
-    env: Mapping[str, str],
+    home_dir: str | os.PathLike[str],
+    path: str,
     scratch_dir: str | os.PathLike[str],
     timeout_s: float = 120.0,
-    launcher: Callable[..., object] = subprocess.run,
+    launcher: Callable[..., object] | None = None,
     git_binary: str = "git",
 ) -> Path:
     """Bundle exactly one commit from ``repo_dir`` into ``bundle_path``.
@@ -1091,7 +1166,8 @@ def create_bundle(
         return run_git(
             argv,
             cwd=repo,
-            env=env,
+            home_dir=home_dir,
+            path=path,
             options=common,
             timeout_s=timeout_s,
             launcher=launcher,
@@ -1110,7 +1186,8 @@ def create_bundle(
         _verify_prerequisite_free(
             target,
             scratch_dir=scratch_dir,
-            env=env,
+            home_dir=home_dir,
+            path=path,
             timeout_s=timeout_s,
             launcher=launcher,
             git_binary=git_binary,
@@ -1131,9 +1208,10 @@ def verify_bundle(
     *,
     max_bytes: int,
     scratch_dir: str | os.PathLike[str],
-    env: Mapping[str, str],
+    home_dir: str | os.PathLike[str],
+    path: str,
     timeout_s: float = 120.0,
-    launcher: Callable[..., object] = subprocess.run,
+    launcher: Callable[..., object] | None = None,
     git_binary: str = "git",
 ) -> list[str]:
     """Verify a bundle credential-free in a fresh bare repo; return its refs.
@@ -1157,7 +1235,8 @@ def verify_bundle(
     return _verify_prerequisite_free(
         target,
         scratch_dir=scratch_dir,
-        env=env,
+        home_dir=home_dir,
+        path=path,
         timeout_s=timeout_s,
         launcher=launcher,
         git_binary=git_binary,
@@ -1169,9 +1248,11 @@ def unbundle_into_fresh_repo(
     dest_dir: str | os.PathLike[str],
     *,
     ref_name: str,
-    env: Mapping[str, str],
+    home_dir: str | os.PathLike[str],
+    path: str,
+    dest_fd: int | None = None,
     timeout_s: float = 300.0,
-    launcher: Callable[..., object] = subprocess.run,
+    launcher: Callable[..., object] | None = None,
     git_binary: str = "git",
 ) -> str:
     """Populate an empty directory from a bundle; return the commit sha.
@@ -1179,29 +1260,57 @@ def unbundle_into_fresh_repo(
     The result has no remote and no reference to the bundle's path, which is
     the point: the workspace's ``.git`` must not tell user code where the
     host keeps anything, and must not carry a remote a later git could push to.
+
+    ``dest_fd`` is a directory descriptor the CALLER holds open for the whole
+    call. When given, git runs with ``cwd=/proc/self/fd/<n>`` and the
+    descriptor passed through, so the destination cannot be swapped between
+    the check and the write -- the path is never re-resolved. The caller must
+    keep the descriptor open until this returns (and, for a bind, until the
+    mount is made).
     """
     _require_ref(ref_name, "fetch ref")
     source = Path(bundle_path)
     if not source.is_file():
         raise WorkspaceGitError("verification", "bundle path is not a regular file")
     dest = Path(dest_dir)
-    if dest.exists():
-        if not dest.is_dir():
-            raise WorkspaceGitError("bad_argument", "dest_dir is not a directory")
-        if any(dest.iterdir()):
+    if dest_fd is not None:
+        if not isinstance(dest_fd, int) or isinstance(dest_fd, bool):
+            raise WorkspaceGitError("bad_argument", "dest_fd must be a directory descriptor")
+        if _IS_WINDOWS:
+            raise WorkspaceGitError(
+                "bad_argument",
+                "a descriptor-pinned destination needs POSIX; this host has no /proc/self/fd",
+            )
+        try:
+            existing = os.listdir(dest_fd)
+        except OSError as exc:
+            raise WorkspaceGitError(
+                "bad_argument", f"dest_fd is not a readable directory: {type(exc).__name__}"
+            ) from None
+        if existing:
             raise WorkspaceGitError("bad_argument", "dest_dir must be empty")
+        work_dir: str | Path = f"/proc/self/fd/{dest_fd}"
     else:
-        dest.mkdir(parents=True)
+        if dest.exists():
+            if not dest.is_dir():
+                raise WorkspaceGitError("bad_argument", "dest_dir is not a directory")
+            if any(dest.iterdir()):
+                raise WorkspaceGitError("bad_argument", "dest_dir must be empty")
+        else:
+            dest.mkdir(parents=True)
+        work_dir = dest
 
     def _run(argv: list[str], options: Sequence[str] = ()) -> GitResult:
         return run_git(
             argv,
-            cwd=dest,
-            env=env,
+            cwd=work_dir,
+            home_dir=home_dir,
+            path=path,
             options=options,
             timeout_s=timeout_s,
             launcher=launcher,
             git_binary=git_binary,
+            pass_fds=() if dest_fd is None else (dest_fd,),
         )
 
     _require_ok(_run(["init", "--quiet", "."]), "init", "verification")
@@ -1239,9 +1348,10 @@ def populate_workspace_from_bundle(
     ref_name: str,
     checkout_ref: str,
     *,
-    env: Mapping[str, str],
+    home_dir: str | os.PathLike[str],
+    path: str,
     timeout_s: float = 300.0,
-    launcher: Callable[..., object] = subprocess.run,
+    launcher: Callable[..., object] | None = None,
     git_binary: str = "git",
 ) -> str:
     """Unbundle into a fresh repo and check the commit out on a local branch."""
@@ -1250,7 +1360,8 @@ def populate_workspace_from_bundle(
         bundle_path,
         dest_dir,
         ref_name=ref_name,
-        env=env,
+        home_dir=home_dir,
+        path=path,
         timeout_s=timeout_s,
         launcher=launcher,
         git_binary=git_binary,
@@ -1258,7 +1369,8 @@ def populate_workspace_from_bundle(
     result = run_git(
         ["checkout", "--quiet", "-B", checkout_ref, sha],
         cwd=dest_dir,
-        env=env,
+        home_dir=home_dir,
+        path=path,
         timeout_s=timeout_s,
         launcher=launcher,
         git_binary=git_binary,
