@@ -2087,3 +2087,86 @@ def test_bundle_helpers_never_touch_the_real_subprocess_by_default() -> None:
 
 def test_python_is_recent_enough_for_the_typing_used() -> None:
     assert sys.version_info >= (3, 11)
+
+
+def test_populate_forwards_the_descriptor_to_both_of_its_git_calls(monkeypatch):
+    """The wrapper takes ``dest_fd`` and BOTH calls under it must use it.
+
+    The adapter passed ``dest_fd`` here while only ``unbundle_into_fresh_repo``
+    accepted it, so every real checkout died with a TypeError the adapter
+    reported as ``workspace_checkout_failed`` - and neither suite saw it,
+    because the adapter's stubs this function and this one never passed the
+    argument (found by the end-to-end chain test, 2026-08-30).
+
+    Forwarding only the fetch would be just as wrong: pinning it to a handle
+    and then re-resolving the same path for the checkout leaves exactly the
+    window the handle exists to close.
+    """
+    import tinyassets.workspace_git as wg
+
+    seen: dict[str, object] = {}
+
+    def fake_unbundle(bundle_path, dest_dir, **kwargs):
+        seen["unbundle_dest_fd"] = kwargs.get("dest_fd")
+        return "a" * 40
+
+    def fake_run_git(argv, **kwargs):
+        seen["checkout_argv"] = list(argv)
+        seen["checkout_cwd"] = str(kwargs.get("cwd"))
+        seen["checkout_pass_fds"] = kwargs.get("pass_fds")
+        return wg.GitResult(
+            returncode=0, stdout_tail="", stderr_class="", stderr_scrubbed=""
+        )
+
+    monkeypatch.setattr(wg, "unbundle_into_fresh_repo", fake_unbundle)
+    monkeypatch.setattr(wg, "run_git", fake_run_git)
+
+    sha = wg.populate_workspace_from_bundle(
+        "/tmp/x.bundle",
+        "/tmp/dest",
+        "refs/heads/main",
+        "tiny/u/checkout",
+        home_dir="/tmp/home",
+        path="/usr/bin",
+        dest_fd=7,
+    )
+
+    assert sha == "a" * 40
+    assert seen["unbundle_dest_fd"] == 7
+    assert seen["checkout_cwd"] == "/proc/self/fd/7"
+    assert seen["checkout_pass_fds"] == (7,)
+
+
+def test_populate_without_a_descriptor_still_works_by_path(monkeypatch):
+    """The path form is what Windows and the tests use; it must not start
+    handing git a /proc name that does not exist there."""
+    import tinyassets.workspace_git as wg
+
+    seen: dict[str, object] = {}
+
+    def fake_unbundle(bundle_path, dest_dir, **kwargs):
+        seen["unbundle_dest_fd"] = kwargs.get("dest_fd")
+        return "b" * 40
+
+    def fake_run_git(argv, **kwargs):
+        seen["checkout_cwd"] = str(kwargs.get("cwd"))
+        seen["checkout_pass_fds"] = kwargs.get("pass_fds")
+        return wg.GitResult(
+            returncode=0, stdout_tail="", stderr_class="", stderr_scrubbed=""
+        )
+
+    monkeypatch.setattr(wg, "unbundle_into_fresh_repo", fake_unbundle)
+    monkeypatch.setattr(wg, "run_git", fake_run_git)
+
+    wg.populate_workspace_from_bundle(
+        "/tmp/x.bundle",
+        "/tmp/dest",
+        "refs/heads/main",
+        "tiny/u/checkout",
+        home_dir="/tmp/home",
+        path="/usr/bin",
+    )
+
+    assert seen["unbundle_dest_fd"] is None
+    assert seen["checkout_cwd"] == "/tmp/dest"
+    assert seen["checkout_pass_fds"] == ()

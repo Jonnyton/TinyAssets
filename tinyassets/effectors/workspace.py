@@ -315,8 +315,14 @@ def _make_lease_dir(lease_path: Path) -> Any:
 
 
 def _make_repo_dir(lease_fd: Any, repo_dir: Path) -> Any:
-    """Create ``<lease>/repo`` through the lease handle and return ITS handle."""
-    return _fs().create_lease_dir(lease_fd, repo_dir.name)
+    """Create ``<lease>/repo`` through the lease handle and return ITS handle.
+
+    NOT ``create_lease_dir``: that one is for a name in the SHARED pool root
+    and requires an unguessable one, which ``'repo'`` is not. The parent here
+    is the private lease directory it just made, so the subdirectory helper is
+    the honest call.
+    """
+    return _fs().create_workspace_subdir(lease_fd, repo_dir.name)
 
 
 def _descriptor_or_none(handle: Any) -> int | None:

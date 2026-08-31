@@ -699,3 +699,220 @@ def test_the_copy_cleanup_never_deletes_a_file_it_did_not_create(
     mine.write_text("mine", encoding="utf-8")
     wfs._unlink_if_same_inode(str(mine), os.lstat(mine))
     assert not mine.exists()
+
+
+# --------------------------------------------------------------------------
+# the Windows branch retries a delete that lost to a process still exiting
+# --------------------------------------------------------------------------
+
+
+def _sharing_violation(winerror: int = 32) -> PermissionError:
+    """What Windows raises while another handle is still open on the file."""
+    error = PermissionError(13, "the process cannot access the file")
+    error.winerror = winerror
+    return error
+
+
+def _lease_tree(tmp_path: Path) -> Path:
+    lease = tmp_path / "lease1"
+    (lease / "repo" / ".git" / "objects").mkdir(parents=True)
+    (lease / "repo" / ".git" / "objects" / "pack.idx").write_text("idx", encoding="utf-8")
+    (lease / "repo" / "README.md").write_text("hello", encoding="utf-8")
+    return lease
+
+
+def test_a_transient_sharing_violation_is_retried_until_the_delete_lands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A git child that is still exiting holds a handle under .git/objects. The
+    wipe used to give up on the first one, and the lease went LOST with its
+    bytes charged forever."""
+    lease = _lease_tree(tmp_path)
+    victim = str(lease / "repo" / ".git" / "objects" / "pack.idx")
+    attempts: list[str] = []
+    real_unlink = os.unlink
+
+    def flaky_unlink(path, **kwargs):
+        if str(path) == victim:
+            attempts.append(str(path))
+            if len(attempts) <= 2:
+                raise _sharing_violation()
+        return real_unlink(path, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", flaky_unlink)
+    slept: list[float] = []
+    wfs.RealPoolFilesystem(
+        posix=False, retry_total_s=5.0, retry_step_s=0.01, sleep=slept.append
+    ).remove_tree_no_follow(lease)
+
+    assert not lease.exists()
+    # Three os.unlink calls, one wait: _unlink_windows already retries ONCE
+    # after clearing the read-only bit, so the first _attempt spends two calls
+    # before the bounded retry waits and the third lands.
+    assert len(attempts) == 3, attempts
+    assert slept == [0.01], slept
+
+
+def test_a_permanent_failure_still_ends_the_lease_LOST(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retrying is not swallowing: a handle nobody ever closes still has to
+    surface, or the pool would report bytes it never freed."""
+    lease = _lease_tree(tmp_path)
+    victim = str(lease / "repo" / ".git" / "objects" / "pack.idx")
+    attempts: list[str] = []
+    real_unlink = os.unlink
+
+    def stuck_unlink(path, **kwargs):
+        if str(path) == victim:
+            attempts.append(str(path))
+            raise _sharing_violation()
+        return real_unlink(path, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", stuck_unlink)
+    filesystem = wfs.RealPoolFilesystem(
+        posix=False, retry_total_s=0.05, retry_step_s=0.01, sleep=lambda _s: None
+    )
+    with pytest.raises(PermissionError):
+        filesystem.remove_tree_no_follow(lease)
+    assert len(attempts) >= 2, "it gave up without retrying at all"
+    assert lease.exists()
+
+
+def test_a_failure_that_is_not_transient_is_not_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the three winerrors a still-exiting process produces are waited on.
+    Anything else is a real refusal and retrying it just costs three seconds."""
+    lease = _lease_tree(tmp_path)
+    victim = str(lease / "repo" / "README.md")
+    attempts: list[str] = []
+    real_unlink = os.unlink
+
+    def refused(path, **kwargs):
+        if str(path) == victim:
+            attempts.append(str(path))
+            error = PermissionError(13, "denied")
+            error.winerror = 1920  # ERROR_CANT_ACCESS_FILE: not transient
+            raise error
+        return real_unlink(path, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", refused)
+    slept: list[float] = []
+    with pytest.raises(PermissionError):
+        wfs.RealPoolFilesystem(
+            posix=False, retry_total_s=5.0, retry_step_s=0.01, sleep=slept.append
+        ).remove_tree_no_follow(lease)
+    # Two calls, because _unlink_windows clears the read-only bit and tries
+    # once more on its own; what matters is that the bounded retry never WAITED.
+    assert attempts == [victim, victim], attempts
+    assert slept == []
+
+
+def test_the_read_only_bit_is_cleared_before_every_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A git child that is still writing can set it again between attempts, so
+    clearing it once at the start is not enough."""
+    lease = _lease_tree(tmp_path)
+    victim = str(lease / "repo" / ".git" / "objects" / "pack.idx")
+    chmods: list[str] = []
+    attempts: list[str] = []
+    real_unlink = os.unlink
+    real_chmod = os.chmod
+
+    def flaky_unlink(path, **kwargs):
+        if str(path) == victim:
+            attempts.append(str(path))
+            if len(attempts) <= 2:
+                raise _sharing_violation(5)
+        return real_unlink(path, **kwargs)
+
+    def spy_chmod(path, mode, **kwargs):
+        chmods.append(str(path))
+        return real_chmod(path, mode, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", flaky_unlink)
+    monkeypatch.setattr(os, "chmod", spy_chmod)
+    wfs.RealPoolFilesystem(
+        posix=False, retry_total_s=5.0, retry_step_s=0.0, sleep=lambda _s: None
+    ).remove_tree_no_follow(lease)
+    assert chmods.count(victim) >= 2, chmods
+
+
+def test_the_posix_branch_does_not_retry(tmp_path: Path, monkeypatch) -> None:
+    """POSIX unlinks an open file without complaint, so a failure there is real
+    and waiting on it would only delay the LOST."""
+    if os.name != "posix":
+        pytest.skip("the POSIX branch needs POSIX")
+    lease = _lease_tree(tmp_path)
+    victim = "pack.idx"
+    attempts: list[str] = []
+    real_unlink = os.unlink
+
+    def stuck_unlink(path, **kwargs):
+        if str(path) == victim:
+            attempts.append(str(path))
+            raise _sharing_violation()
+        return real_unlink(path, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", stuck_unlink)
+    slept: list[float] = []
+    with pytest.raises(PermissionError):
+        wfs.RealPoolFilesystem(sleep=slept.append).remove_tree_no_follow(lease)
+    assert slept == [], "the POSIX branch waited on something"
+
+
+def test_a_lease_the_wipe_cannot_free_is_reported_LOST(tmp_path: Path, monkeypatch) -> None:
+    """The pool's side of the same story, end to end: a wipe that keeps failing
+    marks the lease LOST, keeps its bytes charged, and still releases the locks
+    so the next run is not blocked by a directory nobody can delete."""
+    from tinyassets import workspace_pool as wp
+
+    db = tmp_path / "runs.db"
+    pool_root = tmp_path / "scratch"
+    lease = wp.admit(
+        db,
+        universe_id="u1",
+        connection_id="c1",
+        repo_key="repo",
+        storage_class="scratch",
+        run_id="run-1",
+        max_bytes=1024,
+        pool_root=pool_root,
+        universe_root=tmp_path / "universe",
+    )
+    (lease.path / "repo").mkdir(parents=True)
+    (lease.path / "repo" / "pack.idx").write_text("idx", encoding="utf-8")
+
+    import sqlite3
+
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        wp.enqueue_terminal(conn, run_id="run-1", universe_id="u1", lease=lease)
+        conn.commit()
+    finally:
+        conn.close()
+
+    real_unlink = os.unlink
+
+    def stuck_unlink(path, **kwargs):
+        if str(path).endswith("pack.idx"):
+            raise _sharing_violation()
+        return real_unlink(path, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", stuck_unlink)
+    entry = wp.claim_next(db, claimant="test")
+    assert entry is not None
+    outcome = wp.process_entry(
+        db,
+        entry,
+        fs=wfs.RealPoolFilesystem(
+            posix=False, retry_total_s=0.05, retry_step_s=0.0, sleep=lambda _s: None
+        ),
+    )
+    assert outcome == "lost"
+    stored = wp.get_lease(db, lease.lease_id)
+    assert stored is not None and stored.state == "LOST"
+    assert wp.pool_usage(db).lost_bytes == lease.reserved_bytes

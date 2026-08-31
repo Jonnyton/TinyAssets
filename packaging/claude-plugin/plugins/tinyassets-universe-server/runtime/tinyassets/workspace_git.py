@@ -1455,11 +1455,22 @@ def populate_workspace_from_bundle(
     *,
     home_dir: str | os.PathLike[str],
     path: str,
+    dest_fd: int | None = None,
     timeout_s: float = 300.0,
     launcher: Callable[..., object] | None = None,
     git_binary: str = "git",
 ) -> str:
-    """Unbundle into a fresh repo and check the commit out on a local branch."""
+    """Unbundle into a fresh repo and check the commit out on a local branch.
+
+    ``dest_fd`` is forwarded to :func:`unbundle_into_fresh_repo` AND used for
+    the checkout that follows it. The descriptor is the whole point: pinning
+    the fetch to a handle and then re-resolving the same path for the checkout
+    would leave exactly the window the handle exists to close. It was also the
+    seam - the adapter passed ``dest_fd`` here while only the inner function
+    accepted it, so every real checkout failed with a TypeError the adapter
+    reported as ``workspace_checkout_failed`` (found by the end-to-end chain
+    test, 2026-08-30; the adapter's own suite stubs this function).
+    """
     _require_ref(checkout_ref, "checkout ref")
     sha = unbundle_into_fresh_repo(
         bundle_path,
@@ -1467,18 +1478,20 @@ def populate_workspace_from_bundle(
         ref_name=ref_name,
         home_dir=home_dir,
         path=path,
+        dest_fd=dest_fd,
         timeout_s=timeout_s,
         launcher=launcher,
         git_binary=git_binary,
     )
     result = run_git(
         ["checkout", "--quiet", "-B", checkout_ref, sha],
-        cwd=dest_dir,
+        cwd=dest_dir if dest_fd is None else f"/proc/self/fd/{dest_fd}",
         home_dir=home_dir,
         path=path,
         timeout_s=timeout_s,
         launcher=launcher,
         git_binary=git_binary,
+        pass_fds=() if dest_fd is None else (dest_fd,),
     )
     _require_ok(result, "checkout", "verification")
     return sha
