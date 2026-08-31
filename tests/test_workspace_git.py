@@ -432,7 +432,9 @@ def test_git_environment_requires_an_explicit_path(empty_home: Path) -> None:
 
 def test_forced_git_options_is_the_exact_pinned_list() -> None:
     null_device = "NUL" if IS_WINDOWS else "/dev/null"
-    assert forced_git_options("github.com", "140.82.121.4", "!python helper.py sock") == [
+    assert forced_git_options(
+        "github.com", "140.82.121.4", "!python helper.py sock", multi_resolve=True
+    ) == [
         "-c", f"core.hooksPath={null_device}",
         "-c", "core.fsmonitor=false",
         "-c", "credential.helper=",
@@ -450,7 +452,7 @@ def test_forced_git_options_is_the_exact_pinned_list() -> None:
 
 
 def test_the_empty_credential_helper_comes_first() -> None:
-    options = forced_git_options("github.com", "140.82.121.4", "!broker")
+    options = forced_git_options("github.com", "140.82.121.4", "!broker", multi_resolve=True)
     helpers = [value for value in options if value.startswith("credential.helper=")]
     assert helpers == ["credential.helper=", "credential.helper=!broker"]
     # and the reset really precedes the broker in the argument list
@@ -464,13 +466,16 @@ def _resolve_rule(options: list[str]) -> str:
 
 
 def test_resolve_rule_ipv4_only() -> None:
-    options = forced_git_options("github.com", ["140.82.121.4", "140.82.121.3"], "!broker")
+    options = forced_git_options(
+        "github.com", ["140.82.121.4", "140.82.121.3"], "!broker", multi_resolve=True
+    )
     assert _resolve_rule(options) == "http.curloptResolve=github.com:443:140.82.121.4,140.82.121.3"
 
 
 def test_resolve_rule_ipv6_only_is_bracketed() -> None:
     options = forced_git_options(
-        "github.com", ["2606:50c0:8000::153", "2606:50c0:8001::153"], "!broker"
+        "github.com", ["2606:50c0:8000::153", "2606:50c0:8001::153"], "!broker",
+        multi_resolve=True,
     )
     assert _resolve_rule(options) == (
         "http.curloptResolve=github.com:443:[2606:50c0:8000::153],[2606:50c0:8001::153]"
@@ -479,7 +484,7 @@ def test_resolve_rule_ipv6_only_is_bracketed() -> None:
 
 def test_resolve_rule_mixed_families_keeps_dns_order() -> None:
     options = forced_git_options(
-        "github.com", ["2606:50c0:8000::153", "140.82.121.4"], "!broker"
+        "github.com", ["2606:50c0:8000::153", "140.82.121.4"], "!broker", multi_resolve=True
     )
     assert _resolve_rule(options) == (
         "http.curloptResolve=github.com:443:[2606:50c0:8000::153],140.82.121.4"
@@ -488,12 +493,27 @@ def test_resolve_rule_mixed_families_keeps_dns_order() -> None:
 
 def test_a_single_address_still_produces_one_rule() -> None:
     for given in ("140.82.121.4", ["140.82.121.4"], ("140.82.121.4",)):
-        options = forced_git_options("github.com", given, "!broker")
-        assert _resolve_rule(options) == "http.curloptResolve=github.com:443:140.82.121.4"
+        for multi in (True, False):
+            options = forced_git_options("github.com", given, "!broker", multi_resolve=multi)
+            assert _resolve_rule(options) == "http.curloptResolve=github.com:443:140.82.121.4"
+
+
+def test_an_old_libcurl_refuses_several_addresses_instead_of_emitting_a_comma_list() -> None:
+    """Below 7.59.0 a comma list is mis-parsed; refuse rather than emit it.
+
+    The caller must decide to run one address per operation -- doing that
+    silently here would drop the other addresses without anyone choosing to.
+    """
+    with pytest.raises(WorkspaceGitError) as caught:
+        forced_git_options(
+            "github.com", ["140.82.121.4", "140.82.121.3"], "!broker", multi_resolve=False
+        )
+    assert caught.value.code == "bad_argument"
+    assert "one address per operation" in str(caught.value)
 
 
 def test_the_resolve_rule_host_is_canonical_lower_case() -> None:
-    options = forced_git_options("GitHub.COM", ["140.82.121.4"], "!broker")
+    options = forced_git_options("GitHub.COM", ["140.82.121.4"], "!broker", multi_resolve=True)
     assert _resolve_rule(options) == "http.curloptResolve=github.com:443:140.82.121.4"
 
 
@@ -501,17 +521,20 @@ def test_a_host_carrying_a_port_never_reaches_the_resolve_rule() -> None:
     """A resolve entry is (host, port, address); the port is ours, not input."""
     for hostile in ("github.com:8443", "github.com:443", "github.com:80"):
         with pytest.raises(WorkspaceGitError) as caught:
-            forced_git_options(hostile, ["140.82.121.4"], "!broker")
+            forced_git_options(hostile, ["140.82.121.4"], "!broker", multi_resolve=True)
         assert caught.value.code == "bad_argument"
     # and the rule we do emit pins 443 and nothing else
-    rule = _resolve_rule(forced_git_options("github.com", ["140.82.121.4"], "!broker"))
+    rule = _resolve_rule(
+        forced_git_options("github.com", ["140.82.121.4"], "!broker", multi_resolve=True)
+    )
     assert rule.split(":")[1] == "443"
     assert rule.count(":") == 2
+    assert "8443" not in rule and ":80:" not in rule
 
 
 def test_an_address_carrying_a_port_is_refused() -> None:
     with pytest.raises(WorkspaceGitError) as caught:
-        forced_git_options("github.com", ["140.82.121.4:8443"], "!broker")
+        forced_git_options("github.com", ["140.82.121.4:8443"], "!broker", multi_resolve=True)
     assert caught.value.code == "bad_argument"
 
 
@@ -528,8 +551,14 @@ def test_an_address_carrying_a_port_is_refused() -> None:
 )
 def test_forced_git_options_refuses_injection(host: str, address, helper: str) -> None:
     with pytest.raises(WorkspaceGitError) as caught:
-        forced_git_options(host, address, helper)
+        forced_git_options(host, address, helper, multi_resolve=True)
     assert caught.value.code == "bad_argument"
+
+
+def test_multi_resolve_is_a_required_decision_not_a_default() -> None:
+    """A caller must state which libcurl it is talking to."""
+    with pytest.raises(TypeError):
+        forced_git_options("github.com", ["140.82.121.4"], "!broker")  # type: ignore[call-arg]
 
 
 @pytest.mark.parametrize(
@@ -582,8 +611,11 @@ def test_pin_address_feeds_forced_git_options_directly() -> None:
     pinned = pin_address(
         "github.com", lambda h, p: ["140.82.121.4", "2606:50c0:8000::153"], _classifier_stub
     )
-    rule = _resolve_rule(forced_git_options("github.com", pinned, "!broker"))
+    rule = _resolve_rule(forced_git_options("github.com", pinned, "!broker", multi_resolve=True))
     assert rule == "http.curloptResolve=github.com:443:140.82.121.4,[2606:50c0:8000::153]"
+    # and on an old libcurl the same tuple is a refusal, not a silent truncation
+    with pytest.raises(WorkspaceGitError):
+        forced_git_options("github.com", pinned, "!broker", multi_resolve=False)
 
 
 def test_pin_address_refuses_a_split_answer_rather_than_taking_the_public_subset() -> None:
