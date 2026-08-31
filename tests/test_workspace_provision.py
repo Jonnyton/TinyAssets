@@ -239,19 +239,18 @@ def test_admits_multiple_extras_in_canonical_order() -> None:
 
 
 @pytest.mark.parametrize(
-    ("written", "normalized"),
-    [
-        pytest.param("1.0", "1.0", id="already_canonical"),
-        pytest.param("v1.0", "1.0", id="v_prefix"),
-        pytest.param("1.0-1", "1.0.post1", id="implicit_post"),
-        pytest.param("2.0RC1", "2.0rc1", id="case_and_separator"),
-        pytest.param("1.0.0+local.1", "1.0.0+local.1", id="local_version"),
-    ],
+    "written",
+    ["1.0", "v1.0", "1.0-1", "2.0RC1", "1.0.0+local.1", "1!2.0", "2.0.dev3"],
 )
-def test_admits_and_normalizes_pep440_versions(written: str, normalized: str) -> None:
-    """packaging is the parser, so admission agrees with pip about what a pin means."""
+def test_admits_pep440_versions_verbatim(written: str) -> None:
+    """packaging decides whether the pin is valid; the text is passed through as written.
+
+    The version is never rewritten to its normalized form: that would hand pip a
+    string the manifest never wrote, and the wheel filename the hash pins is built
+    from the version as the project published it.
+    """
     plan = admit_requirements(f"pkg=={written} --hash={HASH_A}\n")
-    assert plan.records[0].version == normalized
+    assert plan.records[0].version == written
 
 
 def test_admits_a_marker() -> None:
@@ -360,20 +359,31 @@ def test_digest_ignores_marker_quote_style() -> None:
     assert _digest(single) == _digest(double)
 
 
-def test_digest_ignores_version_spelling_that_normalizes_to_one_pin() -> None:
-    assert _digest(f"pkg==v1.0 --hash={HASH_A}") == _digest(f"pkg==1.0 --hash={HASH_A}")
+def test_digest_distinguishes_version_spelling() -> None:
+    """Two spellings of one release are two admitted texts, because neither is rewritten."""
+    assert _digest(f"pkg==v1.0 --hash={HASH_A}") != _digest(f"pkg==1.0 --hash={HASH_A}")
 
 
-def test_digest_distinguishes_marker_operand_order() -> None:
-    """packaging preserves operand order, so two spellings are two admitted texts.
-
-    This is weaker than canonicalizing the marker ourselves would be, and it is the
-    deliberate consequence of using ``str(Marker)`` as the canonical form: the digest
-    binds the exact text handed to pip, not a semantic equivalence class.
+def test_digest_ignores_marker_comparison_direction() -> None:
+    """A literal-first comparison is flipped to variable-first, so one condition is
+    one admitted text and one digest.
     """
     forward = f'pkg==1.0 ; python_version >= "3.11" --hash={HASH_A}'
     flipped = f'pkg==1.0 ; "3.11" <= python_version --hash={HASH_A}'
-    assert _digest(forward) != _digest(flipped)
+    assert _digest(forward) == _digest(flipped)
+
+
+def test_flipped_marker_canonicalizes_to_variable_first() -> None:
+    text = f'pkg==1.0 ; "3.11" <= python_version --hash={HASH_A}'
+    plan = admit_requirements(text)
+    assert plan.records[0].marker == 'python_version >= "3.11"'
+
+
+def test_digest_ignores_and_operand_order() -> None:
+    """``and``/``or`` are commutative, so their operands are ordered before hashing."""
+    first = f'pkg==1.0 ; sys_platform == "linux" and python_version >= "3.11" --hash={HASH_A}'
+    second = f'pkg==1.0 ; python_version >= "3.11" and sys_platform == "linux" --hash={HASH_A}'
+    assert _digest(first) == _digest(second)
 
 
 def test_digest_changes_when_a_hash_changes() -> None:
@@ -775,9 +785,10 @@ def test_node_refuses_workspaces_on_the_lockfile_root_entry() -> None:
 
 @pytest.mark.parametrize("field", ["bundleDependencies", "bundledDependencies"])
 def test_node_refuses_bundled_dependencies(field: str) -> None:
+    """Its own class: not pinned by the lockfile and not fetched from the registry."""
     manifest = _manifest(**{field: ["left-pad"]})
     error = _refusal(manifest, _lockfile())
-    assert error.reason == "url_dependency"
+    assert error.reason == "bundled_dependency"
     assert field in error.detail
 
 
