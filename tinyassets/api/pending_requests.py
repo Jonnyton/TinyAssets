@@ -55,7 +55,23 @@ logger = logging.getLogger(__name__)
 _MAX_KIND_CHARS = 24
 _MAX_TITLE_CHARS = 120
 _MAX_BODY_CHARS = 600
-_MAX_FIELDS = 6
+#: How many fields one request may carry.
+#:
+#: Was 6, which is fewer than several real services need: an OAuth 1.0a deposit
+#: (X/Twitter) is an API key, its secret, an access token, ITS secret and often
+#: a bearer token -- five before anything optional. A cap that cannot express
+#: the ask forces the agent back to one box labelled "paste the key", which is
+#: the guessing this is meant to end. Still bounded, because the rail renders
+#: these to a person.
+_MAX_FIELDS = 16
+
+#: Room for "Settings -> Developer portal -> Keys and tokens -> Generate", which
+#: a 120-character label cannot hold.
+_MAX_HELP_CHARS = 400
+
+#: A plain https link, no userinfo (`https://user:pw@host`), bounded.
+_MAX_URL_CHARS = 300
+_SAFE_URL_RE = re.compile(r"^https://[^\s/@]+(?:/[^\s]*)?$")
 _MAX_ANSWER_CHARS = 2000
 #: An agent-requested grant stays narrow; a broader one is a deliberate manual
 #: deposit, chosen by a person in the explicit form.
@@ -376,6 +392,35 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
             "label": str(field.get("label") or name).strip()[:120],
             "type": ftype,
         }
+        # `help` and `url` exist so a credential ask can be ANSWERABLE.
+        #
+        # Founder, 2026-08-31: "no more the user having to guess what they need
+        # to put where. each single indevidual credential will have its own
+        # indevidually labled request that uses what the agent found online as
+        # what that sight uses for calling its credentials". A label of at most
+        # 120 characters cannot carry "Settings -> Developer -> Keys and tokens,
+        # then Generate", and there was nowhere at all to put the link.
+        #
+        # The AGENT fills these in from what it knows about the service, which
+        # is why there is no table of services here: a site nobody has heard of
+        # gets the same quality of ask as a famous one.
+        help_text = str(field.get("help") or "").strip()
+        if help_text:
+            entry["help"] = help_text[:_MAX_HELP_CHARS]
+        url = str(field.get("url") or "").strip()
+        if url:
+            # HTTPS only, and no credentials in the URL. This is rendered to the
+            # owner as something to click while they are being asked for a
+            # secret, so a `javascript:` or `data:` value, or a link carrying a
+            # userinfo section, is refused rather than sanitised -- the caller
+            # is composing it and should be told it was wrong.
+            if not _SAFE_URL_RE.match(url):
+                raise ValueError(
+                    f"field {name!r}: url must be a plain https:// link "
+                    "(no credentials in it, at most "
+                    f"{_MAX_URL_CHARS} chars)"
+                )
+            entry["url"] = url
         if ftype == "choice":
             options = [str(o).strip()[:60] for o in (field.get("options") or []) if str(o).strip()]
             if not options:

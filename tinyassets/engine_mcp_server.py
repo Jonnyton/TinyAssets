@@ -896,6 +896,33 @@ def write_graph(
     EVERY call the flow needs in ONE ask so they paste once (a GitHub pull
     request needs the main ref, a branch ref, the file contents, and the pull).
 
+    **ONE FIELD PER CREDENTIAL, NAMED THE WAY THE SITE NAMES IT.** Never make
+    the owner work out what goes where. If a service needs four values, ask for
+    four, each labelled as that service labels it, each with the path to find it
+    and a link straight there::
+
+        "fields": [
+          {"name": "api_key", "type": "secret",
+           "label": "API Key",
+           "help": "Developer Portal -> your app -> Keys and tokens -> "
+                   "Consumer Keys -> API Key",
+           "url": "https://developer.x.com/en/portal/dashboard"},
+          {"name": "api_key_secret", "type": "secret",
+           "label": "API Key Secret", "help": "shown beside the API Key, once",
+           "url": "https://developer.x.com/en/portal/dashboard"},
+          ...
+        ]
+
+    ``label`` is the service's OWN name for it, not yours -- if the site says
+    "Consumer Key" then say "Consumer Key", because that is the words the owner
+    is looking at. ``help`` is the click path (400 chars). ``url`` is a plain
+    ``https://`` link to the page that issues it. Up to 16 fields.
+
+    Work the field list out yourself from what you know about the service and
+    say where each value comes from. There is no built-in list of services and
+    there is not going to be one: a site nobody has heard of deserves the same
+    quality of ask as a famous one.
+
     **If you ALREADY hold a key for that destination, do not ask for it again.**
     Check ``read_graph target="connections"`` first. To widen an existing grant
     the action is ``extend_http`` on the same destination — new endpoints only,
