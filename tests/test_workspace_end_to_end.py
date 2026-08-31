@@ -44,10 +44,7 @@ from tinyassets.node_sandbox import NodeSandbox, PlainSubprocessLauncher
 from tinyassets.storage.effector_consents import grant_consent
 from tinyassets.storage.outbound_connections import ConnectionLedger
 from tinyassets.storage.workspace_authority import workspace_consent_destination
-from tinyassets.workspace_git import (
-    git_environment,
-    verify_bundle,
-)
+from tinyassets.workspace_git import verify_bundle
 
 GIT = shutil.which("git")
 PY = sys.executable
@@ -227,6 +224,7 @@ def fs_bridge(monkeypatch: pytest.MonkeyPatch) -> dict[str, list]:
 
     monkeypatch.setattr(workspace_fs, "open_dir_nofollow", open_dir_nofollow)
     monkeypatch.setattr(workspace_fs, "create_lease_dir", create_lease_dir)
+    monkeypatch.setattr(workspace_fs, "create_workspace_subdir", create_lease_dir)
     monkeypatch.setattr(
         workspace_fs, "copy_regular_file_beneath", copy_regular_file_beneath
     )
@@ -362,6 +360,24 @@ def _seed_run(universe: Universe, run_id: str = RUN_ID) -> None:
         )
 
 
+def _outbox_outcomes(universe: Universe) -> list[tuple]:
+    """What the processor recorded, verbatim - a LOST carries its exception."""
+    import sqlite3
+
+    db = runs_module.runs_db_path(universe.universe_dir)
+    if not db.exists():
+        return []
+    conn = sqlite3.connect(str(db))
+    try:
+        return list(
+            conn.execute("SELECT action, outcome, done_at FROM workspace_outbox")
+        )
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+
 def _lease_rows(universe: Universe) -> list[tuple]:
     import sqlite3
 
@@ -490,7 +506,8 @@ def test_a_node_commit_becomes_a_bundle_the_push_leg_can_verify(
         Path(request["bundle_path"]),
         max_bytes=512 * 1024 * 1024,
         scratch_dir=scratch,
-        env=git_environment(home, path=str(Path(GIT).parent)),
+        home_dir=home,
+        path=str(Path(GIT).parent),
     )
     assert refs, "verify_bundle returned no refs"
     text = " ".join(str(ref) for ref in refs)
@@ -518,6 +535,9 @@ def test_a_finished_run_releases_its_lease_and_the_next_run_is_admitted(
 ) -> None:
     _seed_run(universe)
     worker = WireWorker(origin)
+    # Every child this test starts is waited on before the terminal write:
+    # the fake wire leg uses subprocess.run, and the adapter's populate does
+    # too. Nothing here is left exiting while the sweep deletes.
     _fire(_packet(), universe=universe, chain=chain, worker=worker)
     rows = _lease_rows(universe)
     assert [state for _id, state, _class in rows] == ["ACTIVE"], rows
@@ -535,9 +555,19 @@ def test_a_finished_run_releases_its_lease_and_the_next_run_is_admitted(
         if thread is not None:
             thread.join(timeout=60)
 
+    # The outcome text carries the exception when a wipe failed, so a LOST here
+    # says WHY without a second run. On Windows a delete can lose to a git child
+    # that is still exiting (sharing violation); the filesystem retries those
+    # for three seconds, and anything still failing after that is real.
     rows = _lease_rows(universe)
-    assert [state for _id, state, _class in rows] == ["AVAILABLE"], rows
-    assert not lease_path.exists(), "the lease directory outlived its lease"
+    assert [state for _id, state, _class in rows] == ["AVAILABLE"], (
+        rows,
+        _outbox_outcomes(universe),
+    )
+    assert not lease_path.exists(), (
+        "the lease directory outlived its lease",
+        _outbox_outcomes(universe),
+    )
 
     import sqlite3
 
