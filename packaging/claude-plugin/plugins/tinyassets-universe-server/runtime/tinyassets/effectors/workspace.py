@@ -487,7 +487,16 @@ def _checkout(
     if storage == "universe":
         replaced = _publish(db, lease, universe_id=universe_id, repo_key=repo_key, run_id=run_id)
 
-    _register_mount(chain, node_id, lease=lease, repo_dir=repo_dir, lease_fd=lease_fd)
+    # The repository's OWN descriptor travels with the mount: the jail binds
+    # through it, and the chain closes it at revoke and at settle.
+    _register_mount(
+        chain,
+        node_id,
+        lease=lease,
+        repo_dir=repo_dir,
+        lease_fd=lease_fd,
+        repo_fd=repo_fd,
+    )
 
     evidence: dict[str, Any] = {
         "op": "checkout",
@@ -683,13 +692,22 @@ def _discard(
 # --------------------------------------------------------------------------- #
 
 
-def _register_mount(chain: Any, node_id: str, *, lease: Any, repo_dir: Path, lease_fd: Any) -> None:
+def _register_mount(
+    chain: Any,
+    node_id: str,
+    *,
+    lease: Any,
+    repo_dir: Path,
+    lease_fd: Any,
+    repo_fd: Any = None,
+) -> None:
     from tinyassets.effectors import WorkspaceMount
 
     mount = WorkspaceMount(
         node_id=node_id,
         bind_source=str(repo_dir),
         lease_fd=lease_fd,
+        repo_fd=repo_fd,
         lease=lease,
         storage_class=lease.storage_class,
         repo_key=lease.repo_key,

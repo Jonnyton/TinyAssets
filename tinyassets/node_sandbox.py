@@ -1497,9 +1497,7 @@ def _default_launcher() -> Launcher:
 DEFAULT_LAUNCHER_FACTORY: Callable[[], Launcher] = _default_launcher
 
 
-def _default_workspace_launcher(
-    bind_source: str, allowed_roots: tuple[str, ...]
-) -> Launcher:
+def _default_workspace_launcher(mount: WorkspaceMount) -> Launcher:
     """The production launcher for a node that HOLDS a workspace.
 
     A bind-less :class:`BwrapLauncher` reports ``/workspace`` as its root and
@@ -1510,15 +1508,19 @@ def _default_workspace_launcher(
     """
     probe = _probe() or {}
     if probe.get("bwrap_available"):
-        return BwrapLauncher(
-            workspace_bind=bind_source, allowed_workspace_roots=tuple(allowed_roots or ())
-        )
+        # for_workspace carries the bind, the roots AND the descriptors the
+        # child must inherit: a launcher built from three loose arguments
+        # dropped pass_fds, and the bind then resolved to a path instead of
+        # the handle the checkout opened.
+        return BwrapLauncher().for_workspace(mount)
     reason = probe.get("reason") or "bwrap unavailable"
     raise SandboxUnavailableError(f"code nodes need the OS sandbox: {reason}")
 
 
-#: Resolves the launcher for a node with a workspace. Substituted by tests.
-WORKSPACE_LAUNCHER_FACTORY: Callable[[str, tuple[str, ...]], Launcher] = (
+#: Resolves the launcher for a node with a workspace, FROM the mount. Taking
+#: the mount rather than its pieces is what keeps ``pass_fds`` from being
+#: forgotten at a call site. Substituted by tests.
+WORKSPACE_LAUNCHER_FACTORY: Callable[[WorkspaceMount], Launcher] = (
     _default_workspace_launcher
 )
 

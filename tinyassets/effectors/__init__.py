@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from dataclasses import dataclass, field
 from typing import Any
@@ -61,6 +62,26 @@ class WorkspaceMount:
     storage_class: str = "scratch"
     repo_key: str = ""
     generation: int = 0
+    #: The descriptor of ``<lease>/repo`` itself. The jail binds THROUGH it
+    #: (``/proc/self/fd/<n>``), so what the node gets is the directory this
+    #: checkout populated - not whatever the path names by the time bwrap
+    #: looks at it. The lease handle stays too: a push reads the export bundle
+    #: relative to the lease, one level above the repository.
+    repo_fd: Any = None
+
+    def close(self) -> None:
+        """Close both descriptors, once. Called by the chain at revoke and at
+        settle; a double close would hit an unrelated fd by number."""
+        for name in ("repo_fd", "lease_fd"):
+            handle = getattr(self, name, None)
+            if isinstance(handle, int) and not isinstance(handle, bool):
+                object.__setattr__(self, name, None)
+                try:
+                    os.close(handle)
+                except OSError:
+                    logging.getLogger(__name__).debug(
+                        "workspace %s was already closed", name
+                    )
 
 
 def _authenticated_call_adapter(

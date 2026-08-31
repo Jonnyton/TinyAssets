@@ -1194,7 +1194,9 @@ def test_a_workspace_command_timeout_reaches_the_compiler_as_its_own_class(
     monkeypatch.setattr(
         node_sandbox,
         "WORKSPACE_LAUNCHER_FACTORY",
-        lambda bind_source, roots: PlainSubprocessLauncher(workspace_bind=bind_source),
+        lambda sandbox_mount: PlainSubprocessLauncher(
+            workspace_bind=sandbox_mount.bind_source
+        ),
     )
     chain = EffectChain()
     chain.register_workspace("checkout", WorkspaceMount(bind_source=str(workspace)))
