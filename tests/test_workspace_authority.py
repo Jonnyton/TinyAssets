@@ -1,0 +1,798 @@
+"""Git scopes and workspace consents: the two gates the workspace sink needs.
+
+A SCOPE says the deposited credential may reach exactly one repository on
+github.com; a CONSENT says the owner agreed to that kind of work on it. The
+tests hold three lines hardest, because each one is a way the authority could
+quietly become something else:
+
+* a git scope is not an HTTP verb, and the proxy's membership test must not
+  accept one as a verb now that both live in the same ``scopes`` tuple;
+* the binding is exact - ``git_read:owner/name`` grants nothing about
+  ``owner/name2``, ``owner/name.git`` or another host; and
+* nothing crosses a universe boundary, so a remix carries neither.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from tinyassets.auth.middleware import auth_middleware, set_provider
+from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
+from tinyassets.storage import workspace_authority as wa
+from tinyassets.storage.effector_consents import is_consent_active, list_consents
+from tinyassets.storage.outbound_connections import (
+    ConnectionLedger,
+    CredentialBlindBroker,
+    ScopedConnectionProxy,
+    _verb_within_scopes,
+)
+
+# --------------------------------------------------------------------------
+# harness (mirrors tests/test_pending_requests.py)
+# --------------------------------------------------------------------------
+
+
+class _StaticAuthProvider(AuthProvider):
+    def __init__(self, identity):
+        self.identity = identity
+
+    def resolve_token(self, token):
+        return self.identity if token == "valid" else None
+
+    def is_auth_required(self):
+        return True
+
+    def register_client(self, metadata):
+        return {"client_id": "test-client", **metadata}
+
+    def create_authorization(self, *a, **k):
+        return "test-code"
+
+    def exchange_code(self, *a, **k):
+        return None
+
+
+def _login(user_id):
+    set_provider(_StaticAuthProvider(Identity(
+        user_id=user_id, username=user_id,
+        capabilities=[
+            "tinyassets.universe.write",
+            "tinyassets.extensions.read",
+            "tinyassets.extensions.write",
+        ])))
+    auth_middleware("valid")
+
+
+def _logout():
+    set_provider(DevAuthProvider())
+    auth_middleware(None)
+
+
+@pytest.fixture(autouse=True)
+def _reset_auth():
+    _logout()
+    yield
+    _logout()
+
+
+@pytest.fixture
+def base(tmp_path, monkeypatch):
+    root = tmp_path / "data"
+    root.mkdir()
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
+    return root
+
+
+def _make_universe(base, uid, *, admin=""):
+    from tinyassets.daemon_server import grant_universe_access
+
+    udir = base / uid
+    udir.mkdir(parents=True, exist_ok=True)
+    if admin:
+        grant_universe_access(base, universe_id=uid, actor_id=admin,
+                              permission="admin", granted_by=admin)
+    return udir
+
+
+GITHUB_ENDPOINT = {
+    "host": "api.github.com",
+    "path_template": "/repos/o/r/pulls",
+    "methods": ["POST"],
+}
+
+
+def _deposit(uid, *, scopes=None, endpoints=None, destination="github"):
+    """connect_http through its own API, the way the rail's answer does."""
+    from tinyassets.api.http_connection import connect_http
+
+    document = {
+        "destination": destination,
+        "secret": "ghp_" + "x" * 30,
+        "auth_scheme": "bearer",
+        "allowed_endpoints": endpoints if endpoints is not None else [GITHUB_ENDPOINT],
+    }
+    if scopes is not None:
+        document["scopes"] = scopes
+    return connect_http(universe_id=uid, payload=json.dumps(document))
+
+
+def _ask(uid, **payload):
+    from tinyassets.api.pending_requests import request_from_user
+
+    return request_from_user(universe_id=uid, payload=json.dumps(payload))
+
+
+def _answer(uid, **document):
+    from tinyassets.api.pending_requests import answer_request
+
+    return answer_request(universe_id=uid, payload=json.dumps(document))
+
+
+def _connection(uid, connection_id):
+    from pathlib import Path
+
+    from tinyassets.api.helpers import _base_path
+
+    return ConnectionLedger(Path(_base_path()) / "outbound.db").get_connection(
+        connection_id
+    )
+
+
+class _Connection:
+    """The duck the predicates read: scopes, endpoints, provider, revocation."""
+
+    def __init__(self, scopes=(), hosts=(), provider="http", revoked_at=None):
+        self.scopes = tuple(scopes)
+        self.allowed_endpoints = tuple(_Endpoint(host) for host in hosts)
+        self.provider = provider
+        self.revoked_at = revoked_at
+
+
+class _Endpoint:
+    def __init__(self, host):
+        self.host = host
+
+
+# --------------------------------------------------------------------------
+# the grammar
+# --------------------------------------------------------------------------
+
+
+def test_a_git_scope_round_trips_through_its_grammar() -> None:
+    assert wa.format_git_scope("git_read", "octocat/hello") == "git_read:octocat/hello"
+    assert wa.require_git_scope("git_write:octocat/hello") == (
+        "git_write",
+        "octocat/hello",
+    )
+    assert wa.parse_git_scope("git_read:o/n") == ("git_read", "o/n")
+    assert wa.normalize_repo("  octocat/hello  ") == "octocat/hello"
+
+
+@pytest.mark.parametrize(
+    "repo",
+    [
+        "octocat/hello.git",          # the same repo under a second spelling
+        "octocat/hello/extra",        # a second slash
+        "octocat",                    # no owner or no name
+        "/hello",
+        "octocat/",
+        "../etc",                     # traversal
+        "octocat/..",
+        "oct at/hello",               # whitespace
+        "octocat/hel:lo",             # outside the charset
+        "",
+    ],
+)
+def test_a_repository_that_is_not_exactly_owner_name_is_refused(repo: str) -> None:
+    with pytest.raises(wa.GitScopeError):
+        wa.normalize_repo(repo)
+
+
+@pytest.mark.parametrize(
+    "scope",
+    ["git_read", "git_read:", "git_read:o", "git_write:o/n.git", "GET", "read:o/n"],
+)
+def test_a_malformed_git_scope_never_parses(scope: str) -> None:
+    assert wa.parse_git_scope(scope) is None
+    with pytest.raises(wa.GitScopeError):
+        wa.require_git_scope(scope)
+
+
+def test_anything_git_shaped_is_recognised_as_a_git_scope() -> None:
+    """The predicate the verb checks use is SHAPE, not validity: a verb named
+    ``git_read`` must be refused whether or not it would parse."""
+    assert wa.is_git_scope("git_read") is True
+    assert wa.is_git_scope("git_write:o/n") is True
+    assert wa.is_git_scope("git_read:garbage") is True
+    assert wa.is_git_scope("POST") is False
+    assert wa.is_git_scope("") is False
+    assert wa.is_git_scope(None) is False
+
+
+def test_a_git_scope_needs_a_connection_that_only_reaches_github() -> None:
+    wa.validate_git_scopes(["git_read:o/n"], hosts=["api.github.com"])
+    wa.validate_git_scopes(["git_read:o/n"], hosts=["github.com"])
+    # A pipe declares no endpoints; its provider is what pins the host.
+    wa.validate_git_scopes(["git_read:o/n"], hosts=[], provider="github")
+    with pytest.raises(wa.GitScopeError, match="github.com"):
+        wa.validate_git_scopes(["git_read:o/n"], hosts=["api.example.com"])
+    with pytest.raises(wa.GitScopeError, match="github.com"):
+        # Mixed: the same credential could then be spent on another host.
+        wa.validate_git_scopes(["git_read:o/n"], hosts=["api.github.com", "evil.com"])
+    with pytest.raises(wa.GitScopeError, match="github.com"):
+        wa.validate_git_scopes(["git_read:o/n"], hosts=[], provider="http")
+    with pytest.raises(wa.GitScopeError, match="github.com.evil.com"):
+        wa.validate_git_scopes(["git_read:o/n"], hosts=["github.com.evil.com"])
+    # An HTTP-only scope tuple is not this rule's business.
+    wa.validate_git_scopes(["POST", "GET"], hosts=["api.example.com"])
+
+
+def test_the_scope_binding_is_exactly_one_repository() -> None:
+    connection = _Connection(
+        scopes=("POST", "git_read:octocat/hello"), hosts=("api.github.com",)
+    )
+    assert wa.has_git_scope(connection, "git_read", "octocat/hello") is True
+    assert wa.has_git_scope(connection, "git_read", "octocat/hello2") is False
+    assert wa.has_git_scope(connection, "git_read", "octocat2/hello") is False
+    assert wa.has_git_scope(connection, "git_write", "octocat/hello") is False
+    assert wa.has_git_scope(connection, "git_read", "octocat/hello.git") is False
+    assert wa.has_git_scope(connection, "not_a_kind", "octocat/hello") is False
+    assert wa.has_git_scope(None, "git_read", "octocat/hello") is False
+
+
+def test_a_revoked_or_off_host_connection_grants_no_git_scope() -> None:
+    revoked = _Connection(
+        scopes=("git_read:o/n",), hosts=("api.github.com",), revoked_at=1.0
+    )
+    assert wa.has_git_scope(revoked, "git_read", "o/n") is False
+    # A row that somehow holds a git scope with a non-github endpoint grants
+    # nothing at READ time either: the check does not rely on the write path
+    # having been the only way in.
+    off_host = _Connection(scopes=("git_read:o/n",), hosts=("api.example.com",))
+    assert wa.has_git_scope(off_host, "git_read", "o/n") is False
+
+
+def test_a_malformed_stored_scope_is_dropped_not_raised() -> None:
+    connection = _Connection(
+        scopes=("git_read:garbage", "git_read:o/n"), hosts=("api.github.com",)
+    )
+    assert wa.connection_git_scopes(connection) == {("git_read", "o/n")}
+
+
+def test_the_consent_destination_has_one_spelling() -> None:
+    assert (
+        wa.workspace_consent_destination("workspace_checkout", "octocat/hello")
+        == "checkout:github.com/octocat/hello"
+    )
+    assert (
+        wa.workspace_consent_destination("workspace_provision", "octocat/hello")
+        == "provision:github.com/octocat/hello"
+    )
+    assert wa.parse_workspace_consent_destination(
+        "push:github.com/octocat/hello"
+    ) == {
+        "consent": "workspace_push",
+        "operation": "push",
+        "host": "github.com",
+        "repo": "octocat/hello",
+    }
+    assert wa.parse_workspace_consent_destination("api.github.com/repos") is None
+    with pytest.raises(wa.GitScopeError):
+        wa.workspace_consent_destination("workspace_delete", "octocat/hello")
+
+
+# --------------------------------------------------------------------------
+# the ledger stores it, or refuses it
+# --------------------------------------------------------------------------
+
+
+def _ledger(tmp_path, actor="user-1"):
+    return ConnectionLedger(
+        tmp_path / "outbound.db", verify_authenticated_principal=lambda: actor
+    )
+
+
+def _create(ledger, *, scopes, endpoints=(GITHUB_ENDPOINT,), **over):
+    document = dict(
+        connection_id="conn-1",
+        owner_user_id="user-1",
+        connection_class="http",
+        connection_type="http",
+        auth_scheme="bearer",
+        scopes=scopes,
+        provider="http",
+        destination="github",
+        credential_ref="vault://http/github",
+        allowed_endpoints=list(endpoints),
+    )
+    document.update(over)
+    return ledger.create_connection(**document)
+
+
+def test_the_ledger_stores_a_git_scope_on_a_github_connection(tmp_path) -> None:
+    view = _create(_ledger(tmp_path), scopes=("POST", "git_read:octocat/hello"))
+    assert "git_read:octocat/hello" in view.scopes
+    assert wa.has_git_scope(view, "git_read", "octocat/hello") is True
+
+
+def test_the_ledger_refuses_a_git_scope_on_a_connection_that_reaches_elsewhere(
+    tmp_path,
+) -> None:
+    with pytest.raises(wa.GitScopeError, match="github.com"):
+        _create(
+            _ledger(tmp_path),
+            scopes=("POST", "git_read:octocat/hello"),
+            endpoints=(
+                {
+                    "host": "api.example.com",
+                    "path_template": "/v1/things",
+                    "methods": ["POST"],
+                },
+            ),
+        )
+
+
+def test_the_ledger_refuses_a_malformed_git_scope(tmp_path) -> None:
+    with pytest.raises(wa.GitScopeError):
+        _create(_ledger(tmp_path), scopes=("POST", "git_read:octocat/hello.git"))
+    with pytest.raises(wa.GitScopeError):
+        _create(_ledger(tmp_path), scopes=("POST", "git_write:../../etc"))
+
+
+def test_the_scope_extension_refuses_a_git_scope_off_github(tmp_path) -> None:
+    ledger = _ledger(tmp_path)
+    _create(ledger, scopes=("POST",))
+    with pytest.raises(wa.GitScopeError, match="github.com"):
+        ledger.extend_http_connection_endpoints(
+            connection_id="conn-1",
+            endpoints=[
+                {
+                    "host": "api.example.com",
+                    "path_template": "/v1/things",
+                    "methods": ["POST"],
+                }
+            ],
+            scopes=("POST", "git_read:octocat/hello"),
+            expected_endpoints_json=json.dumps(
+                [
+                    e.as_dict()
+                    for e in ledger._get_connection_resource("conn-1").allowed_endpoints
+                ]
+            ),
+        )
+
+
+# --------------------------------------------------------------------------
+# a git scope is not an HTTP verb
+# --------------------------------------------------------------------------
+
+
+def test_the_verb_check_never_accepts_a_git_scope_as_a_verb() -> None:
+    scopes = ("POST", "git_read:octocat/hello")
+    assert _verb_within_scopes("POST", scopes) is True
+    assert _verb_within_scopes("git_read:octocat/hello", scopes) is False
+    assert _verb_within_scopes("git_read", scopes) is False
+    assert _verb_within_scopes("DELETE", scopes) is False
+    assert _verb_within_scopes(None, scopes) is False
+    assert _verb_within_scopes("", scopes) is False
+
+
+def test_the_scoped_proxy_refuses_a_git_scope_as_a_verb() -> None:
+    proxy = ScopedConnectionProxy(
+        grant_id="grant-1",
+        provider="http",
+        destination="github",
+        scopes=("POST", "git_read:octocat/hello"),
+        _channel=None,
+    )
+    with pytest.raises(PermissionError, match="outside the granted connection scope"):
+        proxy.request("git_read:octocat/hello", {"url": "https://api.github.com/x"})
+
+
+def test_the_broker_refuses_a_git_scope_as_a_verb(tmp_path) -> None:
+    """The credentialed dispatcher is the one that would spend the token."""
+    ledger = _ledger(tmp_path)
+    _create(ledger, scopes=("POST", "git_read:octocat/hello"))
+    ledger.grant_connection(
+        grant_id="grant-1",
+        connection_id="conn-1",
+        owner_user_id="user-1",
+        universe_id="u-1",
+    )
+    dispatched: list[str] = []
+
+    broker = CredentialBlindBroker(
+        ledger,
+        resolve_credential=lambda ref: "secret",
+        network_request=lambda **kwargs: dispatched.append(kwargs.get("method", "")),
+    )
+    with pytest.raises(PermissionError, match="outside the granted connection scope"):
+        broker.dispatch("grant-1", "git_read:octocat/hello", {"url": "https://x"})
+    assert dispatched == []
+
+
+# --------------------------------------------------------------------------
+# the request rail asks for it
+# --------------------------------------------------------------------------
+
+
+def test_the_rail_accepts_a_git_scope_on_a_github_ask(base) -> None:
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    asked = _ask(
+        "u-1",
+        kind="API",
+        title="Let me check out the repo",
+        body="I need to clone it to run the tests.",
+        action={
+            "type": "extend_http",
+            "destination": "github",
+            "endpoints": [GITHUB_ENDPOINT],
+            "scopes": ["git_read:octocat/hello", "git_write:octocat/hello"],
+        },
+    )
+    assert asked["status"] == "pending", asked
+    assert asked["action"]["scopes"] == [
+        "git_read:octocat/hello",
+        "git_write:octocat/hello",
+    ]
+
+
+def test_the_rail_refuses_a_git_scope_on_an_ask_that_reaches_elsewhere(base) -> None:
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    asked = _ask(
+        "u-1",
+        kind="API",
+        title="Widen my key",
+        body="",
+        action={
+            "type": "extend_http",
+            "destination": "example",
+            "endpoints": [
+                {
+                    "host": "api.example.com",
+                    "path_template": "/v1/things",
+                    "methods": ["POST"],
+                }
+            ],
+            "scopes": ["git_read:octocat/hello"],
+        },
+    )
+    assert asked["error"] == "request_invalid"
+    assert "github.com" in asked["detail"]
+
+
+def test_the_rail_refuses_an_http_verb_smuggled_in_as_a_scope(base) -> None:
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    asked = _ask(
+        "u-1",
+        kind="API",
+        title="Widen my key",
+        body="",
+        action={
+            "type": "extend_http",
+            "destination": "github",
+            "endpoints": [GITHUB_ENDPOINT],
+            "scopes": ["DELETE"],
+        },
+    )
+    assert asked["error"] == "request_invalid"
+    assert "git scopes only" in asked["detail"]
+
+
+def test_answering_the_extend_ask_puts_the_git_scope_on_the_connection(base) -> None:
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    deposited = _deposit("u-1")
+    assert deposited.get("connection_id"), deposited
+    assert wa.connection_git_scopes(
+        _connection("u-1", deposited["connection_id"])
+    ) == set()
+
+    asked = _ask(
+        "u-1",
+        kind="API",
+        title="Let me check out the repo",
+        body="",
+        action={
+            "type": "extend_http",
+            "destination": "github",
+            "endpoints": [GITHUB_ENDPOINT],
+            "scopes": ["git_read:octocat/hello"],
+        },
+    )
+    assert asked["status"] == "pending", asked
+    # No paste box: the key is already in the vault, this is the yes.
+    assert asked["fields"] == []
+    answered = _answer("u-1", request_id=asked["request_id"], values={})
+    assert answered["status"] == "answered", answered
+
+    connection = _connection("u-1", deposited["connection_id"])
+    assert wa.has_git_scope(connection, "git_read", "octocat/hello") is True
+    assert wa.has_git_scope(connection, "git_write", "octocat/hello") is False
+    # The HTTP verb the endpoints imply is still there, unchanged.
+    assert "POST" in connection.scopes
+
+
+def test_a_later_deposit_does_not_drop_a_git_scope(base) -> None:
+    """Scopes are otherwise derived from endpoint methods, so a scope nothing
+    can re-derive would vanish on the next deposit and the sink would start
+    refusing checkouts nobody revoked."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    deposited = _deposit("u-1", scopes=["git_read:octocat/hello"])
+    assert deposited.get("connection_id"), deposited
+
+    again = _deposit("u-1")               # the same ask, no scopes named
+    assert not again.get("error"), again
+    connection = _connection("u-1", deposited["connection_id"])
+    assert wa.has_git_scope(connection, "git_read", "octocat/hello") is True
+
+
+def test_the_deposit_refuses_an_http_verb_smuggled_in_as_a_scope(base) -> None:
+    """The HTTP verbs stay DERIVED from the endpoints. A caller that could name
+    its own verbs could widen the HTTP surface without widening the endpoint
+    allow-list, which is the whole of the deposit's least-privilege story."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    refused = _deposit("u-1", scopes=["DELETE"])
+    assert refused["error"] == "connection_setup_invalid", refused
+    assert "git scopes only" in refused["detail"]
+
+
+def test_a_scope_only_widening_is_not_reported_as_unchanged(base) -> None:
+    """extend_http used to short-circuit on "no new endpoints", which left a
+    scope-only ask with no route through the verb at all."""
+    from tinyassets.api.http_connection import extend_http
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    _deposit("u-1")
+    widened = extend_http(
+        universe_id="u-1",
+        payload=json.dumps(
+            {
+                "destination": "github",
+                "endpoints": [GITHUB_ENDPOINT],
+                "scopes": ["git_write:octocat/hello"],
+            }
+        ),
+    )
+    assert widened["status"] == "extended", widened
+    assert "git_write:octocat/hello" in widened["scopes"]
+    # And asking for the same thing twice IS unchanged.
+    repeat = extend_http(
+        universe_id="u-1",
+        payload=json.dumps(
+            {
+                "destination": "github",
+                "endpoints": [GITHUB_ENDPOINT],
+                "scopes": ["git_write:octocat/hello"],
+            }
+        ),
+    )
+    assert repeat["status"] == "unchanged", repeat
+
+
+# --------------------------------------------------------------------------
+# the typed consents
+# --------------------------------------------------------------------------
+
+
+def _consent_ask(uid, deposited, **over):
+    action = {
+        "type": "grant_workspace_consent",
+        "connection_id": deposited["connection_id"],
+        "repo": "octocat/hello",
+        "consents": [
+            "workspace_checkout",
+            "workspace_push",
+            "workspace_provision",
+        ],
+    }
+    action.update(over)
+    return _ask(
+        uid,
+        kind="Approval",
+        title="May I work on octocat/hello?",
+        body="Check it out, run the tests, push a branch.",
+        action=action,
+    )
+
+
+def test_granting_the_consents_writes_one_row_per_operation(base) -> None:
+    udir = _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    deposited = _deposit("u-1", scopes=["git_read:octocat/hello"])
+    asked = _consent_ask("u-1", deposited)
+    assert asked["status"] == "pending", asked
+    assert asked["fields"] == []
+    assert "octocat/hello" in asked["grant_sentence"]
+
+    answered = _answer("u-1", request_id=asked["request_id"], values={})
+    assert answered["status"] == "answered", answered
+    assert sorted(answered["destinations"]) == [
+        "checkout:github.com/octocat/hello",
+        "provision:github.com/octocat/hello",
+        "push:github.com/octocat/hello",
+    ]
+    rows = list_consents(udir, sink="workspace")
+    assert sorted(row["destination"] for row in rows) == [
+        "checkout:github.com/octocat/hello",
+        "provision:github.com/octocat/hello",
+        "push:github.com/octocat/hello",
+    ]
+    assert all(row["granted_by"] == "alice" for row in rows)
+
+
+def test_a_consent_is_active_only_for_the_exact_operation_and_repo(base) -> None:
+    udir = _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    deposited = _deposit("u-1")
+    asked = _consent_ask("u-1", deposited, consents=["workspace_checkout"])
+    _answer("u-1", request_id=asked["request_id"], values={})
+
+    checkout = wa.workspace_consent_destination("workspace_checkout", "octocat/hello")
+    assert is_consent_active(udir, sink="workspace", destination=checkout) is True
+    for other in (
+        wa.workspace_consent_destination("workspace_push", "octocat/hello"),
+        wa.workspace_consent_destination("workspace_checkout", "octocat/hello2"),
+        wa.workspace_consent_destination("workspace_checkout", "octocat2/hello"),
+        "checkout:gitlab.com/octocat/hello",
+        "checkout:github.com/octocat/hello/extra",
+    ):
+        assert is_consent_active(udir, sink="workspace", destination=other) is False
+    # And it is not a consent for some other sink's destination either.
+    assert is_consent_active(udir, sink="github_pr", destination=checkout) is False
+
+
+def test_a_consent_ask_names_a_connection_this_owner_holds(base) -> None:
+    udir = _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    deposited = _deposit("u-1")
+    asked = _consent_ask("u-1", deposited, connection_id="conn-somebody-elses")
+    assert asked["status"] == "pending", asked
+
+    answered = _answer("u-1", request_id=asked["request_id"], values={})
+    assert answered["error"] == "not_found"
+    assert list_consents(udir, sink="workspace") == []
+    # The tab stays open: the answer did not land, and closing it would lose
+    # the ask with nothing written.
+    from tinyassets.storage.pending_requests import get_request
+
+    assert get_request(udir, asked["request_id"])["status"] == "pending"
+
+
+@pytest.mark.parametrize(
+    "over,fragment",
+    [
+        ({"repo": "octocat/hello.git"}, ".git"),
+        ({"repo": "../etc"}, "traversal"),
+        ({"consents": ["workspace_delete"]}, "unknown consent"),
+        ({"consents": []}, "at least one"),
+        ({"connection_id": ""}, "connection_id"),
+    ],
+)
+def test_a_malformed_consent_ask_never_becomes_a_tab(base, over, fragment) -> None:
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    deposited = _deposit("u-1")
+    asked = _consent_ask("u-1", deposited, **over)
+    assert asked["error"] == "request_invalid", asked
+    assert fragment in asked["detail"]
+
+
+# --------------------------------------------------------------------------
+# nothing crosses a universe boundary
+# --------------------------------------------------------------------------
+
+
+def test_a_remix_carries_neither_the_consents_nor_the_scopes(base, monkeypatch) -> None:
+    """The remixer's universe starts with no authority of its own: consents live
+    in the universe directory and scopes on the owner's connection, and a branch
+    is a SHAPE - copying it copies neither."""
+    import importlib
+
+    from tinyassets import universe_server as us
+
+    source_dir = _make_universe(base, "alice", admin="alice")
+    target_dir = _make_universe(base, "bob", admin="bob")
+    _login("alice")
+    deposited = _deposit("alice", scopes=["git_read:octocat/hello"])
+    asked = _consent_ask("alice", deposited)
+    _answer("alice", request_id=asked["request_id"], values={})
+    assert len(list_consents(source_dir, sink="workspace")) == 3
+
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    importlib.reload(us)
+    spec = {
+        "name": "Run the tests",
+        "entry_point": "ready",
+        "node_defs": [
+            {
+                "node_id": "ready",
+                "display_name": "Ready",
+                "prompt_template": "Do the work.",
+            }
+        ],
+        "edges": [{"from": "START", "to": "ready"}, {"from": "ready", "to": "END"}],
+        "state_schema": [{"name": "x", "type": "str"}],
+        "visibility": "public",
+    }
+    origin = json.loads(us.extensions(action="build_branch", spec_json=json.dumps(spec)))
+    assert origin.get("branch_def_id"), origin
+    published = json.loads(
+        us.extensions(action="publish_version", branch_def_id=origin["branch_def_id"])
+    )
+    assert published.get("branch_version_id"), published
+
+    _login("bob")
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "bob")
+    importlib.reload(us)
+    remixed = json.loads(
+        us.extensions(
+            action="build_branch",
+            spec_json=json.dumps(
+                {**spec, "fork_from": published["branch_version_id"]}
+            ),
+        )
+    )
+    importlib.reload(us)
+    assert remixed.get("branch_def_id"), remixed
+    assert remixed["branch_def_id"] != origin["branch_def_id"]
+
+    # The remixer holds nothing: not the consents, not the connection.
+    assert list_consents(target_dir, sink="workspace") == []
+    for consent in wa.WORKSPACE_CONSENTS:
+        assert (
+            is_consent_active(
+                target_dir,
+                sink="workspace",
+                destination=wa.workspace_consent_destination(consent, "octocat/hello"),
+            )
+            is False
+        )
+    from tinyassets.api.cloud_connections import cloud_connections
+
+    _login("bob")
+    listed = cloud_connections(action="list", universe_id="bob")
+    assert listed["connections"] == []
+    assert listed["workspace_consents"] == []
+
+
+# --------------------------------------------------------------------------
+# the universe can see what it holds
+# --------------------------------------------------------------------------
+
+
+def test_the_inventory_shows_the_git_scopes_and_the_consents(base) -> None:
+    from tinyassets.api.cloud_connections import cloud_connections
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    deposited = _deposit("u-1", scopes=["git_read:octocat/hello"])
+    asked = _consent_ask("u-1", deposited, consents=["workspace_checkout"])
+    _answer("u-1", request_id=asked["request_id"], values={})
+
+    listed = cloud_connections(action="list", universe_id="u-1")
+    assert listed["count"] == 1
+    row = listed["connections"][0]
+    assert row["git_scopes"] == [
+        {"kind": "git_read", "repo": "octocat/hello", "host": "github.com"}
+    ]
+    assert "git_read:octocat/hello" in row["scopes"]
+    assert listed["workspace_consents"] == [
+        {
+            "consent": "workspace_checkout",
+            "operation": "checkout",
+            "host": "github.com",
+            "repo": "octocat/hello",
+            "granted_at": listed["workspace_consents"][0]["granted_at"],
+        }
+    ]
+    # No secret rode along with any of it.
+    assert "credential_ref" not in json.dumps(listed)

@@ -63,6 +63,9 @@ _MAX_REQUEST_METHODS = 2
 #: Enough for a real multi-call flow (a GitHub PR needs three) without
 #: becoming a way to ask for a whole API in one go.
 _MAX_REQUEST_ENDPOINTS = 6
+#: Git scopes one ask may carry. A workspace job names the repositories it works
+#: on; a list longer than this is a portfolio, not a job.
+_MAX_REQUEST_GIT_SCOPES = 6
 
 #: An unbroken run this long is a credential, not prose. Feedback is free text
 #: stored in the clear, so it gets the same screen the resolver applies.
@@ -125,6 +128,8 @@ def _validated_action(raw: Any) -> dict[str, Any]:
     kind = str(action.get("type") or "answer").strip().lower()
     if kind == "answer":
         return {"type": "answer"}
+    if kind == "grant_workspace_consent":
+        return _validated_workspace_consent(action)
     if kind == "extend_http":
         # Widening a grant the user already funded. No secret is involved: the
         # vault keeps the one they deposited, and answering this request IS the
@@ -140,10 +145,12 @@ def _validated_action(raw: Any) -> dict[str, Any]:
             "type": "extend_http",
             "destination": destination,
             "endpoints": endpoints,
+            "scopes": _validated_git_scopes(action, endpoints),
         }
     if kind != "connect_http":
         raise ValueError(
-            "action type must be answer, connect_http or extend_http"
+            "action type must be answer, connect_http, extend_http or "
+            "grant_workspace_consent"
         )
 
     destination = str(action.get("destination") or "").strip().lower()
@@ -167,6 +174,96 @@ def _validated_action(raw: Any) -> dict[str, Any]:
         "destination": destination,
         "auth_scheme": scheme,
         "endpoints": endpoints,
+        "scopes": _validated_git_scopes(action, endpoints),
+    }
+
+
+def _validated_git_scopes(
+    action: dict[str, Any], endpoints: list[dict[str, Any]]
+) -> list[str]:
+    """The git scopes an http ask may carry, validated the way the deposit will.
+
+    A git scope is the one authority an endpoint list cannot express: which
+    repository a credentialed clone or push may touch. It is checked against the
+    SAME endpoint hosts here as at the deposit, so a tab can never promise a
+    scope the deposit would then refuse - the user would have answered a
+    question that grants nothing.
+    """
+    from tinyassets.storage.workspace_authority import (
+        endpoints_allow_git_scopes,
+        format_git_scope,
+        is_git_scope,
+        require_git_scope,
+    )
+
+    raw = action.get("scopes")
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        raise ValueError("scopes must be a list of git scopes")
+    if len(raw) > _MAX_REQUEST_GIT_SCOPES:
+        raise ValueError(
+            f"a request may cover at most {_MAX_REQUEST_GIT_SCOPES} git scopes"
+        )
+    scopes: list[str] = []
+    for value in raw:
+        if not is_git_scope(value):
+            raise ValueError(
+                "scopes accepts git scopes only (git_read:owner/name, "
+                "git_write:owner/name); the HTTP methods come from the endpoints"
+            )
+        scopes.append(format_git_scope(*require_git_scope(value)))
+    if scopes and not endpoints_allow_git_scopes(
+        [str(endpoint.get("host") or "") for endpoint in endpoints]
+    ):
+        raise ValueError(
+            "a git scope needs every endpoint of the same ask to be on "
+            "github.com; ask for the git scope on the github connection"
+        )
+    return sorted(set(scopes))
+
+
+def _validated_workspace_consent(action: dict[str, Any]) -> dict[str, Any]:
+    """``grant_workspace_consent``: the typed yes for one repository.
+
+    The scope says the credential MAY reach the repository; this says the owner
+    agreed to this kind of work on it. Separate on purpose - a key deposited for
+    an API call is not a standing agreement to check the repository out, run its
+    code and push to it.
+    """
+    from tinyassets.storage.workspace_authority import (
+        WORKSPACE_CONSENTS,
+        normalize_repo,
+    )
+
+    connection_id = str(action.get("connection_id") or "").strip()
+    if not connection_id or len(connection_id) > 200:
+        raise ValueError(
+            "grant_workspace_consent needs the connection_id the key was "
+            "deposited under"
+        )
+    repo = normalize_repo(action.get("repo"))
+    raw = action.get("consents")
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(
+            "consents must name at least one of " + ", ".join(WORKSPACE_CONSENTS)
+        )
+    consents = sorted({str(value).strip().lower() for value in raw})
+    unknown = [value for value in consents if value not in WORKSPACE_CONSENTS]
+    if unknown:
+        raise ValueError(
+            "unknown consent(s) " + ", ".join(unknown) + "; expected "
+            + ", ".join(WORKSPACE_CONSENTS)
+        )
+    return {
+        "type": "grant_workspace_consent",
+        "connection_id": connection_id,
+        "repo": repo,
+        "consents": consents,
     }
 
 
@@ -226,7 +323,7 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
         # what it wants rather than presenting an empty tab.
         if action["type"] == "connect_http":
             fields = [{"name": "secret", "label": "Paste the key", "type": "secret"}]
-        elif action["type"] == "extend_http":
+        elif action["type"] in ("extend_http", "grant_workspace_consent"):
             # Nothing to type. The key is already in the vault; this is a yes/no.
             return []
         else:
@@ -336,6 +433,21 @@ def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str
 def _grant_sentence(row: dict[str, Any]) -> str:
     """For a credential ask, the exact grant in one line. Empty otherwise."""
     action = row.get("action") or {}
+    if action.get("type") == "grant_workspace_consent":
+        from tinyassets.storage.workspace_authority import (
+            CONSENT_OPERATIONS,
+            GIT_SCOPE_HOST,
+        )
+
+        operations = [
+            CONSENT_OPERATIONS.get(consent, consent)
+            for consent in (action.get("consents") or [])
+        ]
+        return (
+            "Let this universe " + ", ".join(operations) + " "
+            f"{GIT_SCOPE_HOST}/{action.get('repo')} with the key you already "
+            "gave. Nothing to paste; this is the yes."
+        )
     if action.get("type") == "extend_http":
         lines = [
             f"{'/'.join(e.get('methods') or [])} {e.get('host')}{e.get('path_template')}"
@@ -482,6 +594,91 @@ def unmute_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
     return {"status": "unmuted" if lifted else "not_muted"}
 
 
+def _grant_workspace_consent(
+    *,
+    udir: Any,
+    row: dict[str, Any],
+    action: dict[str, Any],
+    request_id: str,
+    answer: dict[str, Any],
+    feedback: str,
+    dont_ask_again: bool,
+) -> dict[str, Any]:
+    """Write the typed workspace consents the owner just agreed to.
+
+    One row per operation under the ``workspace`` sink, at the destination
+    :func:`workspace_consent_destination` spells - the same string the sink
+    checks, from the same function, so the two cannot drift apart.
+
+    The named connection must exist, belong to this owner and not be revoked:
+    consent to check out a repository through a connection that is not theirs is
+    not a thing the owner can give. It does NOT require the git scope to exist
+    yet - the scope ask and the consent ask are two tabs and the owner may
+    answer them in either order, and a consent with no scope behind it grants
+    nothing, because the sink requires both.
+    """
+    from pathlib import Path
+
+    from tinyassets.api import permissions
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.storage.effector_consents import grant_consent
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+    from tinyassets.storage.pending_requests import resolve_request
+    from tinyassets.storage.workspace_authority import (
+        WORKSPACE_SINK,
+        workspace_consent_destination,
+    )
+
+    actor = permissions.current_actor_id().strip()
+    connection_id = action["connection_id"]
+    ledger = ConnectionLedger(
+        Path(_base_path()) / "outbound.db",
+        verify_authenticated_principal=lambda: actor,
+    )
+    connection = ledger.get_connection(connection_id)
+    if (
+        connection is None
+        or connection.owner_user_id != actor
+        or connection.revoked_at is not None
+    ):
+        # Leave the request PENDING, exactly as a failed deposit does: the answer
+        # did not land, and closing the tab would lose the ask with nothing
+        # written. Uniform envelope so this cannot probe which ids exist.
+        return {"error": "not_found", "resource": "connection"}
+
+    repo = action["repo"]
+    destinations = [
+        workspace_consent_destination(consent, repo)
+        for consent in action["consents"]
+    ]
+    for destination in destinations:
+        grant_consent(
+            udir,
+            sink=WORKSPACE_SINK,
+            destination=destination,
+            granted_by=actor,
+        )
+    resolve_request(
+        udir,
+        request_id,
+        status="answered",
+        answer=answer,
+        feedback=feedback,
+        dont_ask_again=dont_ask_again,
+        decision="allowed",
+    )
+    return {
+        "status": "answered",
+        "request_id": request_id,
+        "connection_id": connection_id,
+        "repo": repo,
+        "consents": list(action["consents"]),
+        "destinations": destinations,
+        "receipt": _grant_sentence(row),
+        "secret_reused": True,
+    }
+
+
 def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
     """The user's answer.
 
@@ -569,6 +766,16 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             "the clear, so say it in words instead"
         )
 
+    if action.get("type") == "grant_workspace_consent":
+        return _grant_workspace_consent(
+            udir=udir,
+            row=row,
+            action=action,
+            request_id=request_id,
+            answer=answer,
+            feedback=feedback,
+            dont_ask_again=dont_ask_again,
+        )
     if action.get("type") == "extend_http":
         from tinyassets.api.http_connection import extend_http
 
@@ -577,6 +784,7 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             payload=json.dumps({
                 "destination": action["destination"],
                 "endpoints": action["endpoints"],
+                "scopes": action.get("scopes") or [],
             }),
         )
         if widened.get("error"):
@@ -604,6 +812,7 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
                     "secret": secret,
                     "auth_scheme": action["auth_scheme"],
                     "allowed_endpoints": action["endpoints"],
+                    "scopes": action.get("scopes") or [],
                 }
             ),
         )

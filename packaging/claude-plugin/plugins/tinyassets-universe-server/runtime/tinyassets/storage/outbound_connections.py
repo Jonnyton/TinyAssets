@@ -25,7 +25,9 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
+
+from tinyassets.storage.workspace_authority import is_git_scope, validate_git_scopes
 
 AuthenticatedPrincipalVerifier = Callable[[], str]
 
@@ -454,6 +456,23 @@ def _describe_child_exit(exitcode: int | None) -> str:
     return f" (exitcode {exitcode})"
 
 
+def _verb_within_scopes(verb: object, scopes: Iterable[str]) -> bool:
+    """Whether an HTTP verb is one this connection's scopes carry.
+
+    Authorization here is a membership test against the ``scopes`` tuple, and
+    that tuple now also holds git scopes (``git_read:owner/name``), which are a
+    DIFFERENT KIND of authority: they say a credentialed git operation may run
+    against one repository, not that an arbitrary HTTP request may be dispatched.
+    Without this check a caller could pass ``verb="git_read:owner/name"``, match
+    by membership, and reach the credentialed dispatcher through the HTTP path.
+    """
+    if not isinstance(verb, str) or not verb:
+        return False
+    if is_git_scope(verb):
+        return False
+    return verb in scopes
+
+
 def _run_proxy_worker(
     channel: Any,
     dispatch_factory: str,
@@ -508,7 +527,7 @@ def _run_proxy_worker(
                 )
                 continue
             verb = message.get("verb")
-            if not isinstance(verb, str) or verb not in scopes:
+            if not _verb_within_scopes(verb, scopes):
                 _send_message(
                     channel,
                     {
@@ -612,7 +631,7 @@ class ScopedConnectionProxy:
     _channel: _ProxyChannel = field(repr=False, compare=False)
 
     def request(self, verb: str, request: object) -> Any:
-        if verb not in self.scopes:
+        if not _verb_within_scopes(verb, self.scopes):
             raise PermissionError(
                 f"verb {verb!r} is outside the granted connection scope"
             )
@@ -644,7 +663,7 @@ class CredentialBlindBroker:
         resource = self._ledger._active_resource_for_grant(grant_id)
         if resource is None:
             raise GrantResolutionError("absent or revoked outbound connection grant")
-        if verb not in resource.scopes:
+        if not _verb_within_scopes(verb, resource.scopes):
             raise PermissionError(
                 f"verb {verb!r} is outside the granted connection scope"
             )
@@ -2809,6 +2828,15 @@ class ConnectionLedger:
                 )
             if normalized_scheme not in _SUPPORTED_HTTP_AUTH_SCHEMES:
                 raise SsrfValidationError("auth scheme is not supported")
+        # A git scope binds one repository on one host, so it may only ride on a
+        # connection provably pointed at github.com. Checked HERE, at the storage
+        # boundary: every issuer assembles its own scope tuple, and a rule that
+        # lives in one of them is a rule the next one forgets.
+        validate_git_scopes(
+            scopes,
+            hosts=[endpoint.host for endpoint in endpoints],
+            provider=provider,
+        )
         resource = ConnectionResource(
             connection_id=_required("connection_id", connection_id),
             owner_user_id=_required("owner_user_id", owner_user_id),
@@ -2905,6 +2933,7 @@ class ConnectionLedger:
                 "an http connection requires at least one allowed endpoint"
             )
         new_scopes = tuple(_required("scope", scope) for scope in scopes)
+        validate_git_scopes(new_scopes, hosts=[endpoint.host for endpoint in parsed])
         with self._connect() as connection:
             cursor = connection.execute(
                 """
