@@ -2159,7 +2159,36 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
     for key, value in payload_obj.items():
         if not isinstance(value, str):
             return json.dumps({"error": f"payload '{key}' must be a string."})
+    from tinyassets.effectors.workspace import EXTERNAL_WRITE_SINK_WORKSPACE
+
     channel_type = (payload_obj.get("channel_type") or "").strip()
+    # `sink` is checked too because `_approve_sink` reads `fields["sink"]` FIRST
+    # and only falls back to `channel_type` -- refusing one spelling and not the
+    # other would be a refusal with a documented way around it.
+    if EXTERNAL_WRITE_SINK_WORKSPACE in {
+        channel_type,
+        (payload_obj.get("sink") or "").strip(),
+    }:
+        # The `workspace` sink was admitted to the served build surface BECAUSE
+        # its consents are typed per (op, connection, repo) and answered by the
+        # owner on the request rail. This verb writes into the same
+        # `effector_consents` store the workspace effector reads
+        # (`_approve_sink` -> `grant_consent`; `is_consent_active` on the way
+        # out), so leaving it open here would let the agent grant itself the
+        # repository access the rail exists to gate -- and the justification for
+        # widening the allowlist would be circular.
+        #
+        # Found by a Codex refute review of PR #2742 (Q1) and confirmed against
+        # this tree. Reachable today only from a vetted founder universe
+        # (`run_graph_allowlist`), which bounds it but does not make it true.
+        return json.dumps({
+            "error": (
+                "workspace consent cannot be self-approved: it is typed per "
+                "(operation, connection, repository) and is answered by the "
+                "universe's owner on the request rail. Ask for it there; this "
+                "verb approves outbound channel sinks only."
+            ),
+        })
     if channel_type == "source_code":
         # Approval is provenance only (change `sandboxed-code-node`); execution is
         # gated by the sandbox and authorship. This verb approves sinks, not code.
