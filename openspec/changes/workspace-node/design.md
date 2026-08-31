@@ -232,7 +232,11 @@ No user code ever runs with both network and the checkout *(R1)*.
   resolver stages only the canonical JSON and runs `npm ci --ignore-scripts
   --cache <cache> --userconfig /dev/null --registry
   https://registry.npmjs.org` (fetch only); the offline `npm ci --offline`
-  in the credential-free, network-less jail may run lifecycle scripts.
+  in the credential-free, network-less jail may run dependency lifecycle
+  scripts. The staged manifests are RECONSTRUCTED from validated fields
+  only (lockfile emitted as v3 with no legacy graph; `scripts` not carried,
+  so the root manifest's own lifecycle hooks do not run offline - a
+  tightening over the first draft, builder 2026-08-31).
 - The resolver jail holds no checkout, only the canonical manifests and an
   empty cache; its own network namespace with userspace egress that permits
   only the declared registry hosts after per-address validation *(R1)*.
