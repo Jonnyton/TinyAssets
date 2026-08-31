@@ -20,8 +20,10 @@ in the platform until a user builds one.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
+import os
 import threading
 from dataclasses import dataclass, field
 from typing import Any
@@ -43,6 +45,99 @@ from tinyassets.effectors.workspace import (
     packet_op,
     run_workspace_effector,
 )
+
+#: How a held directory descriptor is spelled to a process that inherited it.
+_PROC_FD_PREFIX = "/proc/self/fd/"
+
+
+@dataclass
+class AcquiredWorkspace:
+    """One held use of a workspace capability.
+
+    ``mount`` carries DUPLICATED descriptors: closing them is this holder's
+    business alone, and the originals stay open until the chain says
+    otherwise. Releasing twice is a no-op, because a double close would land
+    on whatever fd number the runtime handed out next.
+    """
+
+    mount: Any
+    _chain: Any = None
+    _node_key: str = ""
+    _released: bool = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        if self._chain is not None:
+            self._chain._release_workspace(self._node_key, self.mount)
+        else:  # pragma: no cover - a chainless acquisition is a test double
+            _close_workspace_mount(self.mount)
+
+    def __enter__(self) -> "AcquiredWorkspace":
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self.release()
+
+
+def _dup_workspace_mount(mount: Any) -> Any:
+    """A copy of *mount* holding ``os.dup``s of whatever descriptors it has.
+
+    A mount with no descriptors (Windows, every test double) copies as itself:
+    the path form has nothing to duplicate and nothing whose number could be
+    reused. Anything DERIVED from a descriptor is re-derived from the dup, or
+    the copy would hold this holder's fd while telling the jail to bind the
+    original's number - which is the number a discard is about to free.
+
+    Copied with ``copy.copy`` and assigned, not ``dataclasses.replace``: the
+    capability is a dataclass today and a stub in three test suites, and a
+    copier that only understands one of those silently hands back the ORIGINAL
+    for the rest - which is the bug this function exists to prevent.
+    """
+    duplicated: dict[str, int] = {}
+    try:
+        for name in ("repo_fd", "lease_fd"):
+            handle = getattr(mount, name, None)
+            if isinstance(handle, int) and not isinstance(handle, bool):
+                duplicated[name] = os.dup(handle)
+    except OSError:
+        _close_descriptors(duplicated.values())
+        raise
+    if not duplicated:
+        return mount
+
+    fields: dict[str, Any] = dict(duplicated)
+    repo_dup = duplicated.get("repo_fd")
+    if repo_dup is not None:
+        source = str(getattr(mount, "bind_source", "") or "")
+        if source.startswith(_PROC_FD_PREFIX):
+            fields["bind_source"] = f"{_PROC_FD_PREFIX}{repo_dup}"
+        if tuple(getattr(mount, "pass_fds", ()) or ()):
+            fields["pass_fds"] = (repo_dup,)
+    try:
+        duplicate = copy.copy(mount)
+        for name, value in fields.items():
+            try:
+                setattr(duplicate, name, value)
+            except (AttributeError, TypeError):  # frozen dataclass
+                object.__setattr__(duplicate, name, value)
+    except Exception:
+        # Never leak the dups when the copy itself fails - and never hand back
+        # the original as if it were a copy.
+        _close_descriptors(duplicated.values())
+        raise
+    return duplicate
+
+
+def _close_descriptors(handles: Any) -> None:
+    """Close raw descriptors, ignoring the ones already gone."""
+    for handle in handles:
+        if isinstance(handle, int) and not isinstance(handle, bool):
+            try:
+                os.close(handle)
+            except OSError:
+                pass
 
 
 def _close_workspace_mount(mount: Any) -> None:
@@ -341,6 +436,54 @@ class EffectChain:
     #: bounds outbound calls only (D4).
     workspaces: dict[str, Any] = field(default_factory=dict)
 
+    #: Live acquisitions per node key. A capability with holders outstanding
+    #: is not closed on revoke: the fd NUMBER would be reused by the next
+    #: checkout and a node still holding it would read another branch's
+    #: repository (Codex code round 3, P0 #2).
+    workspace_holds: dict[str, int] = field(default_factory=dict)
+    #: Revoked mounts whose original descriptors are owed a close once the
+    #: last holder releases.
+    workspace_closing: dict[str, Any] = field(default_factory=dict)
+
+    def acquire_workspace(self, node_key: str) -> "AcquiredWorkspace | None":
+        """Take a capability for the length of ONE use, or None.
+
+        None means the same thing ``workspace_mount`` returning None means -
+        never delivered, or revoked - and it is decided INSIDE the lock, so an
+        acquisition cannot straddle a revoke.
+
+        What the caller gets is not the registry's mount: it is a copy holding
+        ``os.dup``s of the descriptors. That is the whole point. A parallel
+        ``discard`` closes the originals, the next checkout opens directories
+        and gets the SAME fd numbers back, and a holder still using them would
+        be reading another branch's repository. A dup is a separate reference
+        to the same open file description: the number cannot be reused while it
+        is held, and closing it costs the original nothing.
+
+        Use it as a context manager, or call ``release()`` in a ``finally``.
+        """
+        key = str(node_key)
+        with self.lock:
+            mount = self.workspaces.get(key)
+            if mount is None:
+                return None
+            duplicate = _dup_workspace_mount(mount)
+            self.workspace_holds[key] = self.workspace_holds.get(key, 0) + 1
+        return AcquiredWorkspace(mount=duplicate, _chain=self, _node_key=key)
+
+    def _release_workspace(self, node_key: str, duplicate: Any) -> None:
+        """Close this holder's dups and, if it was the last one, whatever the
+        revoke deferred."""
+        _close_workspace_mount(duplicate)
+        with self.lock:
+            remaining = self.workspace_holds.get(node_key, 0) - 1
+            if remaining > 0:
+                self.workspace_holds[node_key] = remaining
+                return
+            self.workspace_holds.pop(node_key, None)
+            deferred = self.workspace_closing.pop(node_key, None)
+        _close_workspace_mount(deferred)
+
     def register_workspace(self, node_key: str, mount: Any) -> None:
         """Publish the generation a checkout node delivered, for this run only."""
         if not isinstance(node_key, str) or not node_key.strip():
@@ -373,20 +516,37 @@ class EffectChain:
         descriptors are closed here - a capability object that outlives the
         run would keep the lease directory open for the daemon's lifetime
         (Codex code round 2, #7)."""
+        key = str(node_key)
         with self.lock:
-            mount = self.workspaces.pop(str(node_key), None)
-        _close_workspace_mount(mount)
+            mount = self.workspaces.pop(key, None)
+            # Revoked IMMEDIATELY - a later acquisition gets None either way -
+            # but the descriptors stay open while anyone holds a dup, because
+            # closing them frees the NUMBER for the next checkout to reuse.
+            deferred = mount is not None and self.workspace_holds.get(key, 0) > 0
+            if deferred:
+                self.workspace_closing[key] = mount
+        if not deferred:
+            _close_workspace_mount(mount)
         return mount
 
     def close_workspaces(self) -> int:
         """Revoke and close every workspace this run still holds. Called
         when the chain settles; idempotent."""
         with self.lock:
-            mounts = list(self.workspaces.values())
+            held = dict(self.workspaces)
             self.workspaces.clear()
-        for mount in mounts:
+            closable = []
+            for key, mount in held.items():
+                if self.workspace_holds.get(key, 0) > 0:
+                    # Same rule as revoke: a run that settles while a node is
+                    # still inside its workspace must not free the fd numbers
+                    # under it. The last release closes them.
+                    self.workspace_closing[key] = mount
+                else:
+                    closable.append(mount)
+        for mount in closable:
             _close_workspace_mount(mount)
-        return len(mounts)
+        return len(held)
 
     def prior_effects(self, ancestors: set[str] | None = None) -> dict[str, dict]:
         """Full results of the nodes a reference may legally name (for
