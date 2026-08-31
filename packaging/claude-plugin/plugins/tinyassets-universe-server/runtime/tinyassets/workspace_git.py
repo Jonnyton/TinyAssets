@@ -1458,8 +1458,16 @@ def populate_workspace_from_bundle(
     timeout_s: float = 300.0,
     launcher: Callable[..., object] | None = None,
     git_binary: str = "git",
+    dest_fd: int | None = None,
 ) -> str:
-    """Unbundle into a fresh repo and check the commit out on a local branch."""
+    """Unbundle into a fresh repo and check the commit out on a local branch.
+
+    ``dest_fd`` (a directory descriptor the caller holds open for the whole
+    call) pins BOTH steps to the same inode: the import and the checkout run
+    with ``cwd=/proc/self/fd/<n>``, so a rename of ``dest_dir`` between them
+    changes nothing (the end-to-end lane found the adapter passing this and
+    only the import honouring it).
+    """
     _require_ref(checkout_ref, "checkout ref")
     sha = unbundle_into_fresh_repo(
         bundle_path,
@@ -1470,15 +1478,20 @@ def populate_workspace_from_bundle(
         timeout_s=timeout_s,
         launcher=launcher,
         git_binary=git_binary,
+        dest_fd=dest_fd,
+    )
+    work_dir: str | os.PathLike[str] = (
+        dest_dir if dest_fd is None else f"/proc/self/fd/{dest_fd}"
     )
     result = run_git(
         ["checkout", "--quiet", "-B", checkout_ref, sha],
-        cwd=dest_dir,
+        cwd=work_dir,
         home_dir=home_dir,
         path=path,
         timeout_s=timeout_s,
         launcher=launcher,
         git_binary=git_binary,
+        pass_fds=() if dest_fd is None else (dest_fd,),
     )
     _require_ok(result, "checkout", "verification")
     return sha

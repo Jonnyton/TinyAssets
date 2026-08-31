@@ -367,6 +367,19 @@ def _workspace_sweeper_loop(base_path: str | Path, interval_s: float) -> None:
             logger.exception("workspace sweep failed")
 
 
+def _ensure_scratch_root(base: Path) -> Path:
+    """The scratch pool's parent, created once, mode 0700, never with
+    ``parents=True``: the data root itself must already exist. The no-follow
+    lease helpers refuse a missing parent, so a fresh host needs this before
+    its first checkout (lane E finding)."""
+    root = base / "scratch"
+    if not root.exists():
+        root.mkdir(mode=0o700)
+    if os.name == "posix":
+        os.chmod(root, 0o700)
+    return root
+
+
 def ensure_workspace_reconciled(
     base_path: str | Path,
     *,
@@ -386,6 +399,7 @@ def ensure_workspace_reconciled(
         _WORKSPACE_RECONCILING.add(key)
     try:
         initialize_runs_db(base_path)
+        _ensure_scratch_root(Path(base_path))
         db = runs_db_path(base_path)
         with _connect(base_path) as conn:
             workspace_pool.ensure_schema(conn)
