@@ -84,6 +84,29 @@ def test_a_terminal_status_enqueues_the_lease_in_the_same_write(tmp_path, monkey
     assert kicks == [base], "a finished run's release is kicked, not left to the tick"
 
 
+def test_an_enqueue_failure_rolls_the_terminal_status_back(tmp_path, monkeypatch):
+    """One transaction means one: if the outbox cannot take the entry, the
+    status write must not land either (Codex, code round 1)."""
+    base = tmp_path / "data"
+    _seed_run(base, "r1c")
+    _admit(base, tmp_path, "r1c")
+    monkeypatch.setattr(runs, "_kick_workspace_sweep", lambda p: None)
+
+    def _boom(conn, base_path, run_id):
+        raise sqlite3.OperationalError("outbox unavailable")
+
+    monkeypatch.setattr(runs, "_enqueue_workspace_terminal", _boom)
+    with pytest.raises(sqlite3.OperationalError):
+        runs.update_run_status(base, "r1c", status="completed", finished_at=time.time())
+    conn = sqlite3.connect(runs.runs_db_path(base))
+    try:
+        status = conn.execute("SELECT status FROM runs WHERE run_id = ?", ("r1c",)).fetchone()[0]
+    finally:
+        conn.close()
+    assert status == "running", "the terminal status rolled back with the failed enqueue"
+    assert _pending(base, "r1c") == []
+
+
 def test_the_kick_releases_the_lock_within_the_same_second(tmp_path, monkeypatch):
     base = tmp_path / "data"
     _seed_run(base, "r1b")
@@ -164,12 +187,74 @@ def test_the_reconciler_runs_once_and_finishes_old_entries(tmp_path, monkeypatch
     runs.update_run_status(base, "r6", status="completed")
     assert _pending(base, "r6")
     monkeypatch.setattr("tinyassets.workspace_fs.RealPoolFilesystem", _NoopFs)
-    runs._WORKSPACE_RECONCILED.discard(str(base.resolve()))
+    import os
+
+    runs._WORKSPACE_RECONCILED.discard((os.getpid(), str(base.resolve())))
     assert runs.ensure_workspace_reconciled(base, start_sweeper=False) is True
     assert runs.ensure_workspace_reconciled(base, start_sweeper=False) is False
     assert _pending(base, "r6") == []
     after = workspace_pool.get_lease(runs.runs_db_path(base), lease.lease_id)
     assert after is not None and after.state == "AVAILABLE"
+
+
+def test_the_periodic_pass_leaves_a_permanent_generation_alone(tmp_path, monkeypatch):
+    """An authoritative permanent generation stays ACTIVE after its run by
+    design; the sweep must not re-enqueue it every tick."""
+    base = tmp_path / "data"
+    _seed_run(base, "r7b", status="completed")
+    db = runs.runs_db_path(base)
+    with runs._connect(base) as conn:
+        workspace_pool.ensure_schema(conn)
+    lease = workspace_pool.admit(
+        db, universe_id="u-1", connection_id="c1", repo_key="github.com--o--r",
+        storage_class="universe", run_id="r7b", max_bytes=GIB,
+        pool_root=tmp_path / "scratch", universe_root=tmp_path / "universes" / "u-1",
+        universe_quota_bytes=10 * GIB, universe_used_bytes_fn=lambda _u: 0,
+    )
+    monkeypatch.setattr("tinyassets.workspace_fs.RealPoolFilesystem", _NoopFs)
+    runs._workspace_sweep_once(base, claimant="test")
+    after = workspace_pool.get_lease(db, lease.lease_id)
+    assert after is not None and after.state == "ACTIVE", "the generation is kept"
+    conn = sqlite3.connect(db)
+    try:
+        held = conn.execute(
+            "SELECT COUNT(*) FROM workspace_locks WHERE run_id = ?", ("r7b",)
+        ).fetchone()[0]
+        entries = conn.execute(
+            "SELECT action FROM workspace_outbox WHERE run_id = ?", ("r7b",)
+        ).fetchall()
+    finally:
+        conn.close()
+    assert held == 0, "its locks were released through a lock-only entry"
+    assert entries == [("release_lock_only",)]
+    runs._workspace_sweep_once(base, claimant="test")
+    conn = sqlite3.connect(db)
+    try:
+        again = conn.execute(
+            "SELECT COUNT(*) FROM workspace_outbox WHERE run_id = ?", ("r7b",)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert again == 1, "a second tick enqueues nothing more"
+
+
+def test_the_reconciler_retries_after_a_failed_attempt(tmp_path, monkeypatch):
+    base = tmp_path / "data"
+    runs.initialize_runs_db(base)
+    calls = {"n": 0}
+
+    def _fail_once(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("sweep exploded")
+        return 0
+
+    monkeypatch.setattr(workspace_pool, "startup_sweep", _fail_once)
+    with pytest.raises(RuntimeError):
+        runs.ensure_workspace_reconciled(base, start_sweeper=False)
+    assert runs.ensure_workspace_reconciled(base, start_sweeper=False) is True
+    assert runs.ensure_workspace_reconciled(base, start_sweeper=False) is False
+    assert calls["n"] == 2
 
 
 def test_the_periodic_pass_repairs_an_orphaned_active_lease(tmp_path, monkeypatch):
