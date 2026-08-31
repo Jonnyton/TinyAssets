@@ -843,7 +843,6 @@ def _register_mount(
         pass_fds=(descriptor,) if descriptor is not None else (),
         repo_fd=repo_fd,
         lease_fd=lease_fd,
-        repo_fd=repo_fd,
         lease=lease,
         storage_class=lease.storage_class,
         repo_key=lease.repo_key,
