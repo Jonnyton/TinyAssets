@@ -22,6 +22,7 @@ take ``db: Path`` and open their own ``BEGIN IMMEDIATE``.
 
 from __future__ import annotations
 
+import os
 import re
 import secrets
 import sqlite3
@@ -49,6 +50,31 @@ DEFAULT_CLAIM_TTL_S = 300
 #: must not refuse new jobs. Callers with a truer process-start timestamp pass
 #: it explicitly; the default can only ever be conservative, never absent.
 PROCESS_STARTED_AT = time.time()
+#: How long a bounded wait sleeps between lock polls.
+LOCK_POLL_S = 0.5
+
+
+def mark_process_started(now: float | None = None) -> float:
+    """Re-anchor the startup barrier to THIS process.
+
+    Import time is only process start for the process that did the importing. A
+    worker forked from a parent that imported hours ago inherits the parent's
+    instant, so entries the parent wrote look like they predate the child and
+    the child refuses every admission until they drain. Worker initialisation
+    calls this; ``os.register_at_fork`` calls it in every forked child, so a
+    fork that nobody remembered to instrument is still correct.
+    """
+    global PROCESS_STARTED_AT
+    PROCESS_STARTED_AT = float(time.time() if now is None else now)
+    return PROCESS_STARTED_AT
+
+
+def _reset_process_start_after_fork() -> None:
+    mark_process_started()
+
+
+if hasattr(os, "register_at_fork"):  # POSIX only; a no-op elsewhere
+    os.register_at_fork(after_in_child=_reset_process_start_after_fork)
 #: A negative TTL steals every claim: used by the startup sweep, where nothing
 #: else is running and a claim can only be a dead process's.
 STEAL_ALL_TTL_S = -1.0
@@ -200,6 +226,17 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS workspace_leases_repo "
         "ON workspace_leases(universe_id, repo_key, generation)"
     )
+    # The three lookups every hot path makes: the sweep's "what does this run
+    # still hold", the pool/quota sums, and the outbox scans. Without them each
+    # one is a full scan of a table that only ever grows.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS workspace_leases_state_run "
+        "ON workspace_leases(state, run_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS workspace_leases_universe_class_state "
+        "ON workspace_leases(universe_id, storage_class, state)"
+    )
     conn.execute(
         "CREATE TABLE IF NOT EXISTS workspace_locks ("
         'scope TEXT NOT NULL CHECK (scope IN (\'universe\',\'host\')), "key" TEXT NOT NULL, '
@@ -221,6 +258,14 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         "ON workspace_outbox(done_at, entry_id)"
     )
     conn.execute(
+        "CREATE INDEX IF NOT EXISTS workspace_outbox_run "
+        "ON workspace_outbox(run_id, done_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS workspace_outbox_age "
+        "ON workspace_outbox(done_at, created_at)"
+    )
+    conn.execute(
         "CREATE TABLE IF NOT EXISTS workspace_generations ("
         "repo_key TEXT NOT NULL, universe_id TEXT NOT NULL, generation INTEGER NOT NULL, "
         "path TEXT NOT NULL, PRIMARY KEY (universe_id, repo_key))"
@@ -229,11 +274,23 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE TABLE IF NOT EXISTS workspace_ledger ("
         "universe_id TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('jobs','bytes')), "
         "amount INTEGER NOT NULL, reserved INTEGER NOT NULL, run_id TEXT NOT NULL, "
-        "lease_id TEXT, created_at REAL NOT NULL)"
+        "lease_id TEXT, operation_id TEXT, created_at REAL NOT NULL)"
     )
+    # A ledger written before push/provisioning had their own reservations has
+    # no operation_id. Migrate inside the caller's transaction, as
+    # ``engine_admissions`` does: two first touches must not race the ALTER.
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(workspace_ledger)")}
+    if "operation_id" not in columns:
+        conn.execute("ALTER TABLE workspace_ledger ADD COLUMN operation_id TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS workspace_ledger_window "
         "ON workspace_ledger(universe_id, kind, created_at)"
+    )
+    # One reservation per operation, enforced by STORAGE: a retried push must
+    # not charge the hour twice, and a check-then-insert would still race.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS workspace_ledger_operation "
+        "ON workspace_ledger(operation_id, kind) WHERE operation_id IS NOT NULL"
     )
 
 
@@ -367,6 +424,29 @@ def _scratch_pool_reserved(conn: sqlite3.Connection) -> int:
     return int(row[0])
 
 
+def _universe_outstanding_bytes(conn: sqlite3.Connection, universe_id: str) -> int:
+    """Permanent bytes this universe has RESERVED but not yet put on disk.
+
+    ``universe_used_bytes_fn`` measures the filesystem, which says nothing about
+    a generation that was admitted a millisecond ago and is still being fetched.
+    Two reentrant admissions would each see 0 used and each reserve 6 against a
+    10 GiB quota. Counted here, inside the admission transaction, the second one
+    is refused.
+
+    Only leases with no ``measured_bytes`` count: once the transfer is
+    reconciled the bytes ARE on disk and the filesystem measurement covers them,
+    so counting the reservation too would charge a published generation twice
+    for as long as it exists.
+    """
+    row = conn.execute(
+        "SELECT COALESCE(SUM(reserved_bytes), 0) FROM workspace_leases "
+        "WHERE universe_id = ? AND storage_class = ? AND state = ? "
+        "AND measured_bytes IS NULL",
+        (universe_id, STORAGE_UNIVERSE, STATE_ACTIVE),
+    ).fetchone()
+    return int(row[0])
+
+
 def _next_generation(conn: sqlite3.Connection, universe_id: str, repo_key: str) -> int:
     lease_max = conn.execute(
         "SELECT COALESCE(MAX(generation), 0) FROM workspace_leases "
@@ -440,6 +520,8 @@ def admit(
     now: Callable[[], float] = time.time,
     lease_id_factory: Callable[[], str] = secrets.token_hex,
     process_started_at: float | None = None,
+    wait_s: float = 0.0,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> Lease:
     """Admit one workspace job in ONE ``BEGIN IMMEDIATE`` transaction.
 
@@ -448,6 +530,13 @@ def admit(
     the host slot, the ledger reservation of ``max_bytes``, and the ``ACTIVE``
     lease. Any refusal or error rolls the whole transaction back, so a refused
     admission moves no bytes and leaves an existing generation untouched.
+
+    ``wait_s`` is a bounded wait on the JOB LOCK only: the whole admission is
+    retried every ``LOCK_POLL_S`` until the deadline, because the pool and the
+    hour may have moved while we waited. A node with a timeout passes what it
+    can afford; 0 (the default) refuses immediately. Nothing else is waited on -
+    an exhausted quota will not clear inside a node's timeout, and sleeping on
+    it would turn a clear refusal into a hang.
 
     ``universe_used_bytes_fn`` is called inside the transaction and MUST NOT open
     this database. The returned lease's ``path`` does not exist yet: the caller
@@ -472,159 +561,177 @@ def admit(
         quota_bytes = int(universe_quota_bytes)
         used_fn = universe_used_bytes_fn
 
-    ts = float(now())
-    cutoff = ts - WINDOW_S
-    started_at = PROCESS_STARTED_AT if process_started_at is None else float(process_started_at)
     lease_id = _require_path_key("lease_id", lease_id_factory())
+    deadline = float(now()) + max(0.0, float(wait_s))
 
-    conn = _connect(db)
-    try:
+    def _attempt() -> Lease:
+        ts = float(now())
+        cutoff = ts - WINDOW_S
+        started_at = PROCESS_STARTED_AT if process_started_at is None else float(process_started_at)
+
+        conn = _connect(db)
         try:
-            conn.execute("BEGIN IMMEDIATE")
-            ensure_schema(conn)
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                ensure_schema(conn)
 
-            # The STARTUP barrier: "a startup sweeper runs to completion
-            # before any new workspace job is admitted". Only entries a
-            # previous process left behind hold it - the periodic processor's
-            # own backlog is not a reason to refuse a new job, or every
-            # terminal entry would briefly close the pool to every universe.
-            pending = _unswept_before(conn, started_at)
-            if pending:
-                raise WorkspacePoolRefused(
-                    REFUSED_POOL_BUSY,
-                    f"startup reconciliation pending: {pending} outbox entr"
-                    f"{'y' if pending == 1 else 'ies'} from before "
-                    f"{started_at} not yet AVAILABLE or LOST",
-                )
-
-            # (a) the rolling-hour workspace ledger.
-            jobs = _ledger_sum(conn, universe_id, KIND_JOBS, cutoff)
-            if jobs + 1 > jobs_per_hour:
-                clears = _window_clears_at(conn, universe_id, KIND_JOBS, cutoff)
-                raise WorkspacePoolRefused(
-                    REFUSED_QUOTA,
-                    f"workspace jobs per hour ({jobs_per_hour}) exhausted for "
-                    f"{universe_id}: {jobs} charged, clears_at={clears}",
-                )
-            charged = _ledger_sum(conn, universe_id, KIND_BYTES, cutoff)
-            if charged + max_bytes > bytes_per_hour:
-                clears = _window_clears_at(conn, universe_id, KIND_BYTES, cutoff)
-                raise WorkspacePoolRefused(
-                    REFUSED_QUOTA,
-                    f"workspace bytes per hour ({bytes_per_hour}) exhausted for "
-                    f"{universe_id}: {charged} charged + {max_bytes} requested, "
-                    f"clears_at={clears}",
-                )
-
-            # (b) the storage bound: the shared pool, or the universe's quota.
-            if storage_class == STORAGE_SCRATCH:
-                if max_bytes > lease_bytes_cap:
-                    raise WorkspacePoolRefused(
-                        REFUSED_QUOTA,
-                        f"lease bound ({lease_bytes_cap}) is smaller than the "
-                        f"requested {max_bytes}",
-                    )
-                reserved_bytes = int(lease_bytes_cap)
-                pool_reserved = _scratch_pool_reserved(conn)
-                if pool_reserved + reserved_bytes > pool_bytes_cap:
+                # The STARTUP barrier: "a startup sweeper runs to completion
+                # before any new workspace job is admitted". Only entries a
+                # previous process left behind hold it - the periodic processor's
+                # own backlog is not a reason to refuse a new job, or every
+                # terminal entry would briefly close the pool to every universe.
+                pending = _unswept_before(conn, started_at)
+                if pending:
                     raise WorkspacePoolRefused(
                         REFUSED_POOL_BUSY,
-                        f"scratch pool ({pool_bytes_cap}) has {pool_reserved} reserved; "
-                        f"a {reserved_bytes} lease does not fit",
+                        f"startup reconciliation pending: {pending} outbox entr"
+                        f"{'y' if pending == 1 else 'ies'} from before "
+                        f"{started_at} not yet AVAILABLE or LOST",
                     )
-            else:
-                reserved_bytes = max_bytes
-                used = int(used_fn(universe_id))
-                if used + max_bytes > quota_bytes:
+
+                # (a) the rolling-hour workspace ledger.
+                jobs = _ledger_sum(conn, universe_id, KIND_JOBS, cutoff)
+                if jobs + 1 > jobs_per_hour:
+                    clears = _window_clears_at(conn, universe_id, KIND_JOBS, cutoff)
                     raise WorkspacePoolRefused(
                         REFUSED_QUOTA,
-                        f"universe quota ({quota_bytes}) exhausted for "
-                        f"{universe_id}: {used} used + {max_bytes} requested",
+                        f"workspace jobs per hour ({jobs_per_hour}) exhausted for "
+                        f"{universe_id}: {jobs} charged, clears_at={clears}",
+                    )
+                charged = _ledger_sum(conn, universe_id, KIND_BYTES, cutoff)
+                if charged + max_bytes > bytes_per_hour:
+                    clears = _window_clears_at(conn, universe_id, KIND_BYTES, cutoff)
+                    raise WorkspacePoolRefused(
+                        REFUSED_QUOTA,
+                        f"workspace bytes per hour ({bytes_per_hour}) exhausted for "
+                        f"{universe_id}: {charged} charged + {max_bytes} requested, "
+                        f"clears_at={clears}",
                     )
 
-            # (c) the durable job locks: one per universe, one host-wide slot.
-            _acquire_lock(
-                conn,
-                scope=SCOPE_UNIVERSE,
-                key=universe_id,
-                run_id=run_id,
-                lease_id=lease_id,
-                ts=ts,
-            )
-            _acquire_lock(
-                conn, scope=SCOPE_HOST, key=host_slot, run_id=run_id, lease_id=lease_id, ts=ts
-            )
+                # (b) the storage bound: the shared pool, or the universe's quota.
+                if storage_class == STORAGE_SCRATCH:
+                    if max_bytes > lease_bytes_cap:
+                        raise WorkspacePoolRefused(
+                            REFUSED_QUOTA,
+                            f"lease bound ({lease_bytes_cap}) is smaller than the "
+                            f"requested {max_bytes}",
+                        )
+                    reserved_bytes = int(lease_bytes_cap)
+                    pool_reserved = _scratch_pool_reserved(conn)
+                    if pool_reserved + reserved_bytes > pool_bytes_cap:
+                        raise WorkspacePoolRefused(
+                            REFUSED_POOL_BUSY,
+                            f"scratch pool ({pool_bytes_cap}) has {pool_reserved} reserved; "
+                            f"a {reserved_bytes} lease does not fit",
+                        )
+                else:
+                    reserved_bytes = max_bytes
+                    used = int(used_fn(universe_id))
+                    outstanding = _universe_outstanding_bytes(conn, universe_id)
+                    if used + outstanding + max_bytes > quota_bytes:
+                        raise WorkspacePoolRefused(
+                            REFUSED_QUOTA,
+                            f"universe quota ({quota_bytes}) exhausted for "
+                            f"{universe_id}: {used} used + {outstanding} reserved "
+                            f"+ {max_bytes} requested",
+                        )
 
-            # (d) reserve the maximum charge BEFORE any bytes move.
-            conn.execute(
-                "INSERT INTO workspace_ledger "
-                "(universe_id, kind, amount, reserved, run_id, lease_id, created_at) "
-                "VALUES (?, ?, 1, 0, ?, ?, ?)",
-                (universe_id, KIND_JOBS, run_id, lease_id, ts),
-            )
-            conn.execute(
-                "INSERT INTO workspace_ledger "
-                "(universe_id, kind, amount, reserved, run_id, lease_id, created_at) "
-                "VALUES (?, ?, ?, 1, ?, ?, ?)",
-                (universe_id, KIND_BYTES, max_bytes, run_id, lease_id, ts),
-            )
-
-            # (e) the lease itself.
-            generation = _next_generation(conn, universe_id, repo_key)
-            if storage_class == STORAGE_SCRATCH:
-                path, quarantine_path = scratch_paths(Path(pool_root), lease_id, generation)
-            else:
-                path, quarantine_path = universe_paths(
-                    Path(universe_root), repo_key, generation
+                # (c) the durable job locks: one per universe, one host-wide slot.
+                _acquire_lock(
+                    conn,
+                    scope=SCOPE_UNIVERSE,
+                    key=universe_id,
+                    run_id=run_id,
+                    lease_id=lease_id,
+                    ts=ts,
                 )
-            conn.execute(
-                "INSERT INTO workspace_leases "
-                "(lease_id, universe_id, connection_id, repo_key, storage_class, generation, "
-                "state, reserved_bytes, measured_bytes, run_id, path, quarantine_path, "
-                "created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)",
-                (
-                    lease_id,
-                    universe_id,
-                    connection_id,
-                    repo_key,
-                    storage_class,
-                    generation,
-                    STATE_ACTIVE,
-                    reserved_bytes,
-                    run_id,
-                    str(path),
-                    str(quarantine_path),
-                    ts,
-                    ts,
-                ),
-            )
-            conn.commit()
-        except BaseException:
-            # Everything rolls back together, the schema creation included: it is
-            # a CREATE TABLE IF NOT EXISTS, not a migration, so redoing it costs
-            # nothing and a half-applied admission would cost a leaked bound.
-            conn.rollback()
-            raise
-    finally:
-        conn.close()
+                _acquire_lock(
+                    conn, scope=SCOPE_HOST, key=host_slot, run_id=run_id, lease_id=lease_id, ts=ts
+                )
 
-    return Lease(
-        lease_id=lease_id,
-        universe_id=universe_id,
-        connection_id=connection_id,
-        repo_key=repo_key,
-        storage_class=storage_class,
-        generation=generation,
-        state=STATE_ACTIVE,
-        reserved_bytes=reserved_bytes,
-        measured_bytes=None,
-        run_id=run_id,
-        path=path,
-        quarantine_path=quarantine_path,
-        created_at=ts,
-        updated_at=ts,
-    )
+                # (d) reserve the maximum charge BEFORE any bytes move.
+                conn.execute(
+                    "INSERT INTO workspace_ledger "
+                    "(universe_id, kind, amount, reserved, run_id, lease_id, created_at) "
+                    "VALUES (?, ?, 1, 0, ?, ?, ?)",
+                    (universe_id, KIND_JOBS, run_id, lease_id, ts),
+                )
+                conn.execute(
+                    "INSERT INTO workspace_ledger "
+                    "(universe_id, kind, amount, reserved, run_id, lease_id, created_at) "
+                    "VALUES (?, ?, ?, 1, ?, ?, ?)",
+                    (universe_id, KIND_BYTES, max_bytes, run_id, lease_id, ts),
+                )
+
+                # (e) the lease itself.
+                generation = _next_generation(conn, universe_id, repo_key)
+                if storage_class == STORAGE_SCRATCH:
+                    path, quarantine_path = scratch_paths(Path(pool_root), lease_id, generation)
+                else:
+                    path, quarantine_path = universe_paths(
+                        Path(universe_root), repo_key, generation
+                    )
+                conn.execute(
+                    "INSERT INTO workspace_leases "
+                    "(lease_id, universe_id, connection_id, repo_key, storage_class, generation, "
+                    "state, reserved_bytes, measured_bytes, run_id, path, quarantine_path, "
+                    "created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)",
+                    (
+                        lease_id,
+                        universe_id,
+                        connection_id,
+                        repo_key,
+                        storage_class,
+                        generation,
+                        STATE_ACTIVE,
+                        reserved_bytes,
+                        run_id,
+                        str(path),
+                        str(quarantine_path),
+                        ts,
+                        ts,
+                    ),
+                )
+                conn.commit()
+            except BaseException:
+                # Everything rolls back together, the schema creation included: it is
+                # a CREATE TABLE IF NOT EXISTS, not a migration, so redoing it costs
+                # nothing and a half-applied admission would cost a leaked bound.
+                conn.rollback()
+                raise
+        finally:
+            conn.close()
+
+        return Lease(
+            lease_id=lease_id,
+            universe_id=universe_id,
+            connection_id=connection_id,
+            repo_key=repo_key,
+            storage_class=storage_class,
+            generation=generation,
+            state=STATE_ACTIVE,
+            reserved_bytes=reserved_bytes,
+            measured_bytes=None,
+            run_id=run_id,
+            path=path,
+            quarantine_path=quarantine_path,
+            created_at=ts,
+            updated_at=ts,
+        )
+
+    while True:
+        try:
+            return _attempt()
+        except WorkspacePoolRefused as refusal:
+            # Only the job lock is worth waiting on: it is held by a run
+            # that will finish. A quota or a full pool is not going to
+            # change inside a node's timeout, and sleeping on it would turn
+            # a clear refusal into a hang.
+            remaining = deadline - float(now())
+            if refusal.code != REFUSED_BUSY or remaining <= 0:
+                raise
+            sleep(min(LOCK_POLL_S, remaining))
 
 
 def reconcile_bytes(
@@ -670,6 +777,130 @@ def reconcile_bytes(
                 "UPDATE workspace_leases SET measured_bytes = ?, updated_at = ? "
                 "WHERE lease_id = ?",
                 (measured_bytes, ts, lease_id),
+            )
+            conn.commit()
+            return charged
+        except BaseException:
+            conn.rollback()
+            raise
+    finally:
+        conn.close()
+
+
+def reserve_operation_bytes(
+    db: Path,
+    *,
+    universe_id: str,
+    run_id: str,
+    operation_id: str,
+    max_bytes: int,
+    jobs_per_hour: int = DEFAULT_JOBS_PER_HOUR,
+    bytes_per_hour: int = DEFAULT_BYTES_PER_HOUR,
+    now: Callable[[], float] = time.time,
+) -> int:
+    """Reserve the maximum charge of a workspace operation that holds no lease.
+
+    A checkout reserves through ``admit``; a push (bounded bundle size) and
+    provisioning (cache cap) have no lease to hang a reservation on, and were
+    therefore moving bytes that the hourly ledger never saw. They charge the
+    SAME ledger, as kind ``workspace``: one job and ``max_bytes``, before the
+    wire.
+
+    Idempotent per ``operation_id`` - a retried push must not charge the hour
+    twice - and enforced by a unique index rather than a check, so two attempts
+    racing cannot both insert. Returns the bytes reserved (the existing
+    reservation when the operation was already charged).
+    """
+    if not operation_id:
+        raise ValueError("operation_id is required")
+    if int(max_bytes) < 0:
+        raise ValueError(f"max_bytes must be >= 0, got {max_bytes}")
+    max_bytes = int(max_bytes)
+    ts = float(now())
+    cutoff = ts - WINDOW_S
+    conn = _connect(db)
+    try:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            ensure_schema(conn)
+            existing = conn.execute(
+                "SELECT amount FROM workspace_ledger "
+                "WHERE operation_id = ? AND kind = ?",
+                (operation_id, KIND_BYTES),
+            ).fetchone()
+            if existing is not None:
+                conn.commit()
+                return int(existing[0])
+
+            jobs = _ledger_sum(conn, universe_id, KIND_JOBS, cutoff)
+            if jobs + 1 > jobs_per_hour:
+                clears = _window_clears_at(conn, universe_id, KIND_JOBS, cutoff)
+                raise WorkspacePoolRefused(
+                    REFUSED_QUOTA,
+                    f"workspace jobs per hour ({jobs_per_hour}) exhausted for "
+                    f"{universe_id}: {jobs} charged, clears_at={clears}",
+                )
+            charged = _ledger_sum(conn, universe_id, KIND_BYTES, cutoff)
+            if charged + max_bytes > bytes_per_hour:
+                clears = _window_clears_at(conn, universe_id, KIND_BYTES, cutoff)
+                raise WorkspacePoolRefused(
+                    REFUSED_QUOTA,
+                    f"workspace bytes per hour ({bytes_per_hour}) exhausted for "
+                    f"{universe_id}: {charged} charged + {max_bytes} requested, "
+                    f"clears_at={clears}",
+                )
+            conn.execute(
+                "INSERT INTO workspace_ledger "
+                "(universe_id, kind, amount, reserved, run_id, lease_id, "
+                "operation_id, created_at) VALUES (?, ?, 1, 0, ?, NULL, ?, ?)",
+                (universe_id, KIND_JOBS, run_id, operation_id, ts),
+            )
+            conn.execute(
+                "INSERT INTO workspace_ledger "
+                "(universe_id, kind, amount, reserved, run_id, lease_id, "
+                "operation_id, created_at) VALUES (?, ?, ?, 1, ?, NULL, ?, ?)",
+                (universe_id, KIND_BYTES, max_bytes, run_id, operation_id, ts),
+            )
+            conn.commit()
+            return max_bytes
+        except BaseException:
+            conn.rollback()
+            raise
+    finally:
+        conn.close()
+
+
+def reconcile_operation_bytes(
+    db: Path, operation_id: str, measured_bytes: int
+) -> int:
+    """Reconcile an operation's reservation DOWNWARD to what actually moved.
+
+    Same rule as a lease's: never upward past the reservation, and an operation
+    that never reconciles - an interrupted push, a provisioning that died - keeps
+    the maximum charged for the rest of the hour. Returns the bytes now charged.
+    """
+    if int(measured_bytes) < 0:
+        raise ValueError(f"measured_bytes must be >= 0, got {measured_bytes}")
+    measured_bytes = int(measured_bytes)
+    conn = _connect(db)
+    try:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            ensure_schema(conn)
+            row = conn.execute(
+                "SELECT rowid, amount FROM workspace_ledger "
+                "WHERE operation_id = ? AND kind = ?",
+                (operation_id, KIND_BYTES),
+            ).fetchone()
+            if row is None:
+                raise ValueError(
+                    f"operation {operation_id!r} has no bytes reservation to reconcile"
+                )
+            rowid, amount = int(row[0]), int(row[1])
+            charged = min(amount, measured_bytes)
+            conn.execute(
+                "UPDATE workspace_ledger SET amount = ?, reserved = 0 WHERE rowid = ?",
+                (charged, rowid),
             )
             conn.commit()
             return charged

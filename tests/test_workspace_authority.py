@@ -783,9 +783,15 @@ def test_a_malformed_consent_ask_never_becomes_a_tab(base, over, fragment) -> No
 def test_a_remix_carries_neither_the_consents_nor_the_scopes(base, monkeypatch) -> None:
     """The remixer's universe starts with no authority of its own: consents live
     in the universe directory and scopes on the owner's connection, and a branch
-    is a SHAPE - copying it copies neither."""
-    import importlib
+    is a SHAPE - copying it copies neither.
 
+    The acting user is switched by ``_login`` plus the env the identity resolver
+    reads AT CALL TIME - never ``importlib.reload``. A reload rebinds this
+    module's globals while every module that already imported it keeps the old
+    objects, so which suite ran first decided the outcome: after
+    ``test_run_branch_failure_taxonomy`` this failed with "Branch not found"
+    and a ledger writing ``str / str`` (2026-08-30).
+    """
     from tinyassets import universe_server as us
 
     source_dir = _make_universe(base, "alice", admin="alice")
@@ -797,7 +803,6 @@ def test_a_remix_carries_neither_the_consents_nor_the_scopes(base, monkeypatch) 
     assert len(list_consents(source_dir, sink="workspace")) == 3
 
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
-    importlib.reload(us)
     spec = {
         "name": "Run the tests",
         "entry_point": "ready",
@@ -821,7 +826,6 @@ def test_a_remix_carries_neither_the_consents_nor_the_scopes(base, monkeypatch) 
 
     _login("bob")
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "bob")
-    importlib.reload(us)
     remixed = json.loads(
         us.extensions(
             action="build_branch",
@@ -830,7 +834,6 @@ def test_a_remix_carries_neither_the_consents_nor_the_scopes(base, monkeypatch) 
             ),
         )
     )
-    importlib.reload(us)
     assert remixed.get("branch_def_id"), remixed
     assert remixed["branch_def_id"] != origin["branch_def_id"]
 
