@@ -751,6 +751,83 @@ def _make_workspace(conf, remaining):
     default_timeout = limits.get("command_timeout_s")
     counters = {"commands": 0, "bytes": 0}
 
+    # ── The raw doors, as CLOSURES rather than methods ────────────────────
+    #
+    # `ws` is handed to untrusted node code, so anything hanging off it is
+    # part of the public surface no matter how many underscores it starts
+    # with. A Codex refute review of #2738 made that concrete: an earlier
+    # draft of this refactor exposed `_read_raw` and `_write_raw` as methods,
+    # and in the real jail `ws._write_raw(['/tmp/escape'], b'pwned')` wrote 5
+    # bytes OUTSIDE the workspace root, while
+    # `ws._read_raw('seed.txt', 10**12)` read with a cap the configuration
+    # never authorised. Both measured, both real.
+    #
+    # As closures they are unreachable from `ws` while still being shared by
+    # the text door and the binary one, which is what the refactor was for.
+    # And they take a RELPATH, not pre-split parts: the split IS the
+    # validation, so there is no un-validated entry point left to reach.
+
+    def _cap_for(max_bytes, label):
+        if max_bytes is None:
+            cap = max_read
+        else:
+            # CLAMPED, not replaced: a caller cannot raise the node's cap
+            # by asking for more than the limits allow.
+            cap = min(_ws_exact_int(max_bytes, label + " max_bytes"), max_read)
+        if cap <= 0:
+            raise ValueError("ws." + label + " max_bytes must be positive")
+        return cap
+
+    def _read_leaf(relpath, cap):
+        """The bytes of one leaf, resolved and bounded.
+
+        Shared by `read` and `read_bytes` rather than copied, so the
+        component-wise NOFOLLOW resolution and the cap cannot drift apart
+        between the text door and the binary one.
+        """
+        parts = _ws_split(relpath, "path")
+        handle = root.open_leaf(parts, "path", os.O_RDONLY | _WS_BINARY)
+        try:
+            data = b""
+            while len(data) <= cap:
+                chunk = os.read(handle, 65536)
+                if not chunk:
+                    break
+                data += chunk
+        finally:
+            os.close(handle)
+        if len(data) > cap:
+            raise RuntimeError(
+                "workspace limit: %s is larger than %d bytes" % (relpath, cap)
+            )
+        return data
+
+    def _write_leaf(relpath, data):
+        parts = _ws_split(relpath, "path")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _WS_BINARY
+        handle = root.open_leaf(parts, "path", flags, mode=384, make_parents=True)
+        try:
+            written = 0
+            while written < len(data):
+                written += os.write(handle, data[written:])
+        finally:
+            os.close(handle)
+        return len(data)
+
+    def _charge(size, label):
+        """Count RAW bytes against the node's cumulative output budget.
+
+        RAW, not encoded: base64 is 4/3 the size, so charging the encoded
+        length would bill a node a third more than it moved, and capping the
+        encoded length would silently shrink what it may read.
+        """
+        counters["bytes"] += size
+        if counters["bytes"] > max_output:
+            raise RuntimeError(
+                "workspace limit: %s passed %d bytes for this node"
+                % (label, max_output)
+            )
+
     class _Workspace(object):
         """The checked-out project, and nothing else."""
 
@@ -879,78 +956,14 @@ def _make_workspace(conf, remaining):
                 )
             return result
 
-        def _cap_for(self, max_bytes, label):
-            if max_bytes is None:
-                cap = max_read
-            else:
-                # CLAMPED, not replaced: a caller cannot raise the node's cap
-                # by asking for more than the limits allow.
-                cap = min(_ws_exact_int(max_bytes, label + " max_bytes"), max_read)
-            if cap <= 0:
-                raise ValueError("ws." + label + " max_bytes must be positive")
-            return cap
-
-        def _read_raw(self, relpath, cap):
-            """The bytes of one leaf, resolved and bounded.
-
-            Shared by `read` and `read_bytes` rather than copied, so the
-            component-wise NOFOLLOW resolution and the cap cannot drift apart
-            between the text door and the binary one.
-            """
-            parts = _ws_split(relpath, "path")
-            handle = root.open_leaf(parts, "path", os.O_RDONLY | _WS_BINARY)
-            try:
-                data = b""
-                while len(data) <= cap:
-                    chunk = os.read(handle, 65536)
-                    if not chunk:
-                        break
-                    data += chunk
-            finally:
-                os.close(handle)
-            if len(data) > cap:
-                raise RuntimeError(
-                    "workspace limit: %s is larger than %d bytes" % (relpath, cap)
-                )
-            return data
-
-        def _charge(self, size, label):
-            """Count RAW bytes against the node's cumulative output budget.
-
-            RAW, not encoded: base64 is 4/3 the size, so charging the encoded
-            length would bill a node a third more than it moved, and capping
-            the encoded length would silently shrink what it may read.
-            """
-            counters["bytes"] += size
-            if counters["bytes"] > max_output:
-                raise RuntimeError(
-                    "workspace limit: %s passed %d bytes for this node"
-                    % (label, max_output)
-                )
-
         def read(self, relpath, max_bytes=None):
-            cap = self._cap_for(max_bytes, "read")
-            data = self._read_raw(relpath, cap)
-            return data.decode("utf-8", "replace")
+            return _read_leaf(relpath, _cap_for(max_bytes, "read")).decode(
+                "utf-8", "replace"
+            )
 
         def write(self, relpath, text):
             _ws_exact_str(text, "write text")
-            parts = _ws_split(relpath, "path")
-            data = text.encode("utf-8")
-            return self._write_raw(parts, data)
-
-        def _write_raw(self, parts, data):
-            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _WS_BINARY
-            handle = root.open_leaf(
-                parts, "path", flags, mode=384, make_parents=True
-            )
-            try:
-                written = 0
-                while written < len(data):
-                    written += os.write(handle, data[written:])
-            finally:
-                os.close(handle)
-            return len(data)
+            return _write_leaf(relpath, text.encode("utf-8"))
 
         def read_bytes(self, relpath, max_bytes=None):
             """The file's BYTES, base64-encoded into an ASCII str.
@@ -970,9 +983,8 @@ def _make_workspace(conf, remaining):
             reading a file as bytes is not a way around a cap that reading it
             as text would hit.
             """
-            cap = self._cap_for(max_bytes, "read_bytes")
-            data = self._read_raw(relpath, cap)
-            self._charge(len(data), "read_bytes")
+            data = _read_leaf(relpath, _cap_for(max_bytes, "read_bytes"))
+            _charge(len(data), "read_bytes")
             return base64.b64encode(data).decode("ascii")
 
         def write_bytes(self, relpath, b64):
@@ -990,9 +1002,27 @@ def _make_workspace(conf, remaining):
 
             The decoded size is charged BEFORE the open, so a payload that
             exceeds the node's budget leaves no partial file behind.
+
+            And the ENCODED length is refused before the decode, which is not
+            the same guard. Charging after decoding still lets a node hand in
+            an arbitrarily long string and make the interpreter allocate it
+            plus its decoded copy before any budget has an opinion -- roughly
+            1.75x the string, inside a jail whose memory the host shares.
+            Codex raised this against #2738 (Q4). The bound is derived from
+            `max_output` rather than configured separately, so a node can
+            still pass anything it could afford to write.
             """
             _ws_exact_str(b64, "write_bytes b64")
-            parts = _ws_split(relpath, "path")
+            # 4 encoded chars per 3 raw bytes, plus padding and any newlines a
+            # caller's encoder inserted; generous on purpose, since this is a
+            # memory guard and `_charge` remains the accounting one.
+            encoded_ceiling = 4 * ((max_output + 2) // 3) + 1024
+            if len(b64) > encoded_ceiling:
+                raise RuntimeError(
+                    "workspace limit: write_bytes was handed %d encoded chars, "
+                    "more than this node could write even at its full %d byte "
+                    "budget" % (len(b64), max_output)
+                )
             try:
                 data = base64.b64decode(b64, validate=True)
             except Exception as exc:
@@ -1000,8 +1030,8 @@ def _make_workspace(conf, remaining):
                     "ws.write_bytes needs strict base64 (see ws.read_bytes): "
                     + str(exc)
                 )
-            self._charge(len(data), "write_bytes")
-            return self._write_raw(parts, data)
+            _charge(len(data), "write_bytes")
+            return _write_leaf(relpath, data)
 
         def glob(self, pattern):
             _ws_exact_str(pattern, "glob pattern")
