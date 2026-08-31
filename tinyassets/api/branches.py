@@ -1847,6 +1847,24 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
         return (
             f"node '{nid}' effects must be a JSON array of strings"
         )
+    # ``workspace`` names the ancestor checkout node whose workspace is bound
+    # at /workspace for this node (workspace-node D2). It was reaching
+    # NodeDefinition from nowhere: the served builder never passed it, so a
+    # spec that declared it built a node WITHOUT the binding and the ``ws``
+    # object simply did not exist at run time. Found live 2026-08-31 - the
+    # universe reported "the build tool exposed to me here refuses workspace
+    # nodes" while every unit test constructed NodeDefinition directly and so
+    # could not see it.
+    workspace_raw = raw.get("workspace", "")
+    if workspace_raw is None:
+        workspace_arg = ""
+    elif isinstance(workspace_raw, str):
+        workspace_arg = workspace_raw.strip()
+    else:
+        return (
+            f"node '{nid}' workspace must be the node id of an ancestor "
+            "checkout, as a string"
+        )
     # SECURITY (Codex ADAPT, PR #1349): a node is only approved when the
     # recorded approval hash matches the *effective* source_code being stored.
     # This is the authoring-time half of the provenance gate; the compiler
@@ -1896,6 +1914,7 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             invoke_branch_version_spec=invoke_branch_version_arg,
             await_run_spec=await_run_arg,
             effects=effects_arg,
+            workspace=workspace_arg,
         )
     except ValueError as exc:
         return str(exc)
@@ -2051,6 +2070,12 @@ _NODE_UPDATE_FIELDS = frozenset({
     "invoke_branch_spec",
     "invoke_branch_version_spec",
     "await_run_spec",
+    # A node's effects and its workspace binding are the two things that make
+    # it DO anything beyond a prompt. Neither was editable, so a universe that
+    # wanted to add a workspace to an existing node had to rebuild the whole
+    # branch - and a spec that named one was dropped on the floor.
+    "effects",
+    "workspace",
 })
 _NODE_UPDATE_SPEC_FIELDS = (
     "invoke_branch_spec",
@@ -2208,6 +2233,27 @@ def _apply_node_updates(
         if err:
             return err
         node.tools_allowed = tools_allowed
+    if "effects" in editable_updates:
+        effects, err = _coerce_node_keys(
+            editable_updates["effects"], "effects",
+        )
+        if err:
+            return err
+        node.effects = effects
+    if "workspace" in editable_updates:
+        # The ancestor checkout node whose workspace this node binds. Cleared
+        # with "" - the compiler refuses a name that is not an ancestor in the
+        # run, so an id that does not exist yet fails there rather than here,
+        # where the rest of the branch may not be built.
+        raw_workspace = editable_updates["workspace"]
+        if raw_workspace is None:
+            raw_workspace = ""
+        if not isinstance(raw_workspace, str):
+            return (
+                f"node '{node.node_id}' workspace must be the node id of an "
+                "ancestor checkout, as a string"
+            )
+        node.workspace = raw_workspace.strip()
     if "timeout_seconds" in editable_updates:
         timeout_seconds, err = _coerce_timeout_seconds_update(
             editable_updates["timeout_seconds"],
