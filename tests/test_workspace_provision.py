@@ -1140,3 +1140,136 @@ def test_real_semver_ranges_are_admitted(spec: str) -> None:
     manifest = _manifest(dependencies={"left-pad": spec})
     plan = admit_node(manifest, _lockfile())
     assert len(plan.packages) == 1
+
+
+# ----------------------------------------------------------------------------------
+# Present-and-invalid refuses; absent is absent; present-and-valid is carried
+# ----------------------------------------------------------------------------------
+
+
+def _lockfile_with(field: str, value: object) -> str:
+    document = json.loads(_lockfile())
+    document[field] = value
+    return json.dumps(document)
+
+
+LOCK_ENTRY_BAD_SHAPES = [
+    ("dev", 1),
+    ("optional", "yes"),
+    ("peer", 0),
+    ("hasInstallScript", "true"),
+    ("license", 7),
+    ("engines", ["node >=18"]),
+    ("engines", {"node": 18}),
+    ("bin", 5),
+    ("bin", {"cli": 1}),
+    ("funding", 5),
+    ("funding", [7]),
+]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [pytest.param(f, v, id=f"{f}-{i}") for i, (f, v) in enumerate(LOCK_ENTRY_BAD_SHAPES)],
+)
+def test_a_lock_entry_field_with_the_wrong_shape_refuses(field: str, value: object) -> None:
+    """Dropping it would stage an install that differs from the one written."""
+    packages = {"node_modules/left-pad": _entry(**{field: value})}
+    error = _refusal(_manifest(), _lockfile(packages))
+    assert error.reason == "bad_json"
+    assert field in error.detail
+    assert "node_modules/left-pad" in error.detail
+
+
+LOCK_TOP_BAD_SHAPES = [("name", 7), ("version", 7), ("requires", "yes")]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [pytest.param(f, v, id=f) for f, v in LOCK_TOP_BAD_SHAPES],
+)
+def test_a_lockfile_top_level_field_with_the_wrong_shape_refuses(
+    field: str, value: object
+) -> None:
+    error = _refusal(_manifest(), _lockfile_with(field, value))
+    assert error.reason == "bad_json"
+    assert field in error.detail
+    assert "package-lock.json" in error.detail
+
+
+@pytest.mark.parametrize("field", ["name", "version"])
+def test_a_root_entry_field_with_the_wrong_shape_refuses(field: str) -> None:
+    root = {"name": "app", "version": "1.0.0", "dependencies": {"left-pad": "^1.3.0"}}
+    root[field] = 7
+    error = _refusal(_manifest(), _lockfile(root=root))
+    assert error.reason == "bad_json"
+    assert field in error.detail
+    assert "root entry" in error.detail
+
+
+def test_a_manifest_version_with_the_wrong_shape_refuses() -> None:
+    error = _refusal(_manifest(version=7), _lockfile())
+    assert error.reason == "bad_json"
+    assert "version" in error.detail
+
+
+MANIFEST_META_BAD_SHAPES = [
+    ("not_an_object", ["react"]),
+    ("entry_not_an_object", {"react": "yes"}),
+    ("flag_not_a_boolean", {"react": {"optional": "yes"}}),
+]
+
+
+@pytest.mark.parametrize(
+    "meta", [pytest.param(v, id=name) for name, v in MANIFEST_META_BAD_SHAPES]
+)
+def test_peer_dependencies_meta_with_the_wrong_shape_refuses(meta: object) -> None:
+    """It decides whether a missing peer is admitted, so a quiet read changes
+    the install."""
+    manifest = _manifest(
+        peerDependencies={"react": "^18.0.0"}, peerDependenciesMeta=meta
+    )
+    error = _refusal(manifest, _lockfile())
+    assert error.reason == "bad_json"
+    assert "peerDependenciesMeta" in error.detail
+
+
+def test_every_allowlisted_field_in_its_right_shape_is_carried() -> None:
+    packages = {
+        "node_modules/left-pad": _entry(
+            dev=True,
+            optional=False,
+            peer=True,
+            hasInstallScript=True,
+            license="MIT",
+            engines={"node": ">=18"},
+            bin={"left-pad": "cli.js"},
+            funding=["https://example.com/fund", {"type": "individual"}],
+        )
+    }
+    plan = admit_node(_manifest(), _lockfile(packages, requires=True))
+    staged = json.loads(plan.normalized_lockfile)
+    entry = staged["packages"]["node_modules/left-pad"]
+    assert entry["dev"] is True
+    assert entry["peer"] is True
+    assert entry["hasInstallScript"] is True
+    assert "optional" not in entry  # false is the default; canonical says nothing
+    assert entry["license"] == "MIT"
+    assert entry["engines"] == {"node": ">=18"}
+    assert entry["bin"] == {"left-pad": "cli.js"}
+    assert entry["funding"] == ["https://example.com/fund", {"type": "individual"}]
+    assert staged["requires"] is True
+
+
+def test_a_bare_string_bin_is_a_shape_npm_writes() -> None:
+    packages = {"node_modules/left-pad": _entry(bin="cli.js")}
+    plan = admit_node(_manifest(), _lockfile(packages))
+    staged = json.loads(plan.normalized_lockfile)
+    assert staged["packages"]["node_modules/left-pad"]["bin"] == "cli.js"
+
+
+def test_an_absent_field_is_simply_absent() -> None:
+    plan = admit_node(_manifest(), _lockfile())
+    entry = json.loads(plan.normalized_lockfile)["packages"]["node_modules/left-pad"]
+    for field in ("dev", "license", "engines", "bin", "funding"):
+        assert field not in entry

@@ -877,14 +877,32 @@ def _check_no_workspaces(container: Mapping[str, Any], label: str) -> None:
 
 
 def _optional_peers(manifest: Mapping[str, Any]) -> frozenset[str]:
-    meta = manifest.get("peerDependenciesMeta")
-    if not isinstance(meta, dict):
+    """Which peers the manifest declares optional -- validated, not filtered.
+
+    This decides whether a missing peer is admitted, so a malformed entry that
+    quietly read as 'not optional' (or as 'optional') would change the install
+    without anyone seeing it.
+    """
+    if "peerDependenciesMeta" not in manifest:
         return frozenset()
-    return frozenset(
-        name
-        for name, entry in meta.items()
-        if isinstance(entry, dict) and entry.get("optional") is True
-    )
+    meta = manifest["peerDependenciesMeta"]
+    if not isinstance(meta, dict):
+        _refuse("bad_json", "peerDependenciesMeta: not an object")
+    optional: set[str] = set()
+    for name, entry in meta.items():
+        _check_npm_name(name, f"peerDependenciesMeta {name}")
+        if not isinstance(entry, dict):
+            _refuse("bad_json", f"peerDependenciesMeta {name}: not an object")
+        if "optional" not in entry:
+            continue
+        flag = entry["optional"]
+        if not isinstance(flag, bool):
+            _refuse(
+                "bad_json", f"peerDependenciesMeta {name} optional: not a boolean"
+            )
+        if flag:
+            optional.add(name)
+    return frozenset(optional)
 
 
 def _check_dependency_map(
@@ -958,31 +976,83 @@ def _check_range(name: str, spec: str, field: str) -> None:
         _refuse("non_registry_resolution", f"{label}: not a semver range")
 
 
-def _carry_string(source_map: Mapping[str, Any], field: str, target: dict[str, Any]) -> None:
-    """Carry a string field when it is a string; drop it otherwise."""
-    value = source_map.get(field)
-    if isinstance(value, str) and value:
-        target[field] = value
+def _carry_string(
+    source_map: Mapping[str, Any], field: str, target: dict[str, Any], label: str
+) -> None:
+    """Carry a string field, or refuse.
+
+    Absent is absent. Present-and-wrong is a refusal, never a drop: staging a
+    document that differs in meaning from the one the author wrote, because a
+    value did not parse, is the silent fallback Hard Rule 8 forbids.
+    """
+    if field not in source_map:
+        return
+    value = source_map[field]
+    if not isinstance(value, str) or not value:
+        _refuse("bad_json", f"{label}{field}: not a non-empty string")
+    target[field] = value
+
+
+def _carry_flag(
+    source_map: Mapping[str, Any], field: str, target: dict[str, Any], label: str
+) -> None:
+    """Carry a boolean flag, or refuse. Only ``true`` is written: false is the
+    default and a canonical document says nothing it does not have to.
+    """
+    if field not in source_map:
+        return
+    value = source_map[field]
+    if not isinstance(value, bool):
+        _refuse("bad_json", f"{label}{field}: not a boolean")
+    if value:
+        target[field] = True
+
+
+def _is_string_map(value: Any) -> bool:
+    return isinstance(value, dict) and all(
+        isinstance(key, str) and isinstance(item, str) for key, item in value.items()
+    )
 
 
 def _carry_string_map(
-    source_map: Mapping[str, Any], field: str, target: dict[str, Any]
+    source_map: Mapping[str, Any],
+    field: str,
+    target: dict[str, Any],
+    label: str,
+    *,
+    allow_bare_string: bool = False,
+    allow_list: bool = False,
 ) -> None:
-    """Carry a ``{str: str}`` map (or a bare string, which ``bin`` may be)."""
-    value = source_map.get(field)
-    if isinstance(value, str):
+    """Carry a ``{str: str}`` map, or refuse.
+
+    ``bin`` may also be a bare string and ``funding`` may also be a list of
+    either -- both are shapes npm really writes, so both are *valid*, not
+    tolerated. Anything else present under these names is refused.
+    """
+    if field not in source_map:
+        return
+    value = source_map[field]
+    if allow_bare_string and isinstance(value, str) and value:
         target[field] = value
         return
-    if isinstance(value, dict) and all(
-        isinstance(k, str) and isinstance(v, str) for k, v in value.items()
-    ):
-        target[field] = dict(value)
+    if allow_list and isinstance(value, list):
+        for item in value:
+            if not ((isinstance(item, str) and item) or _is_string_map(item)):
+                _refuse("bad_json", f"{label}{field}: not a list of strings or maps")
+        target[field] = [
+            item if isinstance(item, str) else dict(item) for item in value
+        ]
+        return
+    if not _is_string_map(value):
+        _refuse("bad_json", f"{label}{field}: not a map of strings")
+    target[field] = dict(value)
 
 
 def _normalized_entry(
     entry: Mapping[str, Any],
     nested: Mapping[str, dict[str, str]],
     *,
+    label: str,
     root: bool,
     version: str = "",
     resolved: str = "",
@@ -991,19 +1061,18 @@ def _normalized_entry(
     """One lockfile entry, rebuilt from validated fields only."""
     rebuilt: dict[str, Any] = {}
     if root:
-        _carry_string(entry, "name", rebuilt)
-        _carry_string(entry, "version", rebuilt)
+        _carry_string(entry, "name", rebuilt, label)
+        _carry_string(entry, "version", rebuilt, label)
     else:
         rebuilt["version"] = version
         rebuilt["resolved"] = resolved
         rebuilt["integrity"] = integrity
     for flag in _LOCK_ENTRY_FLAGS:
-        if entry.get(flag) is True:
-            rebuilt[flag] = True
-    _carry_string(entry, "license", rebuilt)
-    for field in _LOCK_ENTRY_MAPS:
-        _carry_string_map(entry, field, rebuilt)
-    _carry_string_map(entry, "funding", rebuilt)
+        _carry_flag(entry, flag, rebuilt, label)
+    _carry_string(entry, "license", rebuilt, label)
+    _carry_string_map(entry, "engines", rebuilt, label)
+    _carry_string_map(entry, "bin", rebuilt, label, allow_bare_string=True)
+    _carry_string_map(entry, "funding", rebuilt, label, allow_list=True)
     for field, specs in nested.items():
         if specs:
             rebuilt[field] = dict(specs)
@@ -1024,7 +1093,7 @@ def _normalized_manifest(
     if name is not None:
         _check_npm_name(name, "package.json name")
         rebuilt["name"] = name
-    _carry_string(manifest, "version", rebuilt)
+    _carry_string(manifest, "version", rebuilt, "package.json ")
     for field, specs in declared.items():
         if specs:
             rebuilt[field] = dict(specs)
@@ -1057,7 +1126,9 @@ def _admit_lockfile(
         _check_no_workspaces(entry, label)
         nested = _check_dependency_map(entry, _NPM_ENTRY_FIELDS, f"{label} ")
         if key == "":
-            rebuilt_entries[key] = _normalized_entry(entry, nested, root=True)
+            rebuilt_entries[key] = _normalized_entry(
+                entry, nested, label=f"{label} ", root=True
+            )
             continue
         if entry.get("link") is True:
             _refuse("workspace_dependency", f"{key}: link")
@@ -1077,6 +1148,7 @@ def _admit_lockfile(
         rebuilt_entries[key] = _normalized_entry(
             entry,
             nested,
+            label=f"{key} ",
             root=False,
             version=package.version,
             resolved=package.resolved,
@@ -1089,11 +1161,10 @@ def _admit_lockfile(
     # second v1-shaped `dependencies` graph, and forwarding the original text
     # would stage whatever THAT said -- a URL the packages map never mentioned.
     rebuilt: dict[str, Any] = {}
-    _carry_string(lockfile, "name", rebuilt)
-    _carry_string(lockfile, "version", rebuilt)
+    _carry_string(lockfile, "name", rebuilt, "package-lock.json ")
+    _carry_string(lockfile, "version", rebuilt, "package-lock.json ")
     rebuilt["lockfileVersion"] = 3
-    if lockfile.get("requires") is True:
-        rebuilt["requires"] = True
+    _carry_flag(lockfile, "requires", rebuilt, "package-lock.json ")
     rebuilt["packages"] = rebuilt_entries
     return version, ordered, frozenset(top_level), rebuilt
 
