@@ -132,7 +132,12 @@ succeed.
   operation, with a push retry reconciling the remote ref before it sends
   again. The rule matches exact host+port for every request of the
   operation; TLS still verifies the hostname; `http.followRedirects=false`
-  prevents cross-host redirection.
+  prevents cross-host redirection. What the pin defends is rebinding
+  between validation and connect — not a host that legitimately moved;
+  identity is the hostname's TLS verification, and a git operation that
+  hangs on the wire lands as `workspace_checkout_failed` /
+  `workspace_push_refused` with the distinct stderr class `timeout`, not
+  `transport` (builder finding, 2026-08-30).
 - **Environment and options** (credential-vault delta): environment built
   from empty (`GIT_CONFIG_SYSTEM`/`GIT_CONFIG_GLOBAL` null device,
   `GIT_CONFIG_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS` false,
