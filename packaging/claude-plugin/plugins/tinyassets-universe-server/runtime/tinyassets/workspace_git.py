@@ -30,6 +30,7 @@ import ipaddress
 import logging
 import os
 import re
+import secrets
 import shlex
 import shutil
 import signal
@@ -231,6 +232,64 @@ if __name__ == "__main__":
 # than bind a silently truncated path.
 _MAX_SOCKET_PATH_BYTES = 100
 
+#: Where the broker puts its socket when the caller does not choose one.
+#: SHORT by design and deliberately not ``tempfile.gettempdir()``: ``sun_path``
+#: is 108 bytes total, and honouring ``TMPDIR`` would put the limit back in the
+#: hands of whatever the environment happens to say. The directory is created
+#: 0700 and removed on ``close``.
+_BROKER_SOCKET_ROOT = "/tmp"
+_BROKER_DIR_PREFIX = "tabk-"
+
+
+def broker_socket_dir(root: str | os.PathLike[str] = _BROKER_SOCKET_ROOT) -> Path:
+    """A fresh, private, SHORT directory for one broker's socket.
+
+    ``/tmp/tabk-<8 hex>``: about 34 bytes with the socket name on the end,
+    against a 108-byte limit. The name is unguessable because the directory is
+    0700 in a world-writable root -- the mode is the guard, the entropy stops
+    another process from having created it first.
+    """
+    parent = Path(root)
+    if not parent.is_dir():
+        raise WorkspaceGitError(
+            "transport", f"no directory at {parent} to put the broker socket in"
+        )
+    for _attempt in range(8):
+        candidate = parent / f"{_BROKER_DIR_PREFIX}{secrets.token_hex(4)}"
+        try:
+            candidate.mkdir(mode=0o700)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            raise WorkspaceGitError(
+                "transport", f"could not create the broker socket directory: {exc}"
+            ) from None
+        return candidate
+    raise WorkspaceGitError(
+        "transport", "could not create a private directory for the broker socket"
+    )
+
+
+def _remove_broker_dir(directory: Path) -> None:
+    """Remove a directory :func:`broker_socket_dir` made. Never raises.
+
+    Only the two files the broker writes, then the directory: a recursive
+    delete of a path in a world-writable root is not a thing to do on a
+    teardown path, and anything else in there means something is wrong that a
+    silent rmtree would erase.
+    """
+    for name in ("credential.sock", "credential_helper.py"):
+        try:
+            (directory / name).unlink()
+        except OSError:
+            pass
+    try:
+        directory.rmdir()
+    except OSError:
+        logging.getLogger(__name__).warning(
+            "broker socket directory %s could not be removed", directory
+        )
+
 
 def canonical_credential_path(repo: str) -> str:
     """The wire path git asks for, derived ONCE from the repository identity.
@@ -319,6 +378,8 @@ class CredentialBroker:
         self._thread: threading.Thread | None = None
         self._socket_path: Path | None = None
         self._script_path: Path | None = None
+        #: Set only when serve() made the directory itself; close() removes it.
+        self._owned_directory: Path | None = None
         self._helper_command: str | None = None
         _register_secret(secret)
 
@@ -373,13 +434,22 @@ class CredentialBroker:
     def serve(
         self,
         *,
-        socket_dir: str | os.PathLike[str],
+        socket_dir: str | os.PathLike[str] | None = None,
         python_executable: str | None = None,
     ) -> str:
         """Start the unix-socket transport and return the ``credential.helper``.
 
         Returns the value to pass to :func:`forced_git_options`, of the form
         ``!<python> <helper script> <socket path>``.
+
+        The broker chooses its own short directory (:func:`broker_socket_dir`)
+        and removes it on ``close``. ``socket_dir`` is an OVERRIDE for tests,
+        not the normal path: a unix socket's address is 108 bytes, and putting
+        it inside the caller's directory made the limit depend on how deeply
+        that caller happened to be nested. In production the staging path is
+        ``<data>/.workspace-staging/<run>/<node>/``, which is close enough that
+        a longer run id refused every checkout with a message about
+        ``sun_path`` -- found by the droplet oracle, 2026-08-31.
         """
         if self._closed:
             raise WorkspaceGitError("bad_argument", "broker is closed")
@@ -390,7 +460,8 @@ class CredentialBroker:
             )
         if self._thread is not None:
             raise WorkspaceGitError("bad_argument", "broker is already serving")
-        directory = Path(socket_dir)
+        owned_directory = socket_dir is None
+        directory = Path(socket_dir) if socket_dir is not None else broker_socket_dir()
         if not directory.is_dir():
             raise WorkspaceGitError(
                 "bad_argument", "broker socket_dir must be an existing directory"
@@ -401,7 +472,17 @@ class CredentialBroker:
         if socket_path.exists() or script_path.exists():
             raise WorkspaceGitError("bad_argument", "broker socket_dir is not empty")
         if len(str(socket_path).encode("utf-8")) > _MAX_SOCKET_PATH_BYTES:
-            raise WorkspaceGitError("bad_argument", "broker socket path is too long for sun_path")
+            # Only reachable through an override now; the chosen root is short
+            # by construction. Still checked: bind would fail with a truncated
+            # address rather than an error naming the cause.
+            if owned_directory:
+                _remove_broker_dir(directory)
+            raise WorkspaceGitError(
+                "bad_argument",
+                f"broker socket path is {len(str(socket_path).encode())} bytes, over the "
+                f"{_MAX_SOCKET_PATH_BYTES} a unix socket address allows; pass a shorter "
+                "socket_dir or let the broker choose its own",
+            )
 
         script_path.write_text(_HELPER_SCRIPT, encoding="utf-8")
         os.chmod(script_path, 0o500)
@@ -420,6 +501,7 @@ class CredentialBroker:
         self._server = server
         self._socket_path = socket_path
         self._script_path = script_path
+        self._owned_directory = directory if owned_directory else None
         interpreter = python_executable or sys.executable
         self._helper_command = "!" + " ".join(
             shlex.quote(part) for part in (interpreter, str(script_path), str(socket_path))
@@ -496,6 +578,11 @@ class CredentialBroker:
                     path.unlink()
                 except OSError:
                     pass
+        # A directory the broker made is the broker's to remove; one the caller
+        # passed is the caller's, and deleting it would be a surprise.
+        owned, self._owned_directory = getattr(self, "_owned_directory", None), None
+        if owned is not None:
+            _remove_broker_dir(owned)
         self._socket_path = None
         self._script_path = None
         self._helper_command = None
