@@ -475,12 +475,10 @@ class EffectChain:
             self.settled = True
             self.settle_pending = False
         # The run is over: nothing may hold a lease's descriptors open past
-        # here, or the outbox cannot wipe what it is owed.
+        # here, or the outbox cannot wipe what it is owed. BEFORE the
+        # settlement, so a raise in there cannot skip the close.
         self.close_workspaces()
         settle_engine_admission(self.run_id, fired)
-        # Nothing fires after a terminal status, so nothing may keep a lease
-        # directory open either.
-        self.close_workspaces()
 
     @property
     def _cond(self) -> threading.Condition:

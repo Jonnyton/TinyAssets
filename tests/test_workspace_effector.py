@@ -601,6 +601,30 @@ def test_a_host_without_openat_is_refused_not_crashed(
     assert chain.workspace_mount_or_none("n1") is None
 
 
+def test_the_repo_subdir_helper_alone_refusing_is_still_a_refusal(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exact seam that broke: `create_workspace_subdir` is POSIX-only.
+
+    The lease handles can succeed (the spy provides them) and THIS call still
+    refuse -- which is what happened on the merged tree, and it surfaced as
+    ``effector_crashed``.
+    """
+    from tinyassets import workspace_fs
+
+    def refuse(*args, **kwargs):
+        raise NotImplementedError(
+            "create_workspace_subdir needs POSIX openat semantics (O_NOFOLLOW + "
+            "dir_fd); this host is 'nt'. There is no fallback."
+        )
+
+    monkeypatch.setattr(workspace_fs, "create_workspace_subdir", refuse, raising=False)
+    _root, universe_dir = _setup(tmp_path)
+    result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
+    assert result["error_kind"] == "workspace_checkout_failed"
+    assert "POSIX openat" in result["error"]
+
+
 def test_the_compiler_binds_the_repository_handle_not_the_lease_handle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
