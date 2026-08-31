@@ -323,6 +323,30 @@ A non-zero `ws.run` exit is data; `code_node_failed` for exceptions in
   class never reaching the classifier, scope-only `extend_http` unable to
   execute, descriptor leaks, unverified staging deletion, capability lookup
   ignoring ancestry) - all folded 2026-08-31; R3 is the cap.
+- **R3 (the cap) REJECT — three P0s, six P1s, two P2s.** Fixed before
+  landing (no fourth review round, per `AGENTS.md`): the packet could still
+  choose the credentialed git HOST (only repo/kind were checked; intents
+  defaulted replays to github.com) → host derived from the stored
+  connection, journaled, revalidated; descriptors had a use-after-revoke /
+  fd-number-reuse race across parallel branches → atomic acquisition under
+  the chain lock with dup'd descriptors, refcount, deferred close; a first
+  permanent checkout could not create `workspaces/<repo-key>` → created
+  through owned no-follow handles, tested with the real helpers; push and
+  discard now charge the workspace ledger and `packet.max_bytes` no longer
+  exists; a reconciliation timeout stays claimable and `expected_old_sha`
+  is journaled; one `try/finally` owns the post-admission lifecycle;
+  provisioning's as-built contract says "wholly unavailable in this
+  release"; specs resynced after the sandbox commits; the POSIX
+  lease-privacy test inspects the lease, not `/proc/self/fd`; the oracle's
+  `full_route` runs a compiled graph through the production launcher
+  factory with the canary credential on the real broker path; staging ids
+  are an injective hash plus nonce.
+- **Founder decision recorded as residual (R3 P2 #10):** a RESUMED run
+  cannot continue past a pre-interrupt checkout - the workspace capability
+  lives in the run's chain and is not persisted; a downstream workspace
+  node fails loudly as `code_node_failed` ("workspace not available").
+  Persisting a generation-checked capability across an interrupt is a
+  named follow-up, not silently attempted.
 
 - **As-built deviations found at spec sync (2026-08-31), now named follow-ups
   rather than claims:** there is no process-tree RSS watchdog (the rlimit
