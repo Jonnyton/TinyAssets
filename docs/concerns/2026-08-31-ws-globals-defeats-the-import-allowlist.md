@@ -1,120 +1,84 @@
-# Node code reaches `subprocess` and `os` through `ws.read.__func__.__globals__`
+# The node import allowlist is theatre — delete it, don't fix it
 
-**Found** 2026-08-31, on `origin/main` (`acc0b11a`), in the Linux oracle
-container (bwrap 0.12.0). **Severity P1** — it defeats every *software* guard
-the code node advertises, but the bubblewrap jail still contains it.
+**Superseded 2026-08-31, same day it was filed.** This started as a P1
+vulnerability report. The founder's statement of the isolation floor inverts the
+conclusion: the finding is real, the severity is not, and the fix is deletion
+rather than repair. The original write-up is kept below because the measurement
+is still the evidence.
 
-Surfaced by a Codex refute review of PR #2738 (claim Q5), then reproduced
-against `main` rather than against the PR branch, because the first question
-was whether the PR introduced it. It did not.
+## The floor that changes it
 
-## What actually happens
+> "the floor is they cant effect other users except what ever ways we build for
+> users to interact. but within your own universe you are god as if you have
+> your own computer in the cloud with an openclaw ageint on it that has full
+> access"
 
-Node code is untrusted, user-authored Python. Two software guards are supposed
-to bound it: `FORBIDDEN_PATTERNS` (a source denylist) and `ALLOWED_IMPORTS`
-(an import allowlist that replaces `__import__`). The `ws` object is injected
-into the node's namespace so it can reach its workspace.
+The test is therefore: **does this stop me affecting another user, or the host
+everyone shares?** Not "does this stop me doing something dangerous to myself".
 
-`ws` is an instance of `_Workspace`, defined in the runner script's module
-namespace. Python hands every function its defining module's globals, so:
+## What was found (unchanged, still true)
+
+Untrusted node code reaches the runner module's globals through any injected
+capability object:
 
 ```python
-def run(state):
-    g = ws.read.__func__.__globals__          # the runner module's globals
-    sp = g['sub' + 'process']                  # denylist matches a literal only
-    p = sp.run(['/usr/local/bin/python', '-c', 'print(7*6)'],
-               capture_output=True, text=True)
-    return {'result': {'rc': p.returncode, 'stdout': p.stdout.strip()}}
+g = ws.read.__func__.__globals__     # 68 names
+sp = g['sub' + 'process']            # the denylist matches literals only
+sp.run([...])                        # measured in the real jail: rc=0, stdout '42'
 ```
 
-Measured in the real jail: **`rc=0`, `stdout='42'`.** The node passed
-validation and spawned a process.
+`_original_import` — the unrestricted `__import__` the allowlist replaced — is
+in there too. Both injected names (`ws`, `invoke_mcp_action`) resolve to the
+**same dict**, so wrapping `ws` fixes nothing. The node's own namespace is clean
+(4 names); the leak is the shared runner module.
 
-`__globals__` exposes **66 names**, including `subprocess`, `os`,
-`_original_import` (the *unrestricted* `__import__` the allowlist replaced),
-`_restricted_import`, `_get_frame` and `_ws_kill_group`. `_original_import`
-alone reduces `ALLOWED_IMPORTS` to decoration: anything the interpreter can
-import is reachable.
+## Why it is not a vulnerability
 
-The denylist does not help. It matches source literals, so `'sub' + 'process'`
-passes; `globals(` is on the list but `__globals__` is not, and adding it would
-be another literal to concatenate around.
+Verified when it was found, and it decides the severity: the bwrap jail
+contains all of it. **No network** (`--unshare-all`, no `--share-net`), **no
+`/data`**, no universe root, **no credential mount**, no broker socket — git
+runs in the effector, not the node jail. Nothing here crosses the tenant
+boundary.
 
-## What this does NOT reach
+So this is a user's own code, in the user's own universe, reaching the user's
+own tools. Under the floor above, that is not an escape. It is Tuesday.
 
-Checked before assigning severity, because it decides whether this is P0:
+## The actual finding: the guard never worked, and never needed to
 
-* **No credentials.** The code-node jail binds no broker socket, no
-  `GIT_ASKPASS`, no credential mount. Git runs in the *effector*, not here.
-* **No `/data`, no universe root.** `_bwrap_argv` binds `/usr`, `/bin`,
-  `/lib`, `/lib64` read-only, `--dev /dev`, `--proc /proc`, `--tmpfs /tmp`,
-  plus at most the one `/workspace` bind.
-* **No network.** `--unshare-all` with no `--share-net`.
+`ALLOWED_IMPORTS` and `FORBIDDEN_PATTERNS` exist to stop the author's code from
+importing things. They:
 
-So the blast radius is the node's own workspace, a private tmpfs, and CPU and
-memory spent outside `ws.run`'s accounting. It is a broken guarantee and a
-budget bypass, not a host compromise or a credential leak.
+* are **defeated by string concatenation** — `'sub' + 'process'` walks past the
+  denylist, which is why the measurement above succeeds;
+* protect **nobody but the author from themselves**, which the floor says is
+  the author's business;
+* cost real engineering, and cost it again every time someone finds a new way
+  around them;
+* actively **mislead**, by implying a boundary that is not where the real one
+  is. The real boundary is bwrap and the RPC, and those hold.
 
-## Why no test caught it
+**Action: delete `ALLOWED_IMPORTS` and `FORBIDDEN_PATTERNS`, and stop
+maintaining the allowlist.** Do not wrap `ws`, do not shrink the runner
+namespace, do not add `__globals__` to a denylist — that last one is one more
+literal to concatenate around, which is the same mistake one turn later.
 
-The six hostile-code jail tests in `tests/test_node_sandbox.py` — including
-`test_jail_runs_a_node_at_all`, the positive control — **skip everywhere**.
-They gate on `providers.base.probe_sandbox_available`, which carried a second,
-divergent bwrap probe (`--ro-bind / / /bin/sh -c true`). Measured side by side
-in the oracle: that probe exits 1 while the launcher's real argv exits 0. So on
-CI and in the oracle the tests skipped rather than ran, and a skip reads as a
-pass in a summary line. See [[a-skipped-test-rots-silently]].
+## What must NOT be deleted with it
 
-The probe divergence is fixed in the same change as this file. That fix is what
-makes any test written for this concern able to run at all — write the fix for
-this concern **after** confirming those six tests now execute.
+These are the real boundary and they are load-bearing:
 
-## The shape of a fix (not yet decided)
+* `--unshare-all` with no `--share-net`, `--clearenv`, the bind set, and
+  `_NEVER_BIND_PREFIXES = ("/data",)`;
+* `RLIMIT_AS` and the aggregate-RSS watchdog — host memory is shared;
+* credential blindness **against imported commons code**. Blindness from the
+  author's *own* agent is the author's call; blindness from a library they
+  pulled from the commons is cross-user, because the commons is a sanctioned
+  interaction surface. That distinction belongs in the commons trust model, not
+  here.
 
-Making `__globals__` unreachable by denylisting it is the wrong shape — it is
-one more literal to evade. The object handed across the boundary should not
-carry a reference to the runner's module namespace at all:
+## Related
 
-* build `_Workspace` by `exec`-ing its definition in a **minimal namespace**
-  holding only what it needs, so `__globals__` is inert; and/or
-* drop `subprocess`, `os` and `_original_import` from the runner's module
-  globals once the closures that need them are built.
-
-## The audit, done — and it rules out the obvious fix
-
-`ws` is **not** the only door. Exactly two names are injected
-(`node_sandbox.py:1261-1263`): `invoke_mcp_action` and `ws`. Measured in the
-jail on the Linux oracle:
-
-```
-run.__globals__                 ->  4 names, subprocess: False
-invoke_mcp_action.__globals__   -> 68 names, subprocess: True, _original_import: True
-                                   is ws.read.__func__.__globals__: True
-```
-
-Three things follow, and the third is the one that matters:
-
-1. The node's OWN namespace is clean — `run.__globals__` holds 4 names and no
-   modules. `exec(source_code, namespace)` is doing its job.
-2. `invoke_mcp_action` is an equally good door, and it is a plain function, so
-   it has no `__func__` indirection to remove.
-3. **Both doors are the SAME dict.** So any fix aimed at `ws` alone — a proxy
-   object, a `__getattr__` wrapper, hiding `__func__` — achieves nothing,
-   because `invoke_mcp_action.__globals__` still reaches the identical
-   namespace. The leak is the shared runner module, not either object.
-
-That kills the "wrap `ws`" family of fixes. What is left:
-
-* **Shrink the runner namespace itself** — `del` the module references once the
-  closures that need them are built, so there is nothing worth reaching. Needs
-  care: `_original_import` is used by `_restricted_import`, so it has to become
-  a closure cell or a default argument rather than a module global.
-* **Build both injected callables in a minimal namespace** — `exec` their
-  definitions in a dict holding only what they need, so `__globals__` is inert
-  for both. Costs a restructure of the runner script.
-
-The first is smaller and probably sufficient; the second is the one that stays
-correct when a third injected name is added.
-
-A fix is not proven until it is asserted by a test that runs *inside* bwrap on
-the Linux oracle, and that goes red on the tree above.
+Superseded by
+`openspec/changes/script-authoring-surface/design.md` (the floor) and
+`docs/concerns/2026-08-31-hard-coded-policy-that-should-be-user-composable.md`
+(the same inversion applied to every other cap). Delete this file once the
+allowlist is gone.

@@ -85,16 +85,29 @@ So the entry point carries no declarations at all:
 run_script(source: str)
 ```
 
-### Policy stops being ours
+### The floor is other people, not the user
 
-Per `docs/concerns/2026-08-31-hard-coded-policy-that-should-be-user-composable.md`,
-several existing caps exist only to bound DSL *node shape* and stop meaning
-anything once the script is the unit — `MAX_RPC_CALLS = 32`,
-`MAX_WORKSPACE_COMMANDS = 64`. Retry, recovery, branch naming and loop bounds
-move into the user's file, where they were always decisions. The platform keeps
-only what protects someone other than the author: `/data` never bound,
-`RLIMIT_AS` and the aggregate-RSS watchdog, the protocol bounds, and credential
-blindness.
+Founder, 2026-08-31:
+
+> "the floor is they cant effect other users except what ever ways we build for
+> users to interact. but within your own universe you are god as if you have
+> your own computer in the cloud with an openclaw ageint on it that has full
+> access, but also has commons libraries of graphs"
+
+One invariant, not four primitives: **you cannot affect another user except
+through an interaction surface we deliberately built.** An earlier draft of
+this proposal listed four primitives, half of which were protecting the user
+from themselves. See `design.md` for every constraint re-run against the
+correct test.
+
+The immediate consequence, worked through today: the `ws.__globals__` finding
+filed this morning as a P1 sandbox escape is **not a vulnerability**. It is
+fully contained by the jail - no network, no `/data`, no credential mount - so
+it never crosses the tenant boundary. It is the author's code reaching the
+author's own tools. What it actually proves is that `ALLOWED_IMPORTS` and
+`FORBIDDEN_PATTERNS` are theatre: defeated by `'sub' + 'process'`, protecting
+nobody but the author from themselves, and misleading about where the real
+boundary is. **Delete them.** That concern file has been rewritten to say so.
 
 ## Impact
 
