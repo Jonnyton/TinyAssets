@@ -190,6 +190,11 @@ succeed.
   revokes the capability**; later `ws.*` calls in the same run raise inside
   `run()` and the node fails as `code_node_failed` naming the discard;
   failures of the discard itself are `workspace_discard_failed`.
+- **Residual (builder finding, 2026-08-31):** the capability is resolved once
+  at node start, so a `discard` fired by a PARALLEL branch during a long
+  `run()` does not make a later `ws.*` call in that same node raise - the
+  next node refuses, this one finishes. Enforcing it inside the child needs a
+  parent-to-child signal on the RPC pipe; named follow-up, not in this slice.
 - Local `git` only; commit identity `TinyAssets Universe <universe-short>
   <<universe-id>@universes.tinyassets.io>`.
 
