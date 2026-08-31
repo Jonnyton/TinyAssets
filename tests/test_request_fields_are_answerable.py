@@ -138,3 +138,34 @@ def test_the_served_docs_teach_the_labelled_shape() -> None:
     assert '"help"' in doc and '"url"' in doc
     # And the instruction that keeps it agnostic.
     assert "no built-in list of services" in doc
+
+
+def test_the_agent_is_told_to_research_the_service_not_recall_it() -> None:
+    """The ask is built by GOING AND READING, not from what the model remembers.
+
+    Founder, 2026-08-31: "more like a skill the users agent uses just to build to
+    what ever the user points them at then the agent researches online to figure
+    out what the request needs to be, how it should lable credentials and what it
+    does and doesnt need and the link for the user to get it".
+
+    The capability was already there and unused: the agent runtime grants
+    WebFetch and WebSearch. Nothing told the agent to use them before asking, so
+    labels and click paths came from recall — and a portal reorganises, which
+    makes a remembered click path a link to somewhere that no longer exists.
+
+    This is the difference between a platform that knows about services and an
+    agent with a research skill. Only the second one works for the service
+    nobody has enumerated.
+    """
+    import tinyassets.engine_mcp_server as engine
+
+    doc = engine.write_graph.__doc__ or ""
+    assert "LOOK IT UP FIRST" in doc
+    assert "WebFetch" in doc and "WebSearch" in doc
+    # What the research is FOR, all four parts.
+    assert "which it does not" in doc          # do not ask for unused values
+    assert "in its own words" in doc           # the site's own labels
+    assert "click path" in doc                 # where to find each one
+    assert "THE LINK" in doc                   # and how to get there
+    # And honesty over confident guessing.
+    assert "confidently wrong label is worse" in doc

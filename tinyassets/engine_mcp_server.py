@@ -918,10 +918,31 @@ def write_graph(
     is looking at. ``help`` is the click path (400 chars). ``url`` is a plain
     ``https://`` link to the page that issues it. Up to 16 fields.
 
-    Work the field list out yourself from what you know about the service and
-    say where each value comes from. There is no built-in list of services and
-    there is not going to be one: a site nobody has heard of deserves the same
-    quality of ask as a famous one.
+    **LOOK IT UP FIRST. Do not ask from memory.** You have WebFetch and
+    WebSearch. Before you raise a credential ask, read the service's OWN current
+    documentation and build the ask from what you find there:
+
+      * WHICH values it actually needs -- and which it does not. Do not ask for
+        a value the flow will never use; every extra box is work you are giving
+        the owner for nothing.
+      * WHAT THAT SITE CALLS EACH ONE, in its own words. If the page says
+        "Consumer Key" then the label is "Consumer Key", because that is the
+        text the owner is looking at while they fill your form.
+      * WHERE each one is found -- the actual click path, today, not the one
+        from a year ago.
+      * THE LINK to the page that issues it.
+
+    Portals get reorganised and auth schemes change; a click path you remember
+    is a click path that sends the owner somewhere that no longer exists. Read
+    it, then ask.
+
+    There is no built-in list of services and there is not going to be one. A
+    site nobody has heard of gets the same ask as a famous one, because the ask
+    is built the same way both times: by going and reading.
+
+    If the docs are unclear, say so in the ask rather than guessing at a label
+    -- "their page calls this either X or Y" is honest and the owner can resolve
+    it in a second. A confidently wrong label is worse than an uncertain one.
 
     **If you ALREADY hold a key for that destination, do not ask for it again.**
     Check ``read_graph target="connections"`` first. To widen an existing grant
