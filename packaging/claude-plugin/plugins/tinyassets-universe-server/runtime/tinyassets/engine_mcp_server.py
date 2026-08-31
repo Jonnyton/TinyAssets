@@ -655,17 +655,50 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
                 from tinyassets.effectors.authenticated_external_call import (
                     EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
                 )
+                from tinyassets.effectors.workspace import (
+                    EXTERNAL_WRITE_SINK_WORKSPACE,
+                )
 
                 if not isinstance(effects, list) or not all(
                     isinstance(e, str) for e in effects
                 ):
                     raise ValueError("node 'effects' must be a JSON array of strings")
+                # `workspace` joined the allowlist on 2026-08-31, on the same
+                # terms the comment above sets: it arrives WITH the channel /
+                # consent + budget slice the earlier sinks lacked. Typed
+                # consents per (op, connection, repo) answered on the request
+                # rail -- and ONLY there, since `source_channel` now refuses to
+                # self-approve this sink; plus a `workspace` admission ledger
+                # charging jobs and bytes per universe-hour with the maximum
+                # reserved BEFORE the wire. Everything else stays refused -
+                # this is still an allowlist, and channels stay USER-built over
+                # the one channel-agnostic node.
+                #
+                # Stated narrowly on purpose. A Codex refute review falsified
+                # the two stronger claims an earlier draft of this comment made,
+                # and both are real:
+                #   * the job locks are REENTRANT on `run_id`, deliberately, so
+                #     a run can check out and then push. "One job per universe"
+                #     therefore holds ACROSS runs, not within one.
+                #   * the byte ledger is accounting, not enforcement: nothing
+                #     measures the tree while a node writes to it, and inside
+                #     the jail the only disk bound is a 512 MiB per-file
+                #     RLIMIT_FSIZE.
+                # Neither is introduced here -- both predate this widening --
+                # and both are bounded today by the vetted-founder gate. They
+                # are written up with reproduction notes in
+                # docs/concerns/2026-08-31-workspace-admission-claims-are-narrower-than-stated.md
+                # Fix them there, and tighten this comment when they land.
+                served_sinks = {
+                    EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+                    EXTERNAL_WRITE_SINK_WORKSPACE,
+                }
                 for sink in effects:
-                    if sink != EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL:
+                    if sink not in served_sinks:
                         raise ValueError(
                             f"effect sink '{sink}' is not available on the served build "
-                            "surface; only the channel-agnostic "
-                            f"'{EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL}' node is allowed"
+                            "surface; allowed: "
+                            + ", ".join(f"'{name}'" for name in sorted(served_sinks))
                         )
                 # The run-time effector dispatches EVERY entry in the list, so a single
                 # node with N duplicate sinks fires N outbound calls — bypassing a
@@ -675,8 +708,8 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
                 # one dispatch, so the effect-node cap is the true outbound ceiling.
                 if len(effects) > 1:
                     raise ValueError(
-                        "a node may declare the channel sink at most once; use a "
-                        "separate node per outbound call"
+                        "a node may declare at most one effect sink; use a "
+                        "separate node per outbound call or workspace operation"
                     )
                 if effects:
                     effect_nodes += 1
@@ -2143,7 +2176,36 @@ def source_channel(action: str = "", branch_id: str = "", payload: str = "") -> 
     for key, value in payload_obj.items():
         if not isinstance(value, str):
             return json.dumps({"error": f"payload '{key}' must be a string."})
+    from tinyassets.effectors.workspace import EXTERNAL_WRITE_SINK_WORKSPACE
+
     channel_type = (payload_obj.get("channel_type") or "").strip()
+    # `sink` is checked too because `_approve_sink` reads `fields["sink"]` FIRST
+    # and only falls back to `channel_type` -- refusing one spelling and not the
+    # other would be a refusal with a documented way around it.
+    if EXTERNAL_WRITE_SINK_WORKSPACE in {
+        channel_type,
+        (payload_obj.get("sink") or "").strip(),
+    }:
+        # The `workspace` sink was admitted to the served build surface BECAUSE
+        # its consents are typed per (op, connection, repo) and answered by the
+        # owner on the request rail. This verb writes into the same
+        # `effector_consents` store the workspace effector reads
+        # (`_approve_sink` -> `grant_consent`; `is_consent_active` on the way
+        # out), so leaving it open here would let the agent grant itself the
+        # repository access the rail exists to gate -- and the justification for
+        # widening the allowlist would be circular.
+        #
+        # Found by a Codex refute review of PR #2742 (Q1) and confirmed against
+        # this tree. Reachable today only from a vetted founder universe
+        # (`run_graph_allowlist`), which bounds it but does not make it true.
+        return json.dumps({
+            "error": (
+                "workspace consent cannot be self-approved: it is typed per "
+                "(operation, connection, repository) and is answered by the "
+                "universe's owner on the request rail. Ask for it there; this "
+                "verb approves outbound channel sinks only."
+            ),
+        })
     if channel_type == "source_code":
         # Approval is provenance only (change `sandboxed-code-node`); execution is
         # gated by the sandbox and authorship. This verb approves sinks, not code.
