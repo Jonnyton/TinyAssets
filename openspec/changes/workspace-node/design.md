@@ -101,8 +101,13 @@ succeed.
   boundary, and a bundle with prerequisites cannot be imported into an
   empty repository, so `checkout` performs a full clone (`--no-recurse-
   submodules --single-branch` at the requested ref) and both directions use
-  **prerequisite-free** bundles, verified as such (`bundle verify` in an
-  empty repository). `depth` is not a packet field; a prerequisite protocol
+  **self-contained** bundles. Measured on git 2.53 (builder, 2026-08-31):
+  `git bundle verify` in an empty repository ACCEPTS a bundle made from a
+  `--depth 1` clone - a shallow boundary is not a declared prerequisite -
+  so `bundle verify` alone is never the gate; self-containedness is
+  proven by the fsck-checked import into an empty repository ("did not
+  send all necessary objects" refuses), which both the checkout population
+  and the push staging run, in that order after `verify`. `depth` is not a packet field; a prerequisite protocol
   (staging proves it holds the exact base objects before importing a thin
   bundle) is the named follow-up for very large repositories. The API
   size precheck and the lease bound refuse repositories that do not fit.
