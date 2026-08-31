@@ -1788,15 +1788,18 @@ class PlainSubprocessLauncher:
         descriptors = tuple(mount.pass_fds or ())
         handle = _PROC_FD_BIND.match(mount.bind_source or "")
         if handle is not None:
-            if sys.platform == "win32":
-                raise SandboxUnavailableError(
-                    "this launcher cannot bind a descriptor on Windows: there "
-                    "is no /proc and no descriptor inheritance"
-                )
+            # Inheritance first, platform second: a descriptor the child will
+            # not be given is incoherent whatever the host is, and checking it
+            # first means one input yields one message everywhere.
             if int(handle.group(1)) not in descriptors:
                 raise SandboxUnavailableError(
                     "this launcher was asked to bind a descriptor the child "
                     "does not inherit, which would name another directory"
+                )
+            if sys.platform == "win32":
+                raise SandboxUnavailableError(
+                    "this launcher cannot bind a descriptor on Windows: there "
+                    "is no /proc and no descriptor inheritance"
                 )
         launcher = type(self)(workspace_bind=mount.bind_source)
         launcher.pass_fds = descriptors

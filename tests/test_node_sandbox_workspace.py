@@ -287,14 +287,72 @@ def test_the_mount_reaches_the_launcher_not_just_the_runner() -> None:
     assert argv[argv.index("--bind") + 1] == "/proc/self/fd/9"
 
 
-def test_the_plain_launcher_refuses_a_descriptor_bind() -> None:
-    """It performs no mount, so /proc/self/fd/<n> would name ITS own fd."""
+def test_the_plain_launcher_refuses_a_descriptor_it_will_not_inherit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The refusal is about INHERITANCE, not about descriptors.
+
+    `/proc/self/fd/<n>` in a process that was not given `n` names whatever that
+    process happens to hold there, which is some other directory entirely. On
+    Windows it is refused whatever the descriptors say: no /proc, no inheritance.
+    """
+    from tinyassets import node_sandbox
     from tinyassets.providers.base import SandboxUnavailableError
 
-    with pytest.raises(SandboxUnavailableError):
+    with pytest.raises(SandboxUnavailableError, match="does not inherit"):
+        PlainSubprocessLauncher().for_workspace(
+            WorkspaceMount(bind_source="/proc/self/fd/9", pass_fds=())
+        )
+    with pytest.raises(SandboxUnavailableError, match="does not inherit"):
+        PlainSubprocessLauncher().for_workspace(
+            WorkspaceMount(bind_source="/proc/self/fd/9", pass_fds=(3,))
+        )
+
+    monkeypatch.setattr(node_sandbox.sys, "platform", "win32")
+    with pytest.raises(SandboxUnavailableError, match="Windows"):
         PlainSubprocessLauncher().for_workspace(
             WorkspaceMount(bind_source="/proc/self/fd/9", pass_fds=(9,))
         )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="/proc and fd inheritance are POSIX")
+def test_the_plain_launcher_honours_a_descriptor_the_child_inherits(
+    workspace: Path,
+) -> None:
+    """No mount is needed: the CHILD holds the descriptor, and Popen chdirs
+    after the fork, so `/proc/self/fd/<n>` names the directory the checkout
+    opened. Asserted by inode, not by string, because the point is that it is
+    the same directory rather than the same spelling.
+    """
+    handle = os.open(str(workspace), os.O_RDONLY)
+    try:
+        mount = WorkspaceMount(
+            bind_source=f"/proc/self/fd/{handle}", pass_fds=(handle,)
+        )
+        launcher = PlainSubprocessLauncher().for_workspace(mount)
+        assert launcher.pass_fds == (handle,)
+        assert launcher.workspace_root() == f"/proc/self/fd/{handle}"
+
+        result = NodeSandbox(launcher=launcher, timeout=30).run_sync(
+            node_id="ws-node",
+            source_code=(
+                "def run(state):\n"
+                "    return {'result': ws.read('README.md')}\n"
+            ),
+            input_state={},
+            input_keys=[],
+            output_keys=["result"],
+            timeout=30,
+            workspace=mount,
+        )
+        assert result.success is True, result.error
+        assert result.output_state["result"].startswith("hello workspace")
+
+        wanted = os.stat(str(workspace))
+        seen = os.stat(f"/proc/self/fd/{handle}")
+        assert (seen.st_dev, seen.st_ino) == (wanted.st_dev, wanted.st_ino)
+    finally:
+        os.close(handle)
 
 
 def test_run_sync_specialises_the_launcher_for_the_mount(workspace: Path) -> None:
