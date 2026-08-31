@@ -63,11 +63,18 @@ jobs:
         # commit modifies tinyassets/ but forgets to re-run
         # build_plugin.py, the committed tree goes stale — CI would
         # otherwise pass silently because the build script re-stages
-        # locally on each run. This diff check closes that gap.
+        # locally on each run. This check closes that gap.
+        #
+        # `git status --porcelain`, NOT `git diff`: a canonical file that is
+        # brand new leaves an UNTRACKED mirror file after the build, and
+        # `git diff` does not see untracked paths. workspace_pool.py and
+        # workspace_fs.py were absent from the committed mirror for three
+        # commits and every gate reported clean (2026-08-30).
         run: |
-          if ! git diff --quiet packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets; then
+          STALE=$(git status --porcelain -- packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets)
+          if [ -n "$STALE" ]; then
             echo "::error::Committed plugin runtime is stale. Run 'python packaging/claude-plugin/build_plugin.py' and commit the result."
-            git diff --stat packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets
+            echo "$STALE"
             exit 1
           fi
 

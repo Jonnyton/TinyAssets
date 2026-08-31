@@ -15,6 +15,7 @@ confidence it has not earned.
 | Always-loaded context budget | `scripts/check_context_budget.py` → `context-budget` invariant | pre-commit hook **and** `invariants.yml` CI |
 | Cross-provider rule-file drift | `scripts/check_cross_provider_drift.py` → `cross-provider-drift` | same |
 | Skill tree valid + mirrored | `validate_skills.py`, `mirror-parity` | same |
+| Plugin mirror ships the current code | `scripts/check_mirror_parity.py` → `mirror-parity`. A canonical `tinyassets/**` file that DIVERGES from its mirror copy **or has no mirror copy at all** fails, by name. | pre-commit hook (staged set) **and** `invariants.yml` CI (whole tree) |
 | No CP-1252 mojibake in tracked text | `mojibake` invariant | same |
 | Behavioural test gate on `main` | `required-tests` + `.github/known-failing-tests.txt` | required check |
 | Diff scope declared | `pr-scope-guard.yml` | required check |
