@@ -11,6 +11,8 @@ build's own, since the build's copy rule is what parity means.
 from __future__ import annotations
 
 import importlib.util
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -231,8 +233,104 @@ def test_the_hook_delegates_to_the_shared_checker() -> None:
         if "check_mirror_parity.py" in line and not line.strip().startswith("#")
     ]
     assert invocations, "the hook does not invoke scripts/check_mirror_parity.py"
-    # The old inline comparison is gone, not merely supplemented.
-    assert "MIRROR_PREFIX" not in hook
+    # The installed hook is SHARED by every worktree (linked worktrees use the
+    # main repo's .git/hooks), so it can be newer than the checkout it runs in.
+    # A worktree whose branch predates the script must fall back, not fail on a
+    # missing file - execing it there blocked four lanes at once (2026-08-30).
+    assert 'if [ ! -f "scripts/check_mirror_parity.py" ]; then' in hook
+    assert "falling back to the legacy divergence-only comparison" in hook
+    # The legacy comparison exists ONLY as that fallback: the unconditional
+    # inline loop this hook used to run is gone.
+    assert "LEGACY_MIRROR_PREFIX" in hook
+    assert not any(
+        line.startswith("MIRROR_PREFIX=") for line in hook.splitlines()
+    ), "the unconditional inline comparison is back"
+
+
+def _bash() -> str | None:
+    """A bash that can see a Windows path. ``shutil.which("bash")`` finds the
+    WSL launcher first on this host, and WSL cannot open ``C:/...`` - it wants
+    ``/mnt/c/...`` - so Git Bash is preferred where it exists."""
+    candidates: list[str] = []
+    if os.name == "nt":
+        candidates += [
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files\Git\usr\bin\bash.exe",
+        ]
+    found = shutil.which("bash")
+    if found:
+        candidates.append(found)
+    for candidate in candidates:
+        if Path(candidate).exists():
+            return candidate
+    return None
+
+
+def _hook_repo(tmp_path: Path, *, diverge: bool) -> Path:
+    """A minimal repo shaped like this one, WITHOUT the shared checker."""
+    repo = tmp_path / "repo"
+    canonical = repo / "tinyassets"
+    mirror = (
+        repo
+        / "packaging"
+        / "claude-plugin"
+        / "plugins"
+        / "tinyassets-universe-server"
+        / "runtime"
+        / "tinyassets"
+    )
+    canonical.mkdir(parents=True)
+    mirror.mkdir(parents=True)
+    (canonical / "runs.py").write_text("x = 1", encoding="utf-8")
+    (mirror / "runs.py").write_text("x = 2" if diverge else "x = 1", encoding="utf-8")
+    for args in (
+        ["init", "-q"],
+        ["config", "user.email", "gate@test"],
+        ["config", "user.name", "gate"],
+        ["add", "-A"],
+    ):
+        subprocess.run(["git", *args], cwd=str(repo), check=True, capture_output=True)
+    return repo
+
+
+@pytest.mark.skipif(_bash() is None, reason="the hook is a bash script")
+def test_the_hook_falls_back_when_the_checker_is_not_in_this_worktree(tmp_path) -> None:
+    """The installed hook is shared by every worktree, so it can be newer than
+    the checkout: it must degrade to the legacy comparison, not die on a missing
+    file. Execing the absent script blocked four lanes at once (2026-08-30)."""
+    repo = _hook_repo(tmp_path, diverge=False)
+    done = subprocess.run(
+        # POSIX spelling: Git Bash on Windows eats the backslashes of a native
+        # path passed as an argument.
+        [_bash(), (REPO_ROOT / "scripts" / "git-hooks" / "pre-commit").as_posix()],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+    )
+    output = done.stdout + done.stderr
+    assert "is not in this worktree" in output
+    assert "mirror parity verified (legacy comparison)" in output
+    assert "can't open file" not in output
+    assert "plugin-mirror parity broken" not in output
+
+
+@pytest.mark.skipif(_bash() is None, reason="the hook is a bash script")
+def test_the_fallback_still_gates_divergence(tmp_path) -> None:
+    """Falling back is not waving through: a worktree behind the gate is still
+    gated on the case the legacy comparison can see."""
+    repo = _hook_repo(tmp_path, diverge=True)
+    done = subprocess.run(
+        # POSIX spelling: Git Bash on Windows eats the backslashes of a native
+        # path passed as an argument.
+        [_bash(), (REPO_ROOT / "scripts" / "git-hooks" / "pre-commit").as_posix()],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+    )
+    output = done.stdout + done.stderr
+    assert done.returncode == 1
+    assert "plugin-mirror parity broken" in output
+    assert "tinyassets/runs.py" in output
 
 
 def test_the_real_tree_is_in_parity() -> None:
