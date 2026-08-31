@@ -53,8 +53,23 @@ dependencies = [
     # reason as typing-extensions above.
     "packaging>=23.0",
 
-    # MCP/server entry points and Tier-3 structural smoke imports
-    "fastmcp>=3.0",
+    # MCP/server entry points and Tier-3 structural smoke imports.
+    #
+    # The <4 bound is LOAD-BEARING, not tidiness. fastmcp 4.0.0 (with mcp
+    # 2.1.1) dropped `request_ctx` from `mcp.server.lowlevel.server`, which
+    # `tinyassets/auth/middleware.py` and `tinyassets/universe_server.py`
+    # import to reach the live request. On 2026-08-31 CI resolved the new
+    # major on its own and 7 tests failed with ImportError, reddening
+    # `required-tests` for every open PR at once. Production runs 3.4.7 and was
+    # unaffected -- but a container rebuild would have taken the PUBLIC MCP
+    # connector down with it (Hard Rule 11), which is the real reason this is
+    # pinned rather than chased.
+    #
+    # The plugin runtime already carried `>=3.2,<4`; this is the canonical
+    # package catching up, and tests/test_fastmcp_pin_matches_runtime.py keeps
+    # the two from drifting again. Upgrading to 4.x is its own lane: port the
+    # `request_ctx` call sites first, then move both bounds together.
+    "fastmcp>=3.2,<4",
     "uvicorn[standard]>=0.30",
     # OAuth 2.1 Resource Server: validate WorkOS AuthKit bearer JWTs (PyJWT + JWKS).
     # The [crypto] extra pulls cryptography for RS256 signature verification.
@@ -115,7 +130,9 @@ api = [
     "uvicorn[standard]>=0.30",
 ]
 mcp = [
-    "fastmcp>=3.0",
+    # Same bound as the core dependency above, deliberately. See the comment
+    # there: fastmcp 4.x removes an import three modules depend on.
+    "fastmcp>=3.2,<4",
 ]
 scientific = [
     "scikit-learn>=1.3",
