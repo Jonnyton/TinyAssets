@@ -140,12 +140,22 @@ def _validated_action(raw: Any) -> dict[str, Any]:
                 "destination must be 2-127 chars of [a-z0-9._:-] starting "
                 "alphanumeric"
             )
-        endpoints = _validated_endpoint_list(action)
+        # A scope-only widening carries no endpoints: a git scope needs none,
+        # and the served rail documents exactly that shape. The deposit
+        # validates it against the endpoints the connection ALREADY has, which
+        # is the only set that could vouch for the host anyway.
+        raw_endpoints = action.get("endpoints")
+        scope_only = (
+            (not isinstance(raw_endpoints, list) or not raw_endpoints)
+            and action.get("scopes")
+            and not action.get("host")
+        )
+        endpoints = [] if scope_only else _validated_endpoint_list(action)
         return {
             "type": "extend_http",
             "destination": destination,
             "endpoints": endpoints,
-            "scopes": _validated_git_scopes(action, endpoints),
+            "scopes": _validated_git_scopes(action, endpoints, host_checked=not scope_only),
         }
     if kind != "connect_http":
         raise ValueError(
@@ -179,7 +189,10 @@ def _validated_action(raw: Any) -> dict[str, Any]:
 
 
 def _validated_git_scopes(
-    action: dict[str, Any], endpoints: list[dict[str, Any]]
+    action: dict[str, Any],
+    endpoints: list[dict[str, Any]],
+    *,
+    host_checked: bool = True,
 ) -> list[str]:
     """The git scopes an http ask may carry, validated the way the deposit will.
 
@@ -215,7 +228,11 @@ def _validated_git_scopes(
                 "git_write:owner/name); the HTTP methods come from the endpoints"
             )
         scopes.append(format_git_scope(*require_git_scope(value)))
-    if scopes and not endpoints_allow_git_scopes(
+    # ``host_checked=False`` is the scope-only widening: this ask names no
+    # endpoints, so there is nothing here to check the host against and the
+    # DEPOSIT checks the connection's stored set instead. Skipping it here
+    # cannot widen anything - the ledger refuses the write either way.
+    if host_checked and scopes and not endpoints_allow_git_scopes(
         [str(endpoint.get("host") or "") for endpoint in endpoints]
     ):
         raise ValueError(
