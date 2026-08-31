@@ -38,6 +38,26 @@ GIT_SCOPE_KINDS = (GIT_SCOPE_READ, GIT_SCOPE_WRITE)
 #: endpoint list to read the host off, so the provider has to supply it.
 PROVIDER_PIPE_HOSTS = {"github": "github.com"}
 
+#: Forges that serve their API and their git transport on DIFFERENT hosts.
+#:
+#: A connection declares the host it makes API calls to. For most forges -- a
+#: self-hosted Gitea, an internal GitLab -- that is also the host git clones
+#: from, and this table is empty for them by design: the pass-through default
+#: is what keeps a workspace forge-agnostic.
+#:
+#: GitHub is the exception, and it cost a live run to find. The founder's
+#: connection declares ten endpoints, all ``api.github.com``, so the derived
+#: git host was ``api.github.com`` and the clone became
+#: ``https://api.github.com/owner/name.git`` -- which GitHub answers 403. The
+#: same wrong value was also written into the consent key, so the owner's
+#: perfectly good ``github.com`` consent looked missing.
+#:
+#: A TABLE, not a heuristic. "Strip the api. prefix" happens to work for GitHub
+#: and is wrong for GitLab, whose API lives at ``gitlab.com/api/v4`` on the very
+#: same host. An explicit fact about one forge is honest; a rule inferred from
+#: one example is how the platform ends up shaped like our demo again.
+FORGE_GIT_HOSTS = {"api.github.com": "github.com"}
+
 #: The effector-consent sink the workspace operations record under.
 WORKSPACE_SINK = "workspace"
 
@@ -184,7 +204,12 @@ def git_host_for_endpoints(hosts: Iterable[str], provider: Any = "") -> str:
     host_list = [_normalize_host(host) for host in hosts if _normalize_host(host)]
     if host_list:
         unique = set(host_list)
-        return host_list[0] if len(unique) == 1 else ""
+        if len(unique) != 1:
+            return ""
+        # The declared host is where the connection makes API CALLS. Git may
+        # live somewhere else on the same forge; unknown hosts pass straight
+        # through, which is what keeps every other forge working.
+        return FORGE_GIT_HOSTS.get(host_list[0], host_list[0])
     return PROVIDER_PIPE_HOSTS.get(_text(provider).lower(), "")
 
 
