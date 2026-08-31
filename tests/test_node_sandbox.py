@@ -32,6 +32,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
 import pytest
@@ -1131,7 +1132,23 @@ class _FakeResourceLauncher:
             "fake.setrlimit = _refuse\n"
             "sys.modules['resource'] = fake\n"
         )
-        return [sys.executable, "-c", prelude + runner_script, *args]
+        # Delivered as a FILE, like PlainSubprocessLauncher: `python -c` is
+        # capped near 32 KiB of command line on Windows and the runner is
+        # larger than that. Same text, different delivery.
+        handle, path = tempfile.mkstemp(prefix="ta-test-runner-", suffix=".py")
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(prelude + runner_script)
+        self._script_path = path
+        return [sys.executable, path, *args]
+
+    def cleanup(self) -> None:
+        path = getattr(self, "_script_path", "")
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            self._script_path = ""
 
     def env(self, home_dir: str) -> dict[str, str]:
         return PlainSubprocessLauncher().env(home_dir)
@@ -1574,7 +1591,9 @@ def test_parent_launch_uses_close_fds_pipes_and_a_private_cwd(monkeypatch):
     # The timeout and the rlimit requirement reach the child as argv, so the
     # child can set RLIMIT_CPU and decide fatal-vs-warning before it reads
     # anything from stdin. "0" here: the plain launcher is not the OS jail.
-    assert captured["argv"][-2:] == ["10.0", "0"]
+    # Three slots since the workspace profile joined them: timeout, whether
+    # rlimits are mandatory, and the JSON profile ("" = the default profile).
+    assert captured["argv"][-3:] == ["10.0", "0", ""]
     assert "preexec_fn" not in captured
 
 
@@ -1706,7 +1725,7 @@ def test_the_jail_launch_demands_rlimits(monkeypatch):
 
     assert result.success is False
     assert "Failed to start subprocess" in result.error
-    assert captured["argv"][-2:] == ["8.0", "1"]
+    assert captured["argv"][-3:] == ["8.0", "1", ""]
 
 
 # -------------------------------------------------------------------

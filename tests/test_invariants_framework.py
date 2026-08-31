@@ -194,8 +194,14 @@ def test_mirror_parity_skipped_when_roots_missing(tmp_path, monkeypatch):
     assert result.status == Status.SKIPPED
 
 
-def test_mirror_parity_ignores_canonical_only_files(tmp_path, monkeypatch):
-    """A canonical file with no mirror counterpart is allowed."""
+def test_mirror_parity_fails_on_a_canonical_file_the_mirror_does_not_have(
+    tmp_path, monkeypatch
+):
+    """Inverted 2026-08-30. This used to assert that a canonical file with no
+    mirror counterpart is ALLOWED ("the build has not picked it up yet"), which
+    is the same sentence as "the mirror does not ship this module":
+    ``workspace_pool.py`` and ``workspace_fs.py`` stayed outside the mirror
+    across three commits with the gate reporting clean. Missing is drift."""
     from scripts.invariants import mirror_parity as mp
 
     canon = tmp_path / "workflow"
@@ -213,9 +219,9 @@ def test_mirror_parity_ignores_canonical_only_files(tmp_path, monkeypatch):
 
     result = mp.MirrorParityInvariant().check()
 
-    assert result.status == Status.OK
-    # The new.py wasn't "checked" because it has no pair.
-    assert result.evidence["checked"] == 0
+    assert result.status == Status.VIOLATED
+    assert result.evidence["missing"] == ["new.py"]
+    assert result.evidence["checked"] == 1
 
 
 # -------------------------------------------------------------------

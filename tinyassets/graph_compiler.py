@@ -32,6 +32,7 @@ import logging
 import operator
 import os
 import re
+import stat
 import threading
 import time
 from dataclasses import dataclass
@@ -119,6 +120,112 @@ class CodeNodeError(CompilerError):
         super().__init__(message)
         self.node_id = node_id
         self.stderr_tail = stderr_tail
+
+
+#: Whether this host can bind a directory through an inherited descriptor.
+#: A module attribute rather than an inline platform test so the suite can
+#: substitute it; production never changes it.
+WORKSPACE_FD_BIND_SUPPORTED = os.name == "posix"
+
+
+def _sandbox_workspace_mount(
+    mount: Any, node_id: str, allowed_roots: tuple[str, ...] = ()
+) -> Any:
+    """Turn the run's workspace capability into the sandbox's mount.
+
+    Prefers the held directory descriptor. ``/proc/self/fd/<n>`` is resolved
+    by the **bwrap process**, which inherited ``n``, so it names the directory
+    the fd was opened on -- not whatever the lease path points at by the time
+    the mount happens, and not this parent's ``/proc/self``. A rename between
+    admission and mount cannot swap what gets bound.
+
+    Falls back to the path when there is no descriptor: Windows, the
+    tests-only launcher, or a sink that has not published one.
+    """
+    from tinyassets.node_sandbox import WorkspaceLimits, WorkspaceMount
+
+    bind_source = getattr(mount, "bind_source", "")
+    if not isinstance(bind_source, str) or not bind_source:
+        raise CodeNodeError(
+            "workspace not available: the run's capability names no directory "
+            f"(node '{node_id}')",
+            node_id=node_id,
+        )
+    limits = getattr(mount, "limits", None)
+    if not isinstance(limits, WorkspaceLimits):
+        limits = WorkspaceLimits()
+    # The capability's own roots win; otherwise the caller's. Only the PATH
+    # form uses them at all -- a descriptor's identity is the fd, not a string.
+    allowed_roots = tuple(getattr(mount, "allowed_roots", ()) or ()) or tuple(
+        allowed_roots or ()
+    )
+
+    # The sink publishes the descriptors it wants bound. Carry them UNCHANGED:
+    # the repository's own fd is the bind source, and deriving one here from
+    # the lease root would mount the directory that CONTAINS the repository
+    # (Codex round 2, P0 #14a).
+    published = tuple(getattr(mount, "pass_fds", ()) or ())
+    if published and WORKSPACE_FD_BIND_SUPPORTED:
+        for descriptor in published:
+            _require_live_directory(descriptor, node_id)
+        return WorkspaceMount(
+            bind_source=bind_source,
+            limits=limits,
+            pass_fds=published,
+            allowed_roots=allowed_roots,
+        )
+
+    # `repo_fd` and nothing else. `lease_fd` names the LEASE, one level up, so
+    # falling back to it would mount the directory that contains the repository
+    # -- the case the comment above rules out -- with the rest of the lease
+    # visible to node code.
+    repo_fd = getattr(mount, "repo_fd", None)
+    if repo_fd is None or not WORKSPACE_FD_BIND_SUPPORTED:
+        return WorkspaceMount(
+            bind_source=bind_source, limits=limits, allowed_roots=allowed_roots
+        )
+
+    descriptor = _require_live_directory(repo_fd, node_id)
+    return WorkspaceMount(
+        bind_source=f"/proc/self/fd/{descriptor}",
+        limits=limits,
+        pass_fds=(descriptor,),
+        allowed_roots=allowed_roots,
+    )
+
+
+def _require_live_directory(descriptor: Any, node_id: str) -> int:
+    """A descriptor that is closed or no longer a directory is a lease that went
+    away. Fail the node: quietly binding the path instead is the swap the
+    descriptor exists to prevent.
+    """
+    try:
+        number = int(descriptor)
+        info = os.fstat(number)
+    except (OSError, TypeError, ValueError) as exc:
+        raise CodeNodeError(
+            "workspace not available: checkout did not deliver / was discarded "
+            f"(node '{node_id}'): the lease descriptor is unusable ({exc})",
+            node_id=node_id,
+        ) from exc
+    if not stat.S_ISDIR(info.st_mode):
+        raise CodeNodeError(
+            f"workspace not available: the lease descriptor for '{node_id}' is "
+            "not a directory",
+            node_id=node_id,
+        )
+    return number
+
+
+class WorkspaceCommandTimeout(NodeTimeoutError):
+    """Raised when a ``ws.run`` command outlived its budget (design D2/D6).
+
+    A subclass of :class:`NodeTimeoutError` so every existing timeout path
+    still catches it, and its own class so the terminal-status taxonomy can
+    report ``workspace_command_timeout`` rather than a generic node timeout:
+    the actionable fact is that a command in the workspace hung, and the
+    whole jail was killed to end it.
+    """
 
 
 class EmptyResponseError(CompilerError):
@@ -1806,6 +1913,21 @@ def _build_node_mcp_invoker(
     return _invoke_mcp_action
 
 
+def _workspace_bind_roots(base_path: str | Path | None) -> tuple[str, ...]:
+    """The two roots a workspace bind may live under, derived the way the
+    adapter derives them: the shared scratch pool beside the universe, and the
+    universe's own workspaces. An unknown base path vouches for nothing, and an
+    empty tuple refuses every bind - the fail-closed direction.
+    """
+    if not base_path:
+        return ()
+    universe_dir = Path(base_path)
+    return (
+        str(universe_dir.parent / "scratch"),
+        str(universe_dir / "workspaces"),
+    )
+
+
 def _build_source_code_node(
     node: NodeDefinition,
     *,
@@ -1854,8 +1976,39 @@ def _build_source_code_node(
             node_id=node.node_id,
         )
     _validate_source_code(node)
+    # A workspace is resolved from the graph, at compile time: the node must
+    # name an ANCESTOR, so no run can reach a checkout it does not depend on
+    # and no branch can smuggle a lease id through state or `$ta.ref`.
+    workspace_node = (getattr(node, "workspace", "") or "").strip()
+    if workspace_node:
+        known = set(ancestors or ())
+        if workspace_node not in known:
+            raise CodeNodeError(
+                f"Node '{node.node_id}' declares workspace: "
+                f"'{workspace_node}', which is not one of its ancestors "
+                f"({sorted(known)}). A workspace is resolved through the "
+                "run's effect chain from a checkout this node depends on; it is "
+                "never named through state or $ta.ref.",
+                node_id=node.node_id,
+            )
     src = node.source_code
     timeout_s = float(node.timeout_seconds or 300.0)
+    if workspace_node:
+        from tinyassets.node_sandbox import MAX_WORKSPACE_TIMEOUT_SECONDS
+
+        # The DECLARED value, not the defaulted one: `or 300.0` above reads a
+        # zero as "unset", and a workspace node has to say how long it may hold
+        # the host-wide slot rather than inherit a default by writing nothing.
+        declared = float(getattr(node, "timeout_seconds", 0.0) or 0.0)
+        if not 0 < declared <= MAX_WORKSPACE_TIMEOUT_SECONDS:
+            raise CodeNodeError(
+                f"Node '{node.node_id}' declares workspace: "
+                f"'{workspace_node}' with timeout_seconds={declared}, outside "
+                f"the bound 0 < t <= {MAX_WORKSPACE_TIMEOUT_SECONDS:.0f}. A "
+                "workspace node holds the universe's job lock and the "
+                "host-wide slot for its whole run.",
+                node_id=node.node_id,
+            )
     input_keys = list(node.input_keys or [])
     output_keys = list(node.output_keys or [])
     defaulted = list(_state_schema_defaults(state_schema or []).keys())
@@ -1889,12 +2042,76 @@ def _build_source_code_node(
 
             request_ctx = contextvars.copy_context()
 
+            # Resolved HERE, per run, not at compile time: the checkout has
+            # to have delivered, and a discard may have revoked it since.
+            mount = None
+            acquired = None
+            if workspace_node:
+                if effect_chain is None:
+                    raise CodeNodeError(
+                        "workspace not available: checkout did not deliver "
+                        f"/ was discarded (node '{workspace_node}'); this "
+                        "run has no effect chain",
+                        node_id=node.node_id,
+                    )
+                # ACQUIRED, not looked up: the lookup hands back the registry's
+                # own mount, and a parallel discard closes its descriptors
+                # while this node is using them - after which the next
+                # checkout gets the same fd NUMBERS and the node is reading
+                # another branch's repository (Codex code round 3, P0 #2). An
+                # acquisition holds dups for the length of the run and is
+                # decided inside the chain's lock, so it cannot straddle a
+                # revoke.
+                acquired = effect_chain.acquire_workspace(workspace_node)
+                raw_mount = None if acquired is None else acquired.mount
+                if raw_mount is None:
+                    # The checkout never delivered, or a discard revoked it.
+                    # Neither is recoverable for a node that declared a
+                    # workspace: fail it by name (design D2).
+                    raise CodeNodeError(
+                        "workspace not available: checkout did not deliver "
+                        f"/ was discarded (node '{workspace_node}')",
+                        node_id=node.node_id,
+                    )
+                # The capability stays owned by the chain (the sink holds the
+                # descriptor open); this only reads it, for the length of the run.
+                mount = _sandbox_workspace_mount(raw_mount, node.node_id)
+
             def _invoke(action: str, kwargs: dict[str, Any]) -> Any:
                 if effect_chain is not None:
                     effect_chain.rpc_permit()
                 return request_ctx.run(invoke_mcp_action, action, **dict(kwargs or {}))
 
-            result = NodeSandbox(timeout=timeout_s).run_sync(
+            # The chain's mount and the sandbox's are DIFFERENT objects with
+            # the same name: the chain's carries the lease identity a push
+            # resolves through (node_id, lease_fd, generation), the sandbox's
+            # carries the jail profile. Handing one to the other raised
+            # AttributeError on `limits` for every workspace node - the seam
+            # neither lane's own suite could see (found by the end-to-end
+            # chain test, 2026-08-30). And a launcher built with no bind
+            # reports /workspace as its root while emitting no --bind for it,
+            # so the node would have run against a mount point that does not
+            # exist.
+            sandbox_mount = None
+            workspace_launcher = None
+            if mount is not None:
+                from tinyassets.node_sandbox import WORKSPACE_LAUNCHER_FACTORY
+
+                # Through the translator, never inline: it is the one place
+                # that turns a held descriptor into the bind and the pass_fds
+                # list, and the one place that checks the descriptor is still a
+                # live directory. Building the mount at the call site is how
+                # both were dropped (Codex #14b). The factory takes the MOUNT so
+                # they cannot be dropped again on the way to the launcher.
+                sandbox_mount = _sandbox_workspace_mount(
+                    mount,
+                    node.node_id,
+                    allowed_roots=_workspace_bind_roots(base_path),
+                )
+                workspace_launcher = WORKSPACE_LAUNCHER_FACTORY(sandbox_mount)
+            result = NodeSandbox(
+                timeout=timeout_s, launcher=workspace_launcher
+            ).run_sync(
                 node_id=node.node_id,
                 source_code=src,
                 input_state=dict(state),
@@ -1903,14 +2120,26 @@ def _build_source_code_node(
                 timeout=timeout_s,
                 effects=effects,
                 invoke=_invoke,
+                workspace=sandbox_mount,
             )
         finally:
+            # Before the tracker: the capability is the scarcer resource, and
+            # releasing it is what lets a revoke's deferred close finally
+            # happen. It runs on every path out of the node, including the
+            # sandbox raising.
+            if acquired is not None:
+                acquired.release()
             if concurrency_tracker is not None:
                 concurrency_tracker.release()
         stderr_tail = getattr(result, "stderr_tail", "") or (result.stderr or "")[-2048:]
         stdout_tail = getattr(result, "stdout_tail", "") or (result.stdout or "")[-2048:]
         if not result.success:
             error = result.error or "code node failed"
+            if getattr(result, "workspace_timeout", False):
+                raise WorkspaceCommandTimeout(
+                    f"Node '{node.node_id}' (code): {error}",
+                    node_id=node.node_id,
+                )
             if "timed out" in error.lower():
                 raise NodeTimeoutError(
                     f"Node '{node.node_id}' (code) exceeded its timeout of {timeout_s}s",

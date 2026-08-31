@@ -879,6 +879,12 @@ def write_graph(
     user paste a secret they already gave you — the one thing they must never
     be asked to do twice.
 
+    **Both asks may also carry ``"scopes"``** — and ONLY git scopes, of the form
+    ``git_read:owner/name`` / ``git_write:owner/name``, on a github connection
+    (every endpoint of the same ask must be on github.com). That is what lets the
+    workspace sink clone or push that ONE repository; the HTTP methods still come
+    from the endpoints, never from this list.
+
     **A path_template can be a PATTERN, so ask for the JOB, not one file.** Any
     segment may be a ``{name}`` placeholder, and the FINAL segment may be a
     ``{name+}`` *rest* placeholder matching one or more remaining segments. Every
@@ -1025,6 +1031,42 @@ def write_graph(
     (``fork_from``) before it runs as yours. Stdlib only (``json re base64
     difflib textwrap html csv datetime math`` ...); 512 MiB, the node's
     ``timeout_seconds``; the source is at most 50 KB.
+
+    WORKSPACES. To read or run a whole repository, check it out with the
+    ``workspace`` sink and bind code nodes to it. A node with
+    ``"effects": ["workspace"]`` returns a ``workspace_packet`` under an
+    output key: ``{"op": "checkout", "connection_id": "<github http
+    connection>", "repo": "owner/name", "ref": "main", "storage": "scratch"}``
+    (``"universe"`` keeps it in your permanent space across turns). A later
+    code node declaring ``"workspace": "<that node id>"`` runs with the
+    repository at ``/workspace`` and a ``ws`` object: ``ws.run(["pytest",
+    "-q"], timeout=600)`` -> ``{"returncode", "stdout_tail", "stderr_tail"}``,
+    ``ws.read(path)``, ``ws.write(path, text)``, ``ws.glob("**/*.py")``,
+    ``ws.bundle(commit_sha)`` after a local ``git commit``. To publish, a node
+    returns ``{"op": "push", "workspace": "<checkout node>", "commit_sha":
+    "<40 hex>", "branch_slug": "fix-readme"}`` - the branch lands as
+    ``tiny/<universe>/<slug>`` (never the default branch; open the PR with the
+    generic call); ``{"op": "discard", "workspace": "<checkout node>"}``
+    drops it early (no consent needed). Dependency provisioning
+    (``provision`` on a checkout) is not available in this release - a
+    checkout that declares it is refused ``workspace_provision_refused``; run
+    what the repository can run with the shipped Python and Node. Each
+    ``(connection, repo)`` needs TWO things, once, both
+    through the request rail: the repository SCOPE on the github connection
+    (``"action": {"type": "extend_http", "destination": "github", "scopes":
+    ["git_read:owner/name", "git_write:owner/name"]}`` - no new endpoints
+    needed, and no key to paste) and the typed CONSENT (``"action":
+    {"type": "grant_workspace_consent", "connection_id": "<from
+    read_graph target='connections'>", "repo": "owner/name", "consents":
+    ["workspace_checkout", "workspace_push", "workspace_provision"]}``). ``read_graph
+    target="connections"`` shows both, so check what you hold before asking. The
+    sandbox has no network and no credential; git talks to the host from a
+    worker you never see. Limits are usage, not shape: a 4 GiB lease, one
+    workspace job at a time per universe, 64 commands and 1 MiB of returned
+    output per node; a timed-out command fails the node as
+    ``workspace_command_timeout``; every other refusal names its class
+    (``workspace_checkout_failed`` ... ``workspace_quota_exceeded``) and what
+    to do.
 
     A branch is a stored graph SHAPE — building/editing one fires NO effects and
     issues NO provider authority. Actually RUNNING it (with side effects) is a

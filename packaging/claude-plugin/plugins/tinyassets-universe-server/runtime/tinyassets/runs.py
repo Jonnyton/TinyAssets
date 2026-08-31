@@ -217,6 +217,235 @@ def _mark_orphaned_run_if_needed(
     return cursor.rowcount > 0
 
 
+# ---------------------------------------------------------------------------
+# Workspace storage: the terminal outbox (OpenSpec change workspace-node, D0).
+# A run that held a scratch lease or a workspace job lock owes work when it
+# ends: the lease is wiped and the locks released THROUGH an outbox entry
+# written in the same transaction as the terminal status, never by a direct
+# delete - so a crash at any point leaves a row that the sweeper finishes.
+# ---------------------------------------------------------------------------
+
+_WORKSPACE_RECONCILE_LOCK = threading.Lock()
+#: (pid, resolved data root) pairs whose startup sweep SUCCEEDED and whose
+#: sweeper thread is running. Keyed by pid so a forked worker never inherits
+#: the parent's claim; reset after fork as well (Codex, code round 1).
+_WORKSPACE_RECONCILED: set[tuple[int, str]] = set()
+_WORKSPACE_RECONCILING: set[tuple[int, str]] = set()
+
+
+def _reset_workspace_reconciliation_after_fork() -> None:
+    _WORKSPACE_RECONCILED.clear()
+    _WORKSPACE_RECONCILING.clear()
+
+
+if hasattr(os, "register_at_fork"):  # pragma: no branch - POSIX only
+    os.register_at_fork(after_in_child=_reset_workspace_reconciliation_after_fork)
+_WORKSPACE_SWEEP_INTERVAL_S = 30.0
+_WORKSPACE_PROCESS_STARTED_AT = time.time()
+#: Every workspace failure class the executor classifies (design D6): one
+#: actionable class per refusal, all the universe's to act on.
+WORKSPACE_FAILURE_KINDS: tuple[str, ...] = (
+    "workspace_checkout_failed",
+    "workspace_push_refused",
+    "workspace_busy",
+    "workspace_pool_busy",
+    "workspace_quota_exceeded",
+    "workspace_command_timeout",
+    "workspace_provision_refused",
+    "workspace_provision_failed",
+    "workspace_discard_failed",
+)
+
+
+def _enqueue_workspace_terminal(
+    conn: sqlite3.Connection, base_path: str | Path, run_id: str,
+) -> int:
+    """Inside the caller's terminal transaction: enqueue the release of every
+    ACTIVE lease this run holds, or a lock-only release when it holds a job
+    lock without a lease. Returns the number of entries written."""
+    from tinyassets import workspace_pool
+
+    workspace_pool.ensure_schema(conn)
+    # Read through the CALLER's connection: this runs inside its open write
+    # transaction, and a second connection taking BEGIN IMMEDIATE (as
+    # get_lease does) would wait on ourselves until busy_timeout.
+    rows = conn.execute(
+        f"SELECT {workspace_pool._LEASE_COLUMNS} FROM workspace_leases "
+        "WHERE run_id = ? AND state = 'ACTIVE'",
+        (run_id,),
+    ).fetchall()
+    written = 0
+    for row in rows:
+        lease = workspace_pool._lease_from_row(row)
+        workspace_pool.enqueue_terminal(
+            conn, run_id=run_id, universe_id=lease.universe_id, lease=lease,
+            storage_class=lease.storage_class,
+        )
+        written += 1
+    if written:
+        return written
+    locks = conn.execute(
+        "SELECT key FROM workspace_locks WHERE scope = 'universe' AND run_id = ?",
+        (run_id,),
+    ).fetchall()
+    for row in locks:
+        workspace_pool.enqueue_terminal(
+            conn, run_id=run_id, universe_id=row[0], lease=None,
+        )
+        written += 1
+    return written
+
+
+def _workspace_sweep_once(base_path: str | Path, *, claimant: str) -> int:
+    """One periodic pass: enqueue leases orphaned by a terminal run that never
+    reached the outbox (a crash between the two writes of an older code path),
+    then process every claimable entry."""
+    from tinyassets import workspace_pool
+    from tinyassets.workspace_fs import RealPoolFilesystem
+
+    db = runs_db_path(base_path)
+    with _connect(base_path) as conn:
+        workspace_pool.ensure_schema(conn)
+        # Only SCRATCH leases: an authoritative permanent generation stays
+        # ACTIVE after its run ends by design (release_lock_only), and must
+        # not be re-enqueued every tick (Codex, code round 1).
+        orphaned_leases = conn.execute(
+            """
+            SELECT l.run_id FROM workspace_leases AS l
+              JOIN runs AS r ON r.run_id = l.run_id
+             WHERE l.state = 'ACTIVE' AND l.storage_class = 'scratch'
+               AND r.status IN ('completed', 'failed', 'cancelled', 'interrupted')
+               AND NOT EXISTS (
+                   SELECT 1 FROM workspace_outbox AS o
+                    WHERE o.run_id = l.run_id AND o.done_at IS NULL
+               )
+            """
+        ).fetchall()
+        # And locks a finished run still holds with nothing pending to
+        # release them - invisible to a lease-first query.
+        orphaned_locks = conn.execute(
+            """
+            SELECT k.run_id FROM workspace_locks AS k
+              JOIN runs AS r ON r.run_id = k.run_id
+             WHERE r.status IN ('completed', 'failed', 'cancelled', 'interrupted')
+               AND NOT EXISTS (
+                   SELECT 1 FROM workspace_outbox AS o
+                    WHERE o.run_id = k.run_id AND o.done_at IS NULL
+               )
+            """
+        ).fetchall()
+        for run_id in {r[0] for r in orphaned_leases} | {r[0] for r in orphaned_locks}:
+            _enqueue_workspace_terminal(conn, base_path, run_id)
+    return workspace_pool.periodic_sweep(db, fs=RealPoolFilesystem(), claimant=claimant)
+
+
+def _reconcile_push_intents(base_path: str | Path, *, when: str) -> int:
+    """Settle every push whose outcome was lost (a crash between the wire and
+    the receipt): ``ls-remote`` through the worker decides done/failed
+    (workspace-node D1, Codex code round 2 #4). Best-effort on each pass -
+    the next sweep retries what this one could not reach - and never
+    blocks a startup on the network."""
+    try:
+        from tinyassets.workspace_worker import reconcile_push_intents
+
+        settled = reconcile_push_intents(base_path)
+    except Exception:  # noqa: BLE001 - retried on the next pass
+        logger.exception("push intent reconciliation failed (%s)", when)
+        return 0
+    if settled:
+        logger.info("push intents reconciled (%s): %s", when, settled)
+    return len(settled)
+
+
+def _kick_workspace_sweep(base_path: str | Path) -> threading.Thread:
+    """Run one sweep pass now, on its own thread: a finished run's lock and
+    lease are released within seconds, not at the next periodic tick."""
+    thread = threading.Thread(
+        target=_workspace_sweep_kick_body, args=(base_path,),
+        name="workspace-sweep-kick", daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+def _workspace_sweep_kick_body(base_path: str | Path) -> None:
+    try:
+        _workspace_sweep_once(base_path, claimant=f"kick:{os.getpid()}")
+    except Exception:  # noqa: BLE001 - the periodic sweeper retries
+        logger.exception("workspace sweep kick failed")
+
+
+def _workspace_sweeper_loop(base_path: str | Path, interval_s: float) -> None:
+    claimant = f"sweeper:{os.getpid()}"
+    while True:
+        time.sleep(interval_s)
+        try:
+            _workspace_sweep_once(base_path, claimant=claimant)
+        except Exception:  # noqa: BLE001 - the loop must outlive one bad pass
+            logger.exception("workspace sweep failed")
+
+
+def _ensure_scratch_root(base: Path) -> Path:
+    """The scratch pool's parent - ``<data>/scratch``, ONE level above the
+    universe directory ``base`` (the adapter admits into ``base.parent /
+    "scratch"``; Codex code round 2 caught the two disagreeing) - created
+    once, mode 0700, never with ``parents=True``: the data root itself must
+    already exist. The no-follow lease helpers refuse a missing or
+    group-writable parent, so a fresh host needs this before its first
+    checkout (lane E finding)."""
+    root = base.parent / "scratch"
+    if not root.exists():
+        root.mkdir(mode=0o700)
+    if os.name == "posix":
+        os.chmod(root, 0o700)
+    return root
+
+
+def ensure_workspace_reconciled(
+    base_path: str | Path,
+    *,
+    start_sweeper: bool = True,
+    interval_s: float = _WORKSPACE_SWEEP_INTERVAL_S,
+) -> bool:
+    """Once per process per data root: finish every outbox entry left by an
+    earlier process (the admission barrier of the scratch-storage spec) and
+    start the periodic sweeper. Returns True the first time, False after."""
+    from tinyassets import workspace_pool
+    from tinyassets.workspace_fs import RealPoolFilesystem
+
+    key = (os.getpid(), str(Path(base_path).resolve()))
+    with _WORKSPACE_RECONCILE_LOCK:
+        if key in _WORKSPACE_RECONCILED or key in _WORKSPACE_RECONCILING:
+            return False
+        _WORKSPACE_RECONCILING.add(key)
+    try:
+        initialize_runs_db(base_path)
+        _ensure_scratch_root(Path(base_path))
+        db = runs_db_path(base_path)
+        with _connect(base_path) as conn:
+            workspace_pool.ensure_schema(conn)
+        done = workspace_pool.startup_sweep(
+            db, fs=RealPoolFilesystem(), claimant=f"startup:{os.getpid()}",
+        )
+        if done:
+            logger.info("workspace startup sweep finished %d outbox entries", done)
+        _reconcile_push_intents(base_path, when="startup")
+        if start_sweeper:
+            threading.Thread(
+                target=_workspace_sweeper_loop, args=(base_path, interval_s),
+                name="workspace-sweeper", daemon=True,
+            ).start()
+    except BaseException:
+        # A failed attempt is not a completed one: the next caller retries.
+        with _WORKSPACE_RECONCILE_LOCK:
+            _WORKSPACE_RECONCILING.discard(key)
+        raise
+    with _WORKSPACE_RECONCILE_LOCK:
+        _WORKSPACE_RECONCILING.discard(key)
+        _WORKSPACE_RECONCILED.add(key)
+    return True
+
+
 def _recover_orphaned_runs_on_read(base_path: str | Path) -> int:
     """Mark stale in-flight rows as interrupted when no worker owns them.
 
@@ -226,6 +455,10 @@ def _recover_orphaned_runs_on_read(base_path: str | Path) -> int:
     but no new write action happens to trigger startup recovery.
     """
     initialize_runs_db(base_path)
+    try:
+        ensure_workspace_reconciled(base_path)
+    except Exception:  # noqa: BLE001 - a read must keep serving
+        logger.exception("workspace startup reconciliation failed")
     count = 0
     now = _now()
     with _connect(base_path) as conn:
@@ -245,6 +478,8 @@ def _recover_orphaned_runs_on_read(base_path: str | Path) -> int:
                 now=now,
             ):
                 count += 1
+                # Same transaction as the rewrite; a failure rolls both back.
+                _enqueue_workspace_terminal(conn, base_path, row["run_id"])
     if count:
         logger.info("Recovered %d orphaned in-flight runs on read", count)
     return count
@@ -987,6 +1222,22 @@ def update_run_status(
             f"UPDATE runs SET {', '.join(sets)} WHERE run_id = ?",
             params,
         )
+        owed = 0
+        if status in _TERMINAL_STATUSES:
+            # The lease this run held is released THROUGH the outbox, in this
+            # same transaction (workspace-node D0): never a direct delete. An
+            # enqueue failure propagates so the connection closes WITHOUT a
+            # commit and the status write rolls back with it - half the state
+            # (terminal status, no owed release) must never land (Codex, code
+            # round 1; Hard Rule 8).
+            owed = _enqueue_workspace_terminal(conn, base_path, run_id)
+        if owed:
+            # Release promptly, not at the sweeper's next tick: the job lock
+            # this run held would otherwise refuse the universe's next checkout
+            # as workspace_busy for up to the sweep interval (lane B finding).
+            # After the commit (the connection context exits before the
+            # thread's first sweep reaches the row), off the caller's path.
+            _kick_workspace_sweep(base_path)
         # Phase 2 emit-site (Task #72): on terminal status transition, emit
         # one execute_step contribution event for attribution. Wrapped in
         # try/except so emit failure (malformed metadata, table missing,
@@ -2866,7 +3117,17 @@ def _invoke_graph(
             )
         timeout_exc = _find_timeout_exception(exc)
         if timeout_exc is not None:
-            msg = f"Node timeout: {timeout_exc}"
+            from tinyassets.graph_compiler import WorkspaceCommandTimeout
+
+            # A ws.run command that outlived its timeout ended the whole jail
+            # (workspace-node D2/D6): its own class, not the generic node
+            # timeout, so the classifier and the suggested action match.
+            if isinstance(timeout_exc, WorkspaceCommandTimeout):
+                reason = "workspace_command_timeout"
+                msg = f"Workspace command timeout: {timeout_exc}"
+            else:
+                reason = "timeout"
+                msg = f"Node timeout: {timeout_exc}"
             step = execution_cursor["step"]
             execution_cursor["step"] += 1
             record_event(base_path, RunStepEvent(
@@ -2876,7 +3137,7 @@ def _invoke_graph(
                 status=NODE_STATUS_FAILED,
                 started_at=_now(),
                 finished_at=_now(),
-                detail={"reason": "timeout", "message": str(timeout_exc)},
+                detail={"reason": reason, "message": str(timeout_exc)},
             ))
             _emit_node_status(
                 _node_id_from_timeout_exc(timeout_exc),
@@ -4360,6 +4621,12 @@ def recover_in_flight_runs(base_path: str | Path) -> int:
     initialize_runs_db(base_path)
     now = _now()
     with _connect(base_path) as conn:
+        in_flight = [
+            row[0] for row in conn.execute(
+                "SELECT run_id FROM runs WHERE status IN (?, ?)",
+                (RUN_STATUS_QUEUED, RUN_STATUS_RUNNING),
+            ).fetchall()
+        ]
         cursor = conn.execute(
             """
             UPDATE runs
@@ -4374,6 +4641,10 @@ def recover_in_flight_runs(base_path: str | Path) -> int:
             ),
         )
         count = cursor.rowcount
+        for run_id in in_flight:
+            # Same transaction as the rewrite (scratch-storage spec): the
+            # lease an interrupted run held is owed to the outbox.
+            _enqueue_workspace_terminal(conn, base_path, run_id)
     if count:
         logger.info("Recovered %d in-flight runs as 'interrupted'", count)
     return count
@@ -4848,6 +5119,16 @@ ACTIONABLE_BY: dict[str, str] = {
     "code_node_failed": "chatbot",
     "node_not_accepted": "chatbot",
     "effect_budget_exhausted": "chatbot",
+    # workspace-node D6: every workspace refusal is the universe's to act on.
+    "workspace_checkout_failed": "chatbot",
+    "workspace_push_refused": "chatbot",
+    "workspace_busy": "chatbot",
+    "workspace_pool_busy": "chatbot",
+    "workspace_quota_exceeded": "chatbot",
+    "workspace_command_timeout": "chatbot",
+    "workspace_provision_refused": "chatbot",
+    "workspace_provision_failed": "chatbot",
+    "workspace_discard_failed": "chatbot",
     "quota_exhausted": "chatbot",
     "provider_overloaded": "chatbot",
     "provider_error": "chatbot",
@@ -4894,6 +5175,59 @@ EFFECT_BUDGET_EXHAUSTED_ACTION = (
     "for the hourly window to clear; the budget is usage, not a limit on your graph."
 )
 
+WORKSPACE_SUGGESTED_ACTIONS: dict[str, str] = {
+    "workspace_checkout_failed": (
+        "The checkout did not complete - the error names auth, transport, "
+        "verification or fit. Check the repository name and ref, that the "
+        "connection holds git_read for exactly that repository, and that it "
+        "fits the 4 GiB lease; then run again yourself."
+    ),
+    "workspace_push_refused": (
+        "The push was refused: the default branch is never a target, the ref "
+        "must be tiny/<universe>/<slug> and fast-forward, and the bundle must "
+        "verify. Commit on a fresh tiny/ branch from the checked-out ref and "
+        "push again; host branch protection is the repository owner's to change."
+    ),
+    "workspace_busy": (
+        "Another workspace job of this universe (or the host's single slot) is "
+        "running. Wait for it to finish and run again; do not split the same "
+        "job across parallel branches."
+    ),
+    "workspace_pool_busy": (
+        "The shared scratch pool is full right now, or startup reconciliation is "
+        "still running. Wait a minute and run again; permanent workspaces "
+        "(storage: universe) do not use the pool."
+    ),
+    "workspace_quota_exceeded": (
+        "A storage or hourly workspace bound was reached - the error names which "
+        "(the 4 GiB lease, the universe's permanent quota, or the hourly jobs/"
+        "bytes). Check out less, discard what you no longer need, or wait for "
+        "the window named in the error to clear."
+    ),
+    "workspace_command_timeout": (
+        "A ws.run command outlived its timeout and the whole sandbox was ended. "
+        "Run a narrower command, raise the node's timeout_seconds (up to 1800), "
+        "or split the work across nodes; then run again."
+    ),
+    "workspace_provision_refused": (
+        "Provisioning was refused before any network: the manifest line or "
+        "lockfile entry named is outside the admitted grammar (registry-pinned "
+        "name==version with sha256 hashes; npm registry tarballs with sha512), "
+        "or the workspace_provision consent is missing. Fix the manifest in a "
+        "commit or raise the consent in the request rail."
+    ),
+    "workspace_provision_failed": (
+        "The resolver or the offline install failed after admission - a wheel "
+        "missing for this platform, a cache bound, or an install error in the "
+        "sandbox. Read the tail, pin a version that ships a wheel, and run again."
+    ),
+    "workspace_discard_failed": (
+        "The workspace could not be discarded; its capability is already "
+        "revoked and the sweeper will retry. Nothing to fix in the branch - if "
+        "it persists, report the lease named in the error."
+    ),
+}
+
 EXTERNAL_WRITE_REFUSED_ACTION = (
     "An effect was refused by authority you do not hold - a consent, a grant that "
     "is missing, revoked or too narrow, an allow-list or SSRF refusal. Retrying "
@@ -4918,6 +5252,10 @@ _EXTERNAL_WRITE_REFUSED_WORDS = (
 def _classify_external_write(lower: str) -> str:
     """Split the "external write failed - ..." summary into the founder's
     (refused by authority) and the universe's (failed, fixable)."""
+    for kind in WORKSPACE_FAILURE_KINDS:
+        # One actionable class per workspace refusal (workspace-node D6).
+        if f"[{kind}]" in lower:
+            return kind
     if "[effect_budget_exhausted]" in lower:
         return "effect_budget_exhausted"
     for kind in _EXTERNAL_WRITE_REFUSED_KINDS:
@@ -4929,6 +5267,8 @@ def _classify_external_write(lower: str) -> str:
 
 
 def external_write_suggested_action(failure_class: str) -> str:
+    if failure_class in WORKSPACE_SUGGESTED_ACTIONS:
+        return WORKSPACE_SUGGESTED_ACTIONS[failure_class]
     if failure_class == "effect_budget_exhausted":
         return EFFECT_BUDGET_EXHAUSTED_ACTION
     if failure_class == "external_write_refused":
@@ -4964,6 +5304,10 @@ def _classify_failure(run: dict) -> str:
         return _classify_external_write(lower)
     if "empty" in lower and ("llm" in lower or "response" in lower or "provider" in lower):
         return "empty_llm_response"
+    if lower.startswith("workspace command timeout"):
+        # Before the generic timeout: the jail was ended for a ws.run that
+        # outlived its budget (workspace-node D6).
+        return "workspace_command_timeout"
     if "timeout" in lower:
         return "timeout"
     if "exhausted" in lower or "cooldown" in lower:
@@ -5152,6 +5496,7 @@ __all__ = [
     "record_node_edit_audit",
     "record_run_receipt",
     "recover_in_flight_runs",
+    "ensure_workspace_reconciled",
     "request_cancel",
     "runs_db_path",
     "shutdown_executor",

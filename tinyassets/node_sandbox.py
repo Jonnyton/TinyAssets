@@ -86,6 +86,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -134,6 +135,29 @@ TAIL_CHARS = 2048
 #: layout looks like. ``/data`` is the universe data dir.
 _NEVER_BIND_PREFIXES = ("/data",)
 
+#: Where a workspace generation is bound inside the jail. A constant, not a
+#: parameter: the runner resolves every ``ws`` path beneath the root the
+#: launcher reports, and only the tests-only launcher reports anything else.
+WORKSPACE_MOUNT_POINT = "/workspace"
+
+#: Workspace caps (design D2 / graph-execution-substrate): per NODE, not per
+#: command, so a loop of small commands is bounded by the same numbers.
+MAX_WORKSPACE_COMMANDS = 64
+MAX_WORKSPACE_OUTPUT_BYTES = 1024 * 1024
+MAX_WORKSPACE_READ_BYTES = 1024 * 1024
+MAX_WORKSPACE_GLOB_RESULTS = 10_000
+WORKSPACE_TAIL_BYTES = 64 * 1024
+#: The design's ceiling on a workspace node's declared timeout. A workspace
+#: node holds the universe's job lock and the host-wide slot for its whole
+#: run, so an unbounded one is a denial of service on every other universe.
+MAX_WORKSPACE_TIMEOUT_SECONDS = 1800.0
+#: Aggregate resident memory across the child's process tree. RLIMIT_AS binds
+#: each process; nothing binds their SUM, and `ws.run` can start 128 of them.
+WORKSPACE_RSS_CAP_BYTES = 2 * 1024 * 1024 * 1024
+WORKSPACE_RSS_INTERVAL_SECONDS = 0.5
+#: Bounded wait for the jail to die after SIGKILL before we fail loudly.
+JAIL_EXIT_GRACE_SECONDS = 5.0
+
 #: Read-only system binds, when they exist on the host.
 _SYSTEM_ROBINDS = ("/usr", "/bin", "/lib", "/lib64")
 
@@ -148,6 +172,86 @@ _POLL_SECONDS = 0.02
 # ═══════════════════════════════════════════════════════════════════════════
 # Execution Result
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+_PROC_FD_BIND = re.compile(r"^/proc/self/fd/([0-9]+)$")
+
+
+class SandboxTerminationError(RuntimeError):
+    """The jail did not die when we killed it.
+
+    Not a node failure: the OS boundary is what failed. A jail that survives
+    SIGKILL is holding a workspace and possibly a running command, so this is
+    loud by design rather than folded into a node error.
+    """
+
+
+@dataclass(frozen=True)
+class WorkspaceLimits:
+    """Per-NODE workspace caps and the rlimit profile a workspace node runs under.
+
+    ``command_timeout_s`` of ``None`` means each command may use whatever is
+    left of the node timeout; a command never outlives the node, because the
+    parent would kill the jail anyway and a shorter budget fails legibly.
+    """
+
+    max_commands: int = MAX_WORKSPACE_COMMANDS
+    max_output_bytes: int = MAX_WORKSPACE_OUTPUT_BYTES
+    command_timeout_s: float | None = None
+    max_read_bytes: int = MAX_WORKSPACE_READ_BYTES
+    max_glob_results: int = MAX_WORKSPACE_GLOB_RESULTS
+    tail_bytes: int = WORKSPACE_TAIL_BYTES
+    rlimit_as: int = 1536 * 1024 * 1024
+    #: Per-UID, not per-process. 128 was a guess that any host sharing a uid
+    #: with other work breaks; it is a bound, not a promise about the host.
+    rlimit_nproc: int = 1024
+    rlimit_nofile: int = 1024
+    rlimit_fsize: int = 512 * 1024 * 1024
+    rlimit_core: int = 0
+    #: Aggregate RSS across the process tree, watched from the parent.
+    rss_cap_bytes: int = WORKSPACE_RSS_CAP_BYTES
+
+    def rlimit_profile(self) -> dict[str, int]:
+        """The limits the child applies before it reads its message."""
+        return {
+            "RLIMIT_AS": self.rlimit_as,
+            "RLIMIT_CORE": self.rlimit_core,
+            "RLIMIT_FSIZE": self.rlimit_fsize,
+            "RLIMIT_NOFILE": self.rlimit_nofile,
+            "RLIMIT_NPROC": self.rlimit_nproc,
+        }
+
+    def as_message(self) -> dict[str, Any]:
+        """The caps the runner enforces, as they cross the pipe."""
+        return {
+            "max_commands": self.max_commands,
+            "max_output_bytes": self.max_output_bytes,
+            "command_timeout_s": self.command_timeout_s,
+            "max_read_bytes": self.max_read_bytes,
+            "max_glob_results": self.max_glob_results,
+            "tail_bytes": self.tail_bytes,
+        }
+
+
+@dataclass(frozen=True)
+class WorkspaceMount:
+    """One checkout generation, bound read-write at :data:`WORKSPACE_MOUNT_POINT`.
+
+    Resolved only through the run's effect chain (design D2); it never travels
+    through state, ``$ta.ref`` or JSON, which is why this is an object and not
+    a string a branch could supply.
+    """
+
+    bind_source: str
+    limits: WorkspaceLimits = field(default_factory=WorkspaceLimits)
+    #: Descriptors the child must inherit. When ``bind_source`` is
+    #: ``/proc/self/fd/<n>`` this holds ``n``: the bind then resolves in the
+    #: bwrap process, which inherited it, to the directory the fd was opened
+    #: on -- not to whatever the path names by the time bwrap looks.
+    pass_fds: tuple[int, ...] = ()
+    #: Roots a PLAIN path may sit beneath. The descriptor form needs none:
+    #: its identity is the fd, not the string.
+    allowed_roots: tuple[str, ...] = ()
 
 
 @dataclass
@@ -170,6 +274,9 @@ class SandboxResult:
     stderr_tail: str = ""
     warning: str = ""
     undeclared: list[str] = field(default_factory=list)
+    #: A ``ws.run`` command outlived its budget. Carried as a flag, not a
+    #: message the caller has to grep, so the compiler can classify it.
+    workspace_timeout: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -251,13 +358,21 @@ FORBIDDEN_PATTERNS = [
 # `resource` module — the code under test and the code that runs are the same
 # string, on every platform.
 _RLIMIT_HELPER = '''
-def _apply_rlimits(resource_module, timeout):
+def _apply_rlimits(resource_module, timeout, profile=None):
     """Apply the code-node resource limits; return a list of failures.
 
     Every limit is set AND read back: a `setrlimit` that raises, a hard
     ceiling below the target, and a silently ignored call are all failures.
     The caller decides whether a failure is fatal (bwrap: yes) or a warning
     (the tests-only launcher on a platform with no `resource`).
+
+    RLIMIT_NPROC is the exception, because it is per-UID rather than
+    per-process: lowering it bounds every process the user already runs, not
+    just this child. On a host whose uid is already past our number -- a CI
+    runner, a shared account -- setting it makes the very next fork fail with
+    EAGAIN, which is not a bound on the node, it is a broken host. So it is
+    RAISED toward the cap and never lowered: a limit already tighter than
+    ours is somebody else's decision and stands.
     """
     if resource_module is None:
         return ["all limits (this platform has no 'resource' module)"]
@@ -268,20 +383,39 @@ def _apply_rlimits(resource_module, timeout):
         cpu_seconds = 31
 
     failures = []
-    for name, want in (
-        ("RLIMIT_AS", 512 * 1024 * 1024),
-        ("RLIMIT_CPU", cpu_seconds),
-        ("RLIMIT_FSIZE", 16 * 1024 * 1024),
-        ("RLIMIT_NOFILE", 64),
-    ):
+    if profile:
+        wanted = [(str(k), int(v)) for k, v in sorted(profile.items())]
+        if not any(name == "RLIMIT_CPU" for name, _v in wanted):
+            wanted.append(("RLIMIT_CPU", cpu_seconds))
+    else:
+        wanted = [
+            ("RLIMIT_AS", 512 * 1024 * 1024),
+            ("RLIMIT_CPU", cpu_seconds),
+            ("RLIMIT_FSIZE", 16 * 1024 * 1024),
+            ("RLIMIT_NOFILE", 64),
+        ]
+    for name, want in wanted:
         try:
             res = getattr(resource_module, name)
-            _soft, hard = resource_module.getrlimit(res)
+            soft, hard = resource_module.getrlimit(res)
             if hard == resource_module.RLIM_INFINITY:
                 new_hard = want
             else:
                 new_hard = min(want, hard)
             target = min(want, new_hard)
+            if name == "RLIMIT_NPROC":
+                unlimited = soft == resource_module.RLIM_INFINITY
+                if unlimited or soft >= target:
+                    # Already at least as permissive as the cap, and it is
+                    # per-UID: leaving it is the whole point.
+                    continue
+                resource_module.setrlimit(res, (target, max(new_hard, soft)))
+                applied = resource_module.getrlimit(res)[0]
+                if applied < target:
+                    failures.append(
+                        f"{name} (asked for {target}, reads {applied})"
+                    )
+                continue
             resource_module.setrlimit(res, (target, new_hard))
             applied = resource_module.getrlimit(res)[0]
             if applied != target:
@@ -293,6 +427,569 @@ def _apply_rlimits(resource_module, timeout):
     return failures
 '''
 
+
+# The `ws` capability. Lives in the RUNNER's globals, never the node's: the node
+# executes in its own namespace dict, so it cannot reach `os` or `subprocess`
+# through `ws` even though `ws` uses them. Every import this needs happens at the
+# top of the runner, BEFORE the import allowlist is installed, so the allowlist
+# still refuses the same names to node code.
+_WORKSPACE_HELPER = '''
+def _ws_exact_str(value, label):
+    """EXACTLY ``str``, never a subclass.
+
+    A ``str`` subclass can override ``replace``, ``__str__`` or ``__fspath__``
+    and run node code inside path validation. Nothing below calls a method on a
+    caller's object before its type is known to be the built-in, so there is no
+    user code between a check and the open it guards.
+    """
+    if type(value) is not str:
+        raise TypeError(
+            "ws " + label + " must be a str, not " + type(value).__name__
+        )
+    return value
+
+
+def _ws_exact_int(value, label):
+    if type(value) is not int or type(value) is bool:
+        raise TypeError(
+            "ws " + label + " must be an int, not " + type(value).__name__
+        )
+    return value
+
+
+def _ws_split(relpath, kind):
+    """Validate a relative path and return its components."""
+    _ws_exact_str(relpath, kind)
+    if not relpath.strip():
+        raise ValueError("workspace " + kind + " must be a non-empty string")
+    if chr(0) in relpath:
+        raise ValueError("workspace " + kind + " contains a NUL byte")
+    norm = relpath.replace(chr(92), "/")
+    if norm.startswith("/"):
+        raise ValueError(
+            "workspace " + kind + " must be relative, not absolute: " + relpath
+        )
+    if len(norm) > 1 and norm[1] == ":":
+        raise ValueError(
+            "workspace " + kind + " must be relative, not a drive path: " + relpath
+        )
+    parts = []
+    for piece in norm.split("/"):
+        if piece == "..":
+            raise ValueError(
+                "workspace " + kind + " may not contain " + chr(39) + ".." + chr(39)
+                + ": " + relpath
+            )
+        if piece not in ("", "."):
+            parts.append(piece)
+    return parts
+
+
+_WS_DIR_FD_OPS = getattr(os, "supports_dir_fd", set())
+_WS_HAS_DIR_FD = (
+    hasattr(os, "O_DIRECTORY")
+    and os.open in _WS_DIR_FD_OPS
+    and os.mkdir in _WS_DIR_FD_OPS
+)
+_WS_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_WS_BINARY = getattr(os, "O_BINARY", 0)
+_WS_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+_WS_MAX_DEPTH = 64
+
+
+class _WsRoot(object):
+    """The workspace, held open.
+
+    On a host with ``dir_fd`` support every component is opened relative to the
+    previous descriptor with ``O_NOFOLLOW``, so a path is never validated as a
+    string and then opened by name: there is no window in which a component can
+    be swapped for a link, because after the first open there is no name left to
+    swap. Where the platform has no ``dir_fd`` (Windows, and therefore only the
+    tests-only launcher, which is not a security boundary) the same rules are
+    enforced against resolved paths.
+    """
+
+    def __init__(self, path):
+        self.path = os.path.realpath(path)
+        self.fd = None
+        if _WS_HAS_DIR_FD:
+            self.fd = os.open(self.path, os.O_RDONLY | _WS_DIRECTORY)
+
+    # -- resolution ----------------------------------------------------------
+
+    def _walk(self, parts, kind, make_parents=False):
+        """Return ``(parent_fd, owned)`` for the directory holding the leaf."""
+        if len(parts) > _WS_MAX_DEPTH:
+            raise ValueError("workspace " + kind + " is nested too deeply")
+        current = self.fd
+        owned = False
+        try:
+            for part in parts:
+                flags = os.O_RDONLY | _WS_DIRECTORY | _WS_NOFOLLOW
+                try:
+                    nxt = os.open(part, flags, dir_fd=current)
+                except FileNotFoundError:
+                    if not make_parents:
+                        raise
+                    os.mkdir(part, 448, dir_fd=current)
+                    nxt = os.open(part, flags, dir_fd=current)
+                if owned:
+                    os.close(current)
+                current = nxt
+                owned = True
+        except OSError as exc:
+            if owned:
+                os.close(current)
+            raise ValueError(
+                "workspace " + kind + " cannot be resolved beneath the workspace: "
+                + str(exc)
+            )
+        return current, owned
+
+    def open_leaf(self, parts, kind, flags, mode=None, make_parents=False):
+        """Open the last component with O_NOFOLLOW, relative to its parent."""
+        if not parts:
+            raise ValueError("workspace " + kind + " names the workspace root")
+        parent, owned = self._walk(parts[:-1], kind, make_parents=make_parents)
+        try:
+            if mode is None:
+                return os.open(parts[-1], flags | _WS_NOFOLLOW, dir_fd=parent)
+            return os.open(parts[-1], flags | _WS_NOFOLLOW, mode, dir_fd=parent)
+        except OSError as exc:
+            raise ValueError(
+                "workspace " + kind + " cannot be opened beneath the workspace: "
+                + str(exc)
+            )
+        finally:
+            if owned:
+                os.close(parent)
+
+    def dir_reference(self, parts, kind):
+        """A path the child can chdir to, naming an OPENED directory."""
+        parent, owned = self._walk(parts, kind)
+        try:
+            return "/proc/self/fd/" + str(parent), parent, owned
+        except BaseException:
+            if owned:
+                os.close(parent)
+            raise
+
+    def scan(self, limit):
+        """Every relative path beneath the root, links neither followed nor listed."""
+        found = []
+        stack = [(self.fd, "", 0)]
+        owned = set()
+        try:
+            while stack and len(found) < limit:
+                handle, prefix, depth = stack.pop()
+                if depth > _WS_MAX_DEPTH:
+                    continue
+                try:
+                    entries = list(os.scandir(handle))
+                except OSError:
+                    continue
+                for entry in entries:
+                    if entry.is_symlink():
+                        continue
+                    name = prefix + entry.name
+                    found.append(name)
+                    if len(found) >= limit:
+                        break
+                    if entry.is_dir(follow_symlinks=False):
+                        try:
+                            child = os.open(
+                                entry.name,
+                                os.O_RDONLY | _WS_DIRECTORY | _WS_NOFOLLOW,
+                                dir_fd=handle,
+                            )
+                        except OSError:
+                            continue
+                        owned.add(child)
+                        stack.append((child, name + "/", depth + 1))
+        finally:
+            for handle in owned:
+                try:
+                    os.close(handle)
+                except OSError:
+                    pass
+        return found
+
+    def close(self):
+        if self.fd is not None:
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+            self.fd = None
+
+
+class _WsPathRoot(_WsRoot):
+    """The no-``dir_fd`` stand-in. Not a boundary: only the tests-only launcher
+    reaches it, and that launcher performs no isolation of any kind."""
+
+    def __init__(self, path):
+        self.path = os.path.realpath(path)
+        self.fd = None
+
+    def _resolve(self, parts, kind, make_parents=False):
+        target = os.path.realpath(os.path.join(self.path, *parts)) if parts else self.path
+        if target != self.path and not target.startswith(self.path + os.sep):
+            raise ValueError(
+                "workspace " + kind + " escapes the workspace: " + "/".join(parts)
+            )
+        if make_parents:
+            parent = os.path.dirname(target)
+            if parent and parent != self.path and not os.path.isdir(parent):
+                os.makedirs(parent)
+        return target
+
+    def open_leaf(self, parts, kind, flags, mode=None, make_parents=False):
+        if not parts:
+            raise ValueError("workspace " + kind + " names the workspace root")
+        target = self._resolve(parts, kind, make_parents=make_parents)
+        try:
+            if mode is None:
+                return os.open(target, flags | _WS_NOFOLLOW | _WS_BINARY)
+            return os.open(target, flags | _WS_NOFOLLOW | _WS_BINARY, mode)
+        except OSError as exc:
+            raise ValueError(
+                "workspace " + kind + " cannot be opened beneath the workspace: "
+                + str(exc)
+            )
+
+    def dir_reference(self, parts, kind):
+        return self._resolve(parts, kind), None, False
+
+    def scan(self, limit):
+        found = []
+        stack = [(self.path, "")]
+        while stack and len(found) < limit:
+            here, prefix = stack.pop()
+            try:
+                entries = list(os.scandir(here))
+            except OSError:
+                continue
+            for entry in entries:
+                if entry.is_symlink():
+                    continue
+                name = prefix + entry.name
+                found.append(name)
+                if len(found) >= limit:
+                    break
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append((entry.path, name + "/"))
+        return found
+
+
+def _ws_match(parts, pattern_parts):
+    """Glob semantics where ``*`` does not cross a separator and ``**`` does."""
+    if not pattern_parts:
+        return not parts
+    head = pattern_parts[0]
+    if head == "**":
+        if len(pattern_parts) == 1:
+            return True
+        for index in range(len(parts) + 1):
+            if _ws_match(parts[index:], pattern_parts[1:]):
+                return True
+        return False
+    if not parts:
+        return False
+    if not fnmatch.fnmatchcase(parts[0], head):
+        return False
+    return _ws_match(parts[1:], pattern_parts[1:])
+
+
+class _WorkspaceTail(object):
+    """Incremental bounded drain: keeps the last `cap` bytes, counts the rest."""
+
+    def __init__(self, stream, cap):
+        self._stream = stream
+        self._cap = cap
+        self._chunks = []
+        self._held = 0
+        self.total = 0
+        self.thread = threading.Thread(target=self._drain)
+        self.thread.daemon = True
+
+    def _drain(self):
+        try:
+            while True:
+                chunk = self._stream.read(65536)
+                if not chunk:
+                    break
+                self.total += len(chunk)
+                self._chunks.append(chunk)
+                self._held += len(chunk)
+                while self._held > self._cap and len(self._chunks) > 1:
+                    self._held -= len(self._chunks.pop(0))
+        except Exception:
+            pass
+        finally:
+            try:
+                self._stream.close()
+            except Exception:
+                pass
+
+    def text(self):
+        data = b"".join(self._chunks)[-self._cap:]
+        return data.decode("utf-8", "replace")
+
+    def truncated(self):
+        return self.total > self._cap
+
+
+def _make_workspace(conf, remaining):
+    """Return the `ws` object bound to one workspace root."""
+    root = _WsRoot(conf["root"]) if _WS_HAS_DIR_FD else _WsPathRoot(conf["root"])
+    limits = conf.get("limits") or {}
+    max_commands = int(limits.get("max_commands", 64))
+    max_output = int(limits.get("max_output_bytes", 1048576))
+    max_read = int(limits.get("max_read_bytes", 1048576))
+    max_glob = int(limits.get("max_glob_results", 10000))
+    tail_cap = int(limits.get("tail_bytes", 65536))
+    default_timeout = limits.get("command_timeout_s")
+    counters = {"commands": 0, "bytes": 0}
+
+    class _Workspace(object):
+        """The checked-out project, and nothing else."""
+
+        path = root.path
+
+        def run(self, argv, timeout=None, cwd=None, env=None):
+            # Types FIRST, before a single method is called on any of it.
+            if type(argv) is not list and type(argv) is not tuple:
+                raise ValueError("ws.run needs a non-empty argv list")
+            argv = list(argv)
+            if not argv:
+                raise ValueError("ws.run needs a non-empty argv list")
+            for item in argv:
+                _ws_exact_str(item, "run argv element")
+                if chr(0) in item:
+                    raise ValueError("ws.run argv contains a NUL byte")
+            if timeout is not None and type(timeout) is not int and type(timeout) is not float:
+                raise TypeError("ws.run timeout must be a number")
+            # `git commit` and `git fetch` fork a detached `gc --auto`, which
+            # keeps `.git/objects/pack` open after the node returns and made
+            # the lease wipe fail on Windows. Turned off through GIT_CONFIG_*
+            # rather than a config file, because the workspace's own `.git`
+            # is writable by node code and a file there would not bind.
+            child_env = {
+                "HOME": "/tmp",
+                "PATH": "/usr/bin:/bin",
+                "LANG": "C.UTF-8",
+                "GIT_CONFIG_COUNT": "2",
+                "GIT_CONFIG_KEY_0": "gc.auto",
+                "GIT_CONFIG_VALUE_0": "0",
+                "GIT_CONFIG_KEY_1": "maintenance.auto",
+                "GIT_CONFIG_VALUE_1": "false",
+            }
+            if env is not None:
+                if type(env) is not dict:
+                    raise TypeError("ws.run env must be a dict")
+                for key in sorted(env):
+                    _ws_exact_str(key, "run env name")
+                    if not _WS_ENV_NAME.match(key):
+                        raise ValueError(
+                            "ws.run env name is not an env name: " + repr(key)
+                        )
+                    value = env[key]
+                    _ws_exact_str(value, "run env value")
+                    if chr(0) in value:
+                        raise ValueError("ws.run env value holds a NUL byte")
+                    if key.startswith("GIT_CONFIG"):
+                        # Refused, not ignored: silently dropping it would let
+                        # a node believe it had turned maintenance back on.
+                        raise ValueError(
+                            "ws.run env may not set " + key + ": the workspace's "
+                            "git configuration is fixed"
+                        )
+                    child_env[key] = value
+
+            if counters["commands"] >= max_commands:
+                raise RuntimeError(
+                    "workspace limit: at most %d commands per node" % max_commands
+                )
+            counters["commands"] += 1
+
+            parts = [] if cwd is None else _ws_split(cwd, "cwd")
+            work, handle, owned = root.dir_reference(parts, "cwd")
+            try:
+                budget = remaining()
+                if default_timeout is not None:
+                    budget = min(budget, float(default_timeout))
+                if timeout is not None:
+                    budget = min(budget, float(timeout))
+                if budget <= 0:
+                    raise RuntimeError(
+                        "workspace limit: no time left in the node budget"
+                    )
+                return self._spawn(argv, work, child_env, budget)
+            finally:
+                if owned and handle is not None:
+                    os.close(handle)
+
+        def _spawn(self, argv, work, child_env, budget):
+            popen_kwargs = {}
+            if hasattr(os, "setsid"):
+                popen_kwargs["start_new_session"] = True
+            elif hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            proc = subprocess.Popen(
+                argv,
+                cwd=work,
+                env=child_env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                close_fds=True,
+                **popen_kwargs
+            )
+            out = _WorkspaceTail(proc.stdout, tail_cap)
+            err = _WorkspaceTail(proc.stderr, tail_cap)
+            out.thread.start()
+            err.thread.start()
+            timed_out = False
+            try:
+                proc.wait(timeout=budget)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                _ws_kill_group(proc)
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
+            out.thread.join(timeout=2.0)
+            err.thread.join(timeout=2.0)
+
+            if timed_out:
+                _ws_exit_on_timeout(argv, budget, out.text(), err.text())
+
+            result = {
+                "returncode": proc.returncode,
+                "stdout_tail": out.text(),
+                "stderr_tail": err.text(),
+                "truncated": bool(out.truncated() or err.truncated()),
+            }
+            counters["bytes"] += len(result["stdout_tail"]) + len(result["stderr_tail"])
+            if counters["bytes"] > max_output:
+                raise RuntimeError(
+                    "workspace limit: returned output passed %d bytes for this node"
+                    % max_output
+                )
+            return result
+
+        def read(self, relpath, max_bytes=None):
+            parts = _ws_split(relpath, "path")
+            if max_bytes is None:
+                cap = max_read
+            else:
+                # CLAMPED, not replaced: a caller cannot raise the node's cap by
+                # asking for more than the limits allow.
+                cap = min(_ws_exact_int(max_bytes, "read max_bytes"), max_read)
+            if cap <= 0:
+                raise ValueError("ws.read max_bytes must be positive")
+            handle = root.open_leaf(parts, "path", os.O_RDONLY | _WS_BINARY)
+            try:
+                data = b""
+                while len(data) <= cap:
+                    chunk = os.read(handle, 65536)
+                    if not chunk:
+                        break
+                    data += chunk
+            finally:
+                os.close(handle)
+            if len(data) > cap:
+                raise RuntimeError(
+                    "workspace limit: %s is larger than %d bytes" % (relpath, cap)
+                )
+            return data.decode("utf-8", "replace")
+
+        def write(self, relpath, text):
+            _ws_exact_str(text, "write text")
+            parts = _ws_split(relpath, "path")
+            data = text.encode("utf-8")
+            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _WS_BINARY
+            handle = root.open_leaf(
+                parts, "path", flags, mode=384, make_parents=True
+            )
+            try:
+                written = 0
+                while written < len(data):
+                    written += os.write(handle, data[written:])
+            finally:
+                os.close(handle)
+            return len(data)
+
+        def glob(self, pattern):
+            _ws_exact_str(pattern, "glob pattern")
+            if not pattern.strip():
+                raise ValueError("ws.glob needs a non-empty pattern")
+            norm = pattern.replace(chr(92), "/")
+            if norm.startswith("/") or (len(norm) > 1 and norm[1] == ":"):
+                raise ValueError("ws.glob pattern must be relative: " + pattern)
+            pattern_parts = [p for p in norm.split("/") if p not in ("", ".")]
+            if any(p == ".." for p in pattern_parts):
+                raise ValueError(
+                    "ws.glob pattern may not contain " + chr(39) + ".." + chr(39)
+                    + ": " + pattern
+                )
+            found = []
+            for name in root.scan(max_glob * 4):
+                if _ws_match(name.split("/"), pattern_parts):
+                    found.append(name)
+                    if len(found) >= max_glob:
+                        break
+            return sorted(set(found))
+
+        def bundle(self, commit_sha):
+            _ws_exact_str(commit_sha, "bundle commit sha")
+            if not _WS_SHA.match(commit_sha):
+                raise ValueError("ws.bundle needs a 40-character hex commit sha")
+            relative = ".tiny-export/" + commit_sha + ".bundle"
+            handle = root.open_leaf(
+                _ws_split(relative, "path"),
+                "path",
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _WS_BINARY,
+                mode=384,
+                make_parents=True,
+            )
+            os.close(handle)
+            target = os.path.join(root.path, ".tiny-export", commit_sha + ".bundle")
+            # -c as well as the environment: a bundle is the one path whose
+            # output crosses the jail boundary, so its git runs with
+            # maintenance off no matter how it was invoked.
+            quiet = [
+                "-c", "gc.auto=0",
+                "-c", "maintenance.auto=false",
+                # One pack thread: RLIMIT_NPROC is per-UID, so on a host whose
+                # uid already runs hundreds of processes git's thread pool
+                # fails with EAGAIN before it packs anything.
+                "-c", "pack.threads=1",
+            ]
+            base = ["git", "-c", "core.hooksPath=/dev/null"] + quiet + [
+                "--no-replace-objects"
+            ]
+            steps = [
+                base + ["update-ref", "refs/tiny/export", commit_sha],
+                ["git"] + quiet + ["--no-replace-objects", "bundle", "create",
+                                   target, "refs/tiny/export"],
+            ]
+            try:
+                for step in steps:
+                    outcome = self.run(step)
+                    if outcome["returncode"] != 0:
+                        raise RuntimeError(
+                            "ws.bundle failed (%s): %s"
+                            % (step[-1], outcome["stderr_tail"][-500:])
+                        )
+            finally:
+                self.run(base + ["update-ref", "-d", "refs/tiny/export"])
+            return relative
+
+    return _Workspace()
+'''
+
 # Executed in the child as `python -c <script> <timeout>`. In order:
 # 1. Resource limits, before anything is read or parsed.
 # 2. Replace sys.stdout with a bounded buffer, so node print() can never
@@ -302,8 +999,20 @@ def _apply_rlimits(resource_module, timeout):
 # 5. Write one result JSON object to the real stdout.
 
 _RUNNER_SCRIPT = textwrap.dedent('''\
+    import fnmatch
     import json
+    import os
+    import re
+    import signal
+    import subprocess
     import sys
+    import threading
+
+    # Imported HERE, at the top, before the allowlist below replaces
+    # __import__: `ws` needs them and node code must still be refused them.
+    # The node executes in its own namespace dict and never sees these names.
+    _WS_ENV_NAME = re.compile("^[A-Z_][A-Z0-9_]*$")
+    _WS_SHA = re.compile("^[0-9a-f]{40}$")
 
     # ---- 1. Resource limits FIRST -----------------------------------------
     # Before the message is read at all: a hostile payload must not get any
@@ -314,6 +1023,13 @@ _RUNNER_SCRIPT = textwrap.dedent('''\
     except Exception:
         _timeout = 30.0
     _require_rlimits = len(sys.argv) > 2 and sys.argv[2] == "1"
+    _rlimit_profile = None
+    _rlimit_profile_error = None
+    if len(sys.argv) > 3 and sys.argv[3]:
+        try:
+            _rlimit_profile = json.loads(sys.argv[3])
+        except Exception as exc:
+            _rlimit_profile_error = "rlimit profile is unreadable: %s" % (exc,)
 
     try:
         import resource as _resource
@@ -322,7 +1038,50 @@ _RUNNER_SCRIPT = textwrap.dedent('''\
 
     __RLIMIT_HELPER__
 
-    _rlimit_failures = _apply_rlimits(_resource, _timeout)
+    _ws_start = None
+    _ws_real_stdout = None
+
+    def _ws_kill_group(proc):
+        killpg = getattr(os, "killpg", None)
+        getpgid = getattr(os, "getpgid", None)
+        sigkill = getattr(signal, "SIGKILL", None)
+        if killpg is not None and getpgid is not None and sigkill is not None:
+            try:
+                killpg(getpgid(proc.pid), sigkill)
+                return
+            except Exception:
+                pass
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+    def _ws_exit_on_timeout(argv, budget, out_tail, err_tail):
+        payload = {
+            "success": False,
+            "workspace_timeout": True,
+            "error": (
+                "workspace command timeout: %r exceeded %.3fs"
+                % (argv[:4], budget)
+            ),
+            "user_stdout": _captured.getvalue(),
+            "stdout_tail": out_tail[-2048:],
+            "stderr_tail": err_tail[-2048:],
+        }
+        try:
+            _ws_real_stdout.write(json.dumps(payload) + "\\n")
+            _ws_real_stdout.flush()
+        except Exception:
+            pass
+        # os._exit, not SystemExit: the node's `except BaseException` must not
+        # be able to swallow a timeout and keep running in the jail.
+        os._exit(4)
+
+    __WORKSPACE_HELPER__
+
+    _rlimit_failures = _apply_rlimits(_resource, _timeout, _rlimit_profile)
+    if _rlimit_profile_error:
+        _rlimit_failures = [_rlimit_profile_error] + _rlimit_failures
     if _require_rlimits and _rlimit_failures:
         # The OS sandbox demands these limits. Refuse loudly, before the
         # message is parsed and long before any node code runs.
@@ -339,6 +1098,7 @@ _RUNNER_SCRIPT = textwrap.dedent('''\
     # The node's print() must not be able to write a result. Capture it into
     # a bounded buffer; the real descriptor is written once, at the end.
     _real_stdout = sys.stdout
+    _ws_real_stdout = _real_stdout
 
 
     class _BoundedStdout:
@@ -390,33 +1150,59 @@ _RUNNER_SCRIPT = textwrap.dedent('''\
     output_keys = msg["output_keys"]
     allowed_imports = set(msg["allowed_imports"])
 
+    # ---- 3b. The workspace capability, when the node declared one --------
+    _ws = None
+    if isinstance(msg.get("workspace"), dict):
+        import time as _ws_time
+
+        _ws_start = _ws_time.monotonic()
+
+        def _ws_remaining():
+            # A command never outlives the node: the parent would kill the
+            # jail anyway, and a shorter budget makes the failure legible.
+            return max(0.0, _timeout - (_ws_time.monotonic() - _ws_start) - 0.5)
+
+        _ws = _make_workspace(msg["workspace"], _ws_remaining)
+
     # ---- 4. Import allowlist ----------------------------------------------
+    # The node executes in THIS dict. It is created here, before the hook, so
+    # the hook can recognise an import made BY node code by identity.
+    namespace = {}
     _original_import = (
         __builtins__.__import__
         if hasattr(__builtins__, "__import__")
         else __import__
     )
 
-    # Only imports the node source asks for directly are name-checked. An
-    # allowlisted module's own module-level imports (base64 -> binascii,
-    # statistics -> random) run at depth > 0 and are permitted, otherwise
-    # half the allowlist would be unimportable. No node code ever executes
-    # at depth > 0, so this is not a bypass.
-    _import_depth = [0]
+    # Only imports made BY NODE CODE are name-checked, and the test for that is
+    # the calling frame's globals: node code runs in `namespace` and nothing
+    # else does. An allowlisted module's own imports (base64 -> binascii) come
+    # from that module's globals and are permitted, otherwise half the
+    # allowlist would be unimportable; the same is true of the lazy imports
+    # `subprocess.Popen` makes on POSIX while `ws` is running.
+    #
+    # This replaces a recursion COUNTER (Codex #8). A counter says how deep
+    # the stack is, not whose code is running, so anything that called into
+    # user code while it was raised -- `ws` calling `.replace()` on a `str`
+    # subclass -- handed node code an unchecked import. A frame cannot be
+    # held open across a call the way a counter can.
+    _get_frame = getattr(sys, "_getframe", None)
 
     def _restricted_import(name, *args, **kwargs):
-        if _import_depth[0] == 0:
+        by_node = True
+        if _get_frame is not None:
+            try:
+                by_node = _get_frame(1).f_globals is namespace
+            except ValueError:
+                by_node = True
+        if by_node:
             top_level = name.split(".")[0]
             if top_level not in allowed_imports:
                 raise ImportError(
                     f"Import '{name}' is not allowed in sandboxed nodes. "
                     f"Allowed: {sorted(allowed_imports)}"
                 )
-        _import_depth[0] += 1
-        try:
-            return _original_import(name, *args, **kwargs)
-        finally:
-            _import_depth[0] -= 1
+        return _original_import(name, *args, **kwargs)
 
     if hasattr(__builtins__, "__import__"):
         __builtins__.__import__ = _restricted_import
@@ -471,10 +1257,10 @@ _RUNNER_SCRIPT = textwrap.dedent('''\
     # Execute the node source to define the function. A failure here (a
     # blocked module-level import, a raised exception) is the node's failure,
     # reported structurally rather than as a bare traceback on stderr.
-    namespace = {
-        "__builtins__": __builtins__,
-        "invoke_mcp_action": invoke_mcp_action,
-    }
+    namespace["__builtins__"] = __builtins__
+    namespace["invoke_mcp_action"] = invoke_mcp_action
+    if _ws is not None:
+        namespace["ws"] = _ws
     load_error = None
     func = None
     try:
@@ -483,7 +1269,7 @@ _RUNNER_SCRIPT = textwrap.dedent('''\
         load_error = f"{type(e).__name__}: {e}"
 
     # Names the runner injected: never mistaken for the node's function.
-    _injected = ("invoke_mcp_action",)
+    _injected = ("invoke_mcp_action", "ws")
 
     if load_error is None:
         # The node function is `run`, else the last defined callable.
@@ -573,6 +1359,8 @@ _RUNNER_SCRIPT = textwrap.dedent('''\
     "MAX_RPC_CALLS", str(MAX_RPC_CALLS)
 ).replace(
     "__RLIMIT_HELPER__", _RLIMIT_HELPER.strip()
+).replace(
+    "__WORKSPACE_HELPER__", _WORKSPACE_HELPER.strip()
 )
 
 
@@ -596,10 +1384,90 @@ def _covered_by(path: str, bound: list[str]) -> bool:
     return False
 
 
+def _beneath_any(candidate: str, roots: tuple[str, ...]) -> bool:
+    """True when *candidate* is one of *roots* or sits inside one."""
+    for root in roots:
+        trimmed = root.rstrip("/") or "/"
+        if candidate == trimmed or candidate.startswith(trimmed.rstrip("/") + "/"):
+            return True
+    return False
+
+
+def _validate_workspace_bind(
+    path: str,
+    allowed_roots: tuple[str, ...],
+    realpath: Callable[[str], str],
+    pass_fds: tuple[int, ...] = (),
+) -> str:
+    """Check the one extra bind against the roots the caller vouches for.
+
+    Two shapes, each vouched for by the thing that identifies it.
+
+    ``/proc/self/fd/<n>`` is a held directory handle: it is admitted only when
+    ``n`` is one of the descriptors the child will inherit, because that is
+    what makes the string resolve, inside the bwrap process, to the directory
+    the fd was opened on. Requiring it to sit beneath a root as well would be
+    theatre -- the path names a descriptor, not a location.
+
+    Any other path must be absolute and beneath a root the caller passed in,
+    checked literally and after ``realpath``. The roots are what makes
+    ``/data/...`` bindable at all -- a universe's workspaces live under it --
+    so an empty root tuple refuses everything rather than falling back to the
+    never-bind list. A plain path is also swappable by a rename between this
+    check and the mount; the descriptor form is the one production uses.
+    """
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError("workspace bind must be a non-empty path")
+    if chr(0) in path:
+        raise ValueError("workspace bind contains a NUL byte")
+    if not path.startswith("/"):
+        raise ValueError(
+            f"workspace bind must be an absolute POSIX path, got {path!r}"
+        )
+    if any(part == ".." for part in path.split("/")):
+        raise ValueError(f"workspace bind may not contain '..': {path!r}")
+    trimmed = path.rstrip("/") or "/"
+
+    handle = _PROC_FD_BIND.match(trimmed)
+    if handle is not None:
+        number = int(handle.group(1))
+        if number not in tuple(pass_fds or ()):
+            raise ValueError(
+                f"workspace bind {path!r} names a descriptor the child does not "
+                f"inherit (pass_fds={tuple(pass_fds or ())!r})"
+            )
+        return trimmed
+
+    roots = tuple(
+        r for r in (allowed_roots or ())
+        if isinstance(r, str) and r.startswith("/") and r.strip()
+    )
+    if not roots:
+        raise ValueError(
+            "no allowed workspace roots were given: refusing to bind "
+            f"{path!r} into the jail"
+        )
+    if not _beneath_any(trimmed, roots):
+        raise ValueError(
+            f"workspace bind {path!r} is not beneath an allowed root {roots!r}"
+        )
+    # A symlinked bind source would otherwise smuggle in any directory.
+    resolved = realpath(trimmed)
+    if not _beneath_any(resolved, roots):
+        raise ValueError(
+            f"workspace bind {path!r} resolves to {resolved!r}, "
+            f"outside the allowed roots {roots!r}"
+        )
+    return trimmed
+
+
 def _bwrap_argv(
     exists: Callable[[str], bool] | None = None,
     bwrap_path: str | None = None,
     realpath: Callable[[str], str] | None = None,
+    workspace_bind: str | None = None,
+    allowed_workspace_roots: tuple[str, ...] = (),
+    pass_fds: tuple[int, ...] = (),
 ) -> list[str]:
     """Build the bubblewrap prefix for a code-node child process.
 
@@ -613,6 +1481,11 @@ def _bwrap_argv(
     read-only binds of the system directories plus the interpreter prefix —
     never ``/data``, never a universe root, never a credential mount.
 
+    With *workspace_bind* the jail gains **exactly one** more bind: the
+    generation read-write at ``/workspace``, which also becomes the working
+    directory in place of ``/tmp``. Nothing else changes -- still no network,
+    still no ``/data``, still no credential mount.
+
     Returns argv ending in ``--``; append the child command.
     """
     if exists is None:
@@ -621,6 +1494,15 @@ def _bwrap_argv(
         realpath = os.path.realpath
     if bwrap_path is None:
         bwrap_path = shutil.which("bwrap") or "bwrap"
+
+    bind_target = None
+    if workspace_bind is not None:
+        bind_target = _validate_workspace_bind(
+            workspace_bind,
+            tuple(allowed_workspace_roots or ()),
+            realpath,
+            tuple(pass_fds or ()),
+        )
 
     argv: list[str] = [
         bwrap_path,
@@ -635,8 +1517,9 @@ def _bwrap_argv(
         "--dev", "/dev",
         "--proc", "/proc",
         "--tmpfs", "/tmp",
-        "--chdir", "/tmp",
     ]
+    if bind_target is None:
+        argv.extend(("--chdir", "/tmp"))
 
     bound: list[str] = []
     for system_path in _SYSTEM_ROBINDS:
@@ -669,6 +1552,12 @@ def _bwrap_argv(
         argv.extend(("--ro-bind", directory, directory))
         bound.append(directory)
 
+    if bind_target is not None:
+        argv.extend(
+            ("--bind", bind_target, WORKSPACE_MOUNT_POINT,
+             "--chdir", WORKSPACE_MOUNT_POINT)
+        )
+
     argv.append("--")
     return argv
 
@@ -686,6 +1575,10 @@ class Launcher(Protocol):
     #: True when the child MUST have its resource limits, so a limit that
     #: cannot be set fails the node instead of warning.
     requires_rlimits: bool
+
+    #: True when the child is an OS jail whose tracked process is the
+    #: supervisor: killing it ends every descendant, double-forked included.
+    is_jail: bool
 
     def build_argv(self, runner_script: str, args: list[str]) -> list[str]:
         """Full argv for the child, including the interpreter."""
@@ -705,6 +1598,95 @@ def _requires_rlimits(launcher: Any) -> bool:
     return bool(getattr(launcher, "requires_rlimits", False))
 
 
+def _is_jail(launcher: Any) -> bool:
+    """Whether killing the tracked process ends everything it started."""
+    return bool(getattr(launcher, "is_jail", False))
+
+
+def _launcher_for_workspace(launcher: Any, mount: WorkspaceMount) -> Any:
+    """The launcher that actually binds *mount*.
+
+    Without this the mount reached the runner (which was told its root is
+    ``/workspace``) but never the launcher, so a default-resolved jail bound
+    nothing and the node found an empty mount point.
+    """
+    specialise = getattr(launcher, "for_workspace", None)
+    if specialise is None:
+        raise SandboxUnavailableError(
+            f"launcher {getattr(launcher, 'name', launcher)!r} cannot host a "
+            "workspace: it cannot bind one"
+        )
+    return specialise(mount)
+
+
+def _launcher_cleanup(launcher: Any) -> None:
+    """Let a launcher drop anything it created to start the child."""
+    cleanup = getattr(launcher, "cleanup", None)
+    if cleanup is None:
+        return
+    try:
+        cleanup()
+    except Exception:
+        logger.exception("launcher cleanup raised")
+
+
+def _launcher_pass_fds(launcher: Any) -> tuple[int, ...]:
+    """Descriptors the child must inherit for its bind to resolve."""
+    return tuple(getattr(launcher, "pass_fds", ()) or ())
+
+
+def _launcher_workspace_root(launcher: Any) -> str:
+    """Where the launcher makes the workspace visible to the child."""
+    getter = getattr(launcher, "workspace_root", None)
+    if getter is None:
+        raise SandboxUnavailableError(
+            f"launcher {getattr(launcher, 'name', launcher)!r} cannot host a "
+            "workspace: it reports no workspace root"
+        )
+    root = getter()
+    if not root:
+        raise SandboxUnavailableError(
+            f"launcher {getattr(launcher, 'name', launcher)!r} reported an "
+            "empty workspace root"
+        )
+    return str(root)
+
+
+def _launcher_child_cwd(launcher: Any, work_dir: str) -> str:
+    """Host-side cwd for the child (bwrap sets the child's own with --chdir)."""
+    getter = getattr(launcher, "child_cwd", None)
+    if getter is None:
+        return work_dir
+    return str(getter(work_dir) or work_dir)
+
+
+def _terminate_child(
+    proc: subprocess.Popen[bytes],
+    launcher: Any,
+    grace: float = JAIL_EXIT_GRACE_SECONDS,
+) -> None:
+    """Kill the child and CONFIRM it is gone, or fail loudly.
+
+    For the jail the tracked process is the bubblewrap supervisor and PID 1 of
+    the jail's pid namespace: killing it takes the namespace with it, which is
+    the only thing that reaches a double-forked ``setsid`` descendant. The
+    plain launcher keeps the process-group semantics it always had.
+    """
+    if _is_jail(launcher):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    else:
+        _kill_process_tree(proc)
+    try:
+        proc.wait(timeout=grace)
+    except subprocess.TimeoutExpired as exc:
+        raise SandboxTerminationError(
+            f"sandbox child {proc.pid} did not exit within {grace}s of SIGKILL"
+        ) from exc
+
+
 class BwrapLauncher:
     """Production launcher: the child runs inside a bubblewrap jail.
 
@@ -714,15 +1696,45 @@ class BwrapLauncher:
 
     name = "bwrap"
     requires_rlimits = True
+    is_jail = True
 
-    def __init__(self, bwrap_path: str | None = None) -> None:
+    def __init__(
+        self,
+        bwrap_path: str | None = None,
+        workspace_bind: str | None = None,
+        allowed_workspace_roots: tuple[str, ...] = (),
+        pass_fds: tuple[int, ...] = (),
+    ) -> None:
         self.bwrap_path = bwrap_path
+        self.workspace_bind = workspace_bind
+        self.allowed_workspace_roots = tuple(allowed_workspace_roots or ())
+        self.pass_fds = tuple(pass_fds or ())
+
+    def for_workspace(self, mount: WorkspaceMount) -> BwrapLauncher:
+        """A launcher that binds *mount*, inheriting whatever fds it names."""
+        return type(self)(
+            bwrap_path=self.bwrap_path,
+            workspace_bind=mount.bind_source,
+            allowed_workspace_roots=(
+                mount.allowed_roots or self.allowed_workspace_roots
+            ),
+            pass_fds=mount.pass_fds,
+        )
 
     def build_argv(self, runner_script: str, args: list[str]) -> list[str]:
         return [
-            *_bwrap_argv(bwrap_path=self.bwrap_path),
+            *_bwrap_argv(
+                bwrap_path=self.bwrap_path,
+                workspace_bind=self.workspace_bind,
+                allowed_workspace_roots=self.allowed_workspace_roots,
+                pass_fds=self.pass_fds,
+            ),
             sys.executable, "-c", runner_script, *args,
         ]
+
+    def workspace_root(self) -> str:
+        """Inside the jail the generation is always at the same place."""
+        return WORKSPACE_MOUNT_POINT
 
     def env(self, home_dir: str) -> dict[str, str]:
         # Only what the parent needs to resolve `bwrap`; `--clearenv` means
@@ -745,9 +1757,92 @@ class PlainSubprocessLauncher:
     #: Windows has no `resource` module, and this launcher is not the OS
     #: boundary anyway: missing limits are a warning, not a refusal.
     requires_rlimits = False
+    #: There is no jail here: killing the child needs the process group.
+    is_jail = False
+
+    def __init__(self, workspace_bind: str | None = None) -> None:
+        #: Stands in for the bind mount: with no jail there is nothing to
+        #: mount, so the directory keeps its real path and the child is
+        #: started inside it.
+        self.workspace_bind = workspace_bind
+        #: No jail, no bind, nothing to inherit.
+        self.pass_fds: tuple[int, ...] = ()
+        #: Where :meth:`build_argv` last wrote the runner, for cleanup.
+        self._script_path = ""
+
+    def for_workspace(self, mount: WorkspaceMount) -> PlainSubprocessLauncher:
+        """Honour a descriptor bind by INHERITING it, since there is no mount.
+
+        There is no bind to resolve ``/proc/self/fd/<n>`` in, but there does
+        not need to be: the child inherits ``n``, so in the CHILD that path
+        names the very directory the checkout opened, and starting the child
+        there is enough. Popen changes directory in the child after the fork,
+        which is why this works at all -- and it keeps the property that
+        matters, that renaming the lease cannot change what the node sees.
+
+        Refused only when the descriptor is one the child will NOT inherit
+        (the path would then name whatever this process has open at that
+        number), or on Windows, which has neither the proc filesystem nor
+        descriptor inheritance.
+        """
+        descriptors = tuple(mount.pass_fds or ())
+        handle = _PROC_FD_BIND.match(mount.bind_source or "")
+        if handle is not None:
+            # Inheritance first, platform second: a descriptor the child will
+            # not be given is incoherent whatever the host is, and checking it
+            # first means one input yields one message everywhere.
+            if int(handle.group(1)) not in descriptors:
+                raise SandboxUnavailableError(
+                    "this launcher was asked to bind a descriptor the child "
+                    "does not inherit, which would name another directory"
+                )
+            if sys.platform == "win32":
+                raise SandboxUnavailableError(
+                    "this launcher cannot bind a descriptor on Windows: there "
+                    "is no /proc and no descriptor inheritance"
+                )
+        launcher = type(self)(workspace_bind=mount.bind_source)
+        launcher.pass_fds = descriptors
+        return launcher
 
     def build_argv(self, runner_script: str, args: list[str]) -> list[str]:
-        return [sys.executable, "-c", runner_script, *args]
+        """Deliver the runner as a FILE, not as ``-c``.
+
+        Windows caps a command line at about 32 KiB and the runner is larger
+        than that; the jail's platform has no such limit, so production keeps
+        ``-c``. The text executed is the same shipped string either way -- only
+        how it reaches the interpreter differs, which is why this stays in the
+        launcher rather than shrinking what runs.
+        """
+        handle, path = tempfile.mkstemp(prefix="ta-node-runner-", suffix=".py")
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(runner_script)
+        self._script_path = path
+        return [sys.executable, path, *args]
+
+    def cleanup(self) -> None:
+        """Remove the delivered script; the parent calls this when the run ends."""
+        path = getattr(self, "_script_path", "")
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            self._script_path = ""
+
+    def workspace_root(self) -> str:
+        if not self.workspace_bind:
+            raise SandboxUnavailableError(
+                "this launcher was built without a workspace bind"
+            )
+        if _PROC_FD_BIND.match(self.workspace_bind):
+            # Resolved in the CHILD, which holds the descriptor. Resolving it
+            # here would name whatever THIS process has open at that number.
+            return self.workspace_bind
+        return os.path.realpath(self.workspace_bind)
+
+    def child_cwd(self, work_dir: str) -> str:
+        return self.workspace_bind or work_dir
 
     def env(self, home_dir: str) -> dict[str, str]:
         # Built from constants: this module reads no env var.
@@ -779,9 +1874,137 @@ def _default_launcher() -> Launcher:
 DEFAULT_LAUNCHER_FACTORY: Callable[[], Launcher] = _default_launcher
 
 
+def _default_workspace_launcher(mount: WorkspaceMount) -> Launcher:
+    """The production launcher for a node that HOLDS a workspace.
+
+    A bind-less :class:`BwrapLauncher` reports ``/workspace`` as its root and
+    emits no ``--bind`` for it, so a workspace node would run against a mount
+    point that does not exist. The bind, and the roots that vouch for it, belong
+    to the RUN - which is why this is a factory the compiler calls per node
+    rather than a launcher built once at import.
+    """
+    probe = _probe() or {}
+    if probe.get("bwrap_available"):
+        # for_workspace carries the bind, the roots AND the descriptors the
+        # child must inherit: a launcher built from three loose arguments
+        # dropped pass_fds, and the bind then resolved to a path instead of
+        # the handle the checkout opened.
+        return BwrapLauncher().for_workspace(mount)
+    reason = probe.get("reason") or "bwrap unavailable"
+    raise SandboxUnavailableError(f"code nodes need the OS sandbox: {reason}")
+
+
+#: Resolves the launcher for a node with a workspace, FROM the mount. Taking
+#: the mount rather than its pieces is what keeps ``pass_fds`` from being
+#: forgotten at a call site. Substituted by tests.
+WORKSPACE_LAUNCHER_FACTORY: Callable[[WorkspaceMount], Launcher] = (
+    _default_workspace_launcher
+)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Child process plumbing
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+def _read_process_tree_rss(pid: int) -> int:
+    """Resident bytes summed over the process tree rooted at *pid*.
+
+    Reads ``/proc``: ``stat`` for the parent of every process (so the tree can
+    be walked without ``CONFIG_PROC_CHILDREN``) and ``statm`` for resident
+    pages. Returns ``-1`` where the tree cannot be measured -- no ``/proc``,
+    or a race that emptied it -- which the watchdog treats as 'stop watching',
+    never as 'over the cap': killing a node because a measurement failed would
+    be worse than not measuring.
+    """
+    if not os.path.isdir("/proc"):
+        return -1
+    page = 4096
+    try:
+        page = os.sysconf("SC_PAGE_SIZE")
+    except (AttributeError, ValueError, OSError):
+        pass
+    children: dict[int, list[int]] = {}
+    try:
+        entries = [name for name in os.listdir("/proc") if name.isdigit()]
+    except OSError:
+        return -1
+    for name in entries:
+        try:
+            with open(f"/proc/{name}/stat", "rb") as handle:
+                raw = handle.read()
+        except OSError:
+            continue
+        # The comm field is parenthesised and may hold spaces; everything
+        # after the LAST close paren is fixed-width.
+        close = raw.rfind(b")")
+        if close < 0:
+            continue
+        fields = raw[close + 2 :].split()
+        if len(fields) < 2:
+            continue
+        try:
+            parent = int(fields[1])
+        except ValueError:
+            continue
+        children.setdefault(parent, []).append(int(name))
+
+    total = 0
+    seen: set[int] = set()
+    stack = [int(pid)]
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        try:
+            with open(f"/proc/{current}/statm", "rb") as handle:
+                parts = handle.read().split()
+            if len(parts) >= 2:
+                total += int(parts[1]) * page
+        except (OSError, ValueError):
+            pass
+        stack.extend(children.get(current, ()))
+    return total
+
+
+#: Injected so a test can present a tree without starting one.
+PROCESS_TREE_RSS_READER: Callable[[int], int] = _read_process_tree_rss
+
+
+def _watch_process_tree_rss(
+    proc: subprocess.Popen[bytes],
+    launcher: Any,
+    cap: int,
+    breaches: list[int],
+    interval: float | None = None,
+) -> None:
+    """Kill the jail when its whole tree passes *cap*.
+
+    ``RLIMIT_AS`` bounds each process; nothing bounds their sum, and a
+    workspace node may start 128 of them. The kill is the timeout path's: the
+    tracked supervisor, so the pid namespace takes every descendant with it.
+    """
+    reader = PROCESS_TREE_RSS_READER
+    # Read here, not bound as a default: a default argument freezes at import
+    # and a test that substitutes the constant would be substituting nothing.
+    pause = WORKSPACE_RSS_INTERVAL_SECONDS if interval is None else interval
+    while proc.poll() is None:
+        try:
+            used = reader(proc.pid)
+        except Exception:
+            logger.warning("workspace RSS watchdog could not read the tree")
+            return
+        if used < 0:
+            return
+        if used > cap:
+            breaches.append(used)
+            try:
+                _terminate_child(proc, launcher)
+            except Exception:
+                logger.exception("workspace RSS watchdog could not kill the jail")
+            return
+        time.sleep(pause)
 
 
 def _kill_process_tree(proc: subprocess.Popen[bytes]) -> None:
@@ -1002,6 +2225,7 @@ class NodeSandbox:
         effects: dict[str, Any] | None = None,
         dependencies: list[str] | None = None,
         invoke: Callable[[str, dict[str, Any]], Any] | None = None,
+        workspace: WorkspaceMount | None = None,
     ) -> SandboxResult:
         """Execute a node in a sandboxed subprocess, synchronously.
 
@@ -1023,6 +2247,10 @@ class NodeSandbox:
                 authority, ``invoke(action, kwargs)``. Called on the drain
                 thread. ``None`` means the node has no action surface and
                 every call is answered "not available".
+            workspace: The checkout generation to bind at ``/workspace``,
+                resolved through the run's effect chain. When set the node
+                gets a ``ws`` object and runs under the workspace rlimit
+                profile; when ``None`` neither exists.
 
         Returns:
             SandboxResult with success/failure, output state, and timing.
@@ -1048,13 +2276,14 @@ class NodeSandbox:
             if k in input_keys
         }
 
-        message = json.dumps({
+        payload: dict[str, Any] = {
             "source_code": source_code,
             "input_state": filtered_input,
             "effects": effects or {},
             "output_keys": output_keys,
             "allowed_imports": sorted(ALLOWED_IMPORTS),
-        }, default=str)
+        }
+        message = json.dumps(payload, default=str)
         message_bytes = message.encode("utf-8")
         if len(message_bytes) > MAX_INPUT_BYTES:
             return SandboxResult(
@@ -1067,21 +2296,55 @@ class NodeSandbox:
                 duration_seconds=time.monotonic() - start_time,
             )
 
-        # bwrap, or an injected launcher, or refuse to run at all.
+        # bwrap, or an injected launcher, or refuse to run at all. Resolved
+        # AFTER the size check: an oversized message must not cost a sandbox
+        # probe. The workspace payload is added here because only the launcher
+        # knows the root it makes the generation visible at; it is a path and
+        # six integers, so it cannot move the message past the cap.
         launcher = self.resolve_launcher()
+        rlimit_profile_arg = ""
+        if workspace is not None:
+            launcher = _launcher_for_workspace(launcher, workspace)
+            payload["workspace"] = {
+                "root": _launcher_workspace_root(launcher),
+                "limits": workspace.limits.as_message(),
+            }
+            rlimit_profile_arg = json.dumps(workspace.limits.rlimit_profile())
+            message = json.dumps(payload, default=str)
+            message_bytes = message.encode("utf-8")
+
         argv = launcher.build_argv(
             _RUNNER_SCRIPT,
-            [str(timeout), "1" if _requires_rlimits(launcher) else "0"],
+            [
+                str(timeout),
+                "1" if _requires_rlimits(launcher) else "0",
+                rlimit_profile_arg,
+            ],
         )
 
         work_dir = tempfile.mkdtemp(prefix="ta-node-sandbox-")
         popen_kwargs: dict[str, Any] = {}
         if sys.platform == "win32":
-            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            # getattr, because a test may force win32 on a POSIX host to
+            # exercise the refusal path, and the constant is Windows-only.
+            flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            if flags:
+                popen_kwargs["creationflags"] = flags
         else:
             # Not preexec_fn: start_new_session is done by the C layer, which
             # is the only fork-time work that is safe in a threaded parent.
             popen_kwargs["start_new_session"] = True
+
+        inherited = _launcher_pass_fds(launcher)
+        if inherited:
+            if sys.platform == "win32":
+                raise SandboxUnavailableError(
+                    "descriptor inheritance is POSIX-only; this launcher asked "
+                    f"to pass {inherited!r} on win32"
+                )
+            # close_fds stays True: pass_fds is the exception list, and the
+            # bind resolves only because the bwrap process holds these.
+            popen_kwargs["pass_fds"] = inherited
 
         try:
             try:
@@ -1091,7 +2354,7 @@ class NodeSandbox:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     close_fds=True,
-                    cwd=work_dir,
+                    cwd=_launcher_child_cwd(launcher, work_dir),
                     env=launcher.env(work_dir),
                     **popen_kwargs,
                 )
@@ -1171,11 +2434,20 @@ class NodeSandbox:
             feeder.start()
 
             outcome = "exited"
+            memory_breaches: list[int] = []
+            rss_cap = workspace.limits.rss_cap_bytes if workspace else 0
+            if rss_cap > 0:
+                threading.Thread(
+                    target=_watch_process_tree_rss,
+                    args=(proc, launcher, rss_cap, memory_breaches),
+                    daemon=True,
+                ).start()
+
             deadline = start_time + timeout
             while True:
                 if breaches:
                     outcome = "too-large"
-                    _kill_process_tree(proc)
+                    _terminate_child(proc, launcher)
                     break
                 try:
                     proc.wait(timeout=_POLL_SECONDS)
@@ -1184,8 +2456,14 @@ class NodeSandbox:
                     pass
                 if time.monotonic() >= deadline:
                     outcome = "timeout"
-                    _kill_process_tree(proc)
+                    _terminate_child(proc, launcher)
                     break
+
+            if memory_breaches and outcome not in ("too-large", "timeout"):
+                # The watchdog's kill ends the child, so the poll loop can break
+                # on the exit before it looks at the flag again. What killed it
+                # is decided here, where both facts are known.
+                outcome = "memory"
 
             _close_stdin(proc)
             feeder.join(timeout=2.0)
@@ -1196,6 +2474,7 @@ class NodeSandbox:
             except subprocess.TimeoutExpired:
                 pass
         finally:
+            _launcher_cleanup(launcher)
             shutil.rmtree(work_dir, ignore_errors=True)
 
         duration = time.monotonic() - start_time
@@ -1212,6 +2491,21 @@ class NodeSandbox:
                 error=(
                     f"output too large: {stream} exceeded the {cap}-byte limit "
                     f"and the node was killed"
+                ),
+                duration_seconds=duration,
+                stdout_tail=_tail(stdout_text),
+                stderr_tail=stderr_tail,
+            )
+
+        if outcome == "memory":
+            used = memory_breaches[0] if memory_breaches else 0
+            return SandboxResult(
+                node_id=node_id,
+                success=False,
+                error=(
+                    "workspace memory cap "
+                    f"{rss_cap / (1024 * 1024 * 1024):.0f} GiB exceeded "
+                    f"(process tree reached {used} bytes)"
                 ),
                 duration_seconds=duration,
                 stdout_tail=_tail(stdout_text),
@@ -1263,6 +2557,24 @@ class NodeSandbox:
                 duration_seconds=duration,
                 stdout_tail=_tail(stdout_text),
                 stderr_tail=stderr_tail,
+            )
+
+        # A ws.run command that outlived its budget: the runner already wrote
+        # this frame and left with os._exit, so all that remains is to make
+        # certain the supervisor -- and with it the whole pid namespace, and
+        # with that any double-forked descendant -- is gone.
+        if result.get("workspace_timeout"):
+            _terminate_child(proc, launcher)
+            return SandboxResult(
+                node_id=node_id,
+                success=False,
+                error=result.get("error") or "workspace command timeout",
+                duration_seconds=duration,
+                stdout=result.get("user_stdout", ""),
+                stderr=stderr_text,
+                stdout_tail=_tail(result.get("stdout_tail", "")),
+                stderr_tail=_tail(result.get("stderr_tail", "") or stderr_text),
+                workspace_timeout=True,
             )
 
         # `stdout_tail` is what the node printed, not the protocol frame.
@@ -1334,6 +2646,7 @@ class NodeSandbox:
 __all__ = [
     "ALLOWED_IMPORTS",
     "DEFAULT_LAUNCHER_FACTORY",
+    "WORKSPACE_LAUNCHER_FACTORY",
     "FORBIDDEN_PATTERNS",
     "MAX_INPUT_BYTES",
     "MAX_OUTPUT_BYTES",
@@ -1343,5 +2656,9 @@ __all__ = [
     "NodeSandbox",
     "PlainSubprocessLauncher",
     "SandboxResult",
+    "SandboxTerminationError",
     "SandboxUnavailableError",
+    "WorkspaceLimits",
+    "WorkspaceMount",
+    "WORKSPACE_MOUNT_POINT",
 ]

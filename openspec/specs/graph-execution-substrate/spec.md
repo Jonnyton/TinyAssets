@@ -120,6 +120,153 @@ provenance only and SHALL NOT gate execution.
 - **WHEN** the child writes past the 8 MiB protocol-stdout cap
 - **THEN** the parent kills it at the cap and the node fails with "output too large"
 
+
+A `source_code` node MAY additionally declare `workspace: "<node id>"`, naming
+an ancestor checkout node in the same run. It then runs with that checkout's
+generation bound read-write at `/workspace` as the jail's **only** additional
+bind, resolved solely through the run's effect chain into an internal
+capability that never round-trips through state, `$ta.ref` or JSON; naming a
+node that is not an ancestor SHALL fail at compile time, before any node runs.
+Where the run's capability carries a held directory descriptor the bind SHALL
+be made through it (`--bind /proc/self/fd/<n> /workspace`, with `<n>` passed to
+the child), so that a rename of the lease path between admission and mount
+cannot change what is mounted; that spelling SHALL be admitted only when `<n>`
+is one of the descriptors the child inherits, and a descriptor that is closed
+or is no longer a directory SHALL fail the node rather than fall back to the
+path. A plain path bind SHALL additionally be required to sit beneath a root
+the caller vouched for, both literally and after `realpath`. Every other
+property of the jail (no network, cleared environment, no data directory, the
+authorship gate, the request's context on RPC) is unchanged.
+
+The runner SHALL expose `ws.run(argv, timeout=, cwd=, env=)`,
+`ws.read(relpath, max_bytes=)`, `ws.write(relpath, text)`, `ws.glob(pattern)`
+and `ws.bundle(commit_sha)` (a self-contained, prerequisite-free bundle from
+one synthetic ref at that commit, hooks and replacements disabled, created
+without credentials inside the jail; its reading of the workspace's own `.git`
+is accepted residual parser input because the process stays in the jail and its
+output is treated as hostile). Paths SHALL be relative, free of `..`, and
+resolved beneath `/workspace` without following a link out of it, with the leaf
+opened `O_NOFOLLOW`. `ws.run` SHALL take an argv list and never a shell string,
+SHALL build the child's environment from a fixed base plus caller keys matching
+`^[A-Z_][A-Z0-9_]*$`, SHALL stream output through bounded incremental drains
+into capped tails, and SHALL count commands and returned bytes against per-node
+caps of 64 commands and 1 MiB. That fixed base SHALL disable background git
+maintenance (`GIT_CONFIG_COUNT=2` with `gc.auto=0` and `maintenance.auto=false`)
+and SHALL refuse a caller key beginning `GIT_CONFIG` rather than ignoring it,
+because a detached `gc --auto` outlives the node and holds the workspace open;
+`ws.bundle` SHALL pass the same two settings on its git command lines.
+
+Every `ws` argument SHALL be validated to the EXACT built-in type before any
+method of it is called, so a `str` subclass cannot run node code inside path
+validation. The import allowlist SHALL decide by WHOSE code is importing — the
+calling frame's globals being the node's namespace — and not by a recursion
+depth: a depth counter suspends the check for everything running beneath it,
+including user code reached through an overridden method, which is a bypass.
+An allowlisted module's own imports and the runner's own lazy ones are therefore
+unchecked while node code is checked, and preloading a module does NOT make it
+importable by node code, because the allowlist refuses by name.
+
+`ws` paths SHALL be resolved component-wise from a descriptor opened on the
+workspace root, each component opened `O_NOFOLLOW` relative to the previous one
+and the leaf likewise, so that no name survives to be swapped between a check
+and the open it guards; `ws.run(cwd=)` SHALL chdir through the resolved
+descriptor and `ws.write` SHALL create parents relative to it. Where the
+platform provides no `dir_fd` the same rules SHALL be enforced against resolved
+paths, which is the tests-only launcher and never the jail.
+`ws.read(max_bytes=)` SHALL CLAMP to the configured cap rather than replace it.
+
+On a command timeout the runner SHALL leave without giving the node a chance to
+catch it, and the parent SHALL SIGKILL the tracked process and confirm its exit
+within a bounded wait, raising rather than continuing if it does not die. For
+the jail that tracked process is the bubblewrap supervisor and PID 1 of the
+jail's pid namespace, so ending it ends every descendant including a
+double-forked `setsid` one; the node fails as `workspace_command_timeout`,
+classified from a flag on the result rather than a phrase in a message.
+
+A workspace node SHALL run under the workspace limits profile (`RLIMIT_AS`
+1.5 GiB, `RLIMIT_NPROC` 1024, `RLIMIT_NOFILE` 1024, `RLIMIT_FSIZE` 512 MiB,
+`RLIMIT_CORE` 0), applied and read back in the child before its message is
+parsed, and under an aggregate process-tree RSS cap of 2 GiB. `RLIMIT_NPROC`
+SHALL be RAISED toward its cap and never lowered: it is per-UID rather than
+per-process, so lowering it bounds every process the host's user already runs,
+and on a host whose uid is past the number the next `fork` fails with EAGAIN —
+which is not a bound on the node but a broken host. A limit already tighter than
+the cap is somebody else's decision and stands, so on a permissive host this
+limit binds nothing and the memory watchdog and the jail are what bound a
+process explosion. Any git the runtime spawns inside the jail SHALL pass
+`pack.threads=1` for the same reason. `RLIMIT_AS` bounds
+each process and nothing bounds their sum, so a parent-side watchdog SHALL sample
+the tracked process's whole tree and, on passing the cap, kill the tracked
+supervisor exactly as the timeout path does; the node then fails as
+`code_node_failed` naming the memory cap, there being no memory class in the
+failure taxonomy to invent. A tree the watchdog cannot measure SHALL stop the
+watchdog, never kill the node.
+
+A node declaring `workspace:` SHALL declare `0 < timeout_seconds <= 1800`,
+refused at compile time naming the bound and again when a persisted definition
+loads, because such a node holds the universe's job lock and the host-wide slot
+for its whole run. The bound is read from the DECLARED value: a zero reads as
+"unset" elsewhere, so a node must say how long it may hold the slot.
+
+The capability SHALL be ACQUIRED for the length of one use, not merely read:
+the decision that it is still live and the taking of it SHALL happen under one
+lock, so an acquisition cannot straddle a `discard`, and what the caller holds
+SHALL be duplicated descriptors rather than the registry's own. A parallel
+discard closes the originals and the next checkout is handed the same descriptor
+numbers back, so a holder still using the originals would be reading another
+branch's repository; a duplicate cannot be reused while it is held. Release
+SHALL happen in a `finally` under a single owner, and the registry's descriptors
+SHALL be closed only when the run ends.
+
+A `discard` between nodes SHALL make the next workspace node fail, naming the
+discard. Revoking a capability **inside** a node that is already running is not
+built in this change — it needs a parent-to-child signal on the runner's
+existing pipe — and is a named residual.
+
+#### Scenario: a discard during acquisition cannot hand out a stale descriptor
+- **WHEN** a `discard` runs concurrently with a node acquiring the same workspace, and a later checkout reopens directories onto the same descriptor numbers
+- **THEN** the acquisition either takes duplicated descriptors that remain valid for its whole use, or fails naming the discard, and never reads the directory the reused numbers now name
+
+#### Scenario: a str subclass cannot run node code inside path validation
+- **WHEN** a node passes `ws.read` a `str` subclass whose `replace` imports a module the allowlist refuses
+- **THEN** the argument is refused for its type before any method of it is called, and the override never runs
+
+#### Scenario: the whole process tree is what the memory cap bounds
+- **WHEN** a node's commands together hold more than 2 GiB resident, no single process exceeding `RLIMIT_AS`
+- **THEN** the watchdog kills the tracked supervisor and the node fails as `code_node_failed` naming the memory cap
+
+#### Scenario: a workspace node cannot hold the host slot indefinitely
+- **WHEN** a node declares `workspace:` with `timeout_seconds` of 0 or above 1800
+- **THEN** it is refused at compile time naming the bound, and a persisted definition carrying it fails to load
+
+#### Scenario: git maintenance cannot outlive the node
+- **WHEN** node code runs `git commit` in the workspace, and separately tries to set `GIT_CONFIG_COUNT` through `ws.run(env=)`
+- **THEN** no detached `gc --auto` is started because the jail's fixed environment disables it, and the caller's key is refused rather than ignored
+
+#### Scenario: a code node reads and runs the checked-out project
+- **WHEN** a node declares `workspace: "checkout"` and its ancestor `checkout` delivered
+- **THEN** `run(state, effects)` sees the repository at `/workspace`, `ws.run([...])` returns an exit code and bounded tails, and no network is reachable
+
+#### Scenario: a workspace reference outside the chain refuses
+- **WHEN** a node's `workspace:` names a node that is not an ancestor checkout in this run, or a branch tries to supply a lease id through state
+- **THEN** compilation fails before any command runs, naming the rule
+
+#### Scenario: a rename of the lease path cannot change what is mounted
+- **WHEN** the capability carries a held directory descriptor and the lease directory is renamed away, with another directory moved into its place, between admission and the mount
+- **THEN** the bind resolves through the descriptor to the original directory, while the path now names the substitute
+
+#### Scenario: a descriptor the child does not inherit is refused
+- **WHEN** a bind names `/proc/self/fd/<n>` and `<n>` is not among the descriptors passed to the child
+- **THEN** the bind is refused before the jail starts, because that path in a process without that descriptor names whatever it does have open there
+
+#### Scenario: a command that outlives its timeout ends the whole sandbox
+- **WHEN** `ws.run` runs a command that double-forks a `setsid` sleeper and exceeds the timeout
+- **THEN** the runner leaves, the parent SIGKILLs the tracked bwrap supervisor and confirms its exit, the pid namespace ends every descendant with it, and the node fails as `workspace_command_timeout`
+
+#### Scenario: a path that leaves the workspace refuses, and a link out is not a way out
+- **WHEN** `ws.read`, `ws.write`, `ws.glob` or a `ws.run` cwd names `..`, an absolute path, or a symlink pointing outside the workspace
+- **THEN** the call raises inside `run()` naming the rule that refused it, and nothing outside the workspace is read or written
+
 ### Requirement: Runs are checkpointed LangGraph executions with a fixed terminal status set
 The runs engine (`tinyassets.runs`) SHALL execute a compiled branch as a checkpointed LangGraph run using a synchronous `SqliteSaver` (never `AsyncSqliteSaver`, per Hard Rule #1) persisted at `.langgraph_runs.db`, with the LangGraph `thread_id` equal to the `run_id`. A run's lifecycle status SHALL be one of `queued`, `running`, `completed`, `failed`, `cancelled`, `interrupted`, or `resumed`. The graph SHALL be invoked with a recursion ceiling defaulting to `DEFAULT_RECURSION_LIMIT = 100` (raised from LangGraph's stock 25 to accommodate multi-iteration gate loops), overridable per call within validated bounds.
 
@@ -159,6 +306,25 @@ other clauses of this requirement are unchanged.
 #### Scenario: a code node that raises fails the run with its stderr
 - **WHEN** `run()` raises inside the sandbox
 - **THEN** the run status is `failed`, the class is `code_node_failed`, and the error contains the exception text from the child's stderr
+
+
+The executor SHALL additionally classify `workspace_checkout_failed`,
+`workspace_push_refused`, `workspace_busy`, `workspace_pool_busy`,
+`workspace_quota_exceeded`, `workspace_command_timeout`,
+`workspace_provision_refused`, `workspace_provision_failed` and
+`workspace_discard_failed`, each actionable by the chatbot with a fixed
+suggested action. `workspace_provision_failed` is classified but not yet
+raised: the resolver whose transport, cache-bound and offline-install failures
+would produce it is the named follow-up. All other clauses of this requirement
+are unchanged.
+
+#### Scenario: a busy workspace is a wait, not a crash
+- **WHEN** a second workspace job starts while the universe's (or the host's) slot is held
+- **THEN** it waits up to its timeout and then fails as `workspace_busy` with the advice to retry
+
+#### Scenario: a workspace command timeout is its own class
+- **WHEN** a `ws.run` command outlives its budget
+- **THEN** the run fails as `workspace_command_timeout`, distinct from a node timeout, classified from a flag on the sandbox result rather than by matching a message
 
 ### Requirement: Interrupted runs resume from checkpoint under owner, status, checkpoint, and version guards
 `resume_run` SHALL resume a run only from its `SqliteSaver` checkpoint and only when four guards pass: the caller `actor` owns the run (else `auth_failed`), the run is `interrupted` (a run already `resumed` is idempotently returned; any other status raises `not_interrupted`), a checkpoint exists for the run's `thread_id` (else `no_checkpoint`), and the exact branch version the run used still resolves (else `branch_version_mismatch`). On resume the run SHALL be marked `resumed` before background re-invocation with `None` inputs (LangGraph's resume signal). At server startup `recover_in_flight_runs` SHALL sweep any `queued` or `running` rows to `interrupted` so no run is falsely reported in flight after a restart. As-built limitation: the `recover_in_flight_runs` docstring still states that `interrupted` is terminal and that mid-run resume via checkpoint is "not available today" — that docstring is stale, because `resume_run` implements exactly that checkpoint-based resume.
@@ -697,3 +863,14 @@ compile (LangGraph would reject the step after their effects fired).
 #### Scenario: a cycle cannot refire an effect
 - **WHEN** a conditional edge routes back to a node whose effects already fired in this run
 - **THEN** the second visit fails the node with kind `effect_already_fired`
+
+### Requirement: Workspace jobs hold one durable lock per universe and one host-wide slot
+
+The runtime SHALL acquire, in the checkout's admission transaction, a durable job lock keyed by universe and a host-wide slot (one slot in this change), SHALL treat it as reentrant for that run's later workspace nodes and its push, and SHALL release it only through the run's terminal outbox entry.
+`workspace_busy` is the refusal when the lock cannot be acquired within the
+node's timeout. The runner sidecar / cgroup follow-up is what lifts the
+host-wide slot.
+
+#### Scenario: the lock outlives the checkout node
+- **WHEN** a run checks out, runs tests in a later node, and pushes in a third
+- **THEN** one lock is held from the checkout's admission until the run's terminal outbox entry is processed, and another universe's checkout waits meanwhile

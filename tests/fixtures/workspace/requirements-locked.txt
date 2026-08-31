@@ -1,0 +1,32 @@
+# A real hash-locked, wheel-only closure for pytest on CPython 3.11, linux
+# x86_64. This is DATA, not a dependency of the repository: it is what the live
+# proof provisions into a workspace before running `pytest -q tests/test_docview.py`,
+# and what the admission grammar is tested against with something a person
+# actually generated rather than something shaped to pass.
+#
+# Produced on 2026-08-30 with the platform pinned, so the wheels are the ones a
+# linux runner resolves and not the ones this Windows dev box would:
+#
+#   pip download --only-binary=:all: --platform manylinux2014_x86_64 \
+#       --python-version 3.11 --implementation cp --abi cp311 -d <dir> pytest
+#   pip hash <dir>/*.whl
+#
+# The closure is complete for CPython 3.11+: pytest's `exceptiongroup` and
+# `tomli` dependencies are both marked `python_version < "3.11"` and so are
+# never resolved here, and `colorama` carries its own marker below rather than
+# being dropped -- pip requires a hash for every file it downloads, so a plan
+# that names only its direct dependencies fails rather than quietly fetching an
+# unpinned transitive one.
+
+pytest==9.1.1 \
+    --hash=sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c
+pluggy==1.6.0 \
+    --hash=sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746
+iniconfig==2.3.0 \
+    --hash=sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12
+packaging==26.3 \
+    --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+pygments==2.21.0 \
+    --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9
+colorama==0.4.6 ; sys_platform == "win32" \
+    --hash=sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6

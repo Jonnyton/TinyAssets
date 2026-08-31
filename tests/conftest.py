@@ -35,6 +35,13 @@ def pytest_configure(config: pytest.Config) -> None:
     Failing here costs one clear error; the alternative costs an elevated
     cleanup and a directory nobody can delete. See ``AGENTS.md`` § *Testing*
     and ``scripts/clear_sandbox_temp_dirs.ps1``.
+
+    On Windows, ALSO pass a SHORT ``--basetemp`` (e.g.
+    ``C:/Users/<you>/AppData/Local/Temp/ta-pt``): pytest's default root plus a
+    workspace lease plus ``.git/objects/pack/pack-<40 hex>.pack`` crosses
+    MAX_PATH, and the failure reads as a real defect (a lease that will not
+    delete) rather than as a path-length limit. Tests that build a real git
+    checkout skip themselves when the root is too long to be safe.
     """
     roots: list[tuple[str, str]] = []
     basetemp = config.getoption("basetemp", default=None)

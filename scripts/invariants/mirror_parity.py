@@ -1,20 +1,33 @@
 """Mirror-parity invariant: canonical `tinyassets/**` == plugin mirror.
 
-Iterates every canonical file under `tinyassets/` and compares bytes
-against the paired plugin-mirror path under
+Compares every canonical file under `tinyassets/` with its paired plugin-mirror
+path under
 `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/`.
-Mismatch → VIOLATED with a list of diverged paths.
+Two ways to break parity, and the check names both by path:
 
-Pre-commit scope (hook invokes it on staged-only set). Non-pre-commit
-mode scans the entire tree for diagnostic use. Auto-heal is disabled:
-fixing mirror drift requires rebuilding the plugin, which is too
-heavyweight for a silent background heal.
+* **diverged** - both copies exist and differ. The mirror is running older code.
+* **missing** - the canonical file has no mirror counterpart at all. This used
+  to be SKIPPED as "a new module the plugin build has not picked up yet", which
+  is the same sentence as "the mirror does not ship this module": `workspace_pool.py`
+  and `workspace_fs.py` sat outside the mirror across three commits and the gate
+  reported clean every time (2026-08-30). A file the build would copy and the
+  mirror does not have is drift, not a grace period.
+
+What the build copies is the definition of what must be mirrored, so the
+exclusion list below is the build's own, pinned by a test.
+
+Pre-commit runs it on the staged set (`scripts/check_mirror_parity.py`, which
+the hook calls); CI runs `invariants_run.py --pre-commit`, which lands here and
+scans the whole tree. Auto-heal is disabled: fixing drift means rebuilding the
+plugin, which is too heavyweight for a silent background heal.
 """
 
 from __future__ import annotations
 
 import filecmp
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable, Iterator
 
 from . import CheckResult, HealResult, Invariant, Status
 
@@ -30,7 +43,120 @@ MIRROR_ROOT = (
     / "tinyassets"
 )
 
+#: MUST stay identical to ``_TREE_EXCLUDES`` in
+#: ``packaging/claude-plugin/build_plugin.py`` - the build's copy rule IS the
+#: parity contract, and a gate holding a different list would either miss drift
+#: or fail on files the build never copies. ``tests/test_mirror_parity_gate.py``
+#: reads both and refuses to let them diverge.
+TREE_EXCLUDES: tuple[str, ...] = (
+    "__pycache__",
+    "*.db",
+    "*.db-journal",
+    "*.log",
+    "*.pyc",
+    ".pytest_cache",
+    "*.tmp",
+)
+
+#: Divergence is compared for text the mirror is expected to ship verbatim.
 SCAN_SUFFIXES = (".py", ".md", ".json", ".toml")
+
+
+def is_excluded(path: Path) -> bool:
+    """The build's own predicate: would ``build_plugin.py`` skip this path?"""
+    name = path.name
+    for pattern in TREE_EXCLUDES:
+        if path.match(pattern) or name == pattern:
+            return True
+    return False
+
+
+def iter_canonical_files(canonical_root: Path) -> Iterator[Path]:
+    """Every file the plugin build would copy out of ``canonical_root``."""
+    for path in canonical_root.rglob("*"):
+        if not path.is_file():
+            continue
+        if is_excluded(path) or any(is_excluded(parent) for parent in path.parents):
+            continue
+        yield path
+
+
+@dataclass(frozen=True)
+class ParityReport:
+    """What the scan saw. ``ok`` is the gate's verdict."""
+
+    checked: int
+    diverged: tuple[str, ...]
+    missing: tuple[str, ...]
+
+    @property
+    def ok(self) -> bool:
+        return not self.diverged and not self.missing
+
+    def message(self) -> str:
+        if self.ok:
+            return f"all {self.checked} canonical file(s) mirror-matched"
+        parts = []
+        if self.diverged:
+            parts.append(f"{len(self.diverged)} diverged")
+        if self.missing:
+            parts.append(f"{len(self.missing)} missing from the mirror")
+        return f"{', '.join(parts)} (out of {self.checked} checked)"
+
+    def detail_lines(self) -> list[str]:
+        """One line per offending path, for a human reading a failed gate."""
+        lines: list[str] = []
+        for path in self.diverged:
+            lines.append(f"  diverged: {path}")
+        for path in self.missing:
+            lines.append(f"  missing from the mirror: {path}")
+        return lines
+
+
+def scan_parity(
+    canonical_root: Path,
+    mirror_root: Path,
+    *,
+    relative_paths: Iterable[str] | None = None,
+) -> ParityReport:
+    """Compare canonical against mirror; whole tree, or just ``relative_paths``.
+
+    ``relative_paths`` are relative to ``canonical_root`` (the hook passes the
+    staged set). A named path that does not exist is skipped - a rename's source
+    side is not drift.
+    """
+    canonical_root = Path(canonical_root)
+    mirror_root = Path(mirror_root)
+    if relative_paths is None:
+        candidates = list(iter_canonical_files(canonical_root))
+    else:
+        candidates = []
+        for raw in relative_paths:
+            path = canonical_root / str(raw).replace("\\", "/")
+            if not path.is_file():
+                continue
+            if is_excluded(path) or any(is_excluded(parent) for parent in path.parents):
+                continue
+            candidates.append(path)
+
+    checked = 0
+    diverged: list[str] = []
+    missing: list[str] = []
+    for canonical in candidates:
+        rel = canonical.relative_to(canonical_root)
+        mirror = mirror_root / rel
+        name = str(rel).replace("\\", "/")
+        checked += 1
+        if not mirror.exists():
+            missing.append(name)
+            continue
+        if canonical.suffix not in SCAN_SUFFIXES:
+            continue
+        if not filecmp.cmp(canonical, mirror, shallow=False):
+            diverged.append(name)
+    return ParityReport(
+        checked=checked, diverged=tuple(sorted(diverged)), missing=tuple(sorted(missing))
+    )
 
 
 class MirrorParityInvariant(Invariant):
@@ -40,48 +166,47 @@ class MirrorParityInvariant(Invariant):
     poll_interval_s = None  # diagnostic / pre-commit only
     auto_heal = False
 
+    def __init__(
+        self,
+        canonical_root: Path | None = None,
+        mirror_root: Path | None = None,
+    ) -> None:
+        # Roots are injectable so the gate can be driven against a temp tree in
+        # a test. A gate nobody can point at a fixture is a gate nobody proves
+        # can fail (`scripts/invariants/__init__.py`: a check that cannot go red
+        # is decor).
+        self.canonical_root = Path(canonical_root or CANONICAL_ROOT)
+        self.mirror_root = Path(mirror_root or MIRROR_ROOT)
+
     def _check(self) -> CheckResult:
-        if not CANONICAL_ROOT.is_dir():
+        if not self.canonical_root.is_dir():
             return CheckResult(
                 status=Status.SKIPPED,
-                message=f"canonical root not found: {CANONICAL_ROOT}",
+                message=f"canonical root not found: {self.canonical_root}",
             )
-        if not MIRROR_ROOT.is_dir():
+        if not self.mirror_root.is_dir():
             return CheckResult(
                 status=Status.SKIPPED,
-                message=f"mirror root not found: {MIRROR_ROOT}",
+                message=f"mirror root not found: {self.mirror_root}",
             )
 
-        mismatches: list[str] = []
-        checked = 0
-        for canon_path in CANONICAL_ROOT.rglob("*"):
-            if not canon_path.is_file():
-                continue
-            if canon_path.suffix not in SCAN_SUFFIXES:
-                continue
-            rel = canon_path.relative_to(CANONICAL_ROOT)
-            mirror_path = MIRROR_ROOT / rel
-            if not mirror_path.exists():
-                # Canonical-only file — acceptable (packaging build
-                # creates mirror later). Not a mismatch.
-                continue
-            checked += 1
-            if not filecmp.cmp(canon_path, mirror_path, shallow=False):
-                mismatches.append(str(rel).replace("\\", "/"))
-
-        if mismatches:
+        report = scan_parity(self.canonical_root, self.mirror_root)
+        if not report.ok:
             return CheckResult(
                 status=Status.VIOLATED,
-                message=(
-                    f"{len(mismatches)} file(s) diverge between canonical and "
-                    f"mirror (out of {checked} checked)"
-                ),
-                evidence={"mismatches": mismatches, "checked": checked},
+                message=report.message()
+                + "; rebuild with python packaging/claude-plugin/build_plugin.py",
+                evidence={
+                    "mismatches": list(report.diverged),
+                    "missing": list(report.missing),
+                    "checked": report.checked,
+                    "paths": report.detail_lines(),
+                },
             )
         return CheckResult(
             status=Status.OK,
-            message=f"all {checked} canonical file(s) mirror-matched",
-            evidence={"checked": checked},
+            message=report.message(),
+            evidence={"checked": report.checked},
         )
 
     def _heal(self) -> HealResult:

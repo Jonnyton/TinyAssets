@@ -10,7 +10,7 @@ the branch, launched run ``cf350418157949cd``, and the run reported::
 No pull request existed. No branch existed. No GitHub call appeared in the daemon
 log across the whole window. The node had declared ``effects:
 ["github_pull_request"]`` — a sink that is NOT in the registry, which holds only
-``authenticated_external_call`` and ``wiki_write_back`` — so the dispatcher
+``authenticated_external_call``, ``wiki_write_back`` and ``workspace`` — so the dispatcher
 recorded ``unknown effect sink: github_pull_request`` and the run reported
 success anyway.
 
@@ -136,6 +136,7 @@ def test_an_unknown_sink_names_the_supported_sinks():
     assert row["supported_sinks"] == [
         "authenticated_external_call",
         "wiki_write_back",
+        "workspace",
     ]
     assert "does nothing" in row["error"], "must say the node is a no-op"
     assert "Rebuild" in row["error"], "must say what to do about it"

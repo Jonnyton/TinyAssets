@@ -61,6 +61,13 @@ from tinyassets.storage.outbound_connections import (
     SsrfValidationError,
     _parse_allowed_endpoints,
 )
+from tinyassets.storage.workspace_authority import (
+    GitScopeError,
+    connection_git_scopes,
+    format_git_scope,
+    is_git_scope,
+    require_git_scope,
+)
 
 # Default when the caller names no scheme (the common single-token API case).
 _DEFAULT_AUTH_SCHEME = "bearer"
@@ -116,6 +123,47 @@ _DESTINATION_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{1,126}$")
 
 _MAX_SECRET_CHARS = 200_000
 _MAX_ENDPOINTS = 20
+#: A connection may hold at most this many git scopes. One ask should name the
+#: repositories the job actually touches, not a portfolio.
+_MAX_GIT_SCOPES = 20
+
+
+def _requested_git_scopes(document: dict[str, Any]) -> frozenset[str]:
+    """The git scopes a caller asked for, canonicalized.
+
+    ``scopes`` accepts GIT scopes only. The HTTP verbs stay derived from the
+    endpoint list - a caller that could name its own verbs would be able to
+    widen the HTTP surface without widening the endpoint allow-list, which is
+    the one thing the deposit's least-privilege story rests on.
+    """
+    raw = document.get("scopes")
+    if raw is None:
+        return frozenset()
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        raise GitScopeError("scopes must be a list of git scopes")
+    if len(raw) > _MAX_GIT_SCOPES:
+        raise GitScopeError(
+            f"a connection may carry at most {_MAX_GIT_SCOPES} git scopes"
+        )
+    found: set[str] = set()
+    for value in raw:
+        if not is_git_scope(value):
+            raise GitScopeError(
+                f"scopes accepts git scopes only (git_read:owner/name, "
+                f"git_write:owner/name); HTTP verbs come from the endpoints. "
+                f"Got {value!r}"
+            )
+        found.add(format_git_scope(*require_git_scope(value)))
+    return frozenset(found)
+
+
+def _stored_git_scopes(resource: Any) -> frozenset[str]:
+    """The git scopes already on the row, as canonical scope strings."""
+    return frozenset(
+        format_git_scope(kind, repo) for kind, repo in connection_git_scopes(resource)
+    )
 
 # Conservative fixed unprompted cap for an MVP outbound channel; tune later.
 _HTTP_ACTION_CAP = ActionCap("http_requests", 100, "requests")
@@ -363,6 +411,15 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     # scope tuple. connection_type/connection_class/provider ("http") carry the type
     # discrimination, so scopes is free to hold the verbs.
     http_scopes = tuple(sorted({m for e in parsed_endpoints for m in e.methods}))
+    # A GIT scope is the one scope a caller supplies rather than the deposit
+    # deriving it: nothing about an endpoint list says which repository a git
+    # credential may clone. Only git scopes may be passed - HTTP verbs stay
+    # derived from the endpoints, so this can never widen the HTTP surface.
+    try:
+        requested_git_scopes = _requested_git_scopes(document)
+    except GitScopeError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
+    http_scopes = tuple(sorted(set(http_scopes) | requested_git_scopes))
 
     credential_ref = f"vault://http/{destination}"
     connection_id, grant_id = _ids(universe_id=uid, destination=destination)
@@ -387,6 +444,13 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     legacy_scope_upgrade = False
     endpoints_extend = False
     if resource is not None:
+        # Scopes are otherwise a PROJECTION of the endpoint methods, so anything
+        # not derivable from endpoints - a git scope - would silently vanish on
+        # the next deposit and the sink would start refusing checkouts nobody
+        # revoked. Carry the stored ones forward explicitly.
+        http_scopes = tuple(
+            sorted(set(http_scopes) | _stored_git_scopes(resource))
+        )
         # Every immutable field EXCEPT scopes must match for either idempotent reuse
         # or the bounded legacy-scope upgrade applied at the END of this handler.
         non_scope_mismatch = (
@@ -550,6 +614,8 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
                     [e.as_dict() for e in resource.allowed_endpoints]
                 ),
             )
+        except GitScopeError as exc:
+            return {"error": "connection_setup_invalid", "detail": str(exc)}
         except SsrfValidationError as exc:
             return {"error": "endpoint_not_permitted", "detail": str(exc)}
         resource = ledger._get_connection_resource(connection_id)
@@ -611,10 +677,24 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
                       "alphanumeric",
         }
     added = document.get("endpoints")
-    if not isinstance(added, list) or not added:
+    # A SCOPE-ONLY widening carries no endpoints at all, which is exactly what
+    # the served rail documents for a git scope: the endpoints a workspace
+    # checkout needs are none - it does not make an HTTP call. Refusing that
+    # shape meant the documented action could never execute (Codex code round
+    # 2, new #14). The stored set is what the scopes are then validated
+    # against, so nothing is widened by leaving them out.
+    try:
+        requested_git_scopes = _requested_git_scopes(document)
+    except GitScopeError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
+    scope_only = not isinstance(added, list) or not added
+    if scope_only and not requested_git_scopes:
         return {
             "error": "connection_setup_invalid",
-            "detail": "endpoints must be a non-empty list",
+            "detail": (
+                "endpoints must be a non-empty list, or scopes must name at "
+                "least one git scope"
+            ),
         }
 
     connection_id, _grant_id = _ids(universe_id=uid, destination=destination)
@@ -632,17 +712,36 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
 
     stored = [e.as_dict() for e in resource.allowed_endpoints]
     try:
-        merged = _parse_allowed_endpoints([*stored, *added])
+        # Scope-only: the connection keeps exactly the endpoints it has. They
+        # still go through the parser, because they are what the ledger will
+        # validate the git scopes' host rule against.
+        merged = _parse_allowed_endpoints(stored if scope_only else [*stored, *added])
     except SsrfValidationError as exc:
         return {"error": "endpoint_not_permitted", "detail": str(exc)}
     except (ValueError, TypeError) as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
     merged_dicts = [e.as_dict() for e in merged]
-    if _canonical_endpoint_set(merged_dicts) <= _canonical_endpoint_set(stored):
+    stored_git_scopes = _stored_git_scopes(resource)
+    new_git_scopes = requested_git_scopes - stored_git_scopes
+    # "Nothing new" has to account for a scope-only widening: adding
+    # git_read:owner/name to a connection whose endpoints already cover what it
+    # needs changes no endpoint at all, and short-circuiting on endpoints alone
+    # left that ask with no route through this verb.
+    if (
+        _canonical_endpoint_set(merged_dicts) <= _canonical_endpoint_set(stored)
+        and not new_git_scopes
+    ):
         return {"status": "unchanged", "destination": destination,
-                "allowed_endpoints": stored}
+                "allowed_endpoints": stored,
+                "scopes": list(resource.scopes)}
 
-    scopes = tuple(sorted({m for e in merged for m in e.methods}))
+    scopes = tuple(
+        sorted(
+            {m for e in merged for m in e.methods}
+            | requested_git_scopes
+            | stored_git_scopes
+        )
+    )
     try:
         widened = ledger.extend_http_connection_endpoints(
             connection_id=connection_id,
@@ -650,6 +749,8 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
             scopes=scopes,
             expected_endpoints_json=json.dumps(stored),
         )
+    except GitScopeError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
     except SsrfValidationError as exc:
         return {"error": "endpoint_not_permitted", "detail": str(exc)}
     if not widened:
@@ -661,6 +762,7 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
         "status": "extended",
         "destination": destination,
         "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
+        "scopes": list(resource.scopes),
         "secret_reused": True,
     }
 

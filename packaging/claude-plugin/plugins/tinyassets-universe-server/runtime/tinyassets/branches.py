@@ -296,6 +296,11 @@ class NodeDefinition:
 
     # Source and execution — one of source_code or prompt_template
     source_code: str = ""
+    # A code node may name ONE ancestor checkout node whose workspace is
+    # bound read-write at /workspace for the run (design D2). Empty = no
+    # workspace and no ``ws`` object. Resolved through the run's effect
+    # chain at run time; naming a non-ancestor fails at compile time.
+    workspace: str = ""
     prompt_template: str = ""
     model_hint: str = ""
     # Per-node reasoning/effort level — a REAL provider setting (e.g. Codex
@@ -451,6 +456,7 @@ class NodeDefinition:
         # character-by-character, silently corrupting sandbox/state
         # handling. Per Hard Rule #8, we'd rather fail to load than
         # accept malformed data.
+        self._validate_workspace_timeout()
         for field_name in (
             "input_keys",
             "output_keys",
@@ -471,6 +477,23 @@ class NodeDefinition:
                         f"[{idx}] must be a string, got "
                         f"{type(item).__name__}",
                     )
+
+    def _validate_workspace_timeout(self) -> None:
+        """A workspace node's timeout is bounded; see graph_compiler.
+
+        Checked on the read side too, so a persisted row that predates the
+        bound fails to load rather than compiling into a node that holds the
+        host-wide slot for as long as it likes.
+        """
+        if not self.workspace:
+            return
+        timeout = float(self.timeout_seconds or 0.0)
+        if not 0 < timeout <= 1800.0:
+            raise NodeDefinitionValidationError(
+                "timeout_seconds",
+                f"must be within 0 < t <= 1800 for a node declaring "
+                f"workspace: '{self.workspace}', got {timeout}",
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
