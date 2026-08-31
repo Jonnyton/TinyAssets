@@ -514,25 +514,28 @@ def _reconcile_operation(base_path: Path, operation_id: str, measured: int) -> N
 
 
 @contextlib.contextmanager
-def _acquired(chain: Any, mount: Any):
-    """Hold the capability for the duration of a use.
+def _acquired(chain: Any, node_key: str):
+    """Hold the capability for the length of ONE use.
 
-    ``chain.acquire_workspace`` hands back a mount whose descriptors are DUP'd
-    for this use, so a concurrent ``discard`` closing the originals cannot pull
-    the descriptor out from under a copy in flight. Falls back to the mount
-    itself where the chain does not offer it yet.
+    ``acquire_workspace`` hands back a mount holding ``os.dup``s of the
+    descriptors, which is what makes this worth doing: a parallel ``discard``
+    closes the ORIGINALS, the next checkout opens directories and gets the same
+    fd numbers back, and a holder still using them would be reading another
+    branch's repository. A dup cannot be reused while it is held.
+
+    ``None`` means never delivered or already revoked, decided inside the
+    chain's lock so an acquisition cannot straddle a revoke.
     """
-    acquire = getattr(chain, "acquire_workspace", None)
-    if acquire is None:
-        yield mount
-        return
-    with acquire(mount.node_id) as acquired:
-        if acquired is None:
-            raise _Refused(
-                "no_matching_packet",
-                f"the workspace '{mount.node_id}' was revoked before this operation",
-            )
-        yield getattr(acquired, "mount", acquired)
+    acquired = chain.acquire_workspace(node_key)
+    if acquired is None:
+        raise _Refused(
+            "no_matching_packet",
+            f"the workspace '{node_key}' was revoked before this operation",
+        )
+    try:
+        yield acquired.mount
+    finally:
+        acquired.release()
 
 
 def _owe_wipe(base_path: Path, lease: Any, *, run_id: str, universe_id: str) -> None:
@@ -953,7 +956,7 @@ def _push(
 
     # Hold the capability across the copy: a discard racing this must not be
     # able to close the descriptor mid-read.
-    with _acquired(chain, mount) as held:
+    with _acquired(chain, mount.node_id) as held:
         try:
             copied = _fs().copy_regular_file_beneath(
                 held.lease_fd, relative, destination, max_bytes=_MAX_BUNDLE_BYTES
@@ -1051,28 +1054,34 @@ def _discard(
         max_bytes=0,
         refusal="workspace_discard_failed",
     )
-    # Revoke FIRST: the capability must be gone before the bytes are owed, so
-    # nothing can open the workspace between the two.
-    _revoke_mount(chain, mount.node_id)
-    db = _pool_db(base_path)
-    conn = workspace_pool._connect(db)
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        workspace_pool.enqueue_discard(
-            conn,
-            run_id=str(run_id),
-            universe_id=universe_id,
-            storage_class=mount.storage_class,
-            lease=mount.lease if mount.storage_class == "scratch" else None,
-            repo_key=mount.repo_key,
-            generation=mount.generation,
-        )
-        conn.commit()
-    except Exception as exc:
-        conn.rollback()
-        raise _Refused("workspace_discard_failed", f"discard could not be recorded: {exc}")
-    finally:
-        conn.close()
+    # ACQUIRE, then revoke, then owe the bytes. Acquiring first means the facts
+    # the outbox entry is built from are read off a capability this call HOLDS,
+    # so a parallel discard cannot retire it underneath; revoking inside the
+    # hold blocks any new acquisition while the originals stay open until this
+    # release, and only then are the bytes owed.
+    with _acquired(chain, mount.node_id) as held:
+        _revoke_mount(chain, held.node_id or mount.node_id)
+        db = _pool_db(base_path)
+        conn = workspace_pool._connect(db)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            workspace_pool.enqueue_discard(
+                conn,
+                run_id=str(run_id),
+                universe_id=universe_id,
+                storage_class=held.storage_class,
+                lease=held.lease if held.storage_class == "scratch" else None,
+                repo_key=held.repo_key,
+                generation=held.generation,
+            )
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            raise _Refused(
+                "workspace_discard_failed", f"discard could not be recorded: {exc}"
+            ) from None
+        finally:
+            conn.close()
     return {
         "op": "discard",
         "repo": mount.repo_key,

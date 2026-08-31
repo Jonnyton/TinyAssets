@@ -250,6 +250,34 @@ def open_dir_nofollow(path: str | Path) -> int:
     return current
 
 
+def open_subdir_nofollow(parent_fd: int, name: str) -> int:
+    """Open ONE existing child directory through a handle the caller holds.
+
+    The public name for what the sink actually needs: descend exactly one
+    level, from a descriptor, without following a link. Not
+    :func:`open_dir_nofollow`, which starts at the root and walks a whole
+    absolute path - a caller that already holds the parent open would be
+    re-resolving every component above it, which is the window the handle
+    exists to close.
+
+    Refuses a name that is not a single safe component, a link or a
+    non-directory at that step (``UnsafePoolPath``), and anything at all
+    off-POSIX. The descriptor is the caller's to close.
+    """
+    _require_posix("open_subdir_nofollow")
+    _require_component(name)
+    fd = _open_child_dir(parent_fd, name)
+    try:
+        # O_DIRECTORY already refuses a non-directory on Linux; the fstat is
+        # what makes that a promise of THIS function rather than of the flag.
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise UnsafePoolPath(f"{name!r} is not a directory")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 def _open_dir_making_one_level(path: Path) -> int:
     """Open ``path``, creating that ONE last component if it is missing.
 

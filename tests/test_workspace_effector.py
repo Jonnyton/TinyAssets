@@ -8,7 +8,6 @@ that asserts THEY were called is what makes the seam real before the merge.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 from pathlib import Path
@@ -1239,24 +1238,21 @@ def test_a_discard_reserves_one_job_before_it_mutates(
 def test_a_push_holds_the_capability_across_the_copy(
     tmp_path: Path, chain: EffectChain, fs_spy, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A discard racing the copy must not close the descriptor mid-read."""
+    """A discard racing the copy must not pull the descriptor out from under it.
+
+    Driven through the REAL ``acquire_workspace``: the assertion is the chain's
+    own hold count observed DURING the copy, which a double could only claim.
+    """
     _root, universe_dir = _setup(tmp_path)
     _with_mount(chain, tmp_path, host=HOST, repo=REPO)
-    held: list[str] = []
+    holds_during_copy: list[int] = []
+    real_copy = wse._fs().copy_regular_file_beneath
 
-    class Acquired:
-        def __init__(self, mount):
-            self.mount = mount
+    def watching_copy(*args, **kwargs):
+        holds_during_copy.append(chain.workspace_holds.get("n0", 0))
+        return real_copy(*args, **kwargs)
 
-    @contextlib.contextmanager
-    def acquire(node_key):
-        held.append(f"enter:{node_key}")
-        try:
-            yield Acquired(chain.workspace_mount_or_none(node_key))
-        finally:
-            held.append("exit")
-
-    monkeypatch.setattr(chain, "acquire_workspace", acquire, raising=False)
+    monkeypatch.setattr(wse._fs(), "copy_regular_file_beneath", watching_copy, raising=False)
     result = _run(
         tmp_path,
         _packet(op="push", commit_sha=SHA, branch_slug="slug", workspace="n0"),
@@ -1265,20 +1261,47 @@ def test_a_push_holds_the_capability_across_the_copy(
         worker=FakeWorker({"ok": True, "bytes": 4, "resolved_sha": SHA}),
     )
     assert result.get("error_kind") is None, result
-    assert held == ["enter:n0", "exit"], "the copy runs inside the acquisition"
+    assert holds_during_copy == [1], "the copy must run inside a held acquisition"
+    assert chain.workspace_holds.get("n0", 0) == 0, "and the hold is released after"
+
+
+def test_the_held_descriptors_are_duplicates_not_the_originals(
+    tmp_path: Path, chain: EffectChain, fs_spy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The point of the dup: a discard closes the ORIGINALS and the next
+    checkout gets the same fd numbers back, so a holder on the original number
+    would be reading another branch's repository."""
+    _root, universe_dir = _setup(tmp_path)
+    lease_dir = _with_mount(chain, tmp_path, host=HOST, repo=REPO)
+    original = chain.workspace_mount_or_none("n0")
+    seen: list[Any] = []
+    real_copy = wse._fs().copy_regular_file_beneath
+
+    def watching_copy(dir_fd, *args, **kwargs):
+        seen.append(dir_fd)
+        return real_copy(dir_fd, *args, **kwargs)
+
+    monkeypatch.setattr(wse._fs(), "copy_regular_file_beneath", watching_copy, raising=False)
+    _run(
+        tmp_path,
+        _packet(op="push", commit_sha=SHA, branch_slug="slug", workspace="n0"),
+        universe_dir=universe_dir,
+        chain=chain,
+        worker=FakeWorker({"ok": True, "bytes": 4, "resolved_sha": SHA}),
+    )
+    assert seen, "the copy never ran"
+    # The fs_spy hands back string handles, so identity is what is observable:
+    # the copy used the ACQUIRED mount's handle, not the registry's object.
+    assert seen[0] == original.lease_fd or str(seen[0]).endswith(lease_dir.name)
 
 
 def test_a_push_whose_capability_was_revoked_is_refused(
-    tmp_path: Path, chain: EffectChain, fs_spy, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, chain: EffectChain, fs_spy
 ) -> None:
+    """Revoked for REAL, through the chain -- not a double that returns None."""
     _root, universe_dir = _setup(tmp_path)
     _with_mount(chain, tmp_path, host=HOST, repo=REPO)
-
-    @contextlib.contextmanager
-    def acquire(node_key):
-        yield None  # revoked between resolution and use
-
-    monkeypatch.setattr(chain, "acquire_workspace", acquire, raising=False)
+    chain.revoke_workspace("n0")
     worker = FakeWorker()
     result = _run(
         tmp_path,
@@ -1289,6 +1312,41 @@ def test_a_push_whose_capability_was_revoked_is_refused(
     )
     assert result["error_kind"] == "no_matching_packet"
     assert worker.requests == []
+
+
+def test_a_discard_acquires_before_it_revokes(
+    tmp_path: Path, chain: EffectChain, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The outbox entry is built from a capability this call HOLDS.
+
+    Revoking first and reading the mount afterwards would build the entry from
+    an object nothing owns any more.
+    """
+    _root, universe_dir = _setup(tmp_path)
+    _with_mount(chain, tmp_path, host=HOST, repo=REPO)
+    order: list[str] = []
+    real_acquire = chain.acquire_workspace
+    real_revoke = chain.revoke_workspace
+
+    def spy_acquire(node_key):
+        order.append("acquire")
+        return real_acquire(node_key)
+
+    def spy_revoke(node_key):
+        order.append(f"revoke:holds={chain.workspace_holds.get(node_key, 0)}")
+        return real_revoke(node_key)
+
+    monkeypatch.setattr(chain, "acquire_workspace", spy_acquire)
+    monkeypatch.setattr(chain, "revoke_workspace", spy_revoke)
+    result = _run(
+        tmp_path,
+        _packet(op="discard", workspace="n0"),
+        universe_dir=universe_dir,
+        chain=chain,
+    )
+    assert result.get("error_kind") is None, result
+    assert order == ["acquire", "revoke:holds=1"], order
+    assert chain.workspace_mount_or_none("n0") is None
 
 
 def test_a_lost_push_settles_as_unknown_never_failed(
