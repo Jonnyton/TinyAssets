@@ -103,9 +103,36 @@ def parse_repo(repo: Any) -> tuple[str, str]:
 
 
 def normalize_repo(repo: Any) -> str:
-    """The canonical ``owner/name``, validated."""
+    """The canonical ``owner/name``, validated and CASEFOLDED.
+
+    Casefolded because this feeds AUTHORITY KEYS -- ``format_git_scope`` and
+    ``workspace_consent_destination`` -- and one repository must not have two
+    of them. Measured against production on 2026-08-31, on a universe whose
+    owner had granted both workspace consents through the request rail:
+
+        jonnyton/tinyassets  -> checkout:http_79315...:github.com/jonnyton/tinyassets  active: True
+        Jonnyton/TinyAssets  -> checkout:http_79315...:github.com/Jonnyton/TinyAssets  active: False
+
+    Same repository, same connection, same grant. The second spelling is the
+    one GitHub displays and the one an agent reads off the repository page, so
+    the honest description of the old behaviour is that a legitimate grant
+    silently authorized nothing. It fails CLOSED, so it denied access rather
+    than widening it -- but a permission that depends on how you capitalise it
+    is not a permission, and this is the third time this key family has had two
+    spellings (see the host default in
+    :func:`workspace_consent_destination`).
+
+    Neither GitHub nor GitLab permits two repositories differing only by case,
+    so folding cannot merge two distinct repositories on the forges this
+    supports.
+
+    :func:`parse_repo` stays case-PRESERVING: the wire URL and the credential
+    path (``workspace_git.canonical_credential_path``) are built from the
+    caller's spelling, because that is the string git actually sends and the
+    broker binds to.
+    """
     owner, name = parse_repo(repo)
-    return f"{owner}/{name}"
+    return f"{owner.casefold()}/{name.casefold()}"
 
 
 def format_git_scope(kind: Any, repo: Any) -> str:
