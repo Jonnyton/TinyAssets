@@ -8,16 +8,28 @@ registry artifact -- and manifest formats keep inventing new ones (``pip`` optio
 PEP 508 direct references, ``npm`` aliases, workspace protocols), so each new spelling
 is a silent admission until somebody notices. Here the parser knows one Python record
 shape (``name[extras]==version ; marker --hash=sha256:...``) and one Node resolution
-shape (a ``https://registry.npmjs.org/`` tarball with an SRI digest), so an unknown
+shape (a ``registry.npmjs.org`` tarball with a ``sha512-`` digest), so an unknown
 spelling fails to parse and is refused with a named reason rather than passed through.
+
+Python records are parsed by ``packaging`` -- the same library the index and the
+installer use -- so admission cannot disagree with pip about what a line means. The
+pre-checks (option lines, includes, direct references, paths, VCS schemes, ``${VAR}``)
+run *before* that parse so each one keeps its precise reason, and the marker allowlist
+runs *after* it, because ``packaging`` accepts PEP 508 variables this sink cannot reason
+about. Node manifests are parsed as JSON with duplicate keys and non-finite numbers
+refused, since either lets the admitted document differ from the installed one.
 
 The module is pure: it parses text and returns an admitted plan or raises
 :class:`ProvisionRefused`. No process is started, no network address is opened, no file
-is read, and no configuration is consulted -- the caller reads the manifests through the
-held lease directory handle and hands the decoded text here. A separate resolver
-consumes the returned plan; binding the later offline install to
-:attr:`PythonPlan.digest` / :attr:`NodePlan.digest` is what makes the admitted text and
-the installed text the same text.
+is read, and no configuration is consulted -- ``urllib.parse`` appears only to split a
+``resolved`` URL, which does no I/O. The caller reads the manifests through the held
+lease directory handle and hands the decoded text here.
+
+The resolver stages **only** the normalized text this module returns
+(:attr:`PythonPlan.normalized_text`, :attr:`NodePlan.normalized_package_json`,
+:attr:`NodePlan.normalized_lockfile`); the original file text never reaches pip or npm.
+The digest covers exactly those bytes, which is what binds the later offline install to
+what was admitted.
 
 Refusal reasons are a closed set (:data:`REFUSAL_REASONS`) so the sink can map each one
 to one actionable failure class (design D6). ``not_regular_file`` is raised by the
@@ -33,6 +45,12 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final, NoReturn
+from urllib.parse import urlsplit
+
+from packaging.markers import InvalidMarker, Marker
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
+from packaging.version import InvalidVersion, Version
 
 __all__ = [
     "REFUSAL_REASONS",
@@ -80,7 +98,7 @@ REFUSAL_REASONS: Final[frozenset[str]] = frozenset(
 
 MAX_DETAIL_CHARS: Final[int] = 200
 
-_REGISTRY_PREFIX: Final[str] = "https://registry.npmjs.org/"
+_REGISTRY_NETLOC: Final[str] = "registry.npmjs.org"
 _NPM_DEPENDENCY_FIELDS: Final[tuple[str, ...]] = (
     "dependencies",
     "devDependencies",
@@ -93,23 +111,18 @@ _NPM_INSTALLED_FIELDS: Final[tuple[str, ...]] = (
     "devDependencies",
     "optionalDependencies",
 )
+# Dependency maps that may appear *inside* a lockfile entry.
+_NPM_ENTRY_FIELDS: Final[tuple[str, ...]] = (
+    "dependencies",
+    "optionalDependencies",
+    "peerDependencies",
+)
 
 _USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@]+@")
 _PEP508_NAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
-_NAME_SEPARATORS = re.compile(r"[-_.]+")
 _HEAD = re.compile(r"^(?P<name>[^\[\]\s]+)\s*(?:\[(?P<extras>[^\[\]]*)\])?$")
-_SHA256_HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
-# PEP 440, without the tolerated ``v`` prefix and without wildcards: a pin is exact.
-_VERSION = re.compile(
-    r"^(?:[0-9]+!)?[0-9]+(?:\.[0-9]+)*"
-    r"(?:[-_.]?(?:a|b|c|rc|alpha|beta|pre|preview)[-_.]?[0-9]*)?"
-    r"(?:-[0-9]+|[-_.]?(?:post|rev|r)[-_.]?[0-9]*)?"
-    r"(?:[-_.]?dev[-_.]?[0-9]*)?"
-    r"(?:\+[a-z0-9]+(?:[-_.][a-z0-9]+)*)?$",
-    re.IGNORECASE,
-)
+_SHA256_HASH = re.compile(r"^[0-9a-f]{64}$")
 _MAX_NAME_CHARS: Final[int] = 128
-_MAX_VERSION_CHARS: Final[int] = 64
 
 _VCS_SCHEMES: Final[tuple[str, ...]] = ("git+", "hg+", "svn+", "bzr+")
 _INCLUDE_OPTIONS: Final[frozenset[str]] = frozenset(
@@ -118,23 +131,20 @@ _INCLUDE_OPTIONS: Final[frozenset[str]] = frozenset(
 _LOCAL_PREFIXES: Final[tuple[str, ...]] = ("./", "../", ".\\", "..\\", "/", "\\", "~")
 _DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
 
+# ``packaging`` accepts every PEP 508 variable. These are the ones the sink can reason
+# about; ``extra``, ``platform_release``, ``platform_version`` and friends are refused
+# even though they parse, which is why this allowlist runs after the packaging parse.
 _MARKER_VARIABLES: Final[frozenset[str]] = frozenset(
     {
         "python_version",
+        "python_full_version",
         "sys_platform",
         "platform_machine",
         "platform_system",
         "implementation_name",
+        "os_name",
     }
 )
-_MARKER_FLIP: Final[Mapping[str, str]] = {
-    "==": "==",
-    "!=": "!=",
-    ">=": "<=",
-    "<=": ">=",
-    "<": ">",
-    ">": "<",
-}
 _MARKER_KEYWORDS: Final[frozenset[str]] = frozenset({"and", "or", "not", "in"})
 _MARKER_TOKEN = re.compile(
     r"(?P<lparen>\()"
@@ -152,7 +162,6 @@ _SEMVER_RANGE = re.compile(r"^[0-9A-Za-z.+*^~<>=|,\- ]+$")
 _MAX_RANGE_CHARS: Final[int] = 128
 _NPM_VERSION = re.compile(r"^[0-9][0-9A-Za-z.+\-]*$")
 _SRI_SHA512 = re.compile(r"^sha512-[A-Za-z0-9+/]{86}==$")
-_SRI_SHA256 = re.compile(r"^sha256-[A-Za-z0-9+/]{43}=$")
 
 
 class ProvisionRefused(Exception):
@@ -235,7 +244,7 @@ def _check_text_size(text: str, max_bytes: int, label: str) -> None:
 
 @dataclass(frozen=True, slots=True)
 class PythonRecord:
-    """One admitted requirement: pinned, hashed, and normalised."""
+    """One admitted requirement: pinned, hashed, and normalized."""
 
     name: str
     extras: tuple[str, ...]
@@ -244,7 +253,7 @@ class PythonRecord:
     hashes: tuple[str, ...]
 
     def canonical(self) -> str:
-        """The single canonical line this record contributes to the admitted text."""
+        """The single canonical line this record contributes to the normalized text."""
         extras = f"[{','.join(self.extras)}]" if self.extras else ""
         marker = f" ; {self.marker}" if self.marker else ""
         hashes = "".join(f" --hash={value}" for value in self.hashes)
@@ -253,11 +262,15 @@ class PythonRecord:
 
 @dataclass(frozen=True, slots=True)
 class PythonPlan:
-    """The admitted requirement set, its canonical text, and the digest binding them."""
+    """The admitted requirement set, its normalized text, and the digest binding them.
+
+    ``normalized_text`` is the only text the resolver may pass to pip: one canonical
+    record per line, sorted. ``digest`` is sha256 over exactly those bytes.
+    """
 
     records: tuple[PythonRecord, ...]
     digest: str
-    normalised_text: str
+    normalized_text: str
 
 
 def admit_requirements(text: str, *, max_bytes: int = 256 * 1024) -> PythonPlan:
@@ -270,7 +283,8 @@ def admit_requirements(text: str, *, max_bytes: int = 256 * 1024) -> PythonPlan:
 
     Checks run in a fixed order so one input always produces one reason: ``${VAR}``
     references, option lines, VCS schemes, direct references, local paths, then the
-    record grammar (name/extras, operator/version, marker, hashes).
+    name/extras, then the marker, then the ``packaging`` parse, then the pin, then the
+    hashes.
     """
     _check_text_size(text, max_bytes, "requirements")
     records: list[PythonRecord] = []
@@ -292,10 +306,10 @@ def admit_requirements(text: str, *, max_bytes: int = 256 * 1024) -> PythonPlan:
         records.append(record)
 
     canonical_lines = sorted(record.canonical() for record in records)
-    normalised = "".join(f"{value}\n" for value in canonical_lines)
-    digest = hashlib.sha256(normalised.encode("utf-8")).hexdigest()
+    normalized = "".join(f"{value}\n" for value in canonical_lines)
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
     ordered = tuple(sorted(records, key=lambda record: record.canonical()))
-    return PythonPlan(records=ordered, digest=digest, normalised_text=normalised)
+    return PythonPlan(records=ordered, digest=digest, normalized_text=normalized)
 
 
 def _strip_comment(line: str) -> str:
@@ -359,15 +373,36 @@ def _parse_requirement(line: str, line_no: int) -> PythonRecord:
         _refuse("local_path", line, line_no)
 
     spec, hash_text = _split_hashes(line)
-    marker_text: str | None
     body, marker_text = _split_marker(spec)
-    head, tail = _split_operator(body.strip())
-    name, extras = _parse_head(head.strip(), line, line_no)
-    version = _parse_pin(tail.strip(), line, line_no)
-    marker = _parse_marker(marker_text, line_no) if marker_text is not None else None
+    # Name and marker are checked before the packaging parse purely so that an invalid
+    # requirement reports which half was wrong; packaging reports one error for all.
+    head, _tail = _split_operator(body.strip())
+    _check_head(head.strip(), line, line_no)
+    if marker_text is not None and not marker_text.strip():
+        _refuse("bad_marker", line, line_no)
+
+    try:
+        requirement = Requirement(spec)
+    except InvalidRequirement:
+        if marker_text is not None and not _marker_parses(marker_text):
+            _refuse("bad_marker", marker_text, line_no)
+        _refuse("unpinned", line, line_no)
+
+    if requirement.url is not None:
+        _refuse("direct_url", line, line_no)
+    version = _admitted_version(requirement, line, line_no)
+    marker = None
+    if requirement.marker is not None:
+        marker = str(requirement.marker)
+        _check_marker_variables(marker, line_no)
+    extras = tuple(sorted(canonicalize_name(extra) for extra in requirement.extras))
     hashes = _parse_hashes(hash_text, line, line_no)
     return PythonRecord(
-        name=name, extras=extras, version=version, marker=marker, hashes=hashes
+        name=canonicalize_name(requirement.name),
+        extras=extras,
+        version=version,
+        marker=marker,
+        hashes=hashes,
     )
 
 
@@ -410,7 +445,8 @@ def _split_operator(body: str) -> tuple[str, str]:
     return body, ""
 
 
-def _parse_head(head: str, line: str, line_no: int) -> tuple[str, tuple[str, ...]]:
+def _check_head(head: str, line: str, line_no: int) -> None:
+    """Validate ``name[extras]`` so a malformed name reports ``bad_name``, not a pin."""
     match = _HEAD.match(head)
     if match is None or not head:
         _refuse("bad_name", line, line_no)
@@ -419,35 +455,31 @@ def _parse_head(head: str, line: str, line_no: int) -> tuple[str, tuple[str, ...
         _refuse("bad_name", name, line_no)
     raw_extras = match.group("extras")
     if raw_extras is None:
-        return _normalise_name(name), ()
+        return
     parts = [part.strip() for part in raw_extras.split(",")]
     if not parts or any(not part for part in parts):
         _refuse("bad_name", line, line_no)
     for part in parts:
         if len(part) > _MAX_NAME_CHARS or not _PEP508_NAME.match(part):
             _refuse("bad_name", part, line_no)
-    extras = tuple(sorted({_normalise_name(part) for part in parts}))
-    return _normalise_name(name), extras
 
 
-def _normalise_name(name: str) -> str:
-    """PEP 503 normalisation -- the form the resolver and the index agree on."""
-    return _NAME_SEPARATORS.sub("-", name).lower()
-
-
-def _parse_pin(tail: str, line: str, line_no: int) -> str:
-    # ``===`` is named explicitly rather than left to the version regex: it is a real
-    # PEP 440 operator (arbitrary equality, matched as a string), so it stays refused
-    # even if the version grammar below is ever loosened.
-    if not tail.startswith("==") or tail.startswith("==="):
+def _admitted_version(requirement: Requirement, line: str, line_no: int) -> str:
+    """Require exactly one ``==`` specifier holding a wildcard-free PEP 440 version."""
+    specifiers = list(requirement.specifier)
+    if len(specifiers) != 1:
         _refuse("unpinned", line, line_no)
-    version = tail[2:].strip()
-    if not version or len(version) > _MAX_VERSION_CHARS or not _VERSION.match(version):
+    specifier = specifiers[0]
+    if specifier.operator != "==" or "*" in specifier.version:
         _refuse("unpinned", line, line_no)
-    return version
+    try:
+        return str(Version(specifier.version))
+    except InvalidVersion:
+        _refuse("unpinned", line, line_no)
 
 
 def _parse_hashes(hash_text: str, line: str, line_no: int) -> tuple[str, ...]:
+    """Collect the sha256 hex digests; any other algorithm names itself in the detail."""
     tokens = hash_text.split()
     values: list[str] = []
     index = 0
@@ -462,9 +494,12 @@ def _parse_hashes(hash_text: str, line: str, line_no: int) -> tuple[str, ...]:
             value = tokens[index]
         else:
             _refuse("missing_hash", token, line_no)
-        if not _SHA256_HASH.match(value):
-            _refuse("missing_hash", value, line_no)
-        values.append(value)
+        algorithm, _, digest = value.partition(":")
+        if algorithm != "sha256":
+            _refuse("missing_hash", f"unsupported hash algorithm: {algorithm}", line_no)
+        if not _SHA256_HASH.match(digest):
+            _refuse("missing_hash", f"malformed sha256 digest: {digest}", line_no)
+        values.append(f"sha256:{digest}")
         index += 1
     if not values:
         _refuse("missing_hash", line, line_no)
@@ -472,26 +507,32 @@ def _parse_hashes(hash_text: str, line: str, line_no: int) -> tuple[str, ...]:
 
 
 # --------------------------------------------------------------------------------------
-# PEP 508 markers: a recursive-descent validator over a conservative subset
+# PEP 508 markers: packaging parses, then a conservative allowlist walk
 # --------------------------------------------------------------------------------------
 
 
-def _parse_marker(text: str, line_no: int) -> str:
-    """Validate a marker and return its canonical text.
+def _marker_parses(text: str) -> bool:
+    try:
+        Marker(text)
+    except (InvalidMarker, ValueError):
+        return False
+    return True
 
-    Only the five variables the sink can reason about are allowed, compared with
-    ``== != >= <= < >`` against a plain ASCII string literal, combined with ``and``/
-    ``or`` and parentheses. The marker is parsed into a tree and re-serialised, never
-    interpreted as Python: a comparison written literal-first is flipped to
-    variable-first and commutative operands are ordered, so two spellings of one
-    condition produce one digest.
+
+def _check_marker_variables(text: str, line_no: int) -> None:
+    """Refuse a marker outside the sink's subset, after ``packaging`` has accepted it.
+
+    ``packaging`` admits every PEP 508 variable, including ``extra`` and the
+    ``platform_*`` strings the resolver jail cannot answer for. This re-reads the
+    normalized marker with a small recursive-descent validator -- never interpreting it
+    as Python -- and requires every comparison to put one allowed variable against one
+    plain ASCII literal.
     """
     stripped = text.strip()
     if not stripped or len(stripped) > _MAX_MARKER_CHARS:
         _refuse("bad_marker", text, line_no)
     tokens = _tokenise_marker(stripped, line_no)
-    parser = _MarkerParser(tokens, stripped, line_no)
-    return _marker_text(parser.parse())
+    _MarkerValidator(tokens, stripped, line_no).validate()
 
 
 def _tokenise_marker(text: str, line_no: int) -> list[tuple[str, str]]:
@@ -505,13 +546,14 @@ def _tokenise_marker(text: str, line_no: int) -> list[tuple[str, str]]:
         if match is None:
             _refuse("bad_marker", text[position:], line_no)
         kind = match.lastgroup
-        assert kind is not None
+        if kind is None:
+            _refuse("bad_marker", text[position:], line_no)
         tokens.append((kind, match.group()))
         position = match.end()
     return tokens
 
 
-class _MarkerParser:
+class _MarkerValidator:
     """Recursive descent over ``or`` > ``and`` > parenthesised term > comparison."""
 
     def __init__(self, tokens: Sequence[tuple[str, str]], text: str, line_no: int) -> None:
@@ -520,11 +562,10 @@ class _MarkerParser:
         self._line_no = line_no
         self._index = 0
 
-    def parse(self) -> tuple[Any, ...]:
-        node = self._or()
+    def validate(self) -> None:
+        self._or()
         if self._peek() is not None:
             _refuse("bad_marker", self._text, self._line_no)
-        return node
 
     def _peek(self) -> tuple[str, str] | None:
         if self._index >= len(self._tokens):
@@ -538,41 +579,38 @@ class _MarkerParser:
         self._index += 1
         return token
 
-    def _or(self) -> tuple[Any, ...]:
-        parts = [self._and()]
+    def _or(self) -> None:
+        self._and()
         while self._peek() == ("word", "or"):
             self._index += 1
-            parts.append(self._and())
-        return _combine("or", parts)
+            self._and()
 
-    def _and(self) -> tuple[Any, ...]:
-        parts = [self._term()]
+    def _and(self) -> None:
+        self._term()
         while self._peek() == ("word", "and"):
             self._index += 1
-            parts.append(self._term())
-        return _combine("and", parts)
+            self._term()
 
-    def _term(self) -> tuple[Any, ...]:
+    def _term(self) -> None:
         if self._peek() == ("lparen", "("):
             self._index += 1
-            node = self._or()
+            self._or()
             if self._peek() != ("rparen", ")"):
                 _refuse("bad_marker", self._text, self._line_no)
             self._index += 1
-            return node
-        return self._comparison()
+            return
+        self._comparison()
 
-    def _comparison(self) -> tuple[Any, ...]:
+    def _comparison(self) -> None:
         left = self._operand()
         operator = self._take()
         if operator[0] != "op":
             _refuse("bad_marker", operator[1], self._line_no)
         right = self._operand()
-        if left[0] == "var" and right[0] == "lit":
-            return ("cmp", left[1], operator[1], right[1])
-        if left[0] == "lit" and right[0] == "var":
-            return ("cmp", right[1], _MARKER_FLIP[operator[1]], left[1])
-        _refuse("bad_marker", self._text, self._line_no)
+        # One side must be a literal: variable-to-variable says nothing the sink can act
+        # on, and the resolver jail would have to answer for both sides.
+        if {left[0], right[0]} != {"var", "lit"}:
+            _refuse("bad_marker", self._text, self._line_no)
 
     def _operand(self) -> tuple[str, str]:
         kind, value = self._take()
@@ -588,31 +626,6 @@ class _MarkerParser:
         _refuse("bad_marker", value, self._line_no)
 
 
-def _combine(kind: str, parts: Sequence[tuple[Any, ...]]) -> tuple[Any, ...]:
-    if len(parts) == 1:
-        return parts[0]
-    flattened: list[tuple[Any, ...]] = []
-    for part in parts:
-        if part[0] == kind:
-            flattened.extend(part[1])
-        else:
-            flattened.append(part)
-    return (kind, tuple(sorted(flattened, key=_marker_text)))
-
-
-def _marker_text(node: tuple[Any, ...]) -> str:
-    if node[0] == "cmp":
-        return f'{node[1]} {node[2]} "{node[3]}"'
-    joiner = " and " if node[0] == "and" else " or "
-    parts = []
-    for child in node[1]:
-        text = _marker_text(child)
-        if node[0] == "and" and child[0] == "or":
-            text = f"({text})"
-        parts.append(text)
-    return joiner.join(parts)
-
-
 # --------------------------------------------------------------------------------------
 # Node: package.json + package-lock.json
 # --------------------------------------------------------------------------------------
@@ -620,7 +633,7 @@ def _marker_text(node: tuple[Any, ...]) -> str:
 
 @dataclass(frozen=True, slots=True)
 class NodePackage:
-    """One admitted lockfile entry: a registry tarball with an SRI digest."""
+    """One admitted lockfile entry: a registry tarball with a sha512 SRI digest."""
 
     name: str
     version: str
@@ -630,13 +643,18 @@ class NodePackage:
 
 @dataclass(frozen=True, slots=True)
 class NodePlan:
-    """The admitted Node install, its canonical manifests, and the digest binding them."""
+    """The admitted Node install, its normalized manifests, and the digest binding them.
+
+    ``normalized_package_json`` and ``normalized_lockfile`` are canonical JSON and are
+    the only texts the resolver may stage; ``digest`` is sha256 over the two joined by a
+    NUL byte.
+    """
 
     packages: tuple[NodePackage, ...]
     digest: str
     lockfile_version: int
-    canonical_manifest: str
-    canonical_lockfile: str
+    normalized_package_json: str
+    normalized_lockfile: str
 
 
 def admit_node(
@@ -648,10 +666,10 @@ def admit_node(
     """Admit a ``package.json`` plus its ``package-lock.json``, or refuse.
 
     A lockfile is required: without one there is nothing pinned to admit. Every entry
-    other than the root must resolve to a ``https://registry.npmjs.org/`` tarball with a
-    ``sha512-``/``sha256-`` SRI digest, and every dependency the manifest names must have
-    a top-level lockfile entry. Refusals carry no ``line_no`` -- JSON has no line the
-    sink can act on, so the detail names the offending key.
+    other than the root must resolve to a ``registry.npmjs.org`` tarball over HTTPS with
+    a ``sha512-`` SRI digest, and every dependency the manifest names must have a
+    top-level lockfile entry. Refusals carry no ``line_no`` -- JSON has no line the sink
+    can act on, so the detail names the offending key.
     """
     _check_text_size(package_json_text, max_bytes, "package.json")
     if lockfile_text is None or not lockfile_text.strip():
@@ -676,17 +694,17 @@ def admit_node(
             if name not in lock_names:
                 _refuse("non_registry_resolution", f"{field} {name}: not in lockfile")
 
-    canonical_manifest = _canonical_json(manifest)
-    canonical_lockfile = _canonical_json(lockfile)
+    normalized_manifest = _canonical_json(manifest)
+    normalized_lockfile = _canonical_json(lockfile)
     digest = hashlib.sha256(
-        canonical_manifest.encode("utf-8") + b"\x00" + canonical_lockfile.encode("utf-8")
+        normalized_manifest.encode("utf-8") + b"\x00" + normalized_lockfile.encode("utf-8")
     ).hexdigest()
     return NodePlan(
         packages=packages,
         digest=digest,
         lockfile_version=version,
-        canonical_manifest=canonical_manifest,
-        canonical_lockfile=canonical_lockfile,
+        normalized_package_json=normalized_manifest,
+        normalized_lockfile=normalized_lockfile,
     )
 
 
@@ -721,6 +739,12 @@ def _canonical_json(value: Mapping[str, Any]) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
+def _check_no_workspaces(container: Mapping[str, Any], label: str) -> None:
+    """A ``workspaces`` key anywhere means a local package tree this slice cannot pin."""
+    if "workspaces" in container:
+        _refuse("workspace_dependency", f"{label} declares workspaces")
+
+
 def _optional_peers(manifest: Mapping[str, Any]) -> frozenset[str]:
     meta = manifest.get("peerDependenciesMeta")
     if not isinstance(meta, dict):
@@ -732,29 +756,34 @@ def _optional_peers(manifest: Mapping[str, Any]) -> frozenset[str]:
     )
 
 
-def _admit_manifest_dependencies(manifest: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
-    if "workspaces" in manifest:
-        _refuse("workspace_dependency", "package.json declares workspaces")
-    for field in ("bundleDependencies", "bundledDependencies"):
-        if field in manifest:
-            _refuse("url_dependency", f"package.json declares {field}")
-
+def _check_dependency_map(
+    container: Mapping[str, Any], fields: Sequence[str], label: str
+) -> dict[str, tuple[str, ...]]:
+    """Every value in each named map must be a plain semver range."""
     declared: dict[str, tuple[str, ...]] = {}
-    for field in _NPM_DEPENDENCY_FIELDS:
-        block = manifest.get(field)
+    for field in fields:
+        block = container.get(field)
         if block is None:
             continue
         if not isinstance(block, dict):
-            _refuse("bad_json", f"{field} is not an object")
+            _refuse("bad_json", f"{label}{field} is not an object")
         names: list[str] = []
         for name, spec in block.items():
-            _check_npm_name(name, f"{field} {name}")
+            _check_npm_name(name, f"{label}{field} {name}")
             if not isinstance(spec, str):
-                _refuse("bad_json", f"{field} {name}: version is not a string")
-            _check_range(name, spec, field)
+                _refuse("bad_json", f"{label}{field} {name}: version is not a string")
+            _check_range(name, spec, f"{label}{field}")
             names.append(name)
         declared[field] = tuple(names)
     return declared
+
+
+def _admit_manifest_dependencies(manifest: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
+    _check_no_workspaces(manifest, "package.json")
+    for field in ("bundleDependencies", "bundledDependencies"):
+        if field in manifest:
+            _refuse("url_dependency", f"package.json declares {field}")
+    return _check_dependency_map(manifest, _NPM_DEPENDENCY_FIELDS, "")
 
 
 def _check_npm_name(name: str, label: str) -> None:
@@ -793,6 +822,7 @@ def _admit_lockfile(
     version = lockfile.get("lockfileVersion")
     if not isinstance(version, int) or isinstance(version, bool) or version not in (2, 3):
         _refuse("lockfile_version", f"lockfileVersion={version!r}; only 2 and 3 are admitted")
+    _check_no_workspaces(lockfile, "package-lock.json")
     entries = lockfile.get("packages")
     if not isinstance(entries, dict):
         _refuse("lockfile_version", "lockfile has no packages map")
@@ -800,10 +830,13 @@ def _admit_lockfile(
     packages: set[NodePackage] = set()
     top_level: set[str] = set()
     for key, entry in entries.items():
-        if key == "":
-            continue
         if not isinstance(entry, dict):
             _refuse("bad_json", f"{key}: entry is not an object")
+        label = "root entry" if key == "" else key
+        _check_no_workspaces(entry, label)
+        _check_dependency_map(entry, _NPM_ENTRY_FIELDS, f"{label} ")
+        if key == "":
+            continue
         if entry.get("link") is True:
             _refuse("workspace_dependency", f"{key}: link")
         if not key.startswith("node_modules/"):
@@ -834,9 +867,12 @@ def _entry_version(key: str, entry: Mapping[str, Any]) -> str:
 
 
 def _entry_resolved(key: str, entry: Mapping[str, Any]) -> str:
+    """Require an HTTPS ``registry.npmjs.org`` tarball, decided by parsing the URL."""
     value = entry.get("resolved")
-    if not isinstance(value, str) or not value:
+    if value is None:
         _refuse("non_registry_resolution", f"{key}: no resolved")
+    if not isinstance(value, str) or not value:
+        _refuse("non_registry_resolution", f"{key}: resolved={value!r}")
     lowered = value.lower()
     if lowered.startswith("file:") or value.startswith(("./", "../", "/", "~/")):
         _refuse("file_dependency", f"{key}: {value}")
@@ -844,15 +880,35 @@ def _entry_resolved(key: str, entry: Mapping[str, Any]) -> str:
         _refuse("git_dependency", f"{key}: {value}")
     if lowered.startswith("http://"):
         _refuse("url_dependency", f"{key}: {value}")
-    if value.startswith(_REGISTRY_PREFIX):
-        return value
-    if lowered.startswith("https://"):
-        _refuse("non_registry_resolution", f"{key}: {value}")
-    _refuse("url_dependency", f"{key}: {value}")
+    try:
+        parts = urlsplit(value)
+    except ValueError as exc:
+        _refuse("url_dependency", f"{key}: {exc}")
+    if parts.scheme != "https":
+        _refuse("url_dependency", f"{key}: scheme {parts.scheme!r}")
+    # Checked before the host comparison so the credential is never echoed in a detail.
+    if "@" in parts.netloc:
+        _refuse("non_registry_resolution", f"{key}: resolved carries userinfo")
+    # netloc, not hostname: a port belongs to a different address.
+    if parts.netloc != _REGISTRY_NETLOC:
+        _refuse("non_registry_resolution", f"{key}: host {parts.netloc!r}")
+    if not parts.path.endswith(".tgz"):
+        _refuse("non_registry_resolution", f"{key}: path {parts.path!r}")
+    if parts.query or parts.fragment:
+        _refuse("non_registry_resolution", f"{key}: resolved carries a query or fragment")
+    return value
 
 
 def _entry_integrity(key: str, entry: Mapping[str, Any]) -> str:
+    """Require ``sha512-``; a weaker algorithm names itself in the detail."""
     value = entry.get("integrity")
-    if not isinstance(value, str) or not (_SRI_SHA512.match(value) or _SRI_SHA256.match(value)):
+    if value is None:
+        _refuse("non_registry_resolution", f"{key}: no integrity")
+    if not isinstance(value, str) or "-" not in value:
+        _refuse("non_registry_resolution", f"{key}: integrity={value!r}")
+    algorithm = value.split("-", 1)[0]
+    if algorithm != "sha512":
+        _refuse("non_registry_resolution", f"{key}: integrity algorithm {algorithm!r}")
+    if not _SRI_SHA512.match(value):
         _refuse("non_registry_resolution", f"{key}: integrity={value!r}")
     return value

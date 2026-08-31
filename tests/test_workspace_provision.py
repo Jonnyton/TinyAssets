@@ -23,6 +23,7 @@ from tinyassets.workspace_provision import (
 HASH_A = "sha256:" + "a" * 64
 HASH_B = "sha256:" + "b" * 64
 SRI_512 = "sha512-" + "A" * 86 + "=="
+SRI_512_OTHER = "sha512-" + "B" * 86 + "=="
 SRI_256 = "sha256-" + "B" * 43 + "="
 REGISTRY = "https://registry.npmjs.org/"
 
@@ -97,13 +98,27 @@ REFUSED_PYTHON: list[tuple[str, str, str, int | None]] = [
     ("bare_name", f"pkg --hash={HASH_A}", "unpinned", 1),
     ("wildcard", f"pkg==1.0.* --hash={HASH_A}", "unpinned", 1),
     ("two_specifiers", f"pkg==1.0,!=1.1 --hash={HASH_A}", "unpinned", 1),
-    ("v_prefix", f"pkg==v1.0 --hash={HASH_A}", "unpinned", 1),
+    ("empty_version", f"pkg== --hash={HASH_A}", "unpinned", 1),
+    ("not_a_version", f"pkg==one.point.oh --hash={HASH_A}", "unpinned", 1),
     ("no_hash", "pkg==1.0", "missing_hash", 1),
     ("wrong_algorithm", "pkg==1.0 --hash=md5:abcdef", "missing_hash", 1),
     ("short_hash", "pkg==1.0 --hash=sha256:abcd", "missing_hash", 1),
     ("uppercase_hash", "pkg==1.0 --hash=sha256:" + "A" * 64, "missing_hash", 1),
     ("dangling_hash_flag", "pkg==1.0 --hash", "missing_hash", 1),
-    ("unknown_marker_variable", f'pkg==1.0 ; os_name == "nt" --hash={HASH_A}', "bad_marker", 1),
+    (
+        "marker_platform_release",
+        f'pkg==1.0 ; platform_release > "5" --hash={HASH_A}',
+        "bad_marker",
+        1,
+    ),
+    ("marker_extra", f'pkg==1.0 ; extra == "dev" --hash={HASH_A}', "bad_marker", 1),
+    (
+        "marker_platform_version",
+        f'pkg==1.0 ; platform_version == "x" --hash={HASH_A}',
+        "bad_marker",
+        1,
+    ),
+    ("marker_unknown_variable", f'pkg==1.0 ; foo_bar == "x" --hash={HASH_A}', "bad_marker", 1),
     ("marker_missing_operator", f"pkg==1.0 ; python_version --hash={HASH_A}", "bad_marker", 1),
     (
         "marker_trailing_and",
@@ -172,6 +187,16 @@ def test_refused_reasons_are_all_in_the_closed_set() -> None:
         assert reason in wp.REFUSAL_REASONS
 
 
+def test_hash_refusal_details_name_the_problem() -> None:
+    with pytest.raises(ProvisionRefused) as caught:
+        admit_requirements("pkg==1.0 --hash=md5:abcdef")
+    assert "unsupported hash algorithm: md5" in caught.value.detail
+
+    with pytest.raises(ProvisionRefused) as caught:
+        admit_requirements("pkg==1.0 --hash=sha256:abcd")
+    assert "malformed sha256 digest" in caught.value.detail
+
+
 def test_requirements_over_max_bytes_have_no_line_number() -> None:
     with pytest.raises(ProvisionRefused) as caught:
         admit_requirements(f"pkg==1.0 --hash={HASH_A}\n", max_bytes=8)
@@ -199,7 +224,7 @@ def test_admits_a_plain_pin() -> None:
     assert record.hashes == (HASH_A,)
 
 
-def test_admits_and_normalises_name_and_extras() -> None:
+def test_admits_and_normalizes_name_and_extras() -> None:
     plan = admit_requirements(f"Pkg_Name.Two[Extra]==1.0 --hash={HASH_A}\n")
     (record,) = plan.records
     assert record.name == "pkg-name-two"
@@ -210,13 +235,46 @@ def test_admits_multiple_extras_in_canonical_order() -> None:
     plan = admit_requirements(f"pkg[b,a]==1.0 --hash={HASH_A}\n")
     (record,) = plan.records
     assert record.extras == ("a", "b")
-    assert plan.normalised_text == f"pkg[a,b]==1.0 --hash={HASH_A}\n"
+    assert plan.normalized_text == f"pkg[a,b]==1.0 --hash={HASH_A}\n"
+
+
+@pytest.mark.parametrize(
+    ("written", "normalized"),
+    [
+        pytest.param("1.0", "1.0", id="already_canonical"),
+        pytest.param("v1.0", "1.0", id="v_prefix"),
+        pytest.param("1.0-1", "1.0.post1", id="implicit_post"),
+        pytest.param("2.0RC1", "2.0rc1", id="case_and_separator"),
+        pytest.param("1.0.0+local.1", "1.0.0+local.1", id="local_version"),
+    ],
+)
+def test_admits_and_normalizes_pep440_versions(written: str, normalized: str) -> None:
+    """packaging is the parser, so admission agrees with pip about what a pin means."""
+    plan = admit_requirements(f"pkg=={written} --hash={HASH_A}\n")
+    assert plan.records[0].version == normalized
 
 
 def test_admits_a_marker() -> None:
     plan = admit_requirements(f'pkg==1.0 ; python_version >= "3.11" --hash={HASH_A}\n')
     (record,) = plan.records
     assert record.marker == 'python_version >= "3.11"'
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        'python_version >= "3.11"',
+        'python_full_version >= "3.11.2"',
+        'sys_platform == "linux"',
+        'platform_machine == "x86_64"',
+        'platform_system == "Linux"',
+        'implementation_name == "cpython"',
+        'os_name == "posix"',
+    ],
+)
+def test_admits_every_allowed_marker_variable(marker: str) -> None:
+    plan = admit_requirements(f"pkg==1.0 ; {marker} --hash={HASH_A}\n")
+    assert plan.records[0].marker == marker
 
 
 def test_admits_a_compound_marker_with_parentheses() -> None:
@@ -251,7 +309,7 @@ def test_admits_comments_and_blank_lines() -> None:
     text = f"# pinned by the lock\n\npkg==1.0 --hash={HASH_A}  # keep\n\n"
     plan = admit_requirements(text)
     assert len(plan.records) == 1
-    assert plan.normalised_text == f"pkg==1.0 --hash={HASH_A}\n"
+    assert plan.normalized_text == f"pkg==1.0 --hash={HASH_A}\n"
 
 
 def test_admits_two_records_for_one_name_under_different_markers() -> None:
@@ -267,11 +325,11 @@ def test_identical_duplicate_lines_collapse() -> None:
     line = f"pkg==1.0 --hash={HASH_A}\n"
     plan = admit_requirements(line * 2)
     assert len(plan.records) == 1
-    assert plan.normalised_text == line
+    assert plan.normalized_text == line
 
 
 # ----------------------------------------------------------------------------------
-# Python: digest stability
+# Python: the normalized text is the only thing the resolver stages
 # ----------------------------------------------------------------------------------
 
 
@@ -295,16 +353,27 @@ def test_digest_ignores_extras_order() -> None:
     assert _digest(f"pkg[b,a]==1.0 --hash={HASH_A}") == _digest(f"pkg[a,b]==1.0 --hash={HASH_A}")
 
 
-def test_digest_ignores_marker_spelling_that_means_the_same_thing() -> None:
+def test_digest_ignores_marker_quote_style() -> None:
+    """``str(Marker)`` is the canonical marker, so quoting and spacing normalize."""
+    single = f"pkg==1.0 ; sys_platform=='linux' --hash={HASH_A}"
+    double = f'pkg==1.0 ; sys_platform == "linux" --hash={HASH_A}'
+    assert _digest(single) == _digest(double)
+
+
+def test_digest_ignores_version_spelling_that_normalizes_to_one_pin() -> None:
+    assert _digest(f"pkg==v1.0 --hash={HASH_A}") == _digest(f"pkg==1.0 --hash={HASH_A}")
+
+
+def test_digest_distinguishes_marker_operand_order() -> None:
+    """packaging preserves operand order, so two spellings are two admitted texts.
+
+    This is weaker than canonicalizing the marker ourselves would be, and it is the
+    deliberate consequence of using ``str(Marker)`` as the canonical form: the digest
+    binds the exact text handed to pip, not a semantic equivalence class.
+    """
     forward = f'pkg==1.0 ; python_version >= "3.11" --hash={HASH_A}'
     flipped = f'pkg==1.0 ; "3.11" <= python_version --hash={HASH_A}'
-    assert _digest(forward) == _digest(flipped)
-
-
-def test_digest_ignores_and_operand_order() -> None:
-    first = f'pkg==1.0 ; sys_platform == "linux" and python_version >= "3.11" --hash={HASH_A}'
-    second = f'pkg==1.0 ; python_version >= "3.11" and sys_platform == "linux" --hash={HASH_A}'
-    assert _digest(first) == _digest(second)
+    assert _digest(forward) != _digest(flipped)
 
 
 def test_digest_changes_when_a_hash_changes() -> None:
@@ -321,11 +390,18 @@ def test_digest_changes_when_a_hash_is_added() -> None:
     assert _digest(one) != _digest(two)
 
 
-def test_normalised_text_is_itself_admissible() -> None:
-    text = f"pkg[b,a]==1.0 ; \"3.11\" <= python_version --hash={HASH_B} --hash={HASH_A}\n"
+def test_digest_covers_exactly_the_normalized_text() -> None:
+    import hashlib
+
+    plan = admit_requirements(f"pkg[b,a]==v1.0 --hash={HASH_B} --hash={HASH_A}\n")
+    assert plan.digest == hashlib.sha256(plan.normalized_text.encode("utf-8")).hexdigest()
+
+
+def test_normalized_text_is_itself_admissible() -> None:
+    text = f"pkg[b,a]==1.0 ; sys_platform=='linux' --hash={HASH_B} --hash={HASH_A}\n"
     plan = admit_requirements(text)
-    second = admit_requirements(plan.normalised_text)
-    assert second.normalised_text == plan.normalised_text
+    second = admit_requirements(plan.normalized_text)
+    assert second.normalized_text == plan.normalized_text
     assert second.digest == plan.digest
 
 
@@ -396,14 +472,23 @@ def _lockfile(
     packages: dict[str, object] | None = None,
     *,
     version: int | str = 3,
+    root: dict[str, object] | None = None,
+    **top_level: object,
 ) -> str:
     entries: dict[str, object] = {
-        "": {"name": "app", "version": "1.0.0", "dependencies": {"left-pad": "^1.3.0"}},
+        "": root
+        if root is not None
+        else {"name": "app", "version": "1.0.0", "dependencies": {"left-pad": "^1.3.0"}},
     }
     entries.update({"node_modules/left-pad": _entry()} if packages is None else packages)
-    return json.dumps(
-        {"name": "app", "version": "1.0.0", "lockfileVersion": version, "packages": entries}
-    )
+    document: dict[str, object] = {
+        "name": "app",
+        "version": "1.0.0",
+        "lockfileVersion": version,
+        "packages": entries,
+    }
+    document.update(top_level)
+    return json.dumps(document)
 
 
 # ----------------------------------------------------------------------------------
@@ -422,11 +507,9 @@ def test_admits_a_v3_lockfile() -> None:
     assert len(plan.digest) == 64
 
 
-def test_admits_a_v2_lockfile_and_a_sha256_integrity() -> None:
-    packages = {"node_modules/left-pad": _entry(integrity=SRI_256)}
-    plan = admit_node(_manifest(), _lockfile(packages, version=2))
+def test_admits_a_v2_lockfile() -> None:
+    plan = admit_node(_manifest(), _lockfile(version=2))
     assert plan.lockfile_version == 2
-    assert plan.packages[0].integrity == SRI_256
 
 
 def test_admits_a_nested_and_scoped_entry() -> None:
@@ -441,6 +524,21 @@ def test_admits_a_nested_and_scoped_entry() -> None:
     }
     plan = admit_node(_manifest(), _lockfile(packages))
     assert [package.name for package in plan.packages] == ["@scope/dep", "inner", "left-pad"]
+
+
+def test_admits_an_entry_declaring_its_own_semver_dependencies() -> None:
+    packages = {
+        "node_modules/left-pad": _entry(
+            dependencies={"inner": "^0.1.0"},
+            peerDependencies={"react": ">=17 <19"},
+            optionalDependencies={"fsevents": "~2.3.2"},
+        ),
+        "node_modules/inner": _entry(
+            version="0.1.0", resolved=f"{REGISTRY}inner/-/inner-0.1.0.tgz"
+        ),
+    }
+    plan = admit_node(_manifest(), _lockfile(packages))
+    assert len(plan.packages) == 2
 
 
 def test_admits_an_optional_peer_absent_from_the_lockfile() -> None:
@@ -458,13 +556,25 @@ def test_node_digest_ignores_key_order_but_not_content() -> None:
     baseline = admit_node(manifest, _lockfile()).digest
     assert admit_node(reordered, _lockfile()).digest == baseline
 
-    changed = {"node_modules/left-pad": _entry(integrity=SRI_256)}
+    changed = {"node_modules/left-pad": _entry(integrity=SRI_512_OTHER)}
     assert admit_node(manifest, _lockfile(changed)).digest != baseline
 
 
-def test_node_canonical_text_round_trips() -> None:
+def test_node_digest_covers_exactly_the_two_normalized_texts() -> None:
+    import hashlib
+
     plan = admit_node(_manifest(), _lockfile())
-    again = admit_node(plan.canonical_manifest, plan.canonical_lockfile)
+    expected = hashlib.sha256(
+        plan.normalized_package_json.encode("utf-8")
+        + b"\x00"
+        + plan.normalized_lockfile.encode("utf-8")
+    ).hexdigest()
+    assert plan.digest == expected
+
+
+def test_node_normalized_text_round_trips() -> None:
+    plan = admit_node(_manifest(), _lockfile())
+    again = admit_node(plan.normalized_package_json, plan.normalized_lockfile)
     assert again.digest == plan.digest
 
 
@@ -526,8 +636,34 @@ NODE_RESOLVED_REFUSALS: list[tuple[str, str, str]] = [
         "https://registry.example.com/left-pad/-/left-pad-1.3.0.tgz",
         "non_registry_resolution",
     ),
+    (
+        "evil_suffix_host",
+        "https://evilregistry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz",
+        "non_registry_resolution",
+    ),
+    (
+        "attacker_subdomain",
+        "https://cdn.registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz",
+        "non_registry_resolution",
+    ),
+    (
+        "registry_on_another_port",
+        "https://registry.npmjs.org:8443/left-pad/-/left-pad-1.3.0.tgz",
+        "non_registry_resolution",
+    ),
+    (
+        "not_a_tarball",
+        "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.zip",
+        "non_registry_resolution",
+    ),
+    (
+        "carries_a_query",
+        "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz?token=abc",
+        "non_registry_resolution",
+    ),
     ("plain_http", "http://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz", "url_dependency"),
     ("ftp", "ftp://example.com/left-pad.tgz", "url_dependency"),
+    ("schemeless", "registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz", "url_dependency"),
     ("file", "file:../left-pad", "file_dependency"),
     ("git_https", "git+https://github.com/a/left-pad.git", "git_dependency"),
     ("git_ssh", "git+ssh://git@github.com/a/left-pad.git", "git_dependency"),
@@ -550,32 +686,50 @@ def test_node_refuses_a_registry_prefix_without_the_trailing_slash() -> None:
 
 
 def test_node_refuses_the_registry_prefix_smuggled_inside_another_url() -> None:
-    """The prefix must open the URL, not merely appear in it."""
+    """The registry must be the host, not a substring of the URL."""
     smuggled = f"https://evil.example.com/proxy?u={REGISTRY}left-pad/-/left-pad-1.3.0.tgz"
     packages = {"node_modules/left-pad": _entry(resolved=smuggled)}
     assert _refusal(_manifest(), _lockfile(packages)).reason == "non_registry_resolution"
 
 
-def test_node_refuses_a_registry_url_with_userinfo() -> None:
+def test_node_refuses_a_registry_url_with_userinfo_without_echoing_it() -> None:
     packages = {
         "node_modules/left-pad": _entry(
-            resolved="https://token@registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz"
+            resolved="https://s3cr3t-token@registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz"
         )
     }
     error = _refusal(_manifest(), _lockfile(packages))
     assert error.reason == "non_registry_resolution"
-    assert "token@" not in error.detail
+    assert "s3cr3t-token" not in error.detail
+    assert "userinfo" in error.detail
 
 
 def test_node_refuses_a_missing_resolved() -> None:
-    entry = {"version": "1.3.0", "integrity": SRI_512}
-    packages = {"node_modules/left-pad": entry}
+    packages = {"node_modules/left-pad": {"version": "1.3.0", "integrity": SRI_512}}
     error = _refusal(_manifest(), _lockfile(packages))
     assert error.reason == "non_registry_resolution"
     assert "no resolved" in error.detail
 
 
-@pytest.mark.parametrize("integrity", ["", "sha1-abcdef", "sha512-tooshort", None, 5])
+def test_node_refuses_a_missing_integrity() -> None:
+    entry = _entry()
+    del entry["integrity"]
+    error = _refusal(_manifest(), _lockfile({"node_modules/left-pad": entry}))
+    assert error.reason == "non_registry_resolution"
+    assert "no integrity" in error.detail
+
+
+def test_node_refuses_a_sha256_integrity_naming_the_algorithm() -> None:
+    packages = {"node_modules/left-pad": _entry(integrity=SRI_256)}
+    error = _refusal(_manifest(), _lockfile(packages))
+    assert error.reason == "non_registry_resolution"
+    assert "integrity algorithm" in error.detail
+    assert "sha256" in error.detail
+
+
+@pytest.mark.parametrize(
+    "integrity", ["", "sha1-abcdef", "sha384-abcdef", "sha512-tooshort", "sha512", None, 5]
+)
 def test_node_refuses_a_bad_integrity(integrity: object) -> None:
     packages = {"node_modules/left-pad": _entry(integrity=integrity)}
     assert _refusal(_manifest(), _lockfile(packages)).reason == "non_registry_resolution"
@@ -599,6 +753,24 @@ def test_node_refuses_an_entry_outside_node_modules() -> None:
 def test_node_refuses_manifest_workspaces() -> None:
     manifest = _manifest(workspaces=["packages/*"])
     assert _refusal(manifest, _lockfile()).reason == "workspace_dependency"
+
+
+def test_node_refuses_lockfile_workspaces() -> None:
+    error = _refusal(_manifest(), _lockfile(workspaces=["packages/*"]))
+    assert error.reason == "workspace_dependency"
+    assert "package-lock.json" in error.detail
+
+
+def test_node_refuses_workspaces_inside_a_lock_entry() -> None:
+    packages = {"node_modules/left-pad": _entry(workspaces=["packages/*"])}
+    assert _refusal(_manifest(), _lockfile(packages)).reason == "workspace_dependency"
+
+
+def test_node_refuses_workspaces_on_the_lockfile_root_entry() -> None:
+    root = {"name": "app", "version": "1.0.0", "workspaces": ["packages/*"]}
+    error = _refusal(_manifest(), _lockfile(root=root))
+    assert error.reason == "workspace_dependency"
+    assert "root entry" in error.detail
 
 
 @pytest.mark.parametrize("field", ["bundleDependencies", "bundledDependencies"])
@@ -643,6 +815,27 @@ NODE_RANGE_REFUSALS: list[tuple[str, str, str]] = [
 def test_node_refuses_non_semver_dependency_specs(spec: str, reason: str) -> None:
     manifest = _manifest(dependencies={"left-pad": spec})
     assert _refusal(manifest, _lockfile()).reason == reason
+
+
+@pytest.mark.parametrize(
+    ("spec", "reason"),
+    [pytest.param(spec, reason, id=name) for name, spec, reason in NODE_RANGE_REFUSALS],
+)
+def test_node_refuses_non_semver_specs_nested_in_a_lock_entry(spec: str, reason: str) -> None:
+    """A transitive dependency can name a git URL the manifest never mentions."""
+    packages = {"node_modules/left-pad": _entry(dependencies={"inner": spec})}
+    assert _refusal(_manifest(), _lockfile(packages)).reason == reason
+
+
+def test_node_refuses_a_non_semver_spec_on_the_lockfile_root_entry() -> None:
+    root = {"name": "app", "version": "1.0.0", "dependencies": {"left-pad": "git+https://x/y"}}
+    assert _refusal(_manifest(), _lockfile(root=root)).reason == "git_dependency"
+
+
+@pytest.mark.parametrize("field", ["dependencies", "optionalDependencies", "peerDependencies"])
+def test_node_refuses_a_lock_entry_dependency_block_that_is_not_an_object(field: str) -> None:
+    packages = {"node_modules/left-pad": _entry(**{field: ["inner"]})}
+    assert _refusal(_manifest(), _lockfile(packages)).reason == "bad_json"
 
 
 def test_node_refuses_a_non_string_dependency_spec() -> None:
@@ -690,10 +883,29 @@ def test_every_declared_reason_is_reachable_or_documented() -> None:
 # ----------------------------------------------------------------------------------
 
 
-FORBIDDEN_IN_SOURCE = ("subprocess", "urllib", "requests", "socket", "environ", "eval(", "exec(")
+# ``urllib.parse`` is allowed -- it splits a URL and does no I/O. Everything that could
+# reach a process, a socket or the ambient configuration is not.
+FORBIDDEN_IN_SOURCE = (
+    "subprocess",
+    "urllib.request",
+    "urllib.error",
+    "urlopen",
+    "requests",
+    "socket",
+    "environ",
+    "eval(",
+    "exec(",
+)
 
 
 def test_module_source_touches_no_process_network_or_configuration() -> None:
     source = pathlib.Path(wp.__file__).read_text(encoding="utf-8")
     found = [token for token in FORBIDDEN_IN_SOURCE if token in source]
     assert found == [], f"admission module must stay a pure parser; found {found}"
+
+
+def test_the_only_urllib_the_module_names_is_the_parser() -> None:
+    source = pathlib.Path(wp.__file__).read_text(encoding="utf-8")
+    for index in range(len(source)):
+        if source.startswith("urllib", index):
+            assert source.startswith("urllib.parse", index), source[index : index + 40]
