@@ -155,6 +155,18 @@ def fs_spy(monkeypatch: pytest.MonkeyPatch):
         parent = Path(str(parent_fd).removeprefix("fd:"))
         if not parent.is_dir():
             raise FileNotFoundError(f"no such parent: {parent}")
+        # The REAL helper refuses a name that is not >=16 random hex characters
+        # -- that rule is what makes a name in the SHARED pool root untargetable.
+        # A double without it let the permanent GENERATION directory ('1') go
+        # through here and pass on Windows while Ubuntu CI failed the same test
+        # (run 33355481278). A permissive double is a double that hides the bug.
+        if len(name) < workspace_fs.MIN_LEASE_NAME_CHARS or any(
+            char not in "0123456789abcdef" for char in name
+        ):
+            raise workspace_fs.UnsafePoolPath(
+                f"a lease directory name must be at least "
+                f"{workspace_fs.MIN_LEASE_NAME_CHARS} random hex characters, got {name!r}"
+            )
         (parent / name).mkdir(exist_ok=True)  # ONE component, never parents
         return f"fd:{parent}/{name}"
 
@@ -821,6 +833,39 @@ def test_a_first_permanent_checkout_works_with_the_real_helpers(
     assert (universe_dir / "workspaces").is_dir()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="the no-follow helpers are POSIX-only")
+def test_the_descent_closes_every_handle_above_the_one_it_returns(tmp_path: Path) -> None:
+    """``_open_permanent_parent`` returns its LAST handle and closes the rest.
+
+    That return is the reason the generation is created without re-resolving
+    the parent by path -- and it is also new leak-prone code: one descriptor
+    left open per checkout exhausts the table on a long-lived daemon (Codex
+    round 2, #7).
+
+    Measured as a COUNT of live descriptors across this one call, which is the
+    only unambiguous observable here. Matching opened numbers against closed
+    ones does not work: the real helpers open and close descriptors internally
+    while walking, and a freed number is immediately reusable -- a set compare
+    of those numbers stayed green with every parent leaked (measured on Linux,
+    2026-08-31). Counting is immune to reuse, and nothing else opens a
+    descriptor inside this call.
+    """
+    import stat as _stat
+
+    universe_dir = tmp_path / "universe-1"
+    (universe_dir / "workspaces").mkdir(parents=True)  # exists: the OPEN branch
+    lease_path = universe_dir / "workspaces" / "owner-name" / "1"  # created
+
+    before = len(os.listdir("/proc/self/fd"))
+    returned = wse._open_permanent_parent(universe_dir, lease_path)
+    try:
+        live = len(os.listdir("/proc/self/fd")) - before
+        assert live == 1, f"the descent left {live} descriptors open, not just its result"
+        assert _stat.S_ISDIR(os.fstat(returned).st_mode), "the caller's handle is open"
+    finally:
+        os.close(returned)
+
+
 def test_the_capability_carries_the_authority_it_was_created_under(
     tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
 ) -> None:
@@ -887,6 +932,104 @@ def test_the_lease_directory_is_created_through_the_no_follow_handles(
     _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
     assert fs_spy["open_dir_nofollow"], "the lease parent was not opened no-follow"
     assert fs_spy["create_lease_dir"], "the lease dir was not created through the handle"
+
+
+def test_a_permanent_generation_is_a_subdir_not_a_shared_pool_lease(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
+) -> None:
+    """``create_lease_dir``'s entropy rule is for the SHARED scratch root.
+
+    A generation is a small integer inside the universe's own tree, under a
+    parent this process walked open itself, so the rule protects nothing and
+    refuses everything: Ubuntu CI failed every permanent checkout with
+    "a lease directory name must be at least 16 random hex characters ...
+    got '1'" (run 33355481278).
+    """
+    _root, universe_dir = _setup(tmp_path)
+    result = _run(tmp_path, _packet(storage="universe"), universe_dir=universe_dir, chain=chain)
+
+    assert result.get("error_kind") is None, result
+    assert fs_spy["create_lease_dir"] == [], "a generation must not take the pool-lease path"
+    generation = str(result["lease_generation"])
+    made = [name for _fd, name in fs_spy["create_workspace_subdir"]]
+    assert generation in made, f"the generation {generation!r} was not made as a subdir: {made}"
+
+
+def test_the_generation_is_made_under_the_handle_its_parent_was_walked_open_with(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
+) -> None:
+    """No re-resolution by path between walking the parents and using them.
+
+    Re-opening ``workspaces/<repo-key>`` by absolute path would hand back the
+    exact window the component-by-component descent exists to close.
+    """
+    _root, universe_dir = _setup(tmp_path)
+    result = _run(tmp_path, _packet(storage="universe"), universe_dir=universe_dir, chain=chain)
+    assert result.get("error_kind") is None, result
+
+    opened_by_path = fs_spy["open_dir_nofollow"]
+    assert opened_by_path == [str(universe_dir)], (
+        "only the universe root may be resolved by path; the rest is descent"
+    )
+    generation = str(result["lease_generation"])
+    parent_fd = next(fd for fd, name in fs_spy["create_workspace_subdir"] if name == generation)
+    repo_key = Path(chain.workspace_mount_or_none("n1").lease.path).parent.name
+    assert str(parent_fd).endswith(repo_key), (
+        f"the generation was made under {parent_fd!r}, not the repo-key handle"
+    )
+
+
+def test_a_scratch_lease_still_gets_the_unguessable_name_rule(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
+) -> None:
+    """The split must not quietly drop the rule where it does protect something."""
+    _root, universe_dir = _setup(tmp_path)
+    result = _run(tmp_path, _packet(storage="scratch"), universe_dir=universe_dir, chain=chain)
+
+    assert result.get("error_kind") is None, result
+    assert len(fs_spy["create_lease_dir"]) == 1, "a scratch lease goes through create_lease_dir"
+    _fd, name = fs_spy["create_lease_dir"][0]
+    assert len(name) >= 16 and all(char in "0123456789abcdef" for char in name), name
+
+
+def test_a_directory_the_no_follow_layer_refuses_is_a_refusal_not_a_crash(
+    tmp_path: Path, chain: EffectChain, fs_spy, monkeypatch: pytest.MonkeyPatch, no_real_git
+) -> None:
+    """``UnsafePoolPath`` is how that layer says no; the graph author sees a code.
+
+    Reported as ``effector_crashed`` it reads as a bug in the sink -- which is
+    exactly how the generation bug presented in CI.
+    """
+    from tinyassets import workspace_fs
+
+    _root, universe_dir = _setup(tmp_path)
+
+    def refuse(parent_fd, name):
+        raise workspace_fs.UnsafePoolPath(f"{name!r} is a symlink, not a directory")
+
+    monkeypatch.setattr(workspace_fs, "create_workspace_subdir", refuse, raising=False)
+    result = _run(tmp_path, _packet(storage="universe"), universe_dir=universe_dir, chain=chain)
+
+    assert result["error_kind"] == "workspace_checkout_failed", result
+    assert "symlink" in result["error"], result
+
+
+def test_a_bad_component_from_the_no_follow_layer_is_also_a_refusal(
+    tmp_path: Path, chain: EffectChain, fs_spy, monkeypatch: pytest.MonkeyPatch, no_real_git
+) -> None:
+    """That layer raises ValueError for a name that is not one safe component."""
+    from tinyassets import workspace_fs
+
+    _root, universe_dir = _setup(tmp_path)
+
+    def refuse(parent_fd, name):
+        raise ValueError(f"{name!r} is not a single path component")
+
+    monkeypatch.setattr(workspace_fs, "create_lease_dir", refuse, raising=False)
+    result = _run(tmp_path, _packet(storage="scratch"), universe_dir=universe_dir, chain=chain)
+
+    assert result["error_kind"] == "workspace_checkout_failed", result
+    assert result["error_kind"] != "effector_crashed"
 
 
 def test_the_worker_request_carries_a_reference_never_a_secret(
