@@ -1,0 +1,194 @@
+"""The run lifecycle owes the workspace outbox its work (workspace-node D0/D6).
+
+A run that held a scratch lease releases it THROUGH an outbox entry written in
+the same transaction as its terminal status; both orphan-recovery paths do the
+same; a once-per-process reconciler finishes what an earlier process left; and
+every workspace refusal is a first-class failure class with an action.
+"""
+from __future__ import annotations
+
+import sqlite3
+import time
+from pathlib import Path
+
+import pytest
+
+from tinyassets import runs, workspace_pool
+
+GIB = 1024 ** 3
+
+
+class _NoopFs:
+    """A filesystem that has nothing to delete: every entry completes."""
+
+    def exists(self, path: Path) -> bool:
+        return False
+
+    def rename(self, src: Path, dst: Path) -> None:
+        raise AssertionError("nothing exists, nothing to rename")
+
+    def remove_tree_no_follow(self, path: Path) -> None:
+        raise AssertionError("nothing exists, nothing to remove")
+
+
+def _seed_run(base: Path, run_id: str, status: str = "running") -> None:
+    runs.initialize_runs_db(base)
+    with runs._connect(base) as conn:
+        conn.execute(
+            "INSERT INTO runs (run_id, branch_def_id, thread_id, status, started_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (run_id, "b1", f"t-{run_id}", status, time.time() - 7200),
+        )
+
+
+def _admit(base: Path, tmp: Path, run_id: str, universe: str = "u-1") -> workspace_pool.Lease:
+    db = runs.runs_db_path(base)
+    with runs._connect(base) as conn:
+        workspace_pool.ensure_schema(conn)
+    return workspace_pool.admit(
+        db,
+        universe_id=universe,
+        connection_id="c1",
+        repo_key="github.com--o--r",
+        storage_class="scratch",
+        run_id=run_id,
+        max_bytes=GIB,
+        pool_root=tmp / "scratch",
+        universe_root=tmp / "universes" / universe,
+    )
+
+
+def _pending(base: Path, run_id: str) -> list[tuple]:
+    conn = sqlite3.connect(runs.runs_db_path(base))
+    try:
+        return conn.execute(
+            "SELECT action, lease_id FROM workspace_outbox WHERE run_id = ? AND done_at IS NULL",
+            (run_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def test_a_terminal_status_enqueues_the_lease_in_the_same_write(tmp_path):
+    base = tmp_path / "data"
+    _seed_run(base, "r1")
+    lease = _admit(base, tmp_path, "r1")
+    assert _pending(base, "r1") == []
+    runs.update_run_status(base, "r1", status="running", last_node_id="n1")
+    assert _pending(base, "r1") == [], "a non-terminal status owes nothing"
+    runs.update_run_status(base, "r1", status="completed", finished_at=time.time())
+    assert _pending(base, "r1") == [("wipe_scratch", lease.lease_id)]
+
+
+def test_a_run_holding_only_the_lock_releases_it(tmp_path):
+    base = tmp_path / "data"
+    _seed_run(base, "r2")
+    lease = _admit(base, tmp_path, "r2")
+    # Simulate a lease that already left ACTIVE (a discard) while the run's
+    # universe lock is still held: the terminal write owes a lock release.
+    conn = sqlite3.connect(runs.runs_db_path(base))
+    conn.execute(
+        "UPDATE workspace_leases SET state = 'AVAILABLE' WHERE lease_id = ?",
+        (lease.lease_id,),
+    )
+    conn.commit()
+    conn.close()
+    runs.update_run_status(base, "r2", status="failed", error="boom")
+    assert _pending(base, "r2") == [("release_lock_only", None)]
+
+
+def test_read_time_orphan_recovery_enqueues(tmp_path, monkeypatch):
+    base = tmp_path / "data"
+    _seed_run(base, "r3", status="running")
+    lease = _admit(base, tmp_path, "r3")
+    monkeypatch.setattr(runs, "ensure_workspace_reconciled", lambda *_a, **_k: False)
+    # No worker owns r3 and its progress is stale: the read path marks it
+    # interrupted and, in the same transaction, owes the lease to the outbox.
+    monkeypatch.setattr(runs, "_mark_orphaned_run_if_needed", _always_orphan)
+    assert runs._recover_orphaned_runs_on_read(base) == 1
+    assert _pending(base, "r3") == [("wipe_scratch", lease.lease_id)]
+
+
+def _always_orphan(conn, *, run_id, status, started_at, now):
+    conn.execute(
+        "UPDATE runs SET status = 'interrupted', finished_at = ? WHERE run_id = ?",
+        (now, run_id),
+    )
+    return True
+
+
+def test_startup_recovery_enqueues_every_in_flight_run(tmp_path):
+    base = tmp_path / "data"
+    _seed_run(base, "r4", status="queued")
+    _seed_run(base, "r5", status="completed")
+    lease4 = _admit(base, tmp_path, "r4")
+    assert runs.recover_in_flight_runs(base) == 1
+    assert _pending(base, "r4") == [("wipe_scratch", lease4.lease_id)]
+    assert _pending(base, "r5") == []
+
+
+def test_the_reconciler_runs_once_and_finishes_old_entries(tmp_path, monkeypatch):
+    base = tmp_path / "data"
+    _seed_run(base, "r6")
+    lease = _admit(base, tmp_path, "r6")
+    runs.update_run_status(base, "r6", status="completed")
+    assert _pending(base, "r6")
+    monkeypatch.setattr("tinyassets.workspace_fs.RealPoolFilesystem", _NoopFs)
+    runs._WORKSPACE_RECONCILED.discard(str(base.resolve()))
+    assert runs.ensure_workspace_reconciled(base, start_sweeper=False) is True
+    assert runs.ensure_workspace_reconciled(base, start_sweeper=False) is False
+    assert _pending(base, "r6") == []
+    after = workspace_pool.get_lease(runs.runs_db_path(base), lease.lease_id)
+    assert after is not None and after.state == "AVAILABLE"
+
+
+def test_the_periodic_pass_repairs_an_orphaned_active_lease(tmp_path, monkeypatch):
+    base = tmp_path / "data"
+    _seed_run(base, "r7", status="completed")
+    lease = _admit(base, tmp_path, "r7")
+    # The run is terminal but nothing enqueued (an older terminal writer): the
+    # sweep notices the ACTIVE lease with a finished run and repairs it.
+    monkeypatch.setattr("tinyassets.workspace_fs.RealPoolFilesystem", _NoopFs)
+    assert _pending(base, "r7") == []
+    runs._workspace_sweep_once(base, claimant="test")
+    after = workspace_pool.get_lease(runs.runs_db_path(base), lease.lease_id)
+    assert after is not None and after.state == "AVAILABLE"
+
+
+@pytest.mark.parametrize("kind", runs.WORKSPACE_FAILURE_KINDS)
+def test_every_workspace_refusal_is_its_own_class_with_an_action(kind):
+    summary = f"external write failed - checkout/workspace: refused [{kind}]"
+    assert runs._classify_external_write(summary) == kind
+    assert runs.external_write_suggested_action(kind)
+    assert runs.ACTIONABLE_BY[kind] == "chatbot"
+
+
+def test_non_workspace_summaries_classify_as_before():
+    assert (
+        runs._classify_external_write("external write failed - x [effect_budget_exhausted]")
+        == "effect_budget_exhausted"
+    )
+    assert (
+        runs._classify_external_write("external write failed - x [missing_consent]")
+        == "external_write_refused"
+    )
+    assert runs._classify_external_write("external write failed - 422") == "external_write_failed"
+
+
+def test_served_docs_name_the_workspace_sink():
+    from tinyassets import engine_mcp_server as srv
+
+    doc = srv.__doc__ or ""
+    import inspect
+
+    text = inspect.getsource(srv)
+    for needle in (
+        "WORKSPACES.",
+        '"op": "checkout"',
+        '"workspace": "<that node id>"',
+        "ws.run(",
+        "ws.bundle(",
+        "workspace_command_timeout",
+        "tiny/<universe>/<slug>",
+    ):
+        assert needle in text or needle in doc, needle

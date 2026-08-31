@@ -1026,6 +1026,30 @@ def write_graph(
     difflib textwrap html csv datetime math`` ...); 512 MiB, the node's
     ``timeout_seconds``; the source is at most 50 KB.
 
+    WORKSPACES. To read or run a whole repository, check it out with the
+    ``workspace`` sink and bind code nodes to it. A node with
+    ``"effects": ["workspace"]`` returns a ``workspace_packet`` under an
+    output key: ``{"op": "checkout", "connection_id": "<github http
+    connection>", "repo": "owner/name", "ref": "main", "storage": "scratch"}``
+    (``"universe"`` keeps it in your permanent space across turns). A later
+    code node declaring ``"workspace": "<that node id>"`` runs with the
+    repository at ``/workspace`` and a ``ws`` object: ``ws.run(["pytest",
+    "-q"], timeout=600)`` -> ``{"returncode", "stdout_tail", "stderr_tail"}``,
+    ``ws.read(path)``, ``ws.write(path, text)``, ``ws.glob("**/*.py")``,
+    ``ws.bundle(commit_sha)`` after a local ``git commit``. To publish, a node
+    returns ``{"op": "push", "workspace": "<checkout node>", "commit_sha":
+    "<40 hex>", "branch_slug": "fix-readme"}`` - the branch lands as
+    ``tiny/<universe>/<slug>`` (never the default branch; open the PR with the
+    generic call). Each ``(connection, repo)`` needs the ``workspace_checkout``
+    / ``workspace_push`` consents once, through the request rail. The
+    sandbox has no network and no credential; git talks to the host from a
+    worker you never see. Limits are usage, not shape: a 4 GiB lease, one
+    workspace job at a time per universe, 64 commands and 1 MiB of returned
+    output per node; a timed-out command fails the node as
+    ``workspace_command_timeout``; every other refusal names its class
+    (``workspace_checkout_failed`` ... ``workspace_quota_exceeded``) and what
+    to do.
+
     A branch is a stored graph SHAPE — building/editing one fires NO effects and
     issues NO provider authority. Actually RUNNING it (with side effects) is a
     separate step via run_graph; a source_code node runs there in the OS sandbox,
