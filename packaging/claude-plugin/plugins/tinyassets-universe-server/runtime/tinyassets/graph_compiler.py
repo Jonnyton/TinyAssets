@@ -1992,6 +1992,22 @@ def _build_source_code_node(
             )
     src = node.source_code
     timeout_s = float(node.timeout_seconds or 300.0)
+    if workspace_node:
+        from tinyassets.node_sandbox import MAX_WORKSPACE_TIMEOUT_SECONDS
+
+        # The DECLARED value, not the defaulted one: `or 300.0` above reads a
+        # zero as "unset", and a workspace node has to say how long it may hold
+        # the host-wide slot rather than inherit a default by writing nothing.
+        declared = float(getattr(node, "timeout_seconds", 0.0) or 0.0)
+        if not 0 < declared <= MAX_WORKSPACE_TIMEOUT_SECONDS:
+            raise CodeNodeError(
+                f"Node '{node.node_id}' declares workspace: "
+                f"'{workspace_node}' with timeout_seconds={declared}, outside "
+                f"the bound 0 < t <= {MAX_WORKSPACE_TIMEOUT_SECONDS:.0f}. A "
+                "workspace node holds the universe's job lock and the "
+                "host-wide slot for its whole run.",
+                node_id=node.node_id,
+            )
     input_keys = list(node.input_keys or [])
     output_keys = list(node.output_keys or [])
     defaulted = list(_state_schema_defaults(state_schema or []).keys())

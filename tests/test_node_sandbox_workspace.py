@@ -198,6 +198,39 @@ def test_empty_roots_refuse_by_name() -> None:
         _validate_workspace_bind("/srv/pool/repo", (), lambda p: p)
 
 
+def test_the_default_factory_hands_the_descriptors_to_the_launcher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The production factory, not a test double: the double is where the
+    descriptors were being dropped unnoticed."""
+    from tinyassets import node_sandbox
+
+    monkeypatch.setattr(
+        node_sandbox, "_probe", lambda: {"bwrap_available": True}
+    )
+    launcher = node_sandbox._default_workspace_launcher(
+        "/proc/self/fd/9", ("/srv/pool",), (9,)
+    )
+    assert launcher.pass_fds == (9,)
+    assert launcher.workspace_bind == "/proc/self/fd/9"
+    assert launcher.allowed_workspace_roots == ("/srv/pool",)
+    argv = launcher.build_argv("print(1)", ["30", "1", ""])
+    assert argv[argv.index("--bind") + 1] == "/proc/self/fd/9"
+
+
+def test_the_default_factory_refuses_without_a_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tinyassets import node_sandbox
+    from tinyassets.providers.base import SandboxUnavailableError
+
+    monkeypatch.setattr(
+        node_sandbox, "_probe", lambda: {"bwrap_available": False, "reason": "no bwrap"}
+    )
+    with pytest.raises(SandboxUnavailableError):
+        node_sandbox._default_workspace_launcher("/srv/pool/x", ("/srv/pool",), ())
+
+
 def test_a_descriptor_bind_reaches_both_the_argv_and_the_child() -> None:
     """The bind names an fd; the child must actually be given that fd."""
     from tinyassets.node_sandbox import BwrapLauncher
@@ -1298,8 +1331,17 @@ def test_the_descriptor_reaches_both_the_launcher_and_the_child(
     assert captured["popen_pass_fds"] == (9,)
 
 
-def test_a_lease_descriptor_is_never_used_for_the_bind(workspace: Path) -> None:
-    """It names the lease; the bind source is the repository inside it."""
+def test_a_lease_descriptor_is_never_used_for_the_bind(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It names the LEASE; the bind source is the repository inside it.
+
+    The flag is forced on so this discriminates on a host that cannot bind a
+    descriptor at all -- otherwise every capability takes the path form and the
+    test would pass whatever the code did with `lease_fd`.
+    """
+    monkeypatch.setattr(gc, "WORKSPACE_FD_BIND_SUPPORTED", True)
+    monkeypatch.setattr(gc, "_require_live_directory", lambda fd, node_id: int(fd))
     built = gc._sandbox_workspace_mount(
         _ChainMount(str(workspace), lease_fd=7), "build"
     )
@@ -1381,6 +1423,153 @@ def test_a_workspace_command_timeout_ends_the_run_and_the_jail(workspace: Path) 
     assert "workspace command timeout" in result.error
     # It failed on the COMMAND budget, not by burning the node's 30s.
     assert time.monotonic() - started < 25
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# The bounds the design promised
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("seconds", [1801, 3600, 0, -5])
+def test_a_workspace_node_outside_the_timeout_bound_fails_at_compile(
+    seconds: int,
+) -> None:
+    """It holds the universe's job lock and the host-wide slot for its whole run,
+    so an unbounded one is a denial of service on every other universe."""
+    # Built valid, then mutated: the dataclass refuses this at construction
+    # (its own test below), so reaching the COMPILER's check needs a node that
+    # was legal when it was made. Both gates exist because a persisted row and a
+    # mutated object arrive by different doors.
+    node = _code_node(workspace="checkout", timeout_seconds=300)
+    node.timeout_seconds = seconds
+    with pytest.raises(gc.CodeNodeError, match="outside the bound"):
+        gc._build_source_code_node(
+            node, event_sink=None, effect_chain=EffectChain(), ancestors={"checkout"}
+        )
+
+
+@pytest.mark.parametrize("seconds", [1, 300, 1800])
+def test_a_workspace_node_inside_the_timeout_bound_compiles(seconds: int) -> None:
+    fn = gc._build_source_code_node(
+        _code_node(workspace="checkout", timeout_seconds=seconds),
+        event_sink=None,
+        effect_chain=EffectChain(),
+        ancestors={"checkout"},
+    )
+    assert callable(fn)
+
+
+def test_a_node_without_a_workspace_keeps_its_own_timeout() -> None:
+    """The bound is the workspace's, not every code node's."""
+    fn = gc._build_source_code_node(
+        _code_node(timeout_seconds=7200),
+        event_sink=None,
+        effect_chain=EffectChain(),
+        ancestors=None,
+    )
+    assert callable(fn)
+
+
+def test_the_bound_is_enforced_when_a_persisted_node_loads() -> None:
+    """A row written before the bound must fail to load, not compile into a node
+    that holds the host-wide slot for as long as it likes."""
+    from tinyassets.branches import NodeDefinition, NodeDefinitionValidationError
+
+    good = NodeDefinition(
+        node_id="build",
+        display_name="Build",
+        phase="draft",
+        workspace="checkout",
+        timeout_seconds=1800,
+    )
+    assert NodeDefinition.from_dict(good.to_dict()).timeout_seconds == 1800
+    payload = dict(good.to_dict())
+    payload["timeout_seconds"] = 5400
+    with pytest.raises(NodeDefinitionValidationError):
+        NodeDefinition.from_dict(payload)
+
+
+def test_the_rss_watchdog_kills_the_jail_when_the_tree_passes_the_cap(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RLIMIT_AS bounds each process; nothing bounds their SUM, and ws.run may
+    start 128 of them. The reader is injected so the tree need not be real."""
+    from tinyassets import node_sandbox
+
+    monkeypatch.setattr(
+        node_sandbox, "PROCESS_TREE_RSS_READER", lambda pid: 8 * 1024 * 1024 * 1024
+    )
+    monkeypatch.setattr(node_sandbox, "WORKSPACE_RSS_INTERVAL_SECONDS", 0.01)
+    source = (
+        "def run(state):\n"
+        "    import time\n"
+        "    time.sleep(20)\n"
+        "    return {'result': 'never'}\n"
+    )
+    started = time.monotonic()
+    result = _run_node(workspace, source, timeout=60)
+    assert result.success is False
+    assert "workspace memory cap 2 GiB exceeded" in result.error
+    assert time.monotonic() - started < 30, "the watchdog did not cut it short"
+
+
+def test_the_watchdog_does_not_fire_below_the_cap(workspace: Path, monkeypatch) -> None:
+    from tinyassets import node_sandbox
+
+    monkeypatch.setattr(node_sandbox, "PROCESS_TREE_RSS_READER", lambda pid: 1024)
+    monkeypatch.setattr(node_sandbox, "WORKSPACE_RSS_INTERVAL_SECONDS", 0.01)
+    result = _run_node(
+        workspace, "def run(state):\n    return {'result': 'ok'}\n"
+    )
+    assert result.success is True, result.error
+    assert result.output_state["result"] == "ok"
+
+
+def test_an_unmeasurable_tree_does_not_kill_the_node(workspace, monkeypatch) -> None:
+    """Killing a node because a measurement failed is worse than not measuring."""
+    from tinyassets import node_sandbox
+
+    monkeypatch.setattr(node_sandbox, "PROCESS_TREE_RSS_READER", lambda pid: -1)
+    monkeypatch.setattr(node_sandbox, "WORKSPACE_RSS_INTERVAL_SECONDS", 0.01)
+    result = _run_node(
+        workspace, "def run(state):\n    return {'result': 'ok'}\n"
+    )
+    assert result.success is True, result.error
+
+
+def test_a_node_without_a_workspace_has_no_watchdog(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cap belongs to the workspace profile; a plain code node keeps its own."""
+    from tinyassets import node_sandbox
+
+    seen: list[int] = []
+
+    def reader(pid: int) -> int:
+        seen.append(pid)
+        return 8 * 1024 * 1024 * 1024
+
+    monkeypatch.setattr(node_sandbox, "PROCESS_TREE_RSS_READER", reader)
+    monkeypatch.setattr(node_sandbox, "WORKSPACE_RSS_INTERVAL_SECONDS", 0.01)
+    result = _run_node(
+        None, "def run(state):\n    return {'result': 'ok'}\n"
+    )
+    assert result.success is True, result.error
+    assert seen == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="/proc is POSIX")
+def test_the_real_reader_sees_this_process_tree() -> None:
+    """The shipped reader, against a real tree: it must be positive and finite."""
+    from tinyassets.node_sandbox import _read_process_tree_rss
+
+    used = _read_process_tree_rss(os.getpid())
+    assert used > 0
+    assert used < 1024 * 1024 * 1024 * 1024
+
+
+def test_the_workspace_profile_carries_the_rss_cap() -> None:
+    assert WorkspaceLimits().rss_cap_bytes == 2 * 1024 * 1024 * 1024
 
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -147,6 +147,14 @@ MAX_WORKSPACE_OUTPUT_BYTES = 1024 * 1024
 MAX_WORKSPACE_READ_BYTES = 1024 * 1024
 MAX_WORKSPACE_GLOB_RESULTS = 10_000
 WORKSPACE_TAIL_BYTES = 64 * 1024
+#: The design's ceiling on a workspace node's declared timeout. A workspace
+#: node holds the universe's job lock and the host-wide slot for its whole
+#: run, so an unbounded one is a denial of service on every other universe.
+MAX_WORKSPACE_TIMEOUT_SECONDS = 1800.0
+#: Aggregate resident memory across the child's process tree. RLIMIT_AS binds
+#: each process; nothing binds their SUM, and `ws.run` can start 128 of them.
+WORKSPACE_RSS_CAP_BYTES = 2 * 1024 * 1024 * 1024
+WORKSPACE_RSS_INTERVAL_SECONDS = 0.5
 #: Bounded wait for the jail to die after SIGKILL before we fail loudly.
 JAIL_EXIT_GRACE_SECONDS = 5.0
 
@@ -198,6 +206,8 @@ class WorkspaceLimits:
     rlimit_nofile: int = 1024
     rlimit_fsize: int = 512 * 1024 * 1024
     rlimit_core: int = 0
+    #: Aggregate RSS across the process tree, watched from the parent.
+    rss_cap_bytes: int = WORKSPACE_RSS_CAP_BYTES
 
     def rlimit_profile(self) -> dict[str, int]:
         """The limits the child applies before it reads its message."""
@@ -1812,6 +1822,106 @@ WORKSPACE_LAUNCHER_FACTORY: Callable[
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _read_process_tree_rss(pid: int) -> int:
+    """Resident bytes summed over the process tree rooted at *pid*.
+
+    Reads ``/proc``: ``stat`` for the parent of every process (so the tree can
+    be walked without ``CONFIG_PROC_CHILDREN``) and ``statm`` for resident
+    pages. Returns ``-1`` where the tree cannot be measured -- no ``/proc``,
+    or a race that emptied it -- which the watchdog treats as 'stop watching',
+    never as 'over the cap': killing a node because a measurement failed would
+    be worse than not measuring.
+    """
+    if not os.path.isdir("/proc"):
+        return -1
+    page = 4096
+    try:
+        page = os.sysconf("SC_PAGE_SIZE")
+    except (AttributeError, ValueError, OSError):
+        pass
+    children: dict[int, list[int]] = {}
+    try:
+        entries = [name for name in os.listdir("/proc") if name.isdigit()]
+    except OSError:
+        return -1
+    for name in entries:
+        try:
+            with open(f"/proc/{name}/stat", "rb") as handle:
+                raw = handle.read()
+        except OSError:
+            continue
+        # The comm field is parenthesised and may hold spaces; everything
+        # after the LAST close paren is fixed-width.
+        close = raw.rfind(b")")
+        if close < 0:
+            continue
+        fields = raw[close + 2 :].split()
+        if len(fields) < 2:
+            continue
+        try:
+            parent = int(fields[1])
+        except ValueError:
+            continue
+        children.setdefault(parent, []).append(int(name))
+
+    total = 0
+    seen: set[int] = set()
+    stack = [int(pid)]
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        try:
+            with open(f"/proc/{current}/statm", "rb") as handle:
+                parts = handle.read().split()
+            if len(parts) >= 2:
+                total += int(parts[1]) * page
+        except (OSError, ValueError):
+            pass
+        stack.extend(children.get(current, ()))
+    return total
+
+
+#: Injected so a test can present a tree without starting one.
+PROCESS_TREE_RSS_READER: Callable[[int], int] = _read_process_tree_rss
+
+
+def _watch_process_tree_rss(
+    proc: subprocess.Popen[bytes],
+    launcher: Any,
+    cap: int,
+    breaches: list[int],
+    interval: float | None = None,
+) -> None:
+    """Kill the jail when its whole tree passes *cap*.
+
+    ``RLIMIT_AS`` bounds each process; nothing bounds their sum, and a
+    workspace node may start 128 of them. The kill is the timeout path's: the
+    tracked supervisor, so the pid namespace takes every descendant with it.
+    """
+    reader = PROCESS_TREE_RSS_READER
+    # Read here, not bound as a default: a default argument freezes at import
+    # and a test that substitutes the constant would be substituting nothing.
+    pause = WORKSPACE_RSS_INTERVAL_SECONDS if interval is None else interval
+    while proc.poll() is None:
+        try:
+            used = reader(proc.pid)
+        except Exception:
+            logger.warning("workspace RSS watchdog could not read the tree")
+            return
+        if used < 0:
+            return
+        if used > cap:
+            breaches.append(used)
+            try:
+                _terminate_child(proc, launcher)
+            except Exception:
+                logger.exception("workspace RSS watchdog could not kill the jail")
+            return
+        time.sleep(pause)
+
+
 def _kill_process_tree(proc: subprocess.Popen[bytes]) -> None:
     """Kill *proc* and, where the OS supports it, its whole process group."""
     killpg = getattr(os, "killpg", None)
@@ -2235,6 +2345,15 @@ class NodeSandbox:
             feeder.start()
 
             outcome = "exited"
+            memory_breaches: list[int] = []
+            rss_cap = workspace.limits.rss_cap_bytes if workspace else 0
+            if rss_cap > 0:
+                threading.Thread(
+                    target=_watch_process_tree_rss,
+                    args=(proc, launcher, rss_cap, memory_breaches),
+                    daemon=True,
+                ).start()
+
             deadline = start_time + timeout
             while True:
                 if breaches:
@@ -2250,6 +2369,12 @@ class NodeSandbox:
                     outcome = "timeout"
                     _terminate_child(proc, launcher)
                     break
+
+            if memory_breaches and outcome not in ("too-large", "timeout"):
+                # The watchdog's kill ends the child, so the poll loop can break
+                # on the exit before it looks at the flag again. What killed it
+                # is decided here, where both facts are known.
+                outcome = "memory"
 
             _close_stdin(proc)
             feeder.join(timeout=2.0)
@@ -2277,6 +2402,21 @@ class NodeSandbox:
                 error=(
                     f"output too large: {stream} exceeded the {cap}-byte limit "
                     f"and the node was killed"
+                ),
+                duration_seconds=duration,
+                stdout_tail=_tail(stdout_text),
+                stderr_tail=stderr_tail,
+            )
+
+        if outcome == "memory":
+            used = memory_breaches[0] if memory_breaches else 0
+            return SandboxResult(
+                node_id=node_id,
+                success=False,
+                error=(
+                    "workspace memory cap "
+                    f"{rss_cap / (1024 * 1024 * 1024):.0f} GiB exceeded "
+                    f"(process tree reached {used} bytes)"
                 ),
                 duration_seconds=duration,
                 stdout_tail=_tail(stdout_text),
