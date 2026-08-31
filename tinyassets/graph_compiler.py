@@ -32,6 +32,7 @@ import logging
 import operator
 import os
 import re
+import stat
 import threading
 import time
 from dataclasses import dataclass
@@ -119,6 +120,70 @@ class CodeNodeError(CompilerError):
         super().__init__(message)
         self.node_id = node_id
         self.stderr_tail = stderr_tail
+
+
+#: Whether this host can bind a directory through an inherited descriptor.
+#: A module attribute rather than an inline platform test so the suite can
+#: substitute it; production never changes it.
+WORKSPACE_FD_BIND_SUPPORTED = os.name == "posix"
+
+
+def _sandbox_workspace_mount(mount: Any, node_id: str) -> Any:
+    """Turn the run's workspace capability into the sandbox's mount.
+
+    Prefers the held directory descriptor. ``/proc/self/fd/<n>`` is resolved
+    by the **bwrap process**, which inherited ``n``, so it names the directory
+    the fd was opened on -- not whatever the lease path points at by the time
+    the mount happens, and not this parent's ``/proc/self``. A rename between
+    admission and mount cannot swap what gets bound.
+
+    Falls back to the path when there is no descriptor: Windows, the
+    tests-only launcher, or a sink that has not published one.
+    """
+    from tinyassets.node_sandbox import WorkspaceLimits, WorkspaceMount
+
+    bind_source = getattr(mount, "bind_source", "")
+    if not isinstance(bind_source, str) or not bind_source:
+        raise CodeNodeError(
+            "workspace not available: the run's capability names no directory "
+            f"(node '{node_id}')",
+            node_id=node_id,
+        )
+    limits = getattr(mount, "limits", None)
+    if not isinstance(limits, WorkspaceLimits):
+        limits = WorkspaceLimits()
+    allowed_roots = tuple(getattr(mount, "allowed_roots", ()) or ())
+
+    lease_fd = getattr(mount, "lease_fd", None)
+    if lease_fd is None or not WORKSPACE_FD_BIND_SUPPORTED:
+        return WorkspaceMount(
+            bind_source=bind_source, limits=limits, allowed_roots=allowed_roots
+        )
+
+    # A descriptor that is closed or is no longer a directory is a lease that
+    # went away: fail the node rather than quietly binding the path instead,
+    # which is the swap this whole mechanism exists to prevent.
+    try:
+        descriptor = int(lease_fd)
+        info = os.fstat(descriptor)
+    except (OSError, TypeError, ValueError) as exc:
+        raise CodeNodeError(
+            "workspace not available: checkout did not deliver / was discarded "
+            f"(node '{node_id}'): the lease descriptor is unusable ({exc})",
+            node_id=node_id,
+        ) from exc
+    if not stat.S_ISDIR(info.st_mode):
+        raise CodeNodeError(
+            f"workspace not available: the lease descriptor for '{node_id}' is "
+            "not a directory",
+            node_id=node_id,
+        )
+    return WorkspaceMount(
+        bind_source=f"/proc/self/fd/{descriptor}",
+        limits=limits,
+        pass_fds=(descriptor,),
+        allowed_roots=allowed_roots,
+    )
 
 
 class WorkspaceCommandTimeout(NodeTimeoutError):
@@ -1926,7 +1991,11 @@ def _build_source_code_node(
                         "run has no effect chain",
                         node_id=node.node_id,
                     )
-                mount = effect_chain.workspace_mount(workspace_node)
+                # The capability stays owned by the chain (the sink holds the
+                # descriptor open); this only reads it, for the length of the run.
+                mount = _sandbox_workspace_mount(
+                    effect_chain.workspace_mount(workspace_node), node.node_id
+                )
 
             def _invoke(action: str, kwargs: dict[str, Any]) -> Any:
                 if effect_chain is not None:
