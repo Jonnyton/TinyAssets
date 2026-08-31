@@ -307,6 +307,22 @@ the exact run and node id. Stripping unsafe characters is not injective — `a/b
 and `ab` collapse — so two different nodes would otherwise share a staging
 directory and a credential broker's socket.
 
+`push` and `discard` SHALL each ACQUIRE the capability for the length of the
+operation — the same acquisition a workspace node takes, holding duplicated
+descriptors and refusing when the workspace was revoked — rather than reading
+the registry's mount. Reading it leaves the operation running against
+descriptors another `discard` may close and a later checkout may be handed back.
+
+Host-side descent into a workspace SHALL go one level at a time from a
+descriptor the caller already holds, refusing a name that is not a single safe
+component and never following a link. Re-resolving an absolute path from the
+root would re-open every component above the handle, which is the window holding
+the handle exists to close.
+
+#### Scenario: a discard cannot pull the ground from under a push
+- **WHEN** a `discard` for the same workspace runs while a `push` is reading the repository
+- **THEN** the push holds duplicated descriptors for its whole operation, or is refused for a revoked workspace before it starts, and never reads a directory a reused descriptor number now names
+
 #### Scenario: a packet cannot choose the host its credential is used against
 - **WHEN** a `checkout` or `push` packet names a host that the connection's endpoints do not declare
 - **THEN** it is refused before any transport is opened, and the host used is the one the stored connection declares
