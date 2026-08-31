@@ -1736,7 +1736,27 @@ def test_the_workspace_profile_carries_the_rss_cap() -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+#: Process states that mean DEAD. `Z` is the one that matters: a killed
+#: descendant whose parent never reaps it keeps its `/proc` entry forever, and
+#: in a container whose PID 1 does not reap that is the normal end state — so
+#: "the directory still exists" is not "the process is still running".
+_DEAD_PROCESS_STATES = frozenset({"Z", "X", "x"})
+
+
 def _marker_is_running(marker: str) -> bool:
+    """Is a process carrying *marker* still ALIVE?
+
+    The marker identifies the process — that part matters and is kept, because
+    a pid can be reused and a pid comparison would then answer about somebody
+    else. What the marker cannot tell us is whether the thing it names is still
+    running, which is what the state letter in `/proc/<pid>/stat` is for. It
+    sits after the LAST `)`, because the command field is parenthesised and may
+    itself contain spaces and brackets.
+
+    An entry that vanishes between the two reads is dead. An unrecognised state
+    counts as ALIVE, so an unfamiliar kernel makes this test fail loudly rather
+    than pass quietly: it exists to prove a descendant died.
+    """
     for entry in Path("/proc").iterdir():
         if not entry.name.isdigit():
             continue
@@ -1744,7 +1764,20 @@ def _marker_is_running(marker: str) -> bool:
             cmdline = (entry / "cmdline").read_bytes()
         except OSError:
             continue
-        if marker.encode() in cmdline:
+        if marker.encode() not in cmdline:
+            continue
+        try:
+            raw = (entry / "stat").read_bytes()
+        except OSError:
+            continue
+        close = raw.rfind(b")")
+        if close < 0:
+            continue
+        fields = raw[close + 2 :].split()
+        if not fields:
+            continue
+        state = fields[0].decode("ascii", "replace")
+        if state not in _DEAD_PROCESS_STATES:
             return True
     return False
 
@@ -1763,13 +1796,37 @@ def test_a_double_forked_sleeper_dies_with_the_jail(tmp_path: Path) -> None:
     root = tmp_path / "generation"
     root.mkdir()
     marker = "ta-jail-canary-" + os.urandom(6).hex()
-    spawner = (
-        "import os, subprocess, sys\n"
-        "subprocess.Popen(['sleep', '300', sys.argv[1]], start_new_session=True)\n"
+    # The helper is written into the workspace by the TEST, not embedded in the
+    # node's source. Two reasons, and both had bitten this test:
+    #
+    #   * the source denylist scans the node's own text, and a spawner spelled
+    #     inline puts the literal `subprocess` in it -- the node would have been
+    #     refused before it ran, so nothing this test asserts was ever exercised;
+    #   * `sleep 300 <marker>` is refused by GNU sleep (a second operand), so
+    #     the descendant this test is about exited instantly and "it is gone"
+    #     was true for the wrong reason.
+    #
+    # The sleeper announces itself by writing a file, which is what makes the
+    # "it died" assertion mean anything at all.
+    (root / "spawn.py").write_text(
+        "import subprocess, sys\n"
+        "SLEEPER = (\n"
+        "    \"import sys, time\\n\"\n"
+        "    \"handle = open(sys.argv[1], 'w')\\n\"\n"
+        "    \"handle.write('up')\\n\"\n"
+        "    \"handle.close()\\n\"\n"
+        "    \"time.sleep(300)\\n\"\n"
+        ")\n"
+        "subprocess.Popen(\n"
+        "    [sys.executable, '-c', SLEEPER, sys.argv[1], sys.argv[2]],\n"
+        "    start_new_session=True,\n"
+        ")\n",
+        encoding="utf-8",
     )
     source = (
         "def run(state):\n"
-        f"    ws.run([{PY!r}, '-c', {spawner!r}, {marker!r}])\n"
+        f"    ws.run([{PY!r}, '/workspace/spawn.py', '/workspace/sleeper-up', "
+        f"{marker!r}])\n"
         f"    ws.run([{PY!r}, '-c', 'import time; time.sleep(120)'], timeout=2)\n"
         "    return {'result': 'never'}\n"
     )
@@ -1788,6 +1845,9 @@ def test_a_double_forked_sleeper_dies_with_the_jail(tmp_path: Path) -> None:
     )
     assert result.success is False
     assert result.workspace_timeout is True
+    assert (root / "sleeper-up").is_file(), (
+        "the detached sleeper never started, so proving it died proves nothing"
+    )
 
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
@@ -1795,5 +1855,6 @@ def test_a_double_forked_sleeper_dies_with_the_jail(tmp_path: Path) -> None:
             break
         time.sleep(0.2)
     assert not _marker_is_running(marker), (
-        f"a double-forked descendant carrying {marker} outlived the jail"
+        f"a double-forked descendant carrying {marker} is still RUNNING after "
+        "the jail died; a zombie would be fine, this is not"
     )
