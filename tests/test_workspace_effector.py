@@ -9,6 +9,7 @@ that asserts THEY were called is what makes the seam real before the merge.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ from tinyassets.effectors.workspace import (
     run_workspace_effector,
 )
 from tinyassets.storage.outbound_connections import ConnectionLedger
+from tinyassets.storage.workspace_authority import workspace_consent_destination
 
 UNIVERSE = "universe-1"
 REPO = "owner/name"
@@ -38,7 +40,7 @@ TOKEN = "ghp_EFFECTORTOKEN0123456789ABCDEFGHI"
 def _setup(
     tmp_path: Path,
     *,
-    scopes=("git_read", "git_write"),
+    scopes=(f"git_read:{REPO}", f"git_write:{REPO}"),
     destination=f"github.com/{REPO}",
     endpoints=None,
     grant_universe=None,
@@ -76,7 +78,9 @@ def _setup(
         grant_consent(
             universe_dir,
             sink=EXTERNAL_WRITE_SINK_WORKSPACE,
-            destination=wse.consent_destination(op, HOST, REPO),
+            destination=workspace_consent_destination(
+                f"workspace_{op}", REPO, connection_id="conn-git"
+            ),
             granted_by="test",
         )
     return data_root, universe_dir
@@ -303,13 +307,13 @@ def test_an_unknown_grant_is_refused(tmp_path: Path, chain: EffectChain) -> None
 
 
 def test_a_checkout_needs_the_git_read_scope(tmp_path: Path, chain: EffectChain) -> None:
-    _root, universe_dir = _setup(tmp_path, scopes=("git_write",))
+    _root, universe_dir = _setup(tmp_path, scopes=(f"git_write:{REPO}",))
     result = _run(tmp_path, _packet(op="checkout"), universe_dir=universe_dir, chain=chain)
     assert result["error_kind"] == "scope_not_granted"
 
 
 def test_a_push_needs_the_git_write_scope(tmp_path: Path, chain: EffectChain) -> None:
-    _root, universe_dir = _setup(tmp_path, scopes=("git_read",))
+    _root, universe_dir = _setup(tmp_path, scopes=(f"git_read:{REPO}",))
     result = _run(
         tmp_path,
         _packet(op="push", commit_sha=SHA, branch_slug="slug", workspace="n0"),
@@ -319,23 +323,40 @@ def test_a_push_needs_the_git_write_scope(tmp_path: Path, chain: EffectChain) ->
     assert result["error_kind"] == "scope_not_granted"
 
 
-def test_a_connection_bound_to_another_repository_cannot_be_borrowed(
+def test_a_scope_bound_to_another_repository_cannot_be_borrowed(
     tmp_path: Path, chain: EffectChain
 ) -> None:
-    _root, universe_dir = _setup(tmp_path, destination="github.com/someone/else")
-    result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
-    assert result["error_kind"] == "repo_not_in_connection"
-
-
-def test_a_connection_not_allowlisted_for_the_host_is_refused(
-    tmp_path: Path, chain: EffectChain
-) -> None:
+    """The binding lives in the SCOPE (``git_read:owner/name``), not in the
+    connection's destination string: a scope for one repo is not a scope for
+    its neighbour, and a prefix is not a match."""
     _root, universe_dir = _setup(
-        tmp_path,
-        endpoints=[{"host": "gitlab.example", "path_template": "/x", "methods": ["GET"]}],
+        tmp_path, scopes=("git_read:someone/else", "git_write:someone/else")
     )
     result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
-    assert result["error_kind"] == "host_not_allowlisted"
+    assert result["error_kind"] == "scope_not_granted"
+
+
+def test_a_scope_for_a_repo_whose_name_extends_this_one_is_not_a_match(
+    tmp_path: Path, chain: EffectChain
+) -> None:
+    _root, universe_dir = _setup(tmp_path, scopes=(f"git_read:{REPO}-evil",))
+    result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
+    assert result["error_kind"] == "scope_not_granted"
+
+
+def test_a_git_scope_on_a_non_github_connection_is_refused_at_creation(
+    tmp_path: Path,
+) -> None:
+    """The host check moved EARLIER than the sink: a connection carrying a git
+    scope whose endpoints are not github cannot be created at all, so the sink
+    never has to refuse one."""
+    from tinyassets.storage.workspace_authority import GitScopeError
+
+    with pytest.raises((GitScopeError, ValueError)):
+        _setup(
+            tmp_path,
+            endpoints=[{"host": "gitlab.example", "path_template": "/x", "methods": ["GET"]}],
+        )
 
 
 def test_a_checkout_without_its_consent_is_refused(tmp_path: Path, chain: EffectChain) -> None:
@@ -362,8 +383,12 @@ def test_a_checkout_consent_does_not_authorize_a_push(
 ) -> None:
     """The consents are typed per op: one is never the other."""
     _root, universe_dir = _setup(tmp_path, consents=("checkout",))
-    checkout_dest = wse.consent_destination("checkout", HOST, REPO)
-    push_dest = wse.consent_destination("push", HOST, REPO)
+    checkout_dest = workspace_consent_destination(
+        "workspace_checkout", REPO, connection_id="conn-git"
+    )
+    push_dest = workspace_consent_destination(
+        "workspace_push", REPO, connection_id="conn-git"
+    )
     assert checkout_dest != push_dest
     from tinyassets.storage.effector_consents import is_consent_active
 
@@ -384,7 +409,9 @@ def test_a_consent_for_another_repository_does_not_authorize_this_one(
     grant_consent(
         universe_dir,
         sink=EXTERNAL_WRITE_SINK_WORKSPACE,
-        destination=wse.consent_destination("checkout", HOST, "someone/else"),
+        destination=workspace_consent_destination(
+            "workspace_checkout", "someone/else", connection_id="conn-git"
+        ),
         granted_by="test",
     )
     result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
@@ -420,6 +447,34 @@ def test_a_checkout_admits_populates_and_registers_the_mount(
     mount = chain.workspace_mount("n1")
     assert mount is not None
     assert mount.bind_source.endswith("repo")
+
+
+def test_the_startup_barrier_runs_before_the_pool_admits(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An entry an earlier process left must be finished before a new job is
+    admitted, even when this run is the first thing to touch the runs DB."""
+    from tinyassets import runs as _runs
+    from tinyassets import workspace_pool
+
+    order: list[str] = []
+    real_reconcile = _runs.ensure_workspace_reconciled
+    real_admit = workspace_pool.admit
+
+    def spy_reconcile(base_path, **kwargs):
+        order.append("reconcile")
+        return real_reconcile(base_path, start_sweeper=False)
+
+    def spy_admit(*args, **kwargs):
+        order.append("admit")
+        return real_admit(*args, **kwargs)
+
+    monkeypatch.setattr(_runs, "ensure_workspace_reconciled", spy_reconcile)
+    monkeypatch.setattr(workspace_pool, "admit", spy_admit)
+    _root, universe_dir = _setup(tmp_path)
+    result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
+    assert result.get("error_kind") is None, result
+    assert order[:2] == ["reconcile", "admit"], order
 
 
 def test_the_lease_directory_is_created_through_the_no_follow_handles(
@@ -744,6 +799,49 @@ def test_dry_run_still_reports_a_refusal_a_live_run_would_hit(
     _root, universe_dir = _setup(tmp_path, consents=())
     result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain, dry_run=True)
     assert result["error_kind"] == "missing_consent"
+
+
+def test_the_adapter_binds_to_the_real_filesystem_helpers_by_name() -> None:
+    """The names are the contract with the pool lane.
+
+    The adapter imports them lazily and the Windows suite injects them, so a
+    rename over there would otherwise surface as a runtime AttributeError on
+    Linux only. These assertions fail HERE instead.
+    """
+    from tinyassets import workspace_fs
+
+    for name in (
+        "open_dir_nofollow",
+        "create_lease_dir",
+        "read_regular_file_beneath",
+        "copy_regular_file_beneath",
+        "bind_target_for",
+    ):
+        assert callable(getattr(workspace_fs, name, None)), f"workspace_fs.{name} is gone"
+    assert issubclass(workspace_fs.UnsafePoolPath, OSError)
+
+
+def test_the_real_helpers_refuse_loudly_on_windows_rather_than_imitating() -> None:
+    """A path-based Windows fallback would fake a descriptor guarantee."""
+    from tinyassets import workspace_fs
+
+    if os.name == "posix":
+        pytest.skip("POSIX has the real openat semantics")
+    with pytest.raises(NotImplementedError):
+        workspace_fs.open_dir_nofollow(".")
+
+
+def test_a_checkout_without_the_posix_helpers_fails_as_a_workspace_refusal(
+    tmp_path: Path, chain: EffectChain, no_real_git
+) -> None:
+    """No fs_spy here: on Windows the real helpers raise, and the adapter must
+    turn that into an actionable kind rather than an unhandled crash."""
+    if os.name == "posix":
+        pytest.skip("the real helpers work here; the Linux proof covers it")
+    _root, universe_dir = _setup(tmp_path)
+    result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
+    assert result["error_kind"] in ("workspace_checkout_failed", "effector_crashed")
+    assert chain.workspace_mount("n1") is None
 
 
 def test_the_sink_is_registered_and_exported() -> None:
