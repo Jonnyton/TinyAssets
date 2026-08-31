@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ from tinyassets.storage.workspace_authority import (
     normalize_repo,
     workspace_consent_destination,
 )
+from tinyassets.workspace_intents import record_push_intent, settle_push_intent
 
 logger = logging.getLogger(__name__)
 
@@ -53,13 +55,15 @@ _CONSENT_FOR_OP = {
 #: The connection scope each operation requires, bound to (host, owner/name).
 _SCOPE_FOR_OP = {"checkout": "git_read", "push": "git_write"}
 
-#: (sink, verb) pairs that could NOT have changed the far side. A checkout
-#: reads a repository and a discard only drops local state; a push is a write.
+#: (sink, verb) pairs that could NOT have changed the far side. Only a
+#: checkout: it reads a repository and changes nothing anywhere.
+#:
+#: ``discard`` is deliberately NOT here (Codex round 2, #12). It destroys a
+#: generation and enqueues an irreversible wipe -- local, but a change, and the
+#: settlement asks "could this run have changed anything", not "did it touch
+#: the network".
 WORKSPACE_READ_EFFECTS = frozenset(
-    {
-        (EXTERNAL_WRITE_SINK_WORKSPACE, "checkout"),
-        (EXTERNAL_WRITE_SINK_WORKSPACE, "discard"),
-    }
+    {(EXTERNAL_WRITE_SINK_WORKSPACE, "checkout")}
 )
 
 _HOST = "github.com"
@@ -152,6 +156,26 @@ def _split_repo(repo: str) -> tuple[str, str]:
 def repo_key_for(host: str, owner: str, name: str) -> str:
     """The pool's path-safe key for one repository."""
     return f"{host}--{owner}--{name}".replace("/", "-")
+
+
+def scratch_pool_root(universe_dir: Path) -> Path:
+    """The shared scratch pool: ``<data>/scratch``, beside the universes.
+
+    Exported because the pool ADMITS against this path and ``runs.py`` CREATES
+    against it; two spellings of one directory is a lease admitted in one place
+    and written in another.
+    """
+    return Path(universe_dir).parent / "scratch"
+
+
+def universe_workspace_root(universe_dir: Path) -> Path:
+    """The universe root the pool derives permanent paths FROM.
+
+    ``workspace_pool.universe_paths`` appends ``workspaces/<repo-key>/<gen>``
+    itself, so this is the universe directory -- passing
+    ``<universe>/workspaces`` here produced ``workspaces/workspaces/...``.
+    """
+    return Path(universe_dir)
 
 
 # --------------------------------------------------------------------------- #
@@ -307,11 +331,61 @@ def _fs():
     return workspace_fs
 
 
+def _close_handles(*handles: Any) -> None:
+    """Close whatever descriptors these are, once, never raising.
+
+    Every failure path after a handle is opened comes through here: a lease
+    whose descriptors stay open is a lease the outbox cannot reclaim.
+    """
+    for handle in handles:
+        if isinstance(handle, int) and not isinstance(handle, bool):
+            try:
+                os.close(handle)
+            except OSError:
+                pass
+
+
 def _make_lease_dir(lease_path: Path) -> Any:
-    """Create the lease directory under a handle resolved without links."""
+    """Create the lease directory under a handle resolved without links.
+
+    The PARENT handle is closed here: it was only needed to create the child
+    safely, and leaking one per checkout exhausts the descriptor table on a
+    long-lived daemon (Codex round 2, #7).
+    """
     fs = _fs()
     parent_fd = fs.open_dir_nofollow(str(lease_path.parent))
-    return fs.create_lease_dir(parent_fd, lease_path.name)
+    try:
+        return fs.create_lease_dir(parent_fd, lease_path.name)
+    finally:
+        _close_handles(parent_fd)
+
+
+def _owe_wipe(base_path: Path, lease: Any, *, run_id: str, universe_id: str) -> None:
+    """Enqueue the lease for wipe after a checkout failed past admission.
+
+    Never raises: this runs on a failure path, and losing the ORIGINAL refusal
+    to a bookkeeping error would report the wrong problem.
+    """
+    from tinyassets import workspace_pool
+
+    try:
+        conn = workspace_pool._connect(_pool_db(base_path))
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            workspace_pool.enqueue_discard(
+                conn,
+                run_id=str(run_id),
+                universe_id=universe_id,
+                storage_class=getattr(lease, "storage_class", "scratch"),
+                lease=lease,
+                repo_key=getattr(lease, "repo_key", None),
+                generation=getattr(lease, "generation", None),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.exception("could not enqueue the failed checkout's lease for wipe")
 
 
 def _make_repo_dir(lease_fd: Any, repo_dir: Path) -> Any:
@@ -383,7 +457,6 @@ def _checkout(
         raise _Refused("invalid_packet", "packet.storage must be 'scratch' or 'universe'")
     repo_key = repo_key_for(host, owner, name)
     db = _pool_db(base_path)
-    data_root = base_path.parent
 
     # The startup barrier: finish every outbox entry an earlier process left
     # before admitting anything new. Once per process and cheap after that, but
@@ -393,8 +466,14 @@ def _checkout(
         from tinyassets import runs as _runs
 
         _runs.ensure_workspace_reconciled(base_path)
-    except Exception:
+    except Exception as exc:
+        # Fail CLOSED. Admitting past a barrier that could not run is admitting
+        # on top of whatever an earlier process left owed.
         logger.exception("workspace startup reconciliation failed")
+        raise _Refused(
+            "workspace_pool_busy",
+            f"startup reconciliation failed: {type(exc).__name__}",
+        ) from None
 
     def _admit() -> Any:
         return workspace_pool.admit(
@@ -405,8 +484,8 @@ def _checkout(
             storage_class=storage,
             run_id=str(run_id),
             max_bytes=int(packet.get("max_bytes") or _DEFAULT_MAX_CHECKOUT_BYTES),
-            pool_root=data_root / "scratch",
-            universe_root=base_path / "workspaces",
+            pool_root=scratch_pool_root(base_path),
+            universe_root=universe_workspace_root(base_path),
             **_universe_quota_kwargs(storage, base_path),
         )
 
@@ -458,8 +537,8 @@ def _checkout(
     lease_fd = _make_lease_dir(Path(lease.path))
     repo_dir = Path(lease.path) / "repo"
     # The repository directory is created THROUGH the lease handle and its own
-    # descriptor is what git is pointed at, so the destination cannot be
-    # swapped between creating it and writing into it.
+    # descriptor is what git is pointed at AND what the jail binds -- binding
+    # the lease root would put the repository one level down from /workspace.
     repo_fd = _make_repo_dir(lease_fd, repo_dir)
     home = staging / "populate-home"
     home.mkdir(parents=True, exist_ok=True)
@@ -475,7 +554,24 @@ def _checkout(
             dest_fd=_descriptor_or_none(repo_fd),
         )
     except Exception as exc:
+        _close_handles(repo_fd, lease_fd)
         raise _Refused("workspace_checkout_failed", f"workspace could not be populated: {exc}")
+
+    # Staging held the credentialed clone, the bundle and the git homes. It is
+    # deleted BEFORE the capability is published, and the deletion is checked:
+    # a workspace published while staging survives is a workspace published
+    # next to the material it was supposed to replace.
+    try:
+        shutil.rmtree(staging)
+        if staging.exists():
+            raise OSError(f"{staging} still exists after rmtree")
+    except OSError as exc:
+        _close_handles(repo_fd, lease_fd)
+        _owe_wipe(base_path, lease, run_id=run_id, universe_id=universe_id)
+        raise _Refused(
+            "workspace_checkout_failed",
+            f"staging could not be removed, so nothing was published: {exc}",
+        ) from None
 
     measured = int(answer.get("bytes") or 0)
     try:
@@ -487,7 +583,19 @@ def _checkout(
     if storage == "universe":
         replaced = _publish(db, lease, universe_id=universe_id, repo_key=repo_key, run_id=run_id)
 
-    _register_mount(chain, node_id, lease=lease, repo_dir=repo_dir, lease_fd=lease_fd)
+    connection_id = str(getattr(resource, "connection_id", ""))
+    mount = _register_mount(
+        chain,
+        node_id,
+        lease=lease,
+        repo_dir=repo_dir,
+        lease_fd=lease_fd,
+        repo_fd=repo_fd,
+        host=host,
+        repo=repo,
+        connection_id=connection_id,
+        grant_id=_str_field(packet, "grant_id"),
+    )
 
     evidence: dict[str, Any] = {
         "op": "checkout",
@@ -500,15 +608,15 @@ def _checkout(
     }
     if replaced is not None:
         evidence["replaced_generation"] = replaced
-    if _str_field(packet, "provision") or packet.get("provision"):
-        connection_id = str(getattr(resource, "connection_id", ""))
-        if not _check_provision_consent(base_path, host, repo, connection_id):
-            # The checkout still completed: provisioning is its own consent.
-            evidence["provision"] = "workspace_provision_refused"
-            evidence["provision_hint"] = (
-                "grant workspace_provision for "
-                f"{_consent_destination(CONSENT_PROVISION, repo, connection_id, host)}"
-            )
+    if packet.get("provision"):
+        # The admission grammar exists (workspace_provision.py) but nothing
+        # installs from it yet. Say THAT, not "you lack a consent" -- a hint
+        # naming a consent implies granting it would make provisioning run.
+        evidence["provision"] = "workspace_provision_refused"
+        evidence["provision_detail"] = (
+            "provisioning is not available in this release (admission only)"
+        )
+    del mount
     return evidence
 
 
@@ -583,6 +691,7 @@ def _push(
     host: str,
     repo: str,
     execute: Any,
+    prior_effects: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     commit_sha = _str_field(packet, "commit_sha")
     slug = _str_field(packet, "branch_slug")
@@ -590,7 +699,15 @@ def _push(
         raise _Refused("invalid_packet", "packet.commit_sha is required for a push")
     if not _SLUG_RE.match(slug) or ".." in slug or slug.endswith(".lock"):
         raise _Refused("invalid_packet", "packet.branch_slug must be a single path-safe segment")
-    mount = _resolve_mount(chain, packet, node_id)
+    mount = _resolve_mount(chain, packet, node_id, prior_effects=prior_effects)
+    # The DESTINATION and the AUTHORITY come from the capability, never from
+    # the packet: the checkout is what was consented to, and a packet naming a
+    # different repository is a packet trying to reuse this credential
+    # somewhere else (Codex round 2, #6).
+    host = mount.host or host
+    repo = mount.repo or repo
+    _require_packet_agrees_with_mount(packet, mount)
+    resource = _connection_for_mount(base_path, mount, fallback=resource)
     remote_ref = f"refs/heads/tiny/{_universe_short(universe_id)}/{slug}"
 
     staging = _staging_root(base_path, run_id, node_id)
@@ -605,6 +722,15 @@ def _push(
             "workspace_push_refused", f"the export bundle could not be read: {exc}"
         )
 
+    intent = record_push_intent(
+        base_path,
+        run_id=str(run_id),
+        node_id=node_id,
+        connection_id=mount.connection_id,
+        repo=repo,
+        remote_ref=remote_ref,
+        sha=commit_sha,
+    )
     answer = execute(
         {
             "op": "push",
@@ -618,6 +744,7 @@ def _push(
             "staging_dir": str(staging),
         }
     )
+    settle_push_intent(base_path, intent, "done" if answer.get("ok") else "failed")
     if not answer.get("ok"):
         raise _Refused(
             "workspace_push_refused",
@@ -644,10 +771,12 @@ def _discard(
     run_id: str,
     universe_id: str,
     chain: Any,
+    prior_effects: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from tinyassets import workspace_pool
 
-    mount = _resolve_mount(chain, packet, node_id)
+    mount = _resolve_mount(chain, packet, node_id, prior_effects=prior_effects)
+    _require_packet_agrees_with_mount(packet, mount)
     # Revoke FIRST: the capability must be gone before the bytes are owed, so
     # nothing can open the workspace between the two.
     _revoke_mount(chain, mount.node_id)
@@ -683,29 +812,114 @@ def _discard(
 # --------------------------------------------------------------------------- #
 
 
-def _register_mount(chain: Any, node_id: str, *, lease: Any, repo_dir: Path, lease_fd: Any) -> None:
+def _register_mount(
+    chain: Any,
+    node_id: str,
+    *,
+    lease: Any,
+    repo_dir: Path,
+    lease_fd: Any,
+    repo_fd: Any,
+    host: str,
+    repo: str,
+    connection_id: str,
+    grant_id: str,
+) -> Any:
+    """Publish the capability, bound to the authority it was created under.
+
+    The bind source is the REPOSITORY's descriptor, not the lease root's:
+    ``/workspace`` must BE the repository. The lease handle is kept too,
+    because push reads ``repo/.tiny-export/<sha>.bundle``, a path beneath the
+    lease rather than beneath the repo.
+    """
     from tinyassets.effectors import WorkspaceMount
 
+    descriptor = _descriptor_or_none(repo_fd)
     mount = WorkspaceMount(
         node_id=node_id,
-        bind_source=str(repo_dir),
+        bind_source=(
+            f"/proc/self/fd/{descriptor}" if descriptor is not None else str(repo_dir)
+        ),
+        pass_fds=(descriptor,) if descriptor is not None else (),
+        repo_fd=repo_fd,
         lease_fd=lease_fd,
         lease=lease,
         storage_class=lease.storage_class,
         repo_key=lease.repo_key,
         generation=lease.generation,
+        host=host,
+        repo=repo,
+        connection_id=connection_id,
+        grant_id=grant_id,
     )
     register = getattr(chain, "register_workspace", None)
     if register is None:
         raise _Refused("workspace_checkout_failed", "this run cannot hold a workspace")
     register(node_id, mount)
+    return mount
 
 
-def _resolve_mount(chain: Any, packet: dict[str, Any], node_id: str) -> Any:
+def _require_packet_agrees_with_mount(packet: dict[str, Any], mount: Any) -> None:
+    """A packet may restate the capability's repo/connection, never change it.
+
+    Silently preferring the mount would be safe but confusing; refusing says
+    the packet is wrong about what it is operating on.
+    """
+    stated_repo = _str_field(packet, "repo")
+    if stated_repo and mount.repo:
+        try:
+            if normalize_repo(stated_repo) != normalize_repo(mount.repo):
+                raise _Refused(
+                    "invalid_packet",
+                    "packet.repo names a different repository than the workspace",
+                )
+        except GitScopeError:
+            raise _Refused("invalid_packet", "packet.repo is not 'owner/name'") from None
+    stated_connection = _str_field(packet, "connection_id")
+    if stated_connection and mount.connection_id and stated_connection != mount.connection_id:
+        raise _Refused(
+            "invalid_packet",
+            "packet.connection_id names a different connection than the workspace",
+        )
+
+
+def _connection_for_mount(base_path: Path, mount: Any, *, fallback: Any) -> Any:
+    """The connection the CHECKOUT ran under, re-read and re-checked.
+
+    Re-read rather than remembered: a connection revoked between the checkout
+    and the push must stop the push.
+    """
+    if not mount.connection_id or not mount.grant_id:
+        return fallback
+    db_path = _ledger_db_path(base_path)
+    if db_path is None:
+        return fallback
+    _grant, resource = _read_connection(
+        db_path=db_path,
+        connection_id=mount.connection_id,
+        universe_id=_universe_id(base_path),
+        grant_id=mount.grant_id,
+    )
+    return resource
+
+
+def _resolve_mount(
+    chain: Any,
+    packet: dict[str, Any],
+    node_id: str,
+    *,
+    prior_effects: dict[str, Any] | None = None,
+) -> Any:
     """The workspace a push/discard names, through the run's effect chain ONLY.
 
     Never through state and never through ``$ta.ref``: a capability that can be
     named in state is a capability user text can forge.
+
+    And it must be an ANCESTOR. The chain is run-global, so without this a node
+    on a parallel branch could name a workspace it has no graph relationship
+    to; ``prior_effects`` is already the ancestor-scoped view the dispatcher
+    hands every adapter (``None`` means no ancestry is known -- legacy
+    post-run dispatch -- and is not treated as a refusal).
     """
     target = _str_field(packet, "workspace")
     if not target:
@@ -719,6 +933,12 @@ def _resolve_mount(chain: Any, packet: dict[str, Any], node_id: str) -> Any:
         raise _Refused(
             "no_matching_packet",
             f"node '{node_id}' names workspace '{target}', which this run does not hold",
+        )
+    if prior_effects is not None and target not in prior_effects:
+        raise _Refused(
+            "no_matching_packet",
+            f"node '{node_id}' names workspace '{target}', which is not one of its "
+            "graph ancestors",
         )
     return mount
 
@@ -792,7 +1012,7 @@ def run_workspace_effector(
     ``chain`` and ``execute`` are injected by tests; in production the chain is
     the run's active :class:`EffectChain` and ``execute`` spawns the worker.
     """
-    del allowed_state_keys, prior_effects
+    del allowed_state_keys
     try:
         return _run(
             node_id=node_id,
@@ -803,6 +1023,7 @@ def run_workspace_effector(
             dry_run=dry_run,
             chain=chain,
             execute=execute,
+            prior_effects=prior_effects,
         )
     except _Refused as refused:
         return {"error": refused.error, "error_kind": refused.kind, **refused.extra}
@@ -821,6 +1042,7 @@ def _run(
     dry_run: bool | None,
     chain: Any,
     execute: Any,
+    prior_effects: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     matched_key, packet = _find_packet(output_keys=output_keys, run_state=run_state)
     if packet is None:
@@ -862,7 +1084,20 @@ def _run(
             run_id=run_id,
             universe_id=universe_id,
             chain=chain,
+            prior_effects=prior_effects,
         )
+
+    if op == "push":
+        # The capability is the authority, so a packet that disagrees with it
+        # is refused HERE -- before the connection and scope gates, which would
+        # otherwise report the contradiction as "scope not granted" and send
+        # the reader looking for a missing grant that is not the problem.
+        early = _resolve_mount(chain, packet, node_id, prior_effects=prior_effects)
+        _require_packet_agrees_with_mount(packet, early)
+        if early.repo:
+            repo = early.repo
+        if early.host:
+            host = early.host
 
     if not repo:
         raise _Refused("invalid_packet", "packet.repo is required")
@@ -911,7 +1146,11 @@ def _run(
         "host": host,
         "repo": repo,
         "execute": execute,
+        "prior_effects": prior_effects,
     }
-    evidence = _checkout(**common) if op == "checkout" else _push(**common)
+    if op == "checkout":
+        evidence = _checkout(**{k: v for k, v in common.items() if k != "prior_effects"})
+    else:
+        evidence = _push(**common)
     evidence["matched_output_key"] = matched_key
     return evidence

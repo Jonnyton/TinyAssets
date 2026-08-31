@@ -154,7 +154,22 @@ def _sandbox_workspace_mount(mount: Any, node_id: str) -> Any:
         limits = WorkspaceLimits()
     allowed_roots = tuple(getattr(mount, "allowed_roots", ()) or ())
 
-    lease_fd = getattr(mount, "lease_fd", None)
+    # The sink publishes the descriptors it wants bound. Carry them UNCHANGED:
+    # the repository's own fd is the bind source, and deriving one here from
+    # the lease root would mount the directory that CONTAINS the repository
+    # (Codex round 2, P0 #14a).
+    published = tuple(getattr(mount, "pass_fds", ()) or ())
+    if published and WORKSPACE_FD_BIND_SUPPORTED:
+        return WorkspaceMount(
+            bind_source=bind_source,
+            limits=limits,
+            pass_fds=published,
+            allowed_roots=allowed_roots,
+        )
+
+    lease_fd = getattr(mount, "repo_fd", None)
+    if lease_fd is None:
+        lease_fd = getattr(mount, "lease_fd", None)
     if lease_fd is None or not WORKSPACE_FD_BIND_SUPPORTED:
         return WorkspaceMount(
             bind_source=bind_source, limits=limits, allowed_roots=allowed_roots

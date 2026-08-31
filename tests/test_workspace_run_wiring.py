@@ -313,6 +313,31 @@ def test_the_chain_closes_workspace_descriptors_on_revoke_and_settle():
     assert chain.workspace_mount("checkout_b") is None
 
 
+def test_startup_reconciliation_settles_lost_push_intents(tmp_path, monkeypatch):
+    """A push whose receipt was lost is settled by ls-remote on the next
+    startup (workspace-node D1; Codex code round 2 #4) - best-effort, never
+    blocking the startup on the network."""
+    from tinyassets import workspace_worker
+
+    universe = tmp_path / "data" / "universe-y"
+    universe.mkdir(parents=True)
+    monkeypatch.setattr(workspace_pool, "startup_sweep", lambda *a, **k: 0)
+    calls: list = []
+    monkeypatch.setattr(
+        workspace_worker, "reconcile_push_intents",
+        lambda base, **k: calls.append(Path(base)) or [("i-1", "done")],
+    )
+    assert runs.ensure_workspace_reconciled(universe, start_sweeper=False) is True
+    assert calls == [universe]
+
+    def _boom(base, **k):
+        raise RuntimeError("no network")
+
+    monkeypatch.setattr(workspace_worker, "reconcile_push_intents", _boom)
+    settled = runs._reconcile_push_intents(universe, when="test")
+    assert settled == 0, "a failure is logged, not raised"
+
+
 @pytest.mark.parametrize("kind", runs.WORKSPACE_FAILURE_KINDS)
 def test_every_workspace_refusal_is_its_own_class_with_an_action(kind):
     summary = f"external write failed - checkout/workspace: refused [{kind}]"

@@ -112,10 +112,13 @@ class FakeWorker:
             "ref_name": "refs/tiny/export",
         }
         self.requests: list[dict] = []
+        self.staging_existed: list[bool] = []
         self.staging_holder = staging_holder
 
     def __call__(self, request: dict[str, Any]) -> dict[str, Any]:
         self.requests.append(request)
+        # staging must exist WHILE the worker runs and be gone afterwards
+        self.staging_existed.append(Path(request["staging_dir"]).is_dir())
         # a real worker writes the bundle into the staging dir the parent made
         staging = Path(request["staging_dir"])
         if request["op"] == "checkout" and self.answer.get("ok"):
@@ -318,8 +321,11 @@ def test_a_checkout_needs_the_git_read_scope(tmp_path: Path, chain: EffectChain)
     assert result["error_kind"] == "scope_not_granted"
 
 
-def test_a_push_needs_the_git_write_scope(tmp_path: Path, chain: EffectChain) -> None:
+def test_a_push_needs_the_git_write_scope(
+    tmp_path: Path, chain: EffectChain, fs_spy
+) -> None:
     _root, universe_dir = _setup(tmp_path, scopes=(f"git_read:{REPO}",))
+    _with_mount(chain, tmp_path, host=HOST, repo=REPO)
     result = _run(
         tmp_path,
         _packet(op="push", commit_sha=SHA, branch_slug="slug", workspace="n0"),
@@ -372,8 +378,11 @@ def test_a_checkout_without_its_consent_is_refused(tmp_path: Path, chain: Effect
     assert result["consent"] == "workspace_checkout"
 
 
-def test_a_push_without_its_consent_is_refused(tmp_path: Path, chain: EffectChain) -> None:
+def test_a_push_without_its_consent_is_refused(
+    tmp_path: Path, chain: EffectChain, fs_spy
+) -> None:
     _root, universe_dir = _setup(tmp_path, consents=("checkout",))
+    _with_mount(chain, tmp_path, host=HOST, repo=REPO)
     result = _run(
         tmp_path,
         _packet(op="push", commit_sha=SHA, branch_slug="slug", workspace="n0"),
@@ -483,6 +492,174 @@ def test_the_startup_barrier_runs_before_the_pool_admits(
     assert order[:2] == ["reconcile", "admit"], order
 
 
+def test_the_bind_source_is_the_repository_not_the_lease_root(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
+) -> None:
+    """P0: `/workspace` must BE the repository.
+
+    Publishing the lease ROOT as the bind would put the repository one level
+    down, so a node would see `repo/` instead of `README.md` -- and the two
+    handles are for two different directories, which is exactly why they are
+    two fields.
+    """
+    _root, universe_dir = _setup(tmp_path)
+    _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
+    mount = chain.workspace_mount_or_none("n1")
+    assert mount is not None
+    assert mount.repo_fd is not None, "the repository's own handle must be published"
+    assert mount.repo_fd != mount.lease_fd, "they are different directories"
+    # the lease handle names the lease; the repo handle names <lease>/repo
+    assert str(mount.lease_fd).endswith(Path(mount.lease.path).name)
+    assert str(mount.repo_fd).endswith("/repo")
+    assert mount.bind_source.endswith("repo") or mount.bind_source.startswith("/proc/self/fd/")
+
+
+def test_the_parent_handle_is_closed_after_the_lease_dir_is_made(
+    tmp_path: Path, chain: EffectChain, no_real_git, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One leaked descriptor per checkout exhausts a long-lived daemon.
+
+    The default spy hands back strings, which cannot be closed and so cannot
+    show the leak; this one hands back REAL descriptors (Codex round 2, #7).
+    """
+    import os as _os
+
+    from tinyassets import workspace_fs
+
+    opened: list[int] = []
+    handles: dict[int, Path] = {}
+
+    def open_dir_nofollow(path):
+        Path(path).mkdir(parents=True, exist_ok=True)
+        read_fd, write_fd = _os.pipe()
+        _os.close(write_fd)
+        opened.append(read_fd)
+        handles[read_fd] = Path(path)
+        return read_fd
+
+    def create_lease_dir(parent_fd, name):
+        parent = handles[parent_fd]
+        (parent / name).mkdir(parents=True, exist_ok=True)
+        read_fd, write_fd = _os.pipe()
+        _os.close(write_fd)
+        handles[read_fd] = parent / name
+        return read_fd
+
+    # Record the CLOSE rather than probing liveness by number: the next
+    # os.pipe() reuses a freed descriptor, so "fstat still works" would be a
+    # lie about a descriptor that really was closed.
+    closed: list[int] = []
+    real_close = _os.close
+
+    def recording_close(descriptor):
+        closed.append(descriptor)
+        real_close(descriptor)
+
+    monkeypatch.setattr(workspace_fs, "open_dir_nofollow", open_dir_nofollow, raising=False)
+    monkeypatch.setattr(workspace_fs, "create_lease_dir", create_lease_dir, raising=False)
+    monkeypatch.setattr(_os, "close", recording_close)
+    _root, universe_dir = _setup(tmp_path)
+    result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
+    assert result.get("error_kind") is None, result
+    assert opened, "no parent handle was ever opened"
+    for parent_fd in opened:
+        assert parent_fd in closed, f"parent handle {parent_fd} was leaked"
+
+
+def test_the_compiler_binds_the_repository_handle_not_the_lease_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bridge must carry what the sink published, not re-derive it.
+
+    Deriving the bind from the lease root here is the P0: the jail would mount
+    the directory that CONTAINS the repository.
+    """
+    import os as _os
+
+    from tinyassets import graph_compiler as gc
+    from tinyassets.effectors import WorkspaceMount
+
+    repo_read, repo_write = _os.pipe()
+    lease_read, lease_write = _os.pipe()
+    _os.close(repo_write)
+    _os.close(lease_write)
+    try:
+        mount = WorkspaceMount(
+            node_id="n0",
+            bind_source=f"/proc/self/fd/{repo_read}",
+            pass_fds=(repo_read,),
+            repo_fd=repo_read,
+            lease_fd=lease_read,
+        )
+        # Force the POSIX branch: production is Linux, and skipping here would
+        # leave the P0 unasserted on the only box that runs the suite.
+        monkeypatch.setattr(gc, "WORKSPACE_FD_BIND_SUPPORTED", True, raising=False)
+        built = gc._sandbox_workspace_mount(mount, "code-node")
+        assert built.pass_fds == (repo_read,), "the REPO handle is what the jail inherits"
+        assert built.bind_source == f"/proc/self/fd/{repo_read}"
+        assert lease_read not in (built.pass_fds or ())
+    finally:
+        _os.close(repo_read)
+        _os.close(lease_read)
+
+
+def test_the_capability_carries_the_authority_it_was_created_under(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
+) -> None:
+    _root, universe_dir = _setup(tmp_path)
+    _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
+    mount = chain.workspace_mount_or_none("n1")
+    assert (mount.host, mount.repo) == (HOST, REPO)
+    assert mount.connection_id == "conn-git"
+    assert mount.grant_id == "grant-git"
+
+
+def test_a_mount_closes_both_handles_exactly_once() -> None:
+    import os as _os
+
+    from tinyassets.effectors import WorkspaceMount
+
+    first, second = _os.pipe()
+    mount = WorkspaceMount(node_id="n", bind_source="x", repo_fd=first, lease_fd=second)
+    mount.close()
+    for descriptor in (first, second):
+        with pytest.raises(OSError):
+            _os.fstat(descriptor)
+    mount.close()  # idempotent: a second close must not touch a reused fd
+
+
+def test_revoking_a_workspace_closes_its_handles(tmp_path: Path) -> None:
+    import os as _os
+
+    from tinyassets.effectors import WorkspaceMount
+
+    chain = EffectChain(run_id="r", base_path=str(tmp_path))
+    first, second = _os.pipe()
+    chain.register_workspace(
+        "n0", WorkspaceMount(node_id="n0", bind_source="x", repo_fd=first, lease_fd=second)
+    )
+    chain.revoke_workspace("n0")
+    with pytest.raises(OSError):
+        _os.fstat(first)
+
+
+def test_settling_a_run_closes_every_workspace_it_still_holds(tmp_path: Path) -> None:
+    """A run that ended without a discard must not pin the lease open."""
+    import os as _os
+
+    from tinyassets.effectors import WorkspaceMount
+
+    chain = EffectChain(run_id="r", base_path=str(tmp_path))
+    first, second = _os.pipe()
+    chain.register_workspace(
+        "n0", WorkspaceMount(node_id="n0", bind_source="x", repo_fd=first, lease_fd=second)
+    )
+    chain.settle()
+    with pytest.raises(OSError):
+        _os.fstat(first)
+    assert chain.workspace_mount_or_none("n0") is None
+
+
 def test_the_lease_directory_is_created_through_the_no_follow_handles(
     tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
 ) -> None:
@@ -506,7 +683,10 @@ def test_the_worker_request_carries_a_reference_never_a_secret(
     assert request["op"] == "checkout"
     assert request["owner_repo"] == REPO
     assert request["host"] == HOST
-    assert Path(request["staging_dir"]).is_dir()
+    assert worker.staging_existed == [True], "staging must exist while the worker runs"
+    # ...and be gone before the capability is published: it held the
+    # credentialed clone and the bundle (Codex round 2, #5).
+    assert not Path(request["staging_dir"]).exists()
 
 
 def test_the_staging_dir_is_never_inside_the_lease(
@@ -582,6 +762,149 @@ def _outbox_rows(db: Path) -> list[dict]:
     finally:
         conn.close()
     return [dict(row) for row in rows]
+
+
+def test_admission_and_the_creator_agree_on_one_scratch_root(tmp_path: Path) -> None:
+    """The pool admits against a path and runs.py creates it; one directory.
+
+    Two spellings means a lease admitted in one place and written in another
+    (Codex round 2, P0 #1).
+    """
+    from tinyassets import runs as _runs
+
+    data_root = tmp_path / "data"
+    universe_dir = data_root / UNIVERSE
+    universe_dir.mkdir(parents=True)
+    created = _runs._ensure_scratch_root(universe_dir)
+    assert created == wse.scratch_pool_root(universe_dir)
+    assert created == data_root / "scratch"
+    assert created.is_dir()
+
+
+def test_the_universe_root_is_the_universe_not_its_workspaces_dir(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
+) -> None:
+    """`universe_paths` appends `workspaces/` itself; passing it again made
+    `workspaces/workspaces/...` (Codex round 2, P0 #1)."""
+    from tinyassets import workspace_pool
+
+    _root, universe_dir = _setup(tmp_path)
+    assert wse.universe_workspace_root(universe_dir) == universe_dir
+    result = _run(tmp_path, _packet(storage="universe"), universe_dir=universe_dir, chain=chain)
+    assert result.get("error_kind") is None, result
+    mount = chain.workspace_mount_or_none("n1")
+    expected, _quarantine = workspace_pool.universe_paths(
+        universe_dir, mount.repo_key, mount.generation
+    )
+    assert Path(mount.lease.path) == expected
+    assert "workspaces/workspaces" not in Path(mount.lease.path).as_posix()
+
+
+def test_a_barrier_that_cannot_run_refuses_instead_of_admitting(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail CLOSED: admitting past a barrier that did not run admits on top of
+    whatever an earlier process left owed (Codex round 2, #2)."""
+    from tinyassets import runs as _runs
+    from tinyassets import workspace_pool
+
+    _root, universe_dir = _setup(tmp_path)
+    admitted: list[str] = []
+    real_admit = workspace_pool.admit
+
+    def spy_admit(*args, **kwargs):
+        admitted.append("admit")
+        return real_admit(*args, **kwargs)
+
+    def broken(base_path, **kwargs):
+        raise OSError("the runs db is locked")
+
+    monkeypatch.setattr(_runs, "ensure_workspace_reconciled", broken)
+    monkeypatch.setattr(workspace_pool, "admit", spy_admit)
+    result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
+    assert result["error_kind"] == "workspace_pool_busy"
+    assert "startup reconciliation failed" in result["error"]
+    assert admitted == [], "nothing may be admitted past a barrier that did not run"
+
+
+def test_a_provision_request_is_refused_without_pretending_it_ran(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
+) -> None:
+    """Nothing installs from the manifest yet; say that, not 'grant a consent'.
+
+    A hint naming a consent implies granting it would make provisioning work
+    (Codex round 2, #3).
+    """
+    _root, universe_dir = _setup(tmp_path)
+    result = _run(
+        tmp_path,
+        _packet(provision={"python": ["x==1.0"]}),
+        universe_dir=universe_dir,
+        chain=chain,
+    )
+    assert result.get("error_kind") is None, "the checkout itself still completes"
+    assert result["provision"] == "workspace_provision_refused"
+    assert result["provision_detail"] == (
+        "provisioning is not available in this release (admission only)"
+    )
+    assert "consent" not in result["provision_detail"]
+    assert "provision_hint" not in result
+
+
+def test_staging_is_gone_before_the_capability_is_published(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
+) -> None:
+    _root, universe_dir = _setup(tmp_path)
+    worker = FakeWorker()
+    _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain, worker=worker)
+    staging = Path(worker.requests[0]["staging_dir"])
+    assert not staging.exists(), "staging held the clone and the bundle"
+
+
+def test_a_checkout_whose_staging_survives_publishes_nothing(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A SILENT partial removal is the case that matters (Codex round 2, #5).
+
+    An rmtree that raises is caught either way; ``ignore_errors=True`` is
+    dangerous precisely because it does NOT raise -- it leaves the credentialed
+    clone and the bundle sitting there and says nothing. So the stand-in here
+    returns normally and leaves the directory, and the existence CHECK is what
+    has to catch it.
+    """
+    _root, universe_dir = _setup(tmp_path)
+    monkeypatch.setattr(wse.shutil, "rmtree", lambda path, **kw: None)
+    result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
+    assert result["error_kind"] == "workspace_checkout_failed"
+    assert "staging could not be removed" in result["error"]
+    assert chain.workspace_mount_or_none("n1") is None, "nothing may be published"
+    rows = _outbox_rows(workspace_pool_db(universe_dir))
+    assert any(row["action"] == "wipe_scratch" for row in rows), rows
+
+
+def test_staging_is_already_gone_at_the_moment_of_publication(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ORDER, not just the end state: gone AFTERWARDS is true either way.
+
+    The capability is what makes the workspace reachable, so staging must
+    already be gone when it is published -- not merely by the time the adapter
+    returns.
+    """
+    _root, universe_dir = _setup(tmp_path)
+    worker = FakeWorker()
+    existed_at_publish: list[bool] = []
+    real_register = chain.register_workspace
+
+    def spy(node_id, mount):
+        staging = Path(worker.requests[0]["staging_dir"])
+        existed_at_publish.append(staging.exists())
+        return real_register(node_id, mount)
+
+    monkeypatch.setattr(chain, "register_workspace", spy)
+    result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain, worker=worker)
+    assert result.get("error_kind") is None, result
+    assert existed_at_publish == [False], "staging outlived the capability's publication"
 
 
 def test_a_lock_held_by_another_run_is_workspace_busy_not_a_quota_error(
@@ -764,7 +1087,14 @@ def test_provisioning_without_its_consent_does_not_fail_the_checkout(
 # --------------------------------------------------------------------------- #
 
 
-def _with_mount(chain: EffectChain, tmp_path: Path, *, node_id: str = "n0") -> Path:
+def _with_mount(
+    chain: EffectChain,
+    tmp_path: Path,
+    *,
+    node_id: str = "n0",
+    host: str = "",
+    repo: str = "",
+) -> Path:
     lease_dir = tmp_path / "lease"
     (lease_dir / "repo" / ".tiny-export").mkdir(parents=True)
     (lease_dir / "repo" / ".tiny-export" / f"{SHA}.bundle").write_bytes(b"PACK-export")
@@ -786,6 +1116,10 @@ def _with_mount(chain: EffectChain, tmp_path: Path, *, node_id: str = "n0") -> P
             storage_class="scratch",
             repo_key="github.com--owner--name",
             generation=1,
+            host=host,
+            repo=repo,
+            connection_id="conn-git" if repo else "",
+            grant_id="grant-git" if repo else "",
         ),
     )
     return lease_dir
@@ -813,6 +1147,153 @@ def test_a_push_copies_the_bundle_through_the_lease_handle_and_names_the_branch(
     assert max_bytes == 512 * 1024 * 1024
     assert worker.requests[0]["op"] == "push"
     assert worker.requests[0]["commit_sha"] == SHA
+
+
+def test_a_push_derives_its_destination_from_the_capability(
+    tmp_path: Path, chain: EffectChain, fs_spy
+) -> None:
+    """The checkout is what was consented to; the packet does not get to
+    redirect the credential (Codex round 2, #6)."""
+    _root, universe_dir = _setup(tmp_path)
+    _with_mount(chain, tmp_path, host=HOST, repo=REPO)
+    worker = FakeWorker({"ok": True, "bytes": 11, "resolved_sha": SHA})
+    result = _run(
+        tmp_path,
+        _packet(op="push", commit_sha=SHA, branch_slug="slug", workspace="n0"),
+        universe_dir=universe_dir,
+        chain=chain,
+        worker=worker,
+    )
+    assert result.get("error_kind") is None, result
+    assert worker.requests[0]["owner_repo"] == REPO
+    assert worker.requests[0]["host"] == HOST
+
+
+@pytest.mark.parametrize(
+    "contradiction",
+    [{"repo": "someone/else"}, {"connection_id": "conn-other"}],
+)
+def test_a_packet_that_contradicts_the_capability_is_refused(
+    tmp_path: Path, chain: EffectChain, fs_spy, contradiction: dict
+) -> None:
+    _root, universe_dir = _setup(tmp_path)
+    _with_mount(chain, tmp_path, host=HOST, repo=REPO)
+    worker = FakeWorker()
+    result = _run(
+        tmp_path,
+        _packet(
+            op="push", commit_sha=SHA, branch_slug="slug", workspace="n0", **contradiction
+        ),
+        universe_dir=universe_dir,
+        chain=chain,
+        worker=worker,
+    )
+    assert result["error_kind"] == "invalid_packet"
+    assert worker.requests == [], "nothing may be sent on a contradicted capability"
+
+
+def test_a_workspace_from_a_non_ancestor_node_is_not_reachable(
+    tmp_path: Path, chain: EffectChain, fs_spy
+) -> None:
+    """The chain is run-global; the graph relation is what authorises.
+
+    Without this a node on a parallel branch could push a workspace it has no
+    relationship to (Codex round 2, #6).
+    """
+    _root, universe_dir = _setup(tmp_path)
+    _with_mount(chain, tmp_path, host=HOST, repo=REPO)
+    worker = FakeWorker()
+    result = run_workspace_effector(
+        node_id="n1",
+        output_keys=["ws"],
+        run_state={
+            "ws": _packet(op="push", commit_sha=SHA, branch_slug="slug", workspace="n0")
+        },
+        base_path=universe_dir,
+        run_id="run-1",
+        chain=chain,
+        execute=worker,
+        prior_effects={"someone-else": {}},  # n0 is NOT an ancestor
+    )
+    assert result["error_kind"] == "no_matching_packet"
+    assert "graph ancestors" in result["error"]
+    assert worker.requests == []
+
+
+def test_an_ancestor_workspace_is_reachable(
+    tmp_path: Path, chain: EffectChain, fs_spy
+) -> None:
+    """The guard must not be one that always fires."""
+    _root, universe_dir = _setup(tmp_path)
+    _with_mount(chain, tmp_path, host=HOST, repo=REPO)
+    result = run_workspace_effector(
+        node_id="n1",
+        output_keys=["ws"],
+        run_state={
+            "ws": _packet(op="push", commit_sha=SHA, branch_slug="slug", workspace="n0")
+        },
+        base_path=universe_dir,
+        run_id="run-1",
+        chain=chain,
+        execute=FakeWorker({"ok": True, "bytes": 4, "resolved_sha": SHA}),
+        prior_effects={"n0": {}},
+    )
+    assert result.get("error_kind") is None, result
+    assert result["op"] == "push"
+
+
+def test_a_push_journals_its_intent_before_the_wire_and_settles_it(
+    tmp_path: Path, chain: EffectChain, fs_spy
+) -> None:
+    """A crash between sending and recording must leave something to ask about."""
+    from tinyassets.workspace_intents import open_intents
+
+    _root, universe_dir = _setup(tmp_path)
+    _with_mount(chain, tmp_path, host=HOST, repo=REPO)
+    seen_open: list[int] = []
+
+    class RecordingWorker(FakeWorker):
+        def __call__(self, request):
+            # the intent must already be durable at the moment of the wire
+            seen_open.append(len(open_intents(universe_dir)))
+            return super().__call__(request)
+
+    worker = RecordingWorker({"ok": True, "bytes": 9, "resolved_sha": SHA})
+    result = _run(
+        tmp_path,
+        _packet(op="push", commit_sha=SHA, branch_slug="slug", workspace="n0"),
+        universe_dir=universe_dir,
+        chain=chain,
+        worker=worker,
+    )
+    assert result.get("error_kind") is None, result
+    assert seen_open == [1], "the intent is written BEFORE the push is sent"
+    assert open_intents(universe_dir) == [], "and settled after"
+
+
+def test_a_failed_push_settles_its_intent_as_failed(
+    tmp_path: Path, chain: EffectChain, fs_spy
+) -> None:
+    import sqlite3
+
+    from tinyassets.workspace_intents import open_intents
+
+    _root, universe_dir = _setup(tmp_path)
+    _with_mount(chain, tmp_path, host=HOST, repo=REPO)
+    _run(
+        tmp_path,
+        _packet(op="push", commit_sha=SHA, branch_slug="slug", workspace="n0"),
+        universe_dir=universe_dir,
+        chain=chain,
+        worker=FakeWorker({"ok": False, "error": "refused", "stderr_class": "protected"}),
+    )
+    assert open_intents(universe_dir) == []
+    conn = sqlite3.connect(workspace_pool_db(universe_dir))
+    try:
+        states = [row[0] for row in conn.execute("SELECT state FROM workspace_push_intents")]
+    finally:
+        conn.close()
+    assert states == ["failed"]
 
 
 def test_a_push_naming_a_workspace_this_run_does_not_hold_is_refused(
@@ -972,7 +1453,18 @@ def test_a_fired_checkout_settles_as_a_read() -> None:
         read_sink="authenticated_external_call",
         read_effects=WORKSPACE_READ_EFFECTS,
     )
-    assert fired_only_reads(
+
+
+def test_a_fired_discard_settles_as_a_write() -> None:
+    """A discard destroys a generation and owes an irreversible wipe.
+
+    It touches no network, but the settlement asks whether the run could have
+    CHANGED anything, and this changes something (Codex round 2, #12).
+    """
+    from tinyassets.engine_admissions import fired_only_reads
+
+    assert (EXTERNAL_WRITE_SINK_WORKSPACE, "discard") not in WORKSPACE_READ_EFFECTS
+    assert not fired_only_reads(
         [(EXTERNAL_WRITE_SINK_WORKSPACE, "discard")],
         read_sink="authenticated_external_call",
         read_effects=WORKSPACE_READ_EFFECTS,
