@@ -299,29 +299,19 @@ class EffectChain:
             self.workspaces[node_key] = mount
 
     def workspace_mount(self, node_key: str) -> Any:
-        """The mount *node_key* delivered, or refuse.
+        """The mount *node_key* delivered, or None.
 
         Absent covers both halves of the same fact: the checkout never ran
-        or never delivered, and a ``discard`` revoked it. Neither is a
-        recoverable state for a node that declared a workspace, so this
-        raises rather than returning ``None`` for a caller to forget.
+        or never delivered, and a ``discard`` revoked it. The registry
+        answers the question; what to do about "absent" belongs to the
+        caller - the compiler fails the node by name, the adapter returns a
+        structured refusal.
         """
-        from tinyassets.graph_compiler import CodeNodeError
-
-        mount = self.workspace_mount_or_none(node_key)
-        if mount is None:
-            raise CodeNodeError(
-                "workspace not available: checkout did not deliver / was discarded "
-                f"(node '{node_key}')",
-                node_id=node_key,
-            )
-        return mount
-
-    def workspace_mount_or_none(self, node_key: str) -> Any:
-        """The mount *node_key* delivered, or None - for an adapter that
-        answers with a structured refusal instead of raising."""
         with self.lock:
             return self.workspaces.get(str(node_key))
+
+    # Same answer under the name the adapter uses.
+    workspace_mount_or_none = workspace_mount
 
     def revoke_workspace(self, node_key: str) -> Any:
         """Drop the capability: a later ``ws`` node in this run refuses.

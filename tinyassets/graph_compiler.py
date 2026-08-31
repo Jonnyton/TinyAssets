@@ -1927,6 +1927,15 @@ def _build_source_code_node(
                         node_id=node.node_id,
                     )
                 mount = effect_chain.workspace_mount(workspace_node)
+                if mount is None:
+                    # The checkout never delivered, or a discard revoked it.
+                    # Neither is recoverable for a node that declared a
+                    # workspace: fail it by name (design D2).
+                    raise CodeNodeError(
+                        "workspace not available: checkout did not deliver "
+                        f"/ was discarded (node '{workspace_node}')",
+                        node_id=node.node_id,
+                    )
 
             def _invoke(action: str, kwargs: dict[str, Any]) -> Any:
                 if effect_chain is not None:
