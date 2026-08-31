@@ -236,6 +236,47 @@ class EffectChain:
     universe_id: str = ""
     dispatches: int = 0
     bytes_out: int = 0
+    #: Workspace capabilities this RUN may bind, keyed by the checkout node
+    #: that delivered each one (design D2). In memory only and never
+    #: serialised: a branch resolves a workspace by naming an ancestor
+    #: checkout, never by carrying a lease id through state or ``$ta.ref``.
+    workspaces: dict[str, Any] = field(default_factory=dict)
+
+    def register_workspace(self, node_key: str, mount: Any) -> None:
+        """Publish the generation a checkout node delivered, for this run only."""
+        if not isinstance(node_key, str) or not node_key.strip():
+            raise ValueError("register_workspace needs a node key")
+        if mount is None:
+            raise ValueError(
+                f"register_workspace({node_key!r}) needs a mount, not None"
+            )
+        with self.lock:
+            self.workspaces[node_key] = mount
+
+    def workspace_mount(self, node_key: str) -> Any:
+        """The mount *node_key* delivered, or refuse.
+
+        Absent covers both halves of the same fact: the checkout never ran
+        or never delivered, and a ``discard`` revoked it. Neither is a
+        recoverable state for a node that declared a workspace, so this
+        raises rather than returning ``None`` for a caller to forget.
+        """
+        from tinyassets.graph_compiler import CodeNodeError
+
+        with self.lock:
+            mount = self.workspaces.get(node_key)
+        if mount is None:
+            raise CodeNodeError(
+                "workspace not available: checkout did not deliver / was discarded "
+                f"(node '{node_key}')",
+                node_id=node_key,
+            )
+        return mount
+
+    def revoke_workspace(self, node_key: str) -> None:
+        """Drop the capability: a later ``ws`` node in this run refuses."""
+        with self.lock:
+            self.workspaces.pop(node_key, None)
 
     def prior_effects(self, ancestors: set[str] | None = None) -> dict[str, dict]:
         """Full results of the nodes a reference may legally name (for

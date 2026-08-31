@@ -296,6 +296,11 @@ class NodeDefinition:
 
     # Source and execution — one of source_code or prompt_template
     source_code: str = ""
+    # A code node may name ONE ancestor checkout node whose workspace is
+    # bound read-write at /workspace for the run (design D2). Empty = no
+    # workspace and no ``ws`` object. Resolved through the run's effect
+    # chain at run time; naming a non-ancestor fails at compile time.
+    workspace: str = ""
     prompt_template: str = ""
     model_hint: str = ""
     # Per-node reasoning/effort level — a REAL provider setting (e.g. Codex

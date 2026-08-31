@@ -121,6 +121,17 @@ class CodeNodeError(CompilerError):
         self.stderr_tail = stderr_tail
 
 
+class WorkspaceCommandTimeout(NodeTimeoutError):
+    """Raised when a ``ws.run`` command outlived its budget (design D2/D6).
+
+    A subclass of :class:`NodeTimeoutError` so every existing timeout path
+    still catches it, and its own class so the terminal-status taxonomy can
+    report ``workspace_command_timeout`` rather than a generic node timeout:
+    the actionable fact is that a command in the workspace hung, and the
+    whole jail was killed to end it.
+    """
+
+
 class EmptyResponseError(CompilerError):
     """Raised when an LLM provider returns an empty response.
 
@@ -1854,6 +1865,21 @@ def _build_source_code_node(
             node_id=node.node_id,
         )
     _validate_source_code(node)
+    # A workspace is resolved from the graph, at compile time: the node must
+    # name an ANCESTOR, so no run can reach a checkout it does not depend on
+    # and no branch can smuggle a lease id through state or `$ta.ref`.
+    workspace_node = (getattr(node, "workspace", "") or "").strip()
+    if workspace_node:
+        known = set(ancestors or ())
+        if workspace_node not in known:
+            raise CodeNodeError(
+                f"Node '{node.node_id}' declares workspace: "
+                f"'{workspace_node}', which is not one of its ancestors "
+                f"({sorted(known)}). A workspace is resolved through the "
+                "run's effect chain from a checkout this node depends on; it is "
+                "never named through state or $ta.ref.",
+                node_id=node.node_id,
+            )
     src = node.source_code
     timeout_s = float(node.timeout_seconds or 300.0)
     input_keys = list(node.input_keys or [])
@@ -1889,6 +1915,19 @@ def _build_source_code_node(
 
             request_ctx = contextvars.copy_context()
 
+            # Resolved HERE, per run, not at compile time: the checkout has
+            # to have delivered, and a discard may have revoked it since.
+            mount = None
+            if workspace_node:
+                if effect_chain is None:
+                    raise CodeNodeError(
+                        "workspace not available: checkout did not deliver "
+                        f"/ was discarded (node '{workspace_node}'); this "
+                        "run has no effect chain",
+                        node_id=node.node_id,
+                    )
+                mount = effect_chain.workspace_mount(workspace_node)
+
             def _invoke(action: str, kwargs: dict[str, Any]) -> Any:
                 if effect_chain is not None:
                     effect_chain.rpc_permit()
@@ -1903,6 +1942,7 @@ def _build_source_code_node(
                 timeout=timeout_s,
                 effects=effects,
                 invoke=_invoke,
+                workspace=mount,
             )
         finally:
             if concurrency_tracker is not None:
@@ -1911,6 +1951,11 @@ def _build_source_code_node(
         stdout_tail = getattr(result, "stdout_tail", "") or (result.stdout or "")[-2048:]
         if not result.success:
             error = result.error or "code node failed"
+            if getattr(result, "workspace_timeout", False):
+                raise WorkspaceCommandTimeout(
+                    f"Node '{node.node_id}' (code): {error}",
+                    node_id=node.node_id,
+                )
             if "timed out" in error.lower():
                 raise NodeTimeoutError(
                     f"Node '{node.node_id}' (code) exceeded its timeout of {timeout_s}s",
