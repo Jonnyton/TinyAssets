@@ -483,6 +483,17 @@ def _classify_run_error(exc: Exception, bid: str) -> dict[str, Any]:
             "in the universe that authored it. If this run named an approval, the "
             "branch predates that change - re-store the node and run again.",
         )
+    if "workspace not available" in msg:
+        # The node declared a workspace and the checkout that owed it never
+        # delivered, or a discard revoked it. Without this the taxonomy called
+        # it "unknown", which tells the universe nothing it can act on (found
+        # by the end-to-end chain test, 2026-08-30).
+        return _failure_payload(
+            exc, "code_node_failed",
+            "This node declared workspace: \"<checkout node>\" and that checkout "
+            "did not deliver (or was discarded). Read the run's earlier nodes for "
+            "the checkout's own refusal - it names the class - then run again.",
+        )
     if "source_code" in msg:
         # A compile-time refusal of the code itself (disallowed pattern, size,
         # syntax): the universe wrote it and can fix it. No approval exists.
@@ -541,6 +552,13 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
             "node_not_accepted",
             "This branch's code was authored elsewhere. Remix it into your universe "
             "(write_graph with fork_from) and run your copy.",
+        )
+    if "workspace not available" in msg:
+        return (
+            "code_node_failed",
+            "A node declared a workspace and the checkout that owed it did not "
+            "deliver (or was discarded). The checkout's own refusal names the "
+            "class; read the earlier nodes of this run.",
         )
     if "code node '" in msg:
         # A source_code node's sandboxed run failed; the message carries its stderr.

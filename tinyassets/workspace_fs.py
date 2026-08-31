@@ -84,6 +84,25 @@ def _unlink_link(path: str) -> None:
         os.rmdir(path)
 
 
+def _unlink_windows(path: str) -> None:
+    """Unlink, clearing the read-only attribute first when that is the refusal.
+
+    Git marks everything under ``.git/objects`` read-only, and on Windows -
+    unlike POSIX, where the containing directory's permission is what counts -
+    unlinking a read-only file raises PermissionError. Every wipe of a real
+    checkout therefore failed and the lease went LOST with its bytes still
+    charged (found by the end-to-end chain test, 2026-08-30). The chmod is
+    scoped to the retry: a failure for any other reason still propagates.
+    """
+    try:
+        os.unlink(path)
+        return
+    except PermissionError:
+        pass
+    os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+    os.unlink(path)
+
+
 # --------------------------------------------------------------------------
 # no-follow directory handles (POSIX)
 # --------------------------------------------------------------------------
@@ -480,7 +499,7 @@ def _remove_tree_windows(target: str) -> None:
         _unlink_link(target)
         return
     if not os.path.isdir(target):
-        os.unlink(target)
+        _unlink_windows(target)
         return
     pending: list[str] = [target]
     emptied: list[str] = []
@@ -500,7 +519,7 @@ def _remove_tree_windows(target: str) -> None:
                 elif entry.is_dir(follow_symlinks=False):
                     pending.append(child)
                 else:
-                    os.unlink(child)
+                    _unlink_windows(child)
             except FileNotFoundError:
                 continue
     for directory in reversed(emptied):

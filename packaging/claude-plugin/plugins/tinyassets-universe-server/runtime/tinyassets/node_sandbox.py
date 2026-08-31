@@ -1497,6 +1497,32 @@ def _default_launcher() -> Launcher:
 DEFAULT_LAUNCHER_FACTORY: Callable[[], Launcher] = _default_launcher
 
 
+def _default_workspace_launcher(
+    bind_source: str, allowed_roots: tuple[str, ...]
+) -> Launcher:
+    """The production launcher for a node that HOLDS a workspace.
+
+    A bind-less :class:`BwrapLauncher` reports ``/workspace`` as its root and
+    emits no ``--bind`` for it, so a workspace node would run against a mount
+    point that does not exist. The bind, and the roots that vouch for it, belong
+    to the RUN - which is why this is a factory the compiler calls per node
+    rather than a launcher built once at import.
+    """
+    probe = _probe() or {}
+    if probe.get("bwrap_available"):
+        return BwrapLauncher(
+            workspace_bind=bind_source, allowed_workspace_roots=tuple(allowed_roots or ())
+        )
+    reason = probe.get("reason") or "bwrap unavailable"
+    raise SandboxUnavailableError(f"code nodes need the OS sandbox: {reason}")
+
+
+#: Resolves the launcher for a node with a workspace. Substituted by tests.
+WORKSPACE_LAUNCHER_FACTORY: Callable[[str, tuple[str, ...]], Launcher] = (
+    _default_workspace_launcher
+)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Child process plumbing
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2106,6 +2132,7 @@ class NodeSandbox:
 __all__ = [
     "ALLOWED_IMPORTS",
     "DEFAULT_LAUNCHER_FACTORY",
+    "WORKSPACE_LAUNCHER_FACTORY",
     "FORBIDDEN_PATTERNS",
     "MAX_INPUT_BYTES",
     "MAX_OUTPUT_BYTES",

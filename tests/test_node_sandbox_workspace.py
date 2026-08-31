@@ -1187,6 +1187,15 @@ def test_a_workspace_command_timeout_reaches_the_compiler_as_its_own_class(
             )
 
     monkeypatch.setattr(node_sandbox, "NodeSandbox", _TimedOut)
+    # The compiler resolves the workspace launcher BEFORE it builds the sandbox
+    # (a bind-less launcher would report /workspace as its root and emit no
+    # --bind for it), so a fake NodeSandbox is no longer enough on a host
+    # without bwrap.
+    monkeypatch.setattr(
+        node_sandbox,
+        "WORKSPACE_LAUNCHER_FACTORY",
+        lambda bind_source, roots: PlainSubprocessLauncher(workspace_bind=bind_source),
+    )
     chain = EffectChain()
     chain.register_workspace("checkout", WorkspaceMount(bind_source=str(workspace)))
     fn = gc._build_source_code_node(
