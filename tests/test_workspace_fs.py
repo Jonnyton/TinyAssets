@@ -916,3 +916,108 @@ def test_a_lease_the_wipe_cannot_free_is_reported_LOST(tmp_path: Path, monkeypat
     stored = wp.get_lease(db, lease.lease_id)
     assert stored is not None and stored.state == "LOST"
     assert wp.pool_usage(db).lost_bytes == lease.reserved_bytes
+
+
+# --------------------------------------------------------------------------
+# open_subdir_nofollow: one level, from a handle (the sink's actual need)
+# --------------------------------------------------------------------------
+
+
+@posix_only
+def test_open_subdir_nofollow_descends_exactly_one_level(tmp_path: Path) -> None:
+    (tmp_path / "workspaces").mkdir()
+    parent = wfs.open_dir_nofollow(tmp_path)
+    try:
+        child = wfs.open_subdir_nofollow(parent, "workspaces")
+        try:
+            opened = os.fstat(child)
+            on_disk = os.stat(tmp_path / "workspaces")
+            assert (opened.st_dev, opened.st_ino) == (on_disk.st_dev, on_disk.st_ino)
+        finally:
+            os.close(child)
+    finally:
+        os.close(parent)
+
+
+@posix_only
+def test_open_subdir_nofollow_refuses_a_symlinked_child(tmp_path: Path) -> None:
+    """The whole reason it exists: a caller holding the parent must not have
+    the child resolved for it through a link somebody planted."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("the host's data", encoding="utf-8")
+    os.symlink(outside, tmp_path / "workspaces", target_is_directory=True)
+    parent = wfs.open_dir_nofollow(tmp_path)
+    try:
+        with pytest.raises(wfs.UnsafePoolPath):
+            wfs.open_subdir_nofollow(parent, "workspaces")
+    finally:
+        os.close(parent)
+
+
+@posix_only
+def test_open_subdir_nofollow_refuses_a_file(tmp_path: Path) -> None:
+    (tmp_path / "workspaces").write_text("not a directory", encoding="utf-8")
+    parent = wfs.open_dir_nofollow(tmp_path)
+    try:
+        with pytest.raises(wfs.UnsafePoolPath):
+            wfs.open_subdir_nofollow(parent, "workspaces")
+    finally:
+        os.close(parent)
+
+
+@posix_only
+def test_open_subdir_nofollow_refuses_anything_but_one_component(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "workspaces").mkdir()
+    parent = wfs.open_dir_nofollow(tmp_path)
+    try:
+        for name, fragment in (
+            ("..", "traversal"),
+            (".", "traversal"),
+            ("workspaces/repo", "separator"),
+            ("", "non-empty"),
+        ):
+            with pytest.raises(wfs.UnsafePoolPath, match=fragment):
+                wfs.open_subdir_nofollow(parent, name)
+    finally:
+        os.close(parent)
+
+
+@posix_only
+def test_the_fstat_is_what_refuses_a_file_where_O_DIRECTORY_is_absent(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """O_DIRECTORY does the work on Linux, which would make the fstat a check
+    that cannot go red. It is load-bearing exactly where the flag is missing -
+    the module falls back to 0 for it - so that is the condition to test under.
+    """
+    (tmp_path / "workspaces").write_text("not a directory", encoding="utf-8")
+    monkeypatch.setattr(wfs, "_O_DIRECTORY", 0)
+    parent = wfs.open_dir_nofollow(tmp_path)
+    try:
+        with pytest.raises(wfs.UnsafePoolPath, match="not a directory"):
+            wfs.open_subdir_nofollow(parent, "workspaces")
+    finally:
+        os.close(parent)
+
+
+@posix_only
+def test_open_subdir_nofollow_reports_a_missing_child_as_itself(
+    tmp_path: Path,
+) -> None:
+    """Absent is not unsafe: the caller decides whether to create it, and a
+    FileNotFoundError is what says which case this is."""
+    parent = wfs.open_dir_nofollow(tmp_path)
+    try:
+        with pytest.raises(FileNotFoundError):
+            wfs.open_subdir_nofollow(parent, "nothing-here")
+    finally:
+        os.close(parent)
+
+
+@windows_only
+def test_open_subdir_nofollow_refuses_loudly_off_posix(tmp_path: Path) -> None:
+    with pytest.raises(NotImplementedError, match="POSIX"):
+        wfs.open_subdir_nofollow(0, "workspaces")
