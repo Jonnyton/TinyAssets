@@ -1046,14 +1046,20 @@ def write_graph(
     returns ``{"op": "push", "workspace": "<checkout node>", "commit_sha":
     "<40 hex>", "branch_slug": "fix-readme"}`` - the branch lands as
     ``tiny/<universe>/<slug>`` (never the default branch; open the PR with the
-    generic call). Each ``(connection, repo)`` needs TWO things, once, both
+    generic call); ``{"op": "discard", "workspace": "<checkout node>"}``
+    drops it early (no consent needed). A checkout may declare
+    ``"provision": {"python": "requirements-locked.txt", "node": true}`` -
+    registry-pinned, hash-locked manifests only (``name==version --hash=…``;
+    npm lockfile v2/v3 with sha512), installed offline into the workspace
+    before your code runs, under the ``workspace_provision`` consent. Each
+    ``(connection, repo)`` needs TWO things, once, both
     through the request rail: the repository SCOPE on the github connection
     (``"action": {"type": "extend_http", "destination": "github", "scopes":
     ["git_read:owner/name", "git_write:owner/name"]}`` - no new endpoints
     needed, and no key to paste) and the typed CONSENT (``"action":
     {"type": "grant_workspace_consent", "connection_id": "<from
     read_graph target='connections'>", "repo": "owner/name", "consents":
-    ["workspace_checkout", "workspace_push"]}``). ``read_graph
+    ["workspace_checkout", "workspace_push", "workspace_provision"]}``). ``read_graph
     target="connections"`` shows both, so check what you hold before asking. The
     sandbox has no network and no credential; git talks to the host from a
     worker you never see. Limits are usage, not shape: a 4 GiB lease, one

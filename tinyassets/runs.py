@@ -226,7 +226,20 @@ def _mark_orphaned_run_if_needed(
 # ---------------------------------------------------------------------------
 
 _WORKSPACE_RECONCILE_LOCK = threading.Lock()
-_WORKSPACE_RECONCILED: set[str] = set()
+#: (pid, resolved data root) pairs whose startup sweep SUCCEEDED and whose
+#: sweeper thread is running. Keyed by pid so a forked worker never inherits
+#: the parent's claim; reset after fork as well (Codex, code round 1).
+_WORKSPACE_RECONCILED: set[tuple[int, str]] = set()
+_WORKSPACE_RECONCILING: set[tuple[int, str]] = set()
+
+
+def _reset_workspace_reconciliation_after_fork() -> None:
+    _WORKSPACE_RECONCILED.clear()
+    _WORKSPACE_RECONCILING.clear()
+
+
+if hasattr(os, "register_at_fork"):  # pragma: no branch - POSIX only
+    os.register_at_fork(after_in_child=_reset_workspace_reconciliation_after_fork)
 _WORKSPACE_SWEEP_INTERVAL_S = 30.0
 _WORKSPACE_PROCESS_STARTED_AT = time.time()
 #: Every workspace failure class the executor classifies (design D6): one
@@ -293,11 +306,14 @@ def _workspace_sweep_once(base_path: str | Path, *, claimant: str) -> int:
     db = runs_db_path(base_path)
     with _connect(base_path) as conn:
         workspace_pool.ensure_schema(conn)
-        orphaned = conn.execute(
+        # Only SCRATCH leases: an authoritative permanent generation stays
+        # ACTIVE after its run ends by design (release_lock_only), and must
+        # not be re-enqueued every tick (Codex, code round 1).
+        orphaned_leases = conn.execute(
             """
             SELECT l.run_id FROM workspace_leases AS l
               JOIN runs AS r ON r.run_id = l.run_id
-             WHERE l.state = 'ACTIVE'
+             WHERE l.state = 'ACTIVE' AND l.storage_class = 'scratch'
                AND r.status IN ('completed', 'failed', 'cancelled', 'interrupted')
                AND NOT EXISTS (
                    SELECT 1 FROM workspace_outbox AS o
@@ -305,9 +321,40 @@ def _workspace_sweep_once(base_path: str | Path, *, claimant: str) -> int:
                )
             """
         ).fetchall()
-        for row in {r[0] for r in orphaned}:
-            _enqueue_workspace_terminal(conn, base_path, row)
+        # And locks a finished run still holds with nothing pending to
+        # release them - invisible to a lease-first query.
+        orphaned_locks = conn.execute(
+            """
+            SELECT k.run_id FROM workspace_locks AS k
+              JOIN runs AS r ON r.run_id = k.run_id
+             WHERE r.status IN ('completed', 'failed', 'cancelled', 'interrupted')
+               AND NOT EXISTS (
+                   SELECT 1 FROM workspace_outbox AS o
+                    WHERE o.run_id = k.run_id AND o.done_at IS NULL
+               )
+            """
+        ).fetchall()
+        for run_id in {r[0] for r in orphaned_leases} | {r[0] for r in orphaned_locks}:
+            _enqueue_workspace_terminal(conn, base_path, run_id)
     return workspace_pool.periodic_sweep(db, fs=RealPoolFilesystem(), claimant=claimant)
+
+
+def _kick_workspace_sweep(base_path: str | Path) -> threading.Thread:
+    """Run one sweep pass now, on its own thread: a finished run's lock and
+    lease are released within seconds, not at the next periodic tick."""
+    thread = threading.Thread(
+        target=_workspace_sweep_kick_body, args=(base_path,),
+        name="workspace-sweep-kick", daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+def _workspace_sweep_kick_body(base_path: str | Path) -> None:
+    try:
+        _workspace_sweep_once(base_path, claimant=f"kick:{os.getpid()}")
+    except Exception:  # noqa: BLE001 - the periodic sweeper retries
+        logger.exception("workspace sweep kick failed")
 
 
 def _workspace_sweeper_loop(base_path: str | Path, interval_s: float) -> None:
@@ -332,25 +379,34 @@ def ensure_workspace_reconciled(
     from tinyassets import workspace_pool
     from tinyassets.workspace_fs import RealPoolFilesystem
 
-    key = str(Path(base_path).resolve())
+    key = (os.getpid(), str(Path(base_path).resolve()))
     with _WORKSPACE_RECONCILE_LOCK:
-        if key in _WORKSPACE_RECONCILED:
+        if key in _WORKSPACE_RECONCILED or key in _WORKSPACE_RECONCILING:
             return False
+        _WORKSPACE_RECONCILING.add(key)
+    try:
+        initialize_runs_db(base_path)
+        db = runs_db_path(base_path)
+        with _connect(base_path) as conn:
+            workspace_pool.ensure_schema(conn)
+        done = workspace_pool.startup_sweep(
+            db, fs=RealPoolFilesystem(), claimant=f"startup:{os.getpid()}",
+        )
+        if done:
+            logger.info("workspace startup sweep finished %d outbox entries", done)
+        if start_sweeper:
+            threading.Thread(
+                target=_workspace_sweeper_loop, args=(base_path, interval_s),
+                name="workspace-sweeper", daemon=True,
+            ).start()
+    except BaseException:
+        # A failed attempt is not a completed one: the next caller retries.
+        with _WORKSPACE_RECONCILE_LOCK:
+            _WORKSPACE_RECONCILING.discard(key)
+        raise
+    with _WORKSPACE_RECONCILE_LOCK:
+        _WORKSPACE_RECONCILING.discard(key)
         _WORKSPACE_RECONCILED.add(key)
-    initialize_runs_db(base_path)
-    db = runs_db_path(base_path)
-    with _connect(base_path) as conn:
-        workspace_pool.ensure_schema(conn)
-    done = workspace_pool.startup_sweep(
-        db, fs=RealPoolFilesystem(), claimant=f"startup:{os.getpid()}",
-    )
-    if done:
-        logger.info("workspace startup sweep finished %d outbox entries", done)
-    if start_sweeper:
-        threading.Thread(
-            target=_workspace_sweeper_loop, args=(base_path, interval_s),
-            name="workspace-sweeper", daemon=True,
-        ).start()
     return True
 
 
@@ -386,13 +442,8 @@ def _recover_orphaned_runs_on_read(base_path: str | Path) -> int:
                 now=now,
             ):
                 count += 1
-                try:
-                    _enqueue_workspace_terminal(conn, base_path, row["run_id"])
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "workspace outbox enqueue failed for orphaned run %s",
-                        row["run_id"],
-                    )
+                # Same transaction as the rewrite; a failure rolls both back.
+                _enqueue_workspace_terminal(conn, base_path, row["run_id"])
     if count:
         logger.info("Recovered %d orphaned in-flight runs on read", count)
     return count
@@ -1135,14 +1186,22 @@ def update_run_status(
             f"UPDATE runs SET {', '.join(sets)} WHERE run_id = ?",
             params,
         )
+        owed = 0
         if status in _TERMINAL_STATUSES:
             # The lease this run held is released THROUGH the outbox, in this
-            # same transaction (workspace-node D0): never a direct delete, so
-            # a crash after the commit still leaves the work owed on record.
-            try:
-                _enqueue_workspace_terminal(conn, base_path, run_id)
-            except Exception:  # noqa: BLE001 - the sweeper repairs an orphan
-                logger.exception("workspace outbox enqueue failed for run %s", run_id)
+            # same transaction (workspace-node D0): never a direct delete. An
+            # enqueue failure propagates so the connection closes WITHOUT a
+            # commit and the status write rolls back with it - half the state
+            # (terminal status, no owed release) must never land (Codex, code
+            # round 1; Hard Rule 8).
+            owed = _enqueue_workspace_terminal(conn, base_path, run_id)
+        if owed:
+            # Release promptly, not at the sweeper's next tick: the job lock
+            # this run held would otherwise refuse the universe's next checkout
+            # as workspace_busy for up to the sweep interval (lane B finding).
+            # After the commit (the connection context exits before the
+            # thread's first sweep reaches the row), off the caller's path.
+            _kick_workspace_sweep(base_path)
         # Phase 2 emit-site (Task #72): on terminal status transition, emit
         # one execute_step contribution event for attribution. Wrapped in
         # try/except so emit failure (malformed metadata, table missing,
