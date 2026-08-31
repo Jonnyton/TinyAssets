@@ -19,7 +19,7 @@ the parent SHALL SIGKILL the tracked bwrap supervisor, confirm its exit and
 rely on the `--die-with-parent` cascade to end the sandbox, so
 double-forked descendants die with it and the node fails as
 `workspace_command_timeout`. A workspace node SHALL run under the workspace
-limits profile (`RLIMIT_AS` 1.5 GiB, `RLIMIT_NPROC` 128, `RLIMIT_NOFILE`
+limits profile (`RLIMIT_AS` 1.5 GiB, `RLIMIT_NPROC` 1024, `RLIMIT_NOFILE`
 1024, `RLIMIT_FSIZE` 512 MiB, `RLIMIT_CORE` 0) with a process-tree RSS
 watchdog at 2 GiB, at most 64 commands and 1 MiB of returned output per
 node, and MAY declare `timeout_seconds` up to 1800. After a `discard`, the
