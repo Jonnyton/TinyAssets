@@ -285,6 +285,40 @@ def test_the_clone_is_bare_single_branch_and_never_recurses_submodules(staging: 
     assert not any(a.startswith("--depth") for a in argv)
 
 
+def test_the_clone_url_and_the_broker_binding_come_from_one_transport(
+    staging: Path,
+) -> None:
+    """One derivation: the URL git is handed and the broker's binding agree.
+
+    The host case is the discriminator -- the transport lower-cases it, so a
+    worker that rebuilt the URL itself from the request's host would clone
+    ``https://GitHub.COM/...`` while the rule pinned ``github.com``.
+    """
+    git = _checkout_git(staging)
+    _checkout(staging, git, host="GitHub.COM")
+    argv = git.argv_for("clone")
+    assert f"https://github.com/{REPO}.git" in argv, argv
+    assert not any("GitHub.COM" in part for part in argv)
+
+    # The session closes its broker when the operation ends, so the recorded
+    # binding is what is asserted -- and a fresh broker on that same binding
+    # answers exactly the request git will send.
+    protocol, host, path, _user = LocalBroker.made[0].bound
+    assert (protocol, host) == ("https", "github.com")
+    assert path == f"{REPO}.git", "the binding is the canonical wire path"
+
+    fresh = CredentialBroker(protocol, host, path, "x-access-token", TOKEN)
+    try:
+        assert fresh.answer(
+            f"operation=get\nprotocol=https\nhost=github.com\npath={REPO}.git\n"
+        ) is not None
+        assert fresh.answer(
+            f"operation=get\nprotocol=https\nhost=github.com\npath={REPO}\n"
+        ) is None
+    finally:
+        fresh.close()
+
+
 def test_the_token_is_in_no_argv_and_no_child_environment(staging: Path) -> None:
     git = _checkout_git(staging)
     _checkout(staging, git)

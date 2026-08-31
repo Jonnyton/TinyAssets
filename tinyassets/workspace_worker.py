@@ -24,11 +24,9 @@ from typing import Any
 from tinyassets.workspace_git import (
     CredentialBroker,
     GitResult,
+    GitTransport,
     WorkspaceGitError,
     create_bundle,
-    forced_git_options,
-    libcurl_supports_multi_resolve,
-    pin_address,
     run_git,
     scrub_text,
     unbundle_into_fresh_repo,
@@ -157,32 +155,36 @@ class _GitSession:
         launcher=None,
         broker_factory=None,
     ) -> None:
-        self.host = host
         self.git_binary = git_binary
         # None means run_git's own launcher, which kills the process GROUP
         # on a timeout. A test injects its own.
         self.launcher = launcher
-        self.url = _canonical_url(host, owner_repo)
         home = staging / _HOME_DIR
         home.mkdir(parents=True, exist_ok=True)
         self.home = home
         self.path = _minimal_path(git_binary)
+
+        # ONE validated transport. The URL git is handed, the broker's binding
+        # and the resolve rule all come from it, so there is no second place
+        # the host or the path can be spelled differently.
+        self.transport = GitTransport.build(
+            owner_repo,
+            host=host,
+            curl_version_text=_curl_version_text(request, self.home, self.path),
+            resolver=resolver,
+            classifier=classifier,
+        )
+        self.host = self.transport.host
+        self.url = self.transport.url
+        self.addresses = self.transport.addresses
+
+        protocol, broker_host, broker_path = self.transport.broker_binding()
         make_broker = broker_factory if broker_factory is not None else CredentialBroker
-        self.broker = make_broker("https", host, owner_repo, username, secret)
+        self.broker = make_broker(protocol, broker_host, broker_path, username, secret)
         broker_dir = staging / _BROKER_DIR
         broker_dir.mkdir(parents=True, exist_ok=True)
         helper = self.broker.serve(socket_dir=broker_dir)
-        addresses = pin_address(host, resolver, classifier)
-        multi = libcurl_supports_multi_resolve(
-            _curl_version_text(request, self.home, self.path)
-        )
-        # Below libcurl 7.59.0 one entry holds one address, so the whole
-        # operation runs against the first validated address rather than
-        # emitting a comma list that libcurl would silently ignore.
-        self.addresses = tuple(addresses) if multi else (addresses[0],)
-        self.options = forced_git_options(
-            host, self.addresses, helper, multi_resolve=multi
-        )
+        self.options = self.transport.forced_options(helper)
 
     def run(self, argv: list[str], *, cwd: Path, timeout_s: float) -> GitResult:
         return run_git(

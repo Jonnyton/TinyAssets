@@ -46,7 +46,9 @@ from typing import Any
 __all__ = [
     "CredentialBroker",
     "GitResult",
+    "GitTransport",
     "WorkspaceGitError",
+    "canonical_credential_path",
     "classify_stderr",
     "create_bundle",
     "forced_git_options",
@@ -228,12 +230,32 @@ if __name__ == "__main__":
 _MAX_SOCKET_PATH_BYTES = 100
 
 
-def _normalise_path(raw: str) -> str:
-    """Apply ``useHttpPath`` comparison semantics to a credential path."""
-    value = raw.strip().strip("/")
-    if value.endswith(".git"):
-        value = value[: -len(".git")]
-    return value.strip("/")
+def canonical_credential_path(repo: str) -> str:
+    """The wire path git asks for, derived ONCE from the repository identity.
+
+    Measured against git 2.43/2.53: for ``https://github.com/owner/name.git``
+    git's credential request carries ``path=owner/name.git``, and for a URL
+    without the suffix it carries ``path=owner/name`` -- two DIFFERENT strings.
+    Since this layer always builds the ``.git`` URL, that is the one spelling
+    the broker binds to.
+    """
+    value = str(repo or "").strip().strip("/")
+    if not value:
+        raise WorkspaceGitError("bad_argument", "a credential path needs a repository")
+    if not value.endswith(".git"):
+        value = f"{value}.git"
+    return value
+
+
+def _wire_path(raw: str) -> str:
+    """A request path as git spells it: no leading slash, nothing else touched.
+
+    Deliberately NOT symmetric normalisation. Stripping ``.git`` on both sides
+    made a grant for ``owner/name.git`` answer a request for ``owner/name``,
+    which is a different resource on some hosts and a different grant on all of
+    them.
+    """
+    return str(raw or "").strip().lstrip("/")
 
 
 def _split_host_port(raw: str) -> tuple[str, str | None]:
@@ -284,7 +306,8 @@ class CredentialBroker:
 
         self._protocol = protocol.lower()
         self._host = host.lower()
-        self._path = _normalise_path(path)
+        # Bound to the canonical wire path, derived once from the identity.
+        self._path = canonical_credential_path(path)
         if not self._path:
             raise WorkspaceGitError("bad_argument", "credential path must name a repository")
         self._username = username
@@ -336,7 +359,7 @@ class CredentialBroker:
             # useHttpPath is forced on; a request without a path cannot be
             # matched to one repository, so it is refused.
             return None
-        if _normalise_path(fields["path"]) != self._path:
+        if _wire_path(fields["path"]) != self._path:
             return None
         requested_user = fields.get("username")
         if requested_user is not None and requested_user and requested_user != self._username:
@@ -544,19 +567,94 @@ _LIBCURL_VERSION_RE = re.compile(r"libcurl/(\d+)\.(\d+)(?:\.(\d+))?")
 def libcurl_supports_multi_resolve(curl_version_text: str) -> bool:
     """Whether this libcurl accepts several addresses in one resolve entry.
 
-    Takes the version TEXT (``git version --build-options`` and ``curl -V``
-    both carry a ``libcurl/X.Y.Z`` token) rather than running anything: the
-    caller knows which binary it is about to run, and parsing a build-options
-    blob for the git version is not the same question. Unparseable text is
-    False -- the single-address fallback is always correct, just slower.
+    Takes the version TEXT (``curl -V`` carries a ``libcurl/X.Y.Z`` token)
+    rather than running anything: the caller knows which binary it is about to
+    run. NOT ``git version --build-options`` -- measured on git 2.43, that
+    carries no libcurl token at all.
+
+    Unparseable text RAISES rather than answering False. A silent False is a
+    permanent, invisible downgrade to one address per operation: everything
+    keeps working, a little worse, forever, and nothing ever says so. Asked
+    once per worker, a loud failure is cheap and a silent one is not.
     """
-    if not isinstance(curl_version_text, str):
-        return False
+    if not isinstance(curl_version_text, str) or not curl_version_text.strip():
+        raise WorkspaceGitError(
+            "bad_argument", "no libcurl version text to read a multi-resolve capability from"
+        )
     found = _LIBCURL_VERSION_RE.search(curl_version_text)
     if found is None:
-        return False
+        raise WorkspaceGitError(
+            "bad_argument", "the version text carries no libcurl/X.Y.Z token"
+        )
     major, minor, patch = found.group(1), found.group(2), found.group(3)
     return (int(major), int(minor), int(patch or 0)) >= _MULTI_RESOLVE_MINIMUM
+
+
+@dataclass(frozen=True)
+class GitTransport:
+    """One validated transport: the URL, the binding and the pinned addresses.
+
+    Built ONCE from the repository identity, and everything downstream reads it
+    rather than re-deriving: the URL handed to git, the broker's
+    ``(protocol, host, path)`` binding, and the ``http.curloptResolve`` rule
+    all come from the same object. That is what stops a caller pinning
+    ``github.com`` and then cloning somewhere else -- there is no second place
+    the host or the path can be spelled.
+    """
+
+    repo: str
+    host: str
+    port: int
+    url: str
+    credential_path: str
+    addresses: tuple[str, ...]
+    multi_resolve: bool
+
+    @classmethod
+    def build(
+        cls,
+        repo: str,
+        *,
+        curl_version_text: str,
+        host: str = "github.com",
+        resolver: Callable[[str, int], list[str]] | None = None,
+        classifier: Callable[[str], str] | None = None,
+        port: int = 443,
+    ) -> GitTransport:
+        """Resolve, validate and canonicalise everything one operation needs."""
+        if not _HOSTNAME_RE.match(host or ""):
+            raise WorkspaceGitError("bad_argument", "transport host is not a hostname")
+        if int(port) != 443:
+            raise WorkspaceGitError("bad_argument", "only HTTPS on 443 is transported")
+        canonical_host = host.lower()
+        credential_path = canonical_credential_path(repo)
+        owner_repo = credential_path[: -len(".git")]
+        if owner_repo.count("/") != 1:
+            raise WorkspaceGitError("bad_argument", "repo must be exactly 'owner/name'")
+        multi = libcurl_supports_multi_resolve(curl_version_text)
+        validated = pin_address(canonical_host, resolver, classifier, port=port)
+        # Below 7.59.0 one entry holds one address, so the whole operation runs
+        # against the first validated address rather than emitting a comma list
+        # that libcurl would silently ignore.
+        addresses = tuple(validated) if multi else (validated[0],)
+        return cls(
+            repo=owner_repo,
+            host=canonical_host,
+            port=int(port),
+            url=f"https://{canonical_host}/{credential_path}",
+            credential_path=credential_path,
+            addresses=addresses,
+            multi_resolve=multi,
+        )
+
+    def broker_binding(self) -> tuple[str, str, str]:
+        """``(protocol, host, path)`` the broker binds to. One derivation."""
+        return ("https", self.host, self.credential_path)
+
+    def forced_options(self, broker_helper_cmd: str) -> list[str]:
+        return forced_git_options(
+            self.host, self.addresses, broker_helper_cmd, multi_resolve=self.multi_resolve
+        )
 
 
 def _resolve_rule_addresses(validated_ips: str | Sequence[str]) -> list[str]:
@@ -1077,10 +1175,17 @@ def _verify_prerequisite_free(
 ) -> list[str]:
     """Verify a bundle in a FRESH EMPTY bare repo; return the refs it carries.
 
-    Empty is the whole point: a bundle that needs objects it does not carry
-    cannot verify against a repository that has none, so verifying here proves
-    the bundle is self-contained. A thin or shallow bundle would import
-    partially somewhere else and look fine.
+    Empty is the whole point: a bundle whose DECLARED prerequisites are absent
+    cannot verify against a repository that has none.
+
+    It is not the whole answer, and the caller must not treat it as one.
+    Measured on git 2.53: a bundle made from a SHALLOW clone passes here --
+    ``bundle verify`` reports the ref and says nothing about the parent commit
+    it cannot reach, because the shallow boundary is not a declared
+    prerequisite. Only the fsck-checked import
+    (:func:`unbundle_into_fresh_repo`) catches that, with "did not send all
+    necessary objects". The push path therefore runs BOTH, in that order, and
+    nothing crosses the boundary on a `verify` alone.
     """
     scratch = Path(scratch_dir)
     if not scratch.is_dir():

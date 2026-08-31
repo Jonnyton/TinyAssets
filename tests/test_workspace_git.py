@@ -170,9 +170,40 @@ def test_broker_answers_a_repeated_get_after_a_401(broker: CredentialBroker) -> 
     assert second is not None and TOKEN in second
 
 
-def test_broker_matches_the_path_with_use_http_path_semantics(broker: CredentialBroker) -> None:
-    for spelling in ("owner/repo", "owner/repo.git", "/owner/repo/", "/owner/repo.git"):
-        assert broker.answer(_get_request(path=spelling)) is not None
+def test_broker_matches_the_canonical_wire_path_exactly(broker: CredentialBroker) -> None:
+    """The path git sends is matched EXACTLY, not normalised on both sides.
+
+    Measured against git 2.43 and 2.53: for ``https://host/owner/repo.git`` the
+    credential request carries ``path=owner/repo.git``, and for a URL without
+    the suffix it carries ``path=owner/repo``. Those are different strings and
+    on some hosts different resources, so stripping ``.git`` on both sides made
+    a grant for one answer a request for the other. This layer always builds
+    the ``.git`` URL, so that is the only spelling it answers.
+    """
+    assert broker.answer(_get_request(path="owner/repo.git")) is not None
+    # git never sends a leading slash, but if it did it would still be the same
+    # resource; anything else is a different one.
+    assert broker.answer(_get_request(path="/owner/repo.git")) is not None
+    assert broker.answer(_get_request(path="owner/repo")) is None
+    assert broker.answer(_get_request(path="owner/repo.git/")) is None
+    assert broker.answer(_get_request(path="owner/repo.GIT")) is None
+
+
+def test_a_broker_bound_without_the_suffix_still_answers_the_canonical_path() -> None:
+    """The binding is derived from the identity, so both spellings of the
+    GRANT produce the one canonical path -- the asymmetry is on the REQUEST."""
+    from tinyassets.workspace_git import canonical_credential_path
+
+    assert canonical_credential_path("owner/repo") == "owner/repo.git"
+    assert canonical_credential_path("owner/repo.git") == "owner/repo.git"
+    assert canonical_credential_path("/owner/repo/") == "owner/repo.git"
+    for spelling in ("owner/repo", "owner/repo.git"):
+        made = CredentialBroker("https", "github.com", spelling, "x-access-token", TOKEN)
+        try:
+            assert made.answer(_get_request(path="owner/repo.git")) is not None
+            assert made.answer(_get_request(path="owner/repo")) is None
+        finally:
+            made.close()
 
 
 def test_broker_refuses_another_path(broker: CredentialBroker) -> None:
@@ -572,18 +603,27 @@ def test_multi_resolve_is_a_required_decision_not_a_default() -> None:
         ("libcurl/7.58.0 OpenSSL/1.1.0", False),
         ("libcurl/7.29.0", False),
         ("libcurl/6.99.99", False),
-        ("curl 8.5.0 (x86_64-pc-linux-gnu)", False),
-        ("", False),
-        ("libcurl/", False),
     ],
 )
 def test_libcurl_supports_multi_resolve(version_text: str, supported: bool) -> None:
     assert libcurl_supports_multi_resolve(version_text) is supported
 
 
-def test_libcurl_gate_is_not_fooled_by_a_non_string() -> None:
-    assert libcurl_supports_multi_resolve(None) is False
-    assert libcurl_supports_multi_resolve(75900) is False
+@pytest.mark.parametrize(
+    "unreadable",
+    ["curl 8.5.0 (x86_64-pc-linux-gnu)", "", "   ", "libcurl/", None, 75900],
+)
+def test_an_unreadable_libcurl_version_fails_loudly(unreadable) -> None:
+    """A silent False is a permanent invisible downgrade.
+
+    Answering "no multi-resolve" for text we could not read means every
+    operation quietly runs against one address forever -- working, a little
+    worse, and never reported. It is asked once per worker, so a loud failure
+    costs nothing and a silent one costs the fallback nobody chose.
+    """
+    with pytest.raises(WorkspaceGitError) as caught:
+        libcurl_supports_multi_resolve(unreadable)
+    assert caught.value.code == "bad_argument"
 
 
 # ---------------------------------------------------------------------------
@@ -596,6 +636,101 @@ def _classifier_stub(ip_text: str) -> str:
     if ip_text.startswith(("10.", "192.168.", "127.", "169.254.")):
         raise ValueError("resolved address is not globally routable")
     return ip_text
+
+
+# ---------------------------------------------------------------------------
+# 6b. GitTransport -- one validated object everything downstream reads
+# ---------------------------------------------------------------------------
+
+
+def _transport(repo: str = "owner/name", **over):
+    from tinyassets.workspace_git import GitTransport
+
+    kwargs = {
+        "curl_version_text": "libcurl/8.5.0",
+        "resolver": lambda h, p: ["140.82.121.4", "140.82.121.3"],
+        "classifier": _classifier_stub,
+    }
+    kwargs.update(over)
+    return GitTransport.build(repo, **kwargs)
+
+
+def test_the_transport_derives_url_binding_and_rule_from_one_identity() -> None:
+    """One derivation: a caller cannot pin one host and clone from another."""
+    transport = _transport()
+    assert transport.url == "https://github.com/owner/name.git"
+    assert transport.broker_binding() == ("https", "github.com", "owner/name.git")
+    assert transport.repo == "owner/name"
+    assert transport.port == 443
+    rule = [
+        option
+        for option in transport.forced_options("!broker")
+        if option.startswith("http.curloptResolve=")
+    ]
+    assert rule == ["http.curloptResolve=github.com:443:140.82.121.4,140.82.121.3"]
+    # the URL's host, the rule's host and the binding's host are the SAME string
+    assert transport.url.split("/")[2] == transport.host
+    assert rule[0].split("=")[1].split(":")[0] == transport.host
+    assert transport.broker_binding()[1] == transport.host
+
+
+def test_the_transport_canonicalises_the_host_and_the_repo() -> None:
+    transport = _transport("Owner/Name", host="GitHub.COM")
+    assert transport.host == "github.com"
+    assert transport.url.startswith("https://github.com/")
+    # the repo case is the user's; only the HOST is case-insensitive
+    assert transport.credential_path.endswith(".git")
+
+
+def test_the_transport_refuses_anything_but_https_on_443() -> None:
+    from tinyassets.workspace_git import WorkspaceGitError as Err
+
+    for kwargs in ({"port": 8443}, {"port": 80}, {"host": "not a host"}):
+        with pytest.raises(Err) as caught:
+            _transport(**kwargs)
+        assert caught.value.code == "bad_argument"
+
+
+@pytest.mark.parametrize("repo", ["", "name", "owner/name/extra", "/", "owner//name"])
+def test_the_transport_refuses_a_repo_that_is_not_owner_slash_name(repo: str) -> None:
+    from tinyassets.workspace_git import WorkspaceGitError as Err
+
+    with pytest.raises(Err) as caught:
+        _transport(repo)
+    assert caught.value.code == "bad_argument"
+
+
+def test_the_transport_refuses_a_split_dns_answer() -> None:
+    from tinyassets.workspace_git import WorkspaceGitError as Err
+
+    with pytest.raises(Err) as caught:
+        _transport(resolver=lambda h, p: ["140.82.121.4", "169.254.169.254"])
+    assert caught.value.code == "address_refused"
+
+
+def test_the_transport_pins_one_address_on_an_old_libcurl() -> None:
+    transport = _transport(curl_version_text="libcurl/7.29.0")
+    assert transport.multi_resolve is False
+    assert transport.addresses == ("140.82.121.4",)
+    rule = [
+        option
+        for option in transport.forced_options("!broker")
+        if option.startswith("http.curloptResolve=")
+    ]
+    assert rule == ["http.curloptResolve=github.com:443:140.82.121.4"]
+
+
+def test_the_transport_binding_is_what_the_broker_answers() -> None:
+    """The binding and the request git will send must be the same string."""
+    transport = _transport()
+    protocol, host, path = transport.broker_binding()
+    made = CredentialBroker(protocol, host, path, "x-access-token", TOKEN)
+    try:
+        # what git sends for transport.url, measured against git 2.43/2.53
+        assert made.answer(_get_request(host=host, path="owner/name.git")) is not None
+        assert made.answer(_get_request(host=host, path="owner/name")) is None
+    finally:
+        made.close()
 
 
 def test_pin_address_returns_every_validated_address_in_dns_order() -> None:
@@ -954,6 +1089,112 @@ def test_a_timeout_reaps_a_double_forked_descendant(tmp_path: Path, empty_home: 
     while os.path.isdir(f"/proc/{descendant}") and time.time() < deadline:
         time.sleep(0.05)
     assert not os.path.isdir(f"/proc/{descendant}"), "the descendant outlived the kill"
+
+
+def test_run_git_refuses_an_environment_that_is_not_the_canonical_set(
+    tmp_path: Path, empty_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Defence in depth, driven: the only way this fires is git_environment
+    changing, which is exactly when a silent widening would happen."""
+    launcher = RecordingLauncher()
+    canonical = dict(git_environment(empty_home, path="/usr/bin"))
+
+    for widened in (
+        {**canonical, "GIT_DIR": "/etc"},
+        {**canonical, "GIT_TRACE_CURL": "1"},
+        {key: value for key, value in canonical.items() if key != "HOME"},
+    ):
+        monkeypatch.setattr(wg, "git_environment", lambda *a, **k: dict(widened))
+        with pytest.raises(WorkspaceGitError) as caught:
+            run_git(
+                ["status"],
+                cwd=tmp_path,
+                home_dir=empty_home,
+                path="/usr/bin",
+                timeout_s=5,
+                launcher=launcher,
+            )
+        assert caught.value.code == "bad_argument"
+    assert launcher.calls == [], "a non-canonical environment must not spawn"
+
+
+def test_run_git_uses_the_group_killing_launcher_when_none_is_injected(
+    tmp_path: Path, empty_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not subprocess.run: its timeout kills only the tracked pid."""
+    used: list[str] = []
+
+    def spy(command, **kwargs):
+        used.append("default")
+        return FakeCompleted()
+
+    monkeypatch.setattr(wg, "_default_launcher", spy)
+    run_git(["status"], cwd=tmp_path, home_dir=empty_home, path="/usr/bin", timeout_s=5)
+    assert used == ["default"]
+
+
+def test_run_git_pins_the_destination_to_a_descriptor_when_given_one(
+    tmp_path: Path, empty_home: Path, monkeypatch: pytest.MonkeyPatch, posix_mode: None
+) -> None:
+    """``dest_fd`` makes git's cwd the descriptor, not a path to re-resolve."""
+    launcher = RecordingLauncher()
+    monkeypatch.setattr(wg.os, "listdir", lambda target: [])
+    monkeypatch.setattr(wg.Path, "is_dir", lambda self: True)
+    bundle = tmp_path / "b.bundle"
+    bundle.write_bytes(b"PACK")
+    with pytest.raises(WorkspaceGitError):
+        # it will fail later (the fake launcher returns no sha), but the FIRST
+        # command must already be pinned to the descriptor
+        unbundle_into_fresh_repo(
+            bundle,
+            tmp_path / "dest",
+            ref_name="refs/tiny/export",
+            home_dir=empty_home,
+            path="/usr/bin",
+            dest_fd=7,
+            launcher=launcher,
+        )
+    first = launcher.calls[0][1]
+    assert first["cwd"] == "/proc/self/fd/7"
+    assert first["pass_fds"] == (7,), "the descriptor must survive into the child"
+
+
+def test_a_descriptor_destination_is_refused_off_posix(
+    tmp_path: Path, empty_home: Path, windows_mode: None
+) -> None:
+    """No /proc/self/fd there; a path-based imitation would be a lie."""
+    bundle = tmp_path / "b.bundle"
+    bundle.write_bytes(b"PACK")
+    with pytest.raises(WorkspaceGitError) as caught:
+        unbundle_into_fresh_repo(
+            bundle,
+            tmp_path / "dest",
+            ref_name="refs/tiny/export",
+            home_dir=empty_home,
+            path="/usr/bin",
+            dest_fd=7,
+            launcher=RecordingLauncher(),
+        )
+    assert caught.value.code == "bad_argument"
+
+
+@pytest.mark.parametrize("bad", ["7", True, 7.0, object()])
+def test_a_destination_descriptor_must_be_a_descriptor(
+    tmp_path: Path, empty_home: Path, bad
+) -> None:
+    bundle = tmp_path / "b.bundle"
+    bundle.write_bytes(b"PACK")
+    with pytest.raises(WorkspaceGitError) as caught:
+        unbundle_into_fresh_repo(
+            bundle,
+            tmp_path / "dest",
+            ref_name="refs/tiny/export",
+            home_dir=empty_home,
+            path="/usr/bin",
+            dest_fd=bad,
+            launcher=RecordingLauncher(),
+        )
+    assert caught.value.code == "bad_argument"
 
 
 def test_run_git_bounds_captured_output(tmp_path: Path, empty_home: Path) -> None:
@@ -1581,6 +1822,77 @@ def test_verify_bundle_refuses_a_bundle_that_needs_objects_it_lacks(
         )
     assert caught.value.code == "verification"
     assert "prerequisite" in str(caught.value)
+
+
+@needs_git
+def test_a_bundle_from_a_shallow_clone_is_refused(tmp_path: Path, deep_repo) -> None:
+    """The real shape D1 forbids: a shallow source cannot cross the bridge.
+
+    A bundle cannot represent a shallow boundary, so a clone made with
+    ``--depth 1`` must not be able to produce one this layer accepts -- either
+    git refuses to bundle it, or the bundle it makes fails verification in an
+    empty repository. Both are the same answer; neither may silently pass.
+    """
+    shallow = tmp_path / "shallow"
+    clone = subprocess.run(
+        [
+            GIT_BINARY, "clone", "--depth", "1", "--no-local",
+            deep_repo["repo"].as_uri(), str(shallow),
+        ],
+        env=deep_repo["env"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if clone.returncode != 0:
+        pytest.skip(f"this git will not make a shallow local clone: {clone.stderr[:120]}")
+    assert (shallow / ".git" / "shallow").exists(), "the clone is not actually shallow"
+
+    sha = subprocess.run(
+        [GIT_BINARY, "rev-parse", "HEAD"],
+        cwd=str(shallow), env=deep_repo["env"], stdin=subprocess.DEVNULL,
+        capture_output=True, text=True, timeout=60,
+    ).stdout.strip()
+
+    bundle = tmp_path / "shallow.bundle"
+    try:
+        create_bundle(
+            shallow, sha, bundle,
+            home_dir=deep_repo["home"],
+            path=deep_repo["path"],
+            scratch_dir=_fresh_scratch(tmp_path),
+        )
+    except WorkspaceGitError as caught:
+        assert caught.code == "verification", caught
+        assert not bundle.exists(), "a refused bundle must not be left behind"
+        return
+
+    # MEASURED (git 2.53): git happily bundles a shallow clone, and
+    # `bundle verify` in an empty repo ACCEPTS it -- it reports the ref and
+    # says nothing about the parent it cannot reach. So verification alone is
+    # NOT proof of self-containedness for a shallow source.
+    refs = verify_bundle(
+        bundle,
+        max_bytes=50_000_000,
+        scratch_dir=_fresh_scratch(tmp_path),
+        home_dir=deep_repo["home"],
+        path=deep_repo["path"],
+    )
+    assert refs == ["refs/tiny/export"]
+
+    # The fsck-checked IMPORT is what catches it, which is exactly why the push
+    # path runs both and never treats `bundle verify` as the whole answer.
+    with pytest.raises(WorkspaceGitError) as caught:
+        unbundle_into_fresh_repo(
+            bundle,
+            tmp_path / "from-shallow",
+            ref_name="refs/tiny/export",
+            home_dir=deep_repo["home"],
+            path=deep_repo["path"],
+        )
+    assert caught.value.code == "verification"
+    assert "necessary objects" in str(caught.value) or "traverse" in str(caught.value)
 
 
 class PrerequisiteReportingLauncher:
