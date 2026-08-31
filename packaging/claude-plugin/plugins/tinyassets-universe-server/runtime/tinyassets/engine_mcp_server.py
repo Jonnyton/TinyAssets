@@ -1047,11 +1047,10 @@ def write_graph(
     "<40 hex>", "branch_slug": "fix-readme"}`` - the branch lands as
     ``tiny/<universe>/<slug>`` (never the default branch; open the PR with the
     generic call); ``{"op": "discard", "workspace": "<checkout node>"}``
-    drops it early (no consent needed). A checkout may declare
-    ``"provision": {"python": "requirements-locked.txt", "node": true}`` -
-    registry-pinned, hash-locked manifests only (``name==version --hash=…``;
-    npm lockfile v2/v3 with sha512), installed offline into the workspace
-    before your code runs, under the ``workspace_provision`` consent. Each
+    drops it early (no consent needed). Dependency provisioning
+    (``provision`` on a checkout) is not available in this release - a
+    checkout that declares it is refused ``workspace_provision_refused``; run
+    what the repository can run with the shipped Python and Node. Each
     ``(connection, repo)`` needs TWO things, once, both
     through the request rail: the repository SCOPE on the github connection
     (``"action": {"type": "extend_http", "destination": "github", "scopes":

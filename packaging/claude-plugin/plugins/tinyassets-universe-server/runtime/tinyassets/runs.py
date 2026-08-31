@@ -368,11 +368,14 @@ def _workspace_sweeper_loop(base_path: str | Path, interval_s: float) -> None:
 
 
 def _ensure_scratch_root(base: Path) -> Path:
-    """The scratch pool's parent, created once, mode 0700, never with
-    ``parents=True``: the data root itself must already exist. The no-follow
-    lease helpers refuse a missing parent, so a fresh host needs this before
-    its first checkout (lane E finding)."""
-    root = base / "scratch"
+    """The scratch pool's parent - ``<data>/scratch``, ONE level above the
+    universe directory ``base`` (the adapter admits into ``base.parent /
+    "scratch"``; Codex code round 2 caught the two disagreeing) - created
+    once, mode 0700, never with ``parents=True``: the data root itself must
+    already exist. The no-follow lease helpers refuse a missing or
+    group-writable parent, so a fresh host needs this before its first
+    checkout (lane E finding)."""
+    root = base.parent / "scratch"
     if not root.exists():
         root.mkdir(mode=0o700)
     if os.name == "posix":
@@ -3095,7 +3098,17 @@ def _invoke_graph(
             )
         timeout_exc = _find_timeout_exception(exc)
         if timeout_exc is not None:
-            msg = f"Node timeout: {timeout_exc}"
+            from tinyassets.graph_compiler import WorkspaceCommandTimeout
+
+            # A ws.run command that outlived its timeout ended the whole jail
+            # (workspace-node D2/D6): its own class, not the generic node
+            # timeout, so the classifier and the suggested action match.
+            if isinstance(timeout_exc, WorkspaceCommandTimeout):
+                reason = "workspace_command_timeout"
+                msg = f"Workspace command timeout: {timeout_exc}"
+            else:
+                reason = "timeout"
+                msg = f"Node timeout: {timeout_exc}"
             step = execution_cursor["step"]
             execution_cursor["step"] += 1
             record_event(base_path, RunStepEvent(
@@ -3105,7 +3118,7 @@ def _invoke_graph(
                 status=NODE_STATUS_FAILED,
                 started_at=_now(),
                 finished_at=_now(),
-                detail={"reason": "timeout", "message": str(timeout_exc)},
+                detail={"reason": reason, "message": str(timeout_exc)},
             ))
             _emit_node_status(
                 _node_id_from_timeout_exc(timeout_exc),
@@ -5272,6 +5285,10 @@ def _classify_failure(run: dict) -> str:
         return _classify_external_write(lower)
     if "empty" in lower and ("llm" in lower or "response" in lower or "provider" in lower):
         return "empty_llm_response"
+    if lower.startswith("workspace command timeout"):
+        # Before the generic timeout: the jail was ended for a ws.run that
+        # outlived its budget (workspace-node D6).
+        return "workspace_command_timeout"
     if "timeout" in lower:
         return "timeout"
     if "exhausted" in lower or "cooldown" in lower:

@@ -270,6 +270,49 @@ def test_the_periodic_pass_repairs_an_orphaned_active_lease(tmp_path, monkeypatc
     assert after is not None and after.state == "AVAILABLE"
 
 
+def test_the_scratch_root_is_created_under_the_data_root(tmp_path, monkeypatch):
+    """The adapter admits into ``<data>/scratch`` (one level above the
+    universe directory); the creator must agree (Codex code round 2, #1)."""
+    universe = tmp_path / "data" / "universe-x"
+    universe.mkdir(parents=True)
+    monkeypatch.setattr(workspace_pool, "startup_sweep", lambda *a, **k: 0)
+    assert runs.ensure_workspace_reconciled(universe, start_sweeper=False) is True
+    assert (tmp_path / "data" / "scratch").is_dir()
+    assert not (universe / "scratch").exists()
+
+
+def test_a_workspace_command_timeout_keeps_its_class():
+    def classify(text):
+        return runs._classify_failure({"status": "failed", "error": text})
+
+    kind = classify("Workspace command timeout: node 'n1' ws.run exceeded 30s")
+    assert kind == "workspace_command_timeout"
+    assert classify("Node timeout: node 'n1' exceeded 300s") == "timeout"
+
+
+def test_the_chain_closes_workspace_descriptors_on_revoke_and_settle():
+    from tinyassets.effectors import EffectChain
+
+    class _Mount:
+        def __init__(self):
+            self.closed = 0
+
+        def close(self):
+            self.closed += 1
+
+    chain = EffectChain(run_id="r-close", base_path=None)
+    a, b = _Mount(), _Mount()
+    chain.register_workspace("checkout_a", a)
+    chain.register_workspace("checkout_b", b)
+    assert chain.revoke_workspace("checkout_a") is a
+    assert a.closed == 1
+    chain.revoke_workspace("checkout_a")
+    assert a.closed == 1, "idempotent: a second revoke closes nothing twice"
+    chain.settle()
+    assert b.closed == 1, "settle closes what the run still held"
+    assert chain.workspace_mount("checkout_b") is None
+
+
 @pytest.mark.parametrize("kind", runs.WORKSPACE_FAILURE_KINDS)
 def test_every_workspace_refusal_is_its_own_class_with_an_action(kind):
     summary = f"external write failed - checkout/workspace: refused [{kind}]"

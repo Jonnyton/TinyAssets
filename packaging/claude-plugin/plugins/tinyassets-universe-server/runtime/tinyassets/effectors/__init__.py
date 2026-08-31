@@ -315,9 +315,24 @@ class EffectChain:
 
     def revoke_workspace(self, node_key: str) -> Any:
         """Drop the capability: a later ``ws`` node in this run refuses.
-        Idempotent; returns what was dropped (None if nothing)."""
+        Idempotent; returns what was dropped (None if nothing). The mount's
+        descriptors are closed here - a capability object that outlives the
+        run would keep the lease directory open for the daemon's lifetime
+        (Codex code round 2, #7)."""
         with self.lock:
-            return self.workspaces.pop(str(node_key), None)
+            mount = self.workspaces.pop(str(node_key), None)
+        _close_workspace_mount(mount)
+        return mount
+
+    def close_workspaces(self) -> int:
+        """Revoke and close every workspace this run still holds. Called
+        when the chain settles; idempotent."""
+        with self.lock:
+            mounts = list(self.workspaces.values())
+            self.workspaces.clear()
+        for mount in mounts:
+            _close_workspace_mount(mount)
+        return len(mounts)
 
     def prior_effects(self, ancestors: set[str] | None = None) -> dict[str, dict]:
         """Full results of the nodes a reference may legally name (for
@@ -406,6 +421,9 @@ class EffectChain:
             self.settled = True
             self.settle_pending = False
         settle_engine_admission(self.run_id, fired)
+        # Nothing fires after a terminal status, so nothing may keep a lease
+        # directory open either.
+        self.close_workspaces()
 
     @property
     def _cond(self) -> threading.Condition:
@@ -466,6 +484,21 @@ def active_effect_chain(run_id: str) -> EffectChain | None:
 def forget_effect_chain(run_id: str) -> EffectChain | None:
     with _ACTIVE_CHAINS_LOCK:
         return _ACTIVE_CHAINS.pop(run_id, None)
+
+
+def _close_workspace_mount(mount: Any) -> None:
+    """Close a mount's descriptors exactly once; a mount without ``close`` is
+    a test double. Never raises - the run is already past the point where a
+    close failure could change its outcome, so it is logged."""
+    if mount is None:
+        return
+    closer = getattr(mount, "close", None)
+    if not callable(closer):
+        return
+    try:
+        closer()
+    except Exception:  # noqa: BLE001 - logged, never fatal at settle
+        logging.getLogger(__name__).exception("workspace mount close failed")
 
 
 def dispatch_node_effects(
