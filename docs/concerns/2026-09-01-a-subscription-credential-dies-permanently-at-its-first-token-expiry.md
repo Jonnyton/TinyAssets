@@ -32,6 +32,28 @@ deletes.
 
 So the vault's `auth_json_b64` is frozen at deposit time, forever.
 
+## The part that makes it permanent rather than merely stale
+
+The jail cannot write the file at all. `/codex-home` is a **tmpfs** with the
+credential files bound in **read-only** (`providers/codex_provider.py:161`,
+`--ro-bind ... /codex-home/auth.json`), and the mount comment states the intent
+plainly: *"The credential bytes stay immutable; only scratch files can be
+created beside them."*
+
+That comment also records the same class of bug from **2026-08-22**: a read-only
+home broke codex's own lock file -- *"cannot open lock file /codex-home/.lock:
+Read-only file system", exit 73 in 56 ms -> "codex exhausted"*. The fix made the
+HOME a tmpfs so scratch files could be written, and left `auth.json` read-only.
+
+**OAuth refresh tokens rotate on use.** So the first refresh a universe attempts
+either fails outright (read-only) or, if it ever succeeded anywhere, invalidated
+the stored token while the new value was discarded. Either way the deposited
+bundle becomes permanently unusable at the first rotation, which is exactly the
+observed shape: working for weeks, dying at a precise instant, never recovering.
+
+"Immutable credential bytes" is a coherent security stance for a static secret
+and is simply incompatible with a rotating one.
+
 ## What review changed
 
 I filed this as "the materializer overwrites the refreshed token on the next
