@@ -8,7 +8,7 @@ scope guard demands is voided by the push that fixes anything. That tension is
 filed as
 `docs/concerns/2026-08-31-the-exact-head-receipt-loops-against-iterative-review.md`.
 
-**Findings per pass: 7 → 5 → 1 → 3 → 5 → 4.** Non-monotonic, as `AGENTS.md` predicts, and
+**Findings per pass: 7 → 5 → 1 → 3 → 5 → 4 → 0 (APPROVE).** Non-monotonic, as `AGENTS.md` predicts, and
 the fourth pass found a weakness in a test written during the third — the failure
 mode it cites from #2561.
 
@@ -109,7 +109,7 @@ suite that drives `engine_mcp_server.write_graph` itself rather than the API
 under it.
 
 
-## Round 5 (`74b14c3a`): ADAPT, 4 findings — one of them a regression I caused
+## Round 5 (`74b14c3a`): ADAPT, 5 findings — one of them a regression I caused
 
 Authorised by the founder as the last pass. It was worth its cost immediately.
 
@@ -163,7 +163,7 @@ assertions caught it.
 
 ## The shape of the whole thing
 
-Seven passes, findings **7 → 5 → 1 → 3 → 5 → 4**. Every round found something
+Seven passes, findings **7 → 5 → 1 → 3 → 5 → 4 → 0**, the last returning APPROVE with the Linux oracle green at 395 passed. Every round found something
 real; none of it was style. The recurring class never changed:
 
 > **Two definitions of one fact, and the tests exercising whichever one was
