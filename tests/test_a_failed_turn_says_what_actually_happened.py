@@ -29,6 +29,8 @@ confident wrong one is worse**, because the owner acts on it.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from tinyassets.exceptions import AllProvidersExhaustedError
@@ -295,3 +297,59 @@ def test_the_recorder_is_actually_WIRED_into_the_failure_path():
         "the served-failure handler no longer records the details before "
         "telling the owner that it has"
     )
+
+
+def test_the_diagnosis_is_readable_from_OUTSIDE_the_container():
+    """A diagnosis only readable from inside the box is, from outside, none.
+
+    The recorder logs to the container. Nobody debugging remotely can read that
+    -- so "we recorded the details" would still leave the person trying to fix
+    the outage with the same generic sentence. The structured classes come back
+    beside the notice instead.
+    """
+    from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
+    from tinyassets.universe_server import _served_failure_diagnosis
+
+    out = _served_failure_diagnosis(AllProvidersExhaustedError(
+        "exhausted",
+        failure_class="provider_unavailable",
+        retry_after=12.5,
+        attempts=[ProviderAttemptDiagnostic(
+            provider="codex", status="failed", skip_class="auth_invalid",
+            detail="launch credential rejected for /data/u-x/creds.json",
+            failure_class="auth_invalid",
+        )],
+    ))
+
+    assert out["failure_class"] == "provider_unavailable"
+    assert out["retry_after_s"] == 12.5
+    [row] = out["provider_diagnosis"]
+    assert row["provider"] == "codex"
+    assert row["failure_class"] == "auth_invalid"
+
+
+def test_the_free_text_detail_never_leaves_the_server():
+    """`detail` is provider output and can carry a host, a path or a token. It
+    stays in the scrubbed log; only the classes are returned."""
+    from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
+    from tinyassets.universe_server import _served_failure_diagnosis
+
+    out = _served_failure_diagnosis(AllProvidersExhaustedError(
+        "exhausted",
+        attempts=[ProviderAttemptDiagnostic(
+            provider="codex", status="failed", skip_class="auth_invalid",
+            detail="token ghp_SECRETVALUE at /data/u-x/creds.json",
+        )],
+    ))
+
+    blob = json.dumps(out)
+    assert "ghp_SECRETVALUE" not in blob
+    assert "/data/" not in blob
+    assert "detail" not in blob
+
+
+def test_a_successful_turn_carries_no_diagnosis_keys():
+    """These appear only on failure; a healthy reply is unchanged."""
+    from tinyassets.universe_server import _served_failure_diagnosis
+
+    assert _served_failure_diagnosis(RuntimeError("plain")) == {}

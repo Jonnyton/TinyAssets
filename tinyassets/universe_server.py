@@ -31,7 +31,7 @@ import json
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import wraps
-from typing import Annotated
+from typing import Annotated, Any
 
 import uvicorn
 from fastmcp import FastMCP
@@ -1854,6 +1854,47 @@ _PLATFORM_FAULT_TELLS = (
 )
 
 
+def _served_failure_diagnosis(exc: BaseException) -> dict[str, Any]:
+    """The machine-readable half of a failed turn, beside the human sentence.
+
+    Returned to an AUTHENTICATED owner about their OWN universe, so a provider
+    name and a failure class disclose nothing. The free-text ``detail`` is
+    deliberately excluded: it is provider output and can carry a host, a path or
+    a token, and it stays in the scrubbed server log.
+
+    This exists because "recorded the details" is worthless to anyone who cannot
+    reach the container log -- which is everyone debugging remotely. A diagnosis
+    that is only readable from inside the box is, from outside it, the same as
+    no diagnosis (2026-09-01).
+    """
+    out: dict[str, Any] = {}
+    try:
+        failure_class = getattr(exc, "failure_class", None)
+        if failure_class:
+            out["failure_class"] = str(failure_class)
+        retry_after = getattr(exc, "retry_after", None)
+        if retry_after:
+            out["retry_after_s"] = retry_after
+        attempts = getattr(exc, "attempts", None) or []
+        if attempts:
+            out["provider_diagnosis"] = [
+                {
+                    key: str(value)
+                    for key, value in (
+                        ("provider", getattr(a, "provider", "")),
+                        ("status", getattr(a, "status", "")),
+                        ("skip_class", getattr(a, "skip_class", "")),
+                        ("failure_class", getattr(a, "failure_class", "") or ""),
+                    )
+                    if value
+                }
+                for a in attempts
+            ]
+    except Exception:  # noqa: BLE001 - never break a failure path for diagnostics
+        return {}
+    return out
+
+
 def _record_served_failure(universe_id: str, exc: BaseException) -> None:
     """Write the per-provider diagnosis to the server log. Never raises.
 
@@ -2084,7 +2125,10 @@ def converse(message: str = "", graph_id: str = "") -> str:
         if held is not None:
             return json.dumps(held)
         _record_served_failure(uid, exc)
-        return json.dumps({"error": _served_failure_notice(exc)})
+        return json.dumps({
+            "error": _served_failure_notice(exc),
+            **_served_failure_diagnosis(exc),
+        })
     try:
         from tinyassets.conversation_store import record_exchange
 
