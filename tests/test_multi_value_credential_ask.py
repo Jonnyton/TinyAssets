@@ -197,3 +197,55 @@ def test_one_box_of_four_is_refused_not_deposited_as_the_whole_credential(base) 
     from tinyassets.credential_vault import load_credential_vault
 
     assert load_credential_vault(udir) == [], "a partial credential was deposited"
+
+
+def test_a_legacy_request_stored_under_the_old_rules_is_refused(base) -> None:
+    """A row created before these rules must not bypass them when answered.
+
+    Fields are validated when an ask is CREATED. A request stored earlier can
+    carry a shape the current rules refuse — a `text` field beside the secret,
+    whose answer is recorded in the clear, or several secrets under a
+    single-value scheme, which would assemble into JSON and be deposited as a
+    bearer token. Answering did not re-run the validator, so a legacy row
+    bypassed both fixes (Codex round 2, Q2/Q5).
+
+    Written directly to storage, because the ask API can no longer create one.
+    """
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.storage.pending_requests import create_request
+
+    udir = _make_universe(base, "u-legacy", admin="founder")
+    _login("founder")
+
+    legacy_id = create_request(
+        _universe_dir("u-legacy"),
+        kind="API",
+        title="pre-upgrade ask",
+        body="stored before the current rules",
+        fields=[
+            {"name": "part_a", "label": "Part A", "type": "secret"},
+            {"name": "part_b", "label": "Part B", "type": "secret"},
+        ],
+        action={
+            "type": "connect_http",
+            "destination": "legacy-service",
+            "auth_scheme": "bearer",          # single-value scheme, two secrets
+            "endpoints": [{"host": "api.example.com",
+                           "path_template": "/v1/x", "methods": ["POST"]}],
+        },
+        dedupe_key="legacy-1",
+    )
+    request_id = legacy_id if isinstance(legacy_id, str) else legacy_id["request_id"]
+
+    out = _answer(
+        "u-legacy",
+        request_id=request_id,
+        values={"part_a": "alpha-token", "part_b": "beta-token"},
+    )
+
+    blob = json.dumps(out)
+    assert "before the current rules" in blob, out
+
+    from tinyassets.credential_vault import load_credential_vault
+
+    assert load_credential_vault(udir) == [], "a legacy row deposited anyway"

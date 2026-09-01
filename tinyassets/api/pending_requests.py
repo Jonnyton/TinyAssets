@@ -69,10 +69,26 @@ _MAX_FIELDS = 16
 #: a 120-character label cannot hold.
 _MAX_HELP_CHARS = 400
 
-#: Auth schemes whose stored credential is a MULTI-VALUE encoding, and so the
-#: only ones an ask may collect several boxes for. `basic` is one string
-#: (`username:password`) and `bearer`/`header` are one token.
-_MULTI_VALUE_AUTH_SCHEMES = frozenset({"oauth1a"})
+#: Auth schemes whose stored credential holds SEVERAL values, mapped to the
+#: field names the deposit reads. `bearer` and `header` are one token and are
+#: absent on purpose.
+#:
+#: `basic` is here because refusing it stranded ordinary username/password
+#: services outright: the ask was refused, the inference swallowed that into an
+#: empty list, and the fieldless ask was refused in turn — so a Basic API could
+#: not be asked for at all (Codex round 2, Q4). It is two boxes joined as
+#: `username:password`, not JSON, because that is the encoding the vault string
+#: has always used.
+#:
+#: The names are FIXED for these schemes and the deposit reads them: label them
+#: however the service words them, but name them these. `oauth1a` mirrors
+#: `_OAUTH1A_FIELDS` in `api/http_connection.py`, and a test pins the two
+#: together so they cannot drift.
+_MULTI_VALUE_FIELD_NAMES = {
+    "oauth1a": ("api_key", "api_secret", "access_token", "access_token_secret"),
+    "basic": ("username", "password"),
+}
+_MULTI_VALUE_AUTH_SCHEMES = frozenset(_MULTI_VALUE_FIELD_NAMES)
 
 #: A plain https link, no userinfo (`https://user:pw@host`), bounded.
 _MAX_URL_CHARS = 300
@@ -480,6 +496,20 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
                 "field; several are only meaningful for "
                 + ", ".join(sorted(_MULTI_VALUE_AUTH_SCHEMES))
             )
+        expected = _MULTI_VALUE_FIELD_NAMES.get(scheme)
+        if expected and len(secrets) > 1:
+            # Caught HERE, not at deposit: the deposit reads these names, and
+            # finding out afterwards means the owner has already filled the form
+            # and is told "oauth1a secret is missing: api_secret" about a box
+            # they cannot see. The LABEL stays the service's wording.
+            got = tuple(f["name"] for f in secrets)
+            if sorted(got) != sorted(expected):
+                raise ValueError(
+                    f"auth_scheme {scheme!r} reads fixed field names "
+                    + ", ".join(expected)
+                    + " -- got " + ", ".join(got)
+                    + " (label them the service's way, name them these)"
+                )
     return out
 
 
@@ -873,6 +903,26 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
         return _bad("values must be an object of field name -> value")
 
     action = row["action"]
+    # Fields were validated when the ask was CREATED, and a row stored before
+    # these rules existed carries a shape they would refuse: a `text` field
+    # beside the secret (whose answer is recorded in the clear), or several
+    # secrets under a single-value scheme (which would assemble into JSON and be
+    # deposited as a bearer token). Answering does not re-run the validator, so
+    # a legacy row bypassed both fixes entirely (Codex round 2, Q2/Q5).
+    #
+    # Revalidate the STORED fields here, against the stored action. A row that
+    # no longer passes is refused with the reason rather than half-honoured:
+    # the ask is re-raisable in seconds and the owner has typed nothing yet at
+    # the moment this runs.
+    if row["fields"]:
+        try:
+            _validated_fields(row["fields"], action)
+        except ValueError as exc:
+            return _bad(
+                "this request was created before the current rules and cannot "
+                f"be answered safely ({exc}); ask again and it will be built "
+                "correctly"
+            )
     secret_names = {f["name"] for f in row["fields"] if f["type"] == "secret"}
     # Record ONLY values for fields the request actually declared as non-secret.
     # Excluding known secret names was not enough: Codex (2026-08-27) submitted
@@ -936,6 +986,7 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
         # -- an OAuth 1.0a owner would fill four boxes, three would vanish, and
         # the deposit would refuse a malformed bundle with nothing to explain it.
         # Found on 2026-08-31 by checking this seam rather than assuming it.
+        scheme = str(action.get("auth_scheme") or "bearer").strip().lower()
         supplied = {
             name: str(values.get(name) or "")
             for name in sorted(secret_names)
@@ -958,6 +1009,10 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             )
         if len(secret_names) == 1:
             secret = next(iter(supplied.values()))
+        elif scheme == "basic":
+            # The vault string for basic has always been `username:password`;
+            # JSON here would hand the service `Basic base64({...})`.
+            secret = f"{supplied['username']}:{supplied['password']}"
         else:
             secret = json.dumps(supplied)
         deposited = connect_http(

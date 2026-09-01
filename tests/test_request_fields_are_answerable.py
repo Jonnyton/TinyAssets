@@ -56,23 +56,54 @@ def test_directions_and_link_are_optional() -> None:
 
 
 def test_an_oauth1a_deposit_fits() -> None:
-    """The case that motivated the cap change: five values before anything
-    optional, which the old limit of six barely held and a sixth broke."""
-    names = [
-        "api_key",
-        "api_key_secret",
-        "access_token",
-        "access_token_secret",
-        "bearer_token",
-    ]
-    # Several boxes are only meaningful where the vault string has a
-    # multi-value encoding, so the ask must say so.
+    """The case that motivated the cap change: four values, each its own box.
+
+    The deposit reads these four names exactly (`_OAUTH1A_FIELDS`), so the ask
+    must use them — labelled however the service words them. An earlier draft of
+    this test asked for five, including a bearer token, which is not part of the
+    OAuth 1.0a bundle at all.
+    """
+    names = ["api_key", "api_secret", "access_token", "access_token_secret"]
     fields = _validated_fields(
         [_field(name=n, label=n.replace("_", " ").title()) for n in names],
         {"type": "connect_http", "auth_scheme": "oauth1a"},
     )
     assert [f["name"] for f in fields] == names
     assert _MAX_FIELDS >= 16, "leave room for a service nobody has enumerated"
+
+
+def test_the_fixed_names_are_enforced_when_the_scheme_reads_them() -> None:
+    """Caught at ASK time, not at deposit.
+
+    The deposit reads fixed names for these schemes. Finding out afterwards
+    means the owner has already filled the form and is told "oauth1a secret is
+    missing: api_secret" about a box they cannot see — and that mismatch was
+    live: the served docs taught `api_key_secret` while the deposit required
+    `api_secret` (Codex round 2, Q1).
+    """
+    wrong = ["api_key", "api_key_secret", "access_token", "access_token_secret"]
+    with pytest.raises(ValueError) as caught:
+        _validated_fields(
+            [_field(name=n) for n in wrong],
+            {"type": "connect_http", "auth_scheme": "oauth1a"},
+        )
+    assert "fixed field names" in str(caught.value)
+    assert "api_secret" in str(caught.value)
+
+
+def test_the_documented_oauth1a_names_are_the_ones_the_deposit_reads() -> None:
+    """Doc/runtime parity, because this exact pair disagreed in production."""
+    from tinyassets.api.http_connection import _OAUTH1A_FIELDS
+    from tinyassets.api.pending_requests import _MULTI_VALUE_FIELD_NAMES
+
+    assert _MULTI_VALUE_FIELD_NAMES["oauth1a"] == _OAUTH1A_FIELDS
+
+    import tinyassets.engine_mcp_server as engine
+
+    doc = engine.write_graph.__doc__ or ""
+    for name in _OAUTH1A_FIELDS:
+        assert name in doc, f"the docs never name {name!r}"
+    assert "api_key_secret" not in doc, "the wrong name is back in the docs"
 
 
 @pytest.mark.parametrize(
@@ -196,11 +227,12 @@ def test_several_boxes_need_a_scheme_that_can_encode_them() -> None:
     authenticate -- failing at the far end with nothing to point at."""
     two = [_field(name="username"), _field(name="password")]
     with pytest.raises(ValueError) as caught:
-        _validated_fields(two, {"type": "connect_http", "auth_scheme": "basic"})
+        _validated_fields(two, {"type": "connect_http", "auth_scheme": "bearer"})
     assert "single value" in str(caught.value)
 
-    # And the scheme that CAN encode several is unaffected.
-    ok = _validated_fields(two, {"type": "connect_http", "auth_scheme": "oauth1a"})
+    # `basic` DOES encode two, and refusing it stranded ordinary
+    # username/password services outright (Codex round 2, Q4).
+    ok = _validated_fields(two, {"type": "connect_http", "auth_scheme": "basic"})
     assert [f["name"] for f in ok] == ["username", "password"]
 
 

@@ -889,7 +889,12 @@ def write_graph(
                      "auth_scheme": "bearer",
                      "endpoints": [{"host": "api.github.com",
                                     "path_template": "/repos/o/r/pulls",
-                                    "methods": ["POST"]}, ...]}}
+                                    "methods": ["POST"]}, ...]},
+          "fields": [                         # REQUIRED -- see below
+            {"name": "token", "type": "secret",
+             "label": "Personal access token",
+             "help": "Settings -> Developer settings -> Personal access tokens",
+             "url": "https://github.com/settings/tokens"}]}
 
     That opens a tab in their app with the exact grant spelled out; they paste
     the key there and it goes straight to the vault under those endpoints. List
@@ -907,11 +912,18 @@ def write_graph(
            "help": "Developer Portal -> your app -> Keys and tokens -> "
                    "Consumer Keys -> API Key",
            "url": "https://developer.x.com/en/portal/dashboard"},
-          {"name": "api_key_secret", "type": "secret",
+          {"name": "api_secret", "type": "secret",
            "label": "API Key Secret", "help": "shown beside the API Key, once",
            "url": "https://developer.x.com/en/portal/dashboard"},
           ...
         ]
+
+    The LABEL is the site's wording; the NAME is what the deposit reads. For
+    most schemes the name is yours to choose, but ``oauth1a`` has a fixed
+    four-value shape and the names must be exactly ``api_key``, ``api_secret``,
+    ``access_token``, ``access_token_secret`` -- label them however the service
+    words them, but name them these or the deposit refuses with "oauth1a secret
+    is missing". For ``basic``, name them ``username`` and ``password``.
 
     ``label`` is the service's OWN name for it, not yours -- if the site says
     "Consumer Key" then say "Consumer Key", because that is the words the owner

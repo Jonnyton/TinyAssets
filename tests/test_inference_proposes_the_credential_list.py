@@ -27,7 +27,7 @@ def test_a_multi_value_service_survives_intact() -> None:
                 "help": "Developer Portal -> your app -> Keys and tokens",
                 "url": "https://developer.example.com/portal",
             },
-            {"name": "api_key_secret", "label": "API Key Secret"},
+            {"name": "api_secret", "label": "API Key Secret"},
             {"name": "access_token", "label": "Access Token"},
             {"name": "access_token_secret", "label": "Access Token Secret"},
         ],
@@ -35,7 +35,7 @@ def test_a_multi_value_service_survives_intact() -> None:
     )
     assert [c["name"] for c in proposed] == [
         "api_key",
-        "api_key_secret",
+        "api_secret",
         "access_token",
         "access_token_secret",
     ]
@@ -77,10 +77,10 @@ def test_a_dangerous_link_drops_the_whole_list() -> None:
     """
     proposed = _validated_credentials(
         [
-            {"name": "api_key", "label": "API Key"},
-            {"name": "secret", "label": "Secret", "url": "javascript:alert(1)"},
+            {"name": "username", "label": "User"},
+            {"name": "password", "label": "Secret", "url": "javascript:alert(1)"},
         ],
-        "oauth1a",
+        "basic",
     )
     assert proposed == []
 
@@ -97,14 +97,14 @@ def test_duplicate_names_drop_the_list() -> None:
     request validator refuses them and this inherits that refusal rather than
     re-deciding it."""
     proposed = _validated_credentials(
-        [{"name": "k", "label": "One"}, {"name": "k", "label": "Two"}], "oauth1a"
+        [{"name": "k", "label": "One"}, {"name": "k", "label": "Two"}], "basic"
     )
     assert proposed == []
 
 
 def test_entries_without_a_name_are_skipped_not_fatal() -> None:
     proposed = _validated_credentials(
-        [{"label": "no name"}, {"name": "api_key", "label": "API Key"}], "oauth1a"
+        [{"label": "no name"}, {"name": "api_key", "label": "API Key"}], "bearer"
     )
     assert [c["name"] for c in proposed] == ["api_key"]
 
