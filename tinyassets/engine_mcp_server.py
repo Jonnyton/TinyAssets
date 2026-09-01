@@ -889,12 +889,72 @@ def write_graph(
                      "auth_scheme": "bearer",
                      "endpoints": [{"host": "api.github.com",
                                     "path_template": "/repos/o/r/pulls",
-                                    "methods": ["POST"]}, ...]}}
+                                    "methods": ["POST"]}, ...]},
+          "fields": [                         # REQUIRED -- see below
+            {"name": "token", "type": "secret",
+             "label": "Personal access token",
+             "help": "Settings -> Developer settings -> Personal access tokens",
+             "url": "https://github.com/settings/tokens"}]}
 
     That opens a tab in their app with the exact grant spelled out; they paste
     the key there and it goes straight to the vault under those endpoints. List
     EVERY call the flow needs in ONE ask so they paste once (a GitHub pull
     request needs the main ref, a branch ref, the file contents, and the pull).
+
+    **ONE FIELD PER CREDENTIAL, NAMED THE WAY THE SITE NAMES IT.** Never make
+    the owner work out what goes where. If a service needs four values, ask for
+    four, each labelled as that service labels it, each with the path to find it
+    and a link straight there::
+
+        "fields": [
+          {"name": "api_key", "type": "secret",
+           "label": "API Key",
+           "help": "Developer Portal -> your app -> Keys and tokens -> "
+                   "Consumer Keys -> API Key",
+           "url": "https://developer.x.com/en/portal/dashboard"},
+          {"name": "api_secret", "type": "secret",
+           "label": "API Key Secret", "help": "shown beside the API Key, once",
+           "url": "https://developer.x.com/en/portal/dashboard"},
+          ...
+        ]
+
+    The LABEL is the site's wording; the NAME is what the deposit reads. For
+    most schemes the name is yours to choose, but ``oauth1a`` has a fixed
+    four-value shape and the names must be exactly ``api_key``, ``api_secret``,
+    ``access_token``, ``access_token_secret`` -- label them however the service
+    words them, but name them these or the deposit refuses with "oauth1a secret
+    is missing". For ``basic``, name them ``username`` and ``password``.
+
+    ``label`` is the service's OWN name for it, not yours -- if the site says
+    "Consumer Key" then say "Consumer Key", because that is the words the owner
+    is looking at. ``help`` is the click path (400 chars). ``url`` is a plain
+    ``https://`` link to the page that issues it. Up to 16 fields.
+
+    **LOOK IT UP FIRST. Do not ask from memory.** You have WebFetch and
+    WebSearch. Before you raise a credential ask, read the service's OWN current
+    documentation and build the ask from what you find there:
+
+      * WHICH values it actually needs -- and which it does not. Do not ask for
+        a value the flow will never use; every extra box is work you are giving
+        the owner for nothing.
+      * WHAT THAT SITE CALLS EACH ONE, in its own words. If the page says
+        "Consumer Key" then the label is "Consumer Key", because that is the
+        text the owner is looking at while they fill your form.
+      * WHERE each one is found -- the actual click path, today, not the one
+        from a year ago.
+      * THE LINK to the page that issues it.
+
+    Portals get reorganised and auth schemes change; a click path you remember
+    is a click path that sends the owner somewhere that no longer exists. Read
+    it, then ask.
+
+    There is no built-in list of services and there is not going to be one. A
+    site nobody has heard of gets the same ask as a famous one, because the ask
+    is built the same way both times: by going and reading.
+
+    If the docs are unclear, say so in the ask rather than guessing at a label
+    -- "their page calls this either X or Y" is honest and the owner can resolve
+    it in a second. A confidently wrong label is worse than an uncertain one.
 
     **If you ALREADY hold a key for that destination, do not ask for it again.**
     Check ``read_graph target="connections"`` first. To widen an existing grant
@@ -907,6 +967,24 @@ def write_graph(
                                   "path_template": "/repos/o/r/contents/{path+}",
                                   "methods": ["GET", "PUT"],
                                   "param_patterns": {"path": "[A-Za-z0-9._\\-/]{1,200}"}}]}
+
+    To TAKE BACK a credential, raise the SAME KIND OF ASK with
+    ``{"type": "remove_http", "destination": "<name>"}`` and NO fields --
+    nothing to paste, so the tab is a plain confirm. Answering it deletes the
+    secret, the connection and its grants, and frees that destination name to
+    deposit again. It is the right answer when the owner says "remove that
+    key", and when a key went to a destination they did not intend. Never ask
+    the owner to "just ignore" a wrong deposit::
+
+        "action": {"type": "remove_http", "destination": "github"}
+
+    Answering it returns ``removed_endpoints`` and ``removed_scopes`` -- what
+    that connection was allowed to reach, and the git scopes it carried. **If
+    you are ROTATING a key rather than retiring it, carry both into the new
+    ``connect_http`` ask.** Scopes live on the grant and die with it, so a
+    re-deposit that omits them yields a connection that looks healthy and fails
+    at the first checkout. Do not ask the owner what they were: you were just
+    told.
 
     A ``connect_http`` ask for a destination that already has a key makes the
     user paste a secret they already gave you — the one thing they must never

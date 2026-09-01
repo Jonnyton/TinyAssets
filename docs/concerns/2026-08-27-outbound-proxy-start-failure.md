@@ -1,8 +1,34 @@
 # The outbound broker child fails to start, and nothing can say why
 
 **Filed:** 2026-08-27
-**Severity:** P0 — every `authenticated_external_call` in production fails; the
-founder's first real outbound action has not completed in three days
+**Severity:** P2 — downgraded from P0 on re-verification (below). The egress path
+works; what remains is an undiagnosed intermittent and two unrelated items.
+**Re-verified:** 2026-08-31
+
+## Re-verification 2026-08-31
+
+The P0 wording describes a live outage that ended the day it was filed, and the
+index row inherited it — so the table has been advertising a total egress
+failure that this file itself retracts one section later.
+
+Evidence the egress path works:
+
+* PR **#2691** (`docs: add request rail note to README`, created
+  2026-08-29T23:07Z, now MERGED) was opened by the founder's universe through
+  `authenticated_external_call` against the GitHub API, uncoached. A PR cannot
+  be opened without the outbound path completing.
+* `docs/concerns/2026-08-28-a-403-effect-completes-the-run-silently.md` records
+  GitHub *answering* an outbound call — a 403 is a reply, which means egress
+  reached the far end.
+
+Still open, and the reason this file is not deleted:
+
+1. **The intermittent proxy-start failure was never diagnosed.** It stopped on
+   its own. #2596 makes the next occurrence name its cause; nothing prevents it.
+2. **`source_code` nodes remain permanently unrunnable.** Re-checked today:
+   `mark_approved` (`tinyassets/branches.py:537`) still has **zero** callers
+   outside `tests/`, so there is no handle that approves one.
+3. Served onboarding copy is still guessed rather than read from the live app.
 
 ## UPDATE 2026-08-27, via the webapp as the founder
 

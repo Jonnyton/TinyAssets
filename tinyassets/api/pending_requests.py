@@ -55,7 +55,44 @@ logger = logging.getLogger(__name__)
 _MAX_KIND_CHARS = 24
 _MAX_TITLE_CHARS = 120
 _MAX_BODY_CHARS = 600
-_MAX_FIELDS = 6
+#: How many fields one request may carry.
+#:
+#: Was 6, which is fewer than several real services need: an OAuth 1.0a deposit
+#: (X/Twitter) is an API key, its secret, an access token, ITS secret and often
+#: a bearer token -- five before anything optional. A cap that cannot express
+#: the ask forces the agent back to one box labelled "paste the key", which is
+#: the guessing this is meant to end. Still bounded, because the rail renders
+#: these to a person.
+_MAX_FIELDS = 16
+
+#: Room for "Settings -> Developer portal -> Keys and tokens -> Generate", which
+#: a 120-character label cannot hold.
+_MAX_HELP_CHARS = 400
+
+#: Auth schemes whose stored credential holds SEVERAL values, mapped to the
+#: field names the deposit reads. `bearer` and `header` are one token and are
+#: absent on purpose.
+#:
+#: `basic` is here because refusing it stranded ordinary username/password
+#: services outright: the ask was refused, the inference swallowed that into an
+#: empty list, and the fieldless ask was refused in turn — so a Basic API could
+#: not be asked for at all (Codex round 2, Q4). It is two boxes joined as
+#: `username:password`, not JSON, because that is the encoding the vault string
+#: has always used.
+#:
+#: The names are FIXED for these schemes and the deposit reads them: label them
+#: however the service words them, but name them these. `oauth1a` mirrors
+#: `_OAUTH1A_FIELDS` in `api/http_connection.py`, and a test pins the two
+#: together so they cannot drift.
+_MULTI_VALUE_FIELD_NAMES = {
+    "oauth1a": ("api_key", "api_secret", "access_token", "access_token_secret"),
+    "basic": ("username", "password"),
+}
+_MULTI_VALUE_AUTH_SCHEMES = frozenset(_MULTI_VALUE_FIELD_NAMES)
+
+#: A plain https link, no userinfo (`https://user:pw@host`), bounded.
+_MAX_URL_CHARS = 300
+_SAFE_URL_RE = re.compile(r"^https://[^\s/@]+(?:/[^\s]*)?$")
 _MAX_ANSWER_CHARS = 2000
 #: An agent-requested grant stays narrow; a broader one is a deliberate manual
 #: deposit, chosen by a person in the explicit form.
@@ -157,10 +194,28 @@ def _validated_action(raw: Any) -> dict[str, Any]:
             "endpoints": endpoints,
             "scopes": _validated_git_scopes(action, endpoints, host_checked=not scope_only),
         }
+    if kind == "remove_http":
+        # TAKING BACK a key the owner deposited. No secret and no endpoints: the
+        # destination names what goes, and answering the request IS the
+        # authorization -- the same shape as extend_http, pointed the other way.
+        #
+        # This is an ASK rather than a served write_graph operation on purpose.
+        # The served surface refuses every target but `branch` and
+        # `pending_request` precisely so the agent cannot touch a connection on
+        # its own, and a destructive act is the last one to carve an exception
+        # for. Deposit and take-back now land in the same rail, so the owner
+        # confirms the removal where they confirmed the deposit.
+        destination = str(action.get("destination") or "").strip().lower()
+        if not _DESTINATION_RE.match(destination):
+            raise ValueError(
+                "destination must be 2-127 chars of [a-z0-9._:-] starting "
+                "alphanumeric"
+            )
+        return {"type": "remove_http", "destination": destination}
     if kind != "connect_http":
         raise ValueError(
-            "action type must be answer, connect_http, extend_http or "
-            "grant_workspace_consent"
+            "action type must be answer, connect_http, extend_http, "
+            "remove_http or grant_workspace_consent"
         )
 
     destination = str(action.get("destination") or "").strip().lower()
@@ -337,12 +392,29 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
 
     fields = raw if isinstance(raw, list) else []
     if not fields:
-        # A credential ask has an obvious single field; anything else must say
-        # what it wants rather than presenting an empty tab.
+        # NO unlabelled fallback for a credential ask.
+        #
+        # This used to synthesise one box labelled "Paste the key", which is
+        # exactly the guessing the founder ruled out on 2026-08-31: "no more the
+        # user having to guess what they need to put where. each single
+        # indevidual credential will have its own indevidually labled request".
+        # Leaving it in place would also make the new path untestable -- an ask
+        # that forgot its fields would still LOOK fine, so a green test would
+        # prove nothing about whether the agent had done the work.
+        #
+        # The agent knows what the service needs; if it does not, that is the
+        # thing to fix, not paper over with a box the owner has to interpret.
         if action["type"] == "connect_http":
-            fields = [{"name": "secret", "label": "Paste the key", "type": "secret"}]
-        elif action["type"] in ("extend_http", "grant_workspace_consent"):
-            # Nothing to type. The key is already in the vault; this is a yes/no.
+            raise ValueError(
+                "a credential request needs one field per value the service "
+                "asks for, each with the label THAT SERVICE uses (and ideally "
+                "'help' saying where to find it and a 'url' to that page) -- "
+                "not one unlabelled box for the owner to work out"
+            )
+        if action["type"] in ("extend_http", "remove_http", "grant_workspace_consent"):
+            # Nothing to type. For extend_http the key is already in the vault
+            # and for remove_http it is on its way out; either way this is a
+            # yes/no, and a paste box on a removal would be nonsense.
             return []
         else:
             raise ValueError("a request needs at least one field")
@@ -376,14 +448,88 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
             "label": str(field.get("label") or name).strip()[:120],
             "type": ftype,
         }
+        # `help` and `url` exist so a credential ask can be ANSWERABLE.
+        #
+        # Founder, 2026-08-31: "no more the user having to guess what they need
+        # to put where. each single indevidual credential will have its own
+        # indevidually labled request that uses what the agent found online as
+        # what that sight uses for calling its credentials". A label of at most
+        # 120 characters cannot carry "Settings -> Developer -> Keys and tokens,
+        # then Generate", and there was nowhere at all to put the link.
+        #
+        # The AGENT fills these in from what it knows about the service, which
+        # is why there is no table of services here: a site nobody has heard of
+        # gets the same quality of ask as a famous one.
+        help_text = str(field.get("help") or "").strip()
+        if help_text:
+            entry["help"] = help_text[:_MAX_HELP_CHARS]
+        url = str(field.get("url") or "").strip()
+        if url:
+            # HTTPS only, and no credentials in the URL. This is rendered to the
+            # owner as something to click while they are being asked for a
+            # secret, so a `javascript:` or `data:` value, or a link carrying a
+            # userinfo section, is refused rather than sanitised -- the caller
+            # is composing it and should be told it was wrong.
+            # LENGTH FIRST. `_MAX_URL_CHARS` was defined and never enforced,
+            # so a 10,000-character hostname matched the pattern and was stored
+            # and rendered while the owner typed a secret (Codex, Q6).
+            if len(url) > _MAX_URL_CHARS or not _SAFE_URL_RE.match(url):
+                raise ValueError(
+                    f"field {name!r}: url must be a plain https:// link "
+                    "(no credentials in it, at most "
+                    f"{_MAX_URL_CHARS} chars)"
+                )
+            entry["url"] = url
         if ftype == "choice":
             options = [str(o).strip()[:60] for o in (field.get("options") or []) if str(o).strip()]
             if not options:
                 raise ValueError("a choice field needs options")
             entry["options"] = options[:8]
         out.append(entry)
-    if action["type"] == "connect_http" and not any(f["type"] == "secret" for f in out):
-        raise ValueError("a connect_http request needs a secret field for the key")
+    if action["type"] == "connect_http":
+        if not any(f["type"] == "secret" for f in out):
+            raise ValueError("a connect_http request needs a secret field for the key")
+        # EVERY field on a credential ask is a secret. A non-secret field's
+        # answer is recorded in `answer_json` and relayed back into chat, so an
+        # ask that labelled one value `text` -- "API token", typed as text --
+        # would persist that credential in the clear. Harmless when a credential
+        # ask was one box; a live hazard now that asks carry four or five
+        # (Codex, Q1). If a request genuinely needs a non-secret answer, that is
+        # a different ask.
+        plain = [f["name"] for f in out if f["type"] != "secret"]
+        if plain:
+            raise ValueError(
+                "every field on a credential request must be type 'secret' -- "
+                + ", ".join(repr(name) for name in plain)
+                + " would be stored and shown in the clear"
+            )
+        # And several values only make sense where the vault string HAS a
+        # multi-value encoding. `basic` is `username:password` and `bearer` /
+        # `header` are one token, so assembling several into JSON would hand the
+        # service `Basic base64({"user":...})` -- a credential that cannot
+        # authenticate, failing at the far end with nothing to point at.
+        secrets = [f for f in out if f["type"] == "secret"]
+        scheme = str(action.get("auth_scheme") or "bearer").strip().lower()
+        if len(secrets) > 1 and scheme not in _MULTI_VALUE_AUTH_SCHEMES:
+            raise ValueError(
+                f"auth_scheme {scheme!r} takes a single value, so ask for one "
+                "field; several are only meaningful for "
+                + ", ".join(sorted(_MULTI_VALUE_AUTH_SCHEMES))
+            )
+        expected = _MULTI_VALUE_FIELD_NAMES.get(scheme)
+        if expected and len(secrets) > 1:
+            # Caught HERE, not at deposit: the deposit reads these names, and
+            # finding out afterwards means the owner has already filled the form
+            # and is told "oauth1a secret is missing: api_secret" about a box
+            # they cannot see. The LABEL stays the service's wording.
+            got = tuple(f["name"] for f in secrets)
+            if sorted(got) != sorted(expected):
+                raise ValueError(
+                    f"auth_scheme {scheme!r} reads fixed field names "
+                    + ", ".join(expected)
+                    + " -- got " + ", ".join(got)
+                    + " (label them the service's way, name them these)"
+                )
     return out
 
 
@@ -448,6 +594,44 @@ def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str
     return {**row, "grant_sentence": _grant_sentence(row)}
 
 
+def _granted_lines(action: dict[str, Any]) -> list[str]:
+    """Everything an ask grants, one phrase each, endpoints AND git scopes.
+
+    ONE builder, because there are two action types that grant and they were
+    rendered by two hand-written string assemblies. Teaching the deposit branch
+    about git scopes left the EXTENSION branch silently granting repository
+    write with nothing about it on screen -- and a scope-only extension rendered
+    the empty phrase "reach ." (Codex, W4).
+
+    Scopes are folded into the same list rather than appended after it, so the
+    "and nothing else" that closes the sentence stays true. Appending a tail
+    after "nothing else" produced a sentence that contradicted itself in the
+    same breath (Codex, W3).
+    """
+    lines = [
+        f"{'/'.join(e.get('methods') or [])} {e.get('host')}{e.get('path_template')}"
+        for e in (action.get("endpoints") or [])
+    ]
+    for scope in (action.get("scopes") or []):
+        text = str(scope).strip()
+        if not text or ":" not in text:
+            continue
+        kind, _, repo = text.partition(":")
+        if kind == "git_read":
+            lines.append(f"use git to READ {repo}")
+        elif kind == "git_write":
+            lines.append(f"use git to WRITE to {repo}")
+    return lines
+
+
+def _grants_git(action: dict[str, Any]) -> bool:
+    """Whether this ask carries git authority, which "reach" does not describe."""
+    return any(
+        str(scope).strip().startswith(("git_read:", "git_write:"))
+        for scope in (action.get("scopes") or [])
+    )
+
+
 def _grant_sentence(row: dict[str, Any]) -> str:
     """For a credential ask, the exact grant in one line. Empty otherwise."""
     action = row.get("action") or {}
@@ -468,20 +652,23 @@ def _grant_sentence(row: dict[str, Any]) -> str:
             "gave. Nothing to paste; this is the yes."
         )
     if action.get("type") == "extend_http":
-        lines = [
-            f"{'/'.join(e.get('methods') or [])} {e.get('host')}{e.get('path_template')}"
-            for e in (action.get("endpoints") or [])
-        ]
+        lines = _granted_lines(action)
+        if not lines:
+            return ""
+        verb = "do" if _grants_git(action) else "reach"
         return (
             f'Also let the key you already gave as "{action.get("destination")}" '
-            "reach " + "; ".join(lines) + ". You do not need to paste it again."
+            f"{verb} " + "; ".join(lines) + ". You do not need to paste it again."
+        )
+    if action.get("type") == "remove_http":
+        return (
+            f'Delete the key you gave as "{action.get("destination")}", and '
+            "everything it was allowed to reach. Nothing to paste; this is the "
+            "yes. You can deposit that name again whenever you like."
         )
     if action.get("type") != "connect_http":
         return ""
-    lines = [
-        f"{'/'.join(e.get('methods') or [])} {e.get('host')}{e.get('path_template')}"
-        for e in (action.get("endpoints") or [])
-    ]
+    lines = _granted_lines(action)
     if not lines:
         return ""
     # Name the connection. Two asks can differ ONLY by destination — the agent
@@ -492,8 +679,13 @@ def _grant_sentence(row: dict[str, Any]) -> str:
     where = f' as "{action.get("destination")}"' if action.get("destination") else ""
     if len(lines) == 1:
         return f"This key{where} will be able to {lines[0]} - nothing else."
+    # "reach" is the established wording and describes an endpoint list. It does
+    # NOT describe "use git to WRITE to owner/repo", so the verb widens only
+    # when a git scope is actually present -- every ask without one reads
+    # exactly as it always has.
+    verb = "do" if _grants_git(action) else "reach"
     return (
-        f"This key{where} will be able to reach exactly these, and nothing "
+        f"This key{where} will be able to {verb} exactly these, and nothing "
         "else: " + "; ".join(lines) + "."
     )
 
@@ -771,12 +963,55 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
     # surface, because the moment of answering is when the user has the opinion.
     feedback = str(document.get("feedback") or "").strip()[:_MAX_ANSWER_CHARS]
     dont_ask_again = document.get("dont_ask_again") is True
+    # Matching the other half of the same rule (see create_request): an
+    # action-bearing ask is the only way its act happens, so a standing "stop
+    # asking" would silently disable the capability rather than express a
+    # preference. Recording one is refused here as well as ignored there --
+    # either alone leaves the hole reachable from the other direction.
+    if dont_ask_again and str((row["action"] or {}).get("type") or "answer") != "answer":
+        dont_ask_again = False
 
     values = document.get("values")
     if not isinstance(values, dict):
         return _bad("values must be an object of field name -> value")
 
     action = row["action"]
+    # Fields were validated when the ask was CREATED, and a row stored before
+    # these rules existed carries a shape they would refuse: a `text` field
+    # beside the secret (whose answer is recorded in the clear), or several
+    # secrets under a single-value scheme (which would assemble into JSON and be
+    # deposited as a bearer token). Answering does not re-run the validator, so
+    # a legacy row bypassed both fixes entirely (Codex round 2, Q2/Q5).
+    #
+    # Revalidate the STORED fields here, against the stored action. A row that
+    # no longer passes is refused with the reason rather than half-honoured:
+    # the ask is re-raisable in seconds and the owner has typed nothing yet at
+    # the moment this runs.
+    # BIND the row that executes to the row that was displayed. The dedupe key
+    # is a hash of exactly [kind, title, body, fields, action] -- the tuple the
+    # tab renders from -- so a stored row whose action_json was rewritten after
+    # rendering no longer reproduces it. Without this, an owner could confirm a
+    # tab that reads "also let me write one more file" and have it delete their
+    # credential instead: the fields check below never ran for a fieldless row,
+    # and nothing ever compared the action to what was on screen.
+    expected = json.dumps(
+        [row["kind"], row["title"], row["body"], row["fields"], action],
+        sort_keys=True, separators=(",", ":"),
+    )
+    if row.get("dedupe_key") and row["dedupe_key"] != expected:
+        return _bad(
+            "this request no longer matches what it was created as, so what "
+            "you were shown is not what would happen; ask again"
+        )
+    if row["fields"]:
+        try:
+            _validated_fields(row["fields"], action)
+        except ValueError as exc:
+            return _bad(
+                "this request was created before the current rules and cannot "
+                f"be answered safely ({exc}); ask again and it will be built "
+                "correctly"
+            )
     secret_names = {f["name"] for f in row["fields"] if f["type"] == "secret"}
     # Record ONLY values for fields the request actually declared as non-secret.
     # Excluding known secret names was not enough: Codex (2026-08-27) submitted
@@ -830,12 +1065,75 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             "receipt": _grant_sentence(row),
             "secret_reused": True,
         }
-    if action.get("type") == "connect_http":
-        secret = next(
-            (str(values.get(n) or "") for n in secret_names if values.get(n)), ""
+    if action.get("type") == "remove_http":
+        from tinyassets.api.http_connection import remove_http
+
+        gone = remove_http(
+            universe_id=universe_id,
+            payload=json.dumps({"destination": action["destination"]}),
         )
-        if not secret.strip():
+        if gone.get("error"):
+            return gone
+        resolve_request(udir, request_id, status="answered", answer=answer,
+                        feedback=feedback, dont_ask_again=dont_ask_again)
+        return {
+            "status": "answered",
+            "request_id": request_id,
+            "destination": action["destination"],
+            "secrets_removed": gone.get("secrets_removed", 0),
+            # Carry the readback THROUGH. Added to remove_http and dropped here,
+            # which meant it did not exist on the only surface the owner drives
+            # (Codex, R3) -- the same "API has it, the served path does not"
+            # shape as the round-3 defect.
+            "auth_scheme": gone.get("auth_scheme", ""),
+            "removed_endpoints": gone.get("removed_endpoints", []),
+            "removed_scopes": gone.get("removed_scopes", []),
+            "receipt": (
+                f'"{action["destination"]}" is gone -- the key, the connection '
+                "and its grants. That name is free to deposit again. To put it "
+                "back, reuse 'auth_scheme', 'removed_endpoints' and "
+                "'removed_scopes' rather than asking what they were."
+            ),
+        }
+    if action.get("type") == "connect_http":
+        # ONE secret field -> its value. SEVERAL -> a JSON object keyed by field
+        # name, which is the encoding a multi-value scheme's vault string uses.
+        #
+        # This used to be `next(...)`: the FIRST secret field's value, with every
+        # other one silently discarded. Harmless while a credential ask was one
+        # unlabelled box, and broken the moment asks became one field per value
+        # -- an OAuth 1.0a owner would fill four boxes, three would vanish, and
+        # the deposit would refuse a malformed bundle with nothing to explain it.
+        # Found on 2026-08-31 by checking this seam rather than assuming it.
+        scheme = str(action.get("auth_scheme") or "bearer").strip().lower()
+        supplied = {
+            name: str(values.get(name) or "")
+            for name in sorted(secret_names)
+            if str(values.get(name) or "").strip()
+        }
+        if not supplied:
             return _bad("the key is required")
+        # Completeness is judged against what the ask DECLARED, never against
+        # what came back. Keying off the supplied count meant filling one box of
+        # four took the single-value branch and deposited that one value as the
+        # whole credential, skipping this check entirely (Codex, Q4).
+        missing = sorted(secret_names - set(supplied))
+        if missing:
+            # Partial is worse than refused: a bundle short one value deposits a
+            # credential that cannot sign, and the owner is told later, by a
+            # failing call, with no idea which box was empty.
+            return _bad(
+                "this needs every value: still missing "
+                + ", ".join(repr(name) for name in missing)
+            )
+        if len(secret_names) == 1:
+            secret = next(iter(supplied.values()))
+        elif scheme == "basic":
+            # The vault string for basic has always been `username:password`;
+            # JSON here would hand the service `Basic base64({...})`.
+            secret = f"{supplied['username']}:{supplied['password']}"
+        else:
+            secret = json.dumps(supplied)
         deposited = connect_http(
             universe_id=universe_id,
             payload=json.dumps(

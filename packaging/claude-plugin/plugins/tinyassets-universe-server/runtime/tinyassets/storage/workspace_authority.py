@@ -3,8 +3,10 @@
 A connection SCOPE says what the deposited credential may do: an http connection's
 scopes are its HTTP verbs, and a git one carries ``git_read:owner/name`` or
 ``git_write:owner/name`` bound to exactly one repository on exactly one host --
-**the host that connection declares**, whatever it is. GitHub, GitLab, Gitea, a
-self-hosted forge: the platform never names one. A typed CONSENT
+**the host that connection declares** -- with ONE mapping, ``FORGE_GIT_HOSTS``
+below, for a forge whose git and API live on different hosts. GitHub is the only
+entry and it cost a live 403 to learn; GitLab, Gitea and any self-hosted forge
+pass straight through untouched. A typed CONSENT
 says the universe's owner agreed to this kind of work on that repository at all -
 ``workspace_checkout``, ``workspace_push``, ``workspace_provision``, recorded per
 universe by :mod:`tinyassets.storage.effector_consents` under a destination this

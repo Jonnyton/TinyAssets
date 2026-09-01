@@ -517,16 +517,53 @@ def test_empty_endpoints_rejected(base: Path) -> None:
 
 def test_unsupported_auth_scheme_rejected(base: Path) -> None:
     """A scheme the broker cannot sign is refused at the door, nothing written.
-    (``header`` is engine-signable but needs a per-connection header NAME the ledger
-    does not persist yet, so it stays off the deposit door; ``none`` has nothing to
-    deposit.)"""
+
+    ``none`` has nothing to deposit. ``header`` used to be on this list, on the
+    stated grounds that it "needs a per-connection header NAME the ledger does
+    not persist yet" -- which was stale: the header name is a per-CALL field on
+    the request packet, and the stored credential is a single token identical to
+    bearer. See ``test_header_scheme_deposits_generically``.
+    """
     udir = _make_universe(base, "u-as", admin="founder")
     _login("founder")
-    for bad in ("digest", "header", "none", "hmac"):
+    for bad in ("digest", "none", "hmac", "mtls"):
         result = _connect("u-as", auth_scheme=bad)
         assert result["error"] == "unsupported_auth_scheme", bad
-        assert set(result["allowed_auth_schemes"]) == {"bearer", "basic", "oauth1a"}
+        assert set(result["allowed_auth_schemes"]) == {
+            "bearer", "basic", "header", "oauth1a",
+        }
     assert _http_records(udir) == []
+
+
+def test_header_scheme_deposits_generically(base: Path) -> None:
+    """An API keyed by a custom header is depositable with no service code.
+
+    ``X-API-Key``, ``apikey``, ``X-Auth-Token`` -- extremely common, and every
+    one of them was undepositable, which is precisely the "another service,
+    another patch" the acceptance test forbids. Nothing had to be persisted and
+    nothing had to be built: the header NAME travels on the request packet and
+    the stored credential is one token, so the door was simply shut.
+    """
+    from tinyassets.api.http_connection import _ids
+
+    udir = _make_universe(base, "u-hdr", admin="founder")
+    _login("founder")
+    result = _connect(
+        "u-hdr", destination="some-api", secret="k-" + "y" * 30,
+        auth_scheme="header",
+        endpoints=[{"host": "api.example.com", "path_template": "/v1/send",
+                    "methods": ["POST"]}],
+    )
+    assert result["status"] == "provisioned", result
+    assert result["auth_scheme"] == "header"
+    assert "k-" + "y" * 30 not in json.dumps(result)
+
+    conn_id, _g = _ids(universe_id="u-hdr", destination="some-api")
+    resource = _ledger(base, "founder")._get_connection_resource(conn_id)
+    assert resource.auth_scheme == "header"
+    # Stored exactly like a bearer token: one opaque string. The header NAME is
+    # the workflow's business, per call, and is validated where it is used.
+    assert [r["token"] for r in _http_records(udir)] == ["k-" + "y" * 30]
 
 
 def test_oauth1a_scheme_deposits_generically(base: Path) -> None:

@@ -76,11 +76,29 @@ _DEFAULT_AUTH_SCHEME = "bearer"
 _ABSENT = object()
 #: Auth schemes this deposit door accepts — exactly the set the broker child can
 #: sign (see ``_SUPPORTED_HTTP_AUTH_SCHEMES`` / ``_build_http_secret_bundle`` in
-#: storage/outbound_connections.py), minus ``none`` (a no-credential connection
-#: has nothing to deposit) and ``header`` (needs a per-connection header NAME the
-#: ledger does not yet persist). Generic on purpose: ``oauth1a`` is what makes
-#: X/Twitter — and every other OAuth 1.0a API — depositable with no service code.
-_DEPOSITABLE_AUTH_SCHEMES = frozenset({"bearer", "basic", "oauth1a"})
+#: storage/outbound_connections.py), minus ``none``: a no-credential connection
+#: has nothing to deposit.
+#:
+#: ``header`` was excluded on the stated grounds that it "needs a per-connection
+#: header NAME the ledger does not yet persist". That was stale. The header NAME
+#: is a per-CALL field on the request packet
+#: (``authenticated_external_call``: ``"header_name": "X-Api-Key"``), and the
+#: stored credential for ``header`` is a single token — byte-identical to
+#: ``bearer`` (``_build_http_secret_bundle``: ``if scheme in ("bearer",
+#: "header")``). So nothing had to be persisted and nothing had to be built; the
+#: door was simply shut.
+#:
+#: It matters because an API keyed by a custom header (``X-API-Key``,
+#: ``apikey``, ...) is extremely common, and every one of them was undepositable
+#: — which is exactly the "another service, another patch" the acceptance test
+#: forbids. The header name stays validated where it is used:
+#: ``_reject_forbidden_header_name`` and ``_SSRF_FORBIDDEN_HEADER_CHARS`` refuse
+#: a smuggling attempt (``Content-Length`` was the one that prompted them).
+#:
+#: Generic on purpose: ``oauth1a`` is what makes every OAuth 1.0a API
+#: depositable with no service code, and ``header`` does the same for every
+#: custom-header API.
+_DEPOSITABLE_AUTH_SCHEMES = frozenset({"bearer", "basic", "header", "oauth1a"})
 _OAUTH1A_FIELDS = ("api_key", "api_secret", "access_token", "access_token_secret")
 
 
@@ -621,6 +639,138 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
         resource = ledger._get_connection_resource(connection_id)
 
     return _project(resource, grant)
+
+
+def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
+    """Remove a deposited http connection: the secret, the connection, its grants.
+
+    The missing half of deposit. A user who pasted a key -- including one pasted
+    against a host they did not intend -- had no way to withdraw it through any
+    surface they could reach
+    (``docs/concerns/2026-08-27-no-reachable-remove-for-http-connections.md``).
+
+    DELETES rather than revokes, and that is the whole design decision. A
+    connection id is deterministic on ``(universe_id, destination)``, and
+    ``connect_http`` refuses any re-provision of a row whose ``revoked_at`` is
+    set, so stamping a revoke would burn that destination name for that universe
+    FOREVER: remove ``github`` and you could never deposit ``github`` again. A
+    remove the user cannot undo is not a remove, it is a trap.
+
+    Order is deliberate: the SECRET goes first. If the ledger delete then fails,
+    what is left is a connection whose credential no longer resolves -- inert,
+    and cleaned up by a retry. The reverse order would leave a secret in the
+    vault with nothing pointing at it, which is the failure that matters.
+
+    Idempotent: removing something already gone reports ``removed`` with zero
+    counts rather than an error, because "take this away" and "it is already
+    away" are the same outcome to the caller.
+    """
+    from tinyassets.api import permissions
+    from tinyassets.credential_vault import forget_credential
+    from tinyassets.daemon_server import list_universe_acl
+
+    # Same gate as connect_http, deliberately: removing a credential is at
+    # least as sensitive as depositing one.
+    if not permissions.is_authenticated_request():
+        return {"error": "authentication_required", "resource": "connection"}
+    actor = permissions.current_actor_id().strip()
+    if not actor or actor == "anonymous":
+        return {"error": "authentication_required", "resource": "connection"}
+
+    uid = _request_universe(universe_id)
+    base = _base_path()
+    admin = [
+        row
+        for row in list_universe_acl(base, universe_id=uid)
+        if row.get("actor_id") == actor and row.get("permission") == "admin"
+    ]
+    if not admin:
+        return dict(_NOT_FOUND)
+
+    try:
+        document = _payload(payload)
+    except ValueError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
+
+    destination = str(document.get("destination") or "").strip().lower()
+    if not _DESTINATION_RE.match(destination):
+        return {
+            "error": "connection_setup_invalid",
+            "detail": "destination must name the connection to remove",
+        }
+
+    connection_id, grant_id = _ids(universe_id=uid, destination=destination)
+
+    ledger = ConnectionLedger(
+        Path(base) / "outbound.db",
+        verify_authenticated_principal=lambda: actor,
+    )
+    resource = ledger._get_connection_resource(connection_id)
+    if resource is not None and resource.owner_user_id != actor:
+        # Mirrors extend_http: an admin may act on the universe, but not on
+        # another principal's deposited credential.
+        return dict(_NOT_FOUND)
+
+    # Read the SHAPE before destroying it. Endpoints and git scopes are the two
+    # things a re-deposit has to reproduce, and scopes in particular die with
+    # the grant -- forget them and the connection comes back looking healthy
+    # while every checkout fails. None of this is secret: the owner saw all of
+    # it in the grant sentence before they pasted anything.
+    removed_endpoints: list[dict[str, Any]] = []
+    removed_scopes: list[str] = []
+    if resource is not None:
+        from tinyassets.storage.workspace_authority import connection_git_scopes
+
+        # `as_dict` is the endpoint's OWN serialization, and it is exactly the
+        # shape `_validate_endpoint` parses -- it round-trips by construction.
+        #
+        # This was hand-written first, and the hand-written version drifted the
+        # moment it existed: it dropped `allowed_query` and `required_query`
+        # entirely and emitted the pattern maps as stored TUPLES, which the
+        # validator refuses with "query_patterns must be an object". A readback
+        # that cannot be re-deposited is worse than none, because it looks like
+        # a rotation right up until the deposit is refused (Codex, W2).
+        #
+        # The rule this is an instance of: never hand-write the inverse of a
+        # parser that already publishes one.
+        removed_endpoints = [
+            endpoint.as_dict() for endpoint in (resource.allowed_endpoints or ())
+        ]
+        try:
+            removed_scopes = sorted(
+                f"{kind}:{repo}" for kind, repo in connection_git_scopes(resource)
+            )
+        except Exception:  # noqa: BLE001 - never fail a removal over a readback
+            removed_scopes = []
+
+    secrets_removed = forget_credential(
+        _universe_dir(uid), credential_type="http", destination=destination
+    )
+    rows_removed = ledger.delete_connection(connection_id)
+
+    return {
+        "status": "removed",
+        "destination": destination,
+        "connection_id": connection_id,
+        "grant_id": grant_id,
+        "secrets_removed": secrets_removed,
+        "connection_removed": bool(rows_removed),
+        # What it looked like, so putting it back does not start from memory.
+        # The scheme too: an oauth1a connection re-deposited as the default
+        # bearer is a different connection wearing the same name.
+        "auth_scheme": getattr(resource, "auth_scheme", "") if resource else "",
+        "removed_endpoints": removed_endpoints,
+        "removed_scopes": removed_scopes,
+        # Say it plainly: the point of deleting rather than revoking is that
+        # the name is free again, and the user should not have to infer that.
+        "next": (
+            f"the destination {destination!r} is free -- deposit it again "
+            "whenever you like. To restore it exactly, reuse "
+            "'removed_endpoints' and 'removed_scopes' in the new ask: the "
+            "scopes went with the grant, and a deposit without them looks "
+            "healthy but cannot check anything out"
+        ),
+    }
 
 
 def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:

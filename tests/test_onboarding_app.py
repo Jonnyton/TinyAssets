@@ -204,25 +204,39 @@ def test_app_embeds_build_and_serves_matching_header(monkeypatch):
 
 
 
-def test_deposit_form_makes_the_x_path_discoverable():
-    """Founder 2026-08-25 looking at the live form: "its still very confusing where
-    goes what" - the four labelled X fields are hidden behind the auth-type select,
-    so a user who does not know X needs OAuth 1.0a never sees them. The form must
-    offer to fill it in and must switch itself when an X host is typed."""
+def test_the_deposit_form_names_protocols_not_companies():
+    """"Where goes what" is answered by LABELS, not by knowing the service.
+
+    Founder 2026-08-25, looking at the live form: "its still very confusing
+    where goes what". The answer at the time was a one-tap X preset plus a rule
+    that switched the form when it recognised an x.com host.
+
+    Founder 2026-08-31 set a bar those cannot meet: "another outside connection
+    and another task ... without any patches". A shortcut for the services we
+    happened to think of makes a test of those services prove nothing about the
+    next one, so the presets and the host sniffing are gone.
+
+    The original need is still met, and now generally: OAuth 1.0a still gets one
+    labelled box per value (that is a PROTOCOL, not a company), and the agent's
+    ask carries a label, directions and a link for every credential -- for a
+    service nobody has enumerated as much as for a famous one.
+    """
     from tinyassets.onboarding import render_app_html
 
     html, _csp = render_app_html()
-    # A one-tap preset that targets the real X posting endpoint.
-    assert 'id="preset-x"' in html
-    assert '"http-host":"api.x.com"' in html
-    assert '"http-path":"/2/tweets"' in html
-    assert '"http-auth-scheme":"oauth1a"' in html
-    # Typing an X host switches to the four-key form on its own.
-    assert 'x\\.com|twitter\\.com' in html or "x\\.com" in html
-    assert "switched to the four-key form below" in html
-    # The select itself says which one X needs.
-    assert 'X/Twitter needs "OAuth 1.0a - 4 keys"' in html
-    # The four labelled boxes still exist, one value per box.
+
+    # No company gets a shortcut the next one would not get.
+    for gone in ('id="preset-x"', 'id="preset-openrouter"', 'id="preset-slack"',
+                 "api.x.com", "twitter.com", "hooks.slack.com", "openrouter.ai",
+                 "switched to the four-key form below"):
+        assert gone not in html, f"service-specific UI survived: {gone!r}"
+
+    # The scheme select describes protocols, and names nobody.
+    assert 'value="oauth1a"' in html
+    assert "X/Twitter" not in html
+
+    # One value per box is kept: four secrets in one field is the confusion the
+    # founder reported, and that part was never about which service it was.
     for field in (
         "http-oauth1a-api-key",
         "http-oauth1a-api-secret",
@@ -230,9 +244,6 @@ def test_deposit_form_makes_the_x_path_discoverable():
         "http-oauth1a-access-token-secret",
     ):
         assert field in html
-
-
-
 
 def test_deposit_error_surfaces_the_actionable_detail():
     """Founder 2026-08-27: deposited a GitHub API connection repeatedly ("i think i
@@ -1283,3 +1294,34 @@ def test_nothing_is_offered_until_the_page_knows_its_universe(tmp_path):
     assert out["converseCalls"] == []
     assert not any("Still waiting" in n["text"] for n in out["notes"])
     assert out["savedAfter"][0]["message"] == line
+
+
+def test_the_rail_renders_directions_and_a_link_for_each_credential() -> None:
+    """A field's `help` and `url` must reach the owner's screen.
+
+    They were added to the request model and the served docs and rendered
+    nowhere, which is the same shape as every gate this week: a capability that
+    exists, is documented, and cannot be reached. The owner would have been
+    shown a name like "API Key Secret" and left to work out where it lives.
+    """
+    from tinyassets.onboarding import render_app_html
+
+    page, _csp = render_app_html()
+    assert "f.help" in page, "the rail never renders a field's directions"
+    assert "f.url" in page, "the rail never renders a field's link"
+    assert "rtab-help" in page and "rtab-link" in page, "no styles for either"
+
+
+def test_a_credential_link_shows_where_it_goes_and_cannot_reach_back() -> None:
+    """The owner is invited to click this WHILE being asked for a secret, and
+    the agent composing it may be running code pulled from the commons.
+
+    So the visible text is the HOST rather than friendly words -- someone who
+    is about to paste a key can see they are being sent to `evil.example` --
+    and the tab cannot reach back into the opener.
+    """
+    from tinyassets.onboarding import render_app_html
+
+    page, _csp = render_app_html()
+    assert 'new URL(f.url).host' in page, "the link does not show its host"
+    assert '"noopener noreferrer"' in page
