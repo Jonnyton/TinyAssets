@@ -1,14 +1,14 @@
 # Codex review — labelled credential fields and removal (branch `claude/labeled-credential-fields`, PR #2755)
 
 Dispatched 2026-08-31 on Codex's own budget, from the PR's own worktree (a review
-run from the primary checkout reads a stale branch). Four passes. `AGENTS.md`
+run from the primary checkout reads a stale branch). SIX passes, plus a final verification. `AGENTS.md`
 caps review at three rounds and then escalates; the fourth was scoped to
 verifying the fix to round 3's single finding, because the exact-head receipt the
 scope guard demands is voided by the push that fixes anything. That tension is
 filed as
 `docs/concerns/2026-08-31-the-exact-head-receipt-loops-against-iterative-review.md`.
 
-**Findings per pass: 7 → 5 → 1 → 3.** Non-monotonic, as `AGENTS.md` predicts, and
+**Findings per pass: 7 → 5 → 1 → 3 → 5 → 4.** Non-monotonic, as `AGENTS.md` predicts, and
 the fourth pass found a weakness in a test written during the third — the failure
 mode it cites from #2561.
 
@@ -107,3 +107,71 @@ was broken.** Three guards now close it structurally rather than by fixing one
 string at a time — served-docs/action parity, connection-verb reachability, and a
 suite that drives `engine_mcp_server.write_graph` itself rather than the API
 under it.
+
+
+## Round 5 (`74b14c3a`): ADAPT, 4 findings — one of them a regression I caused
+
+Authorised by the founder as the last pass. It was worth its cost immediately.
+
+1. **R3, blocking — this branch had reverted #2753.** `FORGE_GIT_HOSTS`
+   (`api.github.com` → `github.com`) was deleted here, and #2753's own
+   regression test was rewritten to assert the opposite. The founder's
+   connection declares ten endpoints all on the API host, so without the table
+   the clone becomes `https://api.github.com/owner/name.git` — the 403 that PR
+   fixed, and that production was serving at the time. **Restored** byte-for-byte
+   from `main`; the design argument is filed at
+   `docs/concerns/2026-08-31-the-forge-table-is-platform-knowledge-and-removing-it-broke-a-live-fix.md`.
+2. **R3, blocking — the rail dropped the readback.** `removed_endpoints` /
+   `removed_scopes` were added to `remove_http` and never carried through
+   `answer_request`, so on the only surface the owner drives they did not exist.
+   The same "the API has it, the served path does not" shape as round 3.
+3. **R3 — the readback could not rebuild what it destroyed**: no `auth_scheme`
+   (an oauth1a connection returned as bearer) and endpoints flattened, losing
+   `param_patterns`.
+4. **R2 — I claimed the readback disclosed nothing new. False.** The grant
+   sentence listed methods and paths and never named git scopes, so a key could
+   carry `git_write` on a repository the owner had never been shown. Fixed by
+   naming them in the sentence rather than by stripping the readback.
+5. **R4** — the rotation test called the API directly and so could not have
+   caught (2). Rewritten to answer through the rail.
+
+## Round 6 (`f495602a`): ADAPT, 4 findings — all in round 5's fixes
+
+Second consecutive round breaking on the previous round's work, which is the
+non-convergence signal. Both blocking items turned out to be **one** defect
+wearing two faces: *a hand-written inverse drifting from the canonical thing it
+mirrors.*
+
+1. **W2, blocking** — the readback re-implemented endpoint serialization while
+   `OutboundEndpoint.as_dict()` already emitted exactly what `_validate_endpoint`
+   parses. Mine dropped `allowed_query` / `required_query` and emitted pattern
+   maps as tuples, so a rebuild was refused with "query_patterns must be an
+   object". **Fixed by calling `as_dict`** — it round-trips by construction.
+2. **W4, blocking** — the grant sentence was assembled per action type, so
+   teaching the deposit about git scopes left the EXTENSION silent: a scope-only
+   extension granted repository write and rendered `reach .`. **Fixed with one
+   builder** used by both.
+3. **W3** — scopes were appended after "- nothing else.", a sentence
+   contradicting itself in the same breath. They are now inside the enumerated
+   list the sentence closes over.
+4. **W1** — the module docstring still said "the platform never names one"
+   directly above the table that names one. Corrected.
+
+Wording for asks carrying no git scope is unchanged on purpose: the first
+attempt reworded every credential tab in the product, and two existing
+assertions caught it.
+
+## The shape of the whole thing
+
+Seven passes, findings **7 → 5 → 1 → 3 → 5 → 4**. Every round found something
+real; none of it was style. The recurring class never changed:
+
+> **Two definitions of one fact, and the tests exercising whichever one was
+> right.** A doc and a runtime (rounds 1–3), a served surface and the API
+> beneath it (round 3), a parser and a hand-written inverse (round 6), a
+> sentence built twice (round 6).
+
+Fixing the instance always worked and never held. What holds is removing the
+second definition: call the serializer that exists, render every grant through
+one builder, derive the guard's vocabulary from the text it checks, and drive
+tests through the door the user actually uses.
