@@ -194,10 +194,28 @@ def _validated_action(raw: Any) -> dict[str, Any]:
             "endpoints": endpoints,
             "scopes": _validated_git_scopes(action, endpoints, host_checked=not scope_only),
         }
+    if kind == "remove_http":
+        # TAKING BACK a key the owner deposited. No secret and no endpoints: the
+        # destination names what goes, and answering the request IS the
+        # authorization -- the same shape as extend_http, pointed the other way.
+        #
+        # This is an ASK rather than a served write_graph operation on purpose.
+        # The served surface refuses every target but `branch` and
+        # `pending_request` precisely so the agent cannot touch a connection on
+        # its own, and a destructive act is the last one to carve an exception
+        # for. Deposit and take-back now land in the same rail, so the owner
+        # confirms the removal where they confirmed the deposit.
+        destination = str(action.get("destination") or "").strip().lower()
+        if not _DESTINATION_RE.match(destination):
+            raise ValueError(
+                "destination must be 2-127 chars of [a-z0-9._:-] starting "
+                "alphanumeric"
+            )
+        return {"type": "remove_http", "destination": destination}
     if kind != "connect_http":
         raise ValueError(
-            "action type must be answer, connect_http, extend_http or "
-            "grant_workspace_consent"
+            "action type must be answer, connect_http, extend_http, "
+            "remove_http or grant_workspace_consent"
         )
 
     destination = str(action.get("destination") or "").strip().lower()
@@ -393,8 +411,10 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
                 "'help' saying where to find it and a 'url' to that page) -- "
                 "not one unlabelled box for the owner to work out"
             )
-        if action["type"] in ("extend_http", "grant_workspace_consent"):
-            # Nothing to type. The key is already in the vault; this is a yes/no.
+        if action["type"] in ("extend_http", "remove_http", "grant_workspace_consent"):
+            # Nothing to type. For extend_http the key is already in the vault
+            # and for remove_http it is on its way out; either way this is a
+            # yes/no, and a paste box on a removal would be nonsense.
             return []
         else:
             raise ValueError("a request needs at least one field")
@@ -601,6 +621,12 @@ def _grant_sentence(row: dict[str, Any]) -> str:
         return (
             f'Also let the key you already gave as "{action.get("destination")}" '
             "reach " + "; ".join(lines) + ". You do not need to paste it again."
+        )
+    if action.get("type") == "remove_http":
+        return (
+            f'Delete the key you gave as "{action.get("destination")}", and '
+            "everything it was allowed to reach. Nothing to paste; this is the "
+            "yes. You can deposit that name again whenever you like."
         )
     if action.get("type") != "connect_http":
         return ""
@@ -975,6 +1001,27 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             "destination": action["destination"],
             "receipt": _grant_sentence(row),
             "secret_reused": True,
+        }
+    if action.get("type") == "remove_http":
+        from tinyassets.api.http_connection import remove_http
+
+        gone = remove_http(
+            universe_id=universe_id,
+            payload=json.dumps({"destination": action["destination"]}),
+        )
+        if gone.get("error"):
+            return gone
+        resolve_request(udir, request_id, status="answered", answer=answer,
+                        feedback=feedback, dont_ask_again=dont_ask_again)
+        return {
+            "status": "answered",
+            "request_id": request_id,
+            "destination": action["destination"],
+            "secrets_removed": gone.get("secrets_removed", 0),
+            "receipt": (
+                f'"{action["destination"]}" is gone -- the key, the connection '
+                "and its grants. That name is free to deposit again."
+            ),
         }
     if action.get("type") == "connect_http":
         # ONE secret field -> its value. SEVERAL -> a JSON object keyed by field

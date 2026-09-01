@@ -968,11 +968,15 @@ def write_graph(
                                   "methods": ["GET", "PUT"],
                                   "param_patterns": {"path": "[A-Za-z0-9._\\-/]{1,200}"}}]}
 
-    To TAKE BACK a credential, the operation is ``remove_http`` with just
-    ``{"destination": "<name>"}``. It deletes the secret and the connection, and
-    the destination is free to deposit again — so it is the right answer when
-    the owner says "remove that key", and when a key went to a destination they
-    did not intend. Never ask the owner to "just ignore" a wrong deposit.
+    To TAKE BACK a credential, raise the SAME KIND OF ASK with
+    ``{"type": "remove_http", "destination": "<name>"}`` and NO fields --
+    nothing to paste, so the tab is a plain confirm. Answering it deletes the
+    secret, the connection and its grants, and frees that destination name to
+    deposit again. It is the right answer when the owner says "remove that
+    key", and when a key went to a destination they did not intend. Never ask
+    the owner to "just ignore" a wrong deposit::
+
+        "action": {"type": "remove_http", "destination": "github"}
 
     A ``connect_http`` ask for a destination that already has a key makes the
     user paste a secret they already gave you — the one thing they must never
