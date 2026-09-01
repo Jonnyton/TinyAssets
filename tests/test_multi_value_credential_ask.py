@@ -169,3 +169,31 @@ def test_the_bundle_keys_are_the_field_names(base) -> None:
         if str(r.get("credential_type") or "").lower() == "http"
     ]
     assert sorted(json.loads(record["token"])) == sorted(f["name"] for f in _OAUTH1A)
+
+
+def test_one_box_of_four_is_refused_not_deposited_as_the_whole_credential(base) -> None:
+    """The exact hole a cross-family review found in the first version of this.
+
+    Completeness was judged on how many boxes came back FILLED rather than how
+    many the ask DECLARED, so a single filled box took the single-value branch
+    and was deposited as the entire credential — skipping the missing-field
+    check written for precisely this case, which only ran when two or more were
+    filled. The owner would have "successfully" deposited a quarter of an OAuth
+    credential and found out from a failing call much later.
+    """
+    udir = _make_universe(base, "u-7", admin="founder")
+    _login("founder")
+    asked = _four_box_ask("u-7")
+
+    out = _answer(
+        "u-7", request_id=asked["request_id"], values={"api_key": "ck-only"}
+    )
+
+    blob = json.dumps(out)
+    assert "missing" in blob.lower(), out
+    for absent in ("api_secret", "access_token", "access_token_secret"):
+        assert absent in blob, f"the refusal must name {absent}"
+
+    from tinyassets.credential_vault import load_credential_vault
+
+    assert load_credential_vault(udir) == [], "a partial credential was deposited"
