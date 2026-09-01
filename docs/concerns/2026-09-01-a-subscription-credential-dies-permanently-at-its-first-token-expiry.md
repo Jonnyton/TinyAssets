@@ -115,3 +115,39 @@ That is a vault write on an authority path, from a provider-call path, with
 concurrency — the four properties that most want their own change, their own
 review and a test that can fail. Codex supplied a reproduction route that needs
 no live OpenAI account (F5).
+
+
+## First implementation attempt: REJECTED (2026-09-01)
+
+Built on `claude/honest-provider-failure` and rejected by Codex before landing.
+Three defects, recorded because the next attempt must not repeat them.
+
+**The lock topology makes the chosen location impossible.** The provider holds
+`provider_assignment_admission().shared(universe)` across the call AND its
+`finally` (`provider_assignment.py:1177`, `:1366-1386`). Promotion asked for
+`exclusive(universe)` inside that, and the admission explicitly rejects
+shared-to-exclusive reentrancy (`:923-928`). Independently,
+`write_credential_vault` takes that same exclusive lock again
+(`credential_vault.py:634`), so even outside the shared context it
+double-acquires. Both raise `RuntimeError`, which the promotion's own
+`except` converted to `return False`.
+
+So it would have shipped, silently done nothing, and reported nothing. **The
+promotion cannot live inside the provider's `finally`.** It needs a location
+outside the shared admission, or an admission API that supports upgrade.
+
+**The identity gate is forgeable.** `_codex_identity` trusted the
+child-controlled `account_id` without binding it to the tokens. A hostile bundle
+keeps the original `account_id` and swaps the principal, or sets
+`auth_mode: "apikey"` with an attacker-chosen `OPENAI_API_KEY` that the record
+merge then persists. An identity check the writer can satisfy is not one.
+
+**Concurrent single-use rotation is unresolved.** Two overlapping calls both
+refresh; one necessarily holds an invalidated token; nothing decides which
+promotion wins, so the vault can end up storing the dead one.
+
+**And the tests did not catch any of it**, because they call the promotion
+directly and never through the provider path that holds the lock — the same
+"tested the helper, not the wiring" gap that this repo hit twice more the same
+day. A test for the next attempt has to drive the real call path, where a
+silent `False` is indistinguishable from success.
