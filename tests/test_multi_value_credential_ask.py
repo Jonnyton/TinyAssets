@@ -217,23 +217,33 @@ def test_a_legacy_request_stored_under_the_old_rules_is_refused(base) -> None:
     udir = _make_universe(base, "u-legacy", admin="founder")
     _login("founder")
 
+    kind, title = "API", "pre-upgrade ask"
+    body = "stored before the current rules"
+    fields = [
+        {"name": "part_a", "label": "Part A", "type": "secret"},
+        {"name": "part_b", "label": "Part B", "type": "secret"},
+    ]
+    action = {
+        "type": "connect_http",
+        "destination": "legacy-service",
+        "auth_scheme": "bearer",          # single-value scheme, two secrets
+        "endpoints": [{"host": "api.example.com",
+                       "path_template": "/v1/x", "methods": ["POST"]}],
+    }
+    # The REAL dedupe key, computed the way the old code computed it. An
+    # arbitrary string here is not a legacy row -- it is a tampered one, and it
+    # trips the binding check instead of the legacy-fields check this test is
+    # about. A genuine pre-upgrade row reproduces its key and has to be refused
+    # on its FIELDS, which is the harder thing to get right.
     legacy_id = create_request(
         _universe_dir("u-legacy"),
-        kind="API",
-        title="pre-upgrade ask",
-        body="stored before the current rules",
-        fields=[
-            {"name": "part_a", "label": "Part A", "type": "secret"},
-            {"name": "part_b", "label": "Part B", "type": "secret"},
-        ],
-        action={
-            "type": "connect_http",
-            "destination": "legacy-service",
-            "auth_scheme": "bearer",          # single-value scheme, two secrets
-            "endpoints": [{"host": "api.example.com",
-                           "path_template": "/v1/x", "methods": ["POST"]}],
-        },
-        dedupe_key="legacy-1",
+        kind=kind,
+        title=title,
+        body=body,
+        fields=fields,
+        action=action,
+        dedupe_key=json.dumps([kind, title, body, fields, action],
+                              sort_keys=True, separators=(",", ":")),
     )
     request_id = legacy_id if isinstance(legacy_id, str) else legacy_id["request_id"]
 

@@ -154,11 +154,32 @@ def create_request(
             # A user who said "don't ask me this again" must not be asked again.
             # The agent is TOLD, rather than silently ignored, so it can stop
             # trying and say so instead of looping.
+            #
             settled = conn.execute(
                 "SELECT feedback, decision, answer_json FROM request_suppressions "
                 "WHERE dedupe_key = ?",
                 (dedupe_key,),
             ).fetchone()
+            # A standing ALLOW is only meaningful when the agent can act on it.
+            # For an action-bearing ask the ANSWER IS THE ACT -- nothing widens a
+            # grant, deposits a key or removes one except answering the tab, and
+            # the served agent has no route to any of them. So a suppressed
+            # allow returned "standing yes, proceed" and then nothing happened:
+            # harmless-looking on extend_http, and on remove_http it tells the
+            # owner a credential is gone while it sits in the vault. The tab is
+            # the mechanism, so for those the tab opens anyway.
+            #
+            # A standing DECLINE is untouched, and deliberately: "do not do this
+            # and stop asking" is honoured by doing nothing, which needs no
+            # route. Refusing it too would make "stop asking me to connect
+            # GitHub" an ask that returns forever -- the trap the mute exists to
+            # prevent, and an existing test said so.
+            if (
+                settled
+                and (settled[1] or "declined") == "allowed"
+                and str((action or {}).get("type") or "answer") != "answer"
+            ):
+                settled = None
             if settled:
                 # The user already settled this. Hand back WHAT they decided so
                 # the agent can act on a standing yes, instead of only learning

@@ -923,6 +923,13 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
     # surface, because the moment of answering is when the user has the opinion.
     feedback = str(document.get("feedback") or "").strip()[:_MAX_ANSWER_CHARS]
     dont_ask_again = document.get("dont_ask_again") is True
+    # Matching the other half of the same rule (see create_request): an
+    # action-bearing ask is the only way its act happens, so a standing "stop
+    # asking" would silently disable the capability rather than express a
+    # preference. Recording one is refused here as well as ignored there --
+    # either alone leaves the hole reachable from the other direction.
+    if dont_ask_again and str((row["action"] or {}).get("type") or "answer") != "answer":
+        dont_ask_again = False
 
     values = document.get("values")
     if not isinstance(values, dict):
@@ -940,6 +947,22 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
     # no longer passes is refused with the reason rather than half-honoured:
     # the ask is re-raisable in seconds and the owner has typed nothing yet at
     # the moment this runs.
+    # BIND the row that executes to the row that was displayed. The dedupe key
+    # is a hash of exactly [kind, title, body, fields, action] -- the tuple the
+    # tab renders from -- so a stored row whose action_json was rewritten after
+    # rendering no longer reproduces it. Without this, an owner could confirm a
+    # tab that reads "also let me write one more file" and have it delete their
+    # credential instead: the fields check below never ran for a fieldless row,
+    # and nothing ever compared the action to what was on screen.
+    expected = json.dumps(
+        [row["kind"], row["title"], row["body"], row["fields"], action],
+        sort_keys=True, separators=(",", ":"),
+    )
+    if row.get("dedupe_key") and row["dedupe_key"] != expected:
+        return _bad(
+            "this request no longer matches what it was created as, so what "
+            "you were shown is not what would happen; ask again"
+        )
     if row["fields"]:
         try:
             _validated_fields(row["fields"], action)
