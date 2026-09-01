@@ -151,3 +151,47 @@ directly and never through the provider path that holds the lock — the same
 "tested the helper, not the wiring" gap that this repo hit twice more the same
 day. A test for the next attempt has to drive the real call path, where a
 silent `False` is indistinguishable from success.
+
+
+## A simpler design the rejection points at (recommended over patching the promotion)
+
+Every defect in the rejected attempt is a cost of ROUND-TRIPPING the credential:
+the lock topology, the forgeable identity gate, and the concurrent-rotation
+winner problem all exist only because a refresh has to travel from a disposable
+snapshot back into the vault.
+
+**The host does not have this problem**, and the reason is instructive: the host
+refreshes `auth.json` in place, in a directory that persists. Nothing is
+promoted because nothing is copied.
+
+So the alternative is to give a universe the same shape: a **persistent,
+per-universe, writable CODEX_HOME**, bound into that universe's own jail. The
+scaffolding already exists -- `resolve_codex_home` (`credential_vault.py:1970`),
+`_codex_home_from_record` (`:1959`), `_secret_artifact_dir` (`:108`) -- and the
+non-snapshot path already uses it.
+
+What it removes:
+
+* no promotion, so no CAS, no lock ordering, no shared-to-exclusive upgrade;
+* no identity gate to forge, because the refreshed bytes never re-enter the
+  vault as a decision -- the file IS that universe's credential store;
+* no concurrent-rotation winner problem beyond what the CLI itself handles,
+  which is the same situation every ordinary codex user is already in.
+
+What it must preserve, and what a review has to attack:
+
+* **the isolation floor** -- one universe must never reach another's home. This
+  is the property that actually matters, and it is per-universe directory
+  containment rather than per-call disposability;
+* the sealed-snapshot design was chosen deliberately ("rotation-stable,
+  sandbox-read-only"), so the case for replacing it has to be made against the
+  threat it was defending, not merely asserted;
+* plaintext credential material now persists between calls rather than being
+  reclaimed per call, which is a real change to the exposure window and
+  interacts with `scavenge_orphaned_launch_credentials`.
+
+**Recommendation for the next session:** cost this against fixing the promotion
+before writing either. The promotion path is known to need a location outside
+the shared admission, an unforgeable identity binding and a rotation winner --
+three hard problems. The persistent-home path removes all three and trades them
+for one question about the exposure window, which is a question with an answer.
