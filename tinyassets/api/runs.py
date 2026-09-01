@@ -427,6 +427,32 @@ def _actionable_by(failure_class: str) -> str:
     return ACTIONABLE_BY.get(failure_class, "user")
 
 
+def _no_provider_advice() -> str:
+    """Advice for "no model reachable" that matches how this deployment works.
+
+    The old text was "check ANTHROPIC/GROQ/GEMINI keys" unconditionally. A
+    subscription-only universe IGNORES those variables --
+    ``TINYASSETS_ALLOW_API_KEY_PROVIDERS`` gates them off -- so the owner was
+    told to go and fix something the platform is configured to disregard. Advice
+    the reader cannot act on is worse than none: it sends them looking in a
+    place where nothing they find can help.
+    """
+    import os
+
+    if str(os.environ.get("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "")).strip().lower() in (
+        "1", "true", "yes", "on",
+    ):
+        return (
+            "No LLM provider is reachable. Check the universe's connected "
+            "provider, or the API keys this deployment allows."
+        )
+    return (
+        "No LLM provider is reachable for this universe. It runs on a provider "
+        "you connect to it, not on platform API keys -- connect or reconnect "
+        "one from the request in your rail."
+    )
+
+
 def _failure_payload(
     exc: Exception, failure_class: str, suggested_action: str,
 ) -> dict[str, Any]:
@@ -516,10 +542,20 @@ def _classify_run_error(exc: Exception, bid: str) -> dict[str, Any]:
             "Inspect the branch definition, node ids, state_schema, and graph"
             " edges; patch the branch and rerun.",
         )
+    if (
+        "carrier" in msg
+        or "already consumed" in msg
+        or "is not server-owned" in msg
+        or "seal is invalid" in msg
+    ):
+        return _failure_payload(
+            exc, "platform_fault",
+            "This is a fault on our side, not a problem with your account or "
+            "your provider setup. Retrying may work; the details are recorded.",
+        )
     if "provider" in msg or "api key" in msg or "api_key" in msg or "auth" in msg:
         return _failure_payload(
-            exc, "provider_unavailable",
-            "No LLM provider is reachable; check ANTHROPIC/GROQ/GEMINI keys.",
+            exc, "provider_unavailable", _no_provider_advice(),
         )
     return _failure_payload(
         exc, "unknown",
@@ -650,10 +686,34 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
             "Inspect the branch definition, node ids, state_schema, and graph"
             " edges; patch the branch and rerun.",
         )
+    # ORDER MATTERS: our own invariants carry the word "provider" too, and the
+    # bare substring below used to claim them as "check your API keys". The
+    # founder was handed that advice for a carrier bug on a universe with
+    # api_key_providers_enabled=False -- advice he could not have acted on even
+    # if it had been the right diagnosis (2026-09-01).
+    if (
+        "carrier" in msg
+        or "already consumed" in msg
+        or "is not server-owned" in msg
+        or "seal is invalid" in msg
+        or "belongs to another process" in msg
+    ):
+        return (
+            "platform_fault",
+            "This is a fault on our side, not a problem with your account or "
+            "your provider setup. Retrying may work; the details are recorded.",
+        )
+    if "expired" in msg or "unauthor" in msg or "forbidden" in msg or "401" in msg:
+        return (
+            "auth_invalid",
+            "The universe's model credential is no longer valid. Reconnecting "
+            "the provider for this universe will fix it; this is not a usage "
+            "or billing limit.",
+        )
     if "provider" in msg or "api key" in msg or "api_key" in msg:
         return (
             "provider_unavailable",
-            "No LLM provider is reachable; check ANTHROPIC/GROQ/GEMINI keys.",
+            _no_provider_advice(),
         )
     if "call failed" in msg or "groq" in msg or "gemini" in msg or "grok" in msg:
         return (

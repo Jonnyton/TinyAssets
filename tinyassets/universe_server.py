@@ -1790,16 +1790,109 @@ _TURN_ENDED_FAILURE_CLASSES = {
         "ended. Whatever it finished before that stands. Sending again repeats "
         "the whole request; asking it to continue is usually the better move."
     ),
+    # Everything below was previously UNMAPPED, which meant the raw router
+    # exception reached the owner -- and that exception says "exhausted" for
+    # every all-attempts-failed reason there is. The founder went and checked
+    # his codex usage because of it; the real cause was a platform bug
+    # (2026-09-01). A wrong diagnosis costs more than a vague one, because the
+    # owner acts on it.
+    "provider_rate_limited": (
+        "Your universe's model provider is rate-limiting it right now, so the "
+        "turn could not run. This usually clears on its own within a few "
+        "minutes -- send again then."
+    ),
+    "provider_overloaded": (
+        "Your universe's model provider is overloaded right now, so the turn "
+        "could not run. Nothing is wrong with your setup; send again in a "
+        "minute."
+    ),
+    # Deliberately does NOT promise a waiting request. The rail synthesises the
+    # connect ask only when NO binding exists; a binding whose CREDENTIAL died
+    # leaves the owner bound, unserved and un-asked. Saying "there is a request
+    # waiting" would be the same confident-wrong shape this whole change is
+    # fixing. Filed: the ask should also appear when the bound credential is
+    # unusable.
+    "auth_invalid": (
+        "Your universe's connection to its model is no longer valid -- the "
+        "credential has expired or been revoked. Reconnecting the provider "
+        "for this universe will fix it. Nothing is wrong with your usage or "
+        "your billing."
+    ),
+    "endpoint_unreachable": (
+        "Your universe could not reach its model provider at all. That is a "
+        "network or service problem rather than anything you set up wrong; "
+        "send again shortly."
+    ),
+    # NOT the owner's problem, and it must not be described as though it were.
+    "platform_fault": (
+        "Something broke on our side while starting your universe's turn, so "
+        "it did not run. This is not a problem with your account, your "
+        "credentials or your usage limits, and sending again may well work. "
+        "It is recorded for us either way."
+    ),
 }
 
 
+#: Substrings that mark a failure as OURS -- an internal invariant tripping,
+#: not anything the owner configured. These reach the owner as
+#: ``platform_fault`` no matter what class the layers below assigned, because
+#: the router labels its own bugs with the same word it uses for quota.
+#: Text from OUR router that reads as a diagnosis and is not one. The class
+#: attached to the exception is the real signal; this string is the same
+#: whatever went wrong, so on its own it misinforms.
+_MISLEADING_ROUTER_TELLS = (
+    "exhausted",
+    "forbids fallback widening",
+)
+
+_PLATFORM_FAULT_TELLS = (
+    "carrier",
+    "seal is invalid",
+    "belongs to another process",
+    "is not server-owned",
+    "already consumed",
+)
+
+
 def _served_failure_notice(exc: BaseException) -> str:
-    """The user-facing sentence for a failed served turn, keyed on the streamed
-    ``failure_class`` when the exception carries one; the verbatim exception
-    otherwise (a credentialed universe's real outage still surfaces as-is)."""
+    """The user-facing sentence for a failed served turn.
+
+    Keyed on the streamed ``failure_class``. The fall-through USED to be the
+    verbatim exception, and the router's exception says "Served provider 'x'
+    exhausted" for every all-attempts-failed reason -- so a platform bug, an
+    expired credential and a genuine quota all reached the owner as a billing
+    problem. On 2026-09-01 the founder checked his provider usage because of
+    it; the real cause was ``provider invocation carrier is already consumed``.
+
+    A vague sentence is a poor outcome. A CONFIDENT WRONG one is worse, because
+    the owner acts on it -- so the unknown case now says it is unknown, and
+    anything carrying our own invariants in its text is named as ours.
+    """
+    text = str(exc).lower()
+    # OUR invariants first: their text names a fault the class layer cannot see,
+    # because the router labels its own bugs with the same class it uses for a
+    # dead provider. Kept deliberately narrow -- an earlier draft included
+    # "authority", which appears in the router's ORDINARY message and hijacked
+    # every correctly-classified failure.
+    if any(tell in text for tell in _PLATFORM_FAULT_TELLS):
+        return _TURN_ENDED_FAILURE_CLASSES["platform_fault"]
+    # Then the class the router attached: the best signal there is.
     notice = _TURN_ENDED_FAILURE_CLASSES.get(getattr(exc, "failure_class", None))
     if notice is not None:
         return notice
+    # Unmapped. Pass the text through UNLESS it is our own synthetic wrapper,
+    # which is the only text here that actively lies: the router says
+    # "exhausted ... forbids fallback widening" whatever the attempts failed
+    # for. An earlier draft suppressed every unmapped exception and two existing
+    # tests caught it -- `RuntimeError("engine binding unreadable")` is precise
+    # and useful, and hiding it behind "we do not know" trades one wrong answer
+    # for another. Hard Rule 8 cuts this way too: fail loudly.
+    if any(lie in text for lie in _MISLEADING_ROUTER_TELLS):
+        return (
+            "Your universe's turn could not run, and we could not identify why. "
+            "This is not necessarily anything you did, and it is not a usage or "
+            "billing limit -- rather than guess, we have recorded the details."
+        )
     return f"Your universe couldn't be reached right now: {exc}"
 
 

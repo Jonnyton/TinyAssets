@@ -322,7 +322,24 @@ def _call_router_with_retry(
         _last_provider = result.provider
         return result.text
 
-    if not retry_on_exhaustion:
+    # A context carrying a ProviderInvocationCarrier is NOT retryable, whatever
+    # the caller asked for. The carrier is single use by design
+    # (``provider_work_authority.validate_for_call`` removes it from the active
+    # set), so attempt 2 re-enters the router with a spent carrier, raises
+    # "provider invocation carrier is already consumed", and -- because Tenacity
+    # reraises the LAST error -- throws away the real reason attempt 1 failed.
+    #
+    # That masking is the worse half. The founder's universe was diagnosed as a
+    # quota problem and then as missing API keys, and was neither; the true
+    # first failure had been overwritten by this retry every time
+    # (Codex root-cause 2026-09-01, C1/C4).
+    #
+    # Re-minting a carrier per attempt would "fix" the error and destroy the
+    # authority property, which exists so one invocation is budgeted and settled
+    # exactly once. Retrying a spent authority is not a retry, it is a second
+    # invocation, and that would have to be authorised above this boundary.
+    carrier_armed = getattr(universe_context, "provider_invocation", None) is not None
+    if not retry_on_exhaustion or carrier_armed:
         return _once()
 
     @retry(
