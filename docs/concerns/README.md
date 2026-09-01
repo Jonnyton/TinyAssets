@@ -37,6 +37,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 | **P2** | [The background loop cannot run on the current shape](2026-08-29-background-loop-activation-is-fleet-era.md) — its activation layer is fleet-era; the "24/7 background self" has been dead since 2026-08-07 | 2026-08-29 |
 | **P2** | ["Connect a model" clears on a signal the turn path does not use](2026-08-29-serving-readiness-panel-disagrees-with-turn-path.md) — a user is told the model is connected while every turn is refused | 2026-08-29 |
 | **P2** | [IdP subject ids are persisted in 24 columns across 5 databases](2026-08-29-subject-ids-scattered-across-stores.md) — a tenant identity change is a hand migration today, and there will be another | 2026-08-29 |
+| **note** | [The acceptance test: a different connection, a different task, zero patches](2026-08-31-the-acceptance-test-is-a-different-connection-and-a-different-task.md) — the founder's bar for calling the credential work done: another service and another task with NO platform patch | 2026-08-31 |
 | **P0** | [Graph/provider false attestation](2026-07-02-graph-provider-false-attestation.md) — router fallback neutralizes isolation refusals | 2026-07-02 |
 | **P0** | [Unauthenticated LAN session leak + CSRF writes](2026-07-21-unauth-lan-session-leak-csrf.md) — do not LAN-run | 2026-07-21 |
 | **P0** | [Public-site privacy, deps, and CI secret exposure](2026-07-27-public-site-privacy-deps-ci.md) — a same-repo PR can request 19 secrets | 2026-07-27 |

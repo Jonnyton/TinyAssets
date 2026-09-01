@@ -32,6 +32,10 @@ def test_every_concern_file_is_linked_from_the_readme() -> None:
         "these concern files are not mentioned anywhere in "
         "docs/concerns/README.md, so nothing points at them:\n  "
         + "\n  ".join(unlinked)
+        + "\n\nIf you did not file these: CI tests your PR MERGED INTO main, so "
+        "a concern filed in another lane while your PR was open shows up here. "
+        "Adding the row is one line and the right fix -- the index is only "
+        "useful if it is complete at merge time."
     )
 
 
