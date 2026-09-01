@@ -213,28 +213,34 @@ def test_removal_hands_back_the_shape_it_destroyed(base):
     assert "removed_scopes" in out["next"]
 
 
-def test_a_rotation_restores_itself_from_that_readback_alone(base):
-    """The whole point, end to end: remove, then rebuild from what came back.
+def test_a_rotation_restores_itself_from_the_RAILS_readback_alone(base):
+    """The whole point, end to end, through the surface the owner drives.
 
-    Nothing here remembers the original shape -- the deposit is built purely
-    from the removal's own return value. If the readback is incomplete or
-    misspelled, the checkout authority does not come back and this fails.
+    An earlier version of this called `remove_http` and `connect_http` directly.
+    It passed while the RAIL was dropping the readback on the floor, so the
+    thing it was named for did not work and the test could not see it (Codex,
+    R4) -- the same "prove the API, not the door" mistake this file exists to
+    stop.
+
+    Nothing here remembers the original shape: the deposit is built purely from
+    what answering the removal tab returned, and the only new input is the new
+    key.
     """
-    from tinyassets.api.http_connection import connect_http, remove_http
+    from tinyassets.api.http_connection import connect_http
     from tinyassets.storage.workspace_authority import has_git_scope
 
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
     _deposit("u-1", scopes=[f"git_read:{REPO}", f"git_write:{REPO}"])
 
-    gone = remove_http(universe_id="u-1",
-                       payload=json.dumps({"destination": "github"}))
+    gone = _remove_through_the_rail("u-1")          # the OWNER's route
     assert not _connection(base, "u-1")
+    assert gone.get("removed_scopes"), "the rail dropped the readback"
 
     back = connect_http(universe_id="u-1", payload=json.dumps({
         "destination": gone["destination"],
         "secret": "ghp_" + "r" * 36,             # the ONLY new thing
-        "auth_scheme": "bearer",
+        "auth_scheme": gone["auth_scheme"],
         "allowed_endpoints": gone["removed_endpoints"],
         "scopes": gone["removed_scopes"],
     }))
@@ -242,6 +248,51 @@ def test_a_rotation_restores_itself_from_that_readback_alone(base):
     assert back["status"] == "provisioned"
     assert has_git_scope(_connection(base, "u-1"), "git_read", REPO)
     assert has_git_scope(_connection(base, "u-1"), "git_write", REPO)
+
+
+def test_an_oauth1a_connection_with_a_PATTERNED_endpoint_rotates_too(base):
+    """The case a three-field readback silently got wrong.
+
+    Flattening endpoints to host/path/methods loses `param_patterns`, and
+    omitting `auth_scheme` re-deposits an OAuth connection as a bearer one. Both
+    produce a connection that provisions cleanly and is not the one destroyed.
+    """
+    from tinyassets.api.http_connection import connect_http
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    endpoint = {
+        "host": "api.x.com",
+        "path_template": "/2/users/{id}/tweets",
+        "methods": ["POST"],
+        "param_patterns": {"id": "[0-9]{1,20}"},
+    }
+    first = connect_http(universe_id="u-1", payload=json.dumps({
+        "destination": "x:posting", "auth_scheme": "oauth1a",
+        "secret": json.dumps({"api_key": "k", "api_secret": "s",
+                              "access_token": "t", "access_token_secret": "ts"}),
+        "allowed_endpoints": [endpoint],
+    }))
+    assert first["status"] == "provisioned", first
+
+    ask = _ask("u-1", kind="API", title="Rotate the X keys", fields=[],
+               action={"type": "remove_http", "destination": "x:posting"})
+    gone = _answer("u-1", request_id=ask["request_id"], values={})
+
+    assert gone["auth_scheme"] == "oauth1a", "the scheme did not survive"
+    [read_back] = gone["removed_endpoints"]
+    assert read_back["param_patterns"] == {"id": "[0-9]{1,20}"}, (
+        "the pattern was flattened away, so the endpoint cannot be rebuilt"
+    )
+
+    again = connect_http(universe_id="u-1", payload=json.dumps({
+        "destination": gone["destination"],
+        "auth_scheme": gone["auth_scheme"],
+        "secret": json.dumps({"api_key": "k2", "api_secret": "s2",
+                              "access_token": "t2", "access_token_secret": "ts2"}),
+        "allowed_endpoints": gone["removed_endpoints"],
+    }))
+    assert again["status"] == "provisioned", again
 
 
 def test_the_readback_carries_no_secret(base):
@@ -270,3 +321,52 @@ def test_removing_something_absent_readbacks_empty_not_missing(base):
     assert out["status"] == "removed"
     assert out["removed_endpoints"] == []
     assert out["removed_scopes"] == []
+
+
+def test_the_owner_is_shown_the_git_authority_they_are_granting(base):
+    """The sentence they say yes to has to name the git scopes.
+
+    It listed methods and paths only, so a connection could carry
+    ``git_write`` on a repository the owner was never shown -- the strongest
+    authority in the grant, and the one thing absent from the grant sentence.
+
+    It is also what makes the removal readback honest. I claimed the readback
+    repeated only what the owner had already seen; that was false for scopes
+    until this (Codex, R2). The claim and the fix are the same line of code, so
+    they are tested together.
+    """
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+
+    ask = _ask("u-1", kind="API", title="Connect GitHub",
+               fields=[{"name": "token", "label": "Token", "type": "secret"}],
+               action={"type": "connect_http", "destination": "github",
+                       "auth_scheme": "bearer",
+                       "endpoints": [{"host": "api.github.com",
+                                      "path_template": "/repos/o/r/pulls",
+                                      "methods": ["POST"]}],
+                       "scopes": [f"git_read:{REPO}", f"git_write:{REPO}"]})
+
+    sentence = ask["grant_sentence"]
+    assert "api.github.com/repos/o/r/pulls" in sentence, "endpoints still shown"
+    assert "git" in sentence.lower(), "the git authority is not mentioned at all"
+    assert f"write {REPO}" in sentence, (
+        "the owner is not told this key may WRITE to the repository"
+    )
+    assert f"read {REPO}" in sentence
+
+
+def test_a_key_with_no_git_scopes_says_nothing_about_git(base):
+    """No ceremony where there is no authority: the sentence stays as it was."""
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+
+    ask = _ask("u-1", kind="API", title="Connect something",
+               fields=[{"name": "token", "label": "Token", "type": "secret"}],
+               action={"type": "connect_http", "destination": "plain",
+                       "auth_scheme": "bearer",
+                       "endpoints": [{"host": "api.example.com",
+                                      "path_template": "/v1/x",
+                                      "methods": ["POST"]}]})
+
+    assert "git" not in ask["grant_sentence"].lower()

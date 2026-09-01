@@ -642,11 +642,28 @@ def _grant_sentence(row: dict[str, Any]) -> str:
     # so a user cannot tell the one that works from the one that fails
     # (observed live, 2026-08-28).
     where = f' as "{action.get("destination")}"' if action.get("destination") else ""
+    # Git scopes are AUTHORITY and were never named here: a connection could
+    # carry git_write on a repository the owner had not been shown, and only the
+    # HTTP endpoints appeared in the sentence they said yes to. That also made
+    # the removal readback disclose something new (Codex, R2). One sentence, all
+    # of the grant.
+    scopes = [str(s).strip() for s in (action.get("scopes") or []) if str(s).strip()]
+    tail = ""
+    if scopes:
+        tail = (
+            " It may also use git to "
+            + "; ".join(
+                ("read " if s.startswith("git_read:") else "write ")
+                + s.split(":", 1)[1]
+                for s in scopes
+            )
+            + "."
+        )
     if len(lines) == 1:
-        return f"This key{where} will be able to {lines[0]} - nothing else."
+        return f"This key{where} will be able to {lines[0]} - nothing else.{tail}"
     return (
         f"This key{where} will be able to reach exactly these, and nothing "
-        "else: " + "; ".join(lines) + "."
+        "else: " + "; ".join(lines) + f".{tail}"
     )
 
 
@@ -1041,9 +1058,18 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             "request_id": request_id,
             "destination": action["destination"],
             "secrets_removed": gone.get("secrets_removed", 0),
+            # Carry the readback THROUGH. Added to remove_http and dropped here,
+            # which meant it did not exist on the only surface the owner drives
+            # (Codex, R3) -- the same "API has it, the served path does not"
+            # shape as the round-3 defect.
+            "auth_scheme": gone.get("auth_scheme", ""),
+            "removed_endpoints": gone.get("removed_endpoints", []),
+            "removed_scopes": gone.get("removed_scopes", []),
             "receipt": (
                 f'"{action["destination"]}" is gone -- the key, the connection '
-                "and its grants. That name is free to deposit again."
+                "and its grants. That name is free to deposit again. To put it "
+                "back, reuse 'auth_scheme', 'removed_endpoints' and "
+                "'removed_scopes' rather than asking what they were."
             ),
         }
     if action.get("type") == "connect_http":

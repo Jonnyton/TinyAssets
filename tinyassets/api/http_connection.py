@@ -721,14 +721,25 @@ def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     if resource is not None:
         from tinyassets.storage.workspace_authority import connection_git_scopes
 
-        removed_endpoints = [
-            {
+        removed_endpoints = []
+        for endpoint in (resource.allowed_endpoints or ()):
+            # EVERY field the deposit accepts, not the three that are easy to
+            # read. A patterned path without its `param_patterns` is refused on
+            # re-deposit, so a partial readback rebuilds a connection that is
+            # not the one destroyed (Codex, R3).
+            entry: dict[str, Any] = {
                 "host": endpoint.host,
                 "path_template": endpoint.path_template,
                 "methods": list(endpoint.methods or []),
             }
-            for endpoint in (resource.allowed_endpoints or ())
-        ]
+            patterns = dict(getattr(endpoint, "param_patterns", None) or {})
+            if patterns:
+                entry["param_patterns"] = patterns
+            for extra in ("query_patterns", "max_body_bytes"):
+                value = getattr(endpoint, extra, None)
+                if value:
+                    entry[extra] = dict(value) if isinstance(value, dict) else value
+            removed_endpoints.append(entry)
         try:
             removed_scopes = sorted(
                 f"{kind}:{repo}" for kind, repo in connection_git_scopes(resource)
@@ -749,6 +760,9 @@ def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
         "secrets_removed": secrets_removed,
         "connection_removed": bool(rows_removed),
         # What it looked like, so putting it back does not start from memory.
+        # The scheme too: an oauth1a connection re-deposited as the default
+        # bearer is a different connection wearing the same name.
+        "auth_scheme": getattr(resource, "auth_scheme", "") if resource else "",
         "removed_endpoints": removed_endpoints,
         "removed_scopes": removed_scopes,
         # Say it plainly: the point of deleting rather than revoking is that
