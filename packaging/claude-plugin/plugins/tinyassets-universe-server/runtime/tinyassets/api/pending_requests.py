@@ -69,6 +69,11 @@ _MAX_FIELDS = 16
 #: a 120-character label cannot hold.
 _MAX_HELP_CHARS = 400
 
+#: Auth schemes whose stored credential is a MULTI-VALUE encoding, and so the
+#: only ones an ask may collect several boxes for. `basic` is one string
+#: (`username:password`) and `bearer`/`header` are one token.
+_MULTI_VALUE_AUTH_SCHEMES = frozenset({"oauth1a"})
+
 #: A plain https link, no userinfo (`https://user:pw@host`), bounded.
 _MAX_URL_CHARS = 300
 _SAFE_URL_RE = re.compile(r"^https://[^\s/@]+(?:/[^\s]*)?$")
@@ -429,7 +434,10 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
             # secret, so a `javascript:` or `data:` value, or a link carrying a
             # userinfo section, is refused rather than sanitised -- the caller
             # is composing it and should be told it was wrong.
-            if not _SAFE_URL_RE.match(url):
+            # LENGTH FIRST. `_MAX_URL_CHARS` was defined and never enforced,
+            # so a 10,000-character hostname matched the pattern and was stored
+            # and rendered while the owner typed a secret (Codex, Q6).
+            if len(url) > _MAX_URL_CHARS or not _SAFE_URL_RE.match(url):
                 raise ValueError(
                     f"field {name!r}: url must be a plain https:// link "
                     "(no credentials in it, at most "
@@ -442,8 +450,36 @@ def _validated_fields(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
                 raise ValueError("a choice field needs options")
             entry["options"] = options[:8]
         out.append(entry)
-    if action["type"] == "connect_http" and not any(f["type"] == "secret" for f in out):
-        raise ValueError("a connect_http request needs a secret field for the key")
+    if action["type"] == "connect_http":
+        if not any(f["type"] == "secret" for f in out):
+            raise ValueError("a connect_http request needs a secret field for the key")
+        # EVERY field on a credential ask is a secret. A non-secret field's
+        # answer is recorded in `answer_json` and relayed back into chat, so an
+        # ask that labelled one value `text` -- "API token", typed as text --
+        # would persist that credential in the clear. Harmless when a credential
+        # ask was one box; a live hazard now that asks carry four or five
+        # (Codex, Q1). If a request genuinely needs a non-secret answer, that is
+        # a different ask.
+        plain = [f["name"] for f in out if f["type"] != "secret"]
+        if plain:
+            raise ValueError(
+                "every field on a credential request must be type 'secret' -- "
+                + ", ".join(repr(name) for name in plain)
+                + " would be stored and shown in the clear"
+            )
+        # And several values only make sense where the vault string HAS a
+        # multi-value encoding. `basic` is `username:password` and `bearer` /
+        # `header` are one token, so assembling several into JSON would hand the
+        # service `Basic base64({"user":...})` -- a credential that cannot
+        # authenticate, failing at the far end with nothing to point at.
+        secrets = [f for f in out if f["type"] == "secret"]
+        scheme = str(action.get("auth_scheme") or "bearer").strip().lower()
+        if len(secrets) > 1 and scheme not in _MULTI_VALUE_AUTH_SCHEMES:
+            raise ValueError(
+                f"auth_scheme {scheme!r} takes a single value, so ask for one "
+                "field; several are only meaningful for "
+                + ", ".join(sorted(_MULTI_VALUE_AUTH_SCHEMES))
+            )
     return out
 
 
@@ -900,26 +936,30 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
         # -- an OAuth 1.0a owner would fill four boxes, three would vanish, and
         # the deposit would refuse a malformed bundle with nothing to explain it.
         # Found on 2026-08-31 by checking this seam rather than assuming it.
-        supplied = [
-            (name, str(values.get(name) or ""))
+        supplied = {
+            name: str(values.get(name) or "")
             for name in sorted(secret_names)
             if str(values.get(name) or "").strip()
-        ]
+        }
         if not supplied:
             return _bad("the key is required")
-        if len(supplied) == 1:
-            secret = supplied[0][1]
+        # Completeness is judged against what the ask DECLARED, never against
+        # what came back. Keying off the supplied count meant filling one box of
+        # four took the single-value branch and deposited that one value as the
+        # whole credential, skipping this check entirely (Codex, Q4).
+        missing = sorted(secret_names - set(supplied))
+        if missing:
+            # Partial is worse than refused: a bundle short one value deposits a
+            # credential that cannot sign, and the owner is told later, by a
+            # failing call, with no idea which box was empty.
+            return _bad(
+                "this needs every value: still missing "
+                + ", ".join(repr(name) for name in missing)
+            )
+        if len(secret_names) == 1:
+            secret = next(iter(supplied.values()))
         else:
-            missing = sorted(secret_names - {name for name, _ in supplied})
-            if missing:
-                # Partial is worse than refused: a bundle short one value
-                # deposits a credential that cannot sign, and the owner is told
-                # later, by a failing call, with no idea which box was empty.
-                return _bad(
-                    "this needs every value: still missing "
-                    + ", ".join(repr(name) for name in missing)
-                )
-            secret = json.dumps(dict(supplied))
+            secret = json.dumps(supplied)
         deposited = connect_http(
             universe_id=universe_id,
             payload=json.dumps(

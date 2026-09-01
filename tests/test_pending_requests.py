@@ -181,19 +181,27 @@ def test_a_secret_field_requires_a_deposit_action(base):
     assert _rail("u-1")["count"] == 0
 
 
-def test_a_secret_answer_is_never_recorded(base):
+def test_a_credential_ask_records_no_answer_at_all(base):
+    """The guarantee got STRONGER, so this test did too.
+
+    It used to pair a secret field with a `text` one and assert the secret was
+    not recorded while the text was. Every field on a credential ask must now be
+    a secret, because a non-secret answer is persisted and relayed into chat and
+    an ask could label a token `text` (Codex, Q1). So nothing is recorded for a
+    credential ask -- there is no longer a field whose value could be.
+    """
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
     asked = _ask("u-1", fields=[
         {"name": "secret", "label": "Key", "type": "secret"},
-        {"name": "note", "label": "Note", "type": "text"},
     ])
 
     _answer("u-1", request_id=asked["request_id"],
-            values={"secret": "ghp_" + "x" * 36, "note": "my work token"})
+            values={"secret": "ghp_" + "x" * 36})
 
     answered = _rail("u-1")["recently_answered"][0]
-    assert answered["answer"] == {"note": "my work token"}
+    # Empty or absent; both mean the same thing and neither holds a value.
+    assert not (answered.get("answer") or {})
     assert "ghp_" not in json.dumps(answered)
 
 
@@ -556,13 +564,14 @@ def test_codex_an_undeclared_key_cannot_smuggle_a_secret_into_storage(base):
     verbatim. Only values for declared non-secret fields are recorded."""
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
-    asked = _ask("u-1", fields=[
-        {"name": "secret", "label": "Key", "type": "secret"},
+    # An APPROVAL ask, not a credential one: every field on a credential ask
+    # must now be a secret, and the property under test -- an undeclared key is
+    # never recorded -- belongs to every ask, not just that one.
+    asked = _ask("u-1", action={"type": "answer"}, fields=[
         {"name": "note", "label": "Note", "type": "text"},
     ])
 
     _answer("u-1", request_id=asked["request_id"], values={
-        "secret": "ghp_" + "x" * 36,
         "shadow": "ghp_REPRO_SECRET_123456789",   # never declared
         "note": "fine",
     })

@@ -30,7 +30,8 @@ def test_a_multi_value_service_survives_intact() -> None:
             {"name": "api_key_secret", "label": "API Key Secret"},
             {"name": "access_token", "label": "Access Token"},
             {"name": "access_token_secret", "label": "Access Token Secret"},
-        ]
+        ],
+        "oauth1a",
     )
     assert [c["name"] for c in proposed] == [
         "api_key",
@@ -78,7 +79,8 @@ def test_a_dangerous_link_drops_the_whole_list() -> None:
         [
             {"name": "api_key", "label": "API Key"},
             {"name": "secret", "label": "Secret", "url": "javascript:alert(1)"},
-        ]
+        ],
+        "oauth1a",
     )
     assert proposed == []
 
@@ -95,14 +97,14 @@ def test_duplicate_names_drop_the_list() -> None:
     request validator refuses them and this inherits that refusal rather than
     re-deciding it."""
     proposed = _validated_credentials(
-        [{"name": "k", "label": "One"}, {"name": "k", "label": "Two"}]
+        [{"name": "k", "label": "One"}, {"name": "k", "label": "Two"}], "oauth1a"
     )
     assert proposed == []
 
 
 def test_entries_without_a_name_are_skipped_not_fatal() -> None:
     proposed = _validated_credentials(
-        [{"label": "no name"}, {"name": "api_key", "label": "API Key"}]
+        [{"label": "no name"}, {"name": "api_key", "label": "API Key"}], "oauth1a"
     )
     assert [c["name"] for c in proposed] == ["api_key"]
 

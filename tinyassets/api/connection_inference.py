@@ -467,7 +467,7 @@ def resolve_connection(*, universe_id: str = "", payload: Any = None) -> dict[st
         # way that service labels it. The agent hands these straight to
         # `request_from_user` as its fields, so the owner never has to work out
         # what goes where (founder 2026-08-31).
-        "credentials": _validated_credentials(proposal.get("credentials")),
+        "credentials": _validated_credentials(proposal.get("credentials"), scheme),
         "why": str(proposal.get("why") or "").strip()[:200],
         # The sentence the app shows as a receipt AFTER depositing. Built here so
         # every surface says the same thing about the same grant.
@@ -477,7 +477,7 @@ def resolve_connection(*, universe_id: str = "", payload: Any = None) -> dict[st
     }
 
 
-def _validated_credentials(raw: Any) -> list[dict[str, Any]]:
+def _validated_credentials(raw: Any, auth_scheme: str = "bearer") -> list[dict[str, Any]]:
     """The proposed credential list, validated by the REQUEST validator.
 
     Deliberately not a second set of rules. These become the ``fields`` of a
@@ -510,7 +510,13 @@ def _validated_credentials(raw: Any) -> list[dict[str, Any]]:
     if not proposed:
         return []
     try:
-        return _validated_fields(proposed, {"type": "connect_http"})
+        # Validate under the PROPOSED scheme, not a bearer default: several
+        # credentials are only legal where the vault string has a multi-value
+        # encoding, so proposing four under `bearer` would be refused by the very
+        # ask this list is destined for.
+        return _validated_fields(
+            proposed, {"type": "connect_http", "auth_scheme": auth_scheme}
+        )
     except ValueError:
         # One bad entry (a javascript: url, a duplicate name, too many) drops
         # the whole list rather than half of it: a partial credential list is

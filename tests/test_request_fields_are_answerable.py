@@ -65,8 +65,11 @@ def test_an_oauth1a_deposit_fits() -> None:
         "access_token_secret",
         "bearer_token",
     ]
+    # Several boxes are only meaningful where the vault string has a
+    # multi-value encoding, so the ask must say so.
     fields = _validated_fields(
-        [_field(name=n, label=n.replace("_", " ").title()) for n in names], _CONNECT
+        [_field(name=n, label=n.replace("_", " ").title()) for n in names],
+        {"type": "connect_http", "auth_scheme": "oauth1a"},
     )
     assert [f["name"] for f in fields] == names
     assert _MAX_FIELDS >= 16, "leave room for a service nobody has enumerated"
@@ -169,3 +172,54 @@ def test_the_agent_is_told_to_research_the_service_not_recall_it() -> None:
     assert "THE LINK" in doc                   # and how to get there
     # And honesty over confident guessing.
     assert "confidently wrong label is worse" in doc
+
+
+def test_a_credential_ask_may_not_carry_a_plain_text_field() -> None:
+    """A non-secret answer is recorded and relayed back into chat, so a field
+    typed `text` on a credential ask persists that value in the clear.
+
+    Harmless when a credential ask was one box; a live hazard once asks carry
+    four or five and one could be mislabelled (Codex, Q1). If a flow genuinely
+    needs a non-secret answer, that is a different ask.
+    """
+    with pytest.raises(ValueError) as caught:
+        _validated_fields(
+            [_field(), {"name": "note", "label": "Note", "type": "text"}], _CONNECT
+        )
+    assert "must be type 'secret'" in str(caught.value)
+    assert "'note'" in str(caught.value)
+
+
+def test_several_boxes_need_a_scheme_that_can_encode_them() -> None:
+    """`basic` is one string and `bearer`/`header` are one token, so assembling
+    several into JSON would hand the service a credential that cannot
+    authenticate -- failing at the far end with nothing to point at."""
+    two = [_field(name="username"), _field(name="password")]
+    with pytest.raises(ValueError) as caught:
+        _validated_fields(two, {"type": "connect_http", "auth_scheme": "basic"})
+    assert "single value" in str(caught.value)
+
+    # And the scheme that CAN encode several is unaffected.
+    ok = _validated_fields(two, {"type": "connect_http", "auth_scheme": "oauth1a"})
+    assert [f["name"] for f in ok] == ["username", "password"]
+
+
+def test_an_overlong_link_is_refused() -> None:
+    """The bound existed and was never applied, so a 10,000-character hostname
+    matched the pattern and was stored and rendered (Codex, Q6)."""
+    with pytest.raises(ValueError):
+        _validated_fields([_field(url="https://" + "a" * 10_000 + ".example")], _CONNECT)
+
+
+def test_the_control_station_prompt_teaches_fields_too() -> None:
+    """The served docstring is not the only place an agent is instructed.
+
+    The Control Station prompt still told agents to raise a `connect_http` ask
+    with no `fields`. Following it exactly now returns `request_invalid` and
+    creates no tab, so the very first live credential ask would have stranded
+    (Codex, Q5). Two instruction surfaces, one instruction.
+    """
+    from tinyassets.api.prompts import _CONTROL_STATION_PROMPT as text
+    assert "fields" in text
+    assert "secret" in text
+    assert "LOOK IT UP FIRST" in text

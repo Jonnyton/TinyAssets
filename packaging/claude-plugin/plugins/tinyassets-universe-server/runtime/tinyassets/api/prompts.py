@@ -289,7 +289,18 @@ infer additional callable tools from legacy action names in old conversations.
    |                                | {host,path_template,methods},...]}`     |
    |                                | for a credential — the key goes         |
    |                                | straight to the vault under exactly     |
-   |                                | those endpoints. List EVERY call the    |
+   |                                | those endpoints. A credential request   |
+   |                                | MUST also carry `fields`: ONE per value |
+   |                                | the service needs, every one            |
+   |                                | `type:"secret"`, `label` in the SITE'S  |
+   |                                | own words, plus `help` (where to click) |
+   |                                | and `url` (the page issuing it).        |
+   |                                | LOOK IT UP FIRST — WebFetch/WebSearch   |
+   |                                | the service, never ask from memory. An  |
+   |                                | ask with no                             |
+   |                                | fields is refused: one unlabelled box   |
+   |                                | makes the owner guess what goes where.  |
+   |                                | List EVERY call the                     |
    |                                | flow needs in ONE request (a GitHub PR  |
    |                                | needs git/refs + contents + pulls), so  |
    |                                | the user pastes once. A path_template   |
