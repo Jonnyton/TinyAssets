@@ -1854,6 +1854,31 @@ _PLATFORM_FAULT_TELLS = (
 )
 
 
+def _attempt_class(exc: BaseException) -> str | None:
+    """The class of the last FAILED attempt, from either taxonomy.
+
+    ``failure_class`` is the streamed one and is often absent; ``skip_class`` is
+    the coarse operator-facing bucket and carries the answer for anything raised
+    as ``ProviderUnavailableError`` -- which is every auth failure on a
+    subprocess provider. Reading only the first is how an `auth_invalid`
+    attempt produced a notice saying the cause was unknown.
+
+    Skips are ignored: a provider that was never tried explains nothing about
+    why the turn failed.
+    """
+    try:
+        for attempt in reversed(getattr(exc, "attempts", None) or []):
+            if getattr(attempt, "status", "") != "failed":
+                continue
+            for field in ("failure_class", "skip_class"):
+                value = getattr(attempt, field, None)
+                if value:
+                    return str(value)
+    except Exception:  # noqa: BLE001 - never break a failure path
+        return None
+    return None
+
+
 def _served_failure_diagnosis(exc: BaseException) -> dict[str, Any]:
     """The machine-readable half of a failed turn, beside the human sentence.
 
@@ -1962,6 +1987,17 @@ def _served_failure_notice(exc: BaseException) -> str:
         return _TURN_ENDED_FAILURE_CLASSES["platform_fault"]
     # Then the class the router attached: the best signal there is.
     notice = _TURN_ENDED_FAILURE_CLASSES.get(getattr(exc, "failure_class", None))
+    if notice is not None:
+        return notice
+    # Then the class the ATTEMPT carried. `dominant_failure_class` only accepts
+    # a STREAMED failure_class, and a ProviderUnavailableError is classified
+    # into `skip_class` instead -- so a served chain that dies on auth yields an
+    # attempt marked `auth_invalid` beside a top-level class of None.
+    #
+    # Live 2026-09-01: the founder read "we could not identify why" while the
+    # payload beside it said {"provider": "codex", "status": "failed",
+    # "skip_class": "auth_invalid"}. Both halves were in the same response.
+    notice = _TURN_ENDED_FAILURE_CLASSES.get(_attempt_class(exc))
     if notice is not None:
         return notice
     # Unmapped. Pass the text through UNLESS it is our own synthetic wrapper,

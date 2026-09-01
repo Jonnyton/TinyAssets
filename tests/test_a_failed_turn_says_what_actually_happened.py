@@ -353,3 +353,79 @@ def test_a_successful_turn_carries_no_diagnosis_keys():
     from tinyassets.universe_server import _served_failure_diagnosis
 
     assert _served_failure_diagnosis(RuntimeError("plain")) == {}
+
+
+def test_the_EXACT_payload_the_founder_got_now_names_the_cause():
+    """Captured live 2026-09-01 from the founder's universe. Verbatim.
+
+    The response carried BOTH halves at once: a notice saying nothing could be
+    identified, and the identification sitting beside it.
+
+        "error": "...we could not identify why..."
+        "provider_diagnosis": [{"provider": "codex", "status": "failed",
+                                "skip_class": "auth_invalid"}]
+
+    `dominant_failure_class` only reads the STREAMED failure_class, and a
+    `ProviderUnavailableError` -- which is every auth failure on a subprocess
+    provider -- is classified into `skip_class` instead. So the top-level class
+    was None while the attempt knew the answer.
+    """
+    from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
+
+    exc = AllProvidersExhaustedError(
+        "Served provider 'codex' exhausted; universe authority forbids fallback widening.",
+        attempts=[ProviderAttemptDiagnostic(
+            provider="codex", status="failed", skip_class="auth_invalid",
+            detail="codex exec returned exit code 1 quickly -- likely unavailable",
+        )],
+    )
+
+    notice = _served_failure_notice(exc)
+    lowered = notice.lower()
+    assert "could not identify" not in lowered, (
+        "the cause was in the attempt and the notice still shrugged"
+    )
+    assert "reconnect" in lowered, "the owner is not told what would fix it"
+    assert "billing" in lowered or "usage" in lowered
+
+
+def test_a_provider_that_was_never_TRIED_explains_nothing():
+    """A `skipped` attempt is not a cause. My first capture was a skip during a
+    cooldown window, which says only that an earlier failure happened -- reading
+    it as the reason would report a cooldown as the diagnosis forever."""
+    from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
+
+    exc = AllProvidersExhaustedError(
+        "Served provider 'codex' exhausted; universe authority forbids fallback widening.",
+        attempts=[ProviderAttemptDiagnostic(
+            provider="codex", status="skipped", skip_class="quota_or_cooldown",
+        )],
+    )
+    assert "could not identify" in _served_failure_notice(exc).lower()
+
+    # And with a class that IS mapped, so the assertion can actually
+    # discriminate: quota_or_cooldown falls through either way, which made an
+    # earlier version of this test survive its own mutation.
+    skipped_but_mapped = AllProvidersExhaustedError(
+        "Served provider 'codex' exhausted; universe authority forbids fallback widening.",
+        attempts=[ProviderAttemptDiagnostic(
+            provider="codex", status="skipped", skip_class="endpoint_unreachable",
+        )],
+    )
+    assert "could not identify" in _served_failure_notice(skipped_but_mapped).lower(), (
+        "a provider that was never tried was reported as the cause"
+    )
+
+
+def test_the_streamed_class_still_wins_when_both_are_present():
+    """`skip_class` is the coarse bucket; the streamed class is more precise."""
+    from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
+
+    exc = AllProvidersExhaustedError(
+        "exhausted",
+        attempts=[ProviderAttemptDiagnostic(
+            provider="codex", status="failed", skip_class="auth_invalid",
+            failure_class="provider_rate_limited",
+        )],
+    )
+    assert "rate-limiting" in _served_failure_notice(exc)
