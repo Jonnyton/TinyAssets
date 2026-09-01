@@ -296,6 +296,13 @@ def _enqueue_workspace_terminal(
     return written
 
 
+#: How old a lock whose run is unknown to this database must be before the
+#: sweep will release it. A lock is written before its run row on a legitimate
+#: start, so anything shorter reaps live work during that race. Far above any
+#: real checkout; far below the day the founder's stuck lock had reached.
+_ORPHAN_LOCK_MIN_AGE_S = 3600.0
+
+
 def _workspace_sweep_once(base_path: str | Path, *, claimant: str) -> int:
     """One periodic pass: enqueue leases orphaned by a terminal run that never
     reached the outbox (a crash between the two writes of an older code path),
@@ -334,6 +341,34 @@ def _workspace_sweep_once(base_path: str | Path, *, claimant: str) -> int:
                )
             """
         ).fetchall()
+        # And locks whose run this database has never heard of. The query above
+        # is an INNER JOIN, so it silently drops them -- and nothing else will
+        # ever release a lock whose run cannot be transitioned here. Runs are
+        # recorded per-universe as well as at the root, so a lock and its run
+        # can live in different files, and then the lock is permanent.
+        #
+        # Live 2026-09-01: `u-01kxm1vszd8hwp7em418asq8h9` could not check out
+        # anything because a lock from a run that had failed the previous day
+        # was still held, and the sweep could not see it to release it.
+        #
+        # Age-bounded because a lock is written BEFORE its run row on a normal
+        # start: without this an unknown-run sweep would reap live work during
+        # that window.
+        unknown_run_locks = conn.execute(
+            """
+            SELECT k.run_id FROM workspace_locks AS k
+             WHERE k.acquired_at < ?
+               AND NOT EXISTS (
+                   SELECT 1 FROM runs AS r WHERE r.run_id = k.run_id
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM workspace_outbox AS o
+                    WHERE o.run_id = k.run_id AND o.done_at IS NULL
+               )
+            """,
+            (time.time() - _ORPHAN_LOCK_MIN_AGE_S,),
+        ).fetchall()
+        orphaned_locks = list(orphaned_locks) + list(unknown_run_locks)
         for run_id in {r[0] for r in orphaned_leases} | {r[0] for r in orphaned_locks}:
             _enqueue_workspace_terminal(conn, base_path, run_id)
     return workspace_pool.periodic_sweep(db, fs=RealPoolFilesystem(), claimant=claimant)
