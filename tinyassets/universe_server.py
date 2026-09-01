@@ -1854,6 +1854,49 @@ _PLATFORM_FAULT_TELLS = (
 )
 
 
+def _record_served_failure(universe_id: str, exc: BaseException) -> None:
+    """Write the per-provider diagnosis to the server log. Never raises.
+
+    ``AllProvidersExhaustedError`` has carried a structured ``attempts`` list
+    since FEAT-006 -- provider, status, skip_class, failure_class, cooldown,
+    detail -- and until 2026-09-01 nothing in the repo read it. The router
+    assembled the exact answer on every failure and discarded it, which is how
+    an outage could be reported as quota, then as missing API keys, and be
+    neither.
+
+    The owner's notice stays clean: ``detail`` is provider text and may carry
+    hosts or paths, so it is scrubbed and kept server-side. What the owner is
+    told is that the details exist -- and now they do.
+    """
+    from tinyassets.workspace_git import scrub_text
+
+    try:
+        attempts = getattr(exc, "attempts", None) or []
+        rendered = "; ".join(
+            " ".join(
+                str(part) for part in (
+                    getattr(a, "provider", "?"),
+                    getattr(a, "status", ""),
+                    getattr(a, "skip_class", ""),
+                    getattr(a, "failure_class", "") or "",
+                    scrub_text(str(getattr(a, "detail", "") or ""))[:200],
+                ) if str(part)
+            )
+            for a in attempts
+        )
+        logger.warning(
+            "served turn failed universe=%s class=%s retry_after=%s attempts=%d [%s] chain=%s",
+            universe_id,
+            getattr(exc, "failure_class", None),
+            getattr(exc, "retry_after", None),
+            len(attempts),
+            rendered or scrub_text(str(exc))[:300],
+            getattr(exc, "chain_state", None),
+        )
+    except Exception:  # noqa: BLE001 - diagnostics must never break a failure path
+        logger.warning("served turn failed universe=%s (diagnostics unavailable)", universe_id)
+
+
 def _served_failure_notice(exc: BaseException) -> str:
     """The user-facing sentence for a failed served turn.
 
@@ -2040,6 +2083,7 @@ def converse(message: str = "", graph_id: str = "") -> str:
         held = engine_setup_required_payload(uid, exc)
         if held is not None:
             return json.dumps(held)
+        _record_served_failure(uid, exc)
         return json.dumps({"error": _served_failure_notice(exc)})
     try:
         from tinyassets.conversation_store import record_exchange
