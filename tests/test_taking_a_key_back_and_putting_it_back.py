@@ -184,3 +184,89 @@ def test_a_removed_key_grants_nothing_while_it_is_gone(base):
 
     assert _connection(base, "u-1") is None
     assert not has_git_scope(_connection(base, "u-1"), "git_read", REPO)
+
+
+def test_removal_hands_back_the_shape_it_destroyed(base):
+    """So putting it back does not start from anyone's memory.
+
+    Founder, 2026-08-31: the agent should "ask its user for only exactly what it
+    cant do on its own". The platform knew the endpoints and scopes a moment
+    before it deleted them, so asking the owner to remember is the guessing this
+    change set exists to end.
+    """
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    _deposit("u-1", scopes=[f"git_read:{REPO}", f"git_write:{REPO}"])
+
+    from tinyassets.api.http_connection import remove_http
+
+    out = remove_http(universe_id="u-1",
+                      payload=json.dumps({"destination": "github"}))
+
+    assert out["status"] == "removed"
+    assert out["removed_scopes"] == [f"git_read:{REPO}", f"git_write:{REPO}"]
+    assert [e["host"] for e in out["removed_endpoints"]] == ["api.github.com"]
+    assert out["removed_endpoints"][0]["path_template"] == "/repos/o/r/pulls"
+    assert out["removed_endpoints"][0]["methods"] == ["POST"]
+    # And it says what to do with them, because a value nobody is told to use
+    # is a value nobody uses.
+    assert "removed_scopes" in out["next"]
+
+
+def test_a_rotation_restores_itself_from_that_readback_alone(base):
+    """The whole point, end to end: remove, then rebuild from what came back.
+
+    Nothing here remembers the original shape -- the deposit is built purely
+    from the removal's own return value. If the readback is incomplete or
+    misspelled, the checkout authority does not come back and this fails.
+    """
+    from tinyassets.api.http_connection import connect_http, remove_http
+    from tinyassets.storage.workspace_authority import has_git_scope
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    _deposit("u-1", scopes=[f"git_read:{REPO}", f"git_write:{REPO}"])
+
+    gone = remove_http(universe_id="u-1",
+                       payload=json.dumps({"destination": "github"}))
+    assert not _connection(base, "u-1")
+
+    back = connect_http(universe_id="u-1", payload=json.dumps({
+        "destination": gone["destination"],
+        "secret": "ghp_" + "r" * 36,             # the ONLY new thing
+        "auth_scheme": "bearer",
+        "allowed_endpoints": gone["removed_endpoints"],
+        "scopes": gone["removed_scopes"],
+    }))
+
+    assert back["status"] == "provisioned"
+    assert has_git_scope(_connection(base, "u-1"), "git_read", REPO)
+    assert has_git_scope(_connection(base, "u-1"), "git_write", REPO)
+
+
+def test_the_readback_carries_no_secret(base):
+    """Four boxes of shape, none of them the key."""
+    from tinyassets.api.http_connection import remove_http
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    secret = "ghp_" + "s" * 36
+    _deposit("u-1", scopes=[f"git_read:{REPO}"], secret=secret)
+
+    out = remove_http(universe_id="u-1",
+                      payload=json.dumps({"destination": "github"}))
+    assert secret not in json.dumps(out)
+
+
+def test_removing_something_absent_readbacks_empty_not_missing(base):
+    """Idempotent removal keeps its shape: the keys are always there, empty."""
+    from tinyassets.api.http_connection import remove_http
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    out = remove_http(universe_id="u-1",
+                      payload=json.dumps({"destination": "never-deposited"}))
+
+    assert out["status"] == "removed"
+    assert out["removed_endpoints"] == []
+    assert out["removed_scopes"] == []

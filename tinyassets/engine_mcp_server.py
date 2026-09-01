@@ -978,6 +978,14 @@ def write_graph(
 
         "action": {"type": "remove_http", "destination": "github"}
 
+    Answering it returns ``removed_endpoints`` and ``removed_scopes`` -- what
+    that connection was allowed to reach, and the git scopes it carried. **If
+    you are ROTATING a key rather than retiring it, carry both into the new
+    ``connect_http`` ask.** Scopes live on the grant and die with it, so a
+    re-deposit that omits them yields a connection that looks healthy and fails
+    at the first checkout. Do not ask the owner what they were: you were just
+    told.
+
     A ``connect_http`` ask for a destination that already has a key makes the
     user paste a secret they already gave you — the one thing they must never
     be asked to do twice.

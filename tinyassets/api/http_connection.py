@@ -711,6 +711,31 @@ def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
         # another principal's deposited credential.
         return dict(_NOT_FOUND)
 
+    # Read the SHAPE before destroying it. Endpoints and git scopes are the two
+    # things a re-deposit has to reproduce, and scopes in particular die with
+    # the grant -- forget them and the connection comes back looking healthy
+    # while every checkout fails. None of this is secret: the owner saw all of
+    # it in the grant sentence before they pasted anything.
+    removed_endpoints: list[dict[str, Any]] = []
+    removed_scopes: list[str] = []
+    if resource is not None:
+        from tinyassets.storage.workspace_authority import connection_git_scopes
+
+        removed_endpoints = [
+            {
+                "host": endpoint.host,
+                "path_template": endpoint.path_template,
+                "methods": list(endpoint.methods or []),
+            }
+            for endpoint in (resource.allowed_endpoints or ())
+        ]
+        try:
+            removed_scopes = sorted(
+                f"{kind}:{repo}" for kind, repo in connection_git_scopes(resource)
+            )
+        except Exception:  # noqa: BLE001 - never fail a removal over a readback
+            removed_scopes = []
+
     secrets_removed = forget_credential(
         _universe_dir(uid), credential_type="http", destination=destination
     )
@@ -723,11 +748,17 @@ def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
         "grant_id": grant_id,
         "secrets_removed": secrets_removed,
         "connection_removed": bool(rows_removed),
+        # What it looked like, so putting it back does not start from memory.
+        "removed_endpoints": removed_endpoints,
+        "removed_scopes": removed_scopes,
         # Say it plainly: the point of deleting rather than revoking is that
         # the name is free again, and the user should not have to infer that.
         "next": (
             f"the destination {destination!r} is free -- deposit it again "
-            "whenever you like"
+            "whenever you like. To restore it exactly, reuse "
+            "'removed_endpoints' and 'removed_scopes' in the new ask: the "
+            "scopes went with the grant, and a deposit without them looks "
+            "healthy but cannot check anything out"
         ),
     }
 
