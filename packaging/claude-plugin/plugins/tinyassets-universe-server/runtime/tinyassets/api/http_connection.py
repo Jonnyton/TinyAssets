@@ -721,25 +721,21 @@ def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     if resource is not None:
         from tinyassets.storage.workspace_authority import connection_git_scopes
 
-        removed_endpoints = []
-        for endpoint in (resource.allowed_endpoints or ()):
-            # EVERY field the deposit accepts, not the three that are easy to
-            # read. A patterned path without its `param_patterns` is refused on
-            # re-deposit, so a partial readback rebuilds a connection that is
-            # not the one destroyed (Codex, R3).
-            entry: dict[str, Any] = {
-                "host": endpoint.host,
-                "path_template": endpoint.path_template,
-                "methods": list(endpoint.methods or []),
-            }
-            patterns = dict(getattr(endpoint, "param_patterns", None) or {})
-            if patterns:
-                entry["param_patterns"] = patterns
-            for extra in ("query_patterns", "max_body_bytes"):
-                value = getattr(endpoint, extra, None)
-                if value:
-                    entry[extra] = dict(value) if isinstance(value, dict) else value
-            removed_endpoints.append(entry)
+        # `as_dict` is the endpoint's OWN serialization, and it is exactly the
+        # shape `_validate_endpoint` parses -- it round-trips by construction.
+        #
+        # This was hand-written first, and the hand-written version drifted the
+        # moment it existed: it dropped `allowed_query` and `required_query`
+        # entirely and emitted the pattern maps as stored TUPLES, which the
+        # validator refuses with "query_patterns must be an object". A readback
+        # that cannot be re-deposited is worse than none, because it looks like
+        # a rotation right up until the deposit is refused (Codex, W2).
+        #
+        # The rule this is an instance of: never hand-write the inverse of a
+        # parser that already publishes one.
+        removed_endpoints = [
+            endpoint.as_dict() for endpoint in (resource.allowed_endpoints or ())
+        ]
         try:
             removed_scopes = sorted(
                 f"{kind}:{repo}" for kind, repo in connection_git_scopes(resource)

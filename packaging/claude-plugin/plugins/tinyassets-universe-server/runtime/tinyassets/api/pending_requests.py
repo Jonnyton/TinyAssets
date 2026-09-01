@@ -594,6 +594,44 @@ def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str
     return {**row, "grant_sentence": _grant_sentence(row)}
 
 
+def _granted_lines(action: dict[str, Any]) -> list[str]:
+    """Everything an ask grants, one phrase each, endpoints AND git scopes.
+
+    ONE builder, because there are two action types that grant and they were
+    rendered by two hand-written string assemblies. Teaching the deposit branch
+    about git scopes left the EXTENSION branch silently granting repository
+    write with nothing about it on screen -- and a scope-only extension rendered
+    the empty phrase "reach ." (Codex, W4).
+
+    Scopes are folded into the same list rather than appended after it, so the
+    "and nothing else" that closes the sentence stays true. Appending a tail
+    after "nothing else" produced a sentence that contradicted itself in the
+    same breath (Codex, W3).
+    """
+    lines = [
+        f"{'/'.join(e.get('methods') or [])} {e.get('host')}{e.get('path_template')}"
+        for e in (action.get("endpoints") or [])
+    ]
+    for scope in (action.get("scopes") or []):
+        text = str(scope).strip()
+        if not text or ":" not in text:
+            continue
+        kind, _, repo = text.partition(":")
+        if kind == "git_read":
+            lines.append(f"use git to READ {repo}")
+        elif kind == "git_write":
+            lines.append(f"use git to WRITE to {repo}")
+    return lines
+
+
+def _grants_git(action: dict[str, Any]) -> bool:
+    """Whether this ask carries git authority, which "reach" does not describe."""
+    return any(
+        str(scope).strip().startswith(("git_read:", "git_write:"))
+        for scope in (action.get("scopes") or [])
+    )
+
+
 def _grant_sentence(row: dict[str, Any]) -> str:
     """For a credential ask, the exact grant in one line. Empty otherwise."""
     action = row.get("action") or {}
@@ -614,13 +652,13 @@ def _grant_sentence(row: dict[str, Any]) -> str:
             "gave. Nothing to paste; this is the yes."
         )
     if action.get("type") == "extend_http":
-        lines = [
-            f"{'/'.join(e.get('methods') or [])} {e.get('host')}{e.get('path_template')}"
-            for e in (action.get("endpoints") or [])
-        ]
+        lines = _granted_lines(action)
+        if not lines:
+            return ""
+        verb = "do" if _grants_git(action) else "reach"
         return (
             f'Also let the key you already gave as "{action.get("destination")}" '
-            "reach " + "; ".join(lines) + ". You do not need to paste it again."
+            f"{verb} " + "; ".join(lines) + ". You do not need to paste it again."
         )
     if action.get("type") == "remove_http":
         return (
@@ -630,10 +668,7 @@ def _grant_sentence(row: dict[str, Any]) -> str:
         )
     if action.get("type") != "connect_http":
         return ""
-    lines = [
-        f"{'/'.join(e.get('methods') or [])} {e.get('host')}{e.get('path_template')}"
-        for e in (action.get("endpoints") or [])
-    ]
+    lines = _granted_lines(action)
     if not lines:
         return ""
     # Name the connection. Two asks can differ ONLY by destination — the agent
@@ -642,28 +677,16 @@ def _grant_sentence(row: dict[str, Any]) -> str:
     # so a user cannot tell the one that works from the one that fails
     # (observed live, 2026-08-28).
     where = f' as "{action.get("destination")}"' if action.get("destination") else ""
-    # Git scopes are AUTHORITY and were never named here: a connection could
-    # carry git_write on a repository the owner had not been shown, and only the
-    # HTTP endpoints appeared in the sentence they said yes to. That also made
-    # the removal readback disclose something new (Codex, R2). One sentence, all
-    # of the grant.
-    scopes = [str(s).strip() for s in (action.get("scopes") or []) if str(s).strip()]
-    tail = ""
-    if scopes:
-        tail = (
-            " It may also use git to "
-            + "; ".join(
-                ("read " if s.startswith("git_read:") else "write ")
-                + s.split(":", 1)[1]
-                for s in scopes
-            )
-            + "."
-        )
     if len(lines) == 1:
-        return f"This key{where} will be able to {lines[0]} - nothing else.{tail}"
+        return f"This key{where} will be able to {lines[0]} - nothing else."
+    # "reach" is the established wording and describes an endpoint list. It does
+    # NOT describe "use git to WRITE to owner/repo", so the verb widens only
+    # when a git scope is actually present -- every ask without one reads
+    # exactly as it always has.
+    verb = "do" if _grants_git(action) else "reach"
     return (
-        f"This key{where} will be able to reach exactly these, and nothing "
-        "else: " + "; ".join(lines) + f".{tail}"
+        f"This key{where} will be able to {verb} exactly these, and nothing "
+        "else: " + "; ".join(lines) + "."
     )
 
 

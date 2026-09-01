@@ -350,10 +350,13 @@ def test_the_owner_is_shown_the_git_authority_they_are_granting(base):
     sentence = ask["grant_sentence"]
     assert "api.github.com/repos/o/r/pulls" in sentence, "endpoints still shown"
     assert "git" in sentence.lower(), "the git authority is not mentioned at all"
-    assert f"write {REPO}" in sentence, (
+    # Assert the MEANING, not the exact wording -- an over-specific string
+    # match here just makes the sentence unimprovable.
+    lowered = sentence.lower()
+    assert f"write to {REPO}" in lowered, (
         "the owner is not told this key may WRITE to the repository"
     )
-    assert f"read {REPO}" in sentence
+    assert f"read {REPO}" in lowered
 
 
 def test_a_key_with_no_git_scopes_says_nothing_about_git(base):
@@ -370,3 +373,113 @@ def test_a_key_with_no_git_scopes_says_nothing_about_git(base):
                                       "methods": ["POST"]}]})
 
     assert "git" not in ask["grant_sentence"].lower()
+
+
+def test_an_endpoint_with_QUERY_policy_survives_the_round_trip(base):
+    """W2: the readback has to be re-depositable, not merely informative.
+
+    The first version hand-wrote the endpoint serialization and drifted from the
+    validator immediately: it dropped `allowed_query` and `required_query` and
+    emitted the pattern maps as stored TUPLES, so a rebuild was refused with
+    "query_patterns must be an object". It looked like a rotation right up to
+    the point the deposit said no.
+
+    `OutboundEndpoint.as_dict()` already existed and is exactly what the
+    validator parses. The rule: never hand-write the inverse of a parser that
+    publishes one.
+    """
+    from tinyassets.api.http_connection import connect_http
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    endpoint = {
+        "host": "api.example.com",
+        "path_template": "/v2/items/{id}",
+        "methods": ["GET", "PUT"],
+        "param_patterns": {"id": "[0-9]{1,12}"},
+        "allowed_query": ["ref", "page"],
+        "query_patterns": {"ref": "[a-z0-9._-]{1,40}"},
+        "required_query": ["ref"],
+    }
+    assert connect_http(universe_id="u-1", payload=json.dumps({
+        "destination": "svc", "auth_scheme": "bearer", "secret": "tok_" + "a" * 20,
+        "allowed_endpoints": [endpoint],
+    }))["status"] == "provisioned"
+
+    ask = _ask("u-1", kind="API", title="Rotate svc", fields=[],
+               action={"type": "remove_http", "destination": "svc"})
+    gone = _answer("u-1", request_id=ask["request_id"], values={})
+
+    [read_back] = gone["removed_endpoints"]
+    assert read_back["allowed_query"] == ["ref", "page"]
+    assert read_back["required_query"] == ["ref"]
+    assert read_back["query_patterns"] == {"ref": "[a-z0-9._-]{1,40}"}, (
+        "query patterns came back as something the validator refuses"
+    )
+
+    # The proof that matters: it goes back in.
+    again = connect_http(universe_id="u-1", payload=json.dumps({
+        "destination": gone["destination"],
+        "auth_scheme": gone["auth_scheme"],
+        "secret": "tok_" + "b" * 20,
+        "allowed_endpoints": gone["removed_endpoints"],
+    }))
+    assert again["status"] == "provisioned", again
+
+
+def test_a_scope_only_EXTENSION_says_what_it_grants(base):
+    """W4: answering it grants repository write, so the tab must say so.
+
+    The extension sentence was assembled separately from the deposit's, so
+    teaching the deposit about git scopes left this one silent -- and a
+    scope-only extension, which carries no endpoints at all, rendered the empty
+    phrase "reach ." while granting write access to a repository.
+
+    One builder now serves both, which is why this cannot drift again.
+    """
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    _deposit("u-1")
+
+    ask = _ask("u-1", kind="API", title="Also let me push", fields=[],
+               action={"type": "extend_http", "destination": "github",
+                       "scopes": [f"git_write:{REPO}"]})
+
+    sentence = ask["grant_sentence"]
+    assert sentence.strip(), "a scope-only extension rendered nothing at all"
+    assert "reach ." not in sentence, "the empty-endpoint phrasing is back"
+    assert f"write to {REPO}" in sentence.lower(), (
+        "the owner is asked to approve repository WRITE without being told"
+    )
+
+
+def test_a_grant_sentence_never_promises_more_than_it_lists(base):
+    """W3: the sentence closed with "nothing else" and then listed more.
+
+    Appending git authority after "- nothing else." produced a sentence that
+    contradicted itself in the same breath. Scopes belong INSIDE the list the
+    sentence closes over.
+    """
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+
+    ask = _ask("u-1", kind="API", title="Connect GitHub",
+               fields=[{"name": "t", "label": "Token", "type": "secret"}],
+               action={"type": "connect_http", "destination": "github",
+                       "auth_scheme": "bearer",
+                       "endpoints": [{"host": "api.github.com",
+                                      "path_template": "/repos/o/r/pulls",
+                                      "methods": ["POST"]}],
+                       "scopes": [f"git_write:{REPO}"]})
+
+    import re
+
+    sentence = ask["grant_sentence"]
+    # The regression was a whole CLAUSE appended after the sentence closed:
+    # "... - nothing else. It may also use git to ...". Enumerating after
+    # "nothing else:" is the correct form and must not trip this.
+    assert not re.search(r"nothing else\.\s+\S", sentence), (
+        "a clause follows the sentence that said there was nothing else: " + sentence
+    )
+    assert sentence.rstrip().endswith(".")
+    assert f"write to {REPO}" in sentence.lower(), "the git authority vanished"
