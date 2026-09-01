@@ -114,7 +114,9 @@ _SECRET_BEARING_KEYS = frozenset(
 )
 
 _ALLOWED_SHAPE_KEYS = frozenset({"label", "prefix", "length"})
-_DEPOSITABLE_AUTH_SCHEMES = frozenset({"bearer", "basic", "oauth1a"})
+#: Mirrors the deposit door in ``api/http_connection.py``; a proposal must
+#: never suggest a scheme the deposit would then refuse.
+_DEPOSITABLE_AUTH_SCHEMES = frozenset({"bearer", "basic", "header", "oauth1a"})
 
 _SYSTEM = """\
 You identify which HTTP API a credential belongs to, from its SHAPE only.
@@ -124,7 +126,7 @@ the credential itself), hostname/URL hints the user pasted, and the user's own
 one-line intent. Return ONE JSON object and nothing else:
 
 {"destination": "<short lowercase slug, [a-z0-9._:-], no spaces>",
- "auth_scheme": "bearer" | "basic" | "oauth1a",
+ "auth_scheme": "bearer" | "basic" | "header" | "oauth1a",
  "host": "<bare hostname, no scheme, no path>",
  "path_template": "<one exact absolute path, e.g. /repos/owner/repo/pulls>",
  "methods": ["POST"],

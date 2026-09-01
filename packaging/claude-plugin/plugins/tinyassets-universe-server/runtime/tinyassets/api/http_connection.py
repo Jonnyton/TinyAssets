@@ -76,11 +76,29 @@ _DEFAULT_AUTH_SCHEME = "bearer"
 _ABSENT = object()
 #: Auth schemes this deposit door accepts — exactly the set the broker child can
 #: sign (see ``_SUPPORTED_HTTP_AUTH_SCHEMES`` / ``_build_http_secret_bundle`` in
-#: storage/outbound_connections.py), minus ``none`` (a no-credential connection
-#: has nothing to deposit) and ``header`` (needs a per-connection header NAME the
-#: ledger does not yet persist). Generic on purpose: ``oauth1a`` is what makes
-#: X/Twitter — and every other OAuth 1.0a API — depositable with no service code.
-_DEPOSITABLE_AUTH_SCHEMES = frozenset({"bearer", "basic", "oauth1a"})
+#: storage/outbound_connections.py), minus ``none``: a no-credential connection
+#: has nothing to deposit.
+#:
+#: ``header`` was excluded on the stated grounds that it "needs a per-connection
+#: header NAME the ledger does not yet persist". That was stale. The header NAME
+#: is a per-CALL field on the request packet
+#: (``authenticated_external_call``: ``"header_name": "X-Api-Key"``), and the
+#: stored credential for ``header`` is a single token — byte-identical to
+#: ``bearer`` (``_build_http_secret_bundle``: ``if scheme in ("bearer",
+#: "header")``). So nothing had to be persisted and nothing had to be built; the
+#: door was simply shut.
+#:
+#: It matters because an API keyed by a custom header (``X-API-Key``,
+#: ``apikey``, ...) is extremely common, and every one of them was undepositable
+#: — which is exactly the "another service, another patch" the acceptance test
+#: forbids. The header name stays validated where it is used:
+#: ``_reject_forbidden_header_name`` and ``_SSRF_FORBIDDEN_HEADER_CHARS`` refuse
+#: a smuggling attempt (``Content-Length`` was the one that prompted them).
+#:
+#: Generic on purpose: ``oauth1a`` is what makes every OAuth 1.0a API
+#: depositable with no service code, and ``header`` does the same for every
+#: custom-header API.
+_DEPOSITABLE_AUTH_SCHEMES = frozenset({"bearer", "basic", "header", "oauth1a"})
 _OAUTH1A_FIELDS = ("api_key", "api_secret", "access_token", "access_token_secret")
 
 
