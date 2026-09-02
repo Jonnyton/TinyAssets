@@ -357,6 +357,33 @@ def test_audit_rows_survive_without_the_person_or_the_content(two_users: Path):
     assert receipt["rows_deleted"]["action_records (redacted)"] == 1
 
 
+def test_a_grant_the_person_made_to_another_universe_goes_with_their_connection(
+    two_users: Path,
+):
+    """`outbound_connection_grants.connection_id` references
+    `outbound_connections` with no ON DELETE clause, and the satellite sweep runs
+    with foreign keys ON. A grant the deleted person made to SOMEONE ELSE'S
+    universe is not selected by the home predicate, so deleting the parent
+    connection would raise and abandon the whole store. It is the person's own
+    grant of their own credential, so it goes with them."""
+    base = two_users
+    outbound = base / "outbound.db"
+    _exec(
+        outbound,
+        "INSERT INTO outbound_connection_grants (grant_id, connection_id, "
+        "owner_user_id, universe_id, granted_at) VALUES ('grant-a-in-b', 'conn-a', ?, ?, 1.0)",
+        (A, HOME_B),
+    )
+
+    receipt = delete_account(base, founder_sub=A, delete_identity=lambda s: "deleted")
+
+    assert receipt["unfinished_phases"] == [], receipt["unfinished_phases"]
+    assert _rows(outbound, "SELECT 1 FROM outbound_connections WHERE owner_user_id = ?", (A,)) == []
+    assert _rows(outbound, "SELECT grant_id FROM outbound_connection_grants") == [("grant-b",)]
+    # B's own connection and grant are untouched.
+    assert _rows(outbound, "SELECT connection_id FROM outbound_connections") == [("conn-b",)]
+
+
 def test_a_commons_pointer_survives_its_binder_being_deleted(two_users: Path):
     """`canonical_bindings` says which branch is canonical for a goal — a pointer
     other people rely on. `bound_by_actor_id` records who bound it, which is

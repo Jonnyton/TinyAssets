@@ -115,6 +115,12 @@ PERSON_KEYED_DESPITE_UNIVERSE = MappingProxyType({
     # binding to the same home is a blocker, but a binding is the person's own
     # row and should not depend on the universe sweep to disappear.
     "founder_home": "founder_sub",
+    # A grant is this person's grant OF THEIR OWN connection, so it goes with
+    # them wherever it points — and it must, because the grant references the
+    # connection with no ON DELETE clause: leaving a grant on someone else's
+    # universe makes deleting the parent connection raise, which abandoned the
+    # whole outbound store and left the credential behind.
+    "outbound_connection_grants": "owner_user_id",
 })
 
 #: Reached through a parent rather than by their own key, and/or entangled in
