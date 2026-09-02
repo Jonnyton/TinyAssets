@@ -1232,6 +1232,7 @@
       if(name) $("universe-name").textContent=name;
       queueScope = String(s.universe_id || s.universe || queueScope || "");
       restoreQueue();   // no-op once done, or until the scope is known
+      healServing(s);
     }catch(err){
       if(err.authRequired) return sessionExpired();
       // The heartbeat doubles as the healer. A transport failure means the
@@ -1247,6 +1248,44 @@
     }
   }
   function startHeartbeat(){ pollStatus(); clearInterval(statusTimer); statusTimer=setInterval(pollStatus,30000); }
+
+  // The status says which engine this universe THINKS on (active_host.llm_endpoint_bound)
+  // and whether anything is serving its background work (no_serving_runtime). A mind
+  // with nothing serving on it is the deposit-without-bind state; heal it once per
+  // page rather than telling the user to reconnect (founder, 2026-09-01: a naive
+  // user would not know to).
+  let servingHealAttempted = false;
+  // Candidate engines, the one the status names first. The writer health here
+  // is host-level presence, not this universe's vault, so each candidate is an
+  // ATTEMPT: the route refuses ("held") when nothing is deposited for it.
+  function unservedCandidates(s){
+    try{
+      const live=s.supervisor_liveness||{};
+      const pump=((live.epoch2_operational||{}).consumer_pump)||[];
+      if(!pump.some(p=>p&&p.reason==="no_serving_runtime")) return [];
+      const bound=String(((s.active_host||{}).llm_endpoint_bound)||"");
+      const writers=((live.provider_auth||{}).writers)||{};
+      const ok=name=>!!(writers[name]&&writers[name].status==="ok");
+      const out=[];
+      const push=(engine,service)=>{ if(ok(engine)&&!out.includes(service)) out.push(service); };
+      if(bound==="codex") push("codex","codex"); else if(bound==="claude-code") push("claude-code","claude");
+      push("codex","codex"); push("claude-code","claude");
+      return out;
+    }catch(_e){ return []; }
+  }
+  async function healServing(s){
+    if(servingHealAttempted) return;
+    const candidates=unservedCandidates(s);
+    if(!candidates.length) return;
+    servingHealAttempted = true;
+    for(const service of candidates){
+      const sv=await serveOn(service);
+      if(sv&&sv.status==="serving"){
+        appendMessage("system","Your universe now runs its background work on your "+serviceLabel(service)+" subscription.");
+        return;
+      }
+    }
+  }
 
   // Connecting a mind is part of signing in (founder 2026-08-21): until the
   // user's universe has an engine, landing goes to Connect, not to a chat that
@@ -1418,6 +1457,22 @@
   function autoGrow(el){ el.style.height="auto"; el.style.height=Math.min(el.scrollHeight,window.innerHeight*0.4)+"px"; }
 
   function authHeaders(){ const h={}; const tk=token(); if(tk) h["Authorization"]="Bearer "+tk; return h; }
+
+  // A deposit is only half of "connect": the universe must also SERVE on it, or
+  // chat works while every run fails with provider_not_bound. Same route the
+  // phone uses; idempotent; returns {status:"serving"|"held", ...}, never throws.
+  async function serveOn(service){
+    try{
+      const r=await fetch("/mcp/app/serving/bind",{method:"POST",headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:JSON.stringify({service})});
+      return (await r.json()).serving||null;
+    }catch(_e){ return null; }
+  }
+  function serviceLabel(service){ return service==="codex" ? "OpenAI" : "Claude"; }
+  function servingSentence(service, sv){
+    if(sv&&sv.status==="serving") return serviceLabel(service)+" connected. Your universe thinks and works on it from the next turn.";
+    const why=(sv&&(sv.detail||sv.reason))?(": "+(sv.detail||sv.reason)):"";
+    return serviceLabel(service)+" credential saved, but your universe is not running on it yet"+why+".";
+  }
 
   // ---- One-tap OpenAI link (device authorization, brokered by the daemon) ----
   // The daemon talks to OpenAI and deposits the resulting credential as the
@@ -1742,7 +1797,14 @@
       try{
         const b64=btoa(unescape(encodeURIComponent(material)));
         const payload=await MCP.connectLLM(service,b64);
-        out.textContent=JSON.stringify(payload,null,2);
+        if(payload&&payload.status==="deposited"){
+          out.textContent="Deposited. Pointing your universe at it...";
+          const sv=await serveOn(service);
+          out.textContent=servingSentence(service, sv);
+          if(sv&&sv.status==="serving") onEngineConnected();
+        } else {
+          out.textContent=JSON.stringify(payload,null,2);
+        }
       }catch(err){ if(err.authRequired){ btn.disabled=false; return enterSignedOut(); } out.textContent="Deposit failed: "+err.message; }
       finally{ btn.disabled=false; }
     });
