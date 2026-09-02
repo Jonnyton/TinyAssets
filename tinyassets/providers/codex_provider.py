@@ -152,39 +152,13 @@ def _redacted_stderr_excerpt(stderr_text: str, limit: int = 240) -> str:
     return text[:half] + " ... " + text[-half:]
 
 
-#: The one file the CLI must be able to rewrite. Codex refreshes its OAuth
-#: bundle in place (``cli_auth_credentials_store = "file"``), and refresh tokens
-#: ROTATE -- so a read-only bind does not merely block the refresh, it strands
-#: the stored token permanently at the first rotation.
-_CODEX_WRITABLE_CREDENTIAL_FILES = frozenset({"auth.json"})
-
-
 def _codex_home_file_mounts(codex_home: Path) -> list[str]:
-    """Bind each regular file of the snapshot into the jail's ``CODEX_HOME``.
-
-    Everything is ``--ro-bind`` except ``auth.json``, which is bound writable.
-
-    The sealed-snapshot design treated the credential bytes as immutable, which
-    is right for a static secret and wrong for an OAuth bundle: the CLI refreshes
-    by rewriting this file, and because refresh tokens rotate on use the
-    deposited bundle becomes permanently unusable at the first rotation. That is
-    what took the founder's universe dark on 2026-09-01 and kept it dark across
-    restarts.
-
-    The writable target is the per-call SNAPSHOT copy. Codex still has no path to
-    the vault; what it writes is either promoted by the trusted parent after the
-    call or thrown away with the snapshot.
-    """
+    """``--ro-bind`` args for each regular file of the sealed snapshot."""
     args: list[str] = []
     for entry in sorted(codex_home.iterdir()):
         if entry.is_symlink() or not entry.is_file():
             continue
-        writable = entry.name in _CODEX_WRITABLE_CREDENTIAL_FILES
-        args.extend((
-            "--bind" if writable else "--ro-bind",
-            str(entry),
-            f"/codex-home/{entry.name}",
-        ))
+        args.extend(("--ro-bind", str(entry), f"/codex-home/{entry.name}"))
     if not args:
         raise ProviderError("codex served sandbox found no credential files to mount")
     return args

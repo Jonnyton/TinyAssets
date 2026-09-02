@@ -1153,7 +1153,6 @@ def authorize_served_provider_call(
         cleanup_llm_credential_snapshot,
         current_connection_grant_custody,
         current_llm_subscription_custody,
-        promote_refreshed_llm_credential,
         snapshot_llm_subscription_credential,
     )
     from tinyassets.custom_agents import get_binding
@@ -1177,10 +1176,6 @@ def authorize_served_provider_call(
     with provider_assignment_admission().shared(universe):
         authority: ServedProviderAuthority | None = None
         credential_snapshot = None
-        # Bound BEFORE the try: the promotion call lives in `finally`, which
-        # runs on the paths where this was never assigned. An unbound name
-        # there would replace the real provider error with a NameError.
-        custody = None
         try:
             capability = validate_provider_request_carrier(
                 request_carrier,
@@ -1374,15 +1369,6 @@ def authorize_served_provider_call(
                 raise
             raise ProviderAuthorityHeldError(held) from exc
         finally:
-            # BEFORE cleanup: the child may have refreshed its OAuth bundle in
-            # the snapshot, and refresh tokens rotate on use -- so discarding it
-            # does not merely lose a refresh, it strands the stored token
-            # permanently. Promotion is compare-and-swap under the deposit lock
-            # and returns False rather than raising, so a completed call is
-            # never turned into a failure by this.
-            promote_refreshed_llm_credential(
-                credential_snapshot, custody, universe_dir=universe,
-            )
             cleanup_llm_credential_snapshot(credential_snapshot)
 
 
