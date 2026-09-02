@@ -237,26 +237,21 @@ The `Create app` button un-greys once it goes through. Tell me and I will take t
 from there. (Earlier notes recorded "identity verified 2026-08-24" — that was a *different*
 verification; the phone step is separate and still open.)
 
-### Google Play: confirm `WORKOS_API_KEY` reaches the daemon (one command, before launch)
+### Google Play: `WORKOS_API_KEY` reaches the daemon — VERIFIED 2026-09-02, nothing for you
 
-Account deletion (`tinyassets/account_deletion.py`, shipped in #2774) removes the user's
-WorkOS record through the management API, and that is also what ends sessions on other
-devices — this process cannot enumerate their refresh handles. The key is not in the repo
-or in `deploy/`, so it lives only in `/etc/tinyassets/env` on the host. WorkOS Pipes needs
-the same variable and works in production, so it is probably already there; "probably" is
-not good enough for a deletion promise published on `/legal`.
+Account deletion removes the user's WorkOS record through the management API, and that
+upstream deletion is also what ends sessions on other devices (their refresh handles are
+opaque to the daemon). The key is not in the repo or in `deploy/`, so I checked the host:
+`/etc/tinyassets/env` carries exactly one `WORKOS_API_KEY=` line, and
+`docker exec tinyassets-daemon printenv WORKOS_API_KEY` returns an `sk_`-prefixed value of
+the expected length. So a real deletion will remove the sign-in identity, which is what
+`/legal` and `/account` promise.
 
-```bash
-ssh <prod-host> 'grep -c "^WORKOS_API_KEY=" /etc/tinyassets/env'   # expect 1
-ssh <prod-host> 'docker exec tinyassets-daemon printenv WORKOS_API_KEY | head -c 3'  # expect sk_
-```
-
-If it is missing, deletion still runs and still removes every byte of the user's data —
-it reports `identity: not_configured`, tells the user in the app, and writes a receipt
-under `.account-deletions/` — but the sign-in identity survives and you must delete it in
-the WorkOS dashboard. Check `python -c "import json,sys;
-from tinyassets.account_deletion import pending_deletions; print(pending_deletions('/data'))"`
-for anything outstanding.
+If that ever stops being true, deletion still removes every byte of the user's data and
+reports `identity: not_configured`, tells the user, and writes a receipt under
+`.account-deletions/` — check it with
+`python -c "from tinyassets.account_deletion import pending_deletions; print(pending_deletions('/data'))"`.
+Delete this paragraph on the next host-actions pass.
 
 ### Google Play: add the four upload-keystore secrets (one command)
 
