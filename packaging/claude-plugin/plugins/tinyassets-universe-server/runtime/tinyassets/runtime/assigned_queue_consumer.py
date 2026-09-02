@@ -826,12 +826,15 @@ class AssignedQueueConsumer:
         """Why `_serving_runtime` came back empty, told honestly.
 
         `no_serving_runtime` only when the universe genuinely has no ready
-        serving assignment. When it HAS one and no daemon can be selected, the
-        universe is serving -- chat and runs use its provider -- and what is
-        missing is the retired fleet-era executor for recurring automations.
+        serving assignment. When it HAS one and this loop can select no daemon
+        (it never can any more: the daemon rows it wants belonged to the
+        retired host workers), the universe is serving -- chat and runs use its
+        provider -- and only scheduled/triggered graphs are not firing.
         Reporting that as "no serving provider selected" sent the founder's
         universe looking for a selection surface that does not exist (app
-        thread, 2026-09-02) and made the app heal re-fire on every load.
+        thread, 2026-09-02) and made the app heal re-fire on every load. This
+        loop itself is what should go: a graph with a trigger should fire
+        through the ordinary run path.
         """
         try:
             from tinyassets.provider_assignment import load_provider_assignment
@@ -841,7 +844,7 @@ class AssignedQueueConsumer:
             return "no_serving_runtime"
         if assignment is None or assignment.state != "ready":
             return "no_serving_runtime"
-        return "background_executor_unavailable"
+        return "automations_not_running"
 
     def _publish_heartbeat(self, universe_id: str):
         from tinyassets.background_branch_authority import (

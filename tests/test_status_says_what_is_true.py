@@ -45,7 +45,7 @@ def test_a_universe_with_a_READY_assignment_is_not_told_to_choose_one(tmp_path, 
             state="ready", provider="codex", owner_user_id="alice",
         ),
     )
-    assert _consumer(tmp_path)._no_runtime_reason("u-1") == "background_executor_unavailable"
+    assert _consumer(tmp_path)._no_runtime_reason("u-1") == "automations_not_running"
 
 
 @pytest.mark.parametrize("assignment", [
@@ -62,19 +62,22 @@ def test_a_universe_without_a_ready_assignment_still_hears_no_serving_runtime(
     assert _consumer(tmp_path)._no_runtime_reason("u-1") == "no_serving_runtime"
 
 
-def test_the_new_reason_says_the_universe_IS_serving_and_names_the_retired_executor():
-    action = consumer_next_action("background_executor_unavailable")
+def test_the_new_reason_says_the_universe_IS_serving_in_words_a_user_can_use():
+    """No 'fleet', no 'executor' (founder, 2026-09-02: the fleet was old
+    spaghetti; users build and run whatever graphs they want, when they want)."""
+    action = consumer_next_action("automations_not_running")
     lowered = action.lower()
     assert "is serving" in lowered
-    assert "retired" in lowered
+    assert "build and run graphs now" in lowered
     assert "no serving provider selected" not in lowered
     assert "choose one" not in lowered
+    assert "fleet" not in lowered and "executor" not in lowered
 
 
 # The wiring is pinned by tests/test_automations.py
 # ::test_a_poll_beats_for_a_serving_universe_with_no_runtime_at_all, which
 # drives the real poll against a universe with a READY assignment and now
-# expects `background_executor_unavailable`.
+# expects `automations_not_running`.
 
 
 # ------------------------------------------------ the app heal keys on the truth
@@ -123,7 +126,7 @@ def test_the_app_heal_does_not_fire_on_the_new_reason():
         "})();",
     ])
     quiet = json.loads(subprocess.run(
-        [_NODE, "-e", script, "--", "background_executor_unavailable"],
+        [_NODE, "-e", script, "--", "automations_not_running"],
         capture_output=True, text=True, timeout=30, check=True,
     ).stdout.strip().splitlines()[-1])
     loud = json.loads(subprocess.run(
