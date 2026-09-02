@@ -1816,16 +1816,26 @@ def _action_list_universes(**_kwargs: Any) -> str:
     return json.dumps(result)
 
 
+class _OwnershipUnavailable(RuntimeError):
+    """The ownership store could not be read. NOT the same as unowned."""
+
+
 def _owned_universe_id(uid: str) -> str:
-    """The owned id ``uid`` names, or ``""``. Never raises: an unreadable ACL
-    store answers "nobody owns it", which refuses rather than serves."""
+    """The owned id ``uid`` names, or ``""`` when nobody owns it.
+
+    Raises ``_OwnershipUnavailable`` when the store cannot be read. Returning
+    ``""`` there refused the request as "Universe not found", which tells the
+    caller an existing universe does not exist -- a lie, from a transient
+    SQLite lock (Codex code review round 3, P1). Fail closed AND loudly: the
+    request is still refused, but for the reason that is true.
+    """
     from tinyassets.daemon_server import owned_universe_id
 
     try:
         return owned_universe_id(_base_path(), uid)
-    except Exception:  # noqa: BLE001 - fail closed
+    except Exception as exc:  # noqa: BLE001
         logger.exception("ownership lookup failed for %s", uid)
-        return ""
+        raise _OwnershipUnavailable(str(exc)) from exc
 
 
 def _available_universe_ids() -> list[str]:
@@ -1845,11 +1855,18 @@ def _available_universe_ids() -> list[str]:
     except Exception:  # noqa: BLE001 - fail closed
         logger.exception("ownership lookup failed while listing available ids")
         return []
+    from tinyassets.api import visibility
+
     return sorted(
         d.name for d in base.iterdir()
         if d.is_dir()
         and not d.name.startswith(".")
         and (d.name in owned or d.name.casefold() in owned)
+        # Existence is separately granted. Without this, asking for an id that
+        # does not exist answered with every owned universe, private and
+        # unlisted ones included -- the enumeration gate the listing applies,
+        # skipped by taking the error path (Codex code review round 3, P1).
+        and visibility.visibility_permits(d.name, "discover_existence")
     )
 
 
@@ -1862,7 +1879,11 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
     # full universe payload for `cloud-automation-inputs` and for the migration
     # backup, reproduced anonymously against production on 2026-09-02. The
     # graveyard was still browsable, which is what the founder reported.
-    if not udir.is_dir() or not _owned_universe_id(uid):
+    try:
+        owner_id = _owned_universe_id(uid)
+    except _OwnershipUnavailable as exc:
+        return json.dumps({"error": f"Ownership store unavailable: {exc}"})
+    if not udir.is_dir() or not owner_id:
         return json.dumps({
             "error": f"Universe '{uid}' not found.",
             "available": _available_universe_ids(),
@@ -5831,7 +5852,11 @@ def _action_switch_universe(universe_id: str = "", **_kwargs: Any) -> str:
 
     uid = universe_id
     udir = _universe_dir(uid)
-    if not udir.is_dir() or not _owned_universe_id(uid):
+    try:
+        owner_id = _owned_universe_id(uid)
+    except _OwnershipUnavailable as exc:
+        return json.dumps({"error": f"Ownership store unavailable: {exc}"})
+    if not udir.is_dir() or not owner_id:
         return json.dumps({
             "error": f"Universe '{uid}' not found.",
             "available": _available_universe_ids(),
@@ -6063,17 +6088,18 @@ def _action_create_universe(
         except Exception as revoke_exc:  # noqa: BLE001 - the create already failed
             logger.exception("rollback: could not revoke the create grant for %s", uid)
             revoke_failed = str(revoke_exc)
+        # An owner left holding an admin grant on a universe that does not
+        # exist has to be told, whatever the create failed with. Reporting it
+        # only for OSError meant a failure in seeding, visibility or home
+        # binding re-raised silently (Codex code review round 3, P1).
+        if revoke_failed:
+            return json.dumps({"error": (
+                f"Failed to create universe: {exc}. The ownership grant could "
+                f"NOT be taken back ({revoke_failed}); '{uid}' is claimed but "
+                "not created."
+            )})
         if isinstance(exc, OSError):
-            detail = f"Failed to create universe: {exc}"
-            if revoke_failed:
-                # Saying only "failed" would leave the owner holding an admin
-                # grant on a universe that does not exist, with nothing on the
-                # surface saying so (Codex code review round 2, P1).
-                detail += (
-                    f" The ownership grant could NOT be taken back "
-                    f"({revoke_failed}); '{uid}' is claimed but not created."
-                )
-            return json.dumps({"error": detail})
+            return json.dumps({"error": f"Failed to create universe: {exc}"})
         raise
 
 

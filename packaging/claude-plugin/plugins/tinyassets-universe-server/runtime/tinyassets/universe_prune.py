@@ -174,6 +174,30 @@ def _measure(path: Path) -> tuple[int, int, list[str]]:
     return files, total, sorted(notable)
 
 
+#: The prefix a removal moves a directory through. Dotted, so nothing lists
+#: it as a universe -- and therefore nothing would ever have mentioned it
+#: again if a crash left one behind (Codex code review round 3, P1).
+STAGING_PREFIX = ".pruning-"
+
+
+def interrupted_cuts(base_path: str | Path) -> list[str]:
+    """Directories left mid-removal by a crash, as paths.
+
+    A cut moves the directory aside before deleting it, so a process that dies
+    in between leaves the content under a dotted name that no listing, no
+    prune, no reset and no filesystem sync will ever mention. Reporting it is
+    the difference between "recoverable" and "gone quietly": `plan()` carries
+    this, and the script prints it before anything else.
+    """
+    base = Path(base_path)
+    if not base.is_dir():
+        return []
+    return sorted(
+        str(p) for p in base.iterdir()
+        if p.is_dir() and p.name.startswith(STAGING_PREFIX)
+    )
+
+
 def plan(base_path: str | Path) -> list[DirectoryReport]:
     """Every directory under the data root, with its owners. Pure: reads only.
 
@@ -301,7 +325,7 @@ def prune(
         # directory, and creation grants before it materializes, so the next
         # read of that id sees an owner and a fresh empty universe rather than
         # this one's contents.
-        staged = base / f".pruning-{name}-{uuid.uuid4().hex[:12]}"
+        staged = base / f"{STAGING_PREFIX}{name}-{uuid.uuid4().hex[:12]}"
         try:
             target.rename(staged)
         except OSError as exc:

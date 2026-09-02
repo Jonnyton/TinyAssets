@@ -58,9 +58,18 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     from tinyassets.storage import data_dir
-    from tinyassets.universe_prune import plan, prune
+    from tinyassets.universe_prune import interrupted_cuts, plan, prune
 
     base = data_dir()
+    # Before anything else: a directory a previous run died halfway through.
+    # Its content is intact and nothing else will ever mention it.
+    for orphan in interrupted_cuts(base):
+        print(
+            f"  ! a previous removal was interrupted and left {orphan}\n"
+            "    Its contents are intact. Rename it back to recover it, or "
+            "remove it by hand once you have looked.",
+            file=sys.stderr,
+        )
     reports = plan(base)
     if not reports:
         print(f"no directories under {base}")

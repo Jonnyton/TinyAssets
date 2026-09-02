@@ -19,7 +19,7 @@ import shutil
 import sqlite3
 from pathlib import Path
 
-from tinyassets.universe_prune import INFRASTRUCTURE_DIRS
+from tinyassets.universe_prune import INFRASTRUCTURE_DIRS, _universe_signal
 
 # Universe-scoped tables in .tinyassets.db, cleared entirely. Every row belongs
 # to a universe (index / visibility / ownership / per-universe runtime + branch
@@ -74,11 +74,19 @@ _RESET_PRESERVED_DIRS = INFRASTRUCTURE_DIRS
 
 
 def universe_dirs(base: Path) -> list[Path]:
-    """Directories a clean-slate reset clears: everything under ``base`` that
-    is not a dotfile and not platform infrastructure.
+    """Directories a clean-slate reset clears: the universes, and the piles of
+    universes a past prune moved aside. Nothing else.
 
-    Not the same question as "which of these is a universe" -- an unowned
-    leftover is not a universe and IS cleared."""
+    "Everything that is not platform infrastructure" was the old answer, and it
+    destroyed the migration backup `docs/host-actions.md` says in as many words
+    not to delete (Codex code review round 3, P0). The prune had learned the
+    difference and the reset had not, which is two definitions of one fact
+    again: a directory nobody recognises is not a universe, and clearing
+    universes is not licence to clear it.
+
+    An unowned prune archive IS still cleared -- it carries the signal, it
+    holds universes, and clearing those is exactly what a reset is for.
+    """
     if not base.is_dir():
         return []
     return sorted(
@@ -86,6 +94,7 @@ def universe_dirs(base: Path) -> list[Path]:
         if p.is_dir()
         and not p.name.startswith(".")
         and p.name not in _RESET_PRESERVED_DIRS
+        and _universe_signal(p)
     )
 
 

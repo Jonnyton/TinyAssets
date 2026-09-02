@@ -102,12 +102,14 @@ def _default_universe() -> str:
     if base.is_dir():
         from tinyassets.daemon_server import owned_universe_ids
 
-        owned = owned_universe_ids(base)
         for child in sorted(base.iterdir()):
             if (
                 child.is_dir()
                 and not child.name.startswith(".")
-                and child.name in owned
+                # The DIRECTORY name, resolved case-insensitively against the
+                # ACL, so a restored `U-Mine` is returned as the path that
+                # exists rather than the ACL spelling that does not.
+                and owned_universe_id(base, child.name)
             ):
                 return child.name
     return "default-universe"
@@ -165,16 +167,15 @@ def _designated_public_universe() -> str:
         if resolved:
             return resolved
     if base.is_dir():
-        from tinyassets.daemon_server import owned_universe_ids
+        from tinyassets.daemon_server import owned_universe_id, owned_universe_ids
 
-        owned = owned_universe_ids(base)
-        if default and not owned:
+        if default and not owned_universe_ids(base):
             return default
         for child in sorted(base.iterdir()):
             if (
                 child.is_dir()
-                and child.name in owned
                 and not is_universe_serial(child.name)
+                and owned_universe_id(base, child.name)
             ):
                 return child.name
     return "default-universe"

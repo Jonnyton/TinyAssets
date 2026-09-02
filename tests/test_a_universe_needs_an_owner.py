@@ -507,9 +507,31 @@ def test_a_claim_landing_between_the_check_and_the_delete_is_not_lost(
             )
         return answer
 
+    # ...and the second ownership read must happen with the id ALREADY FREED.
+    # Reading twice and then deleting the original would pass every assertion
+    # below while leaving the window open (Codex code review round 3, P2), so
+    # the read itself records whether the name was still occupied.
+    from tinyassets import daemon_server
+
+    real_owners = daemon_server.universe_owners
+    occupied_at_read: list[bool] = []
+
+    def _watch_owners(base, *, universe_id):
+        if universe_id == "_removed_racy_20260828":
+            occupied_at_read.append((data_root / universe_id).exists())
+        return real_owners(base, universe_id=universe_id)
+
+    monkeypatch.setattr(daemon_server, "universe_owners", _watch_owners)
     monkeypatch.setattr(universe_prune, "_universe_signal", _claim_then_answer)
     result = universe_prune.prune(
         data_root, names=["_removed_racy_20260828"], apply=True,
+    )
+
+    assert len(occupied_at_read) >= 2, occupied_at_read
+    assert occupied_at_read[0] is True, "the first read ran after the move"
+    assert occupied_at_read[-1] is False, (
+        "the second ownership read ran while the id was still occupied, so the "
+        "check-then-delete window is still open"
     )
 
     assert result["removed"] == [], "a universe claimed mid-cut was deleted"
@@ -554,3 +576,92 @@ def test_reading_a_universe_by_id_needs_an_owner_too(data_root):
 
     owned = json.loads(_action_inspect_universe(universe_id="u-mine"))
     assert "error" not in owned, owned
+
+
+def test_a_reset_clears_universes_and_leaves_what_it_does_not_recognise(data_root):
+    """Codex code review round 3, P0. `reset(confirm=True)` cleared every
+    directory that was not on the infrastructure list, so it destroyed
+    `_backup_subject_migration_...` -- the one thing `docs/host-actions.md`
+    says in as many words not to delete. The prune had learned the difference
+    and the reset had not."""
+    from tinyassets.reset import universe_dirs
+
+    _own(data_root, "u-mine")
+    (data_root / "u-mine" / "soul.md").write_text("# mine", encoding="utf-8")
+    _universe(data_root, "_removed_universes_20260828")
+    backup = "_backup_subject_migration_20260829T055340Z"
+    _universe(data_root, backup)
+    _universe(data_root, "wiki")
+    _universe(data_root, "some-new-store-2027")
+
+    cleared = {p.name for p in universe_dirs(data_root)}
+    assert "u-mine" in cleared
+    assert "_removed_universes_20260828" in cleared, (
+        "a pile of universes a past prune left is exactly what a reset clears"
+    )
+    assert backup not in cleared, "the migration backup was cleared"
+    assert "wiki" not in cleared
+    assert "some-new-store-2027" not in cleared
+
+
+def test_an_interrupted_cut_is_reported_rather_than_left_silent(data_root):
+    """Codex code review round 3, P1. A crash between the move and the delete
+    leaves the content under a dotted name that no listing, no prune, no reset
+    and no filesystem sync will ever mention again."""
+    from tinyassets.universe_prune import STAGING_PREFIX, interrupted_cuts, plan
+
+    _own(data_root, "u-mine")
+    assert interrupted_cuts(data_root) == []
+
+    orphan = data_root / f"{STAGING_PREFIX}_removed_something-deadbeef1234"
+    orphan.mkdir()
+    (orphan / "work.md").write_text("# not lost", encoding="utf-8")
+
+    reported = interrupted_cuts(data_root)
+    assert reported == [str(orphan)]
+    # ...and it is still invisible to everything else, which is why it needs
+    # its own report.
+    assert [r.name for r in plan(data_root)] == ["u-mine"]
+    assert (orphan / "work.md").is_file()
+
+
+def test_a_not_found_answer_does_not_publish_private_universes(data_root, monkeypatch):
+    """Codex code review round 3, P1. Asking for an id that does not exist
+    answered with every OWNED universe -- private and unlisted ones included --
+    to any signed-in caller. The enumeration gate the listing applies was
+    skipped by taking the error path."""
+    from tinyassets.api import universe as universe_api
+    from tinyassets.api import visibility
+
+    _own(data_root, "u-public")
+    _own(data_root, "u-private")
+
+    def _only_public_is_discoverable(universe_id, capability):
+        return universe_id == "u-public"
+
+    monkeypatch.setattr(
+        visibility, "visibility_permits", _only_public_is_discoverable,
+    )
+    answer = json.loads(universe_api._action_inspect_universe(universe_id="nope"))
+    assert "not found" in answer["error"]
+    assert answer["available"] == ["u-public"], answer
+
+
+def test_an_unreadable_ownership_store_is_not_a_missing_universe(data_root, monkeypatch):
+    """Codex code review round 3, P1. A transient SQLite lock during the
+    ownership lookup reported that an existing universe does not exist. Fail
+    closed AND loudly: still refused, for the reason that is true."""
+    from tinyassets import daemon_server
+    from tinyassets.api import universe as universe_api
+
+    _own(data_root, "u-mine")
+
+    def _store_is_down(base_path, name):
+        raise OSError("database is locked")
+
+    monkeypatch.setattr(daemon_server, "owned_universe_id", _store_is_down)
+
+    answer = json.loads(universe_api._action_inspect_universe(universe_id="u-mine"))
+    assert "not found" not in answer["error"], answer
+    assert "Ownership store unavailable" in answer["error"]
+    assert "database is locked" in answer["error"]

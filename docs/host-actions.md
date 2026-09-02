@@ -28,11 +28,36 @@ migration happened, and the page reads like an accident. The site does **not**
 filter them, deliberately: hiding rows while claiming to show "what is public"
 is exactly the dishonesty the public-read boundary exists to prevent.
 
-Your call, because the fix writes to live universe records. Suggested shape is
-in `docs/concerns/2026-09-02-migration-records-are-publicly-discoverable.md`:
-create maintenance holding records private, flip the seven existing ones (do
-not delete — they are migration backups), and decide whether an unpublished
-universe should default to `public` at all.
+**Half of this is answered in code** (branch
+`claude/universe-list-is-a-directory-listing`): a universe is now a directory
+somebody OWNS, so none of the seven appears in any listing, none resolves by
+id, and none can be handed out as a default. Once that deploys, `/commons`
+stops showing them without the site filtering anything — which is the honest
+version of the fix.
+
+**Two things are still yours to decide, and neither is automatic:**
+
+1. **The three prune archives** (`_removed_universes_20260828`,
+   `_removed_universes_20260829`, `_removed_legacy_20260829`) hold universes a
+   past cleanup moved aside rather than deleting. Run
+   `python scripts/prune_unowned_universe_dirs.py` in the daemon container to
+   see what each one holds — file count, size, and the notable files — then
+   `--apply` to cut them. It refuses anything owned, anything that is platform
+   infrastructure, and anything it cannot positively recognise as a former
+   universe.
+2. **The migration backup** (`_backup_subject_migration_20260829T055340Z`) is
+   deliberately NOT cuttable by that script, because this file already says do
+   not delete it. When you decide it has served its purpose, name it explicitly
+   with `--only` — the script still refuses it, so removing it is a deliberate
+   act outside this tool.
+
+`scratch`, `daemon_wikis` and `cloud-automation-inputs` are live platform
+storage, not buckets: the workspace pool, daemon memory, and retained user
+inputs. They are named as infrastructure and are never cut.
+
+The remaining question is unchanged and is a design one: should an unpublished
+universe default to `public` at all? Suggested shape in
+`docs/concerns/2026-09-02-migration-records-are-publicly-discoverable.md`.
 
 ## Decide: should a deposit serve the universe by itself?
 
