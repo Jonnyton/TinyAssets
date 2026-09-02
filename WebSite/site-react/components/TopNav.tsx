@@ -4,79 +4,80 @@ import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { TinyAssetsMark } from "./TinyAssetsMark";
+import { NAV, SITE } from "../lib/site";
 import styles from "./TopNav.module.css";
 
-const items = [
-  { href: "/start", label: "start" },
-  { href: "/goals", label: "goals" },
-  { href: "/loop", label: "loop" },
-  { href: "/commons", label: "commons" },
-  { href: "/graph", label: "graph" },
-  { href: "/soul", label: "soul" },
-  { href: "/build", label: "build" },
-];
-
 function isActive(path: string, href: string): boolean {
-  if (href === "/") return path === "/";
-  return path === href || path.startsWith(href + "/");
+  const clean = href.replace(/\/$/, "");
+  if (clean === "") return path === "/";
+  return path === clean || path.startsWith(clean + "/");
 }
 
 export function TopNav() {
   const pathname = usePathname() ?? "/";
-  const [drawerOpen, setDrawerOpen] = React.useState(false);
-  const close = () => setDrawerOpen(false);
+  const [open, setOpen] = React.useState(false);
+  const close = () => setOpen(false);
 
   return (
-    <>
-      <header className={styles.top}>
-        <div className={`container ${styles.row}`}>
-          <Link className={styles.brand} href="/" aria-label="Tiny — home" onClick={close}>
-            <TinyAssetsMark size={26} />
-            <span className={styles.brandName}>Tiny</span>
-            <span className={`${styles.brandSub} ev`}>tinyassets.io</span>
-          </Link>
-          <nav className={styles.nav} aria-label="Primary">
-            {items.map((it) => (
-              <Link
-                key={it.href}
-                href={it.href}
-                className={`${styles.item}${isActive(pathname, it.href) ? " " + styles.active : ""}`}
-              >
-                <span className={styles.label}>{it.label}</span>
-              </Link>
-            ))}
-          </nav>
-          <button
-            className={`${styles.hamburger}${drawerOpen ? " " + styles.open : ""}`}
-            aria-label={drawerOpen ? "Close menu" : "Open menu"}
-            aria-expanded={drawerOpen}
-            onClick={() => setDrawerOpen((v) => !v)}
-          >
-            <span /><span /><span />
-          </button>
-        </div>
-      </header>
+    <header className={styles.top}>
+      <div className={`container ${styles.row}`}>
+        <Link className={styles.brand} href="/" aria-label="TinyAssets — home" onClick={close}>
+          <TinyAssetsMark size={30} />
+          <span className={styles.wordmark}>TinyAssets</span>
+        </Link>
 
-      {drawerOpen && (
-        <div className={styles.drawer} role="dialog" aria-label="Site navigation">
-          <nav aria-label="Mobile primary">
-            <Link href="/" className={`${styles.drawerItem}${isActive(pathname, "/") ? " " + styles.active : ""}`} onClick={close}>
-              <strong>home</strong>
+        <nav className={styles.nav} aria-label="Primary">
+          {NAV.map((it) => (
+            <Link
+              key={it.href}
+              href={it.href}
+              className={`${styles.item}${isActive(pathname, it.href) ? " " + styles.active : ""}`}
+            >
+              {it.label}
             </Link>
-            {items.map((it) => (
+          ))}
+        </nav>
+
+        <a className={`btn btn--primary btn--sm ${styles.cta}`} href={SITE.app}>
+          Open the app
+        </a>
+
+        <button
+          className={`${styles.hamburger}${open ? " " + styles.open : ""}`}
+          aria-label={open ? "Close menu" : "Open menu"}
+          aria-expanded={open}
+          aria-controls="mobile-nav"
+          onClick={() => setOpen((v) => !v)}
+        >
+          <span />
+          <span />
+          <span />
+        </button>
+      </div>
+
+      {open && (
+        <div id="mobile-nav" className={styles.drawer}>
+          <nav aria-label="Mobile primary" className={`container ${styles.drawerNav}`}>
+            <Link href="/" className={styles.drawerItem} onClick={close}>
+              Home
+            </Link>
+            {NAV.map((it) => (
               <Link
                 key={it.href}
                 href={it.href}
                 className={`${styles.drawerItem}${isActive(pathname, it.href) ? " " + styles.active : ""}`}
                 onClick={close}
               >
-                <strong>{it.label}</strong>
+                {it.label}
               </Link>
             ))}
+            <a className={`btn btn--primary btn--md ${styles.drawerCta}`} href={SITE.app}>
+              Open the app
+            </a>
           </nav>
         </div>
       )}
-    </>
+    </header>
   );
 }
 

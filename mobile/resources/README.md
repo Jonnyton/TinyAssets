@@ -1,7 +1,7 @@
 # App icon + splash
 
-- `icon.png` — 1024×1024 source (the site's logo mark on `#0b0b0f`). Every
-  launcher icon and adaptive foreground is rendered from this.
+- `icon.png` — 1024×1024 source (the TinyAssets mark on its paper tile, on
+  `#0b0b0f`). Every launcher icon and adaptive foreground is rendered from this.
 - `splash.png` — 2732×2732 source (the mark centred on `#0b0b0f`, matching the
   loading page). Every splash size is a cover-fit centre-crop of this, so editing
   it changes what ships.
@@ -22,14 +22,18 @@ keeps CI free of an image toolchain and makes the shipped pixels reviewable.
 ```bash
 cd mobile
 python scripts/render_app_icons.py                      # density set from icon.png + splash.png
-python scripts/render_app_icons.py --from-logo ../WebSite/site/static/logo-mark.png \
-    --font <Regular.ttf> --font-bold <Bold.ttf>         # also icon.png, splash.png, Play graphics
+python scripts/render_app_icons.py --from-logo ../assets/icon.png   # also icon.png, splash.png, icon-512
+python scripts/render_app_icons.py --from-logo ../assets/icon.png \
+    --font <Regular.ttf> --font-bold <Bold.ttf>         # ...and the feature graphic
+# or, for every surface at once: python ../WebSite/brand/render_marks.py
 ```
 
-The wordmark font is an explicit file (no host lookup), so the feature graphic
-renders identically on any machine given the same file. Rendered with Pillow 10.x;
-the committed PNGs are canonical — re-render only to change the art, and review
-the pixel diff.
+The feature graphic is the only output with type on it, and its font must be an
+explicit file: rendered from whatever the host happens to have installed, the same
+command produces different pixels on different machines. Without `--font` it is
+skipped and the committed one is left alone, so `render_marks.py` (which does not
+pass one) stays runnable. Rendered with Pillow 10.x; the committed PNGs are
+canonical — re-render only to change the art, and review the pixel diff.
 
 `scripts/add_app_icons.py` fails the build if any file in `android/` is missing or
 the wrong size for the template it is copied into, so a Capacitor upgrade that

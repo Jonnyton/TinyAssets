@@ -1,15 +1,11 @@
 import type { Metadata } from "next";
-import GraphClient from "./_components/GraphClient";
+import { Moved } from "../_components/Moved";
 
 export const metadata: Metadata = {
-  title: "Graph — Tiny's published knowledge map",
-  description:
-    "A force-directed map of a dated snapshot or a clearly labelled discovery-scoped refresh. Live discovery is not a complete public-page inventory.",
-  alternates: {
-    canonical: "/graph",
-  },
+  title: "Moved",
+  robots: { index: false, follow: true },
 };
 
-export default function GraphPage() {
-  return <GraphClient />;
+export default function Page() {
+  return <Moved to="/build/" name="Build" line="The graph page became the primitives page." />;
 }

@@ -3,12 +3,13 @@
 
 Two stages, both idempotent:
 
-1. ``--from-logo PATH --font TTF`` (optional): render the *sources* from a square
+1. ``--from-logo PATH`` (optional): render the *sources* from a square
    logo mark — ``resources/icon.png`` (1024²), ``resources/splash.png`` (2732²) and
    the Play listing graphics under ``docs/ops/play-assets/`` (icon-512, feature
-   graphic). The wordmark font is an explicit file, never a host lookup, so the
-   same command renders the same pixels on Windows, Linux and macOS (Codex
-   2026-09-02); pass ``--font-bold`` for a separate bold face.
+   graphic). The feature graphic carries the only type, and its font must be an
+   explicit file rather than a host lookup, or the same command renders different
+   pixels on Windows, Linux and macOS (Codex 2026-09-02). Pass ``--font`` (and
+   optionally ``--font-bold``) to render it; omit them and it is skipped.
 2. Always: render the Android density set from the sources into
    ``resources/android/`` — launcher icons and adaptive foregrounds from
    ``icon.png``, every splash size from ``splash.png`` (cover-fit + centre-crop, so
@@ -23,8 +24,14 @@ differently, which is a reason to review the diff, not to re-render casually.
 
 Usage (from ``mobile/``):
     python scripts/render_app_icons.py
-    python scripts/render_app_icons.py --from-logo ../WebSite/site/static/logo-mark.png \\
+    python scripts/render_app_icons.py --from-logo ../assets/icon.png
+    python scripts/render_app_icons.py --from-logo ../assets/icon.png \\
         --font /path/to/Inter-Regular.ttf --font-bold /path/to/Inter-Bold.ttf
+
+``WebSite/brand/render_marks.py`` runs the second form for you as part of exporting
+the mark to every surface. Without ``--font`` the feature graphic — the only output
+with type on it — is SKIPPED rather than drawn with whatever font the host happens
+to have, so the brand pipeline stays runnable and the wordmark stays reproducible.
 """
 from __future__ import annotations
 
@@ -65,13 +72,15 @@ def _save(im: Image.Image, path: Path) -> None:
     print(f"{path.relative_to(REPO).as_posix()} {im.size[0]}x{im.size[1]}")
 
 
-def render_sources(logo_path: Path, font_path: Path, bold_path: Path) -> None:
+def render_sources(
+    logo_path: Path, font_path: Path | None = None, bold_path: Path | None = None
+) -> None:
     # Load every dependency BEFORE writing anything: the first draft validated
     # the font only when it reached the feature graphic, so a missing font left
     # icon.png and splash.png already overwritten and the committed source set
     # half-updated (Codex 2026-09-02).
-    _font(bold_path, 84)
-    _font(font_path, 30)
+    title_font = _font(bold_path, 84) if bold_path else None
+    body_font = _font(font_path, 30) if font_path else None
     logo = Image.open(logo_path).convert("RGBA")
     if logo.size[0] != logo.size[1]:
         raise SystemExit(f"logo must be square, got {logo.size}")
@@ -92,15 +101,26 @@ def render_sources(logo_path: Path, font_path: Path, bold_path: Path) -> None:
     i512.paste(m512, (0, 0), m512)
     _save(i512, PLAY / "icon-512.png")
 
+    if title_font is None or body_font is None:
+        # The committed feature graphic stays as it is. Skipping is the honest
+        # outcome: drawing this wordmark with a guessed font would silently
+        # change the shipped Play listing art depending on the machine.
+        print(
+            "feature-graphic-1024x500.png SKIPPED - pass --font (and --font-bold) "
+            "to re-render the wordmark"
+        )
+        return
     fg = Image.new("RGB", (1024, 500), BG)
     m = logo.resize((360, 360), Image.LANCZOS)
     fg.paste(m, (70, 70), m)
     d = ImageDraw.Draw(fg)
     x = 470
-    d.text((x, 150), "TinyAssets", font=_font(bold_path, 84), fill=(0xF2, 0xF0, 0xEC))
-    sub = _font(font_path, 30)
-    d.text((x + 4, 262), "Your own AI universe.", font=sub, fill=(0x5E, 0xD6, 0xA6))
-    d.text((x + 4, 304), "Runs real work on your own LLM.", font=sub, fill=(0xC8, 0xC6, 0xC2))
+    d.text((x, 150), "TinyAssets", font=title_font, fill=(0xF2, 0xF0, 0xEC))
+    d.text((x + 4, 262), "Your own AI universe.", font=body_font, fill=(0x5E, 0xD6, 0xA6))
+    d.text(
+        (x + 4, 304), "Runs real work on your own LLM.", font=body_font,
+        fill=(0xC8, 0xC6, 0xC2),
+    )
     _save(fg, PLAY / "feature-graphic-1024x500.png")
 
 
@@ -169,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument(
         "--font", type=Path,
-        help="TTF/OTF for the feature-graphic wordmark (required with --from-logo)",
+        help="TTF/OTF for the feature-graphic wordmark; omit to skip that one output",
     )
     ap.add_argument(
         "--font-bold", type=Path,
@@ -177,9 +197,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
     if args.from_logo:
-        if not args.font:
-            ap.error("--from-logo needs --font: an explicit font file, no host fallback")
-        render_sources(args.from_logo, args.font, args.font_bold or args.font)
+        bold = args.font_bold or args.font
+        render_sources(args.from_logo, args.font, bold)
     render_density_set()
     return 0
 

@@ -1,10 +1,10 @@
 .term {
   position: relative;
-  border-bottom: 1px dotted var(--border-2);
+  border-bottom: 1px dotted var(--border-strong);
   cursor: help;
   outline: none;
 }
-.term:focus-visible { border-radius: 2px; box-shadow: 0 0 0 2px var(--live-100); }
+.term:focus-visible { border-radius: 2px; box-shadow: 0 0 0 2px var(--ember-100); }
 .term__tip {
   position: absolute;
   left: 50%;
@@ -15,8 +15,9 @@
   background: var(--ink-text-900);
   color: var(--paper-50);
   font-family: var(--font-sans);
-  font-size: 12.5px;
+  font-size: 13px;
   font-style: normal;
+  font-weight: 400;
   line-height: 1.45;
   letter-spacing: 0;
   text-align: left;

@@ -15,7 +15,7 @@ on:
         required: false
         default: "false"
   workflow_run:
-    workflows: ["Uptime canary", "tier3-oss-clone-nightly", "deploy-site", "Deploy prod"]
+    workflows: ["Uptime canary", "tier3-oss-clone-nightly", "deploy-site-react", "Deploy prod"]
     types: [completed]
   push:
     branches: [main]

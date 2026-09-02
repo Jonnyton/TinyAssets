@@ -1,3 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="TinyAssets">
-  <image href="tinyassets-logo-icon.png" width="1024" height="1024" preserveAspectRatio="xMidYMid slice"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="TinyAssets"><rect width="64" height="64" rx="14" fill="#f6f1e6"/><circle cx="32" cy="30" r="18.5" fill="none" stroke="#1e1a17" stroke-width="5"/><rect x="15.5" y="36" width="43.5" height="4" fill="#1e1a17"/><circle cx="32" cy="38" r="8.5" fill="#f6f1e6"/><circle cx="32" cy="38" r="6" fill="#b5471f"/></svg>

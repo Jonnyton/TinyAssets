@@ -1,8 +1,8 @@
 # Google Play listing assets
 
 Staging for the Play Console listing (see `../google-play-launch.md`). All rendered
-2026-09-01 from the site's logo mark (`WebSite/site/static/logo-mark.png`) and the
-live app.
+2026-09-02 from the TinyAssets mark (`assets/icon.png`, exported by
+`WebSite/brand/render_marks.py`) and the live app.
 
 - `icon-512.png` — 512×512 listing icon (no alpha).
 - `feature-graphic-1024x500.png` — the required feature graphic (logo + wordmark + tagline).

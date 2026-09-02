@@ -69,7 +69,7 @@ export default function LegalPage() {
               . Public domain. Use without permission.
             </li>
             <li>
-              <strong>This site</strong>: same MIT for site code, CC0 for site content where original; fonts retain their respective licenses (Newsreader, Inter, IBM Plex Mono — served via Google Fonts, all SIL Open Font License).
+              <strong>This site</strong>: same MIT for site code, CC0 for site content where original; fonts retain their respective licenses (Fraunces, Source Sans 3, IBM Plex Mono, served via Google Fonts, all SIL Open Font License).
             </li>
           </ul>
 

@@ -1,14 +1,12 @@
 # Deploy WebSite/site-react (Next.js static export) to GitHub Pages.
 #
-# CURRENT PRODUCTION SITE; MANUAL DEPLOY ONLY via workflow_dispatch.
-# Merging React source does not publish it. A host runs this workflow after the
-# production React build and retained Svelte rollback parity have been verified.
-# See docs/runbooks/2026-06-24-site-react-cutover.md.
-#
-# deploy-site.yml is the dispatch-only Svelte rollback path. Both workflows
-# share the `pages` concurrency group and must never run concurrently. After
-# deployment, verify https://tinyassets.io and /mcp via the public canary
-# (AGENTS.md hard rule #11).
+# THE PRODUCTION SITE; MANUAL DEPLOY ONLY via workflow_dispatch.
+# Merging site source does not publish it. A host runs this workflow after the
+# production build and rendered preview have been verified
+# (WebSite/DEPLOY.md). The Svelte rollback tree and deploy-site.yml were
+# retired on 2026-09-02; rolling back now means re-running this workflow on an
+# earlier revision. After deployment, verify https://tinyassets.io and /mcp via
+# the public canary (AGENTS.md hard rule #11).
 name: deploy-site-react
 
 on:
@@ -64,11 +62,8 @@ jobs:
       - name: Install site deps
         run: npm ci
 
-      - name: Test canonical MCP read contract
-        working-directory: WebSite/site
-        run: |
-          npm ci
-          npm test
+      - name: Test canonical MCP read contract and preview trust boundary
+        run: npm test
 
       - name: Build (static export)
         run: npm run build

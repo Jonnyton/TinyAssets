@@ -125,6 +125,10 @@ function createWindow() {
     minHeight: 600,
     backgroundColor: BACKGROUND_COLOR,
     title: 'TinyAssets',
+    // The TinyAssets mark (build/icon.png, exported by WebSite/brand/render_marks.py).
+    // Packaged Windows/macOS builds take the icon from build/icon.{ico,icns} via
+    // electron-builder; this covers Linux and `npm start`.
+    icon: path.join(__dirname, '..', 'build', 'icon.png'),
     autoHideMenuBar: true,
     webPreferences: {
       // Hardened defaults: the window renders a remote page, so the renderer

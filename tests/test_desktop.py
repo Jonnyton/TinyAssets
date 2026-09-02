@@ -40,7 +40,9 @@ class TestIconImage:
     def test_create_icon_image(self):
         img = _create_icon_image(64)
         assert img.size == (64, 64)
-        assert img.mode == "RGB"
+        # The mark is drawn on a rounded paper tile, so the corners are
+        # transparent: an app icon with square corners would be wrong.
+        assert img.mode == "RGBA"
 
     def test_create_icon_custom_size(self):
         img = _create_icon_image(128)
@@ -653,7 +655,8 @@ class TestIconGen:
     def test_create_icon_image_default_size(self):
         img = create_icon_image()
         assert img.size == (64, 64)
-        assert img.mode == "RGB"
+        # Rounded paper tile: the corners must stay transparent.
+        assert img.mode == "RGBA"
 
     def test_create_icon_image_custom_sizes(self):
         for size in (16, 32, 48, 256):
