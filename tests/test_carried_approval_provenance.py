@@ -432,30 +432,41 @@ class TestBidExecutorFailsClosed:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class TestRunnabilitySurfacesProvenanceChecked:
-    def test_empty_hash_node_is_unrunnable(self):
-        from tinyassets.api.branches import _node_source_code_unrunnable
+class TestApprovalProvenanceIsReportedNotEnforced:
+    """The provenance predicate feeds `unapproved_source_code_nodes`. It never
+    decides `runnable`: code nodes run in the OS sandbox (sandboxed-code-node)."""
 
-        # source_code + approved but no hash → not runnable (gate would refuse).
-        assert _node_source_code_unrunnable({
+    def test_empty_hash_node_is_unapproved(self):
+        from tinyassets.api.branches import _node_source_code_unapproved
+
+        # source_code + approved but no hash → the approval is forged or stale.
+        assert _node_source_code_unapproved({
             "node_id": "n", "source_code": "def run(s): return {}",
             "approved": True, "approved_source_hash": "",
         }) is True
 
-    def test_matching_hash_node_is_runnable(self):
-        from tinyassets.api.branches import _node_source_code_unrunnable
+    def test_matching_hash_node_is_approved(self):
+        from tinyassets.api.branches import _node_source_code_unapproved
 
         src = "def run(s): return {}"
-        assert _node_source_code_unrunnable({
+        assert _node_source_code_unapproved({
             "node_id": "n", "source_code": src,
             "approved": True, "approved_source_hash": _hash(src),
         }) is False
 
-    def test_prompt_template_node_is_runnable(self):
-        from tinyassets.api.branches import _node_source_code_unrunnable
+    def test_prompt_template_node_has_nothing_to_approve(self):
+        from tinyassets.api.branches import _node_source_code_unapproved
 
-        # No executable source surface → not gated → runnable.
-        assert _node_source_code_unrunnable({
+        assert _node_source_code_unapproved({
             "node_id": "n", "source_code": "",
             "prompt_template": "hi {x}", "approved": False,
         }) is False
+
+    def test_a_forged_approval_does_not_make_a_node_unrunnable(self):
+        """The whole point: provenance is reported, execution is not gated."""
+        from tinyassets.api.branches import _source_code_problems
+
+        assert _source_code_problems([{
+            "node_id": "n", "source_code": "def run(s): return {}",
+            "approved": True, "approved_source_hash": "",
+        }]) == []

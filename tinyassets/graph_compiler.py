@@ -16,9 +16,11 @@ Design rules (from `docs/specs/community_branches_phase3.md`):
   ``{{ident}}`` is normalized to ``{ident}`` first. Authors escape
   literal placeholders as ``\\{ident\\}``. Rendered output is sent via
   the role-based provider router.
-- source_code nodes require ``approved=True`` on the NodeDefinition.
-  Unapproved code raises ``UnapprovedNodeError`` at compile time, not
-  runtime, so ``run_branch`` can refuse cleanly.
+- source_code nodes run in the OS sandbox (change ``sandboxed-code-node``);
+  ``approved`` / ``approved_source_hash`` are provenance, never a gate.
+  Compile time checks only the disallowed-pattern scan, the size cap and a
+  syntax pass, through :func:`source_code_problems` -- the ONE definition the
+  authoring receipts report ``runnable`` from as well.
 - Conditional edges use a predicate over a single declared output_key.
   No user-code routers in v1.
 """
@@ -75,10 +77,6 @@ class CompilerError(Exception):
 
 class BranchValidationError(CompilerError, ValueError):
     """Raised when branch structure fails compile-time validation."""
-
-
-class UnapprovedNodeError(CompilerError):
-    """Raised when a source_code node lacks host approval."""
 
 
 class NodeTimeoutError(CompilerError):
@@ -1483,35 +1481,64 @@ def _build_prompt_template_node(
     return _fn
 
 
+def source_code_problems(source_code: str, node_id: str) -> list[str]:
+    """Everything the compiler will refuse about one code node, as sentences.
+
+    This is the single definition of "will this code node compile". The
+    compile-time gate raises the first entry; the authoring receipts
+    (``get_branch`` / ``validate`` / ``describe`` / the build receipt) report
+    ``runnable`` from whether the list is empty. Two definitions of that one
+    fact is what sent the founder's universe planning around a ``runnable:
+    false`` the runtime never enforced (concern 2026-09-01, live thread
+    2026-09-02: "platform-side source-code approval is the missing piece").
+
+    An empty ``source_code`` is not a code node and has no problems.
+    """
+    src = source_code or ""
+    if not src:
+        return []
+    problems: list[str] = []
+    for pattern in _DANGEROUS_PATTERNS:
+        if pattern in src:
+            problems.append(
+                f"Node '{node_id}' source_code contains disallowed "
+                f"pattern: '{pattern}'"
+            )
+    size = len(src.encode("utf-8"))
+    if size > _MAX_SOURCE_CODE_BYTES:
+        problems.append(
+            f"Node '{node_id}' source_code is {size} bytes; "
+            f"the cap is {_MAX_SOURCE_CODE_BYTES}"
+        )
+    try:
+        compile(src, f"<node {node_id}>", "exec")
+    except SyntaxError as exc:
+        problems.append(f"Node '{node_id}' source_code does not parse: {exc}")
+    return problems
+
+
 def _validate_source_code(node: NodeDefinition) -> None:
     """Compile-time gate for a source_code node (design D2, change
     `sandboxed-code-node`). The OS sandbox is the authority boundary - the
     child has no credentials, no network and no data dir, and its only output
     is a state delta that reaches the world through the owner's consent-gated
-    effects - so there is no host-approval check here any more:
+    effects - so there is no host-approval check here:
     ``approved`` / ``approved_source_hash`` are provenance, not a gate.
 
     What stays is defence in depth: the disallowed-pattern scan, a size cap
-    and a syntax check. A code node SHOULD declare ``output_keys`` - anything
-    it returns under another key is dropped, named in the node's event."""
-    src = node.source_code or ""
-    for pattern in _DANGEROUS_PATTERNS:
-        if pattern in src:
-            raise CompilerError(
-                f"Node '{node.node_id}' source_code contains disallowed "
-                f"pattern: '{pattern}'"
-            )
-    if len(src.encode("utf-8")) > _MAX_SOURCE_CODE_BYTES:
-        raise CompilerError(
-            f"Node '{node.node_id}' source_code is {len(src.encode('utf-8'))} bytes; "
-            f"the cap is {_MAX_SOURCE_CODE_BYTES}"
-        )
-    try:
-        compile(src, f"<node {node.node_id}>", "exec")
-    except SyntaxError as exc:
-        raise CompilerError(
-            f"Node '{node.node_id}' source_code does not parse: {exc}"
-        ) from exc
+    and a syntax check, all in :func:`source_code_problems`. A code node
+    SHOULD declare ``output_keys`` - anything it returns under another key is
+    dropped, named in the node's event."""
+    problems = source_code_problems(node.source_code or "", node.node_id)
+    if not problems:
+        return
+    if problems[0].startswith(f"Node '{node.node_id}' source_code does not parse"):
+        # Keep the SyntaxError as __cause__, as the gate always did (Codex).
+        try:
+            compile(node.source_code or "", f"<node {node.node_id}>", "exec")
+        except SyntaxError as exc:
+            raise CompilerError(problems[0]) from exc
+    raise CompilerError(problems[0])
 
 
 _NODE_MCP_ACTION_ALIASES: dict[str, tuple[str, str]] = {

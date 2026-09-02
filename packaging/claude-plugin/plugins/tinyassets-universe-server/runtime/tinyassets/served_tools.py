@@ -51,9 +51,9 @@ from __future__ import annotations
 #:       approval/author/fork stripped at node level, `node_ref` (foreign-node
 #:       dereference) rejected, nested `graph` blob rejected, `fork_from` stripped,
 #:       visibility forced private, size/node/type guards. A served-built
-#:       source_code node persists UNAPPROVED, so run_graph's fail-closed
-#:       _validate_source_code refuses to execute it until the founder approves the
-#:       source via the browser. Gated to the same per-universe run allowlist as
+#:       source_code node persists UNAPPROVED as provenance and RUNS: since
+#:       sandboxed-code-node the OS sandbox is the boundary and approval never
+#:       gates a run (receipts fixed 2026-09-02). Gated to the same per-universe run allowlist as
 #:       run_graph (u-tiny). RESIDUAL, tracked as the pre-second-user harden gate
 #:       (served-agent-build-run): branches are author-scoped not universe-scoped,
 #:       and build_branch's approval surface is broad enough that the robust
@@ -78,8 +78,8 @@ from __future__ import annotations
 #:       (sink, destination) allow — the token is deposited out of band via the browser
 #:       form / connect_http, which is deliberately NOT here). SINK CONSENT ONLY:
 #:       channel_type=="source_code" is refused (that approval sets approved_source_hash,
-#:       the code-execution gate the create-only write_graph strips — keeping it off this
-#:       surface preserves the RCE closure). action=approve only; set_policy/get_policy
+#:       the provenance the create-only write_graph strips — keeping it off this
+#:       surface keeps a served build from attesting its own code). action=approve only; set_policy/get_policy
 #:       and the raw-secret connect_http stay off-surface. Gated to the same u-tiny run
 #:       allowlist; the outbound call also needs TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED.
 #:

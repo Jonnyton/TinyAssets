@@ -205,7 +205,11 @@ def test_build_branch_receipt_reports_unapproved_source_code(comp_env):
     assert approval["source_code_node_count"] == 1
     assert approval["approved_count"] == 0
     assert approval["unapproved_count"] == 1
-    assert approval["runnable"] is False
+    # Provenance only: the node is unapproved AND the branch runs. Approval
+    # never gates a code node (the OS sandbox does); the receipt says so.
+    assert approval["gates_execution"] is False
+    assert approval["problems"] == []
+    assert approval["runnable"] is True
     assert approval["unapproved_nodes"] == [{
         "node_id": "calculate",
         "display_name": "Calculate",
@@ -236,11 +240,11 @@ def test_patch_branch_source_code_mutation_clears_prior_approval(
     assert approval["source_code_node_count"] == 1
     assert approval["approved_count"] == 0
     assert approval["unapproved_count"] == 1
-    assert approval["runnable"] is False
+    assert approval["runnable"] is True
     got = _call(us, "get_branch", branch_def_id=bid)
     node = next(n for n in got["node_defs"] if n["node_id"] == "approved_calc")
     assert node["approved"] is False
-    assert got["runnable"] is False
+    assert got["runnable"] is True
 
 
 def test_build_branch_returns_full_branch_in_structured(comp_env):
@@ -984,7 +988,7 @@ def test_update_node_source_code_mutation_clears_prior_approval(
     got = _call(us, "get_branch", branch_def_id=bid)
     node = next(n for n in got["node_defs"] if n["node_id"] == "approved_update")
     assert node["approved"] is False
-    assert got["runnable"] is False
+    assert got["runnable"] is True
     assert got["unapproved_source_code_nodes"] == [{
         "node_id": "approved_update",
         "display_name": "Approved calc",
