@@ -74,6 +74,20 @@ class TestUniverseDir:
 # _default_universe
 # ---------------------------------------------------------------------------
 
+
+def _own_universe(base, name: str) -> None:
+    """Give ``name`` an owner, which is what makes a directory a universe."""
+    from tinyassets.daemon_server import ensure_universe_registered, grant_universe_access
+
+    ensure_universe_registered(
+        base, universe_id=name, universe_path=base / name, display_name=name,
+    )
+    grant_universe_access(
+        base, universe_id=name, actor_id="workos|test", permission="admin",
+        granted_by="test",
+    )
+
+
 class TestDefaultUniverse:
     def test_env_var_overrides(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
@@ -95,18 +109,39 @@ class TestDefaultUniverse:
         (tmp_path / ".active_universe").write_text("../outside", encoding="utf-8")
         assert _default_universe() == "my-default"
 
-    def test_first_subdir_if_no_env(self, tmp_path, monkeypatch):
+    def test_first_owned_universe_if_no_env(self, tmp_path, monkeypatch):
+        """A universe is a directory somebody owns (founder 2026-09-02), so
+        the first OWNED one wins -- not the first directory."""
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
         (tmp_path / "alpha").mkdir()
         (tmp_path / "beta").mkdir()
+        _own_universe(tmp_path, "alpha")
+        _own_universe(tmp_path, "beta")
         assert _default_universe() == "alpha"
+
+    def test_an_operational_store_is_never_the_default_universe(
+        self, tmp_path, monkeypatch,
+    ):
+        """Codex code review 2026-09-02, P1. This returned the first non-hidden
+        directory, so `cloud-automation-inputs` or `daemon_wikis` -- which sort
+        before any serial id -- were handed to an anonymous caller as though
+        they were a universe."""
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+        monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
+        (tmp_path / "cloud-automation-inputs").mkdir()
+        (tmp_path / "daemon_wikis").mkdir()
+        (tmp_path / "u-mine").mkdir()
+        _own_universe(tmp_path, "u-mine")
+        assert _default_universe() == "u-mine"
 
     def test_skips_dotdirs(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
         (tmp_path / ".hidden").mkdir()
         (tmp_path / "visible").mkdir()
+        _own_universe(tmp_path, ".hidden")
+        _own_universe(tmp_path, "visible")
         assert _default_universe() == "visible"
 
     def test_fallback_when_empty(self, tmp_path, monkeypatch):
@@ -125,6 +160,8 @@ class TestDefaultUniverse:
         monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
         (tmp_path / "afile.txt").write_text("x")
         (tmp_path / "zdir").mkdir()
+        _own_universe(tmp_path, "afile.txt")
+        _own_universe(tmp_path, "zdir")
         # File is sorted before zdir alphabetically but must be skipped
         assert _default_universe() == "zdir"
 

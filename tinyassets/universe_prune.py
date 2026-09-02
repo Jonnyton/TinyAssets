@@ -31,17 +31,64 @@ from typing import Any
 #: universes, and not leftovers either: deleting them breaks a running daemon.
 #:
 #: This is the ONE definition -- `tinyassets/reset.py` imports it rather than
-#: keeping a second copy, and `test_a_universe_needs_an_owner.py` reads the
-#: source for every ``data_dir() / "<name>"`` directory and fails if one is
-#: missing here. `founder_offers` was missing, and a prune would have deleted
-#: every founder's stored offers.
+#: keeping a second copy.
+#:
+#: It is a LABEL, not the safety property. Five of these were missing when the
+#: list was the only thing standing between a prune and daemon memory
+#: (`daemon_wikis`), retained user inputs (`cloud-automation-inputs`), the
+#: brain's vector store (`lancedb`, which is not `lance`), the workspace pool
+#: (`scratch`) and every founder's stored offers (`founder_offers`). A list
+#: that has to be complete to be safe is not a safety mechanism, so what
+#: actually protects them is `_universe_signal` below: a prune needs a positive
+#: reason to believe a directory was a universe, and an operational store has
+#: none.
 INFRASTRUCTURE_DIRS = frozenset({
+    "cloud-automation-inputs",
+    "daemon_wikis",
     "founder_offers",
     "lance",
+    "lancedb",
     "output",
     "runs",
+    "scratch",
     "wiki",
+    "workspaces",
 })
+
+#: A file whose presence says "a universe lived here". Any one is enough.
+_UNIVERSE_MARKERS = (
+    "soul.md",
+    "soul.json",
+    "universe.json",
+    "dispatcher.json",
+    "premise.md",
+    "status.json",
+    ".tinyassets.db",
+    "checkpoints.db",
+)
+
+#: What every past prune named the pile it moved aside instead of deleting.
+_ARCHIVE_PREFIXES = ("_removed", "_backup", "_legacy")
+
+
+def _universe_signal(path: Path) -> str:
+    """Why this directory is believed to have been a universe, or ``""``.
+
+    The empty string is a REFUSAL to remove. A prune acts on former universes;
+    a directory it cannot recognise is somebody else's, and the right response
+    to "I do not know what this is" is to leave it alone and say so.
+    """
+    name = path.name
+    for prefix in _ARCHIVE_PREFIXES:
+        if name.startswith(prefix):
+            return "an archive a past prune left behind"
+    for marker in _UNIVERSE_MARKERS:
+        try:
+            if (path / marker).exists():
+                return f"carries {marker}"
+        except OSError:
+            continue
+    return ""
 
 #: Files whose presence says a directory held real work. Reported, never
 #: decisive: the founder decides, this only makes the decision informed.
@@ -66,12 +113,22 @@ class DirectoryReport:
     file_count: int
     byte_count: int
     notable_files: list[str] = field(default_factory=list)
+    universe_signal: str = ""
 
     @property
     def removable(self) -> bool:
-        """Unowned and not infrastructure. A directory with ANY owner is
-        somebody's universe and is never removable by this path."""
-        return not self.owners and not self.is_infrastructure
+        """Unowned, not infrastructure, AND recognisably a former universe.
+
+        A directory with ANY owner is somebody's universe and is never
+        removable by this path. A directory with no universe signal is not
+        this tool's business at all -- that is what keeps an operational store
+        nobody remembered to list out of the cut.
+        """
+        return (
+            not self.owners
+            and not self.is_infrastructure
+            and bool(self.universe_signal)
+        )
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -82,6 +139,7 @@ class DirectoryReport:
             "file_count": self.file_count,
             "byte_count": self.byte_count,
             "notable_files": list(self.notable_files),
+            "universe_signal": self.universe_signal,
             "removable": self.removable,
         }
 
@@ -131,6 +189,7 @@ def plan(base_path: str | Path) -> list[DirectoryReport]:
             file_count=files,
             byte_count=total,
             notable_files=notable,
+            universe_signal=_universe_signal(child),
         ))
     return reports
 
@@ -150,7 +209,7 @@ def prune(
     inventory an hour ago, or on another machine, cannot make this delete a
     universe somebody has since claimed.
     """
-    from tinyassets.daemon_server import universe_owners
+    from tinyassets.daemon_server import owned_universe_ids, universe_owners
 
     base = Path(base_path)
     removed: list[str] = []
@@ -160,6 +219,22 @@ def prune(
         target = base / name
         if name.startswith(".") or "/" in name or "\\" in name or name in ("", ".", ".."):
             refused.append({"name": name, "reason": "not a simple directory name"})
+            continue
+        # THE NAME ON DISK IS THE NAME THAT DECIDES (Codex code review
+        # 2026-09-02, P1). On Windows `WIKI`, `wiki.` and `wiki ` all open the
+        # same directory, so a spelling the caller chose could walk straight
+        # past both the infrastructure list and the ownership query. Only an
+        # exact real child name is accepted.
+        try:
+            real_children = {p.name for p in base.iterdir() if p.is_dir()}
+        except OSError as exc:
+            refused.append({"name": name, "reason": f"could not read the data root: {exc}"})
+            continue
+        if name not in real_children:
+            refused.append({
+                "name": name,
+                "reason": "no directory under the data root is spelled exactly that",
+            })
             continue
         if name in INFRASTRUCTURE_DIRS:
             refused.append({"name": name, "reason": "platform infrastructure"})
@@ -176,11 +251,29 @@ def prune(
             continue
         # THE CHECK, inside the destructive step.
         owners = universe_owners(base, universe_id=name)
+        if not owners:
+            # A directory restored as `U-Mine` is the same directory as the
+            # ACL's `u-mine` on a case-insensitive filesystem. Matching the id
+            # exactly would have called an owned universe unowned.
+            folded = name.casefold()
+            for owned_id in owned_universe_ids(base):
+                if owned_id.casefold() == folded:
+                    owners = universe_owners(base, universe_id=owned_id)
+                    break
         if owners:
             refused.append({
                 "name": name,
                 "reason": "owned",
                 "owners": owners,
+            })
+            continue
+        # ...and a positive reason to believe this was ever a universe, read
+        # from disk here rather than taken from a plan the caller passed in.
+        signal = _universe_signal(target)
+        if not signal:
+            refused.append({
+                "name": name,
+                "reason": "not a universe directory",
             })
             continue
         if not apply:

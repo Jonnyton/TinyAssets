@@ -144,6 +144,9 @@ def test_the_plan_reports_before_anything_is_removed(data_root):
         "x" * 100, encoding="utf-8",
     )
     _universe(data_root, "wiki")
+    # A directory that is neither owned nor infrastructure nor a universe: an
+    # operational store nobody put on any list.
+    _universe(data_root, "some-new-store-2027")
 
     by_name = {r.name: r for r in plan(data_root)}
     assert by_name["u-mine"].owners == ["workos|founder"]
@@ -156,6 +159,16 @@ def test_the_plan_reports_before_anything_is_removed(data_root):
 
     assert by_name["wiki"].is_infrastructure is True
     assert by_name["wiki"].removable is False
+
+    # Unowned, on no list, and still not removable: the prune has no positive
+    # reason to believe it was ever a universe (Codex code review 2026-09-02,
+    # P0 -- `daemon_wikis` and `cloud-automation-inputs` were exactly this, and
+    # a blanket --apply would have erased them).
+    unknown = by_name["some-new-store-2027"]
+    assert unknown.owners == []
+    assert unknown.is_infrastructure is False
+    assert unknown.universe_signal == ""
+    assert unknown.removable is False
 
     # A plan changes nothing.
     assert (data_root / "_removed_universes_20260828").is_dir()
@@ -199,6 +212,7 @@ def test_ownership_is_read_inside_the_cut_not_from_the_caller(data_root):
     from tinyassets.universe_prune import plan, prune
 
     _universe(data_root, "u-late")
+    (data_root / "u-late" / "soul.md").write_text("# late", encoding="utf-8")
     ensure_universe_registered(
         data_root, universe_id="u-late", universe_path=data_root / "u-late",
     )
@@ -238,7 +252,11 @@ def test_a_prune_leaves_nothing_behind_to_prune(data_root):
     from tinyassets.universe_prune import plan, prune
 
     _own(data_root, "u-mine")
-    for leftover in ("_removed_universes_20260828", "_removed_legacy_20260829", "scratch"):
+    for leftover in (
+        "_removed_universes_20260828",
+        "_removed_legacy_20260829",
+        "_backup_subject_migration_20260829T055340Z",
+    ):
         _universe(data_root, leftover)
 
     prune(
@@ -300,4 +318,140 @@ def test_every_platform_directory_under_the_data_root_is_named_infrastructure():
         "these directories are created under the data root but are neither "
         "platform infrastructure nor a universe, so a prune would delete "
         f"them: {missing}"
+    )
+
+
+def test_an_operational_store_is_never_cut_even_when_named(data_root):
+    """Codex code review 2026-09-02, P0. Five live stores share the data root
+    and nobody owns them: daemon_wikis (daemon memory), cloud-automation-inputs
+    (retained user specifications), lancedb (the brain's vector store, which is
+    not the protected `lance`), scratch (the workspace pool) and
+    founder_offers. Under "unowned means garbage" a routine --apply erased all
+    five.
+
+    They are on the infrastructure list now, but a list that has to be complete
+    to be safe is not a safety mechanism -- so this also names a directory on
+    NO list and still expects a refusal.
+    """
+    from tinyassets.universe_prune import prune
+
+    stores = ("daemon_wikis", "cloud-automation-inputs", "lancedb", "scratch")
+    invented = "a-store-invented-after-this-was-written"
+    for store in (*stores, invented):
+        _universe(data_root, store)
+        (data_root / store / "content.bin").write_text("real data", encoding="utf-8")
+
+    result = prune(data_root, names=[*stores, invented], apply=True)
+    assert result["removed"] == []
+    reasons = {entry["name"]: entry["reason"] for entry in result["refused"]}
+    assert reasons["daemon_wikis"] == "platform infrastructure"
+    assert reasons[invented] == "not a universe directory"
+    for store in (*stores, invented):
+        assert (data_root / store / "content.bin").is_file(), store
+
+
+@pytest.mark.parametrize("alias", ["WIKI", "Wiki", "wiki.", "wiki "])
+def test_a_respelled_name_cannot_reach_a_protected_directory(data_root, alias):
+    """Codex code review 2026-09-02, P1. On Windows WIKI, wiki. and 'wiki '
+    all open the same directory as wiki, so a spelling the caller chose walked
+    past both the infrastructure list and the ownership query, and the delete
+    landed on the real directory."""
+    from tinyassets.universe_prune import prune
+
+    _universe(data_root, "wiki")
+    (data_root / "wiki" / "page.md").write_text("# real", encoding="utf-8")
+
+    result = prune(data_root, names=[alias], apply=True)
+    assert result["removed"] == []
+    assert (data_root / "wiki" / "page.md").is_file(), (
+        f"{alias!r} deleted the protected directory"
+    )
+    # It is refused for the RIGHT reason: no child is spelled that way. The
+    # signal check would also have caught this one, and asserting only
+    # "refused" let the name guard be deleted with the test still green.
+    assert result["refused"][0]["reason"] == (
+        "no directory under the data root is spelled exactly that"
+    ), result["refused"]
+
+
+def test_a_recased_universe_directory_is_still_owned(data_root):
+    """The same alias problem the other way round: a directory restored as
+    U-Mine is the ACL's u-mine, and matching the id exactly called an owned
+    universe unowned."""
+    import os
+
+    from tinyassets.universe_prune import prune
+
+    _own(data_root, "u-mine")
+    (data_root / "u-mine" / "soul.md").write_text("# mine", encoding="utf-8")
+
+    try:
+        os.rename(data_root / "u-mine", data_root / "U-Mine")
+    except OSError:
+        pass
+    on_disk = next(p.name for p in data_root.iterdir() if p.name.lower() == "u-mine")
+
+    result = prune(data_root, names=[on_disk], apply=True)
+    assert result["removed"] == []
+    assert result["refused"][0]["reason"] == "owned", result["refused"]
+    assert (data_root / on_disk / "soul.md").is_file()
+
+
+def test_ownership_is_re_read_for_each_directory_not_once(data_root, monkeypatch):
+    """Codex code review 2026-09-02, P2. The earlier test granted ownership
+    before calling prune, so an implementation that snapshotted all ownership
+    at entry would still have passed.
+
+    The claim has to land after the point a snapshot would have been taken, so
+    it fires from the FIRST REMOVAL. A snapshot implementation read the second
+    directory's ownership before any removal, saw nobody, and deleted a
+    universe somebody had claimed in between -- which is what happened for real
+    on 2026-08-26.
+    """
+    from tinyassets import universe_prune
+
+    for name in ("_removed_first_20260828", "_removed_second_20260828"):
+        _universe(data_root, name)
+
+    real_rmtree = universe_prune.shutil.rmtree
+
+    def _claiming_rmtree(path, *args, **kwargs):
+        result = real_rmtree(path, *args, **kwargs)
+        if pathlib.Path(path).name == "_removed_first_20260828":
+            # Another request claims the second directory, now that the first
+            # one is already gone.
+            grant_universe_access(
+                data_root, universe_id="_removed_second_20260828",
+                actor_id="workos|racer", permission="admin", granted_by="test",
+            )
+        return result
+
+    monkeypatch.setattr(universe_prune.shutil, "rmtree", _claiming_rmtree)
+    result = universe_prune.prune(
+        data_root,
+        names=["_removed_first_20260828", "_removed_second_20260828"],
+        apply=True,
+    )
+
+    assert result["removed"] == ["_removed_first_20260828"]
+    refused = {entry["name"]: entry for entry in result["refused"]}
+    assert refused["_removed_second_20260828"]["reason"] == "owned"
+    assert refused["_removed_second_20260828"]["owners"] == ["workos|racer"]
+    assert (data_root / "_removed_second_20260828").is_dir()
+
+
+def test_creating_a_universe_claims_the_owner_before_the_directory_exists():
+    """Codex code review 2026-09-02, P0. Explicit creation made and seeded the
+    directory, did registry and visibility work, and granted ownership ~90
+    lines later. A prune running in that window saw an unowned directory and
+    removed it, while the create went on to write the ACL row and return
+    "created"."""
+    import inspect
+
+    from tinyassets.api import universe as universe_api
+
+    source = inspect.getsource(universe_api._action_create_universe)
+    assert source.index("grant_universe_access(") < source.index("udir.mkdir("), (
+        "the directory is created before its owner is claimed, which is the "
+        "window a concurrent prune deletes into"
     )

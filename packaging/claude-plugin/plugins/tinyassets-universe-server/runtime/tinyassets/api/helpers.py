@@ -79,9 +79,21 @@ def _default_universe() -> str:
     if default:
         return default
 
+    # A universe is a directory somebody owns (founder 2026-09-02). This
+    # returned the first non-hidden directory under the data root, so an
+    # operational store sorting first -- `cloud-automation-inputs`,
+    # `daemon_wikis` -- was handed out as the default universe (Codex code
+    # review 2026-09-02, P1).
     if base.is_dir():
+        from tinyassets.daemon_server import owned_universe_ids
+
+        owned = owned_universe_ids(base)
         for child in sorted(base.iterdir()):
-            if child.is_dir() and not child.name.startswith("."):
+            if (
+                child.is_dir()
+                and not child.name.startswith(".")
+                and child.name in owned
+            ):
                 return child.name
     return "default-universe"
 
@@ -134,10 +146,13 @@ def _designated_public_universe() -> str:
 
     base = _base_path()
     if base.is_dir():
+        from tinyassets.daemon_server import owned_universe_ids
+
+        owned = owned_universe_ids(base)
         for child in sorted(base.iterdir()):
             if (
                 child.is_dir()
-                and not child.name.startswith(".")
+                and child.name in owned
                 and not is_universe_serial(child.name)
             ):
                 return child.name
