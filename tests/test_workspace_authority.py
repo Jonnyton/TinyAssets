@@ -448,6 +448,7 @@ def test_the_scope_extension_refuses_a_git_scope_once_two_hosts_are_reachable(
     """
     ledger = _ledger(tmp_path)
     _create(ledger, scopes=("POST",))
+    stored_endpoints_json, stored_scopes_json = ledger.policy_json("conn-1")
     with pytest.raises(wa.GitScopeError, match="ONE host"):
         ledger.extend_http_connection_endpoints(
             connection_id="conn-1",
@@ -460,12 +461,8 @@ def test_the_scope_extension_refuses_a_git_scope_once_two_hosts_are_reachable(
                 },
             ],
             scopes=("POST", "git_read:octocat/hello"),
-            expected_endpoints_json=json.dumps(
-                [
-                    e.as_dict()
-                    for e in ledger._get_connection_resource("conn-1").allowed_endpoints
-                ]
-            ),
+            expected_endpoints_json=stored_endpoints_json,
+            expected_scopes_json=stored_scopes_json,
         )
 
 
@@ -526,6 +523,9 @@ def test_the_broker_refuses_a_git_scope_as_a_verb(tmp_path) -> None:
 def test_the_rail_accepts_a_git_scope_on_a_github_ask(base) -> None:
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
+    # An extension ask is checked against the held key when it is RAISED, so
+    # the key has to exist; without one the rail says so and raises no tab.
+    _deposit("u-1")
     asked = _ask(
         "u-1",
         kind="API",
