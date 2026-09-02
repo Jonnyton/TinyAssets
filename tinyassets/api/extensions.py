@@ -923,7 +923,7 @@ def _extensions_impl(
             "create_branch", "add_node", "connect_nodes",
             "set_entry_point", "add_state_field",
             "validate_branch", "describe_branch",
-            "get_branch", "list_branches", "delete_branch",
+            "get_branch", "list_branches", "delete_branch", "delete_own_branch",
             "run_branch", "get_run", "list_runs",
             "stream_run", "wait_for_run", "cancel_run", "get_run_output",
             "attach_existing_child_run",

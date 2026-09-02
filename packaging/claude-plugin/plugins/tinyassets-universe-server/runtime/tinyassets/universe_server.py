@@ -2647,7 +2647,7 @@ def extensions(
     Action groups:
     - Node registry: register, list, inspect, approve, disable, enable, remove.
     - Branches: add_node, add_state_field, approve_source_code, build_branch,
-      connect_nodes, create_branch, delete_branch, describe_branch, fork_tree,
+      connect_nodes, create_branch, delete_branch, delete_own_branch, describe_branch, fork_tree,
       get_branch, list_branches, patch_branch, patch_nodes, search_nodes,
       set_entry_point, update_node, validate_branch.
     - Runs: attach_existing_child_run, cancel_run, estimate_run_cost,
