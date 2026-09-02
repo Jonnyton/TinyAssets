@@ -15,9 +15,9 @@ Package name (permanent once published): **`io.tinyassets.app`**
 
 | Step | Action | Where |
 |---|---|---|
-| Account | Create a Google Play Developer account (personal or org). | https://play.google.com/console/signup |
-| Payment | Authorize the **$25 one-time** registration fee. | during signup |
-| Signing key | Generate the upload keystore (§2) and add its 4 values as repo secrets (§3). | your machine → GitHub secrets |
+| Account | ~~Create a Google Play Developer account.~~ **Done** — developer `8089695267825659874`, identity verified 2026-08-24 (Play Console mail). | https://play.google.com/console/developers/8089695267825659874 |
+| Payment | ~~Authorize the $25 fee.~~ **Done** with the account. | — |
+| Signing key | The keystore is generated (§2, 2026-09-01). **Add its 4 values as repo secrets** — one command, §3. An agent cannot: `gh secret set` is denied to it. | your machine → GitHub secrets |
 | Publish | After the AAB uploads + review passes, click **Roll out**. | Play Console |
 
 Everything else below I build/stage.
@@ -35,6 +35,23 @@ change needs a new AAB.
 ---
 
 ## 2. Generate the upload keystore (once, keep it secret)
+
+**Done 2026-09-01** on the founder's machine, outside the repo:
+
+| File | What |
+|---|---|
+| `~/.tinyassets/android/tinyassets-upload.jks` | the upload keystore (JKS, RSA 2048, alias `upload`, valid to 2054) |
+| `~/.tinyassets/android/upload-keystore.env` | the two passwords + alias, `KEY=value` lines, mode 0600 |
+| `~/.tinyassets/android/tinyassets-upload.jks.b64` | base64 of the keystore, ready for the CI secret |
+
+Upload certificate SHA-256 (pinned in `android-release.yml`, which refuses any other):
+`D0:BC:F2:FB:EA:4E:11:6D:87:DD:DD:BD:B2:4C:1E:28:53:7A:CA:77:BE:8E:69:BE:AD:52:C7:C1:C1:03:B2:11`
+
+**Back it up** (password manager or the vault) — it is the only copy besides the
+CI secret. With Play App Signing (§11.5) a lost upload key is resettable through
+Play support; the app-signing key stays with Google.
+
+Regenerate (only if lost — a new upload key then has to be registered with Play):
 
 ```bash
 keytool -genkey -v -keystore tinyassets-upload.jks -keyalg RSA -keysize 2048 \
@@ -64,9 +81,26 @@ in Play App Signing, step §6.4).
 | `ANDROID_UPLOAD_KEY_ALIAS` | `upload` |
 | `ANDROID_UPLOAD_KEY_PASSWORD` | the key password |
 
+One command does all four, reading the files §2 left behind (run it in a Git Bash
+at the repo root; `gh` is already logged in):
+
+```bash
+D="$HOME/.tinyassets/android"; set -a; . "$D/upload-keystore.env"; set +a
+gh secret set ANDROID_UPLOAD_KEYSTORE_B64 < "$D/tinyassets-upload.jks.b64"
+printf '%s' "$ANDROID_UPLOAD_KEYSTORE_PASSWORD" | gh secret set ANDROID_UPLOAD_KEYSTORE_PASSWORD
+printf '%s' upload | gh secret set ANDROID_UPLOAD_KEY_ALIAS
+printf '%s' "$ANDROID_UPLOAD_KEY_PASSWORD" | gh secret set ANDROID_UPLOAD_KEY_PASSWORD
+gh secret list | grep ANDROID_UPLOAD_
+```
+
 Once these exist, run the **Android release AAB** workflow (Actions tab →
 workflow_dispatch, or it runs on a `mobile-v*` tag) to produce the signed
-`app-release.aab` artifact to upload.
+`app-release.aab` artifact to upload:
+
+```bash
+gh workflow run android-release.yml && sleep 5 && gh run list --workflow android-release.yml --limit 1
+gh run download <run-id> -n tinyassets-release-aab -D dist/   # after it goes green
+```
 
 ---
 
@@ -201,9 +235,13 @@ Screenshots come from the live app so they're honest:
 - [x] Release AAB CI workflow (`android-release.yml`)
 - [x] Listing content written (§4)
 - [x] Data safety + content rating answers (§6, §7)
-- [x] Privacy policy section (§5, on `/legal`)
-- [ ] Founder: Play Console account + $25 (§0)
-- [ ] Founder: upload keystore secrets (§2, §3)
-- [ ] Screenshots captured (§10)
-- [ ] AAB built via CI + uploaded (§11)
+- [x] Privacy policy section (§5) — on the **production** `/legal` (React site) as of this
+      change; #2507 had only put it on the retired Svelte site
+- [x] Founder: Play Console account + $25 (§0) — verified 2026-08-24
+- [x] Upload keystore generated (§2, 2026-09-01) + certificate pinned in the workflow
+- [ ] Founder: the four upload-keystore secrets (§3, one command)
+- [x] Launcher icon + splash (`mobile/resources/`, installed by `scripts/add_app_icons.py`)
+- [x] Listing graphics: icon-512, feature graphic, 2 phone screenshots (§9, §10 — 2026-09-01)
+- [ ] AAB built via CI + uploaded (§11) — blocked on the secrets
+- [ ] Play Console: app created, listing + declarations filled (§11.1–2)
 - [ ] Internal testing verified → Production roll out (§11)

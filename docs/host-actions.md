@@ -218,6 +218,25 @@ row; if yes, the concern above is the prerequisite.
 
 ## Credentials and accounts
 
+### Google Play: add the four upload-keystore secrets (one command)
+
+The Play developer account exists (identity verified 2026-08-24) and the upload keystore was
+generated 2026-09-01 into `~/.tinyassets/android/` on your machine. The release workflow
+signs with secrets an agent is not allowed to set (`gh secret set` is denied to it). Run, in
+a Git Bash at the repo root:
+
+```bash
+D="$HOME/.tinyassets/android"; set -a; . "$D/upload-keystore.env"; set +a
+gh secret set ANDROID_UPLOAD_KEYSTORE_B64 < "$D/tinyassets-upload.jks.b64"
+printf '%s' "$ANDROID_UPLOAD_KEYSTORE_PASSWORD" | gh secret set ANDROID_UPLOAD_KEYSTORE_PASSWORD
+printf '%s' upload | gh secret set ANDROID_UPLOAD_KEY_ALIAS
+printf '%s' "$ANDROID_UPLOAD_KEY_PASSWORD" | gh secret set ANDROID_UPLOAD_KEY_PASSWORD
+```
+
+Then back the keystore up somewhere that is not this laptop. Everything after that (AAB
+build, listing, data safety, internal-testing release) is staged in
+`docs/ops/google-play-launch.md`; the only other click that is yours is **Roll out**.
+
 ### Mint the PAT that unblocks the deploy chain
 
 App-merged PRs raise no `push` event, so `build-image` and `deploy-prod` never fire; human-merged

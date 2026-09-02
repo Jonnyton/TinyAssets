@@ -70,6 +70,10 @@ jobs:
           grep -n 'LocalCallbackService' android/app/src/main/AndroidManifest.xml
           grep -n 'FOREGROUND_SERVICE_DATA_SYNC' android/app/src/main/AndroidManifest.xml
 
+      - name: Install the launcher icon + splash (pre-rendered, no image toolchain in CI)
+        working-directory: mobile
+        run: python3 scripts/add_app_icons.py
+
       - name: Restore the stable debug signing key (main only)
         # Android's debug signing config reads ~/.android/debug.keystore
         # (alias androiddebugkey, store/key password "android"). Restoring the
