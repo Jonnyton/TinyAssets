@@ -1,78 +1,41 @@
-# Runbook — deploy the current React/Next production site
+# Runbook — deploy the production site
 
-**Status (2026-09-02):** the cutover is complete and the Svelte rollback tree
-is retired. `WebSite/site-react/` is the only site source for `tinyassets.io`,
-published manually through `.github/workflows/deploy-site-react.yml`.
-`WebSite/site/` and `deploy-site.yml` were deleted on 2026-09-02; rolling back
-now means re-running `deploy-site-react` on an earlier revision. The steps
-below that mention the Svelte tree are historical.
+**Status (2026-09-02):** the React cutover (2026-06-24) is complete and the
+Svelte rollback tree is retired. `WebSite/site-react/` is the only site source
+for `tinyassets.io`, published manually through
+`.github/workflows/deploy-site-react.yml`. `WebSite/site/` and
+`deploy-site.yml` were deleted on 2026-09-02.
 
-Both workflows deploy to the same `github-pages` environment and share the
-`pages` concurrency group. Never run them concurrently, and never add an
-automatic push or schedule trigger to the Svelte rollback workflow.
+The operational procedure now lives in `WebSite/DEPLOY.md` (deploy and verify)
+and `WebSite/PREVIEW.md` (the preview loop). This runbook keeps the dated
+history and the rules that outlived the cutover.
 
-## Production change order
+## History
 
-1. Make every production website edit in `WebSite/site-react/` first.
-2. Build the React/Next site locally:
+- **2026-06-24** — React (`WebSite/site-react/`, Next.js static export on
+  `@tiny/design-system`) replaced the SvelteKit site as the production source.
+  Both trees deployed to the same `github-pages` environment and shared the
+  `pages` concurrency group, so `deploy-site.yml` was kept dispatch-only as a
+  rollback path and every site change carried a Svelte parity step.
+- **2026-07-26** — cutover confirmed complete; React had been production for a
+  month with no rollback ever dispatched.
+- **2026-09-02** — the Svelte tree, `deploy-site.yml`, and the parity step were
+  deleted in the website rewrite. Its shared tooling (the public read-contract
+  test and the hosted-preview trust boundary) moved to
+  `WebSite/site-react/scripts/`, and `deploy-site-react.yml`,
+  `preview-worker.yml`, `preview-security.yml` and `preview-worker-deploy.yml`
+  were repointed there.
 
-   ```powershell
-   cd WebSite/site-react
-   npm ci
-   npm run build
-   ```
+## Rules that still hold
 
-3. Mirror the intended user-visible behavior into `WebSite/site/` so the
-   rollback remains credible, then run its focused checks:
-
-   ```powershell
-   cd WebSite/site
-   npm ci
-   npm run check
-   npm run build
-   ```
-
-4. Review both previews. React is the production candidate; Svelte parity is
-   rollback readiness, not an alternate production lane.
-5. Merge the approved source. A merge does not publish the website.
-
-## Manual production deployment
-
-1. In GitHub Actions, run `deploy-site-react`.
-2. Enter `deploy` in the confirmation input.
-3. Confirm the workflow builds `WebSite/design-system/`, builds the Next static
-   export in `WebSite/site-react/out`, and deploys it to `github-pages`.
-4. Verify the public surface:
-
-   ```powershell
-   python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp
-   ```
-
-5. Load `https://tinyassets.io/` in a browser and verify the production routes
-   affected by the change. Record the deployed source identity before claiming
-   the change shipped; merged is not deployed.
-
-## Rollback to Svelte
-
-Use rollback only for a production regression that requires restoring the
-retained Svelte build.
-
-1. Confirm the Svelte source at the selected revision contains the required
-   parity and passes `npm run check` plus `npm run build`.
-2. Run the dispatch-only `deploy-site` workflow with
-   `refresh_snapshot=false`. Full snapshot regeneration remains disabled until
-   an audience-safe publication manifest exists; use the checked-in vetted
-   snapshot during rollback.
-3. Re-run the public MCP canary and browser checks.
-4. Repair the production React source first, restore parity in Svelte, and
-   manually redeploy React through `deploy-site-react`.
-
-Do not re-enable Svelte push or cron triggers. Svelte is a rollback artifact,
-not a competing deployment owner.
-
-## Evidence boundary
-
-Deployment proof comes from the React workflow result, the deployed source
-identity, the public MCP canary, and rendered browser checks. Platform uptime
-evidence must be labeled separately from user-workflow activity. There is no
-community-watch fallback for deployment truth.
+- **Merged is not deployed.** A merge never publishes the site. A host runs
+  `deploy-site-react` with `confirm: deploy`, then records the deployed
+  revision (`python scripts/deployed_sha.py --assert-contains <sha>`).
+- **Rollback is a redeploy.** With one tree, restoring a previous site means
+  dispatching `deploy-site-react` on the last good revision of `main`, then
+  re-running the canary and rendered checks. Fix forward on `main` afterwards.
+- **Evidence boundary.** Deployment proof is the workflow result, the deployed
+  revision, `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp`,
+  and rendered browser checks. Platform uptime evidence is labelled separately
+  from user-workflow activity, and a community-watch signal is never a
+  deployment fallback.
