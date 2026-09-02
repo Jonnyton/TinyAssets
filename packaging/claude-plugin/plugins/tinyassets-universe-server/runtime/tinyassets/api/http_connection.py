@@ -1010,38 +1010,6 @@ def _extend_preview(
         # extend on a revoked key and "not found" would send the agent to
         # re-deposit under the same name, which the ledger refuses.
         return {"error": "connection_conflict", "resource": "connection"}
-    stored_mode = normalize_access_mode(resource.access_mode)
-    asked_mode = normalize_access_mode(access)
-    if stored_mode == ACCESS_FULL:
-        # The channel is already granted whole, so nothing an extension could
-        # name adds anything -- a full re-ask and an exact ask alike
-        # (full-channel-access D4). The agent is told it holds the channel and
-        # acts, instead of asking the owner a question with no answer.
-        return {
-            "status": "unchanged",
-            "destination": destination,
-            "access": ACCESS_FULL,
-            "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
-            "scopes": list(resource.scopes),
-        }
-    if asked_mode == ACCESS_FULL:
-        # exact -> full: the WRITE is the mode, under CAS on the previous mode.
-        # No endpoint or scope row changes, which is the whole point of the
-        # shape: nothing is stored as a wildcard.
-        return {
-            "status": "extends",
-            "destination": destination,
-            "connection_id": connection_id,
-            "ledger": ledger,
-            "access": ACCESS_FULL,
-            "expected_access_mode": stored_mode,
-            "git_host": git_host_for_endpoints(
-                [e.host for e in resource.allowed_endpoints], resource.provider
-            ),
-            "hosts": sorted({e.host for e in resource.allowed_endpoints}),
-            "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
-            "scopes": list(resource.scopes),
-        }
     # ONE snapshot. Everything the write is derived from -- the stored
     # endpoints, the stored scopes, the host the git rule binds to -- comes
     # from the same raw read the CAS compares against. Deriving the union from
@@ -1056,6 +1024,46 @@ def _extend_preview(
         stored_scope_list = [str(s) for s in json.loads(stored_scopes_json)]
     except (TypeError, ValueError) as exc:
         return {"error": "connection_setup_invalid", "detail": f"stored policy unreadable: {exc}"}
+
+    # The mode verdicts, derived from that SAME snapshot -- never from the
+    # parsed resource, which is a second read (full-channel-access D4, and the
+    # one-snapshot rule Codex established for this function).
+    stored_hosts = sorted({
+        str(e.get("host") or "").strip().lower()
+        for e in stored
+        if isinstance(e, dict) and str(e.get("host") or "").strip()
+    })
+    stored_mode = normalize_access_mode(resource.access_mode)
+    asked_mode = normalize_access_mode(access)
+    if stored_mode == ACCESS_FULL:
+        # The channel is already granted whole, so nothing an extension could
+        # name adds anything -- a full re-ask and an exact ask alike. The agent
+        # is told it holds the channel and acts, instead of asking the owner a
+        # question with no answer.
+        return {
+            "status": "unchanged",
+            "destination": destination,
+            "access": ACCESS_FULL,
+            "hosts": stored_hosts,
+            "allowed_endpoints": stored,
+            "scopes": stored_scope_list,
+        }
+    if asked_mode == ACCESS_FULL:
+        # exact -> full: the WRITE is the mode, compare-and-swapped on the mode
+        # this snapshot read. No endpoint or scope row changes, which is the
+        # whole point of the shape: nothing is stored as a wildcard.
+        return {
+            "status": "extends",
+            "destination": destination,
+            "connection_id": connection_id,
+            "ledger": ledger,
+            "access": ACCESS_FULL,
+            "expected_access_mode": stored_mode,
+            "git_host": git_host_for_endpoints(stored_hosts, resource.provider),
+            "hosts": stored_hosts,
+            "allowed_endpoints": stored,
+            "scopes": stored_scope_list,
+        }
 
     scope_only = not isinstance(added, list) or not added
     try:
