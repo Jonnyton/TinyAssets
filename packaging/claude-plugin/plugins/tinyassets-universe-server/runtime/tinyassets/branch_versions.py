@@ -436,12 +436,18 @@ def versions_invoking(
     branch_def_id: str,
     version_ids: set[str],
     exclude_branch_def_id: str = "",
+    author: str = "",
 ) -> set[str]:
     """Branch ids whose PUBLISHED SNAPSHOTS invoke `branch_def_id` (by id) or one
     of `version_ids` (by version). A snapshot is executable on its own -- a
     canonical binding or `invoke_branch_version` runs it -- and its invoke node
     reloads the child live, so a child a snapshot names is a dependency even
-    when the parent's CURRENT definition no longer names it."""
+    when the parent's CURRENT definition no longer names it.
+
+    With `author`, only that author's snapshots count: a FOREIGN snapshot that
+    invoked the branch while it was public was already cut off when the branch
+    went private (a private child runs only for its author), and the owner
+    cannot edit a foreign branch to remediate, so it must not block forever."""
     initialize_branch_versions_db(base_path)
     conn = _connect(base_path)
     try:
@@ -457,6 +463,8 @@ def versions_invoking(
         try:
             snapshot = json.loads(row["snapshot_json"])
         except (TypeError, ValueError):
+            continue
+        if author and (snapshot.get("author") or "") != author:
             continue
         for node in snapshot.get("node_defs") or []:
             if not isinstance(node, dict):

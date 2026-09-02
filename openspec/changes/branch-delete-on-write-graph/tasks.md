@@ -31,7 +31,10 @@
 - [x] 7 Product decision recorded (design.md): making a public branch private is
       the owner's right and foreign invokers fail closed at their next run; delete
       adds nothing to that. Flagged to the founder.
-- [ ] 8 Cross-family review round 3 (Codex) before push; land; sync this delta into
+- [x] 8 Cross-family review: three rounds (the cap). Round 3 found the soul loop
+      branch reader and the missing author filter on snapshot invokers; both applied
+      without a fourth round, reported to the founder.
+- [ ] 9 Land; sync this delta into
       `openspec/specs/live-mcp-connector-surface/spec.md`; archive.
-- [ ] 9 Live proof: tiny deletes one of its probe branches from the app and it is
+- [ ] 10 Live proof: tiny deletes one of its probe branches from the app and it is
       gone from `read_graph target=branches`.

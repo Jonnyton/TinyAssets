@@ -16,7 +16,9 @@ deserves because the surface cannot show dependents any other way.
 | active schedules / subscriptions (`branch_schedules`, `branch_subscriptions`, `active = 1`) | `branch_def_id` at fire time | **breaks** |
 | canonical goal bindings — default (`canonical_bindings`), personal (`goal_canonicals`), legacy (`goals.canonical_branch_version_id`) | a version; `invoke_branch_version` maps it back to the definition and loads it | **breaks** version-based invocation |
 | other branches' CURRENT definitions: `invoke_branch_spec.branch_def_id` / `invoke_branch_version_spec.branch_version_id` | the live child (`_authorize_child_ref` reloads it each execution) | **breaks** the invoking graph |
-| other branches' PUBLISHED SNAPSHOTS with the same fields | the live child, reloaded at execution of the snapshot | **breaks** — even after the parent's current definition stopped naming the child |
+| the author's other branches' PUBLISHED SNAPSHOTS with the same fields | the live child, reloaded at execution of the snapshot | **breaks** — even after the parent's current definition stopped naming the child |
+| a FOREIGN branch's snapshot from the child's public days | nothing the owner can repair; already fails closed since the child went private | not a dependent (see the product decision) |
+| a universe's soul `loop_branch_def_id` | the live definition, queued on every admitted request | **breaks**: the universe queues a workflow that does not exist |
 | remix lineage (`parent_def_id`) | nothing live (remix copies the snapshot) | benign: the parent disappears from lineage reads |
 | this branch's own `branch_versions` rows | nothing; self-contained snapshots | benign — and every `patch_branch` mints two, so they must NOT count as publication |
 | `background_branch_bindings` | a pinned version snapshot, executed immutably | benign |
@@ -29,13 +31,14 @@ deserves because the surface cannot show dependents any other way.
    works: patch `set_visibility private`, then delete (patch snapshots do not
    block, so the sequence completes when the branch is otherwise dependency-clean).
 3. Dependents → `branch_has_dependents` with `{automations, webhooks, schedules,
-   subscriptions, goals, branches}`, each a list of ids the owner can act on
+   subscriptions, goals, branches, universes}`, each a list of ids the owner can act on
    through operations that already exist. Automations, webhooks, schedules and
    subscriptions are scanned in every universe (a branch is author-scoped; a
    binding in any universe is a dependent). Goals: all three canonical stores,
    over the branch's version ids read uncapped. Branches: the author's own
-   current definitions plus every active published snapshot of any branch, by
-   the two structured child-ref fields — never by free-text mention.
+   current definitions plus the author's own active published snapshots, by
+   the two structured child-ref fields — never by free-text mention. Universes:
+   every universe directory whose soul declares the branch as its loop.
 4. Otherwise `delete_branch_definition` (hard delete of the definition row).
 
 ## A product decision, recorded

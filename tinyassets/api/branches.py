@@ -778,9 +778,13 @@ def _branch_dependents(
     * goals whose canonical binding -- default, personal, or the legacy
       column -- points at ANY of its versions (`invoke_branch_version` maps a
       version back to its definition);
-    * other branches that invoke it: their CURRENT definitions, and their
-      published SNAPSHOTS, which are executable on their own and reload the
-      child live.
+    * other branches of the same author that invoke it: their CURRENT
+      definitions, and their published SNAPSHOTS, which are executable on
+      their own and reload the child live (a FOREIGN snapshot from the
+      branch's public days was already cut off when it went private and is
+      not the owner's to fix, so it does not block);
+    * universes whose soul declares it as their loop branch (request
+      admission queues that branch for every incoming request).
 
     Internal patch snapshots of THIS branch are NOT dependents: every patch
     mints one, so counting them would make any edited branch undeletable.
@@ -796,7 +800,7 @@ def _branch_dependents(
     versions = branch_versions.list_version_ids(base, branch_def_id)
     out: dict[str, list[str]] = {
         "automations": [], "webhooks": [], "schedules": [], "subscriptions": [],
-        "goals": [], "branches": [],
+        "goals": [], "branches": [], "universes": [],
     }
 
     out["automations"] = [
@@ -858,9 +862,30 @@ def _branch_dependents(
                 invokers.add(other)
                 break
     invokers |= branch_versions.versions_invoking(
-        base, branch_def_id=branch_def_id, version_ids=versions,
+        base, branch_def_id=branch_def_id, version_ids=versions, author=actor,
     )
     out["branches"] = sorted(invokers)
+
+    # A universe queues its declared loop branch on every request it admits.
+    from tinyassets.universe_soul import read_universe_soul
+
+    loops: list[str] = []
+    try:
+        universe_dirs = [d for d in Path(base).iterdir() if d.is_dir()]
+    except OSError:
+        universe_dirs = []
+    for udir in sorted(universe_dirs):
+        if not (udir / "soul.md").is_file():
+            continue
+        try:
+            soul = read_universe_soul(udir)
+        except Exception:  # noqa: BLE001 - one unreadable soul must not hide the rest
+            logger.exception("could not read %s while checking branch dependents", udir / "soul.md")
+            loops.append(f"{udir.name}?")
+            continue
+        if soul is not None and (soul.loop_branch_def_id or "").strip() == branch_def_id:
+            loops.append(udir.name)
+    out["universes"] = loops
     return out
 
 
@@ -909,9 +934,10 @@ def _ext_branch_delete_own(kwargs: dict[str, Any]) -> str:
             "detail": (
                 "Something still uses this branch: delete or re-point the "
                 "automations, revoke the webhooks, unregister the schedules and "
-                "subscriptions, unset the goals' canonical binding, or edit the "
-                "branches (and their published versions) that invoke it, then "
-                "delete."
+                "subscriptions, unset the goals' canonical binding, edit the "
+                "branches (and their published versions) that invoke it, or "
+                "declare a different loop branch in the universes that run it, "
+                "then delete."
             ),
         })
     removed = delete_branch_definition(base, branch_def_id=bid)

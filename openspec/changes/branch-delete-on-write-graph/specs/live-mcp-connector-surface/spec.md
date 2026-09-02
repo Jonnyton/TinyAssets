@@ -13,10 +13,13 @@ It SHALL refuse a public branch with `branch_is_public`. It SHALL refuse with
 `branch_has_dependents`, naming each dependent it found, when any of these
 readers still references the branch: an active automation (any universe), an
 active webhook, an active schedule or event subscription, a canonical goal
-binding (default, personal or legacy) on any of the branch's versions, or another
-branch — by current definition or by an active published snapshot — that invokes
-it through `invoke_branch_spec` or `invoke_branch_version_spec`. Version ids SHALL
-be read uncapped. The branch's own patch snapshots in `branch_versions` SHALL NOT
+binding (default, personal or legacy) on any of the branch's versions, another
+branch of the same author — by current definition or by an active published
+snapshot — that invokes it through `invoke_branch_spec` or
+`invoke_branch_version_spec`, or a universe whose soul declares it as its loop
+branch. A foreign snapshot that invoked the branch while it was public SHALL NOT
+count: it was cut off when the branch went private and is not the owner's to
+edit. Version ids SHALL be read uncapped. The branch's own patch snapshots in `branch_versions` SHALL NOT
 count as a dependency. The tool text on both surfaces SHALL name the operation
 and both refusals.
 
@@ -40,7 +43,7 @@ and both refusals.
 #### Scenario: Dependents are named, not broken
 
 - **WHEN** any listed reader references the branch
-- **THEN** delete answers `branch_has_dependents` with the ids under `automations`, `webhooks`, `schedules`, `subscriptions`, `goals`, `branches`
+- **THEN** delete answers `branch_has_dependents` with the ids under `automations`, `webhooks`, `schedules`, `subscriptions`, `goals`, `branches`, `universes`
 - **AND** nothing is deleted
 
 #### Scenario: A non-author cannot probe

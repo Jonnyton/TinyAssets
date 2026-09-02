@@ -383,6 +383,47 @@ def test_version_ids_are_read_uncapped(tmp_path):
     assert len(list_version_ids(tmp_path, "b-many")) == 505
 
 
+def test_a_universe_whose_soul_declares_it_as_the_LOOP_branch_is_named(universe_surface, tmp_path):
+    """Codex round 3: request admission queues the universe's declared loop
+    branch for every incoming request; deleting it leaves the universe
+    queuing a workflow that does not exist."""
+    from tinyassets.universe_soul import write_universe_soul
+
+    us, _actor = universe_surface
+    bid = _create(us, "the-loop")
+    udir = tmp_path / "u-loop"
+    udir.mkdir()
+    write_universe_soul(udir, name="Loop universe", purpose="runs the loop", loop_branch_def_id=bid)
+
+    out = _delete(us, bid)
+    assert out.get("error") == "branch_has_dependents", out
+    assert out["dependents"]["universes"] == ["u-loop"]
+    assert bid in _listed(us)
+
+    write_universe_soul(udir, clear_loop_branch=True)
+    assert _delete(us, bid)["status"] == "deleted"
+
+
+def test_a_FOREIGN_snapshot_from_the_public_days_does_not_block_forever(universe_surface, tmp_path):
+    """Codex round 3: the owner cannot edit another author's branch, so a
+    foreign published snapshot that invoked this branch while it was public
+    must not hold it. That invoker was already cut off when the branch went
+    private (a private child runs only for its author), which is the recorded
+    product decision."""
+    us, actor = universe_surface
+    child = _create(us, "was-public")
+    _make_public(us, child)
+    actor["id"] = "bob"
+    parent = _create(us, "bobs-parent", invokes=child)
+    published = json.loads(us.write_graph(target="branch", operation="publish", branch_id=parent))
+    assert published.get("branch_version_id"), published
+    actor["id"] = "alice"
+    _make_private(us, child)
+
+    out = _delete(us, child)
+    assert out.get("status") == "deleted", out
+
+
 def test_a_prompt_that_merely_MENTIONS_the_id_is_not_a_dependent(universe_surface):
     """Dependents come from the structured child-ref fields, never free text."""
     us, _actor = universe_surface
