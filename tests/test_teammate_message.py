@@ -28,6 +28,7 @@ def _seed_run(base_path: Path) -> str:
         run_name="test",
         thread_id="thread-msg",
         inputs={},
+        actor="universe:u-test",
     )
     return run_id
 
@@ -567,6 +568,7 @@ class TestReceiveMessagesSpec:
             run_name="run-b",
             thread_id="thread-b",
             inputs={},
+            actor="universe:u-test",
         )
         # Post a message from run_a to node-X.
         post_teammate_message(

@@ -929,6 +929,7 @@ def test_queue_branch_task_run_reservation_has_exactly_one_winner(
             branch_version_id="branch-version-a",
             branch_task_id=task_id,
             queue_universe_id="universe-a",
+            actor="universe:u-test",
         )
 
     with ThreadPoolExecutor(max_workers=2) as pool:

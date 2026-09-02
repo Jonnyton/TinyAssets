@@ -457,11 +457,22 @@ def test_every_non_deliverable_state_answers_404(env, monkeypatch):
     # a source hook whose event bus is off -> 404 (NOT 500), and no run
     from tinyassets.scheduler import shutdown_scheduler
     shutdown_scheduler()
-    src_token = webhook_hooks.mint(base, universe_id=uid, branch_def_id="b", source_id="s1")
+    src_token = webhook_hooks.mint(
+        base,
+        universe_id=uid,
+        branch_def_id="b",
+        source_id="s1",
+        owner_principal_id="owner-test",
+    )
     assert wh.handle_hook(token=src_token, body=b"{}", headers={}, base_path=base)[0] == 404
 
     # a valid token whose branch has vanished -> 404 (uniform), not 500
-    plain = webhook_hooks.mint(base, universe_id=uid, branch_def_id="ghost-branch")
+    plain = webhook_hooks.mint(
+        base,
+        universe_id=uid,
+        branch_def_id="ghost-branch",
+        owner_principal_id="owner-test",
+    )
     assert wh.handle_hook(token=plain, body=b"{}", headers={}, base_path=base)[0] == 404
     assert _runs_for_universe(base, uid) == []
 

@@ -248,6 +248,7 @@ def _record_completed_runs(
         rid = create_run(
             base_path, branch_def_id=branch_def_id,
             thread_id=branch_def_id, inputs={},
+            actor="universe:u-test",
         )
         update_run_status(
             base_path, rid,
@@ -263,6 +264,7 @@ def _record_judgment_for_branch(
     rid = create_run(
         base_path, branch_def_id=branch_def_id,
         thread_id=branch_def_id, inputs={},
+        actor="universe:u-test",
     )
     update_run_status(
         base_path, rid,
@@ -726,6 +728,7 @@ def test_in_flight_run_blocks_refresh(base_path):
     rid = create_run(
         base_path, branch_def_id="old", thread_id="old",
         inputs={}, branch_version_id=old_bvid,
+        actor="universe:u-test",
     )
     update_run_status(base_path, rid, status=RUN_STATUS_RUNNING)
 
@@ -773,6 +776,7 @@ def test_in_flight_queued_run_also_blocks_refresh(base_path):
     rid = create_run(
         base_path, branch_def_id="old", thread_id="old",
         inputs={}, branch_version_id=old_bvid,
+        actor="universe:u-test",
     )
     # Default status from create_run is 'queued'.
     resolution = resolve_canonical_for_run(
@@ -803,6 +807,7 @@ def test_stale_in_flight_does_not_block_refresh(base_path):
     rid = create_run(
         base_path, branch_def_id="old", thread_id="old",
         inputs={}, branch_version_id=old_bvid,
+        actor="universe:u-test",
     )
     update_run_status(base_path, rid, status=RUN_STATUS_RUNNING)
     # Backdate the row beyond the in-flight window.
@@ -882,6 +887,7 @@ def test_in_flight_detects_running(base_path):
     rid = create_run(
         base_path, branch_def_id="b1", thread_id="b1",
         inputs={}, branch_version_id=bvid,
+        actor="universe:u-test",
     )
     update_run_status(base_path, rid, status=RUN_STATUS_RUNNING)
     row = is_in_flight_for_version(
@@ -898,6 +904,7 @@ def test_in_flight_detects_queued(base_path):
     rid = create_run(
         base_path, branch_def_id="b1", thread_id="b1",
         inputs={}, branch_version_id=bvid,
+        actor="universe:u-test",
     )
     # Default is queued.
     row = is_in_flight_for_version(
@@ -914,6 +921,7 @@ def test_in_flight_ignores_terminal_runs(base_path):
         rid = create_run(
             base_path, branch_def_id="b1", thread_id="b1",
             inputs={}, branch_version_id=bvid,
+            actor="universe:u-test",
         )
         update_run_status(
             base_path, rid, status=status, finished_at=time.time(),
@@ -934,6 +942,7 @@ def test_in_flight_filters_other_versions(base_path):
     rid = create_run(
         base_path, branch_def_id="b2", thread_id="b2",
         inputs={}, branch_version_id=v2,
+        actor="universe:u-test",
     )
     update_run_status(base_path, rid, status=RUN_STATUS_RUNNING)
     row = is_in_flight_for_version(
@@ -948,6 +957,7 @@ def test_in_flight_window_excludes_old_runs(base_path):
     rid = create_run(
         base_path, branch_def_id="b1", thread_id="b1",
         inputs={}, branch_version_id=bvid,
+        actor="universe:u-test",
     )
     update_run_status(base_path, rid, status=RUN_STATUS_RUNNING)
     from tinyassets.runs import _connect

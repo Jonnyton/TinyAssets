@@ -3788,16 +3788,24 @@ def main(
         assigned_consumer.start()
     try:
         run_visibility_startup_gate()
-        if transport == "sse":
-            mcp.run(transport="sse", host=host, port=port)
-        elif transport == "stdio":
-            # No bearer on stdio: the principal is the local operator, bound
+        if transport in ("sse", "stdio"):
+            # Neither transport carries a bearer, and neither runs behind the
+            # auth middleware, so the principal is the local operator, bound
             # once for the process (no-anonymous-principal). The ContextVar set
             # here is copied into every task anyio starts under mcp.run().
+            # Without it these two surfaces served every call as nobody --
+            # which, now that current_identity() raises, is a refusal rather
+            # than a silent stand-in, and a refusal is not a working server
+            # (Codex code review round 3, P1).
             from tinyassets.auth.middleware import bind_local_operator_identity
 
             bound = bind_local_operator_identity()
-            logger.info("stdio transport: principal is local operator %r", bound.user_id)
+            logger.info(
+                "%s transport: principal is local operator %r", transport, bound.user_id
+            )
+        if transport == "sse":
+            mcp.run(transport="sse", host=host, port=port)
+        elif transport == "stdio":
             mcp.run()
         else:
             raise ValueError(f"Unknown transport: {transport}")

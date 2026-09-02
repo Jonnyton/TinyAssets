@@ -516,6 +516,7 @@ def test_evidence_merges_into_a_callers_terminal_output(monkeypatch, tmp_path):
     runs.initialize_runs_db(tmp_path)
     created = runs.create_run(
         tmp_path, branch_def_id="b", thread_id="t15", inputs={}, run_name="x",
+        actor="universe:u-test",
     )
     run_id = created if isinstance(created, str) else getattr(created, "run_id", "")
     chain = EffectChain(run_id=run_id)

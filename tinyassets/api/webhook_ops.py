@@ -95,6 +95,8 @@ def _resolve_owned_branch(base: str, branch_def_id: str, uid: str) -> tuple[str,
 def _owner_principal() -> str:
     """The authenticated caller a hook will run AS. Every hook has one
     (no-anonymous-principal D2); a request with none cannot mint."""
+    from tinyassets.api.permissions import current_request_actor_id
+
     return (current_request_actor_id() or "").strip()
 
 

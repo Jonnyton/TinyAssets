@@ -115,6 +115,7 @@ def _seed_goal_and_branches(base_path: Path):
         )
         rid = create_run(
             base_path, branch_def_id=bid, thread_id=bid, inputs={},
+            actor="universe:u-test",
         )
         update_run_status(
             base_path, rid,

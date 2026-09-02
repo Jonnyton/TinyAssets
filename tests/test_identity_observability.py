@@ -135,7 +135,7 @@ def test_authenticated_first_contact_has_explicit_identity_evidence(
     set_provider(_StaticProvider())
     auth_middleware(_BEARER)
 
-    payload = json.loads(get_status())
+    payload = json.loads(get_status(universe_id))
 
     assert payload["first_contact"]["event"] == "no_universe_yet"
     assert payload["request_identity"]["bearer_present"] is True
