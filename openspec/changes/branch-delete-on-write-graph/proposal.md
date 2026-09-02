@@ -36,5 +36,10 @@ god; the ONLY platform invariant is not affecting other users.
   `branch_def_id` (benign, no FK), versions keep their snapshots.
 - Cross-family review: Codex REJECTED the first cut (dangling automations, an
   impossible public→private→delete remediation because every patch mints a
-  version, served tests that never reached the real handler, no change dir);
-  this is the second cut, built to those findings.
+  version, served tests that never reached the real handler, no change dir) and
+  the second (webhooks, schedules, subscriptions, personal canonicals and
+  snapshot invocations missing from the dependents; a 500-version cap; a broad
+  exception guard; an overstated spec). This is the third cut, built to both.
+- A product decision is recorded in `design.md`: making a public branch private
+  is the owner's right and foreign invokers fail closed at their next run;
+  delete adds nothing to that. The founder can reverse it at `set_visibility`.

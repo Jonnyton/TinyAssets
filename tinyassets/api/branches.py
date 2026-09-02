@@ -767,34 +767,48 @@ def _ext_branch_delete(kwargs: dict[str, Any]) -> str:
 def _branch_dependents(
     base: str, *, branch_def_id: str, actor: str,
 ) -> dict[str, list[str]]:
-    """Everything that would break if this branch definition vanished.
+    """Everything that would break if this branch definition vanished, by
+    reader (Codex rounds 1 and 2 on the branch-delete change):
 
     * automations bound to it, in any universe (registration promises not to
       store one that cannot fire; deleting the branch would create exactly
       that, and the user would watch it degrade asynchronously);
-    * goals whose canonical binding points at one of its versions
-      (`invoke_branch_version` maps a version back to its definition);
-    * the author's other branches that invoke it by id or by version.
+    * active webhooks whose token resolves to it (each delivery would fail);
+    * active schedules and event subscriptions that fire it;
+    * goals whose canonical binding -- default, personal, or the legacy
+      column -- points at ANY of its versions (`invoke_branch_version` maps a
+      version back to its definition);
+    * other branches that invoke it: their CURRENT definitions, and their
+      published SNAPSHOTS, which are executable on their own and reload the
+      child live.
 
-    Internal patch snapshots in `branch_versions` are NOT dependents: every
-    patch mints one, so counting them would make any edited branch
-    undeletable (Codex on the first cut).
+    Internal patch snapshots of THIS branch are NOT dependents: every patch
+    mints one, so counting them would make any edited branch undeletable.
+    Version ids are read uncapped.
     """
     import sqlite3
 
+    from tinyassets import branch_versions, scheduler
     from tinyassets.automations import AutomationStore
-    from tinyassets.branch_versions import list_branch_versions
     from tinyassets.daemon_server import list_branch_definitions
-    from tinyassets.storage import db_path
+    from tinyassets.storage import db_path, webhook_hooks
 
-    versions = {
-        v.branch_version_id for v in list_branch_versions(base, branch_def_id, limit=500)
+    versions = branch_versions.list_version_ids(base, branch_def_id)
+    out: dict[str, list[str]] = {
+        "automations": [], "webhooks": [], "schedules": [], "subscriptions": [],
+        "goals": [], "branches": [],
     }
-    out: dict[str, list[str]] = {"automations": [], "goals": [], "branches": []}
 
     out["automations"] = [
         a.automation_id for a in AutomationStore(base).list_for_branch(branch_def_id)
     ]
+    out["webhooks"] = [
+        (h.get("source_id") or f"hook:{h['token_prefix']}")
+        for h in webhook_hooks.list_active_for_branch(base, branch_def_id=branch_def_id)
+    ]
+    bound = scheduler.list_bound_to_branch(base, branch_def_id=branch_def_id)
+    out["schedules"] = bound["schedules"]
+    out["subscriptions"] = bound["subscriptions"]
 
     if versions:
         goal_ids: set[str] = set()
@@ -802,25 +816,34 @@ def _branch_dependents(
         if db.exists():
             conn = sqlite3.connect(db)
             try:
+                tables = {
+                    r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                }
                 placeholders = ",".join("?" for _ in versions)
                 params = tuple(versions)
-                for row in conn.execute(
-                    f"SELECT goal_id FROM canonical_bindings WHERE branch_version_id IN ({placeholders})",
-                    params,
-                ):
-                    goal_ids.add(str(row[0]))
-                try:
-                    for row in conn.execute(
-                        f"SELECT goal_id FROM goals WHERE canonical_branch_version_id IN ({placeholders})",
-                        params,
-                    ):
-                        goal_ids.add(str(row[0]))
-                except sqlite3.OperationalError:
-                    pass  # legacy column absent on a fresh database
+                for table in ("canonical_bindings", "goal_canonicals"):
+                    if table in tables:
+                        for row in conn.execute(
+                            f"SELECT goal_id FROM {table} WHERE branch_version_id IN ({placeholders})",
+                            params,
+                        ):
+                            goal_ids.add(str(row[0]))
+                if "goals" in tables:
+                    # The legacy column exists on every production database
+                    # (daemon_server adds it at init); probe rather than swallow
+                    # an OperationalError, which would hide a real fault.
+                    columns = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
+                    if "canonical_branch_version_id" in columns:
+                        for row in conn.execute(
+                            f"SELECT goal_id FROM goals WHERE canonical_branch_version_id IN ({placeholders})",
+                            params,
+                        ):
+                            goal_ids.add(str(row[0]))
             finally:
                 conn.close()
         out["goals"] = sorted(goal_ids)
 
+    invokers: set[str] = set()
     for row in list_branch_definitions(base, author=actor, include_private=True):
         other = str(row.get("branch_def_id") or "")
         if not other or other == branch_def_id:
@@ -832,8 +855,12 @@ def _branch_dependents(
             by_id = (node.get("invoke_branch_spec") or {}).get("branch_def_id")
             by_version = (node.get("invoke_branch_version_spec") or {}).get("branch_version_id")
             if by_id == branch_def_id or (by_version and by_version in versions):
-                out["branches"].append(other)
+                invokers.add(other)
                 break
+    invokers |= branch_versions.versions_invoking(
+        base, branch_def_id=branch_def_id, version_ids=versions,
+    )
+    out["branches"] = sorted(invokers)
     return out
 
 
@@ -880,9 +907,11 @@ def _ext_branch_delete_own(kwargs: dict[str, Any]) -> str:
             "branch_def_id": bid,
             "dependents": dependents,
             "detail": (
-                "Something of yours still uses this branch: delete or re-point "
-                "the automations, unset the goals' canonical binding, or edit the "
-                "branches that invoke it, then delete."
+                "Something still uses this branch: delete or re-point the "
+                "automations, revoke the webhooks, unregister the schedules and "
+                "subscriptions, unset the goals' canonical binding, or edit the "
+                "branches (and their published versions) that invoke it, then "
+                "delete."
             ),
         })
     removed = delete_branch_definition(base, branch_def_id=bid)

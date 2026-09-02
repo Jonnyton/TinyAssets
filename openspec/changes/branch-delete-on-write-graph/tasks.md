@@ -2,23 +2,36 @@
 
 - [x] 1 `AutomationStore.list_for_branch(branch_def_id)` — every non-retired
       automation in any universe bound to the branch.
-- [x] 2 `api/branches.py` `_branch_dependents` + `_ext_branch_delete_own`:
+- [x] 2 `webhook_hooks.list_active_for_branch`, `scheduler.list_bound_to_branch`,
+      `branch_versions.list_version_ids` (uncapped) and
+      `branch_versions.versions_invoking` (published snapshots that invoke a
+      branch by id or version).
+- [x] 3 `api/branches.py` `_branch_dependents` + `_ext_branch_delete_own`:
       author gate (not-found envelope), public refusal, dependents refusal naming
-      automations / goals (canonical bindings on any version, legacy column too) /
-      the author's own invoking branches (structured child-ref fields only), then
-      `delete_branch_definition`. Registered as `delete_own_branch`.
-- [x] 3 `universe_server.py` and `engine_mcp_server.py`: `operation=delete` routed
+      automations / webhooks / schedules / subscriptions / goals (default,
+      personal and legacy canonical stores) / invoking branches (current
+      definitions and published snapshots; structured child-ref fields only),
+      then `delete_branch_definition`. Registered as `delete_own_branch`. The
+      legacy column is probed with PRAGMA, never guessed through an exception.
+- [x] 4 `universe_server.py` and `engine_mcp_server.py`: `operation=delete` routed
       to `delete_own_branch`; `_WRITE_GRAPH_OPS`, error text and tool docstrings
-      name it.
-- [x] 4 Tests (`tests/test_branch_delete_is_first_class.py`): own private deletes
+      name it and both refusals.
+- [x] 5 Tests (`tests/test_branch_delete_is_first_class.py`): own private deletes
       and is gone from the listing; patched branch still deletes; public refused
-      then deletable after set_visibility private; automation / goal / child
-      invocation dependents named and nothing deleted; non-author gets not-found
-      even on a public branch; served surface exercised with the REAL handler
-      under the bound identity, not a stub.
-- [x] 5 Mutation-checked: no author gate, public deletes, dependents ignored (each
-      kind), served/universe routed to the unguarded handler.
-- [ ] 6 Cross-family review round 2 (Codex) before push; land; sync this delta into
+      then deletable after set_visibility private; each dependent kind named and
+      nothing deleted (automation, retired automation does not hold, webhook then
+      revoke, schedule + subscription then unregister, default and personal
+      canonical, current-definition invoker, snapshot invoker with the parent's
+      definition gone, free-text mention is not a dependent, version ids uncapped
+      past 500); non-author gets not-found even on a public branch; served
+      surface exercised with the REAL handler under the bound identity, and a
+      served test that reaches the guarded handler, not the raw one.
+- [x] 6 Mutation-checked (see commit): author gate, public, each dependent kind,
+      free-text mention, both surfaces routed to the unguarded handler.
+- [x] 7 Product decision recorded (design.md): making a public branch private is
+      the owner's right and foreign invokers fail closed at their next run; delete
+      adds nothing to that. Flagged to the founder.
+- [ ] 8 Cross-family review round 3 (Codex) before push; land; sync this delta into
       `openspec/specs/live-mcp-connector-surface/spec.md`; archive.
-- [ ] 7 Live proof: tiny deletes one of its probe branches from the app and it is
+- [ ] 9 Live proof: tiny deletes one of its probe branches from the app and it is
       gone from `read_graph target=branches`.

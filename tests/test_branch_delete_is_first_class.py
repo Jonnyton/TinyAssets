@@ -247,6 +247,142 @@ def test_a_branch_that_INVOKES_this_one_is_named(universe_surface):
     assert _delete(us, child)["status"] == "deleted"
 
 
+def test_an_ACTIVE_webhook_bound_to_the_branch_is_named(universe_surface, tmp_path):
+    """Codex round 2: a minted hook resolves its token to the branch at every
+    delivery; deleting the branch leaves the hook active and every delivery
+    failing."""
+    from tinyassets.storage import webhook_hooks
+
+    us, _actor = universe_surface
+    bid = _create(us, "hooked")
+    token = webhook_hooks.mint(tmp_path, universe_id="u-1", branch_def_id=bid)
+
+    out = _delete(us, bid)
+    assert out.get("error") == "branch_has_dependents", out
+    [hook] = out["dependents"]["webhooks"]
+    assert hook.startswith("hook:") and token.startswith(hook[len("hook:"):]), hook
+    assert bid in _listed(us)
+
+    assert webhook_hooks.revoke(tmp_path, token=token) is True
+    assert _delete(us, bid)["status"] == "deleted"
+
+
+def test_an_ACTIVE_schedule_and_subscription_are_named(universe_surface, tmp_path):
+    from tinyassets import scheduler
+
+    us, _actor = universe_surface
+    bid = _create(us, "scheduled")
+    # The scheduler lays its tables down at daemon start; do the same here.
+    with scheduler._connect(scheduler._runs_db(tmp_path)) as conn:
+        conn.executescript(scheduler.SCHEDULER_SCHEMA)
+    sid = scheduler.register_schedule(
+        tmp_path, branch_def_id=bid, owner_actor="universe:u-1", universe_id="u-1",
+        owner_principal_id="alice", interval_seconds=3600,
+    )
+    sub = scheduler.register_subscription(
+        tmp_path, branch_def_id=bid, owner_actor="universe:u-1", event_type="canon_change",
+    )
+
+    out = _delete(us, bid)
+    assert out.get("error") == "branch_has_dependents", out
+    assert out["dependents"]["schedules"] == [sid]
+    assert out["dependents"]["subscriptions"] == [sub]
+
+    # Deactivation authority is the scheduler's own concern, not this test's.
+    assert scheduler.unregister_schedule(tmp_path, sid, requesting_actor="alice", admin=True) is True
+    assert scheduler.unregister_subscription(tmp_path, sub, requesting_actor="alice", admin=True) is True
+    assert _delete(us, bid)["status"] == "deleted"
+
+
+def test_a_default_canonical_recorded_ONLY_in_canonical_bindings_is_named(universe_surface, tmp_path):
+    """A live database can hold a default canonical in `canonical_bindings`
+    alone (the personal table and the legacy column both empty). The
+    set_canonical path today writes all three, which is why a test through it
+    cannot tell the readers apart; this one writes the single store directly."""
+    import sqlite3
+
+    from tinyassets.storage import db_path
+
+    us, _actor = universe_surface
+    bid = _create(us, "bindings-only")
+    published = json.loads(us.write_graph(target="branch", operation="publish", branch_id=bid))
+    version_id = published["branch_version_id"]
+    goal = json.loads(us.write_graph(target="goal", name="Bound", description="a goal"))
+    goal_id = goal.get("goal_id") or (goal.get("goal") or {}).get("goal_id")
+    conn = sqlite3.connect(db_path(tmp_path))
+    try:
+        conn.execute(
+            "INSERT INTO canonical_bindings (goal_id, scope_token, branch_version_id, "
+            "bound_by_actor_id, bound_at) VALUES (?, '', ?, 'alice', 0)",
+            (goal_id, version_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = _delete(us, bid)
+    assert out.get("error") == "branch_has_dependents", out
+    assert goal_id in out["dependents"]["goals"]
+
+
+def test_a_PERSONAL_canonical_is_named_too(universe_surface, tmp_path):
+    """Actor-scoped canonicals live in `goal_canonicals`, read before the
+    goal default; the first cut queried only the default table."""
+    us, _actor = universe_surface
+    bid = _create(us, "personal-canon")
+    published = json.loads(us.write_graph(target="branch", operation="publish", branch_id=bid))
+    version_id = published["branch_version_id"]
+    goal = json.loads(us.write_graph(target="goal", name="Mine", description="a goal"))
+    goal_id = goal.get("goal_id") or (goal.get("goal") or {}).get("goal_id")
+    from tinyassets.daemon_server import set_goal_canonical
+
+    set_goal_canonical(
+        tmp_path, goal_id=goal_id, scope_actor="alice",
+        branch_version_id=version_id, set_by="alice",
+    )
+
+    out = _delete(us, bid)
+    assert out.get("error") == "branch_has_dependents", out
+    assert goal_id in out["dependents"]["goals"]
+
+
+def test_an_invocation_inside_another_branchs_PUBLISHED_SNAPSHOT_is_named(universe_surface, tmp_path):
+    """Codex round 2: a published snapshot is executable on its own and its
+    invoke node reloads the child live -- even after the parent's CURRENT
+    definition stopped naming the child (here: the parent's definition is
+    gone entirely, its snapshot remains)."""
+    from tinyassets.daemon_server import delete_branch_definition
+
+    us, _actor = universe_surface
+    child = _create(us, "snap-child")
+    parent = _create(us, "snap-parent", invokes=child)
+    published = json.loads(us.write_graph(target="branch", operation="publish", branch_id=parent))
+    assert published.get("branch_version_id"), published
+    assert delete_branch_definition(tmp_path, branch_def_id=parent) is True
+
+    out = _delete(us, child)
+    assert out.get("error") == "branch_has_dependents", out
+    assert out["dependents"]["branches"] == [parent]
+
+
+def test_version_ids_are_read_uncapped(tmp_path):
+    """`list_branch_versions` caps at 500; a dependency check must not."""
+    from tinyassets.branch_versions import (
+        list_branch_versions,
+        list_version_ids,
+        publish_branch_version,
+    )
+
+    branch = {"branch_def_id": "b-many", "name": "many", "author": "alice", "visibility": "private",
+              "entry_point": "ready", "node_defs": [{"node_id": "ready", "display_name": "R",
+              "prompt_template": "x"}], "edges": [], "state_schema": []}
+    for i in range(505):
+        branch["node_defs"][0]["prompt_template"] = f"x{i}"
+        publish_branch_version(tmp_path, branch, publisher="alice", notes=str(i))
+    assert len(list_branch_versions(tmp_path, "b-many", limit=500)) == 500
+    assert len(list_version_ids(tmp_path, "b-many")) == 505
+
+
 def test_a_prompt_that_merely_MENTIONS_the_id_is_not_a_dependent(universe_surface):
     """Dependents come from the structured child-ref fields, never free text."""
     us, _actor = universe_surface
