@@ -99,8 +99,33 @@ class TestDefaultUniverse:
         monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "my-default")
         (tmp_path / "my-default").mkdir()
         (tmp_path / "active-now").mkdir()
+        _own_universe(tmp_path, "my-default")
+        _own_universe(tmp_path, "active-now")
         (tmp_path / ".active_universe").write_text("active-now", encoding="utf-8")
         assert _default_universe() == "active-now"
+
+    def test_a_marker_naming_an_operational_store_is_not_followed(
+        self, tmp_path, monkeypatch,
+    ):
+        """Codex code review round 2, P1. The marker and the configured default
+        returned before any ownership check, so a stale `.active_universe`
+        naming `scratch` routed every request into the workspace pool."""
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+        monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
+        (tmp_path / "scratch").mkdir()
+        (tmp_path / "u-mine").mkdir()
+        _own_universe(tmp_path, "u-mine")
+        (tmp_path / ".active_universe").write_text("scratch", encoding="utf-8")
+        assert _default_universe() == "u-mine"
+
+    def test_a_configured_default_still_answers_an_empty_data_root(
+        self, tmp_path, monkeypatch,
+    ):
+        """A fresh install names the universe it is about to create. It never
+        wins over one that exists."""
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "my-default")
+        assert _default_universe() == "my-default"
 
     def test_invalid_active_marker_ignored(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))

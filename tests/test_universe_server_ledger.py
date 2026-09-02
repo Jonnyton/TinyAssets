@@ -337,6 +337,15 @@ def test_control_daemon_status_does_not_append(universe: str) -> None:
 def test_switch_universe_appends_ledger(universe: str) -> None:
     other = "other-uni"
     (us._base_path() / other).mkdir(parents=True)
+    # Switching to a directory nobody owns is switching to something that is
+    # not a universe. Reading one BY ID needs an owner now, exactly as the
+    # listing does (Codex code review round 2, P1).
+    from tinyassets.daemon_server import grant_universe_access
+
+    grant_universe_access(
+        us._base_path(), universe_id=other, actor_id="user_01TESTOWNER",
+        permission="admin", granted_by="test",
+    )
 
     out = _call("switch_universe", universe_id=other)
     assert out["status"] == "switching"

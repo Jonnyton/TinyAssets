@@ -72,12 +72,27 @@ def _default_universe() -> str:
     base = _base_path()
     from tinyassets.storage import active_universe_id
     active = active_universe_id(base)
+    # A MARKER OR AN ENV VALUE IS A POINTER, NOT A GRANT (Codex code review
+    # round 2, P1). Both returned before any ownership check, so a stale
+    # `.active_universe` or a configured default naming `scratch` routed
+    # requests into an operational directory.
+    from tinyassets.daemon_server import owned_universe_id, owned_universe_ids
+
     if active:
-        return active
+        resolved = owned_universe_id(base, active)
+        if resolved:
+            return resolved
 
     default = os.environ.get("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "")
     if default:
-        return default
+        resolved = owned_universe_id(base, default)
+        if resolved:
+            return resolved
+        # An unowned configured default still answers when the data root holds
+        # no universes at all -- a fresh install pointing at the name it is
+        # about to create. It never wins over a real one.
+        if not owned_universe_ids(base):
+            return default
 
     # A universe is a directory somebody owns (founder 2026-09-02). This
     # returned the first non-hidden directory under the data root, so an
@@ -139,16 +154,22 @@ def _designated_public_universe() -> str:
     chatbot speaks as"). Env-designated default wins; otherwise the first
     non-serial public directory; else the literal ``default-universe``.
     """
-    default = os.environ.get("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "")
-    if default:
-        return default
     from tinyassets.ids import is_universe_serial
 
     base = _base_path()
+    default = os.environ.get("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "")
+    if default:
+        from tinyassets.daemon_server import owned_universe_id
+
+        resolved = owned_universe_id(base, default)
+        if resolved:
+            return resolved
     if base.is_dir():
         from tinyassets.daemon_server import owned_universe_ids
 
         owned = owned_universe_ids(base)
+        if default and not owned:
+            return default
         for child in sorted(base.iterdir()):
             if (
                 child.is_dir()

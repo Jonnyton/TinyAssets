@@ -1743,7 +1743,9 @@ def _is_listable_universe_dir(path: Path, owned: set[str]) -> bool:
     return (
         path.is_dir()
         and not path.name.startswith(".")
-        and path.name in owned
+        # Case-folded, so a directory restored under a different case is still
+        # the universe its ACL row names (Codex code review round 2, P1).
+        and (path.name in owned or path.name.casefold() in owned)
     )
 
 
@@ -1814,17 +1816,56 @@ def _action_list_universes(**_kwargs: Any) -> str:
     return json.dumps(result)
 
 
+def _owned_universe_id(uid: str) -> str:
+    """The owned id ``uid`` names, or ``""``. Never raises: an unreadable ACL
+    store answers "nobody owns it", which refuses rather than serves."""
+    from tinyassets.daemon_server import owned_universe_id
+
+    try:
+        return owned_universe_id(_base_path(), uid)
+    except Exception:  # noqa: BLE001 - fail closed
+        logger.exception("ownership lookup failed for %s", uid)
+        return ""
+
+
+def _available_universe_ids() -> list[str]:
+    """What to offer when an id is not found: the universes SOMEBODY OWNS.
+
+    This used to list every directory under the data root, so a "not found"
+    answer published the whole graveyard -- the archives, the migration backup
+    and the operational stores -- to any caller who guessed a wrong id.
+    """
+    from tinyassets.daemon_server import owned_universe_ids
+
+    base = _base_path()
+    if not base.is_dir():
+        return []
+    try:
+        owned = owned_universe_ids(base)
+    except Exception:  # noqa: BLE001 - fail closed
+        logger.exception("ownership lookup failed while listing available ids")
+        return []
+    return sorted(
+        d.name for d in base.iterdir()
+        if d.is_dir()
+        and not d.name.startswith(".")
+        and (d.name in owned or d.name.casefold() in owned)
+    )
+
+
 def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
 
-    if not udir.is_dir():
+    # A DIRECTORY IS NOT A UNIVERSE (Codex code review round 2, P1). Filtering
+    # the enumeration was half the fix: reading one BY ID still answered with a
+    # full universe payload for `cloud-automation-inputs` and for the migration
+    # backup, reproduced anonymously against production on 2026-09-02. The
+    # graveyard was still browsable, which is what the founder reported.
+    if not udir.is_dir() or not _owned_universe_id(uid):
         return json.dumps({
             "error": f"Universe '{uid}' not found.",
-            "available": [
-                d.name for d in _base_path().iterdir()
-                if d.is_dir() and not d.name.startswith(".")
-            ] if _base_path().is_dir() else [],
+            "available": _available_universe_ids(),
         })
 
     # Metadata gate: inspect returns describe-surface metadata (premise, daemon
@@ -5790,13 +5831,10 @@ def _action_switch_universe(universe_id: str = "", **_kwargs: Any) -> str:
 
     uid = universe_id
     udir = _universe_dir(uid)
-    if not udir.is_dir():
+    if not udir.is_dir() or not _owned_universe_id(uid):
         return json.dumps({
             "error": f"Universe '{uid}' not found.",
-            "available": [
-                d.name for d in _base_path().iterdir()
-                if d.is_dir() and not d.name.startswith(".")
-            ] if _base_path().is_dir() else [],
+            "available": _available_universe_ids(),
         })
 
     # Explicit universe selection is not global (universe-creation spec:
@@ -6016,14 +6054,26 @@ def _action_create_universe(
         # ...and the grant that was written before it, so a failed create
         # leaves neither a bare directory nor an ACL row for a universe that
         # never existed.
+        revoke_failed = ""
         try:
             from tinyassets.daemon_server import revoke_universe_access
 
-            revoke_universe_access(base, universe_id=uid, actor_id=founder)
-        except Exception:  # noqa: BLE001 - the create already failed
-            logger.warning("rollback: could not revoke the create grant for %s", uid)
+            if founder:
+                revoke_universe_access(base, universe_id=uid, actor_id=founder)
+        except Exception as revoke_exc:  # noqa: BLE001 - the create already failed
+            logger.exception("rollback: could not revoke the create grant for %s", uid)
+            revoke_failed = str(revoke_exc)
         if isinstance(exc, OSError):
-            return json.dumps({"error": f"Failed to create universe: {exc}"})
+            detail = f"Failed to create universe: {exc}"
+            if revoke_failed:
+                # Saying only "failed" would leave the owner holding an admin
+                # grant on a universe that does not exist, with nothing on the
+                # surface saying so (Codex code review round 2, P1).
+                detail += (
+                    f" The ownership grant could NOT be taken back "
+                    f"({revoke_failed}); '{uid}' is claimed but not created."
+                )
+            return json.dumps({"error": detail})
         raise
 
 

@@ -4947,6 +4947,31 @@ def owned_universe_ids(base_path: str | Path) -> set[str]:
     return owned
 
 
+def owned_universe_id(base_path: str | Path, name: str) -> str:
+    """The owned universe id ``name`` refers to, or ``""`` when nobody owns it.
+
+    ONE definition, because there were two and they disagreed. The prune
+    matched case-insensitively (a directory restored as ``U-Mine`` is the ACL's
+    ``u-mine`` on a case-insensitive filesystem) while the listing and both
+    default resolvers compared exactly -- so that directory was protected from
+    the cut and invisible in every list at the same time (Codex code review
+    round 2, P1).
+
+    A dotted name is never a universe, whatever the ACL says.
+    """
+    candidate = (name or "").strip()
+    if not candidate or candidate.startswith("."):
+        return ""
+    owned = owned_universe_ids(base_path)
+    if candidate in owned:
+        return candidate
+    folded = candidate.casefold()
+    for owned_id in owned:
+        if owned_id.casefold() == folded:
+            return owned_id
+    return ""
+
+
 def universe_owners(base_path: str | Path, *, universe_id: str) -> list[str]:
     """Who owns this universe: ACL actors plus any founder bound to it as home.
 

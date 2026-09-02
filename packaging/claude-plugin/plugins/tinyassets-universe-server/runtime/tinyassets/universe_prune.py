@@ -23,6 +23,7 @@ It reports before it removes, always. `plan()` is pure.
 from __future__ import annotations
 
 import shutil
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,11 @@ from typing import Any
 #: none.
 INFRASTRUCTURE_DIRS = frozenset({
     "cloud-automation-inputs",
+    # `deploy/compose.yml` sets TINYASSETS_REPO_ROOT=/data/community-pool. It is
+    # named only through an environment variable, which is why reading the
+    # Python source for `data_dir() / "..."` never found it -- so the drift test
+    # reads the compose file too now (Codex code review round 2, P0).
+    "community-pool",
     "daemon_wikis",
     "founder_offers",
     "lance",
@@ -67,8 +73,13 @@ _UNIVERSE_MARKERS = (
     "checkpoints.db",
 )
 
-#: What every past prune named the pile it moved aside instead of deleting.
-_ARCHIVE_PREFIXES = ("_removed", "_backup", "_legacy")
+#: What every past prune named the pile of UNIVERSES it moved aside instead
+#: of deleting. `_backup` is deliberately NOT here: a migration backup is not a
+#: universe, and `docs/host-actions.md` says of the seven existing ones "do not
+#: delete -- they are migration backups". Treating the prefix as a universe
+#: signal would have cut `_backup_subject_migration_20260829T055340Z` on a
+#: blanket --apply (Codex code review round 2, P0).
+_ARCHIVE_PREFIXES = ("_removed", "_legacy")
 
 
 def _universe_signal(path: Path) -> str:
@@ -179,6 +190,8 @@ def plan(base_path: str | Path) -> list[DirectoryReport]:
     reports: list[DirectoryReport] = []
     for child in sorted(base.iterdir()):
         if not child.is_dir() or child.name.startswith("."):
+            # Dotted names are never universes, which also covers the
+            # `.pruning-*` staging names a removal moves a directory through.
             continue
         files, total, notable = _measure(child)
         reports.append(DirectoryReport(
@@ -209,7 +222,7 @@ def prune(
     inventory an hour ago, or on another machine, cannot make this delete a
     universe somebody has since claimed.
     """
-    from tinyassets.daemon_server import owned_universe_ids, universe_owners
+    from tinyassets.daemon_server import owned_universe_id, universe_owners
 
     base = Path(base_path)
     removed: list[str] = []
@@ -253,13 +266,11 @@ def prune(
         owners = universe_owners(base, universe_id=name)
         if not owners:
             # A directory restored as `U-Mine` is the same directory as the
-            # ACL's `u-mine` on a case-insensitive filesystem. Matching the id
-            # exactly would have called an owned universe unowned.
-            folded = name.casefold()
-            for owned_id in owned_universe_ids(base):
-                if owned_id.casefold() == folded:
-                    owners = universe_owners(base, universe_id=owned_id)
-                    break
+            # ACL's `u-mine` on a case-insensitive filesystem. One definition
+            # of that, shared with the listing and the resolvers.
+            resolved = owned_universe_id(base, name)
+            if resolved:
+                owners = universe_owners(base, universe_id=resolved)
         if owners:
             refused.append({
                 "name": name,
@@ -279,8 +290,46 @@ def prune(
         if not apply:
             removed.append(name)
             continue
+        # THE CLAIM CANNOT LAND BETWEEN THE CHECK AND THE DELETE.
+        #
+        # Reading owners and then calling rmtree leaves a window: a grant
+        # written in between is lost with the directory (Codex code review
+        # round 2, P0). So the id is FREED first -- the directory moves aside
+        # under a name nothing can grant on -- and ownership is read again. A
+        # claim that landed before the move is seen now and the directory goes
+        # back. A claim that lands after it is a claim on an id with no
+        # directory, and creation grants before it materializes, so the next
+        # read of that id sees an owner and a fresh empty universe rather than
+        # this one's contents.
+        staged = base / f".pruning-{name}-{uuid.uuid4().hex[:12]}"
         try:
-            shutil.rmtree(target)
+            target.rename(staged)
+        except OSError as exc:
+            refused.append({"name": name, "reason": f"could not stage: {exc}"})
+            continue
+        late_resolved = owned_universe_id(base, name) or name
+        late_owners = universe_owners(base, universe_id=late_resolved)
+        if late_owners:
+            try:
+                staged.rename(target)
+            except OSError as exc:  # pragma: no cover - the restore must be loud
+                refused.append({
+                    "name": name,
+                    "reason": (
+                        f"claimed during removal and could NOT be put back "
+                        f"({exc}); it is at {staged}"
+                    ),
+                    "owners": late_owners,
+                })
+                continue
+            refused.append({
+                "name": name,
+                "reason": "owned",
+                "owners": late_owners,
+            })
+            continue
+        try:
+            shutil.rmtree(staged)
         except OSError as exc:
             refused.append({"name": name, "reason": f"removal failed: {exc}"})
             continue

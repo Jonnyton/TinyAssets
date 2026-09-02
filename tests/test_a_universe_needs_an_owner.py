@@ -252,12 +252,14 @@ def test_a_prune_leaves_nothing_behind_to_prune(data_root):
     from tinyassets.universe_prune import plan, prune
 
     _own(data_root, "u-mine")
-    for leftover in (
-        "_removed_universes_20260828",
-        "_removed_legacy_20260829",
-        "_backup_subject_migration_20260829T055340Z",
-    ):
+    for leftover in ("_removed_universes_20260828", "_removed_legacy_20260829"):
         _universe(data_root, leftover)
+    # A migration backup is NOT one of these. `docs/host-actions.md` says of
+    # the seven existing ones "do not delete -- they are migration backups",
+    # and `_backup` as a universe signal would have cut them (Codex code
+    # review round 2, P0).
+    backup = "_backup_subject_migration_20260829T055340Z"
+    _universe(data_root, backup)
 
     prune(
         data_root,
@@ -265,7 +267,13 @@ def test_a_prune_leaves_nothing_behind_to_prune(data_root):
         apply=True,
     )
 
-    assert sorted(p.name for p in data_root.iterdir() if p.is_dir()) == ["u-mine"]
+    assert sorted(p.name for p in data_root.iterdir() if p.is_dir()) == [
+        backup, "u-mine",
+    ]
+    refused = prune(data_root, names=[backup], apply=True)
+    assert refused["removed"] == []
+    assert refused["refused"][0]["reason"] == "not a universe directory"
+    assert (data_root / backup).is_dir()
     listed = json.loads(_action_list_universes())
     assert [u["id"] for u in listed["universes"]] == ["u-mine"]
     # ...and running it again has nothing to do.
@@ -308,6 +316,16 @@ def test_every_platform_directory_under_the_data_root_is_named_infrastructure():
             found.setdefault(name, str(source.relative_to(repo_root)))
 
     assert found, "the scan found nothing -- it stopped testing what it claims"
+
+    # ...and the roots named only through the environment. `community-pool` is
+    # `TINYASSETS_REPO_ROOT: /data/community-pool` in `deploy/compose.yml` and
+    # appears in no Python literal, which is why reading the source alone left
+    # it out of the list and `reset(confirm=True)` would have removed it
+    # (Codex code review round 2, P0).
+    compose = repo_root / "deploy" / "compose.yml"
+    if compose.is_file():
+        for name in re.findall(r"/data/([A-Za-z0-9_-]+)", compose.read_text(encoding="utf-8")):
+            found.setdefault(name, "deploy/compose.yml")
 
     missing = {
         name: where
@@ -417,7 +435,10 @@ def test_ownership_is_re_read_for_each_directory_not_once(data_root, monkeypatch
 
     def _claiming_rmtree(path, *args, **kwargs):
         result = real_rmtree(path, *args, **kwargs)
-        if pathlib.Path(path).name == "_removed_first_20260828":
+        # The cut frees the id first, so what reaches rmtree is the staging
+        # name `.pruning-<id>-<token>` (Codex code review round 2, P0: the
+        # ownership read and the delete had to stop being two steps).
+        if "_removed_first_20260828" in pathlib.Path(path).name:
             # Another request claims the second directory, now that the first
             # one is already gone.
             grant_universe_access(
@@ -455,3 +476,81 @@ def test_creating_a_universe_claims_the_owner_before_the_directory_exists():
         "the directory is created before its owner is claimed, which is the "
         "window a concurrent prune deletes into"
     )
+
+
+def test_a_claim_landing_between_the_check_and_the_delete_is_not_lost(
+    data_root, monkeypatch,
+):
+    """Codex code review round 2, P0. Reading owners and then calling rmtree
+    left a window: a grant written in between went into the ground with the
+    directory.
+
+    The cut frees the id first -- the directory moves aside under a name
+    nothing can grant on -- and reads ownership again. Here the claim lands
+    during the FIRST read, which is the moment that window opened."""
+    from tinyassets import universe_prune
+
+    _universe(data_root, "_removed_racy_20260828")
+
+    # The claim lands from the signal read, which happens after EVERY
+    # pre-check and before the directory moves. Triggering it from the
+    # ownership read instead would be caught by the pre-check itself, and the
+    # test would pass without the second read existing at all.
+    original_signal = universe_prune._universe_signal
+
+    def _claim_then_answer(path):
+        answer = original_signal(path)
+        if path.name == "_removed_racy_20260828":
+            grant_universe_access(
+                data_root, universe_id="_removed_racy_20260828",
+                actor_id="workos|racer", permission="admin", granted_by="test",
+            )
+        return answer
+
+    monkeypatch.setattr(universe_prune, "_universe_signal", _claim_then_answer)
+    result = universe_prune.prune(
+        data_root, names=["_removed_racy_20260828"], apply=True,
+    )
+
+    assert result["removed"] == [], "a universe claimed mid-cut was deleted"
+    assert result["refused"][0]["reason"] == "owned"
+    assert result["refused"][0]["owners"] == ["workos|racer"]
+    assert (data_root / "_removed_racy_20260828").is_dir(), "it was not put back"
+    assert [p.name for p in data_root.iterdir() if p.name.startswith(".pruning-")] == []
+
+
+def test_reading_a_universe_by_id_needs_an_owner_too(data_root):
+    """Codex code review round 2, P1, reproduced anonymously against
+    production: filtering the enumeration was half the fix. Asking for the
+    migration backup BY ID still answered with a full universe payload, so the
+    graveyard stayed browsable -- which is what the founder reported."""
+    from tinyassets.api.universe import (
+        _action_inspect_universe,
+        _action_switch_universe,
+    )
+
+    _own(data_root, "u-mine")
+    for leftover in (
+        "_backup_subject_migration_20260829T055340Z",
+        "cloud-automation-inputs",
+        "daemon_wikis",
+    ):
+        _universe(data_root, leftover)
+
+    for leftover in (
+        "_backup_subject_migration_20260829T055340Z",
+        "cloud-automation-inputs",
+        "daemon_wikis",
+    ):
+        inspected = json.loads(_action_inspect_universe(universe_id=leftover))
+        assert "error" in inspected, (leftover, inspected)
+        assert "not found" in inspected["error"]
+        # ...and the refusal does not publish the graveyard either.
+        assert inspected["available"] == ["u-mine"]
+
+        switched = json.loads(_action_switch_universe(universe_id=leftover))
+        assert "error" in switched, (leftover, switched)
+        assert switched["available"] == ["u-mine"]
+
+    owned = json.loads(_action_inspect_universe(universe_id="u-mine"))
+    assert "error" not in owned, owned
