@@ -242,13 +242,14 @@ def _reconcile_copied_approval(merged: dict[str, Any]) -> None:
         merged["approval_reason"] = ""
 
 
-def _node_source_code_unrunnable(nd: dict[str, Any]) -> bool:
-    """True when a node dict has executable source_code but is NOT genuinely
-    approved (provenance-checked), so the fail-closed runtime gate would refuse
-    it. Used by the describe/validate/get_branch runnability surfaces so what
-    they report matches what ``_validate_source_code`` will actually accept: a
-    bare ``approved=True`` with a missing/stale ``approved_source_hash`` is
-    reported as unrunnable, not runnable. PR #1349.
+def _node_source_code_unapproved(nd: dict[str, Any]) -> bool:
+    """True when a node dict has source_code with no hash-backed approval.
+
+    PROVENANCE ONLY. Approval stopped gating execution with change
+    ``sandboxed-code-node`` (the OS sandbox is the authority boundary), so this
+    predicate feeds the ``unapproved_source_code_nodes`` list a reader may use
+    to see whose code they are about to run -- and nothing derives
+    ``runnable`` from it. That derivation is :func:`_source_code_problems`.
     """
     if not nd.get("source_code"):
         return False
@@ -257,6 +258,38 @@ def _node_source_code_unrunnable(nd: dict[str, Any]) -> bool:
         nd.get("source_code") or "",
         nd.get("approved_source_hash") or "",
     )
+
+
+def _source_code_problems(node_defs: Any) -> list[dict[str, Any]]:
+    """What the compiler will refuse, per code node: the ONE fact ``runnable``
+    reports. Reuses :func:`tinyassets.graph_compiler.source_code_problems`, so
+    a receipt cannot say ``runnable`` about a branch the compiler then rejects,
+    nor ``runnable: false`` about one it accepts (concern 2026-09-01: the
+    receipt still encoded the retired approval gate, and the universe told the
+    founder its PR-building branch needed an approval flow that does not
+    exist)."""
+    from tinyassets.graph_compiler import source_code_problems
+
+    found: list[dict[str, Any]] = []
+    for nd in node_defs or []:
+        if isinstance(nd, dict):
+            source = nd.get("source_code") or ""
+            node_id = str(nd.get("node_id") or "")
+            display = str(nd.get("display_name") or "")
+        else:
+            source = getattr(nd, "source_code", "") or ""
+            node_id = str(getattr(nd, "node_id", "") or "")
+            display = str(getattr(nd, "display_name", "") or "")
+        if not source:
+            continue
+        problems = source_code_problems(source, node_id)
+        if problems:
+            found.append({
+                "node_id": node_id,
+                "display_name": display,
+                "problems": problems,
+            })
+    return found
 
 
 def _reconcile_node_approval(node: Any) -> Any:
@@ -595,10 +628,12 @@ def _ext_branch_get(kwargs: dict[str, Any]) -> str:
     unapproved_sc = [
         {"node_id": nd.get("node_id", ""), "display_name": nd.get("display_name", "")}
         for nd in branch.get("node_defs", [])
-        if _node_source_code_unrunnable(nd)
+        if _node_source_code_unapproved(nd)
     ]
     branch["unapproved_source_code_nodes"] = unapproved_sc
-    branch["runnable"] = not unapproved_sc
+    problems = _source_code_problems(branch.get("node_defs", []))
+    branch["source_code_problems"] = problems
+    branch["runnable"] = not problems
     return json.dumps(branch, default=str)
 
 
@@ -1194,14 +1229,15 @@ def _ext_branch_validate(kwargs: dict[str, Any]) -> str:
     branch = BranchDefinition.from_dict(source_dict)
     errors = branch.validate()
 
-    # BUG-031: surface unapproved source_code nodes so the chatbot can warn
-    # the user before they attempt run_branch (which would fail with a
-    # permission-denied error and no clear remediation path).
+    # Provenance (who approved which code), never runnability: code nodes run
+    # in the OS sandbox. What can stop a run is a structural error or a code
+    # node the compiler refuses, and both are reported here as such.
     unapproved_sc = [
         {"node_id": nd.get("node_id", ""), "display_name": nd.get("display_name", "")}
         for nd in source_dict.get("node_defs", [])
-        if _node_source_code_unrunnable(nd)
+        if _node_source_code_unapproved(nd)
     ]
+    problems = _source_code_problems(source_dict.get("node_defs", []))
 
     # sandbox-compat warning: list any requires_sandbox=True nodes when
     # the host's bwrap probe says sandbox is unavailable. Non-fatal.
@@ -1232,7 +1268,8 @@ def _ext_branch_validate(kwargs: dict[str, Any]) -> str:
         "branch_def_id": bid,
         "valid": not errors,
         "errors": errors,
-        "runnable": not errors and not unapproved_sc,
+        "runnable": not errors and not problems,
+        "source_code_problems": problems,
         "unapproved_source_code_nodes": unapproved_sc,
         "sandbox_warnings": sandbox_warnings,
     })
@@ -1419,8 +1456,9 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
     unapproved_sc = [
         {"node_id": nd.get("node_id", ""), "display_name": nd.get("display_name", "")}
         for nd in source_dict.get("node_defs", [])
-        if _node_source_code_unrunnable(nd)
+        if _node_source_code_unapproved(nd)
     ]
+    problems = _source_code_problems(source_dict.get("node_defs", []))
 
     node_lines = [
         f"  - {n.node_id}: {n.display_name}"
@@ -1438,12 +1476,10 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
         for f in branch.state_schema
     ] or ["  (no state fields yet)"]
 
-    approval_warning_lines = [
-        f"  - APPROVAL REQUIRED: node '{n['node_id']}' ({n['display_name']}) has"
-        " unapproved source_code — the host must approve it through the internal "
-        "operator surface before this branch can run; approval is not exposed "
-        "by the advertised handles."
-        for n in unapproved_sc
+    code_problem_lines = [
+        f"  - CODE NODE '{n['node_id']}' ({n['display_name']}) will not compile: "
+        + "; ".join(n["problems"])
+        for n in problems
     ]
 
     problem_lines = (
@@ -1471,13 +1507,13 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
         "Open problems:",
         *problem_lines,
     ]
-    if approval_warning_lines:
-        summary_parts += ["", "Approval warnings (branch NOT runnable):"]
-        summary_parts += approval_warning_lines
+    if code_problem_lines:
+        summary_parts += ["", "Code problems (branch NOT runnable):"]
+        summary_parts += code_problem_lines
     run_note = (
-        "Note: this branch has unapproved source_code nodes and must be "
-        "approved before it can run."
-        if unapproved_sc
+        "Note: a code node above will not compile, so this branch cannot run "
+        "until it is fixed."
+        if problems
         else (
             f'Note: run this branch with run_graph branch_def_id="{bid}" '
             'inputs_json="<state JSON>" once validated.'
@@ -1520,7 +1556,8 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
         "mermaid": mermaid,
         "valid": not errors,
         "error_count": len(errors),
-        "runnable": not errors and not unapproved_sc,
+        "runnable": not errors and not problems,
+        "source_code_problems": problems,
         "unapproved_source_code_nodes": unapproved_sc,
         "fork_descendants": fork_descendants,
         "related_wiki_pages": related["items"],
@@ -1559,8 +1596,8 @@ def _branch_authoring_batch_receipt(
         if not getattr(node, "source_code", ""):
             continue
         source_code_node_count += 1
-        # PR #1349 fail-closed: count as approved only when the approval is
-        # backed by matching hash provenance, mirroring the runtime gate.
+        # Provenance: an approval counts only when backed by the matching
+        # source hash. It does NOT gate execution (see gates_execution below).
         if _approval_provenance_valid(
             getattr(node, "approved", False),
             getattr(node, "source_code", "") or "",
@@ -1573,6 +1610,7 @@ def _branch_authoring_batch_receipt(
                 "display_name": getattr(node, "display_name", ""),
             })
 
+    code_problems = _source_code_problems(node_defs)
     receipt: dict[str, Any] = {
         "receipt_type": "branch_authoring_batch",
         "action": action,
@@ -1594,7 +1632,12 @@ def _branch_authoring_batch_receipt(
             "approved_count": approved_source_code_node_count,
             "unapproved_count": len(unapproved_nodes),
             "unapproved_nodes": unapproved_nodes,
-            "runnable": len(unapproved_nodes) == 0,
+            # Approval is provenance. A code node runs in the OS sandbox whether
+            # or not anyone approved it; what stops a run is a code node the
+            # compiler refuses, listed under `problems`.
+            "gates_execution": False,
+            "problems": code_problems,
+            "runnable": not code_problems,
         },
         "authorization_effect": {
             "grants_authorization": False,
@@ -3998,10 +4041,13 @@ only what it returns.
 
 After `read_graph target="branch" branch_id=...`, check `runnable` before
 telling the user their branch is ready to run. If `runnable=false`, surface
-`unapproved_source_code_nodes` or validation errors and stop. If
-`runnable=true`, use `run_graph` with a JSON `inputs_json` that fills the
-state_schema fields. The runner returns a `run_id`, final status, and
-per-node trace.
+the validation `errors` or `source_code_problems` (a code node the compiler
+refuses: a disallowed pattern, over the size cap, or a syntax error) and
+stop. `unapproved_source_code_nodes` is provenance only -- code nodes run in
+the OS sandbox and no approval gates them, so never tell the user a branch
+needs approval before it can run. If `runnable=true`, use `run_graph` with a
+JSON `inputs_json` that fills the state_schema fields. The runner returns a
+`run_id`, final status, and per-node trace.
 
 ## Power users
 
