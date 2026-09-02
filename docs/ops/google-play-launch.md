@@ -17,6 +17,7 @@ Package name (permanent once published): **`io.tinyassets.app`**
 | Step | Action | Where |
 |---|---|---|
 | Account | ~~Create a Google Play Developer account.~~ **Done** — developer `8089695267825659874`, identity verified 2026-08-24 (Play Console mail). | https://play.google.com/console/developers/8089695267825659874 |
+| **Phone** | **BLOCKS EVERYTHING.** Contact phone `+12067997835` is on file but NOT verified, so `Create app` is greyed out with "Complete account verifications to create new apps" (observed 2026-09-02). Google sends a code by SMS or call; only you can read it. Developer account → Contact details → **Verify**. | Play Console |
 | Payment | ~~Authorize the $25 fee.~~ **Done** with the account. | — |
 | Signing key | The keystore is generated (§2, 2026-09-01). **Add its 4 values as repo secrets** — one command, §3. An agent cannot: `gh secret set` is denied to it. | your machine → GitHub secrets |
 | Console forms | Creating the app, its declarations (incl. US export laws), listing, Data safety, content rating and the internal-testing release are **form submissions on your Google account**: the agent drives them in the browser only after an explicit "yes" in chat. Nothing exists in the Console until then. | Play Console (agent, gated on your yes) |
@@ -290,5 +291,6 @@ Screenshots come from the live app so they're honest:
 - [x] Launcher icon + splash (`mobile/resources/`, installed by `scripts/add_app_icons.py`)
 - [x] Listing graphics: icon-512, feature graphic, 2 phone screenshots (§9, §10 — 2026-09-01)
 - [ ] AAB built via CI + uploaded (§11) — blocked on the secrets
+- [ ] Founder: verify the contact phone number (§0) — blocks `Create app`
 - [ ] Play Console: app created, listing + declarations filled (§11.1–2)
 - [ ] Internal testing verified → Production roll out (§11)

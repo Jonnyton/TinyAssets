@@ -218,6 +218,25 @@ row; if yes, the concern above is the prerequisite.
 
 ## Credentials and accounts
 
+### Google Play: verify the contact phone number — BLOCKS EVERYTHING ELSE
+
+**Observed in the Play Console 2026-09-02.** `Create app` is greyed out with a padlock and
+"Complete account verifications to create new apps". The one outstanding verification is
+the contact phone number: `+12067997835` is on file but carries no verification tick, while
+both email addresses do. Until it is verified, no app can be created, so no listing, no
+upload, no internal test and no rollout can happen — the whole launch is behind this.
+
+Only you can do it: Google sends a code by SMS or voice call to that phone, and I cannot
+read it. Roughly a minute:
+
+1. https://play.google.com/console/u/0/developers/8089695267825659874/account
+2. **Contact details** → check the number is right → **Verify**
+3. Choose SMS or call, enter the code, **Verify**
+
+The `Create app` button un-greys once it goes through. Tell me and I will take the launch
+from there. (Earlier notes recorded "identity verified 2026-08-24" — that was a *different*
+verification; the phone step is separate and still open.)
+
 ### Google Play: confirm `WORKOS_API_KEY` reaches the daemon (one command, before launch)
 
 Account deletion (`tinyassets/account_deletion.py`, shipped in #2774) removes the user's
