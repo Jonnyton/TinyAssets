@@ -761,9 +761,12 @@ def write_graph(
             recurring run of one of YOUR workflows, owned by you, in your own
             universe. It runs on whichever provider that universe is serving on
             at the time, so rebinding the provider needs no change here.
-            With target=branch, create/remix/patch/publish. Create and remix
-            consume a complete Branch spec in payload_json; remix uses its
-            fork_from field. Publish freezes the named branch_id.
+            With target=branch, create/remix/patch/publish/delete. Create and
+            remix consume a complete Branch spec in payload_json; remix uses its
+            fork_from field. Publish freezes the named branch_id. Delete removes
+            one of YOUR OWN branches by branch_id, public or private; one that an
+            automation, webhook, schedule, goal binding, invoking branch or a
+            universe loop still depends on is refused with the dependents named.
             With target=connection, connect_llm deposits the authenticated
             owner's own Claude/Codex subscription into this universe's private
             vault (owner-only; see payload_json). Also with target=connection,
@@ -1034,6 +1037,12 @@ def write_graph(
                 branch_def_id=branch_id,
                 notes=description,
             )
+        if branch_operation == "delete":
+            # Author-gated; refuses public/published shapes itself.
+            return _extensions_impl(
+                action="delete_own_branch",
+                branch_def_id=branch_id,
+            )
         if branch_operation == "patch":
             # PR-180 EDIT half: a founder patches their own branch graph via the
             # existing transactional patch_branch handler (author-gated: BUG-081).
@@ -1047,7 +1056,7 @@ def write_graph(
                 "error": "unknown_branch_operation",
                 "target": "branch",
                 "operation": operation,
-                "allowed_operations": ["create", "remix", "patch", "publish"],
+                "allowed_operations": ["create", "remix", "patch", "publish", "delete"],
             }
         )
     if normalized == "automation":
@@ -2638,7 +2647,7 @@ def extensions(
     Action groups:
     - Node registry: register, list, inspect, approve, disable, enable, remove.
     - Branches: add_node, add_state_field, approve_source_code, build_branch,
-      connect_nodes, create_branch, delete_branch, describe_branch, fork_tree,
+      connect_nodes, create_branch, delete_branch, delete_own_branch, describe_branch, fork_tree,
       get_branch, list_branches, patch_branch, patch_nodes, search_nodes,
       set_entry_point, update_node, validate_branch.
     - Runs: attach_existing_child_run, cancel_run, estimate_run_cost,

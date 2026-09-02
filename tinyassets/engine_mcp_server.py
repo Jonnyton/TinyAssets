@@ -519,7 +519,7 @@ def run_graph(
 # run_graph (u-tiny only) until a branch↔universe binding lands (Codex finding 3).
 # Caps are least-privilege (_REMIX_CAPABILITIES: no submit_request), so a build
 # turn structurally cannot fire an effect or submit a run.
-_WRITE_GRAPH_OPS = frozenset({"create", "patch"})
+_WRITE_GRAPH_OPS = frozenset({"create", "patch", "delete"})
 #: Top-level spec fields that would fork or publicly expose the branch.
 _SERVED_STRIP_TOP_FIELDS = ("fork_from", "fork_from_version", "published", "public")
 #: Node fields a served create must NEVER carry, stripped at each node's TOP level
@@ -872,6 +872,13 @@ def write_graph(
       edit is transactional (all-or-nothing). Publishing to the commons, changing
       visibility to public, and forking a foreign shape are NOT available here (they
       stay in the browser flow); a patched source_code node re-enters UNAPPROVED.
+    - ``operation="delete"`` — delete one of YOUR OWN branches by ``branch_id``,
+      public or private (a public branch is a shape others copy; it runs nothing
+      for them). Refused only when something of yours still depends on it
+      (``branch_has_dependents`` names the automations, webhooks, schedules,
+      goals, invoking branches and universe loops to delete or re-point first).
+      Everything else of yours deletes and is gone from
+      ``read_graph target="branches"``.
 
     **Outbound channel node — the channel-agnostic way to add Slack, a webhook, or
     ANY HTTPS API with no service-specific code.** A node declaring
@@ -1294,8 +1301,8 @@ def write_graph(
     if op not in _WRITE_GRAPH_OPS:
         return json.dumps({
             "error": (
-                "write_graph on the served surface supports operation='create' or "
-                f"'patch' (got '{operation or '(empty)'}'). Publishing to the "
+                "write_graph on the served surface supports operation='create', "
+                f"'patch' or 'delete' (got '{operation or '(empty)'}'). Publishing to the "
                 "commons and forking a public shape stay in the browser flow."
             ),
         })
@@ -1325,6 +1332,28 @@ def write_graph(
             payload = json.loads(payload_json or ("[]" if op == "patch" else "{}"))
         except (json.JSONDecodeError, RecursionError):
             return json.dumps({"error": "payload_json must be valid JSON."})
+        if op == "delete":
+            # DELETE an OWN private unpublished branch. delete_own_branch is
+            # author-gated and refuses public/published shapes itself (the
+            # commons may depend on those); nothing else needs sanitizing.
+            bid = (branch_id or "").strip()
+            if not bid:
+                return json.dumps({
+                    "error": (
+                        "operation='delete' requires branch_id (the id of your "
+                        "branch to delete; find it with read_graph target='branches')."
+                    ),
+                })
+            try:
+                return _extensions_impl(
+                    action="delete_own_branch",
+                    branch_def_id=bid,
+                    request_id=idempotency_key,
+                )
+            except Exception as exc:  # noqa: BLE001 - served surface must fail structured
+                return json.dumps({
+                    "error": f"branch delete rejected ({type(exc).__name__}).",
+                })
         if op == "patch":
             # EDIT an existing OWN branch. patch_branch is author-gated (actor ==
             # branch author, no env fallback) and transactional; the sanitizer

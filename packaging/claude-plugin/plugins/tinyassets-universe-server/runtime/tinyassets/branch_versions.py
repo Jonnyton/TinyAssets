@@ -415,6 +415,68 @@ def list_branch_versions(
     return [_row_to_version(r) for r in rows]
 
 
+def list_version_ids(base_path: str | Path, branch_def_id: str) -> set[str]:
+    """EVERY version id of a branch, uncapped. `list_branch_versions` caps at
+    500, which is fine for a listing and wrong for a dependency check."""
+    initialize_branch_versions_db(base_path)
+    conn = _connect(base_path)
+    try:
+        rows = conn.execute(
+            "SELECT branch_version_id FROM branch_versions WHERE branch_def_id = ?",
+            (branch_def_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return {str(r[0]) for r in rows}
+
+
+def versions_invoking(
+    base_path: str | Path,
+    *,
+    branch_def_id: str,
+    version_ids: set[str],
+    exclude_branch_def_id: str = "",
+    author: str = "",
+) -> set[str]:
+    """Branch ids whose PUBLISHED SNAPSHOTS invoke `branch_def_id` (by id) or one
+    of `version_ids` (by version). A snapshot is executable on its own -- a
+    canonical binding or `invoke_branch_version` runs it -- and its invoke node
+    reloads the child live, so a child a snapshot names is a dependency even
+    when the parent's CURRENT definition no longer names it.
+
+    With `author`, only that author's snapshots count: a FOREIGN snapshot that
+    invoked the branch while it was public was already cut off when the branch
+    went private (a private child runs only for its author), and the owner
+    cannot edit a foreign branch to remediate, so it must not block forever."""
+    initialize_branch_versions_db(base_path)
+    conn = _connect(base_path)
+    try:
+        rows = conn.execute(
+            "SELECT branch_def_id, snapshot_json FROM branch_versions "
+            "WHERE branch_def_id != ? AND status = 'active'",
+            (exclude_branch_def_id or branch_def_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    found: set[str] = set()
+    for row in rows:
+        try:
+            snapshot = json.loads(row["snapshot_json"])
+        except (TypeError, ValueError):
+            continue
+        if author and (snapshot.get("author") or "") != author:
+            continue
+        for node in snapshot.get("node_defs") or []:
+            if not isinstance(node, dict):
+                continue
+            by_id = (node.get("invoke_branch_spec") or {}).get("branch_def_id")
+            by_version = (node.get("invoke_branch_version_spec") or {}).get("branch_version_id")
+            if by_id == branch_def_id or (by_version and by_version in version_ids):
+                found.add(str(row["branch_def_id"]))
+                break
+    return found
+
+
 def _validate_version_exists(conn: sqlite3.Connection, version_id: str) -> None:
     row = conn.execute(
         "SELECT 1 FROM branch_versions WHERE branch_version_id = ?",

@@ -1291,8 +1291,9 @@ def test_served_write_graph_branch_only(monkeypatch):
 
 
 def test_served_write_graph_create_and_patch_only(monkeypatch):
-    """Only operation=create/patch are served — publish/remix/delete/bind_provider
-    are refused (publishing/forking stay in the browser flow), before any write."""
+    """Only operation=create/patch/delete are served — publish/remix/bind_provider
+    are refused (publishing/forking stay in the browser flow), before any write.
+    Delete joined on 2026-09-02 (branch-delete-on-write-graph)."""
     import tinyassets.api.extensions as ext
     import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
@@ -1302,9 +1303,9 @@ def test_served_write_graph_create_and_patch_only(monkeypatch):
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: True)
     calls = {"n": 0}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
-    for op in ("publish", "remix", "delete", "bind_provider"):
+    for op in ("publish", "remix", "bind_provider"):
         out = json.loads(s.write_graph(target="branch", operation=op))
-        assert "'create' or" in out.get("error", ""), op
+        assert "'create'" in out.get("error", "") and "'delete'" in out.get("error", ""), op
     assert calls["n"] == 0
 
 

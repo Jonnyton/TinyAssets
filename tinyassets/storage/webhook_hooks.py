@@ -377,6 +377,24 @@ def release_dispatch(base_path: str | Path, *, reservation_id: str) -> None:
         conn.close()
 
 
+def list_active_for_branch(base_path: str | Path, *, branch_def_id: str) -> list[dict[str, Any]]:
+    """Active (unrevoked) hooks that would enqueue this branch on delivery.
+    Returns non-secret rows: ``{token_prefix, universe_id, source_id}``."""
+    conn = _connect(base_path)
+    try:
+        rows = conn.execute(
+            "SELECT token_prefix, universe_id, source_id FROM webhook_hooks "
+            "WHERE branch_def_id = ? AND revoked_at IS NULL ORDER BY created_at",
+            (branch_def_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [
+        {"token_prefix": r["token_prefix"], "universe_id": r["universe_id"], "source_id": r["source_id"]}
+        for r in rows
+    ]
+
+
 def revoke(base_path: str | Path, *, token: str, now: float | None = None) -> bool:
     """Revoke a token by its value (soft: kept for audit). Returns True if an active token
     was revoked. The token is hashed for lookup; the raw value is never stored."""

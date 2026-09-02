@@ -764,6 +764,180 @@ def _ext_branch_delete(kwargs: dict[str, Any]) -> str:
     return json.dumps({"branch_def_id": bid, "status": "deleted"})
 
 
+def _branch_dependents(
+    base: str, *, branch_def_id: str, actor: str,
+) -> dict[str, list[str]]:
+    """Everything that would break if this branch definition vanished, by
+    reader (Codex rounds 1 and 2 on the branch-delete change):
+
+    * automations bound to it, in any universe (registration promises not to
+      store one that cannot fire; deleting the branch would create exactly
+      that, and the user would watch it degrade asynchronously);
+    * active webhooks whose token resolves to it (each delivery would fail);
+    * active schedules and event subscriptions that fire it;
+    * goals whose canonical binding -- default, personal, or the legacy
+      column -- points at ANY of its versions (`invoke_branch_version` maps a
+      version back to its definition);
+    * other branches of the same author that invoke it: their CURRENT
+      definitions, and their published SNAPSHOTS, which are executable on
+      their own and reload the child live (a FOREIGN snapshot from the
+      branch's public days was already cut off when it went private and is
+      not the owner's to fix, so it does not block);
+    * universes whose soul declares it as their loop branch (request
+      admission queues that branch for every incoming request).
+
+    Internal patch snapshots of THIS branch are NOT dependents: every patch
+    mints one, so counting them would make any edited branch undeletable.
+    Version ids are read uncapped.
+    """
+    import sqlite3
+
+    from tinyassets import branch_versions, scheduler
+    from tinyassets.automations import AutomationStore
+    from tinyassets.daemon_server import list_branch_definitions
+    from tinyassets.storage import db_path, webhook_hooks
+
+    versions = branch_versions.list_version_ids(base, branch_def_id)
+    out: dict[str, list[str]] = {
+        "automations": [], "webhooks": [], "schedules": [], "subscriptions": [],
+        "goals": [], "branches": [], "universes": [],
+    }
+
+    out["automations"] = [
+        a.automation_id for a in AutomationStore(base).list_for_branch(branch_def_id)
+    ]
+    out["webhooks"] = [
+        (h.get("source_id") or f"hook:{h['token_prefix']}")
+        for h in webhook_hooks.list_active_for_branch(base, branch_def_id=branch_def_id)
+    ]
+    bound = scheduler.list_bound_to_branch(base, branch_def_id=branch_def_id)
+    out["schedules"] = bound["schedules"]
+    out["subscriptions"] = bound["subscriptions"]
+
+    if versions:
+        goal_ids: set[str] = set()
+        db = db_path(base)
+        if db.exists():
+            conn = sqlite3.connect(db)
+            try:
+                tables = {
+                    r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                }
+                placeholders = ",".join("?" for _ in versions)
+                params = tuple(versions)
+                for table in ("canonical_bindings", "goal_canonicals"):
+                    if table in tables:
+                        for row in conn.execute(
+                            f"SELECT goal_id FROM {table} WHERE branch_version_id IN ({placeholders})",
+                            params,
+                        ):
+                            goal_ids.add(str(row[0]))
+                if "goals" in tables:
+                    # The legacy column exists on every production database
+                    # (daemon_server adds it at init); probe rather than swallow
+                    # an OperationalError, which would hide a real fault.
+                    columns = {r[1] for r in conn.execute("PRAGMA table_info(goals)")}
+                    if "canonical_branch_version_id" in columns:
+                        for row in conn.execute(
+                            f"SELECT goal_id FROM goals WHERE canonical_branch_version_id IN ({placeholders})",
+                            params,
+                        ):
+                            goal_ids.add(str(row[0]))
+            finally:
+                conn.close()
+        out["goals"] = sorted(goal_ids)
+
+    invokers: set[str] = set()
+    for row in list_branch_definitions(base, author=actor, include_private=True):
+        other = str(row.get("branch_def_id") or "")
+        if not other or other == branch_def_id:
+            continue
+        nodes = row.get("node_defs") or ((row.get("graph") or {}).get("nodes")) or []
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            by_id = (node.get("invoke_branch_spec") or {}).get("branch_def_id")
+            by_version = (node.get("invoke_branch_version_spec") or {}).get("branch_version_id")
+            if by_id == branch_def_id or (by_version and by_version in versions):
+                invokers.add(other)
+                break
+    invokers |= branch_versions.versions_invoking(
+        base, branch_def_id=branch_def_id, version_ids=versions, author=actor,
+    )
+    out["branches"] = sorted(invokers)
+
+    # A universe queues its declared loop branch on every request it admits.
+    from tinyassets.universe_soul import read_universe_soul
+
+    loops: list[str] = []
+    try:
+        universe_dirs = [d for d in Path(base).iterdir() if d.is_dir()]
+    except OSError:
+        universe_dirs = []
+    for udir in sorted(universe_dirs):
+        if not (udir / "soul.md").is_file():
+            continue
+        try:
+            soul = read_universe_soul(udir)
+        except Exception:  # noqa: BLE001 - one unreadable soul must not hide the rest
+            logger.exception("could not read %s while checking branch dependents", udir / "soul.md")
+            loops.append(f"{udir.name}?")
+            continue
+        if soul is not None and (soul.loop_branch_def_id or "").strip() == branch_def_id:
+            loops.append(udir.name)
+    out["universes"] = loops
+    return out
+
+
+def _ext_branch_delete_own(kwargs: dict[str, Any]) -> str:
+    """Delete one of the caller's OWN branches that nothing of theirs depends on.
+
+    The served surfaces (`write_graph target=branch operation=delete`) route
+    here rather than to `delete_branch`. Tiny, 2026-09-02: "I do not have a
+    branch delete operation exposed right now ... 106 branches". Inside your
+    universe you are god; the only invariant is not affecting other users. A
+    PUBLIC branch is a shape others copy or remix into their own universe and
+    runs nothing for anyone else (founder, 2026-09-02), so it deletes like any
+    other. A branch the owner's own things still depend on is refused with
+    every dependent named so they can delete or re-point them first. Internal
+    patch snapshots are not dependents.
+    """
+    from tinyassets.daemon_server import delete_branch_definition
+
+    selector = kwargs.get("branch_def_id", "").strip()
+    if not selector:
+        return json.dumps({"error": "branch_def_id is required."})
+    base = str(_base_path())
+    resolved = _resolve_readable_branch(selector, base)
+    if resolved is None:
+        return _branch_not_found(selector)
+    bid, branch = resolved
+    if not _branch_authorized(branch):
+        # Same envelope as a private read by a non-author: existence is not
+        # confirmed either way, even for a public branch.
+        return _branch_not_found(selector)
+    actor = _request_branch_actor() or ""
+    dependents = _branch_dependents(base, branch_def_id=bid, actor=actor)
+    if any(dependents.values()):
+        return json.dumps({
+            "error": "branch_has_dependents",
+            "branch_def_id": bid,
+            "dependents": dependents,
+            "detail": (
+                "Something still uses this branch: delete or re-point the "
+                "automations, revoke the webhooks, unregister the schedules and "
+                "subscriptions, unset the goals' canonical binding, edit the "
+                "branches (and their published versions) that invoke it, or "
+                "declare a different loop branch in the universes that run it, "
+                "then delete."
+            ),
+        })
+    removed = delete_branch_definition(base, branch_def_id=bid)
+    if not removed:
+        return _branch_not_found(selector)
+    return json.dumps({"branch_def_id": bid, "status": "deleted"})
+
+
 def _ext_branch_add_node(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.engine_helpers import (
         _format_commit_failed,
@@ -3649,6 +3823,7 @@ _BRANCH_ACTIONS: dict[str, Any] = {
     "get_branch": _ext_branch_get,
     "list_branches": _ext_branch_list,
     "delete_branch": _ext_branch_delete,
+    "delete_own_branch": _ext_branch_delete_own,
     "add_node": _ext_branch_add_node,
     "connect_nodes": _ext_branch_connect_nodes,
     "set_entry_point": _ext_branch_set_entry_point,
@@ -3666,6 +3841,7 @@ _BRANCH_ACTIONS: dict[str, Any] = {
 _BRANCH_WRITE_ACTIONS: frozenset[str] = frozenset({
     "create_branch", "add_node", "connect_nodes",
     "set_entry_point", "add_state_field", "delete_branch",
+    "delete_own_branch",
     "build_branch", "patch_branch", "patch_nodes", "update_node",
     "approve_source_code",
 })

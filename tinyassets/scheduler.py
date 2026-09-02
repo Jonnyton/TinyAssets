@@ -411,6 +411,32 @@ def register_schedule(
     return schedule_id
 
 
+def list_bound_to_branch(base_path: str | Path, *, branch_def_id: str) -> dict[str, list[str]]:
+    """Active schedule ids and subscription ids that fire this branch."""
+    db = _runs_db(base_path)
+    if not db.exists():
+        return {"schedules": [], "subscriptions": []}
+    with _connect(db) as conn:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if not {"branch_schedules", "branch_subscriptions"} <= tables:
+            # No scheduler tables yet means nothing was ever registered here.
+            return {"schedules": [], "subscriptions": []}
+        migrate_scheduler_schema(conn)
+        schedules = [
+            str(r[0]) for r in conn.execute(
+                "SELECT schedule_id FROM branch_schedules WHERE branch_def_id = ? AND active = 1",
+                (branch_def_id,),
+            )
+        ]
+        subscriptions = [
+            str(r[0]) for r in conn.execute(
+                "SELECT subscription_id FROM branch_subscriptions WHERE branch_def_id = ? AND active = 1",
+                (branch_def_id,),
+            )
+        ]
+    return {"schedules": schedules, "subscriptions": subscriptions}
+
+
 def schedule_is_legacy(row: dict[str, Any]) -> bool:
     """Whether a schedule row predates owner derivation and can never fire.
 
