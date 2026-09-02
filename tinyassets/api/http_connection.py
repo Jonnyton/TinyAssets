@@ -621,16 +621,16 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     #    concurrent deposit that moved the policy makes this a no-op rather than
     #    a clobber; the caller sees the row as it actually stands.
     if endpoints_extend and resource is not None:
-        import json as _json
-
+        raw_policy = ledger.policy_json(connection_id)
+        if raw_policy is None:
+            return dict(_NOT_FOUND)
         try:
             ledger.extend_http_connection_endpoints(
                 connection_id=connection_id,
                 endpoints=requested_endpoints,
                 scopes=http_scopes,
-                expected_endpoints_json=_json.dumps(
-                    [e.as_dict() for e in resource.allowed_endpoints]
-                ),
+                expected_endpoints_json=raw_policy[0],
+                expected_scopes_json=raw_policy[1],
             )
         except GitScopeError as exc:
             return {"error": "connection_setup_invalid", "detail": str(exc)}
@@ -907,7 +907,9 @@ def _extend_preview(
     "extends", ...}`` carrying exactly what the write needs.
     """
     from tinyassets.storage.workspace_authority import (
-        connection_git_host,
+        git_host_for_endpoints,
+        is_git_scope,
+        parse_git_scope,
         validate_git_scopes,
     )
 
@@ -933,17 +935,31 @@ def _extend_preview(
         or grant.revoked_at is not None
         or grant.owner_user_id != actor
         or grant.universe_id != uid
+        or grant.connection_id != connection_id
     ):
         return dict(_NOT_FOUND)
     if resource.revoked_at is not None:
+        # The inventory still lists a revoked resource behind an active grant;
+        # this path names the state instead, because there is nothing to
+        # extend on a revoked key and "not found" would send the agent to
+        # re-deposit under the same name, which the ledger refuses.
         return {"error": "connection_conflict", "resource": "connection"}
+    # ONE snapshot. Everything the write is derived from -- the stored
+    # endpoints, the stored scopes, the host the git rule binds to -- comes
+    # from the same raw read the CAS compares against. Deriving the union from
+    # an earlier parsed read and the CAS from a later raw read let a write
+    # that landed between them pass the CAS and be lost (Codex round 2).
     raw_policy = ledger.policy_json(connection_id)
     if raw_policy is None:
         return dict(_NOT_FOUND)
     stored_json, stored_scopes_json = raw_policy
+    try:
+        stored = list(json.loads(stored_json))
+        stored_scope_list = [str(s) for s in json.loads(stored_scopes_json)]
+    except (TypeError, ValueError) as exc:
+        return {"error": "connection_setup_invalid", "detail": f"stored policy unreadable: {exc}"}
 
     scope_only = not isinstance(added, list) or not added
-    stored = [e.as_dict() for e in resource.allowed_endpoints]
     try:
         # Scope-only: the connection keeps exactly the endpoints it has. They
         # still go through the parser, because they are what the ledger will
@@ -965,7 +981,13 @@ def _extend_preview(
             continue
         seen.add(key)
         merged_dicts.append(as_dict)
-    stored_git_scopes = _stored_git_scopes(resource)
+    stored_git_scopes = frozenset(
+        format_git_scope(kind, repo)
+        for kind, repo in (
+            parse_git_scope(s) for s in stored_scope_list if is_git_scope(s)
+        )
+        if kind
+    )
     new_git_scopes = requested_git_scopes - stored_git_scopes
     scopes = tuple(
         sorted(
@@ -987,7 +1009,9 @@ def _extend_preview(
         return {
             "error": "connection_setup_invalid",
             "detail": str(exc),
-            "git_host": connection_git_host(resource),
+            "git_host": git_host_for_endpoints(
+                [str(e.get("host") or "") for e in stored], resource.provider
+            ),
             "asked_hosts": asked_hosts,
         }
     # "Nothing new" has to account for a scope-only widening: adding
@@ -1000,7 +1024,7 @@ def _extend_preview(
     ):
         return {"status": "unchanged", "destination": destination,
                 "allowed_endpoints": stored,
-                "scopes": list(resource.scopes)}
+                "scopes": stored_scope_list}
     return {
         "status": "extends",
         "destination": destination,
@@ -1012,7 +1036,9 @@ def _extend_preview(
         "merged": merged_dicts,
         "scopes": scopes,
         "allowed_endpoints": merged_dicts,
-        "git_host": connection_git_host(resource),
+        "git_host": git_host_for_endpoints(
+            [str(e.get("host") or "") for e in stored], resource.provider
+        ),
     }
 
 

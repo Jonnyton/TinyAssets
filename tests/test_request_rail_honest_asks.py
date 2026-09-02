@@ -235,6 +235,35 @@ def test_the_write_is_guarded_on_scopes_as_well_as_endpoints(base):  # noqa: F81
     assert "git_read:o/r" in ledger._get_connection_resource(conn_id).scopes
 
 
+def test_the_scopes_guard_cannot_be_skipped():
+    """Codex round 2: an optional scopes CAS is one a caller forgets."""
+    import inspect
+
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    param = inspect.signature(
+        ConnectionLedger.extend_http_connection_endpoints
+    ).parameters["expected_scopes_json"]
+    assert param.default is inspect.Parameter.empty
+    src = pathlib.Path(__import__("tinyassets.api.http_connection", fromlist=["x"]).__file__).read_text(encoding="utf-8")
+    assert src.count("expected_scopes_json=") == src.count("expected_endpoints_json="), (
+        "every caller passes both halves of the snapshot"
+    )
+
+
+def test_the_preview_derives_everything_from_one_snapshot():
+    """Codex round 2: the union came from a parsed read, the CAS from a later
+    raw read; a write between them was lost. Now the raw read is the source."""
+    import tinyassets.api.http_connection as hc
+
+    src = pathlib.Path(hc.__file__).read_text(encoding="utf-8")
+    body = src[src.index("def _extend_preview("):src.index("def preview_extend_http(")]
+    assert "resource.allowed_endpoints" not in body
+    assert "resource.scopes" not in body
+    assert "_stored_git_scopes(resource)" not in body
+    assert "grant.connection_id != connection_id" in body
+
+
 def test_raise_time_and_answer_time_share_one_definition():
     """`extend_http` and the rail's verdict both go through `_extend_preview`:
     the source of the live bug was two definitions of what can be granted."""
