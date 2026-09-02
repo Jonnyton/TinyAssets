@@ -62,14 +62,28 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     ).fetchone() is not None
 
 
-def universe_dirs(base: Path) -> list[Path]:
-    """Universe directories under ``base`` (excludes reserved operational dirs
-    like wiki/output/runs/lance and any dotfile)."""
-    from tinyassets.api.universe import _is_listable_universe_dir
+#: What a clean-slate reset must NOT clear. Deliberately its own list rather
+#: than the universe definition: a reset clears every directory that is not
+#: platform infrastructure, INCLUDING the unowned leftovers a past prune left
+#: behind. Asking "is this a universe?" here would preserve exactly the
+#: directories the reset exists to remove.
+_RESET_PRESERVED_DIRS = frozenset({"lance", "output", "runs", "wiki"})
 
+
+def universe_dirs(base: Path) -> list[Path]:
+    """Directories a clean-slate reset clears: everything under ``base`` that
+    is not a dotfile and not platform infrastructure.
+
+    Not the same question as "which of these is a universe" -- an unowned
+    leftover is not a universe and IS cleared."""
     if not base.is_dir():
         return []
-    return sorted(p for p in base.iterdir() if _is_listable_universe_dir(p))
+    return sorted(
+        p for p in base.iterdir()
+        if p.is_dir()
+        and not p.name.startswith(".")
+        and p.name not in _RESET_PRESERVED_DIRS
+    )
 
 
 def reset(data_dir: Path, *, confirm: bool) -> dict[str, object]:

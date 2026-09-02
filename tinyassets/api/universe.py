@@ -1731,19 +1731,19 @@ def _epoch2_operational_snapshot(udir: Path) -> dict[str, Any]:
     return _epoch2_operational_read(udir).summary
 
 
-_TOP_LEVEL_OPERATIONAL_DATA_DIRS = frozenset({
-    "lance",
-    "output",
-    "runs",
-    "wiki",
-})
+def _is_listable_universe_dir(path: Path, owned: set[str]) -> bool:
+    """A universe is a directory somebody OWNS (founder, 2026-09-02).
 
-
-def _is_listable_universe_dir(path: Path) -> bool:
+    This used to be a four-name denylist standing in for a definition, so the
+    platform's own backups and every prune's archive were universes, and each
+    new operational directory needed another name in the frozenset. Ownership
+    is the definition; operational directories need no list because they were
+    never universes.
+    """
     return (
         path.is_dir()
         and not path.name.startswith(".")
-        and path.name not in _TOP_LEVEL_OPERATIONAL_DATA_DIRS
+        and path.name in owned
     )
 
 
@@ -1766,11 +1766,13 @@ def _action_list_universes(**_kwargs: Any) -> str:
         })
 
     from tinyassets.api import visibility
+    from tinyassets.daemon_server import owned_universe_ids
 
+    owned = owned_universe_ids(base)
     universes = []
     hidden_by_visibility = 0
     for child in sorted(all_entries):
-        if not _is_listable_universe_dir(child):
+        if not _is_listable_universe_dir(child, owned):
             continue
         # Existence is a privileged, separately-granted capability: a universe
         # whose declared level withholds discovery (e.g. `unlisted`) is not

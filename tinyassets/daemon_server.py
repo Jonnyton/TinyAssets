@@ -750,6 +750,15 @@ def set_universe_display_name(
 
 
 def sync_universes_from_filesystem(base_path: str | Path) -> None:
+    """Index every directory under the data root by path.
+
+    Deliberately NOT filtered by ownership. This table is a path index, not the
+    definition of a universe: a self-hoster restoring a universe directory from
+    a backup needs it indexed before anything can grant on it. What makes a
+    directory a UNIVERSE is an owner, and that is enforced where it is read --
+    `owned_universe_ids` and the listing (founder, 2026-09-02). Indexing an
+    unowned directory shows it to nobody.
+    """
     initialize_author_server(base_path)
     root = Path(base_path)
     if not root.exists():
@@ -4908,6 +4917,62 @@ def list_universe_acl(
         }
         for r in rows
     ]
+
+
+def owned_universe_ids(base_path: str | Path) -> set[str]:
+    """Every universe id somebody owns: an ACL grant, or a founder's home.
+
+    THE DEFINITION of a universe (founder, 2026-09-02: "a universe should only
+    exist if it belongs to a user"). It used to be "a directory under the data
+    root that is not one of four hardcoded names", so the platform's own
+    backups, a prune's archive, `scratch` and `cloud-automation-inputs` were
+    all universes, and every new operational directory silently became one.
+
+    A home binding counts alongside an ACL row because first contact binds the
+    home before any grant is written; a universe with a live founder must never
+    depend on which of the two landed first.
+    """
+    initialize_author_server(base_path)
+    with _connect(base_path) as conn:
+        owned = {
+            str(row["universe_id"])
+            for row in conn.execute("SELECT DISTINCT universe_id FROM universe_acl")
+            if str(row["universe_id"] or "").strip()
+        }
+        owned |= {
+            str(row["universe_id"])
+            for row in conn.execute("SELECT DISTINCT universe_id FROM founder_home")
+            if str(row["universe_id"] or "").strip()
+        }
+    return owned
+
+
+def universe_owners(base_path: str | Path, *, universe_id: str) -> list[str]:
+    """Who owns this universe: ACL actors plus any founder bound to it as home.
+
+    Empty means nobody, and nobody means it is not a universe. Read INSIDE a
+    destructive step, never off a listing taken earlier (2026-08-26: a live
+    user's bound universe was archived off a stale inventory)."""
+    if not universe_id:
+        return []
+    initialize_author_server(base_path)
+    with _connect(base_path) as conn:
+        actors = [
+            str(row["actor_id"])
+            for row in conn.execute(
+                "SELECT actor_id FROM universe_acl WHERE universe_id = ?", (universe_id,)
+            )
+            if str(row["actor_id"] or "").strip()
+        ]
+        actors += [
+            str(row["founder_sub"])
+            for row in conn.execute(
+                "SELECT founder_sub FROM founder_home WHERE universe_id = ?",
+                (universe_id,),
+            )
+            if str(row["founder_sub"] or "").strip()
+        ]
+    return sorted(set(actors))
 
 
 def universe_is_private(base_path: str | Path, *, universe_id: str) -> bool:
