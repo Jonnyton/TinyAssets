@@ -1831,7 +1831,8 @@ def remix_shape(
     # Least-privilege branch-write caps (Codex #6) — NOT the full run set. The
     # write lands under the founder identity in the shared BranchDefinition store
     # as a new PRIVATE, founder-authored shape; cross-author source-code approval
-    # is stripped in the fork path so nothing inherited runs without re-approval.
+    # is stripped in the fork path so inherited code carries no forged
+    # provenance (it runs in the OS sandbox like any code node).
     token = _bind_founder_identity(_REMIX_CAPABILITIES)
     try:
         return _impl(

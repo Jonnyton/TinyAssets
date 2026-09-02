@@ -205,10 +205,11 @@ def _approval_provenance_valid(
 
     A source_code node is genuinely approved iff the recorded
     ``approved_source_hash`` equals the hash of the *current* source_code.
-    A bare ``approved=True`` with no/stale hash is forged or stale and must
-    not authorize execution. Prompt-template (non-source) nodes carry no
-    executable surface to gate, so an empty source_code is treated as
-    matching an empty hash only when no hash was recorded.
+    A bare ``approved=True`` with no/stale hash is forged or stale and is
+    reported as unapproved. Approval is provenance -- it never authorizes
+    or blocks execution (the OS sandbox is the boundary). Prompt-template
+    (non-source) nodes carry no source to attest, so an empty source_code is
+    treated as matching an empty hash only when no hash was recorded.
     """
     if not approved:
         return False

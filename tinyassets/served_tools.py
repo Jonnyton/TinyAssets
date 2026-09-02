@@ -78,8 +78,8 @@ from __future__ import annotations
 #:       (sink, destination) allow — the token is deposited out of band via the browser
 #:       form / connect_http, which is deliberately NOT here). SINK CONSENT ONLY:
 #:       channel_type=="source_code" is refused (that approval sets approved_source_hash,
-#:       the code-execution gate the create-only write_graph strips — keeping it off this
-#:       surface preserves the RCE closure). action=approve only; set_policy/get_policy
+#:       the provenance the create-only write_graph strips — keeping it off this
+#:       surface keeps a served build from attesting its own code). action=approve only; set_policy/get_policy
 #:       and the raw-secret connect_http stay off-surface. Gated to the same u-tiny run
 #:       allowlist; the outbound call also needs TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED.
 #:

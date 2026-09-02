@@ -543,12 +543,13 @@ class NodeDefinition:
     ) -> NodeDefinition:
         """Record genuine approval together with its source-hash provenance.
 
-        SECURITY (PR #1349, Codex residual): the runtime gate
-        (``graph_compiler._validate_source_code``) is fail-closed — a
-        source_code node executes only when ``approved=True`` AND
-        ``approved_source_hash`` equals ``sha256(source_code)``. A bare
-        ``approved=True`` with an empty/stale hash is treated as forged or
-        carried-from-elsewhere and refused.
+        PROVENANCE, not a gate (change sandboxed-code-node; receipts fixed
+        2026-09-02): a code node runs in the OS sandbox whether or not anyone
+        approved it. What this records is WHO approved WHICH source: an
+        approval is genuine only when ``approved_source_hash`` equals
+        ``sha256(source_code)``; a bare ``approved=True`` with an empty or
+        stale hash is forged or carried from elsewhere and is reported as
+        unapproved by the receipts (PR #1349 kept the hash check for that).
 
         This is the ONLY sanctioned in-process approval helper. Trusted
         construction (host code, fixtures) must call it instead of setting

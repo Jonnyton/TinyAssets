@@ -135,8 +135,9 @@ _ENGINE_DISALLOWED_TOOLS = (
 # ``read_commons_shape`` are READ-ONLY over PUBLIC cross-universe shapes (the
 # existing viewer filter + author gate enforce visibility). ``remix_shape`` forks
 # a public shape into a new PRIVATE branch the founder owns — cross-author
-# executable source approval is STRIPPED on the fork so nothing inherited runs
-# until re-approved (Codex ADAPT 2026-08-22 #2). The writes are allowlisted +
+# executable source approval is STRIPPED on the fork so inherited code carries
+# no forged provenance; it runs in the OS sandbox like any code node (Codex
+# ADAPT 2026-08-22 #2; gate retired by sandboxed-code-node). The writes are allowlisted +
 # rate-limited (fail-closed) like run_graph. This gives the served agent the SAME
 # commons the browser chatbot has, so it stops WebFetching n8n/Make when asked to
 # browse "our" commons.
