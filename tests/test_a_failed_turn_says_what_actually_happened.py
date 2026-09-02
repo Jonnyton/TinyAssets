@@ -376,7 +376,10 @@ def test_the_EXACT_payload_the_founder_got_now_names_the_cause():
         "Served provider 'codex' exhausted; universe authority forbids fallback widening.",
         attempts=[ProviderAttemptDiagnostic(
             provider="codex", status="failed", skip_class="auth_invalid",
-            detail="codex exec returned exit code 1 quickly -- likely unavailable",
+            detail=(
+                "codex exec returned exit code 1 quickly -- likely unavailable; "
+                "stderr: Error: Not logged in. Run `codex login`."
+            ),
         )],
     )
 
@@ -455,8 +458,8 @@ def test_the_classifiers_DEFAULT_bucket_is_not_promoted_to_a_diagnosis():
 
 
 def test_an_EVIDENCED_skip_class_is_still_promoted():
-    """`auth_invalid` is assigned only when the provider text carried an auth
-    tell; that is evidence and it must keep reaching the owner."""
+    """`auth_invalid` with narrow credential evidence in the attempt's text
+    keeps reaching the owner."""
     from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
 
     exc = AllProvidersExhaustedError(
@@ -467,3 +470,66 @@ def test_an_EVIDENCED_skip_class_is_still_promoted():
         )],
     )
     assert "reconnect" in _served_failure_notice(exc).lower()
+
+
+def test_a_token_LIMIT_error_is_not_reported_as_an_expired_credential():
+    """Codex, review round 2, R3. `classify_unavailable` matches the bare
+    substring "token", so a context-length failure is classified
+    `auth_invalid`. Promoting that would tell the owner their credential
+    expired and that reconnecting will fix it -- which it cannot. The honest
+    unknown wins."""
+    from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
+
+    exc = AllProvidersExhaustedError(
+        "Served provider 'codex' exhausted; universe authority forbids fallback widening.",
+        attempts=[ProviderAttemptDiagnostic(
+            provider="codex", status="failed", skip_class="auth_invalid",
+            detail=(
+                "codex exec returned exit code 1 quickly; stderr: Error: input "
+                "exceeds the model's maximum token limit"
+            ),
+        )],
+    )
+    lowered = _served_failure_notice(exc).lower()
+    assert "reconnect" not in lowered, lowered
+    assert "could not identify" in lowered
+
+
+@pytest.mark.parametrize("detail", [
+    "Error: Not logged in. Run `codex login`.",
+    "HTTP 401 Unauthorized",
+    "oauth error: invalid_grant",
+    "token expired; please reauthenticate",
+    "credential file auth.json is unreadable",
+])
+def test_narrow_credential_evidence_reaches_the_owner(detail):
+    from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
+
+    exc = AllProvidersExhaustedError(
+        "exhausted",
+        attempts=[ProviderAttemptDiagnostic(
+            provider="codex", status="failed", skip_class="auth_invalid", detail=detail,
+        )],
+    )
+    assert "reconnect" in _served_failure_notice(exc).lower(), detail
+
+
+@pytest.mark.parametrize("detail", [
+    "input exceeds the model's maximum token limit",
+    "403 Forbidden: rate limit exceeded for this endpoint",
+    "authorization server unreachable: connection refused",
+    "",
+])
+def test_bare_substring_tells_do_not(detail):
+    """"token", "403" and "auth" alone are what the classifier matched; none of
+    these is a credential problem, and none may promise that reconnecting
+    helps."""
+    from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
+
+    exc = AllProvidersExhaustedError(
+        "exhausted",
+        attempts=[ProviderAttemptDiagnostic(
+            provider="codex", status="failed", skip_class="auth_invalid", detail=detail,
+        )],
+    )
+    assert "reconnect" not in _served_failure_notice(exc).lower(), detail

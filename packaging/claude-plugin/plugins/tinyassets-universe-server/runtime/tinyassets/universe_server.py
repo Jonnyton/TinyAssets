@@ -1854,15 +1854,49 @@ _PLATFORM_FAULT_TELLS = (
 )
 
 
-#: The ``skip_class`` values that were EVIDENCED rather than defaulted.
-#: `classify_unavailable` (providers/diagnostics.py) assigns `auth_invalid`
-#: only when the provider's text carries an auth tell and falls back to
-#: `endpoint_unreachable` for everything else -- so that bucket means "no tell
-#: found", not "the network is down". Promoting it would tell an owner whose
-#: credential silently expired that it is "nothing you set up wrong" (Codex,
-#: review round 1, P6). `quota_or_cooldown` and `timed_out` are set by explicit
-#: measurement, never by a substring guess.
-_EVIDENCED_SKIP_CLASSES = frozenset({"auth_invalid", "quota_or_cooldown", "timed_out"})
+#: The ``skip_class`` values set by explicit measurement, never by a substring
+#: guess: a cooldown window or a timer fired. `endpoint_unreachable` is the
+#: no-tell fallback of `classify_unavailable` (providers/diagnostics.py) -- it
+#: means "no evidence found", not "the network is down" -- and promoting it
+#: would tell an owner whose credential silently expired that it is "nothing
+#: you set up wrong" (Codex, review round 1, P6).
+_MEASURED_SKIP_CLASSES = frozenset({"quota_or_cooldown", "timed_out"})
+
+#: `auth_invalid` is ALSO a substring guess: `classify_unavailable` matches
+#: bare "token", "auth" and "403", so "input exceeds the model's maximum token
+#: limit" classifies as an auth failure (Codex, review round 2, R3). It is
+#: promoted only when the attempt's own text carries narrow evidence of a
+#: credential problem -- text that does not occur in a context-length, quota
+#: or network message. Bare "token"/"auth"/"403" are deliberately absent.
+_AUTH_EVIDENCE_TELLS = (
+    "401",
+    "unauthorized",
+    "invalid_token",
+    "invalid token",
+    "invalid_grant",
+    "token expired",
+    "token has expired",
+    "credential expired",
+    "expired credential",
+    "revoked",
+    "not logged in",
+    "not authenticated",
+    "login required",
+    "please log in",
+    "please login",
+    "codex login",
+    "claude login",
+    "reauthenticat",
+    "re-authenticat",
+    "no_credentials",
+    "auth.json",
+)
+
+
+def _auth_evidence(attempt: Any) -> bool:
+    """True when the attempt's detail names a credential problem narrowly."""
+    detail = str(getattr(attempt, "detail", "") or "").lower()
+    return any(tell in detail for tell in _AUTH_EVIDENCE_TELLS)
 
 
 def _attempt_class(exc: BaseException) -> str | None:
@@ -1876,9 +1910,10 @@ def _attempt_class(exc: BaseException) -> str | None:
 
     Skips are ignored: a provider that was never tried explains nothing about
     why the turn failed. And a `skip_class` is only promoted when it was
-    evidenced (`_EVIDENCED_SKIP_CLASSES`): the classifier's default bucket is
-    the absence of evidence, and an honest "we could not identify why" beats
-    a confident wrong sentence.
+    evidenced: measured classes (`_MEASURED_SKIP_CLASSES`) always, `auth_invalid`
+    only with narrow credential evidence in the attempt's text
+    (`_AUTH_EVIDENCE_TELLS`), the default bucket never. An honest "we could not
+    identify why" beats a confident wrong sentence.
     """
     try:
         for attempt in reversed(getattr(exc, "attempts", None) or []):
@@ -1887,9 +1922,11 @@ def _attempt_class(exc: BaseException) -> str | None:
             streamed = getattr(attempt, "failure_class", None)
             if streamed:
                 return str(streamed)
-            coarse = getattr(attempt, "skip_class", None)
-            if coarse and str(coarse) in _EVIDENCED_SKIP_CLASSES:
-                return str(coarse)
+            coarse = str(getattr(attempt, "skip_class", None) or "")
+            if coarse in _MEASURED_SKIP_CLASSES:
+                return coarse
+            if coarse == "auth_invalid" and _auth_evidence(attempt):
+                return coarse
     except Exception:  # noqa: BLE001 - never break a failure path
         return None
     return None
