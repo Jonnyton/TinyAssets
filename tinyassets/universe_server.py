@@ -163,17 +163,12 @@ def _register_structured_tool(
     Anthropic connector API rejects any tool name that does not match
     ``^[a-zA-Z0-9_-]{1,64}$`` (no dots), which rejects the whole connector.
 
-    ``anonymous_write_challenge=True`` marks a PURE-write handle: an anonymous
-    ``tools/call`` on it answers HTTP 401 + ``WWW-Authenticate`` pre-dispatch
-    so MCP clients launch OAuth (tool-JSON rejections never prompt sign-in).
-    Set it only when every call is a write/costly effect — never on mixed
-    read/write dispatch tools, or anonymous public reads break.
+    ``anonymous_write_challenge`` is retired (no-anonymous-principal): every
+    request without a valid bearer is challenged before dispatch, reads
+    included, so there is no pure-write classification to register. The
+    keyword is accepted and ignored until the sink-deletion change removes
+    it from the call sites.
     """
-    if anonymous_write_challenge:
-        from tinyassets.auth.middleware import register_anonymous_write_challenge_tool
-
-        register_anonymous_write_challenge_tool(name or fn.__name__)
-
     @wraps(fn)
     def _tool(*args, **kwargs):
         from tinyassets.auth.middleware import (
@@ -1297,9 +1292,10 @@ def _inbound_event_run_fn(
     the run, so it is released on run completion; releases it if the run cannot be
     created (Codex round-2 #5).
 
-    ``principal_id`` is the owner the run acts for. A SCHEDULE passes it, because the
-    tick thread has no request identity for the provider session to bind to. An EVENT
-    omits it and the request identity is used, exactly as before."""
+    ``principal_id`` is the owner the run acts for. A SCHEDULE passes its stored
+    owner; a Source EVENT passes the hook owner stamped on the event. Neither
+    thread has a request identity, and there is no anonymous one, so an empty
+    principal refuses (no-anonymous-principal D2)."""
     from tinyassets.storage import data_dir, webhook_hooks
     from tinyassets.webhook_inbound import RESERVATION_INPUT_KEY
 
@@ -1316,6 +1312,13 @@ def _inbound_event_run_fn(
 
     if not actor.startswith("universe:"):
         logger.error("event bus: refusing to fire branch as non-universe actor %r", actor)
+        _release()
+        return
+    if not (principal_id or "").strip():
+        logger.error(
+            "event bus: refusing to fire branch %s for %s with no owner principal",
+            branch_def_id, actor,
+        )
         _release()
         return
     uid = actor[len("universe:"):].strip()
@@ -3610,9 +3613,36 @@ def create_streamable_http_app() -> Starlette:
         if _inbound_enabled()
         else []
     )
+
+    # GET /mcp/pulse: release facts, no principal, no universe data
+    # (no-anonymous-principal D5). The deploy gate (scripts/deployed_sha.py) and
+    # the public website read it; it is the ONE unauthenticated read the daemon
+    # serves, which is why it is not an MCP call and carries nothing a user made.
+    import time as _pulse_time
+
+    from starlette.responses import JSONResponse as _PulseJSON
+    from starlette.routing import Route as _PulseRoute
+
+    _pulse_started = _pulse_time.monotonic()
+
+    async def _pulse_endpoint(request):  # type: ignore[no-untyped-def]
+        from tinyassets.api.status import _load_release_state
+
+        try:
+            state = _load_release_state() or {}
+        except Exception:  # noqa: BLE001 - a missing receipt is reported, never raised
+            state = {}
+        return _PulseJSON({
+            "git_sha": str(state.get("git_sha") or ""),
+            "image_tag": str(state.get("image_tag") or ""),
+            "deployed_at": str(state.get("deployed_at") or ""),
+            "uptime_seconds": int(_pulse_time.monotonic() - _pulse_started),
+        })
+
     app = Starlette(
         routes=[
             *starlette_discovery_routes(),
+            _PulseRoute("/mcp/pulse", _pulse_endpoint, methods=["GET"]),
             *_inbound_routes,
             # Onboarding SPA at /mcp/app — same-origin to /mcp, dark-flagged
             # (returns 404 until TINYASSETS_ONBOARDING_APP is set). Mounted

@@ -535,11 +535,10 @@ def _app_identity_required() -> Any:
     contextvar before the handler runs; ``connect_llm`` re-checks it too."""
     from starlette.responses import JSONResponse
 
-    from tinyassets.auth.middleware import current_identity
-    from tinyassets.auth.provider import ANONYMOUS
+    from tinyassets.auth.middleware import current_identity_or_none
 
-    ident = current_identity()
-    if ident is ANONYMOUS or not getattr(ident, "user_id", "") or ident.user_id == "anonymous":
+    ident = current_identity_or_none()
+    if ident is None or not getattr(ident, "user_id", ""):
         return JSONResponse({"error": "authentication_required"}, status_code=401)
     return None
 

@@ -682,7 +682,7 @@ def initialize_runs_db(base_path: str | Path) -> Path:
         run_name       TEXT NOT NULL DEFAULT '',
         thread_id      TEXT NOT NULL,
         status         TEXT NOT NULL DEFAULT 'queued',
-        actor          TEXT NOT NULL DEFAULT 'anonymous',
+        actor          TEXT NOT NULL,
         owner_user_id  TEXT NOT NULL DEFAULT '',
         inputs_json    TEXT NOT NULL DEFAULT '{}',
         output_json    TEXT NOT NULL DEFAULT '{}',
@@ -1168,7 +1168,7 @@ def create_run(
     thread_id: str,
     inputs: dict[str, Any],
     run_name: str = "",
-    actor: str = "anonymous",
+    actor: str,
     branch_version_id: str | None = None,
     owner_user_id: str | None = None,
     daemon_id: str | None = None,
@@ -1177,6 +1177,10 @@ def create_run(
     branch_task_id: str | None = None,
     queue_universe_id: str | None = None,
 ) -> str:
+    actor = (actor or "").strip()
+    if not actor:
+        # No anonymous principal (founder, 2026-09-02): a run is somebody's.
+        raise ValueError("create_run needs an actor; refusing to record a run as nobody")
     initialize_runs_db(base_path)
     run_id = uuid.uuid4().hex[:16]
     resolved_owner_user_id = (

@@ -178,6 +178,17 @@ def _handle_hook_inner(
     universe_id = str(binding["universe_id"]).strip()
     branch_def_id = str(binding["branch_def_id"]).strip()
     source_id = (binding.get("source_id") or "").strip() or None
+    owner_principal_id = str(binding.get("owner_principal_id") or "").strip()
+    if not owner_principal_id:
+        # A hook minted before owners were recorded. It would run as nobody,
+        # which is exactly what no-anonymous-principal removes: refuse, say
+        # so in the log (the caller sees the uniform 404), and the owner
+        # re-creates the hook or Source.
+        logger.error(
+            "webhook: refused — hook %s… has no recorded owner; re-create it",
+            token[:12],
+        )
+        return _NOT_DELIVERABLE
     if not universe_id:
         logger.error("webhook: refused — binding for a valid token had an empty universe_id")
         return _NOT_DELIVERABLE
@@ -232,11 +243,13 @@ def _handle_hook_inner(
             (emit or _emit_source_event)(
                 source_id=source_id, universe_id=universe_id,
                 dedupe_key=dedupe_key, inputs=inputs, reservation_id=reservation_id,
+                owner_principal_id=owner_principal_id,
             )
             return 202, {"queued": True, "via": "event"}
 
         run_id = (enqueue or _enqueue_branch_run)(
             base, universe_id=universe_id, branch_def_id=branch_def_id, inputs=inputs,
+            principal_id=owner_principal_id,
         )
         webhook_hooks.link_dispatch(base, reservation_id=reservation_id, run_id=str(run_id))
         return 202, {"queued": True}
@@ -263,6 +276,7 @@ def _default_base() -> Path:
 
 def _enqueue_branch_run(
     base_path: str | Path, *, universe_id: str, branch_def_id: str, inputs: dict[str, Any],
+    principal_id: str,
 ) -> str:
     """Enqueue a run of ``branch_def_id`` as ``universe:<universe_id>``.
 
@@ -278,6 +292,7 @@ def _enqueue_branch_run(
         branch_def_id=branch_def_id,
         inputs=inputs,
         run_name="webhook",
+        principal_id=principal_id,
     )
 
 
@@ -294,13 +309,16 @@ def _emit_source_event(
     dedupe_key: str,
     inputs: dict[str, Any],
     reservation_id: str,
+    owner_principal_id: str,
 ) -> None:
     """Publish a Source-node inbound event onto the scheduler bus.
 
-    The event carries the run inputs only (never credentials/identity); ``event_id`` is the
-    SERVER-side dedupe key so the bus also dedupes at-most-once (Codex #4). Identity is NOT
-    in the event — the subscription carries the universe binding. The in-flight reservation
-    id rides under a private inputs key so the fired run can link + release it.
+    The event carries the run inputs and the hook OWNER's principal (never a
+    credential); ``event_id`` is the SERVER-side dedupe key so the bus also dedupes
+    at-most-once (Codex #4). The subscription carries the universe binding; the
+    owner rides on the event so the run binds to a person without a lookup on the
+    event thread (no-anonymous-principal D2). The in-flight reservation id rides
+    under a private inputs key so the fired run can link + release it.
     """
     from tinyassets.scheduler import SchedulerEvent, emit_event, is_running
 
@@ -313,4 +331,5 @@ def _emit_source_event(
         event_type=f"source:{source_id}",
         event_id=dedupe_key,
         payload={"universe_id": universe_id, "inputs": payload_inputs},
+        owner_principal_id=owner_principal_id,
     ))

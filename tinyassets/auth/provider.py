@@ -699,11 +699,17 @@ def action_scope_audit() -> dict[str, Any]:
     }
 
 
-ANONYMOUS = Identity(
-    user_id="anonymous",
-    username="anonymous",
-    display_name="Anonymous",
-    capabilities=["read", "submit_request", "list"],
+#: The operational probes' service principal (canary scripts, the deploy gate).
+#: It holds NO capabilities: the auth middleware admits it only for the exact
+#: JSON-RPC shapes in ``tinyassets.auth.wiki_canary.canary_request_allowed``
+#: and refuses everything else before dispatch. There is no anonymous identity
+#: any more (founder, 2026-08-22 and 2026-09-02): a request either resolves to
+#: a named principal or is refused.
+CANARY = Identity(
+    user_id="canary",
+    username="canary",
+    display_name="Canary",
+    capabilities=[],
 )
 
 HOST = Identity(
@@ -741,19 +747,6 @@ class AuthProvider(ABC):
         production model (D0b): the per-universe ACL layer then confines an
         authenticated founder to their own universe. Providers that leave this
         False keep their existing gating (dev = fully open; OAuth = all-auth).
-        """
-        return False
-
-    def challenge_unauthenticated(self) -> bool:
-        """Whether a *missing* bearer token on the MCP endpoint should return a
-        401 ``WWW-Authenticate`` challenge (default off).
-
-        Resolve-always keeps anonymous reads working by NOT challenging a missing
-        token — but MCP clients (Claude.ai/ChatGPT) only start OAuth on a 401, so
-        an optional-auth connector never prompts the founder to sign in and
-        first-contact never fires. Providers that want to force the OAuth flow on
-        the founder connector return True here; discovery routes stay public so
-        the client can still find the authorization server.
         """
         return False
 
@@ -816,12 +809,36 @@ class AuthProvider(ABC):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+DEV_USER_ENV = "UNIVERSE_SERVER_DEV_USER"
+
+
 class DevAuthProvider(AuthProvider):
-    """No-auth provider for development. Everyone is anonymous."""
+    """Development provider: every bearer resolves to ONE named local operator.
+
+    There is no anonymous identity (founder, 2026-09-02). The operator names
+    themselves through ``UNIVERSE_SERVER_DEV_USER``; ``create_provider``
+    refuses to start dev mode without it. A missing bearer is still refused
+    by the transport, so local clients send any non-empty bearer.
+    """
+
+    def __init__(self, user_id: str | None = None) -> None:
+        raw = (user_id or os.environ.get(DEV_USER_ENV, "")).strip()
+        if not raw:
+            raise RuntimeError(
+                f"dev auth mode needs {DEV_USER_ENV}: name the local operator "
+                "(there is no anonymous principal)"
+            )
+        self._identity = Identity(
+            user_id=raw,
+            username=raw,
+            display_name=raw,
+            capabilities=["read", "write", "submit_request", "list", "costly", "admin"],
+        )
 
     def resolve_token(self, token: str) -> Identity | None:
-        # In dev mode, any token (or no token) is anonymous
-        return ANONYMOUS
+        if not token:
+            return None
+        return self._identity
 
     def is_auth_required(self) -> bool:
         return False
@@ -913,7 +930,7 @@ class OAuthProvider(AuthProvider):
                 scope           TEXT NOT NULL DEFAULT '',
                 code_challenge  TEXT NOT NULL,
                 code_challenge_method TEXT NOT NULL DEFAULT 'S256',
-                user_id         TEXT NOT NULL DEFAULT 'anonymous',
+                user_id         TEXT NOT NULL,
                 created_at      REAL NOT NULL,
                 used            INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (client_id) REFERENCES oauth_clients(client_id)
@@ -1181,5 +1198,5 @@ def create_provider() -> AuthProvider:
     if auth_mode in ("optional", "resolve"):
         logger.info("Optional OAuth auth provider enabled")
         return OptionalOAuthProvider()
-    logger.info("Dev auth provider (no auth)")
+    logger.info("Dev auth provider (named local operator)")
     return DevAuthProvider()

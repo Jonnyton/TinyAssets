@@ -180,16 +180,14 @@ def _current_actor() -> str:
     Authenticated MCP requests use the OAuth subject resolved at request
     entry. Authless paths and direct tests keep the legacy env-var fallback.
     """
-    try:
-        from tinyassets.auth.middleware import current_identity
+    from tinyassets.auth.middleware import current_identity
 
-        identity = current_identity()
-        subject = (getattr(identity, "user_id", "") or "").strip()
-        if subject and subject != "anonymous":
-            return subject
-    except Exception:
-        logger.exception("failed to resolve request auth identity")
-    return os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
+    # No environment fallback and no stand-in (founder, 2026-09-02): the
+    # attribution is the authenticated subject or the write refuses.
+    subject = (getattr(current_identity(), "user_id", "") or "").strip()
+    if not subject:
+        raise PermissionError("Authentication required")
+    return subject
 
 
 def _append_ledger(

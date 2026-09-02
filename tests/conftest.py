@@ -446,3 +446,13 @@ def universe_input() -> dict[str, Any]:
         "cross_series_facts": [],
         "quality_trace": [],
     }
+
+
+# There is no anonymous principal (founder, 2026-09-02). The dev auth provider
+# names its local operator through UNIVERSE_SERVER_DEV_USER and refuses to
+# start without it; the suite runs as this named operator unless a test sets
+# its own. A test that wants NO identity calls auth_middleware(None) and
+# asserts the refusal, never a stand-in.
+import os as _os
+
+_os.environ.setdefault("UNIVERSE_SERVER_DEV_USER", "dev-tests")

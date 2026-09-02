@@ -21,7 +21,7 @@ from contextvars import ContextVar, Token
 from typing import Any
 
 from tinyassets.auth.provider import (
-    ANONYMOUS,
+    CANARY,
     AuthProvider,
     Identity,
     PermissionAction,
@@ -31,6 +31,7 @@ from tinyassets.auth.provider import (
     create_provider,
 )
 from tinyassets.auth.wiki_canary import (
+    canary_request_allowed,
     is_exact_wiki_canary_request,
     reset_wiki_canary_authority,
     set_wiki_canary_authority,
@@ -42,9 +43,13 @@ logger = logging.getLogger("universe_server.auth")
 # Request-local storage for per-request identity. ContextVar is required
 # because Streamable HTTP handlers run concurrently on the same event-loop
 # thread; thread-local storage would leak actors between async requests.
+# None means "no principal bound". There is no anonymous identity to fall back
+# to (founder, 2026-09-02): code that needs an actor calls current_identity(),
+# which raises, and the transport has already answered 401 to any request that
+# would reach it unbound.
 _current_identity: ContextVar[Identity | None] = ContextVar(
     "workflow_current_identity",
-    default=ANONYMOUS,
+    default=None,
 )
 _current_bearer_present: ContextVar[bool] = ContextVar(
     "tinyassets_current_bearer_present",
@@ -422,38 +427,24 @@ def set_provider(provider: AuthProvider) -> None:
     _provider = provider
 
 
-def _rejects_invalid_tokens(provider: AuthProvider) -> bool:
-    """A present-but-invalid bearer token is a hard 401, not a silent downgrade
-    to anonymous, whenever the provider enforces auth for writes (full-auth OR
-    resolve-always). A *missing* token still resolves to anonymous public read.
-    """
-    return provider.is_auth_required() or provider.resolve_always_writes()
+def auth_middleware(token: str | None) -> Identity | None:
+    """Resolve a Bearer token to an Identity, or to nothing.
 
-
-def auth_middleware(token: str | None) -> Identity:
-    """Resolve a Bearer token to an Identity.
-
-    Call this at the transport layer before tool execution.
-    The resolved identity is stored in thread-local storage
-    for tools to access via `current_identity()`.
+    Call this at the transport layer before tool execution. The resolved
+    identity is stored request-locally for tools to read through
+    ``current_identity()``. A missing token and an invalid token both bind
+    NOTHING, in every auth mode; the transport answers 401 for either on a
+    non-exempt path. Nothing here ever manufactures a principal.
     """
     _current_bearer_present.set(bool(token))
     _current_request_boundary_id.set(None)
     provider = _get_provider()
 
-    identity = ANONYMOUS
+    identity: Identity | None = None
     if token:
         identity = provider.resolve_token(token)
-        if identity is None:
-            if _rejects_invalid_tokens(provider):
-                # Present-but-invalid token — set None to signal a 401 to the
-                # transport layer (do NOT downgrade an invalid token to anon).
-                _current_identity.set(None)
-                return ANONYMOUS  # Caller must check current_identity() is None
-            identity = ANONYMOUS
-
     _current_identity.set(identity)
-    if token and identity is not ANONYMOUS:
+    if identity is not None:
         _current_request_boundary_id.set(f"request_boundary_{secrets.token_hex(32)}")
     return identity
 
@@ -535,6 +526,12 @@ def _auth_challenge_path(path: str) -> bool:
     # /mcp/app/billing/... route is exempt, so checkout and cancel stay identity-gated.
     if path == "/mcp/app/billing/webhook":
         return False
+    # Release facts for the deploy gate and the public website: git sha, image
+    # tag, deploy time, uptime. No universe data and no principal, which is why
+    # it is the one unauthenticated read the daemon serves (no-anonymous-
+    # principal D5). Exact path; nothing under it.
+    if path == "/mcp/pulse":
+        return False
     # Narrow, ordered exemption for the browser deposit flow: when enabled, its
     # own signed-state / signed-session validation is the sole boundary for these
     # routes, so they must not be swept into the MCP bearer 401. Scoped to exactly
@@ -608,38 +605,16 @@ async def _send_auth_challenge_401(send: Any, *, invalid_token: bool) -> None:
     )
 
 
-# MCP tools whose EVERY call is a write/costly effect (the canonical write
-# handles). An anonymous ``tools/call`` on one of these draws the 401 OAuth
-# challenge BEFORE dispatch — tool-JSON rejections never prompt MCP clients to
-# sign in, and an SSE response stream cannot be retro-401'd after dispatch.
-# Mixed read/write dispatch tools (wiki, goals, gates, ...) must NOT be listed:
-# challenging them would break anonymous public reads; their write actions stay
-# gated by `require_action_scope` (fail-closed, tool-JSON envelope).
-_ANON_WRITE_CHALLENGE_TOOLS: set[str] = set()
-
-
-def register_anonymous_write_challenge_tool(name: str) -> None:
-    """Mark one MCP wire-name as pure-write for the anonymous 401 challenge."""
-    _ANON_WRITE_CHALLENGE_TOOLS.add(name)
-
-
-def anonymous_write_challenge_tools() -> frozenset[str]:
-    """The currently registered pure-write tool names (for tests/audit)."""
-    return frozenset(_ANON_WRITE_CHALLENGE_TOOLS)
-
-
-# Hard cap on how much of an ANONYMOUS request body the classifier will buffer
+# Hard cap on how much of a PROBE request body the canary check will buffer
 # (Codex review 2026-07-15: unbounded buffering of unauthenticated POSTs on a
-# public endpoint is a memory-DoS vector). Legitimate anonymous traffic is
-# JSON-RPC reads — far below this. Oversized anonymous bodies answer 413;
-# authenticated requests are never buffered here.
-_MAX_ANON_BODY_BYTES = 1_048_576  # 1 MiB
+# public endpoint is a memory-DoS vector). A probe is a few hundred bytes.
+_MAX_PROBE_BODY_BYTES = 1_048_576  # 1 MiB
 
 
 async def _buffer_request_body(
     receive: Any,
     *,
-    cap: int = _MAX_ANON_BODY_BYTES,
+    cap: int = _MAX_PROBE_BODY_BYTES,
 ) -> tuple[bytes, list[dict], bool, bool]:
     """Drain the request body: (body, raw messages, disconnected, oversized).
 
@@ -662,6 +637,20 @@ async def _buffer_request_body(
         chunks.append(chunk)
         if not message.get("more_body"):
             return b"".join(chunks), messages, False, False
+
+
+async def _send_forbidden_403(send: Any, reason: str) -> None:
+    """A named principal that may not make THIS request (the canary outside
+    its allowlist). Not a challenge: the bearer was valid."""
+    body = json.dumps({"error": "forbidden", "detail": reason}).encode("utf-8")
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 403,
+            "headers": [(b"content-type", b"application/json")],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
 
 
 async def _send_payload_too_large_413(send: Any) -> None:
@@ -693,34 +682,27 @@ def _replay_receive(messages: list[dict], receive: Any) -> Any:
     return _receive
 
 
-def _calls_write_tool(body: bytes) -> bool:
-    """True when the JSON-RPC body (single or batch) calls a pure-write tool.
+def current_identity_or_none() -> Identity | None:
+    """The bound identity, or None when the request bound nothing.
 
-    Malformed bodies return False — the transport layer produces its own
-    protocol error, and the tool-layer scope gate still rejects any write that
-    somehow dispatches.
+    For the few places that legitimately branch on PRESENCE: the transport's
+    challenge path, status's ``bearer_present``, the app's identity gate.
+    Everything else calls :func:`current_identity` and lets it refuse.
     """
-    try:
-        payload = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        return False
-    items = payload if isinstance(payload, list) else [payload]
-    for item in items:
-        if not isinstance(item, dict) or item.get("method") != "tools/call":
-            continue
-        params = item.get("params")
-        if isinstance(params, dict) and params.get("name") in _ANON_WRITE_CHALLENGE_TOOLS:
-            return True
-    return False
+    return _current_identity.get()
 
 
 def current_identity() -> Identity:
-    """Get the current request's resolved identity.
+    """The current request's resolved identity, or a refusal.
 
-    Call this from within a tool function to know who's calling.
-    Returns ANONYMOUS if no auth context has been set.
+    There is no anonymous identity (founder, 2026-09-02). If nothing is
+    bound, the caller is running outside an authenticated request and gets
+    ``PermissionError`` -- never a stand-in principal.
     """
-    return _current_identity.get() or ANONYMOUS
+    identity = _current_identity.get()
+    if identity is None:
+        raise PermissionError("Authentication required")
+    return identity
 
 
 @contextmanager
@@ -778,7 +760,7 @@ def current_mcp_message_identity() -> Identity | None:
     if wiki_canary_token_matches(credential.strip()):
         return None
     identity = _get_provider().resolve_token(credential.strip())
-    if identity is None or identity is ANONYMOUS or identity.user_id == "anonymous":
+    if identity is None or not (identity.user_id or "").strip():
         return None
     return identity
 
@@ -797,7 +779,7 @@ class AuthContextMiddleware:
             await self.app(scope, receive, send)
             return
 
-        previous: Token[Identity | None] = _current_identity.set(ANONYMOUS)
+        previous: Token[Identity | None] = _current_identity.set(None)
         previous_bearer: Token[bool] = _current_bearer_present.set(False)
         previous_boundary: Token[str | None] = _current_request_boundary_id.set(None)
         previous_canary = set_wiki_canary_authority(False)
@@ -810,75 +792,57 @@ class AuthContextMiddleware:
             token = None
             if auth_header.lower().startswith("bearer "):
                 token = auth_header[7:].strip()
+            path = scope.get("path", "")
+            method = scope.get("method", "").upper()
+
             canary_authorized = False
-            if (
-                token
-                and wiki_canary_token_matches(token)
-                and scope.get("method", "").upper() == "POST"
-                and _auth_challenge_path(scope.get("path", ""))
-            ):
+            if token and wiki_canary_token_matches(token):
+                # The canary SERVICE PRINCIPAL (no-anonymous-principal D4). Its
+                # bearer is valid for exactly the probe shapes in
+                # canary_request_allowed, on the MCP endpoint, by POST; every
+                # item of a batch is checked before any of it is replayed. A
+                # valid bearer outside that world is refused, never downgraded.
+                if method != "POST" or not _auth_challenge_path(path):
+                    await _send_forbidden_403(send, "the canary bearer may only probe /mcp")
+                    return
                 body, messages, disconnected, oversized = await _buffer_request_body(receive)
                 if oversized:
                     await _send_payload_too_large_413(send)
                     return
-                canary_authorized = not disconnected and is_exact_wiki_canary_request(body)
+                if disconnected or not canary_request_allowed(body):
+                    await _send_forbidden_403(
+                        send, "the canary bearer may only initialize, list tools, "
+                        "read status, and write its own probe page"
+                    )
+                    return
                 receive = _replay_receive(messages, receive)
-                if canary_authorized:
-                    _current_identity.set(ANONYMOUS)
-                    _current_bearer_present.set(True)
-                    set_wiki_canary_authority(True)
+                _current_identity.set(CANARY)
+                _current_bearer_present.set(True)
+                set_wiki_canary_authority(is_exact_wiki_canary_request(body))
+                canary_authorized = True
             # The inbound webhook receiver's sole boundary is its unguessable URL
-            # token + author-gated handler; a generic channel may POST with its OWN
+            # token + owner-bound handler; a generic channel may POST with its OWN
             # Authorization: Bearer. Skip ALL MCP bearer interpretation/401 on an
             # enabled EXACT hook route so a foreign bearer isn't rejected before the
-            # token handler runs (Codex inbound review). The route is exempt from
-            # _auth_challenge_path too, so the challenge branches below are skipped.
-            is_hook_route = _inbound_hooks_enabled() and _is_inbound_hook_path(
-                scope.get("path", "")
-            )
+            # token handler runs (Codex inbound review). The hook's OWNER is bound
+            # to the run by the handler from the hook row, never from this request.
+            is_hook_route = _inbound_hooks_enabled() and _is_inbound_hook_path(path)
             if not canary_authorized and not is_hook_route:
                 auth_middleware(token)
             identity = _current_identity.get()
-            if not canary_authorized and not is_hook_route and token and identity is None:
-                # Present-but-invalid bearer token → 401 challenge (RFC 9728).
-                await _send_auth_challenge_401(send, invalid_token=True)
-                return
-            if (
-                not canary_authorized
-                and identity is ANONYMOUS
-                and _auth_challenge_path(scope.get("path", ""))
-                and _get_provider().challenge_unauthenticated()
-            ):
-                # Require-auth (founder connector): a missing token on the MCP
-                # endpoint returns a 401 so the client launches OAuth. Without
-                # this the connector connects anonymously and first-contact
-                # (which needs an authenticated founder) never fires. Discovery
-                # routes are exempt so the client can still find the AS.
-                await _send_auth_challenge_401(send, invalid_token=False)
-                return
-            if (
-                not canary_authorized
-                and identity is ANONYMOUS
-                and scope.get("method", "").upper() == "POST"
-                and _auth_challenge_path(scope.get("path", ""))
-                and _ANON_WRITE_CHALLENGE_TOOLS
-                and _get_provider().writes_require_identity()
-            ):
-                # Write-gating modes keep anonymous reads open, so a missing
-                # token is not challenged at connect — but a WRITE tools/call
-                # must answer HTTP 401 (not tool JSON) or the client never
-                # launches OAuth (STATUS residual 2026-07-01). Classify
-                # pre-dispatch: an SSE response stream cannot be retro-401'd.
-                # The #1441 tool-layer write gate remains the fail-closed
-                # backstop for anything this classifier does not match.
-                body, messages, disconnected, oversized = await _buffer_request_body(receive)
-                if oversized:
-                    await _send_payload_too_large_413(send)
+            if not canary_authorized and not is_hook_route and identity is None:
+                if token:
+                    # Present-but-invalid bearer -> 401 challenge (RFC 9728), on
+                    # every path: a bad credential is never ignored.
+                    await _send_auth_challenge_401(send, invalid_token=True)
                     return
-                if not disconnected and _calls_write_tool(body):
+                if _auth_challenge_path(path):
+                    # No bearer on the MCP endpoint -> 401 challenge, in EVERY auth
+                    # mode: the client launches OAuth. The exempt paths (discovery,
+                    # the app shell and its token route, connect, hooks, billing
+                    # webhook, pulse) bind their own principal or read no state.
                     await _send_auth_challenge_401(send, invalid_token=False)
                     return
-                receive = _replay_receive(messages, receive)
             await self.app(scope, receive, send)
         finally:
             reset_wiki_canary_authority(previous_canary)
@@ -907,10 +871,6 @@ def require_auth(
             or lacks the requested capability.
     """
     identity = current_identity()
-    provider = _get_provider()
-
-    if provider.is_auth_required() and identity.user_id == "anonymous":
-        raise PermissionError("Authentication required")
 
     if capability:
         verdict = identity.can(capability, scope=scope, context=context)
@@ -950,14 +910,12 @@ def require_action_scope(
             f"No action-scope metadata for {tool}.{action}; refusing gated dispatch."
         )
 
-    # Resolve-always (WorkOS, D0b): anonymous may perform read-effect actions
-    # (public reads). The per-universe ACL layer separately denies reads of a
-    # private universe; this gate only classifies the action.
+    # Resolve-always (WorkOS, D0b): read-effect actions are not scope-gated;
+    # the per-universe ACL layer separately denies reads of a private universe.
+    # The caller is always a named principal here (the transport refused
+    # anything else).
     if resolve_always and not auth_required and metadata.effect == "read":
         return identity
-
-    if identity.user_id == "anonymous":
-        raise PermissionError("Authentication required")
 
     if resolve_always and not auth_required:
         # Write/costly/admin: an authenticated founder passes when they hold
@@ -991,36 +949,9 @@ def require_action_scope(
     return identity
 
 
-_WRITE_GATE_GUIDANCE = (
-    "Anonymous writes are disabled on this server; reads stay open. "
-    "To write, connect this MCP server with an authenticated (OAuth) "
-    "connection — re-add the TinyAssets connector and complete the "
-    "sign-in step — then retry. Without signing in you can still "
-    "browse goals, branches, universes, and wiki pages freely."
-)
-
-
 def write_gate_rejection(handle: str) -> str | None:
-    """Server-side anonymous-write gate for mutating MCP handles.
-
-    Returns a rejection envelope (JSON string) when the provider gates
-    writes and the caller is anonymous; ``None`` when the write may
-    proceed. Founder decision 2026-07-13 (production-mcp-sweep P0):
-    reads stay open in every auth mode; writes require a resolved
-    identity whenever the server runs an OAuth-backed mode. Dev mode
-    keeps writes open for local and test flows.
-    """
-    provider = _get_provider()
-    if not provider.writes_require_identity():
-        return None
-    identity = current_identity()
-    if identity.user_id != "anonymous":
-        return None
-    return json.dumps(
-        {
-            "status": "rejected",
-            "error": f"{handle}: {_WRITE_GATE_GUIDANCE}",
-            "auth_required": True,
-            "tool": handle,
-        }
-    )
+    """Retired anonymous-write gate. Every request that reaches a handle is a
+    named principal (the transport refused the rest), so there is nothing to
+    reject here; kept for its callers until the sink-deletion change removes
+    them. Always ``None``."""
+    return None

@@ -18,7 +18,7 @@ account connectors — verified 2026-08-13). This module then enforces:
   * **Identity.** Every handler call runs with ``_current_identity`` bound to the
     FOUNDER (``TINYASSETS_ENGINE_ACTOR_ID``) and a LEAST-PRIVILEGE capability set.
     No host identity, no ambient/env credential fallback. An empty actor_id binds
-    ANONYMOUS, so a private-universe read simply fails closed.
+    nothing, so the call refuses instead of reading as nobody.
   * **Graph pin.** Every handler is forced onto ``TINYASSETS_ENGINE_GRAPH_ID``.
     The agent cannot address another universe by supplying a different id — the
     pinned id is not even an exposed parameter.
@@ -202,13 +202,17 @@ def _bind_founder_identity(capabilities=_READ_CAPABILITIES):
     ``capabilities`` defaults to the read-only set; the run_graph handler passes
     ``_RUN_CAPABILITIES`` so a run can submit while reads stay least-privilege.
     Returns the ContextVar token so the caller can reset it. Fail-closed: with no
-    actor_id we bind ANONYMOUS, and the handlers refuse private-universe reads.
+    actor_id there is nothing to bind and the call refuses (there is no
+    anonymous principal to fall back to; founder, 2026-09-02).
     """
     from tinyassets.auth.middleware import _current_identity
-    from tinyassets.auth.provider import ANONYMOUS, Identity
+    from tinyassets.auth.provider import Identity
 
     if not _ACTOR_ID:
-        return _current_identity.set(ANONYMOUS)
+        raise PermissionError(
+            "the engine surface has no bound actor (TINYASSETS_ENGINE_ACTOR_ID); "
+            "refusing rather than acting as nobody"
+        )
     identity = Identity(
         user_id=_ACTOR_ID,
         username=_ACTOR_ID,

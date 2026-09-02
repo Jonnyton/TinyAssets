@@ -55,7 +55,10 @@ def _policy_hash(payload: dict[str, Any]) -> str:
 
 def _request_identity_evidence() -> tuple[dict[str, object], dict[str, str]]:
     """Return token-free, self-only identity evidence for this request."""
-    from tinyassets.auth.middleware import current_bearer_present, current_identity
+    from tinyassets.auth.middleware import (
+        current_bearer_present,
+        current_identity_or_none,
+    )
 
     bearer_present = current_bearer_present()
     unavailable_identity = {
@@ -93,10 +96,15 @@ def _request_identity_evidence() -> tuple[dict[str, object], dict[str, str]]:
             "reason": "version_invalid",
         }
 
-    subject = current_identity().user_id.strip() or "anonymous"
+    identity = current_identity_or_none()
+    if identity is None:
+        return unavailable_identity, {"status": "unavailable", "reason": "no_identity"}
+    subject = (identity.user_id or "").strip()
+    if not subject:
+        return unavailable_identity, {"status": "unavailable", "reason": "no_identity"}
     message = f"tinyassets:request-identity:{version}\0{subject}".encode()
     digest = hmac.new(key, message, hashlib.sha256).hexdigest()
-    prefix = f"{version}:anonymous:" if subject == "anonymous" else f"{version}:"
+    prefix = f"{version}:"
     return (
         {
             "bearer_present": bearer_present,
@@ -1361,7 +1369,7 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
     except Exception:  # noqa: BLE001
         pass
 
-    if account_user and account_user != "anonymous":
+    if account_user:
         activity_tail = [
             line.replace(account_user, "[request-principal]")
             for line in activity_tail

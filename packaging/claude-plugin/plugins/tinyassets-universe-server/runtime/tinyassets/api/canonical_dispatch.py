@@ -133,8 +133,8 @@ def route_back_evaluation(
             f"Originating run {clean_run_id!r} does not exist",
             details={"originating_run_id": clean_run_id},
         )
-    run_actor = str(origin.get("actor") or "anonymous").strip() or "anonymous"
-    scope_actor = "" if run_actor == "anonymous" else run_actor
+    run_actor = str(origin.get("actor") or "").strip()
+    scope_actor = run_actor
     notes = PatchNotes.from_dict(evaluation.patch_notes.to_dict())
     hop = (goal_id, scope_actor)
     if hop in notes.route_history or len(notes.route_history) >= 3:
