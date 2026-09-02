@@ -1178,6 +1178,12 @@ def create_run(
     queue_universe_id: str | None = None,
 ) -> str:
     actor = (actor or "").strip()
+    if actor.lower() == "anonymous":
+        # The string is not a principal. A row carrying it is legacy data, and
+        # nothing may create a new one (Codex review, 2026-09-02).
+        raise ValueError(
+            'create_run needs a real principal; "anonymous" is not one'
+        )
     if not actor:
         # No anonymous principal (founder, 2026-09-02): a run is somebody's.
         raise ValueError("create_run needs an actor; refusing to record a run as nobody")

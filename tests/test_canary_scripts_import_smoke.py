@@ -390,9 +390,15 @@ def test_uptime_canary_reuses_public_canary_error(loaded_modules):
 
 
 def test_selfhost_smoke_missing_token_exits_before_network(monkeypatch, capsys):
+    import _canary_common
+
     smoke = importlib.import_module("selfhost_smoke")
     calls = []
     monkeypatch.delenv("TINYASSETS_WIKI_CANARY_TOKEN", raising=False)
+    monkeypatch.setattr(
+        smoke, "canary_bearer_for",
+        lambda url, prog, timeout=10.0: _canary_common.require_canary_bearer(prog),
+    )
     monkeypatch.setattr(
         smoke.urllib.request, "urlopen", lambda *a, **k: calls.append((a, k)),
     )

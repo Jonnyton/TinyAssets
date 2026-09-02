@@ -72,9 +72,17 @@ from _canary_common import (  # noqa: E402
     _extract_structured_tool_payload,
     _extract_tool_text,
     _init_payload,
-    require_canary_bearer,
+    canary_bearer,
+    canary_bearer_for,
 )
 from _canary_common import _post as _post_raw  # noqa: E402
+
+#: "Not specified" -- distinct from an explicit ``None``, which means "this
+#: daemon is pre-cutover, send no bearer". Omitting the argument reads the
+#: configured token WITHOUT a network call, so a direct caller (and every unit
+#: test that drives a helper) behaves as it always did.
+_FROM_ENV: Any = object()
+
 
 DEFAULT_URL = "https://tinyassets.io/mcp"
 DEFAULT_THRESHOLD_MIN = 30
@@ -153,7 +161,7 @@ def fetch_inspect_result(
     timeout: float,
     *,
     post_fn=None,
-    bearer_token: str | None = None,
+    bearer_token: Any = _FROM_ENV,
 ) -> dict[str, Any]:
     """Full MCP handshake + get_status call.
 
@@ -163,7 +171,8 @@ def fetch_inspect_result(
     Raises LastActivityError on any failure — handshake failures get
     step_code=4, tool failures get step_code=3.
     """
-    bearer_token = bearer_token or require_canary_bearer("last-activity")
+    if bearer_token is _FROM_ENV:
+        bearer_token = canary_bearer()
     post = post_fn or _post
 
     # Step 1: initialize. Any failure => exit 4 (handshake).
@@ -239,7 +248,7 @@ def run_canary(
     post_fn=None,
     now: _dt.datetime | None = None,
     verbose: bool = False,
-    bearer_token: str | None = None,
+    bearer_token: Any = _FROM_ENV,
 ) -> tuple[int, str]:
     """Full canary flow. Returns (exit_code, human_message).
 
@@ -249,7 +258,8 @@ def run_canary(
     The status surface intentionally exposes only the platform-wide timestamp;
     universe phase and pause state are outside this principal's authority.
     """
-    bearer_token = bearer_token or require_canary_bearer("last-activity")
+    if bearer_token is _FROM_ENV:
+        bearer_token = canary_bearer()
     current_now = now or _dt.datetime.now(tz=_dt.timezone.utc)
     inspect = fetch_inspect_result(
         url, timeout, post_fn=post_fn, bearer_token=bearer_token,
@@ -272,7 +282,6 @@ def run_canary(
 
 
 def main(argv: list[str] | None = None) -> int:
-    bearer = require_canary_bearer("last-activity")
     ap = argparse.ArgumentParser(
         description="Probe daemon.last_activity_at for 24/7 node-execution liveness.",
     )
@@ -289,6 +298,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--verbose", action="store_true",
                     help="Print one-line summary + diagnostic fields.")
     args = ap.parse_args(argv)
+    # Which contract does THIS daemon keep? Asked once, after the URL is
+    # known, so one run never mixes the pre- and post-cutover shapes.
+    bearer = canary_bearer_for(args.url, "last-activity", args.timeout)
 
     try:
         code, msg = run_canary(

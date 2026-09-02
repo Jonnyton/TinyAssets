@@ -25,7 +25,16 @@ from mcp_tool_canary import ToolCanaryError  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _canary_boundary(monkeypatch):
+    import _canary_common
+
     monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "t" * 40)
+    # This daemon keeps the no-anonymous contract. Stated here rather than
+    # discovered over the network, and it still honours a deleted token, so
+    # the missing-token tests below exercise the real refusal.
+    monkeypatch.setattr(
+        wc, "canary_bearer_for",
+        lambda url, prog, timeout=10.0: _canary_common.require_canary_bearer(prog),
+    )
     monkeypatch.setattr(
         wc,
         "_status_post",
@@ -305,14 +314,23 @@ def test_run_probe_uses_environment_token_when_present(monkeypatch):
     assert scripted.calls[2]["bearer_token"] == token
 
 
-def test_run_probe_missing_environment_token_exits_before_post(monkeypatch):
+def test_run_probe_with_no_bearer_probes_the_pre_cutover_way(monkeypatch):
+    """The token requirement lives in ``main()``, where the daemon kind is
+    known: a pre-cutover daemon refuses this bearer, so demanding it there
+    would make every probe red for the whole cutover window and after any
+    rollback (Codex review, 2026-09-02, finding E). ``run_probe`` sends what
+    it is handed."""
     scripted = _happy_scripted()
     monkeypatch.delenv("TINYASSETS_WIKI_CANARY_TOKEN", raising=False)
 
-    with pytest.raises(SystemExit) as exc:
-        wc.run_probe("https://fake/mcp", 5.0, post_fn=scripted)
-    assert exc.value.code == 2
-    assert not scripted.calls
+    wc.run_probe("https://fake/mcp", 5.0, post_fn=scripted, bearer_token=None)
+
+    assert scripted.calls, "the anonymous path still probes"
+    assert all(
+        call.get("bearer_token") in (None, "")
+        for call in scripted.calls
+        if isinstance(call, dict)
+    )
 
 
 def test_credentialed_run_probe_writes_fresh_content_each_time(monkeypatch):

@@ -26,7 +26,17 @@ import last_activity_canary as lac  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _canary_token(monkeypatch):
+    import _canary_common
+
     monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "t" * 40)
+    # This daemon keeps the no-anonymous contract. Stated here rather than
+    # discovered over the network: the probe asks GET <url>/pulse, and a test
+    # that leaves that to a stub would consume a scripted response meant for
+    # `initialize`.
+    monkeypatch.setattr(
+        lac, "canary_bearer_for",
+        lambda url, prog, timeout=10.0: _canary_common.require_canary_bearer(prog),
+    )
 
 
 def _utc(ts: str) -> _dt.datetime:

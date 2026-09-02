@@ -45,6 +45,7 @@ import re
 import sys
 from functools import partial
 from pathlib import Path
+from typing import Any
 
 _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
@@ -55,9 +56,17 @@ from _canary_common import (  # noqa: E402
     _extract_structured_tool_payload,
     _extract_tool_text,
     _init_payload,
-    require_canary_bearer,
+    canary_bearer,
+    canary_bearer_for,
 )
 from _canary_common import _post as _post_raw  # noqa: E402
+
+#: "Not specified" -- distinct from an explicit ``None``, which means "this
+#: daemon is pre-cutover, send no bearer". Omitting the argument reads the
+#: configured token WITHOUT a network call, so a direct caller (and every unit
+#: test that drives a helper) behaves as it always did.
+_FROM_ENV: Any = object()
+
 
 DEFAULT_URL = "https://tinyassets.io/mcp"
 DEFAULT_WARN_WINDOW_MIN = 10
@@ -213,14 +222,15 @@ def fetch_status_activity_tail(
     timeout: float,
     *,
     post_fn=None,
-    bearer_token: str | None = None,
+    bearer_token: Any = _FROM_ENV,
 ) -> list[str]:
     """MCP handshake + tools/call get_status; return activity_log_tail.
 
     Raises RevertLoopError with step_code=4 on handshake trouble, 5 on
     tool-shape trouble (evidence missing).
     """
-    bearer_token = bearer_token or require_canary_bearer("revert-loop")
+    if bearer_token is _FROM_ENV:
+        bearer_token = canary_bearer()
     post = post_fn or _post
 
     resp, sid = post(
@@ -315,10 +325,11 @@ def run_canary(
     critical_threshold: int,
     post_fn=None,
     now: _dt.datetime | None = None,
-    bearer_token: str | None = None,
+    bearer_token: Any = _FROM_ENV,
 ) -> tuple[int, str]:
     """Full canary flow. Returns (exit_code, human_message)."""
-    bearer_token = bearer_token or require_canary_bearer("revert-loop")
+    if bearer_token is _FROM_ENV:
+        bearer_token = canary_bearer()
     current_now = now or _dt.datetime.now(tz=_dt.timezone.utc)
     tail = fetch_status_activity_tail(
         url, timeout, post_fn=post_fn, bearer_token=bearer_token,
@@ -333,7 +344,6 @@ def run_canary(
 
 
 def main(argv: list[str] | None = None) -> int:
-    bearer = require_canary_bearer("revert-loop")
     ap = argparse.ArgumentParser(
         description="Two-tier revert-loop canary per Lane 4 spec.",
     )
@@ -378,6 +388,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--verbose", action="store_true",
                     help="Echo the canary classification summary.")
     args = ap.parse_args(argv)
+    # Which contract does THIS daemon keep? Asked once, after the URL is
+    # known, so one run never mixes the pre- and post-cutover shapes.
+    bearer = canary_bearer_for(args.url, "revert-loop", args.timeout)
 
     try:
         code, msg = run_canary(

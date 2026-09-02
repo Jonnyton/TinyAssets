@@ -610,12 +610,13 @@ def _action_escrow_fund(kwargs: dict[str, Any]) -> str:
 
 def _action_escrow_balance(kwargs: dict[str, Any]) -> str:
     """Read-only — a staker's escrow budget (total / reserved / spendable)."""
+    # A balance is read FOR a principal. Falling back to an env var read one
+    # stranger's escrow for another (and, unset, read "anonymous"'s).
+    from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.payments.actions import action_escrow_balance
     from tinyassets.storage import _connect
 
-    staker_id = (
-        kwargs.get("staker_id") or os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
-    ).strip()
+    staker_id = (kwargs.get("staker_id") or _current_actor()).strip()
     currency = (kwargs.get("currency") or "MicroToken").strip()
 
     with _connect(_base_path()) as conn:

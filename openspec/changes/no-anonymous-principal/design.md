@@ -181,6 +181,35 @@ Source-event propagation; those are in PR 1.
 **PR 3:** spec sync, environment-variable catalog, Hard Rules 11 and 14
 gain the bearer, archive.
 
+## D9. The cutover seam (Codex code review round 1, finding E)
+
+The probes cannot simply require the bearer. The image production runs until
+this deploys honours that token only for the exact wiki write and answers an
+anonymous `initialize` with 200, so a probe that always authenticates is red
+against a healthy production for the whole window between merge and deploy --
+and permanently after a rollback, while the container's own healthcheck
+reports green. That is the worst shape available: a gate that fails on the
+build it is protecting.
+
+So a probe ASKS which contract the daemon keeps. `GET /mcp/pulse` is served
+only by this build, so a 200 identifies it and a 404 identifies the previous
+one (`scripts/_canary_common.server_enforces_bearer`). Each probe negotiates
+once in `main()`, after the URL is known, and honours that answer for every
+step of the run:
+
+- new daemon: send the bearer, assert the 401 challenge on an anonymous
+  `initialize`, assert 403 on a canary `converse`;
+- previous daemon: probe anonymously and say so in the verbose line, which
+  names only the checks that actually ran.
+
+`scripts/deployed_sha.py` does the same, falling back to the anonymous
+`get_status` read when `/mcp/pulse` 404s, so Hard Rule 14 is runnable
+throughout. Proven live 2026-09-02 from the branch: both gates green against
+the pre-cutover production.
+
+The seam is dated and deletes itself. PR 3 removes it once production has been
+on this image long enough that a rollback past it is not a scenario.
+
 ## D8. Testing
 
 - `signed_in(user_id)` fixture replaces every `_logout()` /

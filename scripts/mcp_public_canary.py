@@ -59,7 +59,15 @@ _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
-from _canary_common import require_canary_bearer  # noqa: E402
+from _canary_common import canary_bearer, canary_bearer_for  # noqa: E402
+
+#: "Not specified" -- distinct from an explicit ``None``, which means "this
+#: daemon is pre-cutover, send no bearer". Omitting the argument reads the
+#: configured token WITHOUT a network call, so a direct caller (and every unit
+#: test that drives a helper) behaves as it always did.
+_FROM_ENV: Any = object()
+
+
 
 DEFAULT_URL = "https://tinyassets.io/mcp"
 DEFAULT_TIMEOUT = 10.0
@@ -145,13 +153,15 @@ def _post(
     timeout: float,
     session_id: str | None = None,
     accepted_http_statuses: frozenset[int] = frozenset(),
-    bearer: str | None = None,
+    bearer: Any = _FROM_ENV,
 ) -> tuple[int, dict[str, str], bytes]:
     """POST one JSON-RPC frame. Return (status, headers, body). Raise on I/O.
 
     Factored out (and module-level) so unit tests can monkeypatch it to drive
     the handshake offline without a network.
     """
+    if bearer is _FROM_ENV:
+        bearer = canary_bearer()
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
@@ -216,10 +226,11 @@ def _get_json(url: str, timeout: float) -> dict[str, Any]:
 
 
 def advertised_tool_names(
-    url: str, timeout: float, *, bearer: str | None = None,
+    url: str, timeout: float, *, bearer: Any = _FROM_ENV,
 ) -> set[str]:
     """Full MCP handshake → tools/list; return the advertised tool name set."""
-    bearer = bearer or require_canary_bearer("canary")
+    if bearer is _FROM_ENV:
+        bearer = canary_bearer()
     status, headers, _ = _post(url, _INIT_PAYLOAD, timeout, bearer=bearer)
     if status != 200:
         raise CanaryError(2, f"non-200 status {status} from {url}")
@@ -255,9 +266,11 @@ def advertised_tool_names(
 
 
 def assert_canonical_handles(
-    url: str, timeout: float, *, bearer: str | None = None,
+    url: str, timeout: float, *, bearer: Any = _FROM_ENV,
 ) -> None:
     """Raise ``CanaryError(4)`` unless tools/list is exactly the canonical set."""
+    if bearer is _FROM_ENV:
+        bearer = canary_bearer()
     names = advertised_tool_names(url, timeout, bearer=bearer)
     missing = CANONICAL_HANDLES - names
     extra = names - _ALLOWED_ADVERTISED
@@ -270,10 +283,11 @@ def assert_canonical_handles(
 
 
 def assert_converse_auth_gate(
-    url: str, timeout: float, *, bearer: str | None = None,
+    url: str, timeout: float, *, bearer: Any = _FROM_ENV,
 ) -> None:
     """Prove ``converse`` is refused anonymously and for the canary."""
-    bearer = bearer or require_canary_bearer("canary")
+    if bearer is _FROM_ENV:
+        bearer = canary_bearer()
     status, response_headers, body = _post(
         url,
         {
@@ -317,6 +331,12 @@ def assert_converse_auth_gate(
     ):
         raise CanaryError(6, f"protected resource document drift on {url}")
 
+    if bearer is None:
+        # A pre-cutover daemon has no canary principal to refuse, so there is
+        # no 403 to assert. The anonymous half above is the whole contract it
+        # keeps, and it just passed.
+        return
+
     status, headers, _ = _post(url, _INIT_PAYLOAD, timeout, bearer=bearer)
     if status != 200:
         raise CanaryError(2, f"non-200 status {status} from {url}")
@@ -353,7 +373,7 @@ def assert_converse_auth_gate(
 
 
 def assert_status_surface(
-    url: str, timeout: float, *, bearer: str | None = None,
+    url: str, timeout: float, *, bearer: Any = _FROM_ENV,
 ) -> str:
     """Call ``get_status`` and verify its uptime-critical response fields.
 
@@ -361,7 +381,8 @@ def assert_status_surface(
     fingerprint configuration degradation visible without treating it as a
     status-surface outage.
     """
-    bearer = bearer or require_canary_bearer("canary")
+    if bearer is _FROM_ENV:
+        bearer = canary_bearer()
     status, headers, _ = _post(url, _INIT_PAYLOAD, timeout, bearer=bearer)
     if status != 200:
         raise CanaryError(2, f"non-200 status {status} from {url}")
@@ -447,7 +468,7 @@ def assert_canonical_handles_with_retry(
     delay: float = 3.0,
     _sleep=time.sleep,
     *,
-    bearer: str | None = None,
+    bearer: Any = _FROM_ENV,
 ) -> str:
     """Assert canonical handles and status surface, retrying transient blips.
 
@@ -459,7 +480,8 @@ def assert_canonical_handles_with_retry(
     last attempt's ``CanaryError`` propagates so a genuine regression still
     fails the deploy.
     """
-    bearer = bearer or require_canary_bearer("canary")
+    if bearer is _FROM_ENV:
+        bearer = canary_bearer()
     attempts = max(1, retries)
     for attempt in range(1, attempts + 1):
         try:
@@ -482,41 +504,47 @@ def probe_result(
     timeout: float,
     expected_name: str | None = None,
     *,
-    bearer: str | None = None,
+    bearer: Any = _FROM_ENV,
 ) -> None:
     """Run the probe. Return None on success; raise ``CanaryError`` on failure.
 
     Importable by layered canary wrappers that need to log outcomes without
     exiting the process. ``probe()`` is the CLI-shaped thin adapter.
     """
-    bearer = bearer or require_canary_bearer("canary")
-    try:
-        status, challenge_headers, challenge_body = _post(
-            url,
-            _INIT_PAYLOAD,
-            timeout,
-            accepted_http_statuses=frozenset({401}),
-        )
-    except CanaryError as exc:
-        if exc.code == 2 and exc.msg.startswith("HTTP "):
+    if bearer is _FROM_ENV:
+        bearer = canary_bearer()
+    if bearer is not None:
+        # Assertion one, and the thing that would silently regress: an
+        # initialize with NO bearer must draw the 401 challenge. Skipped only
+        # against a pre-cutover daemon, which has no such contract to keep.
+        try:
+            status, challenge_headers, challenge_body = _post(
+                url,
+                _INIT_PAYLOAD,
+                timeout,
+                accepted_http_statuses=frozenset({401}),
+            )
+        except CanaryError as exc:
+            if exc.code == 2 and exc.msg.startswith("HTTP "):
+                raise CanaryError(
+                    6,
+                    f"surface did not challenge anonymous initialize on {url}: {exc.msg}",
+                ) from exc
+            raise
+        challenge = challenge_headers.get("www-authenticate", "")
+        try:
+            challenge_payload = json.loads(challenge_body)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            challenge_payload = None
+        if (
+            status != 401
+            or not challenge.startswith("Bearer ")
+            or challenge_payload != {"error": "authentication_required"}
+        ):
             raise CanaryError(
-                6, f"surface did not challenge anonymous initialize on {url}: {exc.msg}"
-            ) from exc
-        raise
-    challenge = challenge_headers.get("www-authenticate", "")
-    try:
-        challenge_payload = json.loads(challenge_body)
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        challenge_payload = None
-    if (
-        status != 401
-        or not challenge.startswith("Bearer ")
-        or challenge_payload != {"error": "authentication_required"}
-    ):
-        raise CanaryError(
-            6,
-            f"surface admitted an anonymous initialize on {url}: HTTP {status}",
-        )
+                6,
+                f"surface admitted an anonymous initialize on {url}: HTTP {status}",
+            )
 
     status, _, body = _post(url, _INIT_PAYLOAD, timeout, bearer=bearer)
 
@@ -553,9 +581,11 @@ def probe(
     timeout: float,
     expected_name: str | None = None,
     *,
-    bearer: str,
+    bearer: Any = _FROM_ENV,
 ) -> None:
     """CLI-shaped adapter — calls ``probe_result`` and ``_die``s on failure."""
+    if bearer is _FROM_ENV:
+        bearer = canary_bearer()
     try:
         probe_result(url, timeout, expected_name=expected_name, bearer=bearer)
     except CanaryError as exc:
@@ -563,7 +593,6 @@ def probe(
 
 
 def main(argv: list[str]) -> int:
-    bearer = require_canary_bearer("canary")
     ap = argparse.ArgumentParser(description="Probe a public MCP endpoint.")
     ap.add_argument("--url", default=DEFAULT_URL, help=f"MCP endpoint URL (default {DEFAULT_URL})")
     ap.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT,
@@ -583,6 +612,10 @@ def main(argv: list[str]) -> int:
                     help="seconds between handle-assertion retries (default 3)")
     args = ap.parse_args(argv)
 
+    # Which contract does THIS daemon keep? Asked once, then honoured for every
+    # step, so one run never mixes the two.
+    bearer = canary_bearer_for(args.url, "canary", args.timeout)
+
     probe(args.url, args.timeout, expected_name=args.assert_name, bearer=bearer)
 
     if args.assert_handles:
@@ -598,15 +631,22 @@ def main(argv: list[str]) -> int:
             _die(exc.code, exc.msg)
 
     if args.verbose:
-        suffix = (
-            " (anonymous initialize challenged; canonical handle set advertised; "
-            "converse refused anonymously and for canary; "
-            "get_status uptime fields present; "
-            f"identity_evidence={identity_state})"
-            if args.assert_handles
-            else ""
+        # Say what was actually asserted against THIS daemon, never the
+        # superset: a line claiming a check that did not run is worse than no
+        # line, because it is the line an operator trusts after a rollback.
+        checks = ["canonical handle set advertised", "converse refused anonymously"]
+        if bearer is not None:
+            checks.insert(0, "anonymous initialize challenged")
+            checks.append("converse refused for the canary")
+        checks.append("get_status uptime fields present")
+        checks.append(f"identity_evidence={identity_state}")
+        suffix = f" ({'; '.join(checks)})" if args.assert_handles else ""
+        contract = (
+            "reads as the canary principal"
+            if bearer is not None
+            else "PRE-CUTOVER daemon (no /mcp/pulse): probed anonymously"
         )
-        print(f"[canary] OK {args.url}{suffix}")
+        print(f"[canary] OK {args.url} [{contract}]{suffix}")
     return 0
 
 

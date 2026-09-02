@@ -29,6 +29,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 _SCRIPTS = Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPTS.parent
@@ -38,7 +39,8 @@ if str(_SCRIPTS) not in sys.path:
 from _canary_common import (  # noqa: E402
     _INITIALIZED_NOTIF,
     _init_payload,
-    require_canary_bearer,
+    canary_bearer,
+    canary_bearer_for,
 )
 from mcp_public_canary import CanaryError  # noqa: E402
 from mcp_public_canary import _post as _status_post  # noqa: E402
@@ -48,6 +50,13 @@ from mcp_tool_canary import (  # noqa: E402
     _extract_tool_text,
     _post,
 )
+
+#: "Not specified" -- distinct from an explicit ``None``, which means "this
+#: daemon is pre-cutover, send no bearer". Omitting the argument reads the
+#: configured token WITHOUT a network call, so a direct caller (and every unit
+#: test that drives a helper) behaves as it always did.
+_FROM_ENV: Any = object()
+
 from uptime_canary import _append_log, _now_local_iso  # noqa: E402
 
 DEFAULT_URL = "https://tinyassets.io/mcp"
@@ -211,7 +220,7 @@ def run_canary(
     post_fn=None,
     status_post_fn=None,
     verbose: bool = False,
-    bearer_token: str | None = None,
+    bearer_token: Any = _FROM_ENV,
     canary_content: str = _CANARY_CONTENT,
 ) -> None:
     """Challenge anonymous initialize, then run the scoped roundtrip.
@@ -222,7 +231,8 @@ def run_canary(
     The authenticated write and read always target the reserved
     ``uptime-probe`` draft required by the canary allowlist.
     """
-    bearer_token = bearer_token or require_canary_bearer("wiki-canary")
+    if bearer_token is _FROM_ENV:
+        bearer_token = canary_bearer()
     post = post_fn or _post
     status_post = status_post_fn or _status_post
 
@@ -316,10 +326,11 @@ def run_probe(
     post_fn=None,
     status_post_fn=None,
     verbose: bool = False,
-    bearer_token: str | None = None,
+    bearer_token: Any = _FROM_ENV,
 ) -> int:
     """Run one wiki roundtrip probe. Returns exit code (0=green, nonzero=red)."""
-    bearer_token = bearer_token or require_canary_bearer("wiki-canary")
+    if bearer_token is _FROM_ENV:
+        bearer_token = canary_bearer()
     ts = _now_local_iso()
     start = time.monotonic()
     canary_content = _fresh_canary_content()
@@ -357,7 +368,6 @@ def run_probe(
 
 
 def main(argv: list[str] | None = None) -> int:
-    bearer = require_canary_bearer("wiki-canary")
     ap = argparse.ArgumentParser(
         description="Authenticated wiki write-roundtrip uptime canary.",
     )
@@ -376,6 +386,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args(argv)
+    # Which contract does THIS daemon keep? Asked once, after the URL is
+    # known, so one run never mixes the pre- and post-cutover shapes.
+    bearer = canary_bearer_for(args.url, "wiki-canary", args.timeout)
     return run_probe(
         args.url,
         args.timeout,

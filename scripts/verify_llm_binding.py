@@ -38,7 +38,14 @@ _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
-from _canary_common import require_canary_bearer  # noqa: E402
+from _canary_common import canary_bearer, canary_bearer_for  # noqa: E402
+
+#: "Not specified" -- distinct from an explicit ``None``, which means "this
+#: daemon is pre-cutover, send no bearer". Omitting the argument reads the
+#: configured token WITHOUT a network call, so a direct caller (and every unit
+#: test that drives a helper) behaves as it always did.
+_FROM_ENV: Any = object()
+
 
 DEFAULT_URL = "https://tinyassets.io/mcp"
 DEFAULT_TIMEOUT = 20.0
@@ -69,9 +76,10 @@ def _post(
     payload: dict[str, Any],
     timeout: float,
     *,
-    bearer_token: str | None = None,
+    bearer_token: Any = _FROM_ENV,
 ) -> tuple[dict | None, str | None]:
-    bearer_token = bearer_token or require_canary_bearer("verify-llm")
+    if bearer_token is _FROM_ENV:
+        bearer_token = canary_bearer()
     headers: dict[str, str] = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
@@ -79,7 +87,9 @@ def _post(
     }
     if sid:
         headers["mcp-session-id"] = sid
-    headers["Authorization"] = f"Bearer {bearer_token}"
+    if bearer_token:
+        # Absent against a pre-cutover daemon, which refuses this bearer.
+        headers["Authorization"] = f"Bearer {bearer_token}"
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),
@@ -144,13 +154,14 @@ def check_llm_binding(
     *,
     require_sandbox: bool = False,
     post_fn=None,  # injection seam for tests
-    bearer_token: str | None = None,
+    bearer_token: Any = _FROM_ENV,
 ) -> dict[str, Any]:
     """Run the full binding verification. Returns the final status dict.
 
     Raises VerifyError with an appropriate exit code on any failure.
     """
-    bearer_token = bearer_token or require_canary_bearer("verify-llm")
+    if bearer_token is _FROM_ENV:
+        bearer_token = canary_bearer()
     _post_fn = post_fn or _post
 
     # Step 1: initialize
@@ -225,7 +236,6 @@ def _call_tool_with(
 
 
 def main(argv: list[str] | None = None) -> int:
-    bearer = require_canary_bearer("verify-llm")
     ap = argparse.ArgumentParser(
         description="Verify the daemon has an LLM provider bound (HD-3 post-deploy check)."
     )
@@ -258,6 +268,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Seconds to sleep between retry attempts (default 5).",
     )
     args = ap.parse_args(argv)
+    # Which contract does THIS daemon keep? Asked once, after the URL is
+    # known, so one run never mixes the pre- and post-cutover shapes.
+    bearer = canary_bearer_for(args.url, "verify-llm", args.timeout)
 
     attempts = max(1, args.retries)
     retry_delay = max(0.0, args.retry_delay)

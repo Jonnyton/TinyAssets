@@ -53,6 +53,58 @@ def require_canary_bearer(prog: str) -> str:
         raise SystemExit(2)
     return token
 
+
+#: The one unauthenticated read the no-anonymous daemon serves. A daemon that
+#: answers it is the build that refuses anonymous MCP; one that 404s it is a
+#: pre-cutover build that refuses the canary bearer outside the wiki write.
+_PULSE_PATH = "/pulse"
+_PULSE_USER_AGENT = "tinyassets-canary-negotiate/1.0"
+
+
+def server_enforces_bearer(url: str, timeout: float = 10.0) -> bool:
+    """Whether the daemon at ``url`` requires a bearer on every MCP call.
+
+    THE CUTOVER SEAM, and nothing more. Every probe authenticates against a
+    daemon that enforces the bearer and stays anonymous against one that does
+    not, so the same probe is green before the no-anonymous deploy, after it,
+    and after a rollback to the previous image. Without this, a rollback leaves
+    Hard Rule 11's gate permanently red against a healthy production (Codex
+    review, 2026-09-02, finding E).
+
+    Unreachable or ambiguous reads as "enforces": the probe then authenticates,
+    which is the correct posture for the build we are shipping, and a genuinely
+    dark surface fails on its own next step rather than here.
+
+    DELETE THIS once production has been on the no-anonymous image long enough
+    that a rollback past it is not a scenario (tracked in the change's PR 3).
+    """
+    request = urllib.request.Request(
+        url.rstrip("/") + _PULSE_PATH,
+        method="GET",
+        headers={"Accept": "application/json", "User-Agent": _PULSE_USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status == 200
+    except urllib.error.HTTPError as exc:
+        # 404: the route does not exist, so this is the pre-cutover build.
+        # Anything else (403 from an edge, 5xx) is not evidence of that.
+        return exc.code != 404
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return True
+
+
+def canary_bearer_for(url: str, prog: str, timeout: float = 10.0) -> str | None:
+    """The bearer to send to ``url``: the token when the daemon enforces one,
+    ``None`` when it is a pre-cutover daemon that would refuse it.
+
+    Exits 2 naming the variable when the daemon enforces a bearer and none is
+    configured -- the case an operator has to fix.
+    """
+    if not server_enforces_bearer(url, timeout):
+        return None
+    return require_canary_bearer(prog)
+
 # MCP `notifications/initialized` is parameter-free and identical across
 # every canary client; consolidating eliminates 4 copies.
 _INITIALIZED_NOTIF: dict[str, Any] = {

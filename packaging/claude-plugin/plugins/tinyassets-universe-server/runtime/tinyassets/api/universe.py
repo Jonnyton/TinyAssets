@@ -101,9 +101,12 @@ def _env_actor_grants() -> tuple[str, ...]:
 
 
 def _env_actor_can(action: str, *, universe_id: str = "") -> bool:
+    # The bound principal decides, not the environment. The helper keeps its
+    # name for its callers; what it resolves is the authenticated subject.
+    from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.auth.provider import PermissionScope, resolve_permission
 
-    actor = os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
+    actor = _current_actor()
     grants = _env_actor_grants()
     return resolve_permission(
         actor_id=actor,
@@ -4207,7 +4210,9 @@ def _action_queue_cancel(
             "branch_task_id": branch_task_id,
         })
     if target.status == "running":
-        source = os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
+        from tinyassets.api.engine_helpers import _current_actor
+
+        source = _current_actor()
         is_owner = bool(target.claimed_by) and source == target.claimed_by
         can_cancel = _env_actor_can(
             ACTION_CANCEL_BRANCH_TASK,
@@ -4445,7 +4450,9 @@ def _action_post_to_goal_pool(
             "status": "rejected",
             "error": "priority_weight must be >= 0.",
         })
-    source = os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
+    from tinyassets.api.engine_helpers import _current_actor
+
+    source = _current_actor()
     if not _env_actor_can(ACTION_POST_PRIORITY_GOAL_POOL, universe_id=uid):
         pw = 0.0
 
@@ -4567,7 +4574,9 @@ def _action_submit_node_bid(
             ),
         })
 
-    source = os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
+    from tinyassets.api.engine_helpers import _current_actor
+
+    source = _current_actor()
     node_bid_id = new_node_bid_id()
     payload = {
         "node_bid_id": node_bid_id,

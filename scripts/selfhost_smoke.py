@@ -38,7 +38,14 @@ _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
-from _canary_common import require_canary_bearer  # noqa: E402
+from _canary_common import canary_bearer_for  # noqa: E402
+
+#: "Not specified" -- distinct from an explicit ``None``, which means "this
+#: daemon is pre-cutover, send no bearer". Omitting the argument reads the
+#: configured token WITHOUT a network call, so a direct caller (and every unit
+#: test that drives a helper) behaves as it always did.
+_FROM_ENV: Any = object()
+
 from mcp_public_canary import CanaryError, probe_result  # noqa: E402
 from verify_llm_binding import VerifyError, check_llm_binding  # noqa: E402
 
@@ -84,7 +91,9 @@ def _post(
     }
     if sid:
         headers["mcp-session-id"] = sid
-    headers["Authorization"] = f"Bearer {bearer_token}"
+    if bearer_token:
+        # Absent against a pre-cutover daemon, which refuses this bearer.
+        headers["Authorization"] = f"Bearer {bearer_token}"
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),
@@ -170,15 +179,17 @@ def probe_url(
 
 
 def assert_tunnel_access_blocked(
-    url: str, timeout: float, bearer_token: str,
+    url: str, timeout: float, bearer_token: str | None,
 ) -> int:
     print(f"[smoke] probing tunnel Access gate: {url}")
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
         "User-Agent": "workflow-selfhost-smoke/1.0",
-        "Authorization": f"Bearer {bearer_token}",
     }
+    if bearer_token:
+        # Absent against a pre-cutover daemon, which refuses this bearer.
+        headers["Authorization"] = f"Bearer {bearer_token}"
     req = urllib.request.Request(
         url,
         data=json.dumps(_INIT_PAYLOAD).encode(),
@@ -278,7 +289,6 @@ def run(
 
 
 def main(argv: list[str] | None = None) -> int:
-    bearer = require_canary_bearer("selfhost-smoke")
     ap = argparse.ArgumentParser(description="Self-host migration smoke test (Row F).")
     ap.add_argument("--canonical", default=CANONICAL_URL, help="User-facing canonical URL")
     ap.add_argument("--tunnel", default=TUNNEL_URL, help="Direct tunnel URL")
@@ -296,6 +306,9 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = ap.parse_args(argv)
+    # Which contract does THIS daemon keep? Asked once, after the URL is
+    # known, so one run never mixes the pre- and post-cutover shapes.
+    bearer = canary_bearer_for(args.canonical, "selfhost-smoke", args.timeout)
     return run(
         args.canonical,
         args.tunnel,

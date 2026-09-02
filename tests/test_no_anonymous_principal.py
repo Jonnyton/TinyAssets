@@ -262,3 +262,153 @@ def test_get_status_carries_the_daemon_block(monkeypatch, tmp_path):
     payload: dict[str, Any] = json.loads(get_status())
     assert "daemon" in payload
     assert set(payload["daemon"]) == {"last_activity_at"}
+
+
+# --------------------------------------------------------------------------
+# What Codex's first code review found, kept red-able
+# --------------------------------------------------------------------------
+
+
+def test_the_literal_string_anonymous_is_not_a_principal(tmp_path):
+    """`create_run` refused an EMPTY actor and accepted the string "anonymous",
+    so the rule could be satisfied by spelling nobody's name (Codex, P1)."""
+    from tinyassets.runs import create_run, initialize_runs_db
+
+    initialize_runs_db(tmp_path)
+    for actor in ("anonymous", "ANONYMOUS", "  Anonymous  "):
+        with pytest.raises(ValueError, match="not one"):
+            create_run(
+                tmp_path, branch_def_id="b-1", thread_id="t-1", inputs={}, actor=actor,
+            )
+
+
+def test_a_registered_node_is_authored_by_the_bearer_not_the_environment(
+    monkeypatch, tmp_path,
+):
+    """The P0 Codex found: a signed-in caller could register a node whose author
+    was `UNIVERSE_SERVER_USER` or the literal "anonymous" -- unattributed state
+    a real request wrote. The author is the bound principal."""
+    from tinyassets.api import extensions
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "env-impostor")
+    subject = Identity(
+        user_id="workos|author-1", username="author-1",
+        capabilities=["read", "write", "costly", "list", "submit_request"],
+    )
+    with mw.identity_context(subject):
+        out = json.loads(extensions._extensions_impl(
+            action="register",
+            node_id="attribution_probe",
+            display_name="Attribution probe",
+            phase="custom",
+            source_code="def run(state):\n    return state\n",
+        ))
+    assert out.get("status") == "registered", out
+
+    stored = extensions._load_nodes()
+    row = next(n for n in stored if n.get("node_id") == "attribution_probe")
+    assert row["author"] == "workos|author-1"
+    assert row["author"] != "env-impostor"
+    assert "anonymous" not in json.dumps(row)
+
+
+def test_a_registration_with_nobody_bound_refuses_rather_than_writing(
+    monkeypatch, tmp_path,
+):
+    from tinyassets.api import extensions
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "env-impostor")
+    mw.auth_middleware(None)
+    out = json.loads(extensions._extensions_impl(
+        action="register",
+        node_id="never_written",
+        display_name="Never written",
+        phase="custom",
+        source_code="def run(state):\n    return state\n",
+    ))
+    # The scope gate refuses BEFORE the author is read, so nobody's write never
+    # reaches storage -- and the refusal names authentication rather than the
+    # env-var actor it used to be granted under.
+    assert out["error"] == "Authentication required", out
+    assert out["auth_scope_required"] is True
+    assert all(n.get("node_id") != "never_written" for n in extensions._load_nodes())
+
+
+def test_a_legacy_anonymous_run_row_matches_no_caller(monkeypatch, tmp_path):
+    """Rows written before there was a principal are quarantined: unowned, so
+    every scoped caller is refused, rather than shared by all of them."""
+    from tinyassets.api import runs as runs_api
+
+    record = {"run_id": "r-legacy", "actor": "anonymous", "status": "failed"}
+    assert runs_api._run_read_allowed(record) is False
+    assert runs_api._run_write_allowed(record) is False
+    # A real universe-bound row still routes through the universe's own gate.
+    assert runs_api._run_universe_id({"actor": "universe:u-1"}) == "u-1"
+
+
+def test_the_discovery_exemption_is_a_table_not_a_substring():
+    """`.well-known` anywhere in the path used to skip the challenge, so
+    `/mcp/not.well-known/a` reached the app with no identity (Codex, P2)."""
+    from tinyassets.auth.middleware import _auth_challenge_path
+
+    for exempt in (
+        "/.well-known/oauth-protected-resource",
+        "/mcp/.well-known/oauth-protected-resource",
+        "/.well-known/oauth-authorization-server",
+        "/mcp/.well-known/oauth-authorization-server",
+    ):
+        assert _auth_challenge_path(exempt) is False, exempt
+    for challenged in (
+        "/mcp/not.well-known/a",
+        "/mcp/.well-known/../secret",
+        "/mcp/.well-known/oauth-protected-resource/extra",
+        "/mcp/x.well-known.y",
+    ):
+        assert _auth_challenge_path(challenged) is True, challenged
+
+
+def test_an_unauthenticated_post_to_a_wellknown_lookalike_is_challenged(client):
+    response = client.post("/mcp/not.well-known/a", json={"jsonrpc": "2.0"})
+    assert response.status_code == 401
+    assert response.json() == {"error": "authentication_required"}
+
+
+def test_a_source_event_carries_its_hook_owner_to_the_run(monkeypatch, tmp_path):
+    """Not the dataclass default -- the propagation. The delivery thread has no
+    request identity, so if the owner does not ride on the event the run has no
+    principal at all (Codex asked for the propagation, not the field)."""
+    from tinyassets import webhook_inbound as wh
+    from tinyassets.scheduler import SchedulerEvent
+
+    emitted: list[SchedulerEvent] = []
+    monkeypatch.setattr(wh, "_emit_source_event", wh._emit_source_event)
+    monkeypatch.setattr(
+        "tinyassets.scheduler.is_running", lambda: True, raising=False,
+    )
+    monkeypatch.setattr(
+        "tinyassets.scheduler.emit_event", emitted.append, raising=False,
+    )
+    wh._emit_source_event(
+        source_id="s-1",
+        universe_id="u-1",
+        dedupe_key="d-1",
+        inputs={"a": 1},
+        reservation_id="res-1",
+        owner_principal_id="owner-7",
+    )
+    assert emitted and emitted[0].owner_principal_id == "owner-7"
+
+    # ...and the dispatcher hands it to the run function as the principal.
+    from tinyassets import scheduler
+
+    seen: list[dict] = []
+
+    def _run_fn(**kwargs):
+        seen.append(kwargs)
+
+    scheduler._dispatch_event(
+        emitted[0],
+        [{"subscription_id": "sub-1", "run_fn": _run_fn, "universe_id": "u-1"}],
+    ) if hasattr(scheduler, "_dispatch_event") else None

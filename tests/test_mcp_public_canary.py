@@ -20,6 +20,15 @@ _TOKEN = "t" * 40
 @pytest.fixture(autouse=True)
 def _canary_token(monkeypatch):
     monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _TOKEN)
+    # This daemon keeps the no-anonymous contract. Stated here rather than
+    # discovered over the network: the probe asks GET <url>/pulse, and a test
+    # that leaves that to a stub would consume a scripted response meant for
+    # `initialize`.
+    import _canary_common
+
+    monkeypatch.setattr(
+        _canary_common, "server_enforces_bearer", lambda url, timeout=10.0: True
+    )
 
 
 def _scripted_post(

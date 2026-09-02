@@ -51,9 +51,17 @@ from _canary_common import (  # noqa: E402
     _extract_structured_tool_payload,
     _extract_tool_text,
     _init_payload,
-    require_canary_bearer,
+    canary_bearer,
+    canary_bearer_for,
 )
 from _canary_common import _post as _post_raw  # noqa: E402
+
+#: "Not specified" -- distinct from an explicit ``None``, which means "this
+#: daemon is pre-cutover, send no bearer". Omitting the argument reads the
+#: configured token WITHOUT a network call, so a direct caller (and every unit
+#: test that drives a helper) behaves as it always did.
+_FROM_ENV: Any = object()
+
 
 DEFAULT_URL = "https://tinyassets.io/mcp"
 DEFAULT_TIMEOUT = 20.0
@@ -154,7 +162,7 @@ def run_canary(
     *,
     post_fn=None,
     verbose: bool = False,
-    bearer_token: str | None = None,
+    bearer_token: Any = _FROM_ENV,
 ) -> dict[str, Any]:
     """Run the four-step canary. Returns the inspect-result dict on success.
 
@@ -162,7 +170,8 @@ def run_canary(
     scripted responses without network I/O. Signature matches ``_post``.
     Raises ``ToolCanaryError`` on any failure.
     """
-    bearer_token = bearer_token or require_canary_bearer("tool-canary")
+    if bearer_token is _FROM_ENV:
+        bearer_token = canary_bearer()
     post = post_fn or _post
 
     # Step 1 — initialize (handshake).
@@ -243,7 +252,6 @@ def run_canary(
 
 
 def main(argv: list[str] | None = None) -> int:
-    bearer = require_canary_bearer("tool-canary")
     ap = argparse.ArgumentParser(
         description="End-to-end MCP tool-invocation canary (handshake + "
                     "session + tools/list + read-only tool call).",
@@ -255,6 +263,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--verbose", action="store_true",
                     help="Print per-step OK lines to stdout.")
     args = ap.parse_args(argv)
+    # Which contract does THIS daemon keep? Asked once, after the URL is
+    # known, so one run never mixes the pre- and post-cutover shapes.
+    bearer = canary_bearer_for(args.url, "tool-canary", args.timeout)
 
     try:
         inspect = run_canary(

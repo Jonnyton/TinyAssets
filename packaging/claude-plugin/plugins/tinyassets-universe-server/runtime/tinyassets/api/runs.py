@@ -199,6 +199,19 @@ def _run_universe_id(record: dict[str, Any]) -> str:
     return actor[len(prefix):].strip() if actor.startswith(prefix) else ""
 
 
+def _run_actor_is_legacy_anonymous(record: dict[str, Any]) -> bool:
+    """A run row recorded before there was a principal to record.
+
+    ``create_run`` refuses the string now, so these are historical rows only.
+    They are QUARANTINED rather than deleted (the founder decides what to do
+    with their own history): unowned, so no caller matches them, and never
+    re-dispatched. Codex found them readable and cancellable by any scoped
+    signed-in caller, which is the "unattributed state a caller can match"
+    the rule exists to prevent.
+    """
+    return str((record or {}).get("actor") or "").strip().lower() == "anonymous"
+
+
 def _run_read_allowed(record: dict[str, Any]) -> bool:
     """Whether the current caller may READ a run's data.
 
@@ -206,6 +219,8 @@ def _run_read_allowed(record: dict[str, Any]) -> bool:
     universes stay readable, a private universe (``public_read=false``) requires
     a grant. Runs with no universe binding are not private-universe data.
     """
+    if _run_actor_is_legacy_anonymous(record):
+        return False
     uid = _run_universe_id(record)
     if not uid:
         return True
@@ -232,6 +247,8 @@ def _run_write_allowed(record: dict[str, Any]) -> bool:
     caller with write access to that universe; runs with no universe binding are
     not universe-brain state.
     """
+    if _run_actor_is_legacy_anonymous(record):
+        return False
     uid = _run_universe_id(record)
     if not uid:
         return True

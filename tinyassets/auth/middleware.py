@@ -504,12 +504,26 @@ def _inbound_hooks_enabled() -> bool:
     return bool(inbound_enabled())
 
 
+#: The OAuth discovery documents, EXACTLY as ``starlette_discovery_routes``
+#: mounts them. A substring test on ".well-known" used to stand in for this,
+#: which exempted anything containing the string -- `/mcp/not.well-known/x`
+#: reached the app unchallenged and answered 404 instead of the 401 the rule
+#: promises (Codex review, 2026-09-02). An exempt table is a list of paths, not
+#: a pattern.
+_DISCOVERY_PATHS = frozenset({
+    "/.well-known/oauth-protected-resource",
+    "/mcp/.well-known/oauth-protected-resource",
+    "/.well-known/oauth-authorization-server",
+    "/mcp/.well-known/oauth-authorization-server",
+})
+
+
 def _auth_challenge_path(path: str) -> bool:
     """The MCP endpoint (``/mcp`` + sub-paths) requires auth in challenge mode.
     Discovery routes stay public so the client can still find the authorization
     server, and unrelated paths are not swept in.
     """
-    if ".well-known" in path:
+    if path in _DISCOVERY_PATHS:
         return False
     if path == "/mcp/app" or path == "/mcp/app/token":
         # The onboarding SPA (tinyassets/onboarding) is a public page that MUST

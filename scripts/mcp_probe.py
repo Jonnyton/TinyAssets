@@ -37,7 +37,15 @@ _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
-from _canary_common import require_canary_bearer  # noqa: E402
+from _canary_common import canary_bearer, canary_bearer_for  # noqa: E402
+
+#: "Not specified" -- distinct from an explicit ``None``, which means "this
+#: daemon is pre-cutover, send no bearer". Omitting the argument reads the
+#: configured token WITHOUT a network call, so a direct caller (and every unit
+#: test that drives a helper) behaves as it always did.
+_FROM_ENV: Any = object()
+
+
 
 DEFAULT_URL = "https://tinyassets.io/mcp"
 MCP_PROTOCOL_VERSION = "2024-11-05"
@@ -55,9 +63,10 @@ def _mcp_call(
     url: str,
     sid: str | None,
     payload: dict[str, Any],
-    bearer_token: str | None = None,
+    bearer_token: Any = _FROM_ENV,
 ) -> tuple[dict | None, str | None]:
-    bearer_token = bearer_token or require_canary_bearer("probe")
+    if bearer_token is _FROM_ENV:
+        bearer_token = canary_bearer()
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
@@ -65,7 +74,9 @@ def _mcp_call(
     }
     if sid:
         headers["mcp-session-id"] = sid
-    headers["Authorization"] = f"Bearer {bearer_token}"
+    if bearer_token:
+        # Absent against a pre-cutover daemon, which refuses this bearer.
+        headers["Authorization"] = f"Bearer {bearer_token}"
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode(), method="POST", headers=headers
     )
@@ -372,9 +383,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     global _VERBOSE
-    bearer = require_canary_bearer("probe")
     p = _build_parser()
     args = p.parse_args()
+    # Which contract does THIS daemon keep? Asked once, after the URL is
+    # known, so one run never mixes the pre- and post-cutover shapes.
+    bearer = canary_bearer_for(args.url, "probe", getattr(args, 'timeout', 30.0))
     _VERBOSE = bool(args.verbose)
     url = args.url
     raw = args.raw
