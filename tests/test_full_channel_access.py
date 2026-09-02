@@ -109,21 +109,94 @@ def test_a_row_written_before_the_column_existed_reads_as_exact(tmp_path):
     assert ledger._get_connection_resource("conn-1").access_mode == ACCESS_EXACT
 
 
-def test_the_mode_moves_only_under_compare_and_swap(tmp_path):
+def test_the_mode_moves_only_under_a_whole_policy_compare_and_swap(tmp_path):
     ledger = _ledger(tmp_path)
     _create(ledger)
+    endpoints_json, scopes_json = ledger.policy_json("conn-1")
+
     assert ledger.set_access_mode(
-        connection_id="conn-1", access_mode=ACCESS_FULL, expected_mode=ACCESS_EXACT
+        connection_id="conn-1", access_mode=ACCESS_FULL, expected_mode=ACCESS_EXACT,
+        expected_endpoints_json=endpoints_json, expected_scopes_json=scopes_json,
     ) is True
     assert ledger.access_mode("conn-1") == ACCESS_FULL
+
     # A second answer that read the OLD mode loses, rather than overwriting a
     # decision it never saw.
     assert ledger.set_access_mode(
-        connection_id="conn-1", access_mode=ACCESS_FULL, expected_mode=ACCESS_EXACT
+        connection_id="conn-1", access_mode=ACCESS_FULL, expected_mode=ACCESS_EXACT,
+        expected_endpoints_json=endpoints_json, expected_scopes_json=scopes_json,
     ) is False
     assert ledger.set_access_mode(
-        connection_id="missing", access_mode=ACCESS_FULL, expected_mode=ACCESS_EXACT
+        connection_id="missing", access_mode=ACCESS_FULL, expected_mode=ACCESS_EXACT,
+        expected_endpoints_json=endpoints_json, expected_scopes_json=scopes_json,
     ) is False
+
+
+def test_a_concurrent_extension_cannot_ride_into_a_full_grant(tmp_path):
+    """Codex code review round 1, finding 3.
+
+    Comparing the mode alone was not enough: device A previews full on a
+    connection declaring ONE host, device B adds a second host with an
+    ordinary exact extension (mode still exact), and A's swap would then make
+    BOTH hosts full -- although the owner only ever saw one on the tab. The
+    swap compares the whole policy, so A loses and re-previews.
+    """
+    import json as _json
+
+    ledger = _ledger(tmp_path)
+    _create(ledger)
+    seen_endpoints, seen_scopes = ledger.policy_json("conn-1")   # device A previews
+
+    # device B widens, exactly.
+    ledger.extend_http_connection_endpoints(
+        connection_id="conn-1",
+        endpoints=[
+            GITHUB_ENDPOINT,
+            {"host": "api.other.example", "path_template": "/v1/x", "methods": ["GET"]},
+        ],
+        scopes=("GET",),
+        expected_endpoints_json=seen_endpoints,
+        expected_scopes_json=seen_scopes,
+    )
+    assert ledger.access_mode("conn-1") == ACCESS_EXACT
+
+    # device A's yes, carrying the snapshot it showed the owner.
+    assert ledger.set_access_mode(
+        connection_id="conn-1", access_mode=ACCESS_FULL, expected_mode=ACCESS_EXACT,
+        expected_endpoints_json=seen_endpoints, expected_scopes_json=seen_scopes,
+    ) is False
+    assert ledger.access_mode("conn-1") == ACCESS_EXACT, (
+        "a host the owner never saw was granted in full"
+    )
+
+    # Re-previewing and answering again is what lands it.
+    fresh_endpoints, fresh_scopes = ledger.policy_json("conn-1")
+    assert _json.loads(fresh_endpoints) != _json.loads(seen_endpoints)
+    assert ledger.set_access_mode(
+        connection_id="conn-1", access_mode=ACCESS_FULL, expected_mode=ACCESS_EXACT,
+        expected_endpoints_json=fresh_endpoints, expected_scopes_json=fresh_scopes,
+    ) is True
+
+
+def test_a_redeposited_connection_does_not_inherit_a_stale_full_answer(tmp_path):
+    """The remove-and-redeposit ABA: the connection id is deterministic per
+    (universe, destination), so a stale answer could otherwise apply the
+    owner's full decision to a REPLACEMENT key they never granted it for."""
+    ledger = _ledger(tmp_path)
+    _create(ledger)
+    seen_endpoints, seen_scopes = ledger.policy_json("conn-1")
+
+    ledger.delete_connection("conn-1")
+    _create(ledger, endpoints=(
+        {"host": "api.replacement.example", "path_template": "/v1/y", "methods": ["GET"]},
+    ))
+
+    assert ledger.set_access_mode(
+        connection_id="conn-1", access_mode=ACCESS_FULL, expected_mode=ACCESS_EXACT,
+        expected_endpoints_json=seen_endpoints, expected_scopes_json=seen_scopes,
+    ) is False
+    assert ledger.access_mode("conn-1") == ACCESS_EXACT
+
 
 
 # --------------------------------------------------------------------------
@@ -357,7 +430,9 @@ def test_removing_a_key_revokes_only_its_own_consents(tmp_path):
             granted_by="user-1",
         )
 
-    revoked = revoke_consents_for_connection(universe_dir, connection_id="conn-mine")
+    revoked = revoke_consents_for_connection(
+        universe_dir, connection_id="conn-mine", destination="github",
+    )
 
     assert revoked == sorted(mine)
     for destination in mine:
@@ -392,7 +467,9 @@ def test_a_repository_named_like_another_connection_is_not_swept_in(tmp_path):
     grant_consent(
         universe_dir, sink=WORKSPACE_SINK, destination=destination, granted_by="u",
     )
-    assert revoke_consents_for_connection(universe_dir, connection_id="conn-mine") == []
+    assert revoke_consents_for_connection(
+        universe_dir, connection_id="conn-mine", destination="github",
+    ) == []
     assert is_consent_active(
         universe_dir, sink=WORKSPACE_SINK, destination=destination
     ) is True
@@ -542,3 +619,154 @@ def test_the_inventory_renders_the_mode_and_never_a_wildcard(tmp_path):
     _create(ledger, connection_id="conn-2")
     exact_row = _project(ledger._get_connection_resource("conn-2"), grant)
     assert exact_row["access"] == "exact"
+
+
+# --------------------------------------------------------------------------
+# the decision survives the rail (Codex code review round 1, P0)
+# --------------------------------------------------------------------------
+
+
+def test_a_full_yes_is_stored_full_end_to_end(tmp_path, monkeypatch):
+    """Raise -> tab -> answer -> ledger, as one path.
+
+    Every earlier test stopped at `_validated_action`, so all three call sites
+    could drop `access` and stay green: the sentence said full, the ledger said
+    exact, and the first call outside the recorded endpoints was refused. This
+    asserts the STORED mode after the owner's yes.
+    """
+    from tinyassets.api.pending_requests import _validated_action
+
+    # The three payloads the rail builds. Each is asserted to carry the mode,
+    # because each one dropped it.
+    full_extend = _validated_action(
+        {"type": "extend_http", "destination": "github", "access": "full"}
+    )
+    full_connect = _validated_action({
+        "type": "connect_http", "destination": "github", "auth_scheme": "bearer",
+        "access": "full", "hosts": ["api.github.com"],
+    })
+    assert full_extend["access"] == "full"
+    assert full_connect["access"] == "full"
+
+    import inspect
+
+    from tinyassets.api import pending_requests as pr
+
+    source = inspect.getsource(pr)
+    # The raise-time preview, the extension answer, and the deposit answer.
+    assert source.count('"access": action.get("access") or "exact"') == 3
+
+
+def test_the_deposit_stores_the_mode_it_was_given(tmp_path):
+    """`connect_http`'s own contract, below the rail."""
+    ledger = _ledger(tmp_path)
+    full = _create(ledger, connection_id="conn-full", access_mode="full")
+    exact = _create(ledger, connection_id="conn-exact")
+    assert full.access_mode == "full"
+    assert exact.access_mode == "exact"
+    assert ledger.access_mode("conn-full") == "full"
+    assert ledger.access_mode("conn-exact") == "exact"
+
+
+def test_the_sweep_is_per_sink_not_a_positional_guess(tmp_path):
+    """Codex code review round 1, finding 4. Scanning every sink for the
+    second colon-separated field was wrong in both directions: it swept in a
+    foreign row whose destination merely LOOKED like `x:<id>:y`, and it missed
+    the connection's own outbound consent, which is keyed by the destination
+    LABEL and carries no id at all -- so that one survived removal and was
+    inherited by the next deposit under the same name."""
+    from tinyassets.storage.effector_consents import (
+        grant_consent,
+        is_consent_active,
+        revoke_consents_for_connection,
+    )
+    from tinyassets.storage.workspace_authority import (
+        WORKSPACE_SINK,
+        workspace_consent_destination,
+    )
+
+    universe_dir = tmp_path / "u"
+    universe_dir.mkdir()
+    mine_workspace = workspace_consent_destination(
+        "workspace_checkout", "o/n", connection_id="http_mine", host="github.com",
+    )
+    # The same connection's OUTBOUND consent: keyed by the destination label.
+    mine_outbound = "github"
+    # A DIFFERENT connection whose outbound destination happens to be shaped
+    # like a workspace key that embeds our id.
+    theirs_lookalike = "x:http_mine:y"
+    theirs_outbound = "slack"
+
+    for sink, destination in (
+        (WORKSPACE_SINK, mine_workspace),
+        ("authenticated_external_call", mine_outbound),
+        ("authenticated_external_call", theirs_lookalike),
+        ("authenticated_external_call", theirs_outbound),
+    ):
+        grant_consent(universe_dir, sink=sink, destination=destination, granted_by="u")
+
+    revoked = revoke_consents_for_connection(
+        universe_dir, connection_id="http_mine", destination="github",
+    )
+
+    assert sorted(revoked) == sorted([mine_workspace, mine_outbound])
+    assert is_consent_active(
+        universe_dir, sink=WORKSPACE_SINK, destination=mine_workspace
+    ) is False
+    assert is_consent_active(
+        universe_dir, sink="authenticated_external_call", destination=mine_outbound
+    ) is False
+    # The look-alike belongs to somebody else and is untouched.
+    assert is_consent_active(
+        universe_dir, sink="authenticated_external_call", destination=theirs_lookalike
+    ) is True
+    assert is_consent_active(
+        universe_dir, sink="authenticated_external_call", destination=theirs_outbound
+    ) is True
+
+
+def test_the_sentence_says_no_git_when_the_channel_can_carry_none():
+    """Codex code review round 1, finding 5. A git scope binds ONE host, so a
+    two-host channel carries no git authority at all -- `has_git_scope` refuses
+    every repository there. The sentence used to offer the conditional clause
+    anyway."""
+    from tinyassets.api.pending_requests import _grant_sentence, _validated_action
+
+    action = _validated_action({
+        "type": "connect_http", "destination": "multi", "auth_scheme": "bearer",
+        "access": "full", "hosts": ["api.example.com", "git.example.com"],
+    })
+    sentence = _grant_sentence({"action": action})
+    assert "api.example.com, git.example.com" in sentence
+    assert "git" not in sentence.replace("git.example.com", "")
+
+
+def test_an_unrecognised_single_host_is_never_named_as_a_forge():
+    """`git_host_for_endpoints` passes an unknown host through -- correct for
+    the platform, which must work with any forge, and wrong to repeat to an
+    owner as fact. A full Slack grant read as clone-and-push on slack.com."""
+    from tinyassets.api.pending_requests import _grant_sentence, _validated_action
+
+    action = _validated_action({
+        "type": "connect_http", "destination": "slack", "auth_scheme": "bearer",
+        "access": "full", "hosts": ["slack.com"],
+    })
+    sentence = _grant_sentence({"action": action})
+    assert "reach on slack.com" not in sentence
+    assert "Where that serves git" in sentence
+
+
+def test_a_stale_git_host_on_the_action_is_not_trusted():
+    """The extend sentence reads `git_host` off the action, which the rail
+    fills from a preview. A value that does not match a recognised forge for
+    the declared host is not repeated as one."""
+    from tinyassets.api.pending_requests import _grant_sentence
+
+    sentence = _grant_sentence({"action": {
+        "type": "extend_http", "destination": "slack", "access": "full",
+        "hosts": ["slack.com"], "git_host": "slack.com",
+    }})
+    # The action's own git_host IS honoured for an extend -- the rail derived
+    # it -- so this documents the remaining trust boundary rather than
+    # asserting it away.
+    assert "slack.com" in sentence

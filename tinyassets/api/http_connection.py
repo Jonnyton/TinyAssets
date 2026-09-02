@@ -367,6 +367,10 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
         return {"error": "connection_setup_invalid", "detail": str(exc)}
 
     destination = str(document.get("destination") or "").strip().lower()
+    try:
+        asked_access = normalize_access_mode(document.get("access"))
+    except ValueError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
     if not _DESTINATION_RE.match(destination):
         return {
             "error": "connection_setup_invalid",
@@ -620,6 +624,9 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
                 destination=destination,
                 credential_ref=credential_ref,
                 allowed_endpoints=endpoints,
+                # The mode the owner accepted. Defaulting it here stored an
+                # exact connection for a full yes (Codex code review round 1).
+                access_mode=asked_access,
             )
         except SsrfValidationError as exc:
             return {"error": "endpoint_not_permitted", "detail": str(exc)}
@@ -785,7 +792,7 @@ def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     from tinyassets.storage.effector_consents import revoke_consents_for_connection
 
     removed_consents = revoke_consents_for_connection(
-        _universe_dir(uid), connection_id=connection_id
+        _universe_dir(uid), connection_id=connection_id, destination=destination
     )
 
     return {
@@ -915,6 +922,8 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
             connection_id=connection_id,
             access_mode=ACCESS_FULL,
             expected_mode=preview["expected_access_mode"],
+            expected_endpoints_json=preview["stored_json"],
+            expected_scopes_json=preview["stored_scopes_json"],
         ):
             return {"error": "connection_conflict", "resource": "connection"}
         resource = ledger._get_connection_resource(connection_id)
@@ -1063,6 +1072,8 @@ def _extend_preview(
             "ledger": ledger,
             "access": ACCESS_FULL,
             "expected_access_mode": stored_mode,
+            "stored_json": stored_json,
+            "stored_scopes_json": stored_scopes_json,
             "git_host": git_host_for_endpoints(stored_hosts, resource.provider),
             "hosts": stored_hosts,
             "allowed_endpoints": stored,

@@ -162,10 +162,42 @@ def revoke_consent(
         return cur.rowcount > 0
 
 
+#: The sink whose consent destinations embed the connection id
+#: (``"<op>:<connection_id>:<host>/<owner>/<name>"``, per
+#: ``workspace_consent_destination``).
+_CONNECTION_KEYED_SINK = "workspace"
+#: The sink whose consent destination is the connection's DESTINATION LABEL
+#: with no id in it at all -- so it cannot be found by scanning for the id, and
+#: survived removal to be inherited by the next deposit under the same name.
+_DESTINATION_KEYED_SINK = "authenticated_external_call"
+
+
+def _keyed_on_connection(
+    sink: str,
+    destination: str,
+    connection_id: str,
+    connection_destination: str,
+) -> bool:
+    """Whether this consent row belongs to THIS connection.
+
+    Per sink, because the two sinks key differently and a single positional
+    guess was wrong in both directions (Codex code review round 1): scanning
+    every sink for ``split(":")[1]`` swept in a foreign row whose destination
+    merely LOOKED like ``x:<id>:y``, and missed the connection's own outbound
+    consent, which carries the destination label and no id.
+    """
+    if sink == _CONNECTION_KEYED_SINK:
+        return destination.split(":")[1:2] == [connection_id]
+    if sink == _DESTINATION_KEYED_SINK:
+        return bool(connection_destination) and destination == connection_destination
+    return False
+
+
 def revoke_consents_for_connection(
     universe_dir: str | Path,
     *,
     connection_id: str,
+    destination: str = "",
     revoked_at: float | None = None,
 ) -> list[str]:
     """Revoke every consent keyed on ``connection_id``. Returns their
@@ -184,6 +216,7 @@ def revoke_consents_for_connection(
     it authorized (full-channel-access D6).
     """
     token = str(connection_id or "").strip()
+    destination_token = str(destination or "").strip()
     if not token:
         return []
     initialize_consents_db(universe_dir)
@@ -198,7 +231,9 @@ def revoke_consents_for_connection(
         hits = [
             (row["sink"], row["destination"])
             for row in rows
-            if str(row["destination"]).split(":")[1:2] == [token]
+            if _keyed_on_connection(
+                str(row["sink"]), str(row["destination"]), token, destination_token
+            )
         ]
         for sink, destination in hits:
             conn.execute(

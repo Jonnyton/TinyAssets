@@ -729,8 +729,16 @@ def _full_channel_reach(universe_id: str, action: dict[str, Any]) -> dict[str, A
     hosts = preview.get("hosts")
     if isinstance(hosts, list) and hosts:
         reach["hosts"] = [str(h) for h in hosts]
-    git_host = str(preview.get("git_host") or "").strip()
-    if git_host:
+    # Only a RECOGNISED forge is named. `git_host_for_endpoints` passes an
+    # unknown single host straight through -- correct for the platform, which
+    # must work with any forge, and wrong to repeat to an owner: it made a full
+    # grant on a Slack key read as "clone or push on slack.com" (Codex code
+    # review round 1). An unrecognised host gets the conditional clause.
+    from tinyassets.storage.workspace_authority import FORGE_GIT_HOSTS
+
+    git_host = str(preview.get("git_host") or "").strip().lower()
+    declared = [str(h).strip().lower() for h in (reach.get("hosts") or [])]
+    if git_host and len(declared) == 1 and FORGE_GIT_HOSTS.get(declared[0]) == git_host:
         reach["git_host"] = git_host
     return reach
 
@@ -755,6 +763,10 @@ def _extend_ask_verdict(universe_id: str, action: dict[str, Any]) -> dict[str, A
         "destination": action.get("destination"),
         "endpoints": action.get("endpoints") or None,
         "scopes": action.get("scopes") or [],
+        # The ask's MODE. Without it a full ask was previewed as
+        # exact-with-no-endpoints and could not raise at all (Codex code
+        # review round 1, P0).
+        "access": action.get("access") or "exact",
     })
     if preview.get("error") == "not_found":
         return _bad(
@@ -861,12 +873,18 @@ def _full_channel_sentence(action: dict[str, Any]) -> str:
             "including checking that repository out and running its build in your "
             "universe's sandbox"
         )
-    else:
+    elif len(hosts) == 1:
+        # One host, not a forge we recognise -- it may still be a Gitea or
+        # GitLab box, and a full grant does cover git there.
         git_clause = (
             ". Where that serves git, this covers clone and push to any "
             "repository the key can reach there, including checking it out and "
             "running its build in your universe's sandbox"
         )
+    else:
+        # Several hosts: a git scope binds ONE host, so this channel carries no
+        # git authority at all and the sentence must not imply otherwise.
+        git_clause = ""
     closing = (
         " You paste it once."
         if deposit
@@ -1329,6 +1347,9 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
                 "destination": action["destination"],
                 "endpoints": action["endpoints"],
                 "scopes": action.get("scopes") or [],
+                # The mode the owner read on the tab and accepted. Dropping it
+                # here recorded an exact widening for a full yes.
+                "access": action.get("access") or "exact",
             }),
         )
         if widened.get("error"):
@@ -1339,6 +1360,7 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             "status": "answered",
             "request_id": request_id,
             "destination": action["destination"],
+            "access": widened.get("access") or "exact",
             "receipt": _grant_sentence(row),
             "secret_reused": True,
         }
@@ -1420,6 +1442,10 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
                     "auth_scheme": action["auth_scheme"],
                     "allowed_endpoints": action["endpoints"],
                     "scopes": action.get("scopes") or [],
+                    # As above: the owner accepted a full channel, so the
+                    # connection is created full. It was stored exact, and the
+                    # first call outside the recorded endpoints was refused.
+                    "access": action.get("access") or "exact",
                 }
             ),
         )

@@ -3030,14 +3030,22 @@ class ConnectionLedger:
         connection_id: str,
         access_mode: str,
         expected_mode: str,
+        expected_endpoints_json: str,
+        expected_scopes_json: str,
     ) -> bool:
         """Move a connection between ``exact`` and ``full`` under CAS.
 
-        Returns True when the row moved. False means the stored mode was not
-        ``expected_mode`` any more -- another answer landed first -- and the
-        caller re-previews rather than overwriting a decision it never saw.
-        The same compare-and-swap discipline the endpoint extension uses, for
-        the same reason: two tabs answered from two devices.
+        Returns True when the row moved. False means the connection is not
+        what the caller previewed any more, and the caller re-previews rather
+        than applying a decision to a grant it never saw.
+
+        The comparison is the WHOLE POLICY, not just the mode. Comparing the
+        mode alone let a concurrent exact extension ride in: device A previews
+        full on a connection declaring one host, device B adds a second host
+        (mode still exact), and A's swap then makes BOTH hosts full although
+        the owner only ever saw one (Codex code review round 1). It also closes
+        the remove-and-redeposit ABA, because a replacement row cannot carry
+        the same endpoint and scope text by accident.
         """
         wanted = normalize_access_mode(access_mode)
         expected = normalize_access_mode(expected_mode)
@@ -3046,9 +3054,18 @@ class ConnectionLedger:
                 """
                 UPDATE outbound_connections
                    SET access_mode = ?
-                 WHERE connection_id = ? AND access_mode = ?
+                 WHERE connection_id = ?
+                   AND access_mode = ?
+                   AND allowed_endpoints_json = ?
+                   AND scopes_json = ?
                 """,
-                (wanted, connection_id, expected),
+                (
+                    wanted,
+                    connection_id,
+                    expected,
+                    expected_endpoints_json,
+                    expected_scopes_json,
+                ),
             )
             return cursor.rowcount > 0
 
