@@ -34,6 +34,11 @@ export default function CommonsPage() {
               from the checked-in snapshot with its date. Every universe starts private; appearing
               here is a choice its owner made.
             </p>
+            <p className="note">
+              This is the raw list the endpoint reports as publicly discoverable, not a curated
+              gallery. Early on that includes the founder&apos;s own working and housekeeping
+              records alongside real universes.
+            </p>
           </div>
           <PublicShapes />
         </div>

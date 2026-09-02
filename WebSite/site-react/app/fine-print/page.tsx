@@ -49,7 +49,7 @@ export default function FinePrintPage() {
                 <tr>
                   <th>Plan</th>
                   <th>What you get</th>
-                  <th>Limits</th>
+                  <th>Allowances</th>
                 </tr>
               </thead>
               <tbody>
@@ -60,22 +60,28 @@ export default function FinePrintPage() {
                     every surface. Runs on your own subscription.
                   </td>
                   <td>
-                    Daily limits on outside-world actions, compute minutes and storage, set well above
-                    ordinary use.
+                    Daily allowances for outside-world actions, compute minutes and storage, set well
+                    above ordinary use.
                   </td>
                 </tr>
                 <tr>
                   <td>Premium, $20 a month</td>
                   <td>The same universe, nothing held back.</td>
-                  <td>Higher daily limits on all three.</td>
+                  <td>Higher daily allowances on all three.</td>
                 </tr>
               </tbody>
             </table>
           </div>
           <p className="note">
-            Upgrading happens per account from inside the app. If you hit a limit before that control
-            ships, write to <a href={`mailto:${SITE.contact.general}`}>{SITE.contact.general}</a>. The
-            platform never bills you for a model; your subscription is your own.
+            Being straight about where this stands: your usage is metered from day one, but the gate
+            that would refuse an action for exceeding an allowance is not switched on yet. It stays
+            off until the accounting behind it is provably exact, because refusing your work on a
+            number we do not trust is worse than not refusing it. So today nobody is cut off, and
+            premium raises the allowances that apply when the gate goes live. Upgrading will happen
+            per account inside the app; there is no control for it yet, and no page here pretends
+            otherwise. Questions:{" "}
+            <a href={`mailto:${SITE.contact.general}`}>{SITE.contact.general}</a>. The platform never
+            bills you for a model; your subscription is your own.
           </p>
         </div>
       </section>

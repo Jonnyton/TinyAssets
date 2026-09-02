@@ -5,6 +5,7 @@ import { fetchPublicUniverses } from "../lib/live";
 import { fmtRel, fmtStampStable, fmtCount } from "../lib/fmt";
 import snapshot from "../lib/mcp-snapshot.json";
 import type { Snapshot } from "../lib/types";
+import { discoverableRows } from "../lib/discoverable";
 import styles from "./PublicShapes.module.css";
 
 type Row = {
@@ -20,12 +21,7 @@ type State =
   | { kind: "snapshot"; rows: Row[]; reason: string };
 
 const baked = snapshot as Snapshot;
-const bakedRows: Row[] = (baked.universes ?? []).map((u) => ({
-  id: u.id,
-  phase: u.phase,
-  word_count: u.word_count ?? 0,
-  last_activity_at: u.last_activity_at ?? null,
-}));
+const bakedRows: Row[] = discoverableRows(baked.universes);
 const bakedStamp = `checked-in snapshot from ${fmtStampStable(baked.fetched_at)}`;
 
 /**
@@ -45,14 +41,7 @@ export function PublicShapes() {
     setBusy(true);
     try {
       const live = await fetchPublicUniverses(100);
-      const rows: Row[] = live
-        .map((u: any) => ({
-          id: String(u.id),
-          phase: String(u.phase_human ?? u.phase ?? "unknown"),
-          word_count: Number(u.word_count ?? 0),
-          last_activity_at: u.last_activity_at ?? null,
-        }))
-        .sort(
+      const rows: Row[] = discoverableRows(live).sort(
           (a, b) =>
             (Date.parse(b.last_activity_at ?? "") || 0) - (Date.parse(a.last_activity_at ?? "") || 0),
         );

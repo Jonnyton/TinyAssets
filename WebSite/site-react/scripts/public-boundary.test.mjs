@@ -12,6 +12,8 @@ import { dirname, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { discoverableRows } from "../lib/discoverable.js";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const siteRoot = resolve(here, "..");
 
@@ -58,6 +60,69 @@ test("vitals derive activity from public universe timestamps, never from runs", 
   assert.match(live, /last_activity_at/);
 });
 
+test("every browser request to the public endpoint is anonymous", () => {
+  // Carried forward from the deleted public-playground-boundary test: the
+  // initialize POST, the notifications/initialized POST, and every tool call
+  // must send `credentials: "omit"`, so a signed-in visitor's cookies never
+  // ride along to a public read.
+  const fetches = (live.match(/\bfetch\(\s*MCP_PATH\b/g) ?? []).length;
+  const anonymous = (live.match(/credentials:\s*"omit"/g) ?? []).length;
+  assert.ok(fetches >= 2, `expected the RPC and notification POSTs, found ${fetches}`);
+  assert.equal(
+    anonymous,
+    fetches,
+    `every fetch to the endpoint must set credentials: "omit" (${fetches} fetches, ${anonymous} anonymous)`,
+  );
+  // A cookie-bearing mode must never appear.
+  assert.doesNotMatch(live, /credentials:\s*"(?:include|same-origin)"/);
+});
+
+test("the checked-in snapshot fails closed on visibility, like a live read", () => {
+  // Drive the REAL function both render paths call, with fixtures, rather than
+  // regexing the component: a rule that is only asserted against source text
+  // survives a refactor that removes the rule.
+  const good = {
+    id: "u-real",
+    visibility: "public",
+    phase: "idle",
+    word_count: 3,
+    last_activity_at: "2026-09-01T00:00:00Z",
+  };
+  assert.deepEqual(discoverableRows([good]), [
+    { id: "u-real", phase: "idle", word_count: 3, last_activity_at: "2026-09-01T00:00:00Z" },
+  ]);
+
+  for (const bad of [
+    { ...good, visibility: undefined },
+    { ...good, visibility: "private" },
+    { ...good, visibility: "" },
+    { ...good, visibility: "PUBLIC" },
+    { ...good, id: "" },
+    { visibility: "public" },
+    null,
+    "u-real",
+  ]) {
+    assert.deepEqual(
+      discoverableRows([bad]),
+      [],
+      `a record with ${JSON.stringify(bad)} must not render as public`,
+    );
+  }
+
+  // One bad record is dropped; it does not blank the whole list.
+  assert.equal(discoverableRows([good, { ...good, id: "u-2", visibility: "private" }]).length, 1);
+  assert.deepEqual(discoverableRows("not an array"), []);
+
+  // Both render paths go through it.
+  assert.match(shapes, /const bakedRows: Row\[\] = discoverableRows\(baked\.universes\)/);
+  assert.match(shapes, /const rows: Row\[\] = discoverableRows\(live\)/);
+
+  // And the checked-in snapshot itself carries only discoverable records.
+  const snapshot = JSON.parse(readFileSync(resolve(siteRoot, "lib/mcp-snapshot.json"), "utf8"));
+  assert.ok(Array.isArray(snapshot.universes));
+  assert.equal(discoverableRows(snapshot.universes).length, snapshot.universes.length);
+});
+
 test("public pages never surface untrusted error detail", () => {
   for (const file of [{ path: "lib/live.ts", body: live }, ...pages]) {
     assert.doesNotMatch(file.body, /json\.error\.message|res\.statusText/, file.path);
@@ -98,6 +163,95 @@ test("site-wide refresh controls are named Refresh MCP", () => {
 test("no page imports a reader the client does not export", () => {
   for (const file of pages) {
     assert.doesNotMatch(file.body, /\bfetchLive\b|\bfetchPublicGoals?\b|\bliveToSnapshotShape\b/, file.path);
+  }
+});
+
+test("plans are stated in exactly one place, and never overstate enforcement", () => {
+  // The gate that would refuse an action is dark (usage_policy.enforcement_enabled
+  // defaults off), so no page may describe hitting a limit as a live consequence,
+  // and the price/benefit must not be restated anywhere it can drift.
+  const finePrint = source("app/fine-print/page.tsx");
+  assert.match(finePrint, /\$20 a month/);
+  assert.match(finePrint, /metered from day one/);
+  assert.match(finePrint, /is not switched on yet/);
+  assert.doesNotMatch(finePrint, /\b5,?000\b|\b12,?000\b|\b20 GB\b/, "no allowance numbers while the gate is dark");
+
+  const others = pages.filter((f) => !f.path.replace(/\\/g, "/").includes("app/fine-print/"));
+  for (const file of others) {
+    assert.doesNotMatch(file.body, /\$20\b/, `${file.path} must not restate the price`);
+  }
+
+  // Public text assets may point at the section but must not restate it.
+  for (const asset of ["public/llms.txt", "public/robots.txt"]) {
+    const body = source(asset);
+    assert.doesNotMatch(body, /\$?\bUSD 20\b|\$20\b/, `${asset} must not restate the price`);
+    assert.doesNotMatch(body, /raises the daily/i, `${asset} must not restate the premium benefit`);
+  }
+  assert.match(source("public/llms.txt"), /fine-print\/#plans/);
+});
+
+test("robots.txt keeps every named crawler in the group that carries the exclusions", () => {
+  // RFC 9309: a crawler obeys its most specific matching group and does NOT
+  // fall back to "*". A named agent in its own group silently loses these.
+  const robots = source("public/robots.txt");
+  const groups = robots
+    .split(/\n\s*\n/)
+    .filter((block) => /^\s*User-agent:/im.test(block));
+  assert.equal(groups.length, 1, "one group, so no agent can miss the exclusions");
+  const [group] = groups;
+  for (const agent of ["*", "Googlebot", "GPTBot", "ClaudeBot", "PerplexityBot", "OAI-SearchBot"]) {
+    assert.ok(
+      group.includes(`User-agent: ${agent}`),
+      `${agent} must sit in the group carrying the exclusions`,
+    );
+  }
+  for (const path of ["/account", "/auth/", "/editor/", "/admin/"]) {
+    assert.ok(group.includes(`Disallow: ${path}`), `${path} stays out of every index`);
+  }
+  assert.match(robots, /Sitemap: https:\/\/tinyassets\.io\/sitemap\.xml/);
+});
+
+test("the inline mark is generated from the one geometry source", () => {
+  const mark = source("components/TinyAssetsMark.tsx");
+  assert.match(mark, /GENERATED by WebSite\/brand\/render_marks\.py/);
+  assert.match(mark, /Do not hand-edit/);
+  // Its numbers must equal the Python constants, so a drifted checkout is red.
+  const iconGen = readFileSync(
+    resolve(siteRoot, "../../tinyassets/desktop/icon_gen.py"),
+    "utf8",
+  );
+  // `RING_CX, RING_CY, RING_R = 32.0, 30.0, 18.5` and friends.
+  const tuple = (names) => {
+    const m = iconGen.match(new RegExp(`^${names.join(", ")}\\s*=\\s*([0-9.,\\s]+)$`, "m"));
+    assert.ok(m, `icon_gen.py defines ${names.join(", ")}`);
+    return m[1].split(",").map((v) => Number(v.trim()));
+  };
+  const scalar = (name) => {
+    const m = iconGen.match(new RegExp(`^${name}\\s*=\\s*([0-9.]+)`, "m"));
+    assert.ok(m, `icon_gen.py defines ${name}`);
+    return Number(m[1]);
+  };
+  const [ringCx, ringCy, ringR] = tuple(["RING_CX", "RING_CY", "RING_R"]);
+  const [dotCx, dotCy, dotR] = tuple(["DOT_CX", "DOT_CY", "DOT_R"]);
+  const halo = dotR + scalar("DOT_HALO");
+
+  const svgNumbers = new Set(
+    [...mark.matchAll(/(?:cx|cy|r|rx|x|y|width|height|strokeWidth)="([\d.]+)"/g)].map((m) =>
+      Number(m[1]),
+    ),
+  );
+  for (const [label, value] of [
+    ["ring centre x", ringCx],
+    ["ring centre y", ringCy],
+    ["ring radius", ringR],
+    ["ring stroke", scalar("RING_STROKE")],
+    ["tile radius", scalar("TILE_RADIUS")],
+    ["dot centre x", dotCx],
+    ["dot centre y", dotCy],
+    ["dot radius", dotR],
+    ["halo radius", halo],
+  ]) {
+    assert.ok(svgNumbers.has(value), `${label} (${value}) must come from icon_gen.py`);
   }
 });
 

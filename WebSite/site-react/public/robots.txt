@@ -1,35 +1,23 @@
 # tinyassets.io — the public site is open to search and AI-grounding crawlers.
+#
+# RFC 9309: a crawler obeys the MOST SPECIFIC matching group and does NOT fall
+# back to "*". So every rule lives in ONE group that names every agent we care
+# about plus the wildcard; splitting the named agents into their own groups
+# would silently drop the exclusions below for exactly those crawlers.
 
 User-agent: *
-Allow: /
-
-# Named AI-search + grounding crawlers (Allow: / above already covers them;
-# listed explicitly so intent is unambiguous as engines change behavior).
 User-agent: Googlebot
-Allow: /
 User-agent: Google-Extended
-Allow: /
 User-agent: Bingbot
-Allow: /
 User-agent: OAI-SearchBot
-Allow: /
 User-agent: ChatGPT-User
-Allow: /
 User-agent: GPTBot
-Allow: /
 User-agent: ClaudeBot
-Allow: /
 User-agent: Claude-Web
-Allow: /
 User-agent: anthropic-ai
-Allow: /
 User-agent: PerplexityBot
-Allow: /
 User-agent: Perplexity-User
 Allow: /
-
-# Private surfaces stay out of every index.
-User-agent: *
 Disallow: /account
 Disallow: /auth/
 Disallow: /editor/

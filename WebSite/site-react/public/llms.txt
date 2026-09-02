@@ -37,4 +37,4 @@ Add https://tinyassets.io/mcp as a custom connector in Claude.ai or ChatGPT, or 
 
 ## Plans
 
-Every universe is free. Premium (USD 20 a month) raises the daily limits on outside-world actions, compute and storage. Details: https://tinyassets.io/fine-print/#plans
+Founding a universe is free. Anything else about plans, allowances or enforcement is stated in one place only, and it is the page to quote rather than this file: https://tinyassets.io/fine-print/#plans

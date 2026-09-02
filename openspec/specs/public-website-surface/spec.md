@@ -34,14 +34,20 @@ The site SHALL present TinyAssets as a personal universe: a cloud agent that run
 - **THEN** ChatGPT/Codex is described as one tap and Claude as the person pasting their own setup token into the deposit form
 - **AND** no page presents a "Connect Claude" OAuth control
 
-### Requirement: Plans Are Described In Words, In One Place
+### Requirement: Plans Are Described In Words, In One Place, And Do Not Overstate Enforcement
 
-The site SHALL describe plans only in the `Plans` section of `/fine-print` (anchor `#plans`), stating that every universe is free and that premium costs USD 20 a month and raises the daily limits on outside-world actions, compute, and storage. It SHALL NOT print limit numbers until enforcement is live and SHALL NOT render an upgrade control until the app has one; it directs a person who hits a limit to the general contact address. `/start` MAY carry one sentence that links to the section. No other page mentions pricing.
+The site SHALL describe plans only in the `Plans` section of `/fine-print` (anchor `#plans`), stating that every universe is free and that premium costs USD 20 a month and raises the daily allowances for outside-world actions, compute, and storage. Because `tinyassets.usage_policy.enforcement_enabled()` defaults off — the meter records but the gate does not refuse — the section SHALL say so plainly: usage is metered, nobody is cut off today, and premium raises the allowances that will apply when the gate goes live. It SHALL NOT print allowance numbers while the gate is dark, SHALL NOT render an upgrade control until the app has one, and SHALL NOT describe hitting a limit as a thing that currently happens. `/start` MAY carry one sentence that links to the section. No other page, and no public text asset (`llms.txt`, `robots.txt`), states the price or what premium changes; a text asset MAY point at the section.
 
 #### Scenario: A visitor looks for pricing
 
 - **WHEN** a visitor opens `/fine-print/#plans`
-- **THEN** they read that every universe starts free, what premium changes in words, and its monthly price, with no form, no button, and no numeric limits
+- **THEN** they read that every universe starts free, what premium changes in words, its monthly price, and that enforcement is not switched on yet, with no form, no button, and no numeric allowances
+
+#### Scenario: A grounding crawler reads the text assets
+
+- **WHEN** an AI-grounding crawler reads `/llms.txt`
+- **THEN** it finds that founding a universe is free and a pointer to `/fine-print/#plans`
+- **AND** it does not find the price or the premium benefit restated, so the two cannot drift apart
 
 ### Requirement: Public Views Distinguish Live Reads From The Checked-In Snapshot
 
@@ -62,6 +68,18 @@ The site SHALL carry a checked-in public snapshot (`lib/mcp-snapshot.json`: the 
 
 - **WHEN** a live read succeeds with an empty list
 - **THEN** the page states that there are no public universes right now and that every universe starts private
+
+#### Scenario: A snapshot record is not explicitly discoverable
+
+- **WHEN** the checked-in snapshot holds a record whose `visibility` is missing, `private`, or any value other than `public`/`metadata_only`
+- **THEN** it is dropped before render by the same `sanitizePublicUniverse` allowlist a live read passes through (`lib/discoverable.js`), rather than shown as public
+- **AND** one bad record does not blank the list
+
+#### Scenario: The public list is raw rather than curated
+
+- **WHEN** the endpoint reports working or housekeeping universes as publicly discoverable
+- **THEN** `/commons` shows them and says the list is what the endpoint reports rather than a curated gallery
+- **AND** the site does not filter them out, which would make its own "what is public" claim false (open finding: `docs/concerns/2026-09-02-migration-records-are-publicly-discoverable.md`)
 
 ### Requirement: Browser MCP Reads Use The Public Connector Contract And Only The Public Projection
 
@@ -107,7 +125,7 @@ The `/fine-print` reachability strip SHALL derive server reachability from a suc
 
 ### Requirement: The Mark Has One Source And Appears On Every Surface
 
-The brand mark (a ring crossed low by a rule running off to the right, with one terracotta dot on the rule) SHALL be defined once in `tinyassets/desktop/icon_gen.py` and exported by `WebSite/brand/render_marks.py` to the site icons (`favicon.ico`, `icon.svg`, `apple-touch-icon.png`, `icon-192.png`, `icon-512.png`, `logo-mark.png`, `tinyassets-mark.png`), the repository brand assets under `assets/`, the desktop app build resources, the Windows tray icon, the Android launcher and splash density set, and the Play listing graphics; `WebSite/brand/render_og.py` SHALL render the OG card with the site's fonts. The site SHALL inline the mark as SVG (`components/TinyAssetsMark.tsx`) and the served web app SHALL carry the same mark as its favicon and brand glyph.
+The brand mark (a ring crossed low by a rule running off to the right, with one terracotta dot on the rule) SHALL be defined once in `tinyassets/desktop/icon_gen.py` and exported by `WebSite/brand/render_marks.py` to the site icons (`favicon.ico`, `icon.svg`, `apple-touch-icon.png`, `icon-192.png`, `icon-512.png`, `logo-mark.png`, `tinyassets-mark.png`), the repository brand assets under `assets/`, the desktop app build resources, the Windows tray icon, the Android launcher and splash density set, and the Play listing graphics; `WebSite/brand/render_og.py` SHALL render the OG card with the site's fonts. The site's inline React mark (`components/TinyAssetsMark.tsx`) SHALL be **generated** by the same exporter from the same constants rather than hand-maintained, so a geometry change cannot leave the web mark behind. The served web app SHALL carry the same mark as its favicon and brand glyph.
 
 #### Scenario: The mark changes
 
@@ -116,7 +134,7 @@ The brand mark (a ring crossed low by a rule running off to the right, with one 
 
 ### Requirement: Public And Private Indexing Boundaries Are Declared
 
-The site's crawler policy SHALL allow public pages to search and AI-grounding crawlers while disallowing `/account`, `/auth/`, `/editor/`, and `/admin/` from indexing, and `/account` SHALL also carry `noindex` metadata. The sitemap SHALL contain only the seven intended public routes and SHALL use the canonical `https://tinyassets.io` origin with trailing slashes. These declarations are advisory web metadata and MUST NOT be treated as authentication or access control for private application surfaces.
+The site's crawler policy SHALL allow public pages to search and AI-grounding crawlers while disallowing `/account`, `/auth/`, `/editor/`, and `/admin/` from indexing, and `/account` SHALL also carry `noindex` metadata. Because a crawler obeys only its most specific matching group and does not fall back to `*` (RFC 9309), every named agent and the wildcard SHALL share one group carrying both the allow and the exclusions; naming an agent in its own group would silently drop the exclusions for exactly that crawler. The sitemap SHALL contain only the seven intended public routes and SHALL use the canonical `https://tinyassets.io` origin with trailing slashes. These declarations are advisory web metadata and MUST NOT be treated as authentication or access control for private application surfaces.
 
 #### Scenario: Crawler requests policy
 
