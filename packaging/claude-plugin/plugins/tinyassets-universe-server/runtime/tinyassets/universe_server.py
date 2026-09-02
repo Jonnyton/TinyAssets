@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import wraps
 from typing import Annotated, Any
@@ -1854,6 +1855,95 @@ _PLATFORM_FAULT_TELLS = (
 )
 
 
+#: The ``skip_class`` values set by explicit measurement, never by a substring
+#: guess: a cooldown window or a timer fired. `endpoint_unreachable` is the
+#: no-tell fallback of `classify_unavailable` (providers/diagnostics.py) -- it
+#: means "no evidence found", not "the network is down" -- and promoting it
+#: would tell an owner whose credential silently expired that it is "nothing
+#: you set up wrong" (Codex, review round 1, P6).
+_MEASURED_SKIP_CLASSES = frozenset({"quota_or_cooldown", "timed_out"})
+
+#: `auth_invalid` is ALSO a substring guess: `classify_unavailable` matches
+#: bare "token", "auth" and "403", so "input exceeds the model's maximum token
+#: limit" classifies as an auth failure (Codex, review round 2, R3). It is
+#: promoted only when the attempt's own text carries narrow evidence of a
+#: credential problem -- text that does not occur in a context-length, quota
+#: or network message. Bare "token"/"auth"/"403" are deliberately absent.
+_AUTH_EVIDENCE_TELLS = (
+    "unauthorized",
+    "invalid_token",
+    "invalid token",
+    "invalid_grant",
+    "token expired",
+    "token has expired",
+    "credential expired",
+    "expired credential",
+    "revoked",
+    "not logged in",
+    "not authenticated",
+    "login required",
+    "please log in",
+    "please login",
+    "codex login",
+    "claude login",
+    "reauthenticat",
+    "re-authenticat",
+    "no_credentials",
+    "auth.json",
+    # Codex 0.146: "Your access token could not be refreshed. Please log out
+    # and sign in again." Claude: "Not logged in · Please run /login".
+    "could not be refreshed",
+    "log out and sign in",
+    "sign in again",
+    "run /login",
+)
+
+#: "401" only as a whole number: "maximum token limit: 140123 tokens" contains
+#: it as digits (Codex, review round 3, V1).
+_HTTP_401 = re.compile(r"(?<!\d)401(?!\d)")
+
+
+def _auth_evidence(attempt: Any) -> bool:
+    """True when the attempt's detail names a credential problem narrowly."""
+    detail = str(getattr(attempt, "detail", "") or "").lower()
+    if _HTTP_401.search(detail):
+        return True
+    return any(tell in detail for tell in _AUTH_EVIDENCE_TELLS)
+
+
+def _attempt_class(exc: BaseException) -> str | None:
+    """The class of the last FAILED attempt, from either taxonomy.
+
+    ``failure_class`` is the streamed one and is often absent; ``skip_class`` is
+    the coarse operator-facing bucket and carries the answer for anything raised
+    as ``ProviderUnavailableError`` -- which is every auth failure on a
+    subprocess provider. Reading only the first is how an `auth_invalid`
+    attempt produced a notice saying the cause was unknown.
+
+    Skips are ignored: a provider that was never tried explains nothing about
+    why the turn failed. And a `skip_class` is only promoted when it was
+    evidenced: measured classes (`_MEASURED_SKIP_CLASSES`) always, `auth_invalid`
+    only with narrow credential evidence in the attempt's text
+    (`_AUTH_EVIDENCE_TELLS`), the default bucket never. An honest "we could not
+    identify why" beats a confident wrong sentence.
+    """
+    try:
+        for attempt in reversed(getattr(exc, "attempts", None) or []):
+            if getattr(attempt, "status", "") != "failed":
+                continue
+            streamed = getattr(attempt, "failure_class", None)
+            if streamed:
+                return str(streamed)
+            coarse = str(getattr(attempt, "skip_class", None) or "")
+            if coarse in _MEASURED_SKIP_CLASSES:
+                return coarse
+            if coarse == "auth_invalid" and _auth_evidence(attempt):
+                return coarse
+    except Exception:  # noqa: BLE001 - never break a failure path
+        return None
+    return None
+
+
 def _served_failure_diagnosis(exc: BaseException) -> dict[str, Any]:
     """The machine-readable half of a failed turn, beside the human sentence.
 
@@ -1962,6 +2052,17 @@ def _served_failure_notice(exc: BaseException) -> str:
         return _TURN_ENDED_FAILURE_CLASSES["platform_fault"]
     # Then the class the router attached: the best signal there is.
     notice = _TURN_ENDED_FAILURE_CLASSES.get(getattr(exc, "failure_class", None))
+    if notice is not None:
+        return notice
+    # Then the class the ATTEMPT carried. `dominant_failure_class` only accepts
+    # a STREAMED failure_class, and a ProviderUnavailableError is classified
+    # into `skip_class` instead -- so a served chain that dies on auth yields an
+    # attempt marked `auth_invalid` beside a top-level class of None.
+    #
+    # Live 2026-09-01: the founder read "we could not identify why" while the
+    # payload beside it said {"provider": "codex", "status": "failed",
+    # "skip_class": "auth_invalid"}. Both halves were in the same response.
+    notice = _TURN_ENDED_FAILURE_CLASSES.get(_attempt_class(exc))
     if notice is not None:
         return notice
     # Unmapped. Pass the text through UNLESS it is our own synthetic wrapper,
