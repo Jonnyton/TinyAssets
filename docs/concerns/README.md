@@ -86,6 +86,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 | **P2** | [No user Stop for a running turn](2026-08-29-no-user-stop-for-a-running-turn.md) -- turns now run until finished (3600s backstop); the "interrupted by the user" half of the founder's rule is unbuilt | 2026-08-29 |
 | **P2** | [A codex `agent_message` can be dropped under backpressure](2026-08-29-codex-agent-message-can-be-dropped-under-backpressure.md) -- only `TurnCompleted` is guaranteed; a finished turn with its reply item dropped fails "omitted result or usage" instead of returning the reply | 2026-08-29 |
 | **P2** | [`initialize_runs_db()` is not concurrency-safe](2026-08-29-initialize-runs-db-not-concurrency-safe.md) — `executescript` upgrades a deferred transaction outside `busy_timeout`; racing boots fail with `database is locked` even on a fresh DB | 2026-08-29 |
+| **P1** | [A universe is any directory under `/data`](2026-09-02-a-universe-is-any-directory-under-data.md) — `read_graph target="graphs"` returns 12 public universes on production; five are not universes, and three of those are the archives PAST PRUNES created. The definition is a four-name denylist, so every operational directory becomes a browsable universe | 2026-09-02 |
 | — | [Provider fallback-chain privacy](2026-04-17-provider-fallback-chain-privacy.md) — gemini/groq/grok still in the chains | 2026-04-17 |
 | — | [Cloud automation rollback refused >24h](2026-08-05-cloud-automation-rollback-refused.md) — tested, not fixed | 2026-08-05 |
 
