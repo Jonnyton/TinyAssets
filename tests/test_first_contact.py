@@ -157,6 +157,28 @@ def _own_universes_as(actor_id: str = "user_01TESTOWNER") -> None:
     set_provider(_Static())
     auth_middleware("ok")
 
+
+def _assert_reads_as_outage_not_onboarding(out: dict) -> None:
+    """The guarantee these tests exist for, asserted directly.
+
+    They used to look for the router's "All providers exhausted" text. #2756 /
+    #2758 deliberately stopped surfacing it: the router says "exhausted" for
+    every all-attempts-failed reason there is, and the founder went and checked
+    his Codex usage over a turn that had actually hit a platform bug
+    (``universe_server.py``, ``_MISLEADING_ROUTER_TELLS``). In these fixtures no
+    provider is even TRIED -- every attempt is ``status="skipped"`` -- so there
+    is no exhaustion to report and the vague notice is the honest one; a
+    separate guard in ``test_a_failed_turn_says_what_actually_happened.py``
+    requires it for this shape. What must still hold is the distinguishability
+    BUG-038/039 needs: the turn is NOT parked as onboarding, and an owner who
+    already has a credential is never sent to attach one.
+    """
+    assert out.get("status") != "held", out
+    assert "reply" not in out, out
+    assert out.get("reason") != "setup_required", out
+    assert "setup_paths" not in out, out
+    assert out.get("error"), out
+
 def test_get_status_without_home_is_repeatable_and_side_effect_free(data_dir):
     from tinyassets.api.status import get_status
     from tinyassets.daemon_server import get_founder_home
@@ -1087,9 +1109,7 @@ def test_credentialed_universe_still_surfaces_transient_exhaustion_honestly(
 
     out = json.loads(converse(message="Hello"))
 
-    assert out.get("status") != "held"
-    assert "All providers exhausted" in out["error"]
-    assert "reply" not in out
+    _assert_reads_as_outage_not_onboarding(out)
 
 
 def test_credentialless_universe_still_surfaces_non_provider_failures(
@@ -1129,8 +1149,7 @@ def test_unreadable_vault_never_claims_the_credential_is_missing(
 
     out = json.loads(converse(message="Hello"))
 
-    assert out.get("status") != "held"
-    assert "All providers exhausted" in out["error"]
+    _assert_reads_as_outage_not_onboarding(out)
 
 
 def test_held_payload_does_not_invoke_a_second_provider_call(
@@ -1181,8 +1200,7 @@ def test_non_vault_engine_choice_is_an_outage_not_missing_setup(
 
     out = json.loads(converse(message="Hello"))
 
-    assert out.get("status") != "held"
-    assert "All providers exhausted" in out["error"]
+    _assert_reads_as_outage_not_onboarding(out)
 
 
 def test_unreadable_config_never_claims_the_engine_is_missing(
@@ -1207,8 +1225,7 @@ def test_unreadable_config_never_claims_the_engine_is_missing(
 
     out = json.loads(converse(message="Hello"))
 
-    assert out.get("status") != "held"
-    assert "All providers exhausted" in out["error"]
+    _assert_reads_as_outage_not_onboarding(out)
 
 
 def test_non_string_engine_source_does_not_crash_the_failing_turn(
@@ -1229,8 +1246,7 @@ def test_non_string_engine_source_does_not_crash_the_failing_turn(
 
     out = json.loads(converse(message="Hello"))
 
-    assert out.get("status") != "held"
-    assert "All providers exhausted" in out["error"]
+    _assert_reads_as_outage_not_onboarding(out)
 
 
 def test_policy_hard_fail_keeps_its_own_message(data_dir, monkeypatch):
