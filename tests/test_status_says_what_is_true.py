@@ -38,14 +38,35 @@ def _consumer(tmp_path):
     )
 
 
-def test_a_universe_with_a_READY_assignment_is_not_told_to_choose_one(tmp_path, monkeypatch):
+def _ready(monkeypatch) -> None:
     monkeypatch.setattr(
         "tinyassets.provider_assignment.load_provider_assignment",
         lambda base, universe_id: SimpleNamespace(
             state="ready", provider="codex", owner_user_id="alice",
         ),
     )
-    assert _consumer(tmp_path)._no_runtime_reason("u-1") == "automations_not_running"
+
+
+def _bindings(monkeypatch, *statuses: str) -> None:
+    monkeypatch.setattr(
+        "tinyassets.custom_agents.list_bindings",
+        lambda base, universe_id, limit=100: [{"status": s} for s in statuses],
+    )
+
+
+def test_a_SERVING_universe_is_not_told_to_choose_a_provider(tmp_path, monkeypatch):
+    _ready(monkeypatch)
+    _bindings(monkeypatch, "configured", "serving")
+    assert _consumer(tmp_path)._no_runtime_reason("u-1") == "legacy_control_tasks_parked"
+
+
+def test_a_ready_assignment_with_serving_DISABLED_is_still_not_serving(tmp_path, monkeypatch):
+    """Codex: disabling serving flips the binding to `configured` and leaves
+    the assignment ready; runs then fail provider_not_bound, so the honest
+    reason is still the unserved one and the app heal must still fire."""
+    _ready(monkeypatch)
+    _bindings(monkeypatch, "configured")
+    assert _consumer(tmp_path)._no_runtime_reason("u-1") == "no_serving_runtime"
 
 
 @pytest.mark.parametrize("assignment", [
@@ -59,25 +80,45 @@ def test_a_universe_without_a_ready_assignment_still_hears_no_serving_runtime(
         "tinyassets.provider_assignment.load_provider_assignment",
         lambda base, universe_id: assignment,
     )
+    _bindings(monkeypatch, "serving")
     assert _consumer(tmp_path)._no_runtime_reason("u-1") == "no_serving_runtime"
+
+
+def test_an_unreadable_assignment_is_reported_as_not_serving_and_logged(
+    tmp_path, monkeypatch, caplog,
+):
+    import logging
+
+    def _boom(base, universe_id):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr("tinyassets.provider_assignment.load_provider_assignment", _boom)
+    with caplog.at_level(logging.ERROR):
+        assert _consumer(tmp_path)._no_runtime_reason("u-1") == "no_serving_runtime"
+    assert "could not establish whether u-1 is serving" in caplog.text
 
 
 def test_the_new_reason_says_the_universe_IS_serving_in_words_a_user_can_use():
     """No 'fleet', no 'executor' (founder, 2026-09-02: the fleet was old
-    spaghetti; users build and run whatever graphs they want, when they want)."""
-    action = consumer_next_action("automations_not_running")
+    spaghetti; users build and run whatever graphs they want, when they want).
+    And it must not claim automations do not fire: this loop submits due
+    automations, and schedules and subscriptions fire through the run path
+    (Codex on the first cut); the founder's own automation completed on
+    2026-08-31 (run c78d10128b5a42d0)."""
+    action = consumer_next_action("legacy_control_tasks_parked")
     lowered = action.lower()
     assert "is serving" in lowered
-    assert "build and run graphs now" in lowered
+    assert "automations, schedules and subscriptions all fire" in lowered
     assert "no serving provider selected" not in lowered
     assert "choose one" not in lowered
+    assert "do not fire" not in lowered
     assert "fleet" not in lowered and "executor" not in lowered
 
 
 # The wiring is pinned by tests/test_automations.py
 # ::test_a_poll_beats_for_a_serving_universe_with_no_runtime_at_all, which
 # drives the real poll against a universe with a READY assignment and now
-# expects `automations_not_running`.
+# expects `legacy_control_tasks_parked`.
 
 
 # ------------------------------------------------ the app heal keys on the truth
@@ -126,7 +167,7 @@ def test_the_app_heal_does_not_fire_on_the_new_reason():
         "})();",
     ])
     quiet = json.loads(subprocess.run(
-        [_NODE, "-e", script, "--", "automations_not_running"],
+        [_NODE, "-e", script, "--", "legacy_control_tasks_parked"],
         capture_output=True, text=True, timeout=30, check=True,
     ).stdout.strip().splitlines()[-1])
     loud = json.loads(subprocess.run(

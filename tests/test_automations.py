@@ -2624,7 +2624,7 @@ def test_a_poll_beats_for_a_serving_universe_with_no_runtime_at_all(
     # reason is the retired background executor, never "no serving provider
     # selected" (which sent the founder's universe hunting for a selection
     # surface that does not exist, app thread 2026-09-02).
-    assert _refusal_rows(tmp_path)[f"universe:{UNIVERSE}:-"] == "automations_not_running"
+    assert _refusal_rows(tmp_path)[f"universe:{UNIVERSE}:-"] == "legacy_control_tasks_parked"
 
 
 def test_a_paused_universe_still_beats(

@@ -37,12 +37,12 @@ _STATIC: dict[str, str] = {
         "run background work. Choose one (registering a provider is not selecting "
         "it)."
     ),
-    "automations_not_running": (
-        "This universe IS serving: chat and runs use your selected provider, so "
-        "build and run graphs now. Scheduled and triggered graphs (automations) "
-        "do not fire yet on this release; that path is being rebuilt so a graph "
-        "you build with a trigger simply runs in your universe. Nothing to select "
-        "and nothing to reconnect."
+    "legacy_control_tasks_parked": (
+        "This universe IS serving: chat, runs, and your automations, schedules "
+        "and subscriptions all fire on your selected provider. One kind of "
+        "queued item left from before the host workers were removed (a cloud "
+        "control task) has no runner on this release and stays parked; nothing "
+        "you build depends on it. Nothing to select and nothing to reconnect."
     ),
     "not_an_automation_task": (
         "This queued item is not an automation task, so the automation worker will "
