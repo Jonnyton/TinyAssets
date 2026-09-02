@@ -123,6 +123,9 @@ shape) or one build-then-spec slice.
   need item 2.
 - **A surprise service**: any static-token API is carried today with the caveats of items 3 and
   6; anything OAuth2-refreshed (Google, HubSpot public app) is not, until item 1.
-- **24/7 on the user's behalf**: not in this map. It is a user-built graph with a trigger, and
-  its blocker is that triggers still fire through the fleet-era consumer instead of the
-  ordinary run path (`docs/concerns/2026-08-29-background-loop-activation-is-fleet-era.md`).
+- **24/7 on the user's behalf**: not in this map, and not blocked. It is a user-built graph
+  with a trigger (`write_graph target=automation`, a schedule, a Source), and those already fire
+  on the universe's serving provider: the founder's automation completed on 2026-08-31 (run
+  `c78d10128b5a42d0`). What is left is cleanup of the leftover consumer loop and its legacy
+  control-task path (`docs/concerns/2026-08-29-background-loop-activation-is-fleet-era.md`),
+  and a status line that no longer claims otherwise (`status-says-what-is-true`).

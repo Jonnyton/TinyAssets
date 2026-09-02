@@ -2619,8 +2619,12 @@ def test_a_poll_beats_for_a_serving_universe_with_no_runtime_at_all(
     assert stamped <= datetime.now(timezone.utc) + timedelta(seconds=5)
     # No runtime means no audience and no invented executor identity...
     assert beat["runtime_instance_id"] == ""
-    # ...and the caller still says why it did no executor-bound work.
-    assert _refusal_rows(tmp_path)[f"universe:{UNIVERSE}:-"] == "no_serving_runtime"
+    # ...and the caller still says why it did no executor-bound work -- and
+    # says it honestly: this universe HAS a ready serving assignment, so the
+    # reason is the retired background executor, never "no serving provider
+    # selected" (which sent the founder's universe hunting for a selection
+    # surface that does not exist, app thread 2026-09-02).
+    assert _refusal_rows(tmp_path)[f"universe:{UNIVERSE}:-"] == "legacy_control_tasks_parked"
 
 
 def test_a_paused_universe_still_beats(
