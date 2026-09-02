@@ -784,7 +784,7 @@ def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     # revoked by removing the key, still active (full-channel-access D6).
     from tinyassets.storage.effector_consents import revoke_consents_for_connection
 
-    consents_revoked = revoke_consents_for_connection(
+    removed_consents = revoke_consents_for_connection(
         _universe_dir(uid), connection_id=connection_id
     )
 
@@ -795,7 +795,11 @@ def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
         "grant_id": grant_id,
         "secrets_removed": secrets_removed,
         "connection_removed": bool(rows_removed),
-        "consents_revoked": consents_revoked,
+        # What the removal took back, so a ROTATION can re-ask for exactly
+        # these and the owner is never asked to remember them. Inheriting them
+        # silently was the alternative, and it also survives a removal the
+        # owner meant as a revocation.
+        "removed_consents": removed_consents,
         # What it looked like, so putting it back does not start from memory.
         # The scheme too: an oauth1a connection re-deposited as the default
         # bearer is a different connection wearing the same name.

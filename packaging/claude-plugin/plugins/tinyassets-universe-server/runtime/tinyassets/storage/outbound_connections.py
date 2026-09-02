@@ -2595,6 +2595,7 @@ class _TrustedNetworkDriver:
         credential: str,
         verb: str,
         request: object,
+        access_mode: str = ACCESS_EXACT,
     ) -> Any:
         if not self._allow_http:
             # Fail closed until a deployment enables the general http path.
@@ -2614,6 +2615,7 @@ class _TrustedNetworkDriver:
             body=request.get("body"),
             header_name=str(request.get("header_name", "") or ""),
             allowed_endpoints=allowed_endpoints,
+            access_mode=access_mode,
         )
 
 

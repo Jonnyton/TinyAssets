@@ -167,8 +167,9 @@ def revoke_consents_for_connection(
     *,
     connection_id: str,
     revoked_at: float | None = None,
-) -> int:
-    """Revoke every consent keyed on ``connection_id``. Returns the row count.
+) -> list[str]:
+    """Revoke every consent keyed on ``connection_id``. Returns their
+    destinations, so the caller can tell the owner what it took back.
 
     A workspace consent destination is ``"<op>:<connection_id>:<host>/<repo>"``
     (``workspace_consent_destination``), so the connection is IN the key and a
@@ -184,7 +185,7 @@ def revoke_consents_for_connection(
     """
     token = str(connection_id or "").strip()
     if not token:
-        return 0
+        return []
     initialize_consents_db(universe_dir)
     ts = revoked_at if revoked_at is not None else time.time()
     # The connection id is the SECOND colon-separated field. Matching on the
@@ -206,7 +207,7 @@ def revoke_consents_for_connection(
                 (ts, sink, destination),
             )
         conn.commit()
-    return len(hits)
+    return sorted(destination for _, destination in hits)
 
 
 def is_consent_active(

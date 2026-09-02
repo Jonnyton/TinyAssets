@@ -359,7 +359,7 @@ def test_removing_a_key_revokes_only_its_own_consents(tmp_path):
 
     revoked = revoke_consents_for_connection(universe_dir, connection_id="conn-mine")
 
-    assert revoked == len(mine)
+    assert revoked == sorted(mine)
     for destination in mine:
         assert is_consent_active(
             universe_dir, sink=WORKSPACE_SINK, destination=destination
@@ -392,7 +392,7 @@ def test_a_repository_named_like_another_connection_is_not_swept_in(tmp_path):
     grant_consent(
         universe_dir, sink=WORKSPACE_SINK, destination=destination, granted_by="u",
     )
-    assert revoke_consents_for_connection(universe_dir, connection_id="conn-mine") == 0
+    assert revoke_consents_for_connection(universe_dir, connection_id="conn-mine") == []
     assert is_consent_active(
         universe_dir, sink=WORKSPACE_SINK, destination=destination
     ) is True
@@ -403,8 +403,8 @@ def test_revoking_for_no_connection_revokes_nothing(tmp_path):
 
     universe_dir = tmp_path / "u"
     universe_dir.mkdir()
-    assert revoke_consents_for_connection(universe_dir, connection_id="") == 0
-    assert revoke_consents_for_connection(universe_dir, connection_id="   ") == 0
+    assert revoke_consents_for_connection(universe_dir, connection_id="") == []
+    assert revoke_consents_for_connection(universe_dir, connection_id="   ") == []
 
 
 # --------------------------------------------------------------------------
