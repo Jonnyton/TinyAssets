@@ -1,4 +1,4 @@
-"""Connecting a subscription is the whole gesture: it deposits AND serves.
+"""Connecting a subscription in the app is the whole gesture: deposit AND serve.
 
 Live, 2026-09-01. The founder pasted a Codex credential through the app. The
 deposit succeeded and chat worked on it, and every run failed:
@@ -8,22 +8,23 @@ deposit succeeded and chat worked on it, and every run failed:
 
 `get_status` said `no_serving_runtime` -- "registering a provider is not
 selecting it". The deposit result carried `next: bind_serving_provider` as a
-hint, to a surface where nobody reads hints. Tiny, from inside: "provider
-registration and provider selection must not be separable in a way that
-leaves me runnable-on-paper but dead in practice."
+hint, to a surface where nobody reads hints. The claude path and the phone
+already finish the gesture through `/mcp/app/serving/bind`; the pasted
+credential path printed the receipt and stopped.
 
-Two halves, both pinned here:
-
-* the SERVER: a deposit into a universe that serves on nothing serves on it;
-  a universe that already serves keeps its explicit choice;
-* the APP: the pasted-credential path finishes the gesture, and the heartbeat
-  heals a universe that has a mind deposited but nothing serving on it.
+The deposit itself stays write-only: the spec
+(`openspec/changes/byo-llm-deposit-surface`) says it SHALL NOT enable
+serving, and a server-side auto-bind was withdrawn on Codex review. The app
+finishes the gesture, and the helper the app calls is serialized per universe
+so two first-time gestures cannot leave two bindings and nothing serving.
 """
 from __future__ import annotations
 
 import base64
+import contextvars
 import json
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -104,91 +105,109 @@ _CODEX_BUNDLE = json.dumps({"tokens": {
 }})
 
 
-def _serving_bindings(base: Path, uid: str) -> list[dict[str, Any]]:
+def _bindings(base: Path, uid: str) -> list[dict[str, Any]]:
     from tinyassets.custom_agents import list_bindings
 
-    return [
-        b for b in list_bindings(base, universe_id=uid, limit=100)
-        if b.get("status") == "serving"
-    ]
+    return list(list_bindings(base, universe_id=uid, limit=100))
 
 
-# --------------------------------------------------------------- the server
+# ------------------------------------------ the deposit stays write-only
 
 
-def test_a_deposit_into_a_universe_serving_on_NOTHING_serves_on_it(base):
-    """THE regression. Before: `status: deposited`, `next: bind_serving_provider`,
-    and a universe whose chat worked while every run said provider_not_bound."""
+def test_the_deposit_itself_does_NOT_serve(base):
+    """The spec requirement, pinned so the withdrawn server-side auto-bind does
+    not come back by accident: the deposit names the re-point and enables
+    nothing."""
     _universe(base, "u-1", "founder")
     _login("founder")
 
     result = _deposit("u-1", "codex", _CODEX_BUNDLE)
 
     assert result["status"] == "deposited"
-    assert result["serving"]["status"] == "serving", result
-    assert result["serving"]["provider"] == "codex"
-    assert "next" not in result, "the hint nobody reads is still the only path"
-    [binding] = _serving_bindings(base, "u-1")
-    assert binding["agent_binding_id"] == result["agent_binding_id"]
-    assert result["expected_revision"] == binding["revision"]
-
-
-def test_a_universe_that_ALREADY_serves_keeps_its_choice(base):
-    """Write-only where write-only was chosen for a reason: re-pointing a
-    serving universe is an explicit decision, and a re-deposit does not make
-    it silently."""
-    _universe(base, "u-1", "founder")
-    _login("founder")
-    first = _deposit("u-1", "codex", _CODEX_BUNDLE)
-    assert first["serving"]["status"] == "serving"
-    [before] = _serving_bindings(base, "u-1")
-
-    again = _deposit("u-1", "codex", _CODEX_BUNDLE.replace("acct-1", "acct-1"))
-
-    assert again["status"] == "deposited"
-    assert again["serving"] == {
-        "status": "unchanged",
-        "reason": "already_serving",
-        "agent_binding_id": before["agent_binding_id"],
-    }
-    assert again["next"].startswith("write_graph target=agent_binding")
-    [after] = _serving_bindings(base, "u-1")
-    assert after["revision"] == before["revision"], "a re-deposit re-pointed serving"
-
-
-def test_a_HELD_bind_never_turns_a_successful_deposit_into_a_failure(base):
-    """Claude serving is held behind an operator opt-in. The deposit still
-    lands and is reported as such; the hold is reported beside it, with the
-    explicit path left open."""
-    _universe(base, "u-1", "founder")
-    _login("founder")
-
-    result = _deposit("u-1", "claude", "sk-ant-oat-token")
-
-    assert result["status"] == "deposited"
-    assert result["serving"]["status"] == "held", result
     assert result["next"].startswith("write_graph target=agent_binding")
-    assert _serving_bindings(base, "u-1") == []
+    assert [b for b in _bindings(base, "u-1") if b.get("status") == "serving"] == []
 
 
-def test_the_bind_is_actually_WIRED_into_the_deposit(base, monkeypatch):
-    """Testing the helper is not testing that the deposit calls it."""
-    import tinyassets.api.llm_deposit as mod
+# --------------------------- the gesture the app calls is one at a time
 
-    calls: list[str] = []
 
-    def _spy(base_, *, universe_id, universe_dir, actor, service):
-        calls.append(f"{universe_id}:{actor}:{service}")
-        return {"status": "held", "reason": "spy"}
+def test_two_first_time_gestures_leave_ONE_binding_and_it_serves(base, monkeypatch):
+    """Codex on #2760, S3. Two open tabs heal at once (or a paste and a phone
+    connect): both list bindings, both see none, both create one, both go
+    serving, and each quiesce pass disables the other -- two bindings, zero
+    serving, every later call refusing them as ambiguous. The race is made
+    deterministic by holding every lister for a moment after it looks."""
+    import tinyassets.onboarding.serving as serving
 
-    monkeypatch.setattr(mod, "_serve_if_nothing_does", _spy)
-    _universe(base, "u-1", "founder")
+    udir = _universe(base, "u-1", "founder")
     _login("founder")
+    assert _deposit("u-1", "codex", _CODEX_BUNDLE)["status"] == "deposited"
 
-    result = _deposit("u-1", "codex", _CODEX_BUNDLE)
+    from tinyassets import custom_agents
 
-    assert calls == ["u-1:founder:codex"]
-    assert result["serving"] == {"status": "held", "reason": "spy"}
+    original = custom_agents.list_bindings
+    started = threading.Barrier(2)
+
+    def slow_list(*args, **kwargs):
+        rows = original(*args, **kwargs)
+        # Without the gesture lock both threads reach this barrier having LOOKED
+        # and seen nothing, and then both create. With the lock the second
+        # thread cannot look until the first is done, so the barrier times out
+        # -- which is the fix working, not the test failing.
+        try:
+            started.wait(timeout=2)
+        except threading.BrokenBarrierError:
+            pass
+        return rows
+
+    monkeypatch.setattr(custom_agents, "list_bindings", slow_list)
+
+    results: list[dict[str, Any]] = []
+    errors: list[BaseException] = []
+
+    def gesture():
+        # A Context can be entered by one thread at a time: each thread gets
+        # its own copy of the signed-in identity.
+        ctx = contextvars.copy_context()
+        try:
+            results.append(ctx.run(
+                serving.ensure_founder_serving,
+                base_path=base, universe_dir=udir, owner_user_id="founder",
+                universe_id="u-1", service="codex",
+            ))
+        except BaseException as exc:  # noqa: BLE001 - surfaced by the assertion
+            errors.append(exc)
+
+    threads = [threading.Thread(target=gesture) for _ in range(2)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(timeout=30)
+
+    assert not errors, errors
+    assert [r["status"] for r in results] == ["serving", "serving"], results
+    bindings = _bindings(base, "u-1")
+    assert len(bindings) == 1, f"two first-time gestures created {len(bindings)} bindings"
+    assert bindings[0]["status"] == "serving", "the gesture finished with nothing serving"
+
+
+def test_the_gesture_is_idempotent_once_the_binding_exists(base):
+    import tinyassets.onboarding.serving as serving
+
+    udir = _universe(base, "u-1", "founder")
+    _login("founder")
+    _deposit("u-1", "codex", _CODEX_BUNDLE)
+    first = serving.ensure_founder_serving(
+        base_path=base, universe_dir=udir, owner_user_id="founder",
+        universe_id="u-1", service="codex",
+    )
+    second = serving.ensure_founder_serving(
+        base_path=base, universe_dir=udir, owner_user_id="founder",
+        universe_id="u-1", service="codex",
+    )
+    assert first["status"] == second["status"] == "serving"
+    assert first["agent_binding_id"] == second["agent_binding_id"]
+    assert len(_bindings(base, "u-1")) == 1
 
 
 # ------------------------------------------------------------------ the app
@@ -204,21 +223,16 @@ def app_html() -> str:
 
 def test_the_pasted_credential_path_finishes_the_gesture(app_html):
     """The generic connect form deposited and printed the receipt. It now points
-    the universe at the deposit and says, in words, whether that worked."""
+    the universe at the deposit and says, in words, whether that worked. (The
+    executed-JS proof of the heal is in test_app_serving_heal_executes.py.)"""
     deposit = app_html.index("await MCP.connectLLM(service,b64)")
     serve = app_html.index("serveOn(service)", deposit)
     assert serve - deposit < 600, "the serve step is not in the paste path"
     assert "servingSentence(service, sv)" in app_html
 
 
-def test_the_heartbeat_heals_a_universe_with_a_mind_but_nothing_serving(app_html):
-    """The founder's exact state: deposited, chatting, `no_serving_runtime`.
-    Healed on the next status poll, once per page, with no re-paste."""
+def test_the_heartbeat_calls_the_heal(app_html):
     poll = app_html.index("async function pollStatus()")
     heal = app_html.index("healServing(s)", poll)
     assert heal - poll < 1200, "the heal is not on the heartbeat"
-    assert 'p.reason==="no_serving_runtime"' in app_html
-    assert re.search(r"if\(servingHealAttempted\) return;", app_html), (
-        "the heal must run at most once per page"
-    )
-    assert '"/mcp/app/serving/bind"' in app_html
+    assert re.search(r"if\(servingHealAttempted\) return;", app_html)
