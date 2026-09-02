@@ -12,6 +12,47 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Decided for you, reversible: no anonymous principal (2026-09-02)
+
+Your rule: *"anonymous should not be a possibility anywhere in the codebase."*
+Change `no-anonymous-principal` (PR 1 of 3 in flight). Six choices the rule did
+not make, taken so the build could proceed; say the word and any flips:
+
+1. The probes (canary, deploy gate) run as a named `canary` service principal
+   admitted only for an exact allowlist (initialize, tools/list, get_status,
+   read_graph target=status, the wiki probe page). Not a capability set.
+2. Dev mode names its operator through `UNIVERSE_SERVER_DEV_USER` and refuses
+   to start without it. No fixed `local-operator` default.
+3. The public website reads `GET /mcp/pulse` (git sha, image tag, deploy time,
+   uptime) instead of making anonymous MCP calls; the playground shows the
+   401 challenge as step one of a real connection.
+4. Legacy rows are quarantined, not fatal: OAuth sessions whose user is
+   `anonymous` are deleted; run rows with an anonymous actor are logged and
+   never re-dispatched; a hook minted before owners were recorded refuses to
+   deliver (uniform 404, logged) until its owner re-creates it.
+5. `/mcp/pulse` carries exactly those four fields and nothing that names a
+   universe or a user.
+6. "Public" now means visible to any signed-in user (the remix model needs
+   that); there is no unauthenticated reader anywhere.
+
+## Decided for you, reversible: full channel access (2026-09-02)
+
+Your words: *"a more agnostic term it should have asked for should have been
+full channel access."* Change `full-channel-access` (design reviewed, build
+waits on #2769). Five choices:
+
+1. "Full" includes git clone/push to any repository the key reaches on the
+   channel's git host and checking a repository out and running its build in
+   your universe's sandbox. A full grant that still asked per repository
+   would be the third ask again.
+2. All-or-exact. No `owner/*` half-form.
+3. The agent's ask defaults to full; the manual "Add a key yourself" form is
+   unchanged.
+4. No downgrade verb: to retract a full grant, remove the key and deposit it
+   again with exact endpoints.
+5. "Full" is bounded to the one to four hosts the agent declared for the
+   channel, never every host the credential could reach.
+
 ## Decide: should a deposit serve the universe by itself?
 
 The deposit spec (`openspec/changes/byo-llm-deposit-surface/specs/byo-llm-deposit-surface/spec.md`,
