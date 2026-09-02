@@ -44,8 +44,11 @@ export default function AccountPage() {
           <strong>Kept:</strong> audit records, with the actor replaced by an opaque id and
           their summary, target and payload emptied; commons and ledger rows that are not
           personal data (published author and branch definitions, goals, settlement history);
-          the invoices our payment processor holds; and server backups until they age out on
-          our retention schedule. Nothing that could rebuild your universe is retained.
+          a one-way digest of your sign-in id, kept permanently so a still-valid session on
+          another device cannot silently re-create the account you just deleted — it cannot
+          be turned back into your id or your email; the invoices our payment processor
+          holds; and server backups until they age out on our retention schedule. Nothing
+          that could rebuild your universe is retained.
         </p>
         <p className="stub__line">
           <strong>If something can&apos;t complete</strong> — the payment processor is

@@ -31,10 +31,12 @@ def principal_is_deleted(base: Path, founder: str) -> bool:
     """Whether this principal deleted their account (account-deletion tombstone).
 
     Read-only and fail-open on a missing table so a pre-migration database still
-    serves; the row is written inside the deletion transaction itself.
+    serves. The tombstone is keyed by a one-way digest of the principal, never
+    the principal itself, and is written before the deletion touches anything.
     """
     import sqlite3
 
+    from tinyassets.account_deletion import principal_digest
     from tinyassets.daemon_server import _connect, initialize_author_server
 
     subject = (founder or "").strip()
@@ -44,7 +46,8 @@ def principal_is_deleted(base: Path, founder: str) -> bool:
         initialize_author_server(base)
         with _connect(base) as conn:
             row = conn.execute(
-                "SELECT 1 FROM deleted_principals WHERE founder_sub = ?", (subject,)
+                "SELECT 1 FROM deleted_principals WHERE founder_sub = ?",
+                (principal_digest(subject),),
             ).fetchone()
         return row is not None
     except sqlite3.OperationalError:

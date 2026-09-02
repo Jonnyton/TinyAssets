@@ -89,9 +89,11 @@ PRINCIPAL_KEYS = (
     "founder_sub",
     "user_id",
     "actor_id",
+    "owner_id",
     "owner_user_id",
     "owner_actor",
     "owner_actor_id",
+    "owner_principal_id",
     "bound_by_actor_id",
     "authorizing_principal_id",
     "principal_id",
@@ -151,6 +153,20 @@ REDACTED_TABLES = frozenset({"action_records"})
 #: an unresolved stake is the host's to settle first.
 BLOCKING_TABLES = frozenset({"escrow_locks", "staker_escrow_budget"})
 
+#: (table, column) pairs where a value other than the owner is normal and must
+#: NOT block: the column records who granted or acted, not who owns the row.
+_FOREIGN_ROWS_EXPECTED = frozenset({
+    ("universe_acl", "actor_id"),  # every grant here is one the owner issued
+})
+
+#: Columns that identify WHOSE a row is, for the purpose of refusing to destroy
+#: it. Deliberately wider than :data:`PRINCIPAL_KEYS`: `created_by` must never
+#: be a deletion key (it would delete this person's rows out of other people's
+#: universes) but it is exactly the signal that a row inside *this* universe
+#: belongs to someone else — a daemon instance B started and stopped here is
+#: still B's, and no liveness check will notice it (Codex round 3, finding 1).
+FOREIGN_OWNERSHIP_KEYS = PRINCIPAL_KEYS + ("created_by",)
+
 
 class AccountDeletionError(RuntimeError):
     """Deletion refused. The message never carries a secret."""
@@ -161,7 +177,21 @@ class AccountDeletionBlocked(AccountDeletionError):
 
 
 def _fingerprint(principal: str) -> str:
+    """Short, content-free label for receipts and logs."""
     return hashlib.sha256(principal.encode("utf-8")).hexdigest()[:16]
+
+
+def principal_digest(principal: str) -> str:
+    """One-way digest used as the tombstone key.
+
+    The tombstone outlives the account, so storing the raw WorkOS user id there
+    would keep an identifier of a person who asked to be deleted — while
+    ``/account`` says the sign-in identity is removed. A full-length digest lets
+    first-contact recognise a deleted principal without retaining one
+    (Codex round 3, finding 5); full length, not the short label, because a
+    collision here would wrongly refuse a *different* person a universe.
+    """
+    return hashlib.sha256((principal or "").strip().encode("utf-8")).hexdigest()
 
 
 def _rmtree(path: Path) -> None:
@@ -379,6 +409,33 @@ def deletion_blockers(
         except sqlite3.OperationalError:
             # A renamed column must fail loudly, not read as "nothing matched".
             blockers.append(f"cannot evaluate {table} — schema changed")
+
+    # The enumerated checks above name the tables the operator path knows. Any
+    # OTHER universe-scoped table can still hold a foreign person's row — a
+    # daemon instance B started here and stopped, say, which is terminal and so
+    # matches no active-work check (Codex round 3, finding 1). Sweeping the
+    # universe would delete it. Refuse instead: whose row it is does not depend
+    # on whether it is still running.
+    for table, keys in deletion_plan(conn, principal=principal, home=home).items():
+        if not any(kind == "universe" for _, kind in keys):
+            continue
+        cols = _columns(conn, table)
+        for key in FOREIGN_OWNERSHIP_KEYS:
+            if key not in cols or (table, key) in _FOREIGN_ROWS_EXPECTED:
+                continue
+            try:
+                foreign = _count(
+                    conn,
+                    f'SELECT COUNT(*) FROM "{table}" '
+                    f'WHERE universe_id = ? AND "{key}" NOT IN (?, \'system\', \'\')',
+                    (home, principal),
+                )
+            except sqlite3.OperationalError:
+                blockers.append(f"cannot evaluate {table} — schema changed")
+                break
+            if foreign:
+                blockers.append(f"another person's rows are in {table} here")
+                break
     return blockers
 
 
@@ -393,13 +450,14 @@ def _delete_root_rows(
     tables = set(_tables(conn))
     fingerprint = _fingerprint(principal)
 
-    # Dependents first. Queue Epoch 2 rows cascade in BOTH directions —
-    # deleting a request takes its tasks, deleting a task takes its admission —
-    # so a plain delete-and-count reports whichever one it happened to reach
-    # first and silently under-reports the rest. Count every entangled table
-    # BEFORE touching any of them, then delete: the receipt has to say what
-    # actually went, or "we deleted your data" is unverifiable.
-    explicit = (
+    # ON DELETE CASCADE means a delete can remove rows in tables the plan has
+    # not reached yet — Queue Epoch 2 cascades in BOTH directions, and deleting
+    # user_accounts takes user_sessions with it. Counting as we go therefore
+    # reports whichever table the cascade happened to reach last and understates
+    # the rest (Codex rounds 2 and 3). So: count EVERY targeted table first,
+    # then delete. The receipt has to say what actually went, or "we deleted
+    # your data" is unverifiable.
+    indirect = (
         ("request_admission_events",
          "request_id IN (SELECT request_id FROM user_requests WHERE universe_id = ?)"),
         ("request_admissions",
@@ -410,19 +468,20 @@ def _delete_root_rows(
         ("vote_ballots",
          "vote_id IN (SELECT vote_id FROM vote_windows WHERE universe_id = ?)"),
     )
+    targets: list[tuple[str, str, tuple[Any, ...]]] = []
     if home:
-        present = [(t, w) for t, w in explicit if t in tables]
-        for table, where in present:
-            found = _count(conn, f'SELECT COUNT(*) FROM "{table}" WHERE {where}', (home,))
-            if found:
-                counts[table] = counts.get(table, 0) + found
-        for table, where in present:
-            conn.execute(f'DELETE FROM "{table}" WHERE {where}', (home,))
-
+        targets += [(t, w, (home,)) for t, w in indirect if t in tables]
     for table, keys in deletion_plan(conn, principal=principal, home=home).items():
         for column, kind in keys:
             value = home if kind == "universe" else principal
-            _delete(conn, counts, table, f'"{column}" = ?', (value,))
+            targets.append((table, f'"{column}" = ?', (value,)))
+
+    for table, where, params in targets:
+        found = _count(conn, f'SELECT COUNT(*) FROM "{table}" WHERE {where}', params)
+        if found:
+            counts[table] = counts.get(table, 0) + found
+    for table, where, params in targets:
+        conn.execute(f'DELETE FROM "{table}" WHERE {where}', params)
 
     # Audit rows survive, stripped of the person and the content. This is what
     # makes the retention sentence on /legal true rather than aspirational.
@@ -455,19 +514,54 @@ def _delete_root_rows(
             if redacted:
                 counts["action_records (redacted)"] = int(redacted)
 
-    if "deleted_principals" in tables:
+
+def write_tombstone(base_path: str | Path, principal: str) -> None:
+    """Record that this principal deleted their account, keyed by digest.
+
+    Written BEFORE anything is staged or deleted. Round 3 reproduced the race
+    the other order leaves open: between staging the home and committing the
+    tombstone, a second device's still-valid token reached first-contact, saw a
+    live binding and no tombstone, and rebuilt a fresh universe that outlived
+    the deletion. Writing the fence first means the worst case is a tombstoned
+    principal whose deletion then failed — refused a new universe until a host
+    clears it, which is the safe direction to fail.
+    """
+    from tinyassets.daemon_server import _connect, initialize_author_server
+
+    subject = (principal or "").strip()
+    if not subject or subject == "anonymous":
+        return
+    initialize_author_server(base_path)
+    with _connect(base_path) as conn:
         conn.execute(
             "INSERT INTO deleted_principals (founder_sub, deleted_at) VALUES (?, ?) "
             "ON CONFLICT(founder_sub) DO UPDATE SET deleted_at = excluded.deleted_at",
-            (principal, time.time()),
+            (principal_digest(subject), time.time()),
         )
+
+
+def _root_databases(root: Path) -> list[Path]:
+    """Every store at the data root except the main database, which
+    ``_delete_root_rows`` owns.
+
+    A registry that reads the directory cannot go stale the way a hand-listed
+    one does — round 3 found ``.authoring.db`` and ``.automations.db``
+    untouched because the list named only ``outbound.db`` and ``.auth.db``.
+    Non-recursive on purpose: per-universe stores live inside the universe
+    directory and go with it.
+    """
+    from tinyassets.storage import DB_FILENAME
+
+    return sorted(
+        p for p in root.glob("*.db") if p.is_file() and p.name != DB_FILENAME
+    )
 
 
 def _delete_satellite_rows(
     path: Path, *, principal: str, home: str, counts: dict[str, int], label: str
 ) -> None:
-    """Apply the same schema-derived rule to a database beside the root one
-    (``outbound.db``, ``.auth.db``): universe-keyed and person-keyed rows go."""
+    """Apply the same schema-derived rule to one store beside the root database:
+    universe-keyed and person-keyed rows go, counted before any delete."""
     if not path.is_file():
         return
     conn = sqlite3.connect(str(path), timeout=30.0)
@@ -477,27 +571,86 @@ def _delete_satellite_rows(
         local: dict[str, int] = {}
         with conn:
             plan = deletion_plan(conn, principal=principal, home=home)
+            targets: list[tuple[str, str, tuple[Any, ...]]] = []
             # Child rows whose own columns name neither the person nor the
             # universe, but whose parent is going.
-            if "outbound_connector_artifact_edges" in plan or (
-                "outbound_connector_artifacts" in plan
-            ):
+            if "outbound_connector_artifacts" in plan:
                 for side in ("parent_artifact_id", "child_artifact_id"):
-                    try:
-                        _delete(
-                            conn, local, "outbound_connector_artifact_edges",
-                            f"{side} IN (SELECT artifact_id FROM "
-                            "outbound_connector_artifacts WHERE owner_user_id = ?)",
-                            (principal,),
-                        )
-                    except sqlite3.OperationalError:
-                        break
+                    targets.append((
+                        "outbound_connector_artifact_edges",
+                        f"{side} IN (SELECT artifact_id FROM "
+                        "outbound_connector_artifacts WHERE owner_user_id = ?)",
+                        (principal,),
+                    ))
             for table, keys in plan.items():
                 for column, kind in keys:
                     value = home if kind == "universe" else principal
-                    _delete(conn, local, table, f'"{column}" = ?', (value,))
+                    targets.append((table, f'"{column}" = ?', (value,)))
+            live = {t for t in _tables(conn)}
+            targets = [t for t in targets if t[0] in live]
+            for table, where, params in targets:
+                try:
+                    found = _count(
+                        conn, f'SELECT COUNT(*) FROM "{table}" WHERE {where}', params
+                    )
+                except sqlite3.OperationalError:
+                    continue
+                if found:
+                    local[table] = local.get(table, 0) + found
+            for table, where, params in targets:
+                try:
+                    conn.execute(f'DELETE FROM "{table}" WHERE {where}', params)
+                except sqlite3.OperationalError:
+                    continue
         for table, n in local.items():
             counts[f"{label}:{table}"] = counts.get(f"{label}:{table}", 0) + n
+    finally:
+        conn.close()
+
+
+def _delete_authoring_blobs(root: Path, session_ids: list[str]) -> int:
+    """Remove the on-disk blobs of the deleted person's authoring sessions.
+
+    The rows go with ``.authoring.db``; the files they point at are laid out as
+    ``.authoring_blobs/<session_id>/<handle_id>`` and would otherwise survive
+    the account that uploaded them."""
+    from tinyassets.authoring.store import BLOB_DIRNAME
+
+    removed = 0
+    blob_root = root / BLOB_DIRNAME
+    if not blob_root.is_dir():
+        return 0
+    for session_id in session_ids:
+        candidate = (blob_root / session_id).resolve(strict=False)
+        if candidate.parent != blob_root.resolve(strict=False):
+            continue  # never follow a crafted session id out of the blob root
+        if candidate.is_dir():
+            _rmtree(candidate)
+            removed += 1
+    _rmdir_if_empty(blob_root)
+    return removed
+
+
+def _authoring_session_ids(root: Path, principal: str) -> list[str]:
+    """Session ids the principal owns, read before their rows are deleted."""
+    from tinyassets.authoring.store import DB_FILENAME
+
+    path = root / DB_FILENAME
+    if not path.is_file():
+        return []
+    conn = sqlite3.connect(str(path), timeout=30.0)
+    try:
+        if "authoring_sessions" not in _tables(conn):
+            return []
+        return [
+            str(row[0])
+            for row in conn.execute(
+                "SELECT session_id FROM authoring_sessions WHERE owner_id = ?",
+                (principal,),
+            )
+        ]
+    except sqlite3.OperationalError:
+        return []
     finally:
         conn.close()
 
@@ -640,6 +793,11 @@ def delete_account(
     if blockers:
         raise AccountDeletionBlocked("; ".join(blockers))
 
+    # The fence goes in FIRST, so no window exists in which the binding is still
+    # live and the tombstone is not (Codex round 3, finding 4).
+    write_tombstone(root, principal)
+    blob_sessions = _authoring_session_ids(root, principal)
+
     staged = _stage_home(root, home) if home else None
     failures: list[str] = []
 
@@ -659,13 +817,24 @@ def delete_account(
             _delete_root_rows(conn, principal=principal, home=home, counts=counts)
 
     _phase("root_rows", _root_rows)
-    for label, filename in (("outbound", "outbound.db"), ("auth", ".auth.db")):
+    # Every store at the data root, not a named few: an account's data is
+    # wherever a store keyed it, and the directory is the only registry that
+    # cannot go stale.
+    for store in _root_databases(root):
+        label = store.stem.lstrip(".") or store.name
         _phase(
-            label,
-            lambda f=filename, la=label: _delete_satellite_rows(
-                root / f, principal=principal, home=home, counts=counts, label=la
+            f"store:{label}",
+            lambda s=store, la=label: _delete_satellite_rows(
+                s, principal=principal, home=home, counts=counts, label=la
             ),
         )
+    if blob_sessions:
+        def _blobs() -> None:
+            removed = _delete_authoring_blobs(root, blob_sessions)
+            if removed:
+                counts["authoring_blobs (directories)"] = removed
+
+        _phase("authoring_blobs", _blobs)
 
     home_removed = staged is None
     staged_path = ""
@@ -688,6 +857,15 @@ def delete_account(
     identity = _phase(
         "identity", lambda: (delete_identity or delete_workos_user)(principal)
     ) or "error"
+    # An outcome that is neither "done" nor "nothing to do" is UNFINISHED, even
+    # though nothing raised: `unavailable` means we could not reach Stripe, so a
+    # subscription may still be charging, and silence there is exactly the harm
+    # (Codex round 3, finding 3). `not_configured` for identity means the WorkOS
+    # user still exists and a host must remove it.
+    if billing not in ("cancelled", "none", "not_configured") and "billing" not in failures:
+        failures.append("billing")
+    if identity not in ("deleted", "not_applicable") and "identity" not in failures:
+        failures.append("identity")
 
     receipt: dict[str, Any] = {
         "principal_fingerprint": fingerprint,

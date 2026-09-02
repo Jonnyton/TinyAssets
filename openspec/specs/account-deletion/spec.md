@@ -43,7 +43,7 @@ The row set SHALL be computed from the live database schema rather than a hand-m
 
 ### Requirement: Everything The Platform Holds For The Principal Is Removed
 
-`tinyassets.account_deletion.delete_account(base_path, founder_sub=...)` SHALL remove, for exactly that principal: the `founder_home` binding; the bound home universe directory (soul, memory, conversation history, credential vault, every per-universe store); the schema-derived root-database rows above; `outbound.db` connections, grants, connector artifacts and remix edges the principal owns; and every `.auth.db` row keyed by the principal. Rows entangled in two-way `ON DELETE CASCADE` (`request_admissions`, `request_admission_events`, `branch_tasks_v2`, `branch_heads`, `vote_ballots`) SHALL be counted before any of them is deleted, so the receipt states what was actually destroyed rather than whichever table the cascade reached last. Audit rows SHALL be redacted rather than deleted — actor replaced by an opaque fingerprint, summary, target and payload emptied — which is what makes the retention sentence published on `/legal` true. It SHALL cancel the home's Stripe subscription immediately (not at period end) and delete the WorkOS user record through the management API when `WORKOS_API_KEY` is configured; that upstream deletion, not local sweeping, is what ends sessions on devices whose opaque refresh handles this process cannot enumerate.
+`tinyassets.account_deletion.delete_account(base_path, founder_sub=...)` SHALL remove, for exactly that principal: the `founder_home` binding; the bound home universe directory (soul, memory, conversation history, credential vault, every per-universe store); the schema-derived root-database rows above; `outbound.db` connections, grants, connector artifacts and remix edges the principal owns; and every `.auth.db` row keyed by the principal. EVERY targeted table, in every store, SHALL be counted before anything is deleted, so the receipt states what was actually destroyed rather than whichever table a cascade reached last. Counting as each delete runs is not sufficient: `ON DELETE CASCADE` reaches tables the plan has not visited yet, in both directions across Queue Epoch 2 and from `user_accounts` into `user_sessions`. Audit rows SHALL be redacted rather than deleted — actor replaced by an opaque fingerprint, summary, target and payload emptied — which is what makes the retention sentence published on `/legal` true. It SHALL cancel the home's Stripe subscription immediately (not at period end) and delete the WorkOS user record through the management API when `WORKOS_API_KEY` is configured; that upstream deletion, not local sweeping, is what ends sessions on devices whose opaque refresh handles this process cannot enumerate.
 
 #### Scenario: A cascade never hides what was deleted
 
@@ -79,18 +79,56 @@ Deletion SHALL refuse, changing nothing, when another founder is bound to the sa
 - **WHEN** a different user's request lives in the home being deleted
 - **THEN** the deletion is refused and that request still exists
 
+### Requirement: Every Store At The Data Root Is Swept
+
+Deletion SHALL visit every `*.db` at the data root, discovered by reading the directory
+rather than by naming files, and apply the same schema-derived rule to each. A file list
+rots exactly as a table list does: `.authoring.db` and `.automations.db` survived a
+deletion that named only `outbound.db` and `.auth.db`. Files those rows point at SHALL go
+with them — the blobs under `.authoring_blobs/<session_id>/` belong to the sessions being
+deleted. Per-universe stores are out of scope because they live inside the universe
+directory and go with it.
+
+#### Scenario: Drafts, automations and uploads do not outlive the account
+
+- **WHEN** the deleted principal owns authoring sessions, automations and uploaded blobs
+- **THEN** all three are gone and another person's equivalents are untouched
+
+### Requirement: Foreign Ownership Is Judged More Widely Than Deletion
+
+The check for "someone else's row is in this universe" SHALL consider a wider set of
+columns than deletion uses, including `created_by`. `created_by` SHALL NOT be a deletion
+key, because deleting by it would reach into other people's universes; it SHALL be an
+ownership signal, because a row another person created inside *this* universe is theirs
+even when it is terminal and therefore matches no liveness check.
+
+#### Scenario: A stopped instance someone else started blocks the deletion
+
+- **WHEN** another person's daemon instance sits terminal inside the home being deleted
+- **THEN** the deletion is refused and that row still exists
+
 ### Requirement: A Deleted Account Is Not Re-Founded By A Live Token
 
-Deletion SHALL write a tombstone for the principal, and `ensure_founder_home` SHALL refuse to create a home for a tombstoned principal. Without it, an already-issued token on another device would pass local authentication before the identity provider removes the user, and first-contact would hand the person a brand-new universe seconds after they deleted their account. The operator's scoped identity reset SHALL clear the tombstone, because that operation deliberately keeps the login.
+Deletion SHALL write a tombstone BEFORE it stages or deletes anything, and `ensure_founder_home` SHALL refuse to create a home for a tombstoned principal. Writing it last leaves a window in which the binding is still live and the fence is not, and a second device's still-valid token walks through it into first contact; writing it first means the worst case is a tombstoned principal whose deletion then failed, which fails in the safe direction. The tombstone SHALL be keyed by a one-way digest of the principal, never the principal itself, because it outlives the account and `/account` states that the sign-in identity is removed; `/account` SHALL disclose that the digest is retained and why. Without it, an already-issued token on another device would pass local authentication before the identity provider removes the user, and first-contact would hand the person a brand-new universe seconds after they deleted their account. The operator's scoped identity reset SHALL clear the tombstone, because that operation deliberately keeps the login.
 
 #### Scenario: First contact refuses a deleted principal
 
 - **WHEN** a deleted principal's still-valid token reaches first contact
 - **THEN** no universe is created and no binding is written
 
+#### Scenario: The fence is already up when the home is staged
+
+- **WHEN** the home directory is staged during a deletion
+- **THEN** the tombstone for that principal already exists
+
+#### Scenario: The tombstone retains no identifier
+
+- **WHEN** a deletion completes
+- **THEN** the stored key is a digest, the raw principal appears nowhere in it, and the check still recognises that principal
+
 ### Requirement: Refuse Before Changing, Report After
 
-Deletion SHALL be refused, with nothing changed, for an empty or `anonymous` principal or when the bound home path escapes the data root or is not a plain directory. Once the home directory has been staged (atomic rename under `.deleting/`), the account is unreachable. Every later phase SHALL run independently of the others, so a failure in one never prevents the phase that cancels the money; each failure SHALL be recorded in the receipt (`unfinished_phases`, plus `home_removed`/`billing`/`identity`) and logged at ERROR with a principal fingerprint only — never swallowed, never carrying a secret or the raw principal. A deletion that leaves any phase unfinished SHALL also write a durable, content-free receipt under `.account-deletions/` so the host can finish it, and the app SHALL tell the user rather than report a deletion that did not fully happen.
+Deletion SHALL be refused, with nothing changed, for an empty or `anonymous` principal or when the bound home path escapes the data root or is not a plain directory. Once the home directory has been staged (atomic rename under `.deleting/`), the account is unreachable. Every later phase SHALL run independently of the others, so a failure in one never prevents the phase that cancels the money; each failure SHALL be recorded in the receipt (`unfinished_phases`, plus `home_removed`/`billing`/`identity`) and logged at ERROR with a principal fingerprint only — never swallowed, never carrying a secret or the raw principal. An outcome that is neither success nor nothing-to-do — an unreachable payment processor, an unconfigured identity provider — SHALL count as unfinished even though nothing raised, because a subscription may still be charging and silence there is the harm. A deletion that leaves any phase unfinished SHALL also write a durable, content-free receipt under `.account-deletions/` so the host can finish it, and the app SHALL tell the user rather than report a deletion that did not fully happen.
 
 #### Scenario: An escaping binding changes nothing
 
@@ -106,6 +144,11 @@ Deletion SHALL be refused, with nothing changed, for an empty or `anonymous` pri
 
 - **WHEN** a satellite database is locked and its deletion phase fails
 - **THEN** billing cancellation and identity deletion still run, and a durable receipt names the unfinished phases
+
+#### Scenario: An unreachable payment processor is unfinished work
+
+- **WHEN** billing cancellation returns `unavailable` without raising
+- **THEN** the receipt marks billing unfinished and a durable receipt is written for the host
 
 ### Requirement: The Public Web Page And The In-App Path Exist And Agree
 

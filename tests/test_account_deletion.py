@@ -383,6 +383,173 @@ def test_a_principal_with_no_home_still_loses_grants_tokens_and_identity(two_use
     assert (base / HOME_B / "soul.md").is_file()
 
 
+def test_other_root_stores_lose_the_persons_data_too(two_users: Path):
+    """Round 3 found `.authoring.db` and `.automations.db` untouched because the
+    sweep named two files. Every store at the data root is visited now."""
+    base = two_users
+    authoring = base / ".authoring.db"
+    conn = sqlite3.connect(str(authoring))
+    with conn:
+        conn.execute(
+            "CREATE TABLE authoring_sessions (session_id TEXT PRIMARY KEY, "
+            "owner_id TEXT NOT NULL)"
+        )
+        conn.execute("INSERT INTO authoring_sessions VALUES ('sess-a', ?)", (A,))
+        conn.execute("INSERT INTO authoring_sessions VALUES ('sess-b', ?)", (B,))
+    conn.close()
+    automations = base / ".automations.db"
+    conn = sqlite3.connect(str(automations))
+    with conn:
+        conn.execute(
+            "CREATE TABLE automations (automation_id TEXT PRIMARY KEY, "
+            "universe_id TEXT NOT NULL, owner_principal_id TEXT NOT NULL)"
+        )
+        conn.execute("INSERT INTO automations VALUES ('au-a', ?, ?)", (HOME_A, A))
+        conn.execute("INSERT INTO automations VALUES ('au-b', ?, ?)", (HOME_B, B))
+    conn.close()
+    blobs = base / ".authoring_blobs"
+    (blobs / "sess-a").mkdir(parents=True)
+    (blobs / "sess-a" / "handle-1").write_text("A's upload", encoding="utf-8")
+    (blobs / "sess-b").mkdir(parents=True)
+    (blobs / "sess-b" / "handle-2").write_text("B's upload", encoding="utf-8")
+
+    receipt = delete_account(base, founder_sub=A, delete_identity=lambda s: "deleted")
+
+    assert _rows(authoring, "SELECT session_id FROM authoring_sessions") == [("sess-b",)]
+    assert _rows(automations, "SELECT automation_id FROM automations") == [("au-b",)]
+    assert not (blobs / "sess-a").exists(), "A's uploaded files must go with their rows"
+    assert (blobs / "sess-b" / "handle-2").read_text(encoding="utf-8") == "B's upload"
+    assert receipt["rows_deleted"]["authoring:authoring_sessions"] == 1
+    assert receipt["rows_deleted"]["automations:automations"] == 1
+    assert receipt["rows_deleted"]["authoring_blobs (directories)"] == 1
+
+
+def test_a_foreign_terminal_row_in_my_universe_blocks_the_deletion(two_users: Path):
+    """A stopped daemon B started inside A's universe is nobody's active work,
+    so no liveness check catches it — but it is still B's row."""
+    base = two_users
+    root_db = base / ".tinyassets.db"
+    _exec(
+        root_db,
+        "INSERT INTO author_runtime_instances (instance_id, universe_id, author_id, "
+        "provider_name, model_name, status, created_by, created_at, updated_at, "
+        "metadata_json) "
+        "VALUES ('inst-b', ?, 'auth-1', 'claude', 'sonnet', 'stopped', ?, 1.0, 1.0, '{}')",
+        (HOME_A, B),
+    )
+    conn = sqlite3.connect(str(root_db))
+    has_owner = "created_by" in {
+        r[1] for r in conn.execute("PRAGMA table_info(author_runtime_instances)")
+    }
+    conn.close()
+    if not has_owner:
+        pytest.skip("author_runtime_instances has no owner column in this schema")
+
+    with pytest.raises(AccountDeletionBlocked) as exc:
+        delete_account(base, founder_sub=A, delete_identity=lambda s: "deleted")
+
+    assert "another person's rows" in str(exc.value)
+    survived = _rows(
+        root_db, "SELECT 1 FROM author_runtime_instances WHERE instance_id = 'inst-b'"
+    )
+    assert survived == [(1,)]
+    assert (base / HOME_A / "soul.md").is_file()
+
+
+def test_an_unreachable_payment_processor_is_unfinished_work(two_users: Path):
+    """Nothing raises when Stripe is unreachable — `cancel_stripe_billing`
+    returns "unavailable". Silence there is the harm: the subscription may still
+    be charging, so it has to count as unfinished and leave a receipt."""
+    base = two_users
+
+    receipt = delete_account(
+        base,
+        founder_sub=A,
+        cancel_billing=lambda home: "unavailable",
+        delete_identity=lambda sub: "deleted",
+    )
+
+    assert receipt["billing"] == "unavailable"
+    assert receipt["unfinished_phases"] == ["billing"]
+    assert receipt["host_receipt_path"]
+    pending = account_deletion.pending_deletions(base)
+    assert len(pending) == 1 and pending[0]["billing"] == "unavailable"
+
+
+def test_an_unconfigured_identity_provider_is_unfinished_work(two_users: Path):
+    """`not_configured` means the WorkOS user still exists, while /account says
+    the sign-in is removed. The host has to be told."""
+    receipt = delete_account(
+        two_users, founder_sub=A, delete_identity=lambda sub: "not_configured"
+    )
+    assert receipt["identity"] == "not_configured"
+    assert receipt["unfinished_phases"] == ["identity"]
+    assert account_deletion.pending_deletions(two_users)
+
+
+def test_the_fence_is_written_before_anything_is_staged(two_users: Path, monkeypatch):
+    """Round 3 reproduced the race: with the tombstone written last, a second
+    device reached first-contact between staging and commit and rebuilt a home
+    that outlived the deletion. The fence must already be up when staging runs."""
+    from tinyassets.api.first_contact import principal_is_deleted
+
+    base = two_users
+    seen: list[bool] = []
+    real_stage = account_deletion._stage_home
+
+    def _watching_stage(root, home):
+        seen.append(principal_is_deleted(root, A))
+        return real_stage(root, home)
+
+    monkeypatch.setattr(account_deletion, "_stage_home", _watching_stage)
+    delete_account(base, founder_sub=A, delete_identity=lambda s: "deleted")
+
+    assert seen == [True], "the tombstone must exist before the home is staged"
+
+
+def test_the_tombstone_keeps_no_identifier(two_users: Path):
+    """It outlives the account, so it must not retain the WorkOS user id of
+    someone who asked to be deleted — /account says the sign-in is removed."""
+    from tinyassets.api.first_contact import principal_is_deleted
+
+    base = two_users
+    delete_account(base, founder_sub=A, delete_identity=lambda s: "deleted")
+
+    stored = _rows(base / ".tinyassets.db", "SELECT founder_sub FROM deleted_principals")
+    assert len(stored) == 1
+    assert A not in stored[0][0]
+    assert stored[0][0] == account_deletion.principal_digest(A)
+    assert principal_is_deleted(base, A) is True
+    assert principal_is_deleted(base, B) is False
+
+
+def test_a_cascade_into_an_unvisited_table_is_still_counted(two_users: Path):
+    """Deleting `user_accounts` cascades into `user_sessions` before the sorted
+    plan reaches it. Counting as we go reported only the parent."""
+    base = two_users
+    root_db = base / ".tinyassets.db"
+    _exec(
+        root_db,
+        "INSERT INTO user_accounts (user_id, username, display_name, is_active, "
+        "created_at, updated_at, metadata_json) "
+        "VALUES (?, 'a', 'A', 1, 1.0, 1.0, '{}')",
+        (A,),
+    )
+    _exec(
+        root_db,
+        "INSERT INTO user_sessions (session_token, user_id, created_at, last_seen, "
+        "expires_at, metadata_json) "
+        "VALUES ('sess-a', ?, 1.0, 1.0, 9999999999.0, '{}')",
+        (A,),
+    )
+
+    receipt = delete_account(base, founder_sub=A, delete_identity=lambda s: "deleted")
+
+    assert _rows(root_db, "SELECT 1 FROM user_sessions WHERE user_id = ?", (A,)) == []
+    assert receipt["rows_deleted"].get("user_accounts") == 1
+    assert receipt["rows_deleted"].get("user_sessions") == 1, receipt["rows_deleted"]
+
+
 # --------------------------------------------------------------------------- #
 # the schema-derived rule itself
 # --------------------------------------------------------------------------- #
@@ -508,7 +675,7 @@ def test_a_failed_row_phase_still_cancels_the_billing(two_users: Path, monkeypat
 
     assert billed == [HOME_A], "billing ran even though an earlier phase failed"
     assert receipt["identity"] == "deleted"
-    assert receipt["unfinished_phases"] == ["auth", "outbound"]
+    assert receipt["unfinished_phases"] == ["store:auth", "store:outbound"]
     assert receipt["host_receipt_path"]
 
 

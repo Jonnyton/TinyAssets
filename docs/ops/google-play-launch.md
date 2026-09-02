@@ -190,7 +190,7 @@ Play's taxonomy, not ours. Answer exactly:
   |---|---|---|---|
   | Personal info → **Email address** | sign-in email | Required | App functionality, Account management |
   | Personal info → **User IDs** | WorkOS user id | Required | App functionality, Account management |
-  | Messages → **Other in-app messages** | what you say to your universe | Optional (you choose to write) | App functionality |
+  | Messages → **Other in-app messages** | what you say to your universe | **Required** — chatting *is* the app's primary functionality, and Play asks that data required for primary functionality be declared required, not that the user could decline to type | App functionality |
   | Files and docs → **Files and docs** | attachments you send it | Optional (attaching is a choice) | App functionality |
   | App activity → **Other user-generated content** | the AI-provider credential you deposit (Play has no "credentials" type; this is its category for user-entered content that fits nowhere else) | Optional (Connect can be skipped) | App functionality |
 
