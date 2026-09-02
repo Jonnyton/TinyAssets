@@ -1,7 +1,7 @@
-# Tiny — "Field Notes" design system (how to build with it)
+# TinyAssets — "Ink editorial" design system (how to build with it)
 
-A naturalist's logbook crossed with a scientific instrument: warm paper ground,
-ink text, calm and deliberate. One load-bearing rule — **claim vs evidence is
+An ink-editorial document: a dark ground with
+cream text, calm and deliberate. One load-bearing rule — **claim vs evidence is
 typographic**: prose uses serif/sans; live data, ids, and timestamps are
 **always mono**.
 
@@ -26,7 +26,7 @@ props**. Style your own layout glue two ways:
 
 1. **CSS custom properties** — the design language. Real names (see
    `tokens/tiny.tokens.json` for the full set):
-   - color: `--bg-0`..`--bg-3` (paper grounds), `--fg-1`..`--fg-4` (ink, strong→faint),
+   - color: `--bg-0`..`--bg-3` (ink ground, then raised surfaces), `--fg-1`..`--fg-4` (cream, strong→faint),
      `--ember-600`/`--accent` (the ONE action color), `--live-600` (RESERVED for genuine
      liveness), `--violet-600` (lineage/souls), `--border-1`/`--border-2`, `--panel`/`--on-panel` (dark readout)
    - type: `--font-voice` (Newsreader serif), `--font-sans` (Inter), `--font-mono` (IBM Plex Mono — for ALL evidence)

@@ -1,7 +1,7 @@
 /* Base reset, semantic element styles, and the site-wide vocabulary classes
    (.voice / .ev / .eyebrow / .sheet / .rule / .ledger / .receipt ...).
    Imports the token :root so a single `@import "styles.css"` gives a design
-   the full warm-editorial look. */
+   the full ink-editorial look. */
 
 @import "./tokens.css";
 
@@ -19,12 +19,14 @@ html, body {
   text-rendering: optimizeLegibility;
 }
 
-/* ---------- ATMOSPHERE: a faint paper grain ---------- */
+/* ---------- ATMOSPHERE ----------
+   A very faint warm haze at the top, so the ground is not a flat black
+   rectangle. No texture: grain on a dark ground reads as noise. */
 body {
   background:
-    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.30  0 0 0 0 0.26  0 0 0 0 0.22  0 0 0 0.035 0'/></filter><rect width='180' height='180' filter='url(%23n)'/></svg>"),
+    radial-gradient(120% 70% at 50% -10%, rgba(224, 112, 63, 0.07), transparent 60%),
     var(--bg-0);
-  background-size: 180px 180px, auto;
+  background-attachment: fixed;
 }
 
 h1, h2, h3 {
@@ -68,26 +70,26 @@ p {
 }
 
 a {
-  color: var(--ember-700);
+  color: var(--ember-600);
   text-decoration: underline;
-  text-decoration-color: rgba(149, 58, 25, 0.35);
+  text-decoration-color: rgba(224, 112, 63, 0.4);
   text-underline-offset: 3px;
   text-decoration-thickness: 1px;
   transition: color var(--dur-fast) var(--ease-standard),
     text-decoration-color var(--dur-fast) var(--ease-standard);
 }
-a:hover { color: var(--ember-900); text-decoration-color: currentColor; }
+a:hover { color: var(--ember-500); text-decoration-color: currentColor; }
 
 code, pre, kbd, samp {
   font-family: var(--font-mono);
   font-size: 0.9em;
 }
 code {
-  background: var(--paper-200);
+  background: var(--bg-2);
   border: 1px solid var(--border-1);
   padding: 1px 6px;
   border-radius: var(--radius-xs);
-  color: var(--ink-text-700);
+  color: var(--fg-2);
 }
 pre {
   background: var(--bg-1);
@@ -126,7 +128,7 @@ th {
   border-bottom: 1px solid var(--border-strong);
 }
 
-::selection { background: rgba(181, 71, 31, 0.18); color: var(--fg-1); }
+::selection { background: rgba(224, 112, 63, 0.3); color: var(--fg-1); }
 
 :focus-visible {
   outline: 2px solid var(--ember-600);
@@ -145,7 +147,7 @@ th {
   max-width: 60ch;
   font-variation-settings: "opsz" 20, "SOFT" 30;
 }
-.voice em { font-style: italic; color: var(--ember-700); }
+.voice em { font-style: italic; color: var(--ember-600); }
 
 /* Evidence — live values, ids, timestamps. Always mono. */
 .ev {
@@ -177,7 +179,7 @@ th {
   flex: none;
 }
 .dot.live { background: var(--signal-live); box-shadow: 0 0 0 3px var(--live-100); }
-.dot.idle { background: var(--signal-idle); box-shadow: 0 0 0 3px rgba(154, 107, 10, 0.14); }
+.dot.idle { background: var(--signal-idle); box-shadow: 0 0 0 3px rgba(201, 162, 39, 0.18); }
 .dot.error { background: var(--signal-error); box-shadow: 0 0 0 3px var(--ember-100); }
 
 /* Display pull — a big serif line with one emphasised word. */
@@ -195,22 +197,14 @@ th {
   color: var(--ember-600);
 }
 
-[data-theme="light"] {
-  --bg-0: var(--ground-0);
-  --bg-1: var(--paper-50);
-  --bg-2: var(--paper-100);
-  --bg-3: var(--paper-200);
-}
-
 /* ---------- THE MOTIF: sheets, rules, ledgers, receipts ---------- */
 
-/* A sheet of paper sitting on the desk. */
+/* A raised surface on the ground. On ink, depth is a lighter panel. */
 .sheet {
   background: var(--bg-1);
   border: 1px solid var(--border-2);
   border-radius: var(--radius-card);
   padding: var(--s-6);
-  box-shadow: var(--shadow-sm);
 }
 
 /* A horizontal rule with a label set into it, like a section head in a ledger. */
@@ -257,7 +251,7 @@ th {
   background: var(--bg-1);
   border-top: 2px solid var(--border-strong);
   border-bottom: 1px solid var(--border-strong);
-  padding: var(--s-3) 0;
+  padding: var(--s-3) var(--s-4);
   margin: 0;
   color: var(--fg-2);
   font-feature-settings: "tnum";
@@ -278,14 +272,11 @@ th {
   padding-top: 2px;
 }
 .receipt dd { margin: 0; color: var(--fg-1); overflow-wrap: anywhere; }
-.receipt dd.ok { color: var(--live-700); }
+.receipt dd.ok { color: var(--signal-live); }
 .receipt dd.err { color: var(--signal-error); }
-.receipt .total {
-  font-weight: 600;
-  color: var(--fg-1);
-}
+.receipt .total { font-weight: 600; color: var(--fg-1); }
 
-/* ---------- INK PANEL (sparingly: a dark block on the page) ---------- */
+/* ---------- PAPER PANEL (the inversion: a printed sheet on the ink) ------- */
 .readout {
   background-color: var(--panel);
   color: var(--on-panel);
@@ -297,10 +288,10 @@ th {
 .readout p { color: var(--on-panel-soft); }
 .readout .eyebrow, .readout .ritual-label { color: var(--on-panel-soft); }
 .readout .ev { color: var(--on-panel-soft); }
-.readout a { color: var(--ember-300); text-decoration-color: rgba(217, 139, 106, 0.4); }
+.readout a { color: var(--ember-900); text-decoration-color: rgba(164, 75, 33, 0.45); }
 .readout a:hover { color: var(--on-panel); }
-.readout .voice em { color: var(--ember-300); }
-.readout .dot.live { background: var(--live-bright); box-shadow: 0 0 0 3px rgba(127, 191, 140, 0.2); }
+.readout .voice em { color: var(--ember-900); }
+.readout .dot.live { background: var(--live-bright); box-shadow: 0 0 0 3px rgba(47, 107, 58, 0.18); }
 
 /* A single reading. */
 .stat { display: grid; gap: 4px; }

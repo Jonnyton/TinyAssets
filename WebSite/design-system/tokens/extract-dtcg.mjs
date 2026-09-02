@@ -78,7 +78,7 @@ function classify(name, resolved) {
 
 const out = {
   $description:
-    "Tiny — Field Notes design tokens (DTCG 2025.10). Generated from src/styles/tokens.css; do not hand-edit. Exact CSS variable names preserved under $extensions['tiny.var'].",
+    "TinyAssets — ink-editorial design tokens (DTCG 2025.10). Generated from src/styles/tokens.css; do not hand-edit. Exact CSS variable names preserved under $extensions['tiny.var'].",
 };
 
 for (const name of order) {

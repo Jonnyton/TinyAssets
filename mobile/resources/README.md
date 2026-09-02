@@ -1,7 +1,7 @@
 # App icon + splash
 
-- `icon.png` — 1024×1024 source (the TinyAssets mark on its paper tile, on `#0b0b0f`).
-- `splash.png` — 2732×2732 source (the mark centred on `#0b0b0f`, matching the
+- `icon.png` — 1024×1024 source (the TinyAssets monogram on the ink ground, `#14140f`).
+- `splash.png` — 2732×2732 source (the mark centred on `#14140f`, matching the
   loading page).
 - `android/` — the **pre-rendered density set** the app actually ships: legacy
   launcher icons (48–192 px, square + round), adaptive-icon foregrounds

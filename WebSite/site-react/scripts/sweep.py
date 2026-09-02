@@ -50,9 +50,16 @@ class Quiet(http.server.SimpleHTTPRequestHandler):
         pass
 
 
-def serve() -> socketserver.TCPServer:
+class _Server(socketserver.ThreadingTCPServer):
+    # Threaded on purpose: the alias pages redirect while their first request
+    # is still open, and a single-threaded server deadlocks on the overlap.
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def serve() -> _Server:
     handler = partial(Quiet, directory=str(OUT))
-    srv = socketserver.TCPServer(("127.0.0.1", PORT), handler)
+    srv = _Server(("127.0.0.1", PORT), handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
 

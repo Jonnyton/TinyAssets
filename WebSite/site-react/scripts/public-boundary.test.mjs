@@ -220,9 +220,9 @@ test("the inline mark is generated from the one geometry source", () => {
     resolve(siteRoot, "../../tinyassets/desktop/icon_gen.py"),
     "utf8",
   );
-  // `RING_CX, RING_CY, RING_R = 32.0, 30.0, 18.5` and friends.
+  // `RULE_X0, RULE_X1 = 9.0, 55.0` and friends.
   const tuple = (names) => {
-    const m = iconGen.match(new RegExp(`^${names.join(", ")}\\s*=\\s*([0-9.,\\s]+)$`, "m"));
+    const m = iconGen.match(new RegExp(`^${names.join(", ")}\\s*=\\s*([0-9.,\\s]+)`, "m"));
     assert.ok(m, `icon_gen.py defines ${names.join(", ")}`);
     return m[1].split(",").map((v) => Number(v.trim()));
   };
@@ -231,28 +231,31 @@ test("the inline mark is generated from the one geometry source", () => {
     assert.ok(m, `icon_gen.py defines ${name}`);
     return Number(m[1]);
   };
-  const [ringCx, ringCy, ringR] = tuple(["RING_CX", "RING_CY", "RING_R"]);
-  const [dotCx, dotCy, dotR] = tuple(["DOT_CX", "DOT_CY", "DOT_R"]);
-  const halo = dotR + scalar("DOT_HALO");
+  const [ruleX0, ruleX1] = tuple(["RULE_X0", "RULE_X1"]);
 
   const svgNumbers = new Set(
-    [...mark.matchAll(/(?:cx|cy|r|rx|x|y|width|height|strokeWidth)="([\d.]+)"/g)].map((m) =>
-      Number(m[1]),
-    ),
+    [...mark.matchAll(/(?:rx|x|y|width|height)="([\d.]+)"/g)].map((m) => Number(m[1])),
   );
   for (const [label, value] of [
-    ["ring centre x", ringCx],
-    ["ring centre y", ringCy],
-    ["ring radius", ringR],
-    ["ring stroke", scalar("RING_STROKE")],
+    ["viewBox", scalar("VIEWBOX")],
     ["tile radius", scalar("TILE_RADIUS")],
-    ["dot centre x", dotCx],
-    ["dot centre y", dotCy],
-    ["dot radius", dotR],
-    ["halo radius", halo],
+    ["rule start", ruleX0],
+    ["rule width", ruleX1 - ruleX0],
+    ["rule y", scalar("RULE_Y")],
+    ["rule height", scalar("RULE_H")],
   ]) {
     assert.ok(svgNumbers.has(value), `${label} (${value}) must come from icon_gen.py`);
   }
+
+  // The letterforms themselves: the component must carry the exact outline
+  // data from icon_gen.py, never a redrawn approximation of it.
+  const pathInPython = iconGen.match(/TA_PATH = \(\n([\s\S]*?)\n\)/);
+  assert.ok(pathInPython, "icon_gen.py defines TA_PATH");
+  const joined = [...pathInPython[1].matchAll(/"([^"]*)"/g)].map((m) => m[1]).join("");
+  assert.ok(joined.length > 500, "TA_PATH carries real outline data");
+  const pathInMark = mark.match(/<path d="([^"]+)"/);
+  assert.ok(pathInMark, "the component renders the monogram path");
+  assert.equal(pathInMark[1], joined, "the inline mark uses icon_gen.py's outlines verbatim");
 });
 
 test("no public copy claims goals or runs are read live, or that the platform runs a model", () => {

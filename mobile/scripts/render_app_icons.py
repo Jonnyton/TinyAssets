@@ -32,7 +32,7 @@ REPO = MOBILE.parent
 RES = MOBILE / "resources"
 OUT = RES / "android"
 PLAY = REPO / "docs" / "ops" / "play-assets"
-BG = (0x0B, 0x0B, 0x0F)  # capacitor.config.json android.backgroundColor
+BG = (0x14, 0x14, 0x0F)  # capacitor.config.json android.backgroundColor
 
 LAUNCHER = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
 FOREGROUND = {"mdpi": 108, "hdpi": 162, "xhdpi": 216, "xxhdpi": 324, "xxxhdpi": 432}

@@ -31,20 +31,20 @@ HTML = """<!doctype html>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..700&family=Source+Sans+3:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=block" rel="stylesheet">
 <style>
-  html, body { margin: 0; width: 1200px; height: 630px; background: #f4efe4; color: #1e1a17; }
+  html, body { margin: 0; width: 1200px; height: 630px; background: #14140f; color: #f2efe6; }
   .card { position: relative; width: 1200px; height: 630px; padding: 72px 84px; box-sizing: border-box;
           font-family: "Source Sans 3", sans-serif; }
   .brand { display: flex; align-items: center; gap: 22px; }
-  .brand svg { width: 72px; height: 72px; }
+  .brand svg { width: 86px; height: 86px; }
   .word { font-family: "Fraunces", serif; font-size: 44px; font-weight: 500; letter-spacing: -0.01em;
           font-variation-settings: "opsz" 48, "SOFT" 30; }
   h1 { font-family: "Fraunces", serif; font-weight: 500; font-size: 84px; line-height: 1.02; letter-spacing: -0.015em;
        margin: 48px 0 24px; max-width: 18ch; font-variation-settings: "opsz" 144, "SOFT" 30; }
-  p { font-size: 28px; line-height: 1.35; margin: 0; max-width: 40ch; color: #3f3833; }
-  .rule { position: absolute; left: 84px; right: 84px; bottom: 48px; border-top: 1px solid rgba(30,26,23,.72);
+  p { font-size: 28px; line-height: 1.35; margin: 0; max-width: 40ch; color: #cdc7ba; }
+  .rule { position: absolute; left: 84px; right: 84px; bottom: 48px; border-top: 1px solid rgba(242,239,230,.55);
           padding-top: 16px; display: flex; justify-content: space-between;
-          font-family: "IBM Plex Mono", monospace; font-size: 20px; color: #6b625a; }
-  .rule b { color: #b5471f; font-weight: 500; }
+          font-family: "IBM Plex Mono", monospace; font-size: 20px; color: #8f8a7e; }
+  .rule b { color: #e0703f; font-weight: 500; }
 </style></head>
 <body><div class="card">
   <div class="brand">__MARK__<span class="word">TinyAssets</span></div>

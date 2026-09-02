@@ -10,7 +10,7 @@ export interface RitualLabelProps {
 
 /**
  * RitualLabel — the small-caps mono kicker used above section headings and on
- * metadata ("inscribed" text). Mono + wide letter-spacing is the Field Notes
+ * metadata ("inscribed" text). Mono + wide letter-spacing is the ink-editorial
  * signal for a label rather than prose.
  */
 export function RitualLabel({ children, color }: RitualLabelProps) {

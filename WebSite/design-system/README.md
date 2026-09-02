@@ -1,6 +1,6 @@
 # @tiny/design-system
 
-Tiny's **React** design system — the "Field Notes" language. This is the
+TinyAssets' **React** design system — the "ink editorial" language. This is the
 AI-facing component library: the compiled `dist/` is what claude.ai/design's
 `/design-sync` ingests, and what the product site imports.
 

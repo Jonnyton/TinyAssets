@@ -52,7 +52,7 @@
   color: var(--fg-2);
   line-height: 1.35;
 }
-.rung.lit .rung__name { color: var(--live-700); }
+.rung.lit .rung__name { color: var(--live-600); }
 .rung__desc {
   font-size: 13.5px;
   color: var(--fg-3);
@@ -62,7 +62,7 @@
 .rung__evidence {
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--live-700);
+  color: var(--live-600);
   width: fit-content;
 }
 .compact .rung { padding: 4px 0 4px 3px; }

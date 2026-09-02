@@ -26,7 +26,7 @@ from pathlib import Path
 MOBILE = Path(__file__).resolve().parents[1]
 RES = MOBILE / "android" / "app" / "src" / "main" / "res"
 SRC = MOBILE / "resources" / "android"
-BACKGROUND = "#0B0B0F"  # matches capacitor.config.json android.backgroundColor
+BACKGROUND = "#14140F"  # matches capacitor.config.json android.backgroundColor
 
 ADAPTIVE_ICON = """<?xml version="1.0" encoding="utf-8"?>
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">

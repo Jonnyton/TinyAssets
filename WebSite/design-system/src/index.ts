@@ -1,5 +1,5 @@
 // @tiny/design-system — public entry.
-// Importing this pulls in the full Field Notes base layer (tokens + reset +
+// Importing this pulls in the full ink-editorial base layer (tokens + reset +
 // vocabulary) plus each component's styles, so a single import gives the look.
 import "./styles/base.css";
 
