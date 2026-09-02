@@ -218,6 +218,27 @@ row; if yes, the concern above is the prerequisite.
 
 ## Credentials and accounts
 
+### Google Play: confirm `WORKOS_API_KEY` reaches the daemon (one command, before launch)
+
+Account deletion (`tinyassets/account_deletion.py`, shipped in #2774) removes the user's
+WorkOS record through the management API, and that is also what ends sessions on other
+devices — this process cannot enumerate their refresh handles. The key is not in the repo
+or in `deploy/`, so it lives only in `/etc/tinyassets/env` on the host. WorkOS Pipes needs
+the same variable and works in production, so it is probably already there; "probably" is
+not good enough for a deletion promise published on `/legal`.
+
+```bash
+ssh <prod-host> 'grep -c "^WORKOS_API_KEY=" /etc/tinyassets/env'   # expect 1
+ssh <prod-host> 'docker exec tinyassets-daemon printenv WORKOS_API_KEY | head -c 3'  # expect sk_
+```
+
+If it is missing, deletion still runs and still removes every byte of the user's data —
+it reports `identity: not_configured`, tells the user in the app, and writes a receipt
+under `.account-deletions/` — but the sign-in identity survives and you must delete it in
+the WorkOS dashboard. Check `python -c "import json,sys;
+from tinyassets.account_deletion import pending_deletions; print(pending_deletions('/data'))"`
+for anything outstanding.
+
 ### Google Play: add the four upload-keystore secrets (one command)
 
 The Play developer account exists (identity verified 2026-08-24) and the upload keystore was
