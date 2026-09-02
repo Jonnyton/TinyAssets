@@ -761,7 +761,20 @@ def _action_subscribe_branch(kwargs: dict[str, Any]) -> str:
             "error": f"Unknown event_type '{event_type}'.",
             "valid": sorted(VALID_EVENT_TYPES),
         })
-    owner_actor = (kwargs.get("owner_actor") or "").strip() or "anonymous"
+    # A subscription is an authority row: the run it fires acts for its owner.
+    # Defaulting to the literal string wrote one owned by nobody and later
+    # dispatched as `subscriber:anonymous` (Codex code review round 3). The
+    # caller names an owner, or the request identity does.
+    owner_actor = (kwargs.get("owner_actor") or "").strip()
+    if not owner_actor:
+        from tinyassets.api.permissions import current_request_actor_id
+
+        owner_actor = current_request_actor_id()
+    if not owner_actor:
+        return json.dumps({
+            "error": "authentication_required",
+            "detail": "a subscription needs an owner; there is no anonymous one",
+        })
     base = _base_path()
     initialize_runs_db(base)
     try:
@@ -787,7 +800,20 @@ def _action_unsubscribe_branch(kwargs: dict[str, Any]) -> str:
     subscription_id = (kwargs.get("subscription_id") or "").strip()
     if not subscription_id:
         return json.dumps({"error": "subscription_id is required."})
-    owner_actor = (kwargs.get("owner_actor") or "").strip() or "anonymous"
+    # A subscription is an authority row: the run it fires acts for its owner.
+    # Defaulting to the literal string wrote one owned by nobody and later
+    # dispatched as `subscriber:anonymous` (Codex code review round 3). The
+    # caller names an owner, or the request identity does.
+    owner_actor = (kwargs.get("owner_actor") or "").strip()
+    if not owner_actor:
+        from tinyassets.api.permissions import current_request_actor_id
+
+        owner_actor = current_request_actor_id()
+    if not owner_actor:
+        return json.dumps({
+            "error": "authentication_required",
+            "detail": "a subscription needs an owner; there is no anonymous one",
+        })
     base = _base_path()
     try:
         removed = unregister_subscription(base, subscription_id, requesting_actor=owner_actor)

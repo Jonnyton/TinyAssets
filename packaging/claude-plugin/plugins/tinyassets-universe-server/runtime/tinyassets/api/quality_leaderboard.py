@@ -211,11 +211,17 @@ def build_quality_leaderboard(
 
     # Dispatch the selector. Empty candidate set short-circuits to
     # an empty leaderboard without burning an LLM call.
+    from tinyassets.api.engine_helpers import _current_actor
+
     dispatch_result = dispatch_selector(
         base_path,
         goal_id=goal_id,
         candidate_branches=candidates,
-        actor=viewer or "anonymous",
+        # The viewer, or the bound principal. Never the literal string: it
+        # names nobody, and `create_run` refuses it -- so converting an empty
+        # viewer into it turned "who is asking" into a hard failure at the
+        # dispatch (Codex code review round 3, P0).
+        actor=viewer or _current_actor(),
         provider_call=provider_call,
     )
 

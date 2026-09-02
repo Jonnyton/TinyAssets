@@ -618,6 +618,7 @@ def main(argv: list[str]) -> int:
 
     probe(args.url, args.timeout, expected_name=args.assert_name, bearer=bearer)
 
+    identity_state = "not-checked"
     if args.assert_handles:
         try:
             identity_state = assert_canonical_handles_with_retry(
@@ -634,13 +635,17 @@ def main(argv: list[str]) -> int:
         # Say what was actually asserted against THIS daemon, never the
         # superset: a line claiming a check that did not run is worse than no
         # line, because it is the line an operator trusts after a rollback.
-        checks = ["canonical handle set advertised", "converse refused anonymously"]
-        if bearer is not None:
-            checks.insert(0, "anonymous initialize challenged")
-            checks.append("converse refused for the canary")
-        checks.append("get_status uptime fields present")
-        checks.append(f"identity_evidence={identity_state}")
-        suffix = f" ({'; '.join(checks)})" if args.assert_handles else ""
+        checks: list[str] = []
+        if args.assert_handles:
+            checks = ["canonical handle set advertised", "converse refused anonymously"]
+            if bearer is not None:
+                checks.insert(0, "anonymous initialize challenged")
+                checks.append("converse refused for the canary")
+            checks.append("get_status uptime fields present")
+            checks.append(f"identity_evidence={identity_state}")
+        elif bearer is not None:
+            checks = ["anonymous initialize challenged"]
+        suffix = f" ({'; '.join(checks)})" if checks else ""
         contract = (
             "reads as the canary principal"
             if bearer is not None
