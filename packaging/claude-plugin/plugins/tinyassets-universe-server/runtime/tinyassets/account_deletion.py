@@ -109,7 +109,13 @@ UNIVERSE_KEY = "universe_id"
 #: everywhere: an access grant is this account's access, so deleting the account
 #: revokes it wherever it points. Removing it takes nothing from the universe
 #: that granted it — only the deleted person's ability to reach it.
-PERSON_KEYED_DESPITE_UNIVERSE = MappingProxyType({"universe_acl": "actor_id"})
+PERSON_KEYED_DESPITE_UNIVERSE = MappingProxyType({
+    "universe_acl": "actor_id",
+    # Defence in depth: the binding is deleted by home anyway, and a foreign
+    # binding to the same home is a blocker, but a binding is the person's own
+    # row and should not depend on the universe sweep to disappear.
+    "founder_home": "founder_sub",
+})
 
 #: Reached through a parent rather than by their own key, and/or entangled in
 #: two-way ON DELETE CASCADE. Deleted explicitly and counted before any of them
@@ -129,6 +135,12 @@ PRESERVED_TABLES = frozenset({
     "branch_definitions",
     "goals",
     "goal_canonicals",
+    # Which branch is canonical for a goal is a COMMONS pointer other people
+    # rely on; `bound_by_actor_id` records who bound it, which is attribution,
+    # not ownership. The operator path preserves it and so must this one —
+    # deleting the binder's account must not un-canonicalise a shared goal.
+    # The attribution is redacted instead (see ATTRIBUTION_COLUMNS).
+    "canonical_bindings",
     "gate_claims",
     "transaction_log",
     "take_rate_log",
@@ -148,6 +160,14 @@ PRESERVED_TABLES = frozenset({
 #: it and what it said — which is what makes the ``/legal`` retention sentence
 #: ("content-free audit records keyed by an opaque id") true rather than a hope.
 REDACTED_TABLES = frozenset({"action_records"})
+
+#: Preserved rows that nonetheless name the deleted person. The row stays — it is
+#: commons or evidence — and the attribution is replaced by the opaque
+#: fingerprint, so no preserved row keeps an identifier of someone who asked to
+#: be deleted.
+ATTRIBUTION_COLUMNS = MappingProxyType({
+    "canonical_bindings": ("bound_by_actor_id",),
+})
 
 #: Money the person is a party to. Refuse the deletion rather than discard it:
 #: an unresolved stake is the host's to settle first.
@@ -468,19 +488,34 @@ def _delete_root_rows(
         ("vote_ballots",
          "vote_id IN (SELECT vote_id FROM vote_windows WHERE universe_id = ?)"),
     )
-    targets: list[tuple[str, str, tuple[Any, ...]]] = []
+    # Grouped by table, with the predicates OR-ed: a row matching two of them
+    # (founder_home matches both its universe and its person) is one deleted
+    # row, and the receipt must say rows, not predicate hits.
+    grouped: dict[str, tuple[list[str], list[Any]]] = {}
+
+    def _target(table: str, where: str, params: tuple[Any, ...]) -> None:
+        if table not in tables:
+            return
+        clauses, values = grouped.setdefault(table, ([], []))
+        clauses.append(f"({where})")
+        values.extend(params)
+
     if home:
-        targets += [(t, w, (home,)) for t, w in indirect if t in tables]
+        for table, where in indirect:
+            _target(table, where, (home,))
     for table, keys in deletion_plan(conn, principal=principal, home=home).items():
         for column, kind in keys:
-            value = home if kind == "universe" else principal
-            targets.append((table, f'"{column}" = ?', (value,)))
+            _target(table, f'"{column}" = ?', (home if kind == "universe" else principal,))
 
-    for table, where, params in targets:
+    plan = {
+        table: (" OR ".join(clauses), tuple(values))
+        for table, (clauses, values) in grouped.items()
+    }
+    for table, (where, params) in plan.items():
         found = _count(conn, f'SELECT COUNT(*) FROM "{table}" WHERE {where}', params)
         if found:
             counts[table] = counts.get(table, 0) + found
-    for table, where, params in targets:
+    for table, (where, params) in plan.items():
         conn.execute(f'DELETE FROM "{table}" WHERE {where}', params)
 
     # Audit rows survive, stripped of the person and the content. This is what
@@ -513,6 +548,23 @@ def _delete_root_rows(
             ).rowcount
             if redacted:
                 counts["action_records (redacted)"] = int(redacted)
+
+    # Preserved rows that name the person keep the row and lose the name, so no
+    # retained row carries an identifier of someone who asked to be deleted.
+    for table, columns in ATTRIBUTION_COLUMNS.items():
+        if table not in tables:
+            continue
+        cols = _columns(conn, table)
+        for column in columns:
+            if column not in cols:
+                continue
+            changed = conn.execute(
+                f'UPDATE "{table}" SET "{column}" = ? WHERE "{column}" = ?',
+                (f"deleted:{fingerprint}", principal),
+            ).rowcount
+            if changed:
+                key = f"{table} (redacted)"
+                counts[key] = counts.get(key, 0) + int(changed)
 
 
 def write_tombstone(base_path: str | Path, principal: str) -> None:

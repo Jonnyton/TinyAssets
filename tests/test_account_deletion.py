@@ -357,6 +357,41 @@ def test_audit_rows_survive_without_the_person_or_the_content(two_users: Path):
     assert receipt["rows_deleted"]["action_records (redacted)"] == 1
 
 
+def test_a_commons_pointer_survives_its_binder_being_deleted(two_users: Path):
+    """`canonical_bindings` says which branch is canonical for a goal — a pointer
+    other people rely on. `bound_by_actor_id` records who bound it, which is
+    attribution, not ownership, so the row stays and the name goes. Found by
+    auditing the full root schema, not by the small fixture."""
+    base = two_users
+    root_db = base / ".tinyassets.db"
+    conn = sqlite3.connect(str(root_db))
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(canonical_bindings)")}
+    finally:
+        conn.close()
+    if not cols:
+        pytest.skip("canonical_bindings is not created in this schema")
+    values = {
+        "goal_id": "goal-1", "branch_def_id": "bd-1", "bound_by_actor_id": A,
+        "bound_at": 1.0, "scope_token": "", "branch_version_id": "bv-1",
+        "visibility": "public",
+    }
+    used = [c for c in cols if c in values]
+    _exec(
+        root_db,
+        f"INSERT INTO canonical_bindings ({','.join(used)}) "
+        f"VALUES ({','.join('?' for _ in used)})",
+        tuple(values[c] for c in used),
+    )
+
+    receipt = delete_account(base, founder_sub=A, delete_identity=lambda s: "deleted")
+
+    rows = _rows(root_db, "SELECT bound_by_actor_id FROM canonical_bindings")
+    assert len(rows) == 1, "the commons pointer must survive its binder"
+    assert A not in rows[0][0] and rows[0][0].startswith("deleted:")
+    assert receipt["rows_deleted"].get("canonical_bindings (redacted)") == 1
+
+
 def test_a_principal_with_no_home_still_loses_grants_tokens_and_identity(two_users: Path):
     base = two_users
     stranger = "user_01CCCCCCCCCCCCCCCCCCCCCCCC"
