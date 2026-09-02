@@ -21,6 +21,13 @@ import json
 
 import pytest
 
+# The universe + login + deposit harness that drives the real
+# `extend_http`. `base` is a fixture and `_reset_auth` is autouse, so
+# both are imported by name rather than reimplemented.
+from tests.test_workspace_authority import (  # noqa: F401
+    _reset_auth,
+    base,
+)
 from tinyassets.storage.outbound_connections import (
     ACCESS_EXACT,
     ACCESS_FULL,
@@ -825,3 +832,149 @@ def test_a_full_deposit_moves_an_existing_connection(tmp_path):
     body = inspect.getsource(hc.connect_http)
     assert "set_access_mode(" in body
     assert body.index("set_access_mode(") < body.index("Idempotent grant bound")
+
+
+# ---------------------------------------------------------------------------
+# The yes lands on the reach the owner read
+# ---------------------------------------------------------------------------
+
+
+def test_a_full_yes_cannot_land_on_a_host_added_while_the_tab_was_open(base):  # noqa: F811
+    """Codex code review round 2, left open then and closed here.
+
+    The compare-and-swap protected the write against a change between the
+    ANSWER-time preview and the write -- microseconds. The window that matters
+    is between the ASK and the ANSWER, which is however long the owner takes to
+    read the tab:
+
+      1. the ask says "full access", and its sentence names api.github.com;
+      2. another device adds api.other.example -- an ordinary exact widening,
+         so the mode is still exact and nothing conflicts;
+      3. the owner says yes.
+
+    The answer used to take a FRESH preview, read both hosts, and swap
+    successfully against its own read. The owner granted full on a host they
+    never saw.
+    """
+    import json as _json
+
+    from tests.test_workspace_authority import (
+        GITHUB_ENDPOINT as WA_ENDPOINT,
+    )
+    from tests.test_workspace_authority import (
+        _connection,
+        _deposit,
+        _login,
+        _make_universe,
+    )
+    from tinyassets.api.http_connection import extend_http
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    deposited = _deposit("u-1")
+    connection_id = deposited["connection_id"]
+
+    ledger = ConnectionLedger(
+        base / "outbound.db", verify_authenticated_principal=lambda: "alice",
+    )
+    read_at_ask_time = ledger.policy_json(connection_id)
+    assert read_at_ask_time is not None
+    snapshot = {
+        "endpoints_json": read_at_ask_time[0],
+        "scopes_json": read_at_ask_time[1],
+        "access_mode": "exact",
+    }
+
+    # (2) another device widens, exactly. The mode does not move.
+    widened = extend_http(universe_id="u-1", payload=_json.dumps({
+        "destination": "github",
+        "endpoints": [
+            WA_ENDPOINT,
+            {"host": "api.other.example", "path_template": "/v1/x",
+             "methods": ["GET"]},
+        ],
+    }))
+    assert widened["status"] == "extended", widened
+    assert ledger.access_mode(connection_id) == "exact"
+
+    # (3) the owner's yes, carrying what the tab showed them.
+    answered = extend_http(universe_id="u-1", payload=_json.dumps({
+        "destination": "github",
+        "endpoints": [],
+        "scopes": [],
+        "access": "full",
+        "policy_snapshot": snapshot,
+    }))
+    assert answered.get("error") == "connection_conflict", answered
+    assert "did not see" in str(answered.get("detail", ""))
+    assert ledger.access_mode(connection_id) == "exact", (
+        "a host the owner never read was granted in full"
+    )
+    hosts = {ep.host for ep in _connection("u-1", connection_id).allowed_endpoints}
+    assert "api.other.example" in hosts
+
+    # Re-asking is what lands it: the new tab names both hosts.
+    fresh = ledger.policy_json(connection_id)
+    landed = extend_http(universe_id="u-1", payload=_json.dumps({
+        "destination": "github",
+        "endpoints": [],
+        "scopes": [],
+        "access": "full",
+        "policy_snapshot": {
+            "endpoints_json": fresh[0],
+            "scopes_json": fresh[1],
+            "access_mode": "exact",
+        },
+    }))
+    assert landed["status"] == "extended", landed
+    assert ledger.access_mode(connection_id) == "full"
+
+
+def test_the_full_ask_records_the_policy_its_sentence_was_written_from(base):  # noqa: F811
+    """The snapshot and the words come from ONE read, so they cannot disagree
+    about what the owner is being asked to grant."""
+    from tests.test_workspace_authority import _deposit, _login, _make_universe
+    from tinyassets.api.pending_requests import _full_channel_reach
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    deposited = _deposit("u-1")
+
+    reach = _full_channel_reach("u-1", {"destination": "github", "access": "full"})
+    assert reach.get("hosts") == ["api.github.com"], reach
+
+    snapshot = reach.get("policy_snapshot")
+    assert isinstance(snapshot, dict), reach
+    assert snapshot["access_mode"] == "exact"
+
+    endpoints_json, scopes_json = ConnectionLedger(
+        base / "outbound.db", verify_authenticated_principal=lambda: "alice",
+    ).policy_json(deposited["connection_id"])
+    assert snapshot["endpoints_json"] == endpoints_json
+    assert snapshot["scopes_json"] == scopes_json
+
+
+def test_an_ask_without_a_snapshot_still_answers(base):  # noqa: F811
+    """A pending row raised before this existed, or a direct call that never
+    went through a tab, must not be bricked: it swaps against its own read, as
+    it did before."""
+    import json as _json
+
+    from tests.test_workspace_authority import _deposit, _login, _make_universe
+    from tinyassets.api.http_connection import extend_http
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    deposited = _deposit("u-1")
+
+    answered = extend_http(universe_id="u-1", payload=_json.dumps({
+        "destination": "github",
+        "endpoints": [],
+        "scopes": [],
+        "access": "full",
+    }))
+    assert answered["status"] == "extended", answered
+
+    assert ConnectionLedger(
+        base / "outbound.db", verify_authenticated_principal=lambda: "alice",
+    ).access_mode(deposited["connection_id"]) == "full"

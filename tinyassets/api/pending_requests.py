@@ -726,6 +726,17 @@ def _full_channel_reach(universe_id: str, action: dict[str, Any]) -> dict[str, A
     except Exception:  # noqa: BLE001 - a sentence must never break the ask
         return {}
     reach: dict[str, Any] = {}
+    # The policy this sentence is written from. The answer swaps against it, so
+    # a yes can only land on the reach the owner actually read (Codex code
+    # review round 2, left open). Same single read: the words and the snapshot
+    # cannot disagree.
+    snapshot = {
+        "endpoints_json": preview.get("stored_json"),
+        "scopes_json": preview.get("stored_scopes_json"),
+        "access_mode": preview.get("expected_access_mode"),
+    }
+    if all(isinstance(v, str) and v for v in snapshot.values()):
+        reach["policy_snapshot"] = snapshot
     hosts = preview.get("hosts")
     if isinstance(hosts, list) and hosts:
         reach["hosts"] = [str(h) for h in hosts]
@@ -1354,6 +1365,9 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
                 # The mode the owner read on the tab and accepted. Dropping it
                 # here recorded an exact widening for a full yes.
                 "access": action.get("access") or "exact",
+                # ...and the policy that mode was read against, so the write
+                # cannot land on a reach that grew while the tab was open.
+                "policy_snapshot": action.get("policy_snapshot") or None,
             }),
         )
         if widened.get("error"):

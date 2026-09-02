@@ -149,6 +149,29 @@ _MAX_ENDPOINTS = 200
 _MAX_GIT_SCOPES = 200
 
 
+def _answered_policy_snapshot(document: dict) -> dict[str, str] | None:
+    """The policy an ``extend_http`` ask recorded when it rendered its sentence.
+
+    ``None`` when the ask carries none -- an older pending row, or a direct
+    call that never went through a tab. The caller then swaps against its own
+    read, which is what it did before this existed: no worse, and a stored ask
+    that DOES carry one is held to it.
+
+    Every field must be a non-empty string. A partial snapshot is a broken one,
+    and swapping against a broken snapshot would refuse every answer.
+    """
+    raw = document.get("policy_snapshot")
+    if not isinstance(raw, dict):
+        return None
+    snapshot = {
+        key: raw.get(key)
+        for key in ("access_mode", "endpoints_json", "scopes_json")
+    }
+    if not all(isinstance(v, str) and v for v in snapshot.values()):
+        return None
+    return snapshot  # type: ignore[return-value]
+
+
 def _requested_git_scopes(document: dict[str, Any]) -> frozenset[str]:
     """The git scopes a caller asked for, canonicalized.
 
@@ -947,17 +970,32 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     ledger = preview["ledger"]
     connection_id = preview["connection_id"]
     if preview.get("access") == ACCESS_FULL:
-        # The whole write: one mode, compare-and-swapped on the mode the
-        # preview read. A concurrent answer that moved it wins and this one
-        # re-previews rather than overwriting a decision it never saw.
+        # The whole write: one mode, compare-and-swapped on the policy THE
+        # OWNER READ. When the ask carries the snapshot it rendered its
+        # sentence from, that is what the swap compares -- not this call's own
+        # fresh read, which would happily grant full on a host added while the
+        # tab sat open (Codex code review round 2, left open then).
+        expected = _answered_policy_snapshot(document) or {
+            "access_mode": preview["expected_access_mode"],
+            "endpoints_json": preview["stored_json"],
+            "scopes_json": preview["stored_scopes_json"],
+        }
         if not ledger.set_access_mode(
             connection_id=connection_id,
             access_mode=ACCESS_FULL,
-            expected_mode=preview["expected_access_mode"],
-            expected_endpoints_json=preview["stored_json"],
-            expected_scopes_json=preview["stored_scopes_json"],
+            expected_mode=expected["access_mode"],
+            expected_endpoints_json=expected["endpoints_json"],
+            expected_scopes_json=expected["scopes_json"],
         ):
-            return {"error": "connection_conflict", "resource": "connection"}
+            return {
+                "error": "connection_conflict",
+                "resource": "connection",
+                "detail": (
+                    "this connection changed while the request was open, so the "
+                    "yes was not applied to a reach you did not see; ask again "
+                    "and the tab will name what is there now"
+                ),
+            }
         resource = ledger._get_connection_resource(connection_id)
         return {
             "status": "extended",
@@ -1240,12 +1278,16 @@ def preview_extend_http(*, universe_id: str = "", payload: Any = None) -> dict[s
         added=document.get("endpoints"), requested_git_scopes=requested_git_scopes,
         access=asked_access,
     )
-    # Serializable projection only: never the ledger or the resource.
+    # Serializable projection only: never the ledger or the resource. The
+    # three policy-snapshot fields ARE included: the raise records what it
+    # rendered its sentence from so the answer can swap against exactly that,
+    # and they carry no more than `allowed_endpoints` and `scopes` already do.
     return {
         key: value for key, value in preview.items()
         if key in ("error", "resource", "detail", "status", "destination",
                    "allowed_endpoints", "scopes", "git_host", "asked_hosts",
-                   "access", "hosts")
+                   "access", "hosts",
+                   "expected_access_mode", "stored_json", "stored_scopes_json")
     }
 
 
