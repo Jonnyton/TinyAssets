@@ -93,14 +93,21 @@ phone drawer together.
 
 ## Build, test, sweep, ship
 
+From the repo root (paths written in full so they resolve the same for you and
+for the doc checker):
+
 ```
-cd WebSite/design-system && npm run build      # after any token/component change
-cd ../site-react
-npm test                                       # contract + boundary + preview validators
-npm run build                                  # out/<route>/index.html for every route
-python scripts/sweep.py --shots ../../out-shots  # errs 0, warns 0, no overflow, aliases land
-node scripts/snapshot-public.mjs               # refresh lib/mcp-snapshot.json when it is stale
+cd WebSite/design-system && npm run build   # after any token/component change
+cd ../site-react && npm test                # contract + boundary + preview validators
+npm run build                               # out/<route>/index.html for every route
 ```
+
+Then, still in `WebSite/site-react`:
+
+- `python WebSite/site-react/scripts/sweep.py --shots ../../out-shots` — every
+  route and alias at 390 px and 1280 px; requires errs 0, warns 0, no overflow.
+- `node WebSite/site-react/scripts/snapshot-public.mjs` — refresh
+  `lib/mcp-snapshot.json` when it is stale.
 
 Before declaring done: the sweep is clean, the screenshots were looked at,
 and the live surfaces on `npm run dev` render readable records or an explicit
