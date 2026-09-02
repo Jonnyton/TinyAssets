@@ -743,7 +743,9 @@ def _make_workspace(conf, remaining):
     """Return the `ws` object bound to one workspace root."""
     root = _WsRoot(conf["root"]) if _WS_HAS_DIR_FD else _WsPathRoot(conf["root"])
     limits = conf.get("limits") or {}
-    max_commands = int(limits.get("max_commands", 64))
+    # The child runner has no module constants; 1000 is MAX_WORKSPACE_COMMANDS
+    # (a test pins the two together).
+    max_commands = int(limits.get("max_commands", 1000))
     max_output = int(limits.get("max_output_bytes", 1048576))
     max_read = int(limits.get("max_read_bytes", 1048576))
     max_glob = int(limits.get("max_glob_results", 10000))

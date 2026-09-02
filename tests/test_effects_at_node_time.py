@@ -623,7 +623,7 @@ def test_parallel_siblings_that_both_overwrite_one_field_are_refused_at_compile(
 
 def test_resume_seeds_at_most_once_and_the_rpc_cap_from_the_interrupted_segment(monkeypatch):
     """R3 P0: a resumed run got an empty chain, so an effect fired before the
-    interrupt could fire again and 32 more RPCs were allowed."""
+    interrupt could fire again and a whole new RPC budget was allowed."""
     adapter = _Adapter({"fetch": _OK_GET})
     monkeypatch.setitem(effectors._EFFECTORS, SINK, adapter)
     chain = EffectChain(run_id="r16")

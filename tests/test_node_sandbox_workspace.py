@@ -481,7 +481,16 @@ def test_the_workspace_profile_is_the_one_the_design_names() -> None:
         "RLIMIT_NOFILE": 1024,
         "RLIMIT_NPROC": 1024,
     }
-    assert limits.max_commands == 64
+    from tinyassets.node_sandbox import MAX_WORKSPACE_COMMANDS
+
+    assert limits.max_commands == MAX_WORKSPACE_COMMANDS
+    # The child runner's fallback cannot import the constant; pin it by text.
+    import pathlib as _pl
+
+    from tinyassets import node_sandbox as _ns
+
+    src = _pl.Path(_ns.__file__).read_text(encoding="utf-8")
+    assert f'limits.get("max_commands", {MAX_WORKSPACE_COMMANDS})' in src
     assert limits.max_output_bytes == 1024 * 1024
     assert limits.command_timeout_s is None
 

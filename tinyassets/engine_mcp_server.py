@@ -1216,7 +1216,7 @@ def write_graph(
     before asking. The
     sandbox has no network and no credential; git talks to the host from a
     worker you never see. Limits are usage, not shape: a 4 GiB lease, one
-    workspace job at a time per universe, 64 commands and 1 MiB of returned
+    workspace job at a time per universe, 1000 commands and 1 MiB of returned
     output per node; a timed-out command fails the node as
     ``workspace_command_timeout``; every other refusal names its class
     (``workspace_checkout_failed`` ... ``workspace_quota_exceeded``) and what
