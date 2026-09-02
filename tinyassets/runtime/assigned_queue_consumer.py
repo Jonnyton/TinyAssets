@@ -294,7 +294,7 @@ class AssignedQueueConsumer:
                 if audience is None:
                     self._record_reason(
                         prep_store, f"universe:{universe_id}:-", universe_id,
-                        "no_serving_runtime",
+                        self._no_runtime_reason(universe_id),
                     )
                 if self._paused(universe_id):
                     paused_universes.add(universe_id)
@@ -821,6 +821,27 @@ class AssignedQueueConsumer:
             )
             self._runtimes[key] = runtime
         return daemon, runtime
+
+    def _no_runtime_reason(self, universe_id: str) -> str:
+        """Why `_serving_runtime` came back empty, told honestly.
+
+        `no_serving_runtime` only when the universe genuinely has no ready
+        serving assignment. When it HAS one and no daemon can be selected, the
+        universe is serving -- chat and runs use its provider -- and what is
+        missing is the retired fleet-era executor for recurring automations.
+        Reporting that as "no serving provider selected" sent the founder's
+        universe looking for a selection surface that does not exist (app
+        thread, 2026-09-02) and made the app heal re-fire on every load.
+        """
+        try:
+            from tinyassets.provider_assignment import load_provider_assignment
+
+            assignment = load_provider_assignment(self.base_path, universe_id=universe_id)
+        except Exception:  # noqa: BLE001 - an unreadable assignment is "not serving"
+            return "no_serving_runtime"
+        if assignment is None or assignment.state != "ready":
+            return "no_serving_runtime"
+        return "background_executor_unavailable"
 
     def _publish_heartbeat(self, universe_id: str):
         from tinyassets.background_branch_authority import (

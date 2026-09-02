@@ -37,6 +37,13 @@ _STATIC: dict[str, str] = {
         "run background work. Choose one (registering a provider is not selecting "
         "it)."
     ),
+    "background_executor_unavailable": (
+        "This universe IS serving: chat and runs use its selected provider. "
+        "Recurring automations do not fire on this release, because the executor "
+        "that ran them was retired with the host fleet; its replacement is a "
+        "trigger that fires through the ordinary run path. Nothing to select and "
+        "nothing to reconnect."
+    ),
     "not_an_automation_task": (
         "This queued item is not an automation task, so the automation worker will "
         "never run it. Re-queue the work as an automation, or cancel it."
