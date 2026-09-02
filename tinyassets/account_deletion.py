@@ -96,6 +96,13 @@ def _fingerprint(principal: str) -> str:
     return hashlib.sha256(principal.encode("utf-8")).hexdigest()[:16]
 
 
+def _rmdir_if_empty(path: Path) -> None:
+    try:
+        path.rmdir()
+    except OSError:
+        pass  # another deletion is staged in it, or it is already gone
+
+
 def _rmtree(path: Path) -> None:
     def _onerror(func: Any, target: Any, _exc: Any) -> None:
         os.chmod(target, stat.S_IWRITE)
@@ -356,6 +363,7 @@ def delete_account(
         try:
             _rmtree(staged)
             home_removed = True
+            _rmdir_if_empty(staged.parent)  # the staging dir exists only mid-operation
         except OSError as exc:
             staged_path = str(staged)
             logger.error(

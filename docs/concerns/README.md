@@ -25,6 +25,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
+| **P2** | [Auto-merge landed #2773 six minutes after its Codex verdict said REJECT](2026-09-02-auto-merge-landed-2773-before-its-cross-family-verdict-was-read.md) — auto-enroll binds merge to CI, not to the cross-family verdict; measured: enrolled 05:59Z, REJECT written 06:03Z, merged 06:09Z. Drafts are skipped by auto-enroll, so this lane opens review-pending PRs as drafts | 2026-09-02 |
 | **P2** | [The exact-head receipt and the three-round cap have no exit together](2026-08-31-the-exact-head-receipt-loops-against-iterative-review.md) — every fix voids the receipt, the cap forbids the pass that would restore it; findings went 7 -> 5 -> 1 -> 3 on #2755. CI cannot represent the founder decision the cap assumes ends the loop | 2026-08-31 |
 | **P2** | [Credential removal leaves ownership and orphans](2026-08-31-credential-removal-leaves-ownership-and-orphans.md) — `forget_credential` does not clear the deposit-ownership row, so a DIFFERENT principal's re-deposit is refused as a transfer; and an absent connection row skips the owner check entirely | 2026-08-31 |
 | **P2** | [Merging took three rail asks because the PR opened as a draft](2026-08-30-merge-needs-three-asks-because-the-pr-was-a-draft.md) — live naive-user test on #2691: merge `405 still a draft`, the `ready_for_review` REST endpoint does not exist (`404`), only GraphQL works | 2026-08-30 |

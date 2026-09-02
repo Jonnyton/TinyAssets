@@ -171,9 +171,9 @@ def test_deleting_a_removes_all_of_a_and_none_of_b(two_users: Path):
     assert receipt["rows_deleted"]["webhook_hooks"] == 1
     assert receipt["rows_deleted"]["outbound_connections"] == 1
     assert A not in json.dumps(receipt) and HOME_B not in json.dumps(receipt)
-    # Nothing lingers in the staging area.
-    staging = base / ".deleting"
-    assert not staging.exists() or list(staging.iterdir()) == []
+    # The staging dir exists only mid-operation: no root-level dot-dir lingers for
+    # the data-root scanners (universe list, _resolve_udir fallback) to trip over.
+    assert not (base / ".deleting").exists()
 
 
 def test_a_principal_with_no_home_still_loses_grants_tokens_and_identity(two_users: Path):
