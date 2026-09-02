@@ -242,20 +242,32 @@ TEST_OPERATOR = Identity(
 
 
 @pytest.fixture(autouse=True)
-def _signed_in_operator():
-    """Bind ``TEST_OPERATOR`` for every test, and unbind afterwards.
+def _signed_in_operator(request):
+    """Bind a named operator for every test, and unbind afterwards.
 
     There is no anonymous principal (founder, 2026-09-02): with nothing bound,
     ``current_identity()`` raises. A test that wants NOBODY says so --
     ``auth_middleware(None)`` -- and asserts the refusal; a test that wants a
     different subject sets its own provider. Neither is affected by this, and
     both used to be the only way a test got an identity at all.
+
+    The operator is DISTINCT PER TEST. A shared one leaked across tests that
+    share a data directory: an authenticated caller with no explicit scope
+    resolves their bound home, so a home auto-birthed by one test became the
+    resolved scope of the next, which had set up a differently-named universe
+    and got somebody else's serial id.
     """
     from tinyassets.auth import middleware as _mw
 
-    token = _mw._current_identity.set(TEST_OPERATOR)
+    operator = Identity(
+        user_id=f"test-operator::{request.node.nodeid}",
+        username="test-operator",
+        display_name="test-operator",
+        capabilities=list(TEST_OPERATOR.capabilities),
+    )
+    token = _mw._current_identity.set(operator)
     try:
-        yield TEST_OPERATOR
+        yield operator
     finally:
         try:
             _mw._current_identity.reset(token)
@@ -264,6 +276,43 @@ def _signed_in_operator():
             # different task) leaves the token unresettable here; clearing is
             # the equivalent end state.
             _mw._current_identity.set(None)
+
+
+@pytest.fixture
+def founder_home(tmp_path, monkeypatch, _signed_in_operator):
+    """An isolated data dir where the signed-in operator HAS a home universe.
+
+    The state a founder is in after first contact, and the one an omitted
+    scope resolves to. Without it an authenticated caller with no bound home
+    gets the first-contact card from ``get_status`` and the designated public
+    universe from ``_request_universe`` -- both correct, and neither what a
+    test asserting "the status of my universe" means.
+
+    Returns the universe directory.
+    """
+    from tinyassets.daemon_server import (
+        claim_founder_home,
+        ensure_universe_registered,
+        grant_universe_access,
+    )
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    uid = "test-universe"
+    udir = tmp_path / uid
+    udir.mkdir(parents=True, exist_ok=True)
+    (udir / "dispatcher.json").write_text("{}", encoding="utf-8")
+    # The canonical completed-seed marker. A home without it is "bound but
+    # partial", which status reports as first contact rather than reading.
+    (udir / "soul.md").write_text("# test universe\n", encoding="utf-8")
+    ensure_universe_registered(
+        tmp_path, universe_id=uid, universe_path=udir, display_name=uid,
+    )
+    grant_universe_access(
+        tmp_path, universe_id=uid, actor_id=_signed_in_operator.user_id,
+        permission="admin", granted_by="tests",
+    )
+    claim_founder_home(tmp_path, _signed_in_operator.user_id, uid)
+    return udir
 
 
 @pytest.fixture

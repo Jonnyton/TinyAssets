@@ -35,9 +35,14 @@ def _seed_run(base: Path, run_id: str, status: str = "running") -> None:
     runs.initialize_runs_db(base)
     with runs._connect(base) as conn:
         conn.execute(
-            "INSERT INTO runs (run_id, branch_def_id, thread_id, status, started_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (run_id, "b1", f"t-{run_id}", status, time.time() - 7200),
+            "INSERT INTO runs "
+            "(run_id, branch_def_id, thread_id, status, started_at, actor) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                run_id, "b1", f"t-{run_id}", status, time.time() - 7200,
+                # Every run records who asked for it; the column is NOT NULL.
+                "universe:u-test",
+            ),
         )
 
 
