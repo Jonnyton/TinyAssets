@@ -38,11 +38,11 @@ _STATIC: dict[str, str] = {
         "it)."
     ),
     "legacy_control_tasks_parked": (
-        "This universe IS serving: chat, runs, and your automations, schedules "
-        "and subscriptions all fire on your selected provider. One kind of "
-        "queued item left from before the host workers were removed (a cloud "
-        "control task) has no runner on this release and stays parked; nothing "
-        "you build depends on it. Nothing to select and nothing to reconnect."
+        "This universe IS serving: chat, runs, and your automations and schedules "
+        "fire on your selected provider. One kind of queued item left from before "
+        "the host workers were removed (a cloud control task) has no runner on "
+        "this release and stays parked; nothing you build depends on it. Nothing "
+        "to select and nothing to reconnect."
     ),
     "not_an_automation_task": (
         "This queued item is not an automation task, so the automation worker will "

@@ -24,6 +24,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import tinyassets.provider_serving_binding  # noqa: F401 - bind its real imports BEFORE any patch below
 from tinyassets.consumer_reason_actions import consumer_next_action
 from tinyassets.runtime.assigned_queue_consumer import AssignedQueueConsumer
 
@@ -47,10 +48,15 @@ def _ready(monkeypatch) -> None:
     )
 
 
-def _bindings(monkeypatch, *statuses: str) -> None:
+def _bindings(monkeypatch, *statuses: str, created_by: str = "alice") -> None:
+    """What `resolve_serving_agent_binding` will see: it requires exactly one
+    `serving` binding created by the assignment's owner."""
     monkeypatch.setattr(
-        "tinyassets.custom_agents.list_bindings",
-        lambda base, universe_id, limit=100: [{"status": s} for s in statuses],
+        "tinyassets.provider_serving_binding.list_bindings",
+        lambda base, universe_id, limit=100: [
+            {"status": s, "created_by": created_by, "agent_binding_id": f"b-{i}"}
+            for i, s in enumerate(statuses)
+        ],
     )
 
 
@@ -58,6 +64,20 @@ def test_a_SERVING_universe_is_not_told_to_choose_a_provider(tmp_path, monkeypat
     _ready(monkeypatch)
     _bindings(monkeypatch, "configured", "serving")
     assert _consumer(tmp_path)._no_runtime_reason("u-1") == "legacy_control_tasks_parked"
+
+
+def test_TWO_serving_bindings_are_not_serving_because_admission_refuses_them(tmp_path, monkeypatch):
+    """Codex round 2: admission requires exactly one serving binding for the
+    owner; the status must use the same predicate, not "any serving"."""
+    _ready(monkeypatch)
+    _bindings(monkeypatch, "serving", "serving")
+    assert _consumer(tmp_path)._no_runtime_reason("u-1") == "no_serving_runtime"
+
+
+def test_a_serving_binding_created_by_someone_else_does_not_count(tmp_path, monkeypatch):
+    _ready(monkeypatch)
+    _bindings(monkeypatch, "serving", created_by="mallory")
+    assert _consumer(tmp_path)._no_runtime_reason("u-1") == "no_serving_runtime"
 
 
 def test_a_ready_assignment_with_serving_DISABLED_is_still_not_serving(tmp_path, monkeypatch):
@@ -108,7 +128,12 @@ def test_the_new_reason_says_the_universe_IS_serving_in_words_a_user_can_use():
     action = consumer_next_action("legacy_control_tasks_parked")
     lowered = action.lower()
     assert "is serving" in lowered
-    assert "automations, schedules and subscriptions all fire" in lowered
+    assert "automations and schedules fire" in lowered
+    assert "subscription" not in lowered, (
+        "subscriptions fire on the event thread without the owner's identity; "
+        "do not claim them (docs/concerns/2026-09-02-event-subscriptions-fire-"
+        "without-the-owners-identity.md)"
+    )
     assert "no serving provider selected" not in lowered
     assert "choose one" not in lowered
     assert "do not fire" not in lowered

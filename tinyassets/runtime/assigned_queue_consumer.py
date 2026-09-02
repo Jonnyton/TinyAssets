@@ -825,33 +825,41 @@ class AssignedQueueConsumer:
     def _no_runtime_reason(self, universe_id: str) -> str:
         """Why `_serving_runtime` came back empty, told honestly.
 
-        `no_serving_runtime` only when the universe genuinely is not serving:
-        no READY provider assignment, or no agent binding in status `serving`
-        (disabling serving leaves the assignment ready -- Codex on this change).
-        When both hold, the universe IS serving: chat, runs, and its own
-        automations, schedules and subscriptions all fire on its provider
-        (this loop submits due automations before it records this reason).
-        The only thing without a runner is a legacy control task queued before
-        the host workers were removed. Reporting that as "no serving provider
-        selected" sent the founder's universe looking for a selection surface
-        that does not exist (app thread, 2026-09-02) and made the app heal
-        re-fire on every load.
+        `no_serving_runtime` only when the universe genuinely is not serving,
+        by the SAME predicate a founder turn's admission uses: a READY provider
+        assignment and `resolve_serving_agent_binding` finding exactly one
+        serving binding created by that assignment's owner (two serving
+        bindings, or serving disabled, are refusals there too -- Codex on this
+        change, rounds 1 and 2). When it holds, the universe IS serving: chat,
+        runs, and its own automations and schedules fire on its provider (this
+        loop submits due automations before it records this reason; event
+        subscriptions are NOT claimed, see the 2026-09-02 concern). The only
+        thing without a runner is a legacy control task queued before the host
+        workers were removed. Reporting that as "no serving provider selected"
+        sent the founder's universe looking for a selection surface that does
+        not exist (app thread, 2026-09-02) and made the app heal re-fire on
+        every load.
         """
         try:
-            from tinyassets.custom_agents import list_bindings
             from tinyassets.provider_assignment import load_provider_assignment
+            from tinyassets.provider_serving_binding import resolve_serving_agent_binding
 
             assignment = load_provider_assignment(self.base_path, universe_id=universe_id)
             if assignment is None or assignment.state != "ready":
                 return "no_serving_runtime"
-            bindings = list_bindings(self.base_path, universe_id=universe_id, limit=100)
+            try:
+                resolve_serving_agent_binding(
+                    self.base_path,
+                    universe_id=universe_id,
+                    owner_user_id=str(assignment.owner_user_id or ""),
+                )
+            except PermissionError:
+                return "no_serving_runtime"
         except Exception:  # noqa: BLE001 - loud in the log, safe in behaviour
             logger.exception(
                 "could not establish whether %s is serving; reporting it as not",
                 universe_id,
             )
-            return "no_serving_runtime"
-        if not any(b.get("status") == "serving" for b in bindings):
             return "no_serving_runtime"
         return "legacy_control_tasks_parked"
 
