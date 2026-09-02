@@ -162,6 +162,53 @@ def revoke_consent(
         return cur.rowcount > 0
 
 
+def revoke_consents_for_connection(
+    universe_dir: str | Path,
+    *,
+    connection_id: str,
+    revoked_at: float | None = None,
+) -> int:
+    """Revoke every consent keyed on ``connection_id``. Returns the row count.
+
+    A workspace consent destination is ``"<op>:<connection_id>:<host>/<repo>"``
+    (``workspace_consent_destination``), so the connection is IN the key and a
+    removal can find its own rows without touching anyone else's. Scoped on
+    purpose: a universe holds several connections, and a universe-wide sweep
+    would revoke consents for keys the owner never removed.
+
+    Why it exists: ``remove_http`` deleted the ledger row and left these
+    active, and a connection id is deterministic per ``(universe,
+    destination)`` -- so re-depositing the same destination silently inherited
+    the old repository consents. Taking a key back has to take back everything
+    it authorized (full-channel-access D6).
+    """
+    token = str(connection_id or "").strip()
+    if not token:
+        return 0
+    initialize_consents_db(universe_dir)
+    ts = revoked_at if revoked_at is not None else time.time()
+    # The connection id is the SECOND colon-separated field. Matching on the
+    # exact position, not a substring, so a repository or host that happens to
+    # contain another connection's name cannot be swept in.
+    with _connect(universe_dir) as conn:
+        rows = conn.execute(
+            "SELECT sink, destination FROM effector_consents WHERE revoked_at IS NULL"
+        ).fetchall()
+        hits = [
+            (row["sink"], row["destination"])
+            for row in rows
+            if str(row["destination"]).split(":")[1:2] == [token]
+        ]
+        for sink, destination in hits:
+            conn.execute(
+                "UPDATE effector_consents SET revoked_at = ? "
+                "WHERE sink = ? AND destination = ?",
+                (ts, sink, destination),
+            )
+        conn.commit()
+    return len(hits)
+
+
 def is_consent_active(
     universe_dir: str | Path,
     *,

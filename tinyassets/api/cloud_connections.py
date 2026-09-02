@@ -13,6 +13,7 @@ from tinyassets.api.helpers import _base_path, _request_universe, _universe_dir
 from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
 from tinyassets.storage.workspace_authority import (
     WORKSPACE_SINK,
+    connection_access_mode,
     connection_git_host,
     connection_git_scopes,
     parse_workspace_consent_destination,
@@ -86,6 +87,13 @@ def _project(resource: Any, grant: Any) -> dict[str, Any]:
             {"kind": kind, "repo": repo, "host": connection_git_host(resource)}
             for kind, repo in sorted(connection_git_scopes(resource))
         ],
+        # "exact" | "full" (full-channel-access D3.4). On a full channel the
+        # rows above are what the owner declared as its hosts, NOT the limit of
+        # what the universe may do there: any path, any verb, any repository the
+        # key reaches. Rendered as the mode rather than as wildcard rows,
+        # because no wildcard is stored and inventing one on the way out would
+        # be a second definition of the grant.
+        "access": connection_access_mode(resource),
         "status": "connected",
     }
 

@@ -31,6 +31,7 @@ from tinyassets.storage.workspace_authority import (
     CONSENT_PUSH,
     WORKSPACE_SINK,
     GitScopeError,
+    connection_access_mode,
     connection_git_host,
     connection_hosts,
     has_git_scope,
@@ -364,10 +365,22 @@ def _consent_destination(consent: str, repo: str, connection_id: str, host: str)
 
 
 def _require_consent(
-    universe_dir: Path, op: str, host: str, repo: str, connection_id: str
+    universe_dir: Path,
+    op: str,
+    host: str,
+    repo: str,
+    connection_id: str,
+    access_mode: str = "exact",
 ) -> None:
     consent = _CONSENT_FOR_OP.get(op, "")
     if not consent:
+        return
+    if str(access_mode).strip().lower() == "full":
+        # The owner granted the CHANNEL, so every repository this key reaches on
+        # this connection's git host is consented, and no per-repository row is
+        # needed (full-channel-access D3.3). The connection and host checks that
+        # got us here stay exact: the caller already proved the connection is
+        # live, bound to this universe, and pointed at this host.
         return
     try:
         destination = _consent_destination(consent, repo, connection_id, host)
@@ -392,10 +405,21 @@ def _require_consent(
 
 
 def _check_provision_consent(
-    universe_dir: Path, host: str, repo: str, connection_id: str
+    universe_dir: Path,
+    host: str,
+    repo: str,
+    connection_id: str,
+    access_mode: str = "exact",
 ) -> bool:
     """Provisioning is separately consented; its absence is NOT a checkout
-    failure (D-spec scenario: the checkout completes, provisioning does not)."""
+    failure (D-spec scenario: the checkout completes, provisioning does not).
+
+    A ``full`` channel pre-authorizes it for the release that enables it. There
+    is no call site today and checkout refuses requested provisioning outright,
+    so this changes nothing that runs; it is written now so the grant does not
+    silently mean less than the sentence the owner accepted."""
+    if str(access_mode).strip().lower() == "full":
+        return True
     try:
         from tinyassets.storage.effector_consents import is_consent_active
 
@@ -1713,7 +1737,13 @@ def _run(
     host = transport_host_for(resource)
     _require_packet_host_agrees(packet, host)
     _require_scope(resource, op, host, repo)
-    _require_consent(universe_dir, op, host, repo, connection_id)
+    # The mode comes from the STORED connection the gates above already
+    # validated, never from the packet: a caller must not be able to claim its
+    # own grant is full (full-channel-access D3.3).
+    _require_consent(
+        universe_dir, op, host, repo, connection_id,
+        access_mode=connection_access_mode(resource),
+    )
 
     if dry_run:
         # Describe, never spawn. Every gate above has already run, so a dry run

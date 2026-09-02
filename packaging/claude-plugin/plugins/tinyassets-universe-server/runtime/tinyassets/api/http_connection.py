@@ -56,10 +56,13 @@ from typing import Any
 
 from tinyassets.api.helpers import _base_path, _request_universe, _universe_dir
 from tinyassets.storage.outbound_connections import (
+    ACCESS_EXACT,
+    ACCESS_FULL,
     ActionCap,
     ConnectionLedger,
     SsrfValidationError,
     _parse_allowed_endpoints,
+    normalize_access_mode,
 )
 from tinyassets.storage.workspace_authority import (
     GitScopeError,
@@ -775,6 +778,15 @@ def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
         _universe_dir(uid), credential_type="http", destination=destination
     )
     rows_removed = ledger.delete_connection(connection_id)
+    # Everything this key authorized goes with it. The connection id is
+    # deterministic per (universe, destination), so a re-deposit under the same
+    # name used to inherit the old repository consents -- a grant the owner
+    # revoked by removing the key, still active (full-channel-access D6).
+    from tinyassets.storage.effector_consents import revoke_consents_for_connection
+
+    consents_revoked = revoke_consents_for_connection(
+        _universe_dir(uid), connection_id=connection_id
+    )
 
     return {
         "status": "removed",
@@ -783,6 +795,7 @@ def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
         "grant_id": grant_id,
         "secrets_removed": secrets_removed,
         "connection_removed": bool(rows_removed),
+        "consents_revoked": consents_revoked,
         # What it looked like, so putting it back does not start from memory.
         # The scheme too: an oauth1a connection re-deposited as the default
         # bearer is a different connection wearing the same name.
@@ -865,8 +878,13 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
         requested_git_scopes = _requested_git_scopes(document)
     except GitScopeError as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
+    try:
+        asked_access = normalize_access_mode(document.get("access"))
+    except ValueError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
     scope_only = not isinstance(added, list) or not added
-    if scope_only and not requested_git_scopes:
+    if scope_only and not requested_git_scopes and asked_access != ACCESS_FULL:
+        # A full ask names neither: it is the channel, not a list.
         return {
             "error": "connection_setup_invalid",
             "detail": (
@@ -878,12 +896,32 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     preview = _extend_preview(
         actor=actor, base=base, uid=uid, destination=destination,
         added=added, requested_git_scopes=requested_git_scopes,
+        access=asked_access,
     )
     if preview.get("error") or preview.get("status") == "unchanged":
         return preview
 
     ledger = preview["ledger"]
     connection_id = preview["connection_id"]
+    if preview.get("access") == ACCESS_FULL:
+        # The whole write: one mode, compare-and-swapped on the mode the
+        # preview read. A concurrent answer that moved it wins and this one
+        # re-previews rather than overwriting a decision it never saw.
+        if not ledger.set_access_mode(
+            connection_id=connection_id,
+            access_mode=ACCESS_FULL,
+            expected_mode=preview["expected_access_mode"],
+        ):
+            return {"error": "connection_conflict", "resource": "connection"}
+        resource = ledger._get_connection_resource(connection_id)
+        return {
+            "status": "extended",
+            "destination": destination,
+            "access": ACCESS_FULL,
+            "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
+            "scopes": list(resource.scopes),
+            "secret_reused": True,
+        }
     try:
         widened = ledger.extend_http_connection_endpoints(
             connection_id=connection_id,
@@ -904,6 +942,7 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     return {
         "status": "extended",
         "destination": destination,
+        "access": ACCESS_EXACT,
         "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
         "scopes": list(resource.scopes),
         "secret_reused": True,
@@ -918,6 +957,7 @@ def _extend_preview(
     destination: str,
     added: Any,
     requested_git_scopes: frozenset[str],
+    access: str = "exact",
 ) -> dict[str, Any]:
     """Everything ``extend_http`` decides BEFORE it writes, as one function.
 
@@ -970,6 +1010,38 @@ def _extend_preview(
         # extend on a revoked key and "not found" would send the agent to
         # re-deposit under the same name, which the ledger refuses.
         return {"error": "connection_conflict", "resource": "connection"}
+    stored_mode = normalize_access_mode(resource.access_mode)
+    asked_mode = normalize_access_mode(access)
+    if stored_mode == ACCESS_FULL:
+        # The channel is already granted whole, so nothing an extension could
+        # name adds anything -- a full re-ask and an exact ask alike
+        # (full-channel-access D4). The agent is told it holds the channel and
+        # acts, instead of asking the owner a question with no answer.
+        return {
+            "status": "unchanged",
+            "destination": destination,
+            "access": ACCESS_FULL,
+            "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
+            "scopes": list(resource.scopes),
+        }
+    if asked_mode == ACCESS_FULL:
+        # exact -> full: the WRITE is the mode, under CAS on the previous mode.
+        # No endpoint or scope row changes, which is the whole point of the
+        # shape: nothing is stored as a wildcard.
+        return {
+            "status": "extends",
+            "destination": destination,
+            "connection_id": connection_id,
+            "ledger": ledger,
+            "access": ACCESS_FULL,
+            "expected_access_mode": stored_mode,
+            "git_host": git_host_for_endpoints(
+                [e.host for e in resource.allowed_endpoints], resource.provider
+            ),
+            "hosts": sorted({e.host for e in resource.allowed_endpoints}),
+            "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
+            "scopes": list(resource.scopes),
+        }
     # ONE snapshot. Everything the write is derived from -- the stored
     # endpoints, the stored scopes, the host the git rule binds to -- comes
     # from the same raw read the CAS compares against. Deriving the union from
@@ -1043,10 +1115,12 @@ def _extend_preview(
         and not new_git_scopes
     ):
         return {"status": "unchanged", "destination": destination,
+                "access": ACCESS_EXACT,
                 "allowed_endpoints": stored,
                 "scopes": stored_scope_list}
     return {
         "status": "extends",
+        "access": ACCESS_EXACT,
         "destination": destination,
         "connection_id": connection_id,
         "ledger": ledger,
@@ -1102,15 +1176,21 @@ def preview_extend_http(*, universe_id: str = "", payload: Any = None) -> dict[s
         requested_git_scopes = _requested_git_scopes(document)
     except GitScopeError as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
+    try:
+        asked_access = normalize_access_mode(document.get("access"))
+    except ValueError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
     preview = _extend_preview(
         actor=actor, base=base, uid=uid, destination=destination,
         added=document.get("endpoints"), requested_git_scopes=requested_git_scopes,
+        access=asked_access,
     )
     # Serializable projection only: never the ledger or the resource.
     return {
         key: value for key, value in preview.items()
         if key in ("error", "resource", "detail", "status", "destination",
-                   "allowed_endpoints", "scopes", "git_host", "asked_hosts")
+                   "allowed_endpoints", "scopes", "git_host", "asked_hosts",
+                   "access", "hosts")
     }
 
 

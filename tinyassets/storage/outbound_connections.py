@@ -75,6 +75,27 @@ class OutboundEndpoint:
         }
 
 
+#: A connection is granted one of two ways (full-channel-access D2).
+#: ``exact``: the declared endpoints, verbs and repositories, and nothing else.
+#: ``full``: anything the key itself can do on the channel's declared hosts.
+#: The mode is the authority; nothing is ever STORED as a wildcard, so no
+#: ``*/*`` reaches the git transport or a consent row.
+ACCESS_EXACT = "exact"
+ACCESS_FULL = "full"
+ACCESS_MODES = (ACCESS_EXACT, ACCESS_FULL)
+
+
+def normalize_access_mode(value: Any) -> str:
+    """``exact`` or ``full``; anything else raises. Empty means ``exact`` so a
+    row written before the column existed reads as least privilege."""
+    text = ("" if value is None else str(value)).strip().lower()
+    if not text:
+        return ACCESS_EXACT
+    if text not in ACCESS_MODES:
+        raise ValueError(f"access_mode must be one of {ACCESS_MODES}, got {value!r}")
+    return text
+
+
 @dataclass(frozen=True, repr=False)
 class ConnectionResource:
     """Credential-BEARING connection record — for trusted server-internal use.
@@ -105,6 +126,10 @@ class ConnectionResource:
     auth_scheme: str = ""
     #: The per-connection egress allowlist (design.md D3). Empty ⇒ no call.
     allowed_endpoints: tuple[OutboundEndpoint, ...] = ()
+    #: ``exact`` | ``full`` (full-channel-access D2). Read by the egress
+    #: allowlist, the git-scope check and the workspace consents; never by the
+    #: SSRF safety checks, which run for both modes.
+    access_mode: str = ACCESS_EXACT
 
     def __repr__(self) -> str:
         return (
@@ -119,7 +144,8 @@ class ConnectionResource:
             f"revoked_at={self.revoked_at!r}, "
             f"connection_type={self.connection_type!r}, "
             f"auth_scheme={self.auth_scheme!r}, "
-            f"allowed_endpoints={self.allowed_endpoints!r})"
+            f"allowed_endpoints={self.allowed_endpoints!r}, "
+            f"access_mode={self.access_mode!r})"
         )
 
     def to_view(self) -> ConnectionView:
@@ -139,6 +165,7 @@ class ConnectionResource:
             allowed_endpoints=self.allowed_endpoints,
             destination=self.destination,
             revoked_at=self.revoked_at,
+            access_mode=self.access_mode,
         )
 
 
@@ -162,6 +189,10 @@ class ConnectionView:
     allowed_endpoints: tuple[OutboundEndpoint, ...]
     destination: str
     revoked_at: float | None
+    #: ``exact`` | ``full`` (full-channel-access D2). Rendered to the owner as
+    #: the ONE sentence that says what a full grant means; never as a wildcard
+    #: endpoint row, because none is stored.
+    access_mode: str = ACCESS_EXACT
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -175,6 +206,7 @@ class ConnectionView:
             "allowed_endpoints": [ep.as_dict() for ep in self.allowed_endpoints],
             "destination": self.destination,
             "revoked_at": self.revoked_at,
+            "access_mode": self.access_mode,
         }
 
 
@@ -695,6 +727,7 @@ class CredentialBlindBroker:
                 connection_type=resource.connection_type,
                 auth_scheme=resource.auth_scheme,
                 allowed_endpoints=resource.allowed_endpoints,
+                access_mode=resource.access_mode,
                 verb=verb,
                 request=request,
             )
@@ -1660,17 +1693,32 @@ def _enforce_endpoint_allowlist(
     canonical: _CanonicalOutboundUrl,
     method: str,
     endpoints: tuple[OutboundEndpoint, ...],
+    access_mode: str = ACCESS_EXACT,
 ) -> None:
     """Refuse any host/method/path/query not on the connection allowlist (design.md D3).
 
     This is the real egress boundary: an EMPTY allowlist permits nothing, and a
     URL whose host, method, path, OR query does not match a declared endpoint is
     refused before any socket is opened.
+
+    On a ``full`` connection (full-channel-access D3.1) the owner has said the
+    universe may do anything the key itself can do on this channel, so once the
+    HOST matches one the agent declared, any path, any query and any of the five
+    verbs are admitted. What "full" does NOT touch: the caller has already
+    refused a non-HTTPS scheme, userinfo, a port other than 443, dot segments,
+    encoded separators, double encoding and a verb outside the five; and the DNS
+    resolution plus the globally-routable-address check still run after this,
+    immediately before the socket. Full is bounded to the 1-4 hosts the channel
+    declared, never to every host the credential might reach.
     """
     if not endpoints:
         raise SsrfValidationError("connection has no permitted endpoints")
     host = canonical.hostname.strip().lower()
     verb = (method or "").strip().upper()
+    if normalize_access_mode(access_mode) == ACCESS_FULL:
+        if any(endpoint.host == host for endpoint in endpoints):
+            return
+        raise SsrfValidationError("outbound host is not on the connection allowlist")
     raw_path, _, raw_query = canonical.path_qs.partition("?")
     if len(raw_query) > _SSRF_MAX_QUERY_LEN:
         raise SsrfValidationError("outbound url query is too long")
@@ -2347,6 +2395,7 @@ class _SsrfHardenedHttpDriver:
         body: Any = None,
         header_name: str = "",
         allowed_endpoints: tuple[OutboundEndpoint, ...] | None = None,
+        access_mode: str = ACCESS_EXACT,
     ) -> dict[str, Any]:
         if not isinstance(bundle, ConnectionSecretBundle):
             raise SsrfValidationError("a typed connection secret bundle is required")
@@ -2361,7 +2410,9 @@ class _SsrfHardenedHttpDriver:
         # tests); every production call through _TrustedNetworkDriver passes a
         # non-empty allowlist, and an empty one refuses.
         if allowed_endpoints is not None:
-            _enforce_endpoint_allowlist(canonical, verb, allowed_endpoints)
+            _enforce_endpoint_allowlist(
+                canonical, verb, allowed_endpoints, access_mode
+            )
         request_headers = _validated_request_headers(headers)
         # oauth1a signs over the method + the exact request URL, so pass the
         # reconstructed URL (identical to the one _execute_pinned_https_request
@@ -2516,10 +2567,12 @@ class _TrustedNetworkDriver:
         connection_type = str(kwargs.pop("connection_type", "") or "").strip().lower()
         auth_scheme = str(kwargs.pop("auth_scheme", "") or "")
         allowed_endpoints = kwargs.pop("allowed_endpoints", ()) or ()
+        access_mode = kwargs.pop("access_mode", ACCESS_EXACT)
         if connection_type == "http":
             return self._dispatch_http(
                 auth_scheme=auth_scheme,
                 allowed_endpoints=tuple(allowed_endpoints),
+                access_mode=access_mode,
                 credential=kwargs.get("credential", ""),
                 verb=str(kwargs.get("verb", "")),
                 request=kwargs.get("request"),
@@ -2621,7 +2674,8 @@ CREATE TABLE IF NOT EXISTS outbound_connections (
     revoked_at      REAL,
     connection_type TEXT NOT NULL DEFAULT '',
     auth_scheme     TEXT NOT NULL DEFAULT '',
-    allowed_endpoints_json TEXT NOT NULL DEFAULT '[]'
+    allowed_endpoints_json TEXT NOT NULL DEFAULT '[]',
+    access_mode     TEXT NOT NULL DEFAULT 'exact'
 );
 
 CREATE TABLE IF NOT EXISTS outbound_connection_grants (
@@ -2686,6 +2740,9 @@ def _resource_from_row(row: sqlite3.Row) -> ConnectionResource:
         connection_type=(row["connection_type"] if "connection_type" in columns else "") or "",
         auth_scheme=(row["auth_scheme"] if "auth_scheme" in columns else "") or "",
         allowed_endpoints=_parse_allowed_endpoints(endpoints_raw),
+        access_mode=normalize_access_mode(
+            row["access_mode"] if "access_mode" in columns else ""
+        ),
     )
 
 
@@ -2755,6 +2812,9 @@ class ConnectionLedger:
                 ("connection_type", "TEXT NOT NULL DEFAULT ''"),
                 ("auth_scheme", "TEXT NOT NULL DEFAULT ''"),
                 ("allowed_endpoints_json", "TEXT NOT NULL DEFAULT '[]'"),
+                # full-channel-access D2. Every existing row is `exact`: a
+                # migration must never widen an existing grant.
+                ("access_mode", "TEXT NOT NULL DEFAULT 'exact'"),
             ):
                 if column not in connection_columns:
                     connection.execute(
@@ -2807,8 +2867,10 @@ class ConnectionLedger:
         connection_type: str = "",
         auth_scheme: str = "",
         allowed_endpoints: Any = (),
+        access_mode: str = ACCESS_EXACT,
     ) -> ConnectionView:
         endpoints = _parse_allowed_endpoints(allowed_endpoints)
+        normalized_access = normalize_access_mode(access_mode)
         normalized_type = (connection_type or "").strip().lower()
         normalized_scheme = (auth_scheme or "").strip().lower()
         if normalized_type not in _KNOWN_CONNECTION_TYPES:
@@ -2849,6 +2911,7 @@ class ConnectionLedger:
             connection_type=normalized_type,
             auth_scheme=normalized_scheme,
             allowed_endpoints=endpoints,
+            access_mode=normalized_access,
         )
         with self._connect() as connection:
             connection.execute(
@@ -2856,8 +2919,9 @@ class ConnectionLedger:
                 INSERT INTO outbound_connections (
                     connection_id, owner_user_id, connection_class, scopes_json,
                     provider, destination, credential_ref, revoked_at,
-                    connection_type, auth_scheme, allowed_endpoints_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+                    connection_type, auth_scheme, allowed_endpoints_json,
+                    access_mode
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
                 """,
                 (
                     resource.connection_id,
@@ -2870,6 +2934,7 @@ class ConnectionLedger:
                     resource.connection_type,
                     resource.auth_scheme,
                     json.dumps([ep.as_dict() for ep in resource.allowed_endpoints]),
+                    resource.access_mode,
                 ),
             )
         # Return the REDACTED view — no caller (not even the creator) gets
@@ -2956,6 +3021,45 @@ class ConnectionLedger:
                 ),
             )
             return cursor.rowcount > 0
+
+    def set_access_mode(
+        self,
+        *,
+        connection_id: str,
+        access_mode: str,
+        expected_mode: str,
+    ) -> bool:
+        """Move a connection between ``exact`` and ``full`` under CAS.
+
+        Returns True when the row moved. False means the stored mode was not
+        ``expected_mode`` any more -- another answer landed first -- and the
+        caller re-previews rather than overwriting a decision it never saw.
+        The same compare-and-swap discipline the endpoint extension uses, for
+        the same reason: two tabs answered from two devices.
+        """
+        wanted = normalize_access_mode(access_mode)
+        expected = normalize_access_mode(expected_mode)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE outbound_connections
+                   SET access_mode = ?
+                 WHERE connection_id = ? AND access_mode = ?
+                """,
+                (wanted, connection_id, expected),
+            )
+            return cursor.rowcount > 0
+
+    def access_mode(self, connection_id: str) -> str | None:
+        """The stored mode, or ``None`` when there is no such connection."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT access_mode FROM outbound_connections WHERE connection_id = ?",
+                (connection_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return normalize_access_mode(row["access_mode"])
 
     def policy_json(self, connection_id: str) -> tuple[str, str] | None:
         """The stored ``(allowed_endpoints_json, scopes_json)`` exactly as
