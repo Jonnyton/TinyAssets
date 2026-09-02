@@ -96,7 +96,10 @@ _MAX_SHAPE_ENTRIES = 40
 _MAX_HINTS = 20
 
 #: An inferred grant stays narrow; a broader one is a deliberate manual choice.
-_MAX_INFERRED_METHODS = 5
+#: NOT a per-user usage cap: this bounds what the MODEL may grant itself by
+#: inference from a pasted key's shape. A broad grant is the owner's deliberate
+#: choice (full-channel-access), never an inference. Kept at 2 (2026-09-02).
+_MAX_INFERRED_METHODS = 2
 
 #: A hint must look like a host or a URL. Anything else is a place a secret
 #: could hide, so it is refused rather than trimmed.
