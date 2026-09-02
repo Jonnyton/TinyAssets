@@ -28,6 +28,7 @@ when that refuses, the result says so.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,24 @@ _PLATFORM_DEFINITION = {
 }
 _BINDING_PAYLOAD = {"schema_version": 1, "name": "Your universe", "role": "writer"}
 _SERVICE_TO_PROVIDER = {"codex": "codex", "claude": "claude-code"}
+
+#: One gesture at a time per universe. `_platform_binding` is check-then-create
+#: and `agent_bindings` has no uniqueness constraint, so two first-time calls
+#: (two open tabs healing, a paste and a phone connect) both see no binding,
+#: both create one, both go serving, and their quiesce passes disable each
+#: other: zero serving, two bindings, and every later call refusing them as
+#: ambiguous (Codex on #2760, S3). The route and the deposit both run in this
+#: process, so a process lock keyed by universe closes it.
+_GESTURE_LOCKS: dict[str, threading.Lock] = {}
+_GESTURE_LOCKS_GUARD = threading.Lock()
+
+
+def _gesture_lock(universe_id: str) -> threading.Lock:
+    with _GESTURE_LOCKS_GUARD:
+        lock = _GESTURE_LOCKS.get(universe_id)
+        if lock is None:
+            lock = _GESTURE_LOCKS[universe_id] = threading.Lock()
+        return lock
 
 
 def _platform_definition(base: Path) -> dict[str, Any]:
@@ -168,8 +187,6 @@ def ensure_founder_serving(
     an authority refusal, so a deposit's success is reported honestly alongside
     the serving outcome.
     """
-    from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
-
     provider = _SERVICE_TO_PROVIDER.get((service or "").strip().lower())
     if provider is None:
         return {"status": "held", "reason": "unsupported_service"}
@@ -178,6 +195,17 @@ def ensure_founder_serving(
     uid = (universe_id or "").strip()
     if not owner or owner == "anonymous" or not uid:
         return {"status": "held", "reason": "authentication_required"}
+    with _gesture_lock(uid):
+        return _ensure_founder_serving_locked(
+            base, universe_dir=universe_dir, owner=owner, uid=uid, provider=provider,
+        )
+
+
+def _ensure_founder_serving_locked(
+    base: Path, *, universe_dir: str | Path, owner: str, uid: str, provider: str,
+) -> dict[str, Any]:
+    from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
+
     try:
         _require_current_admin(base, universe_id=uid, owner=owner)
         binding = _platform_binding(base, universe_id=uid, owner=owner)

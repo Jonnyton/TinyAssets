@@ -12,6 +12,23 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Decide: should a deposit serve the universe by itself?
+
+The deposit spec (`openspec/changes/byo-llm-deposit-surface/specs/byo-llm-deposit-surface/spec.md`,
+"The deposit result directs the owner to the existing serving re-point") says the deposit
+**SHALL NOT itself enable serving**. On 2026-09-01 a pasted Codex deposit through the app
+left the universe chatting but every run refused with `provider_not_bound`, because the
+paste path never followed the hint. #2760 fixes that in the app (the paste path and the
+heartbeat call the same `/mcp/app/serving/bind` the phone uses); a server-side
+"deposit serves when nothing serves" was built, then withdrawn on Codex review because it
+contradicts the requirement above.
+
+Your call, because it is a contract change: keep the deposit write-only (every surface
+finishes the gesture itself, as now), or change the spec so `connect_llm` serves when
+nothing is serving yet. The second is one spec delta plus the withdrawn code; it needs
+your approval first. Tiny's view from inside: "registration and selection must not be
+separable in a way that leaves me runnable-on-paper but dead in practice."
+
 ## Capacity for 1,000 users
 
 ### Apply the daemon memory limit — needs a compose sync, not a decision

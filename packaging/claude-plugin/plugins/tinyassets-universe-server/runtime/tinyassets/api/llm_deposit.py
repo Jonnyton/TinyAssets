@@ -24,7 +24,6 @@ echoes the material, and its exceptions carry no secret.
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +40,6 @@ _MAX_MATERIAL_CHARS = 200_000
 # owner", and "unknown universe" so a caller cannot probe universe/credential
 # existence through the deposit surface (mirrors cloud_connections.py:105).
 _NOT_FOUND: dict[str, Any] = {"error": "not_found", "resource": "connection"}
-logger = logging.getLogger(__name__)
 
 
 def _payload(value: Any) -> dict[str, Any]:
@@ -117,43 +115,6 @@ def _build_record(service: str, material: str) -> dict[str, Any]:
         "service": "codex",
         "auth_json_b64": normalized,
     }
-
-
-def _serve_if_nothing_does(
-    base: Path, *, universe_id: str, universe_dir: Path, actor: str, service: str,
-) -> dict[str, Any]:
-    """Point the universe at the deposit it just received, but only when no
-    serving binding exists at all.
-
-    A deposit is write-only when something already serves: re-pointing is an
-    explicit choice and stays one. When nothing serves there is no choice to
-    respect - the universe is runnable on paper and dead in practice, chat
-    working on the deposit while every run fails `provider_not_bound` - so
-    the autonomous default is to serve on what was just connected.
-    Never raises: the deposit already succeeded and is reported as such;
-    this returns the serving projection or a held reason beside it.
-    """
-    try:
-        from tinyassets.custom_agents import list_bindings
-        from tinyassets.onboarding.serving import ensure_founder_serving
-
-        for binding in list_bindings(base, universe_id=universe_id, limit=100):
-            if binding.get("status") == "serving":
-                return {
-                    "status": "unchanged",
-                    "reason": "already_serving",
-                    "agent_binding_id": binding.get("agent_binding_id"),
-                }
-        return ensure_founder_serving(
-            base_path=base,
-            universe_dir=universe_dir,
-            owner_user_id=actor,
-            universe_id=universe_id,
-            service=service,
-        )
-    except Exception:  # noqa: BLE001 - the deposit stands; say the bind did not
-        logger.exception("serving re-point after deposit failed for %s", universe_id)
-        return {"status": "held", "reason": "serving_bind_failed"}
 
 
 def connect_llm(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
@@ -253,42 +214,22 @@ def connect_llm(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
             "detail": "the deposit could not be completed",
         }
 
-    # 6. A universe serving on NOTHING serves on this deposit; one that already
-    #    serves keeps its explicit choice and gets the re-point hint instead.
-    serving = _serve_if_nothing_does(
-        base, universe_id=uid, universe_dir=udir, actor=actor, service=service,
-    )
-    # 7. Non-secret projection. Never the token, decoded bytes, or any digest.
+    # 6. Non-secret projection + the serving re-point hint. Never the token,
+    #    decoded bytes, or any digest. Deposit is write-only; serving stays held.
     agent_binding_id, expected_revision = _serving_hint(base, universe_id=uid, actor=actor)
-    result: dict[str, Any] = {
+    return {
         "status": "deposited",
         "service": service,
-        "serving": serving,
-        "agent_binding_id": serving.get("agent_binding_id") or agent_binding_id,
-        "expected_revision": (
-            serving.get("revision") if serving.get("status") == "serving"
-            else expected_revision
+        "agent_binding_id": agent_binding_id,
+        "expected_revision": expected_revision,
+        "next": "write_graph target=agent_binding operation=bind_serving_provider",
+        "note": (
+            "Deposit is write-only and does not enable serving. Re-point serving "
+            "with bind_serving_provider (which bumps the binding revision), then "
+            'set_serving {"enabled": true} using the post-bind revision. There is '
+            "no switch_provider operation."
         ),
     }
-    if serving.get("status") == "serving":
-        result["note"] = (
-            "Deposited, and this universe now serves on it: nothing was serving "
-            "before, so no choice was overridden."
-        )
-    else:
-        result["next"] = "write_graph target=agent_binding operation=bind_serving_provider"
-        result["note"] = (
-            "Deposited. Serving was not re-pointed"
-            + (
-                " because a serving binding already exists"
-                if serving.get("reason") == "already_serving"
-                else f" ({serving.get('reason', 'held')})"
-            )
-            + ". Re-point with bind_serving_provider (which bumps the binding "
-            'revision), then set_serving {"enabled": true} using the post-bind '
-            "revision. There is no switch_provider operation."
-        )
-    return result
 
 
 __all__ = ["connect_llm"]
