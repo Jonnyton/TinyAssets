@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 
-from tinyassets.auth.provider import ANONYMOUS
+import pytest
 
 # ── engine_mcp_server: fail-closed + confinement ────────────────────────────
 
@@ -114,16 +114,16 @@ def test_bind_founder_identity_uses_verified_principal(monkeypatch):
         middleware._current_identity.reset(token)
 
 
-def test_bind_founder_identity_anonymous_without_actor(monkeypatch):
+def test_bind_founder_identity_refuses_without_actor(monkeypatch):
+    # No actor bound to the engine surface means nobody to act as, and there
+    # is no anonymous principal to stand in (founder, 2026-09-02).
     from tinyassets import engine_mcp_server as s
     from tinyassets.auth import middleware
 
     monkeypatch.setattr(s, "_ACTOR_ID", "")
-    token = s._bind_founder_identity()
-    try:
-        assert middleware.current_identity() is ANONYMOUS
-    finally:
-        middleware._current_identity.reset(token)
+    with pytest.raises(PermissionError, match="no bound actor"):
+        s._bind_founder_identity()
+    assert middleware.current_identity_or_none() is None
 
 
 # ── engine_mcp_server: shared commons (browse / read / remix) ───────────────

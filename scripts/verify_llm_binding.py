@@ -31,7 +31,14 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
+
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+
+from _canary_common import require_canary_bearer  # noqa: E402
 
 DEFAULT_URL = "https://tinyassets.io/mcp"
 DEFAULT_TIMEOUT = 20.0
@@ -61,7 +68,10 @@ def _post(
     sid: str | None,
     payload: dict[str, Any],
     timeout: float,
+    *,
+    bearer_token: str | None = None,
 ) -> tuple[dict | None, str | None]:
+    bearer_token = bearer_token or require_canary_bearer("verify-llm")
     headers: dict[str, str] = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
@@ -69,6 +79,7 @@ def _post(
     }
     if sid:
         headers["mcp-session-id"] = sid
+    headers["Authorization"] = f"Bearer {bearer_token}"
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),
@@ -133,21 +144,29 @@ def check_llm_binding(
     *,
     require_sandbox: bool = False,
     post_fn=None,  # injection seam for tests
+    bearer_token: str | None = None,
 ) -> dict[str, Any]:
     """Run the full binding verification. Returns the final status dict.
 
     Raises VerifyError with an appropriate exit code on any failure.
     """
+    bearer_token = bearer_token or require_canary_bearer("verify-llm")
     _post_fn = post_fn or _post
 
     # Step 1: initialize
-    resp, sid = _post_fn(url, None, _INIT_PAYLOAD, timeout)
+    resp, sid = _post_fn(
+        url, None, _INIT_PAYLOAD, timeout, bearer_token=bearer_token,
+    )
     if not resp or "result" not in resp:
         raise VerifyError(1, f"MCP initialize failed: {resp!r}")
-    _post_fn(url, sid, _INITIALIZED_NOTIF, timeout)
+    _post_fn(
+        url, sid, _INITIALIZED_NOTIF, timeout, bearer_token=bearer_token,
+    )
 
     # Step 2: get_status — check llm_endpoint_bound
-    status_result = _call_tool_with(url, sid, "get_status", {}, timeout, _post_fn)
+    status_result = _call_tool_with(
+        url, sid, "get_status", {}, timeout, _post_fn, bearer_token,
+    )
     status = _parse_status(status_result)
 
     llm_bound = _llm_endpoint_bound(status)
@@ -185,6 +204,7 @@ def _call_tool_with(
     args: dict[str, Any],
     timeout: float,
     post_fn,
+    bearer_token: str,
 ) -> dict[str, Any]:
     payload = {
         "jsonrpc": "2.0",
@@ -192,7 +212,9 @@ def _call_tool_with(
         "method": "tools/call",
         "params": {"name": tool, "arguments": args},
     }
-    resp, _ = post_fn(url, sid, payload, timeout)
+    resp, _ = post_fn(
+        url, sid, payload, timeout, bearer_token=bearer_token,
+    )
     if resp is None or "result" not in resp:
         raise VerifyError(1, f"tools/call {tool!r} got no result: {resp!r}")
     if resp["result"].get("isError"):
@@ -203,6 +225,7 @@ def _call_tool_with(
 
 
 def main(argv: list[str] | None = None) -> int:
+    bearer = require_canary_bearer("verify-llm")
     ap = argparse.ArgumentParser(
         description="Verify the daemon has an LLM provider bound (HD-3 post-deploy check)."
     )
@@ -245,6 +268,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.url,
                 args.timeout,
                 require_sandbox=args.require_sandbox,
+                bearer_token=bearer,
             )
             llm_bound = _llm_endpoint_bound(status)
             print(f"[verify-llm] PASS — llm_endpoint_bound={llm_bound!r}")

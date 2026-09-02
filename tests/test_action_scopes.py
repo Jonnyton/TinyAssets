@@ -166,6 +166,10 @@ def test_action_scope_checkpoint_enforces_only_when_auth_is_enabled() -> None:
     with pytest.raises(PermissionError, match="tinyassets.universe.admin"):
         require_action_scope("universe", "daemon_banish")
 
-    set_provider(DevAuthProvider())
+    # Dev mode does not enforce scopes, but it still needs SOMEBODY bound.
+    set_provider(DevAuthProvider(user_id="operator"))
     auth_middleware(None)
+    with pytest.raises(PermissionError, match="Authentication required"):
+        require_action_scope("universe", "daemon_banish")
+    auth_middleware("any-bearer")
     require_action_scope("universe", "daemon_banish")

@@ -3296,18 +3296,17 @@ class _DeprecatedToolVisibility(Middleware):
                 "canonical handles",
                 name,
             )
-            # Anonymous-write-gate coverage (2026-07-13 founder decision):
-            # the fat tools mix read and write actions behind one `action`
-            # argument, so classifying per action would drift. They are
-            # already hidden from tools/list; in gating auth modes they are
-            # unavailable to anonymous callers outright. Signed-in callers
-            # and dev mode keep them for the migration release.
+            # The fat tools mix read and write actions behind one `action`
+            # argument, so classifying per action would drift. They are hidden
+            # from tools/list, and unavailable without a bound principal --
+            # which over HTTP is every request, since the transport refuses
+            # the rest (no anonymous principal, 2026-09-02).
             if write_gate_rejection(name) is not None:
                 raise ToolError(
                     f"{name} is a deprecated tool and is not available "
                     "without a signed-in connection. Use the advertised "
-                    "canonical handles instead: reads stay open there; writes "
-                    "require connecting this MCP server with OAuth."
+                    "canonical handles instead, with this MCP server "
+                    "connected through OAuth."
                 )
         return await call_next(context)
 
@@ -3792,6 +3791,13 @@ def main(
         if transport == "sse":
             mcp.run(transport="sse", host=host, port=port)
         elif transport == "stdio":
+            # No bearer on stdio: the principal is the local operator, bound
+            # once for the process (no-anonymous-principal). The ContextVar set
+            # here is copied into every task anyio starts under mcp.run().
+            from tinyassets.auth.middleware import bind_local_operator_identity
+
+            bound = bind_local_operator_identity()
+            logger.info("stdio transport: principal is local operator %r", bound.user_id)
             mcp.run()
         else:
             raise ValueError(f"Unknown transport: {transport}")

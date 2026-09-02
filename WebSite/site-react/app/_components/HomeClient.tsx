@@ -241,7 +241,12 @@ export default function HomeClient() {
             {vitals?.reachable ? (
               <>
                 <span className={`dot ${vitals.workflowActive ? "live" : "idle"}`} aria-hidden="true"></span>
-                {vitals.workflowActive ? (
+                {vitals.activityVisible === false ? (
+                  <>
+                    <span>right now: <strong>activity is visible to signed-in connectors only</strong></span>
+                    <span className="ev">read {fmtRel(vitals.fetchedAt)}</span>
+                  </>
+                ) : vitals.workflowActive ? (
                   <>
                     <span>right now: <strong>recent public graph activity is visible</strong></span>
                     {vitals.lastMovedAt && <span className="ev">last signal {fmtRel(vitals.lastMovedAt)} · read {fmtRel(vitals.fetchedAt)}</span>}

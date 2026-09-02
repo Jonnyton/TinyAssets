@@ -289,6 +289,28 @@ jobs:
           ls -la "$CLAUDE_DIR" || true
           SH
 
+      - name: Sync the canary bearer into /etc/tinyassets/env
+        # The daemon serves no anonymous read: its own healthcheck, the
+        # post-deploy canary below and every probe workflow present this
+        # bearer. Synced from the GitHub secret on every deploy so the two
+        # never drift; a missing secret is refused HERE, before anything
+        # is mutated, instead of surfacing as an unhealthy container and a
+        # rollback (docs/host-actions.md: mint the canary bearer).
+        env:
+          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "${#TINYASSETS_WIKI_CANARY_TOKEN}" -lt 32 ]; then
+            echo "::error::TINYASSETS_WIKI_CANARY_TOKEN secret is unset or shorter than 32 bytes; the probes cannot run and the container healthcheck would fail. See docs/host-actions.md (mint the canary bearer) and re-run."
+            exit 1
+          fi
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes deploy/install-tinyassets-env.sh \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"
+          printf '%s' "${TINYASSETS_WIKI_CANARY_TOKEN}" \
+            | ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_WIKI_CANARY_TOKEN"
+          echo "canary bearer synced"
+
       - name: Run fail-safe deploy on the droplet
         id: deploy
         env:
@@ -320,6 +342,8 @@ jobs:
           fi
 
       - name: Public MCP canary (--assert-handles)
+        env:
+          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         id: canary
         run: |
           set -euo pipefail

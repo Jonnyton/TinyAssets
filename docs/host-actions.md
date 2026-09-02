@@ -34,6 +34,39 @@ not make, taken so the build could proceed; say the word and any flips:
    universe or a user.
 6. "Public" now means visible to any signed-in user (the remix model needs
    that); there is no unauthenticated reader anywhere.
+7. The website's commons / graph / host / loop pages keep their `Refresh MCP`
+   control, and it now reports the reason plainly ("public universe
+   discovery needs a signed-in connector") and shows the checked-in
+   snapshot. Removing those controls, or giving the site a signed-in read,
+   is a separate site change; the vitals widgets read `/mcp/pulse`.
+8. The stdio server (the Claude plugin, `--transport stdio`) binds the local
+   operator as its principal: `UNIVERSE_SERVER_DEV_USER` when set, else the
+   OS account the process runs as. It never ran as anybody before; it runs
+   as you now.
+9. The activity probe (`last_activity_canary.py`) no longer inspects a
+   universe (it read yours, as nobody). `get_status` gained a platform-wide
+   `daemon.last_activity_at` from the run ledger, and the probe reads that.
+
+### Mint the canary bearer -- blocks merging PR 1 (`no-anonymous-principal`)
+
+`TINYASSETS_WIKI_CANARY_TOKEN` is not a GitHub secret today (checked
+2026-09-02: `gh secret list` has no such row, and the live wiki canary runs
+in its tokenless mode). After PR 1 the daemon serves no anonymous read, so
+its own container healthcheck, the post-deploy canary and every probe
+workflow present this bearer. Deploying without it rolls the deploy back.
+`deploy-prod.yml` now syncs the secret into `/etc/tinyassets/env` on every
+deploy and refuses to start a deploy while the secret is missing, so the
+whole ask is one command, run once:
+
+```
+gh secret set TINYASSETS_WIKI_CANARY_TOKEN --body "$(python -c 'import secrets; print(secrets.token_hex(32))')"
+```
+
+The agent could not run it (`gh secret set` was declined in an earlier
+session). Then merge PR 1; the first deploy carries the token to the
+droplet before it touches the container. Nothing else is needed: the
+probes read the secret from the same name, and the tray/self-host template
+documents the key for anyone running their own daemon.
 
 ## Decided for you, reversible: full channel access (2026-09-02)
 

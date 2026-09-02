@@ -55,6 +55,7 @@ from _canary_common import (  # noqa: E402
     _extract_structured_tool_payload,
     _extract_tool_text,
     _init_payload,
+    require_canary_bearer,
 )
 from _canary_common import _post as _post_raw  # noqa: E402
 
@@ -212,15 +213,20 @@ def fetch_status_activity_tail(
     timeout: float,
     *,
     post_fn=None,
+    bearer_token: str | None = None,
 ) -> list[str]:
     """MCP handshake + tools/call get_status; return activity_log_tail.
 
     Raises RevertLoopError with step_code=4 on handshake trouble, 5 on
     tool-shape trouble (evidence missing).
     """
+    bearer_token = bearer_token or require_canary_bearer("revert-loop")
     post = post_fn or _post
 
-    resp, sid = post(url, None, _INIT_PAYLOAD, timeout, step_code=4)
+    resp, sid = post(
+        url, None, _INIT_PAYLOAD, timeout, step_code=4,
+        bearer_token=bearer_token,
+    )
     if resp is None or "result" not in resp:
         raise RevertLoopError(4, f"initialize returned no result: {resp!r}")
     if "error" in resp:
@@ -232,14 +238,20 @@ def fetch_status_activity_tail(
             4, "initialize response missing mcp-session-id header",
         )
 
-    post(url, sid, _INITIALIZED_NOTIF, timeout, step_code=4)
+    post(
+        url, sid, _INITIALIZED_NOTIF, timeout, step_code=4,
+        bearer_token=bearer_token,
+    )
 
     call_payload = {
         "jsonrpc": "2.0", "id": 2,
         "method": "tools/call",
         "params": {"name": "get_status", "arguments": {}},
     }
-    resp, _ = post(url, sid, call_payload, timeout, step_code=5)
+    resp, _ = post(
+        url, sid, call_payload, timeout, step_code=5,
+        bearer_token=bearer_token,
+    )
     if resp is None or "result" not in resp:
         raise RevertLoopError(
             5, f"get_status returned no result: {resp!r}",
@@ -303,10 +315,14 @@ def run_canary(
     critical_threshold: int,
     post_fn=None,
     now: _dt.datetime | None = None,
+    bearer_token: str | None = None,
 ) -> tuple[int, str]:
     """Full canary flow. Returns (exit_code, human_message)."""
+    bearer_token = bearer_token or require_canary_bearer("revert-loop")
     current_now = now or _dt.datetime.now(tz=_dt.timezone.utc)
-    tail = fetch_status_activity_tail(url, timeout, post_fn=post_fn)
+    tail = fetch_status_activity_tail(
+        url, timeout, post_fn=post_fn, bearer_token=bearer_token,
+    )
     return classify_loop(
         tail, now=current_now,
         warn_window_min=warn_window_min,
@@ -317,6 +333,7 @@ def run_canary(
 
 
 def main(argv: list[str] | None = None) -> int:
+    bearer = require_canary_bearer("revert-loop")
     ap = argparse.ArgumentParser(
         description="Two-tier revert-loop canary per Lane 4 spec.",
     )
@@ -369,6 +386,7 @@ def main(argv: list[str] | None = None) -> int:
             warn_threshold=args.warn_threshold,
             critical_window_min=args.critical_window_min,
             critical_threshold=args.critical_threshold,
+            bearer_token=bearer,
         )
     except RevertLoopError as exc:
         print(

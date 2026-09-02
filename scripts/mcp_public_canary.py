@@ -1,8 +1,11 @@
 """Public MCP uptime canary — stdlib-only end-to-end probe.
 
-POSTs an ``initialize`` JSON-RPC request against a configurable MCP
-endpoint (default ``https://tinyassets.io/mcp``) and validates the
-response carries a well-formed MCP ``serverInfo`` + ``protocolVersion``.
+What it asserts:
+
+* anonymous ``initialize`` gets the canonical Bearer challenge;
+* every MCP read runs as the scoped canary service principal;
+* authenticated initialize, tools/list, and get_status remain healthy; and
+* converse is refused both without credentials (401) and for the canary (403).
 
 Intended for continuous uptime monitoring per the 24/7 forever rule.
 Tray wires this on a timer; on nonzero exit, tray surfaces an alert.
@@ -25,8 +28,8 @@ Exit codes
     DNS/tunnel/Worker/connector change.
 5   ``--assert-handles`` status failure: ``tools/call get_status`` failed or
     omitted the uptime-critical ``active_host`` / ``release_state`` fields.
-6   ``--assert-handles`` continuity failure: ``converse`` did not reach the
-    unauthenticated Bearer challenge for this endpoint's protected resource.
+6   Authentication-boundary failure: anonymous initialize was admitted, or
+    ``converse`` was not refused at both the anonymous and canary boundaries.
 
 Usage
 -----
@@ -49,7 +52,14 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
+
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+
+from _canary_common import require_canary_bearer  # noqa: E402
 
 DEFAULT_URL = "https://tinyassets.io/mcp"
 DEFAULT_TIMEOUT = 10.0
@@ -135,6 +145,7 @@ def _post(
     timeout: float,
     session_id: str | None = None,
     accepted_http_statuses: frozenset[int] = frozenset(),
+    bearer: str | None = None,
 ) -> tuple[int, dict[str, str], bytes]:
     """POST one JSON-RPC frame. Return (status, headers, body). Raise on I/O.
 
@@ -148,6 +159,8 @@ def _post(
     }
     if session_id:
         headers["mcp-session-id"] = session_id
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
@@ -202,9 +215,12 @@ def _get_json(url: str, timeout: float) -> dict[str, Any]:
     return payload
 
 
-def advertised_tool_names(url: str, timeout: float) -> set[str]:
+def advertised_tool_names(
+    url: str, timeout: float, *, bearer: str | None = None,
+) -> set[str]:
     """Full MCP handshake → tools/list; return the advertised tool name set."""
-    status, headers, _ = _post(url, _INIT_PAYLOAD, timeout)
+    bearer = bearer or require_canary_bearer("canary")
+    status, headers, _ = _post(url, _INIT_PAYLOAD, timeout, bearer=bearer)
     if status != 200:
         raise CanaryError(2, f"non-200 status {status} from {url}")
     session_id = headers.get("mcp-session-id")
@@ -215,12 +231,14 @@ def advertised_tool_names(url: str, timeout: float) -> set[str]:
             {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
             timeout,
             session_id,
+            bearer=bearer,
         )
     status, _, body = _post(
         url,
         {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
         timeout,
         session_id,
+        bearer=bearer,
     )
     if status != 200:
         raise CanaryError(2, f"non-200 status {status} from {url} (tools/list)")
@@ -236,9 +254,11 @@ def advertised_tool_names(url: str, timeout: float) -> set[str]:
     return {t.get("name") for t in tools if isinstance(t, dict) and t.get("name")}
 
 
-def assert_canonical_handles(url: str, timeout: float) -> None:
+def assert_canonical_handles(
+    url: str, timeout: float, *, bearer: str | None = None,
+) -> None:
     """Raise ``CanaryError(4)`` unless tools/list is exactly the canonical set."""
-    names = advertised_tool_names(url, timeout)
+    names = advertised_tool_names(url, timeout, bearer=bearer)
     missing = CANONICAL_HANDLES - names
     extra = names - _ALLOWED_ADVERTISED
     if missing or extra:
@@ -249,19 +269,11 @@ def assert_canonical_handles(url: str, timeout: float) -> None:
         )
 
 
-def assert_converse_auth_gate(url: str, timeout: float) -> None:
-    """Prove an anonymous ``converse`` call reaches the Bearer auth gate."""
-    status, headers, _ = _post(url, _INIT_PAYLOAD, timeout)
-    if status != 200:
-        raise CanaryError(2, f"non-200 status {status} from {url}")
-    session_id = headers.get("mcp-session-id")
-    if session_id:
-        _post(
-            url,
-            {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
-            timeout,
-            session_id,
-        )
+def assert_converse_auth_gate(
+    url: str, timeout: float, *, bearer: str | None = None,
+) -> None:
+    """Prove ``converse`` is refused anonymously and for the canary."""
+    bearer = bearer or require_canary_bearer("canary")
     status, response_headers, body = _post(
         url,
         {
@@ -274,7 +286,6 @@ def assert_converse_auth_gate(url: str, timeout: float) -> None:
             },
         },
         timeout,
-        session_id,
         accepted_http_statuses=frozenset({401}),
     )
     if status != 401:
@@ -306,15 +317,7 @@ def assert_converse_auth_gate(url: str, timeout: float) -> None:
     ):
         raise CanaryError(6, f"protected resource document drift on {url}")
 
-
-def assert_status_surface(url: str, timeout: float) -> str:
-    """Call ``get_status`` and verify its uptime-critical response fields.
-
-    Return a compact identity-evidence state so verbose canary output makes
-    fingerprint configuration degradation visible without treating it as a
-    status-surface outage.
-    """
-    status, headers, _ = _post(url, _INIT_PAYLOAD, timeout)
+    status, headers, _ = _post(url, _INIT_PAYLOAD, timeout, bearer=bearer)
     if status != 200:
         raise CanaryError(2, f"non-200 status {status} from {url}")
     session_id = headers.get("mcp-session-id")
@@ -324,6 +327,52 @@ def assert_status_surface(url: str, timeout: float) -> str:
             {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
             timeout,
             session_id,
+            bearer=bearer,
+        )
+    status, _, _ = _post(
+        url,
+        {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "converse",
+                "arguments": {"message": "mcp-public-canary auth boundary probe"},
+            },
+        },
+        timeout,
+        session_id,
+        accepted_http_statuses=frozenset({403}),
+        bearer=bearer,
+    )
+    if status != 403:
+        raise CanaryError(
+            6,
+            f"canary converse gate expected HTTP 403 from {url}, got {status}",
+        )
+
+
+def assert_status_surface(
+    url: str, timeout: float, *, bearer: str | None = None,
+) -> str:
+    """Call ``get_status`` and verify its uptime-critical response fields.
+
+    Return a compact identity-evidence state so verbose canary output makes
+    fingerprint configuration degradation visible without treating it as a
+    status-surface outage.
+    """
+    bearer = bearer or require_canary_bearer("canary")
+    status, headers, _ = _post(url, _INIT_PAYLOAD, timeout, bearer=bearer)
+    if status != 200:
+        raise CanaryError(2, f"non-200 status {status} from {url}")
+    session_id = headers.get("mcp-session-id")
+    if session_id:
+        _post(
+            url,
+            {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+            timeout,
+            session_id,
+            bearer=bearer,
         )
     status, _, body = _post(
         url,
@@ -335,6 +384,7 @@ def assert_status_surface(url: str, timeout: float) -> str:
         },
         timeout,
         session_id,
+        bearer=bearer,
     )
     if status != 200:
         raise CanaryError(5, f"non-200 status {status} from {url} (get_status)")
@@ -396,6 +446,8 @@ def assert_canonical_handles_with_retry(
     retries: int = 5,
     delay: float = 3.0,
     _sleep=time.sleep,
+    *,
+    bearer: str | None = None,
 ) -> str:
     """Assert canonical handles and status surface, retrying transient blips.
 
@@ -407,12 +459,13 @@ def assert_canonical_handles_with_retry(
     last attempt's ``CanaryError`` propagates so a genuine regression still
     fails the deploy.
     """
+    bearer = bearer or require_canary_bearer("canary")
     attempts = max(1, retries)
     for attempt in range(1, attempts + 1):
         try:
-            assert_canonical_handles(url, timeout)
-            assert_converse_auth_gate(url, timeout)
-            return assert_status_surface(url, timeout)
+            assert_canonical_handles(url, timeout, bearer=bearer)
+            assert_converse_auth_gate(url, timeout, bearer=bearer)
+            return assert_status_surface(url, timeout, bearer=bearer)
         except CanaryError as exc:
             if attempt >= attempts:
                 raise
@@ -428,38 +481,44 @@ def probe_result(
     url: str,
     timeout: float,
     expected_name: str | None = None,
+    *,
+    bearer: str | None = None,
 ) -> None:
     """Run the probe. Return None on success; raise ``CanaryError`` on failure.
 
     Importable by layered canary wrappers that need to log outcomes without
     exiting the process. ``probe()`` is the CLI-shaped thin adapter.
     """
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(_INIT_PAYLOAD).encode("utf-8"),
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-            "User-Agent": "tinyassets-mcp-canary/1.0",
-        },
-    )
-    ctx = ssl.create_default_context()
-
+    bearer = bearer or require_canary_bearer("canary")
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
-            status = resp.status
-            body = resp.read()
-    except urllib.error.HTTPError as exc:
-        raise CanaryError(2, f"HTTP {exc.code} from {url}: {exc.reason}") from exc
-    except urllib.error.URLError as exc:
-        raise CanaryError(2, f"unreachable {url}: {exc.reason}") from exc
-    except TimeoutError as exc:
-        raise CanaryError(2, f"timeout after {timeout}s: {url}") from exc
-    except ssl.SSLError as exc:
-        raise CanaryError(2, f"TLS error {url}: {exc}") from exc
-    except OSError as exc:
-        raise CanaryError(2, f"socket error {url}: {exc}") from exc
+        status, challenge_headers, challenge_body = _post(
+            url,
+            _INIT_PAYLOAD,
+            timeout,
+            accepted_http_statuses=frozenset({401}),
+        )
+    except CanaryError as exc:
+        if exc.code == 2 and exc.msg.startswith("HTTP "):
+            raise CanaryError(
+                6, f"surface did not challenge anonymous initialize on {url}: {exc.msg}"
+            ) from exc
+        raise
+    challenge = challenge_headers.get("www-authenticate", "")
+    try:
+        challenge_payload = json.loads(challenge_body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        challenge_payload = None
+    if (
+        status != 401
+        or not challenge.startswith("Bearer ")
+        or challenge_payload != {"error": "authentication_required"}
+    ):
+        raise CanaryError(
+            6,
+            f"surface admitted an anonymous initialize on {url}: HTTP {status}",
+        )
+
+    status, _, body = _post(url, _INIT_PAYLOAD, timeout, bearer=bearer)
 
     if status != 200:
         raise CanaryError(2, f"non-200 status {status} from {url}")
@@ -493,15 +552,18 @@ def probe(
     url: str,
     timeout: float,
     expected_name: str | None = None,
+    *,
+    bearer: str,
 ) -> None:
     """CLI-shaped adapter — calls ``probe_result`` and ``_die``s on failure."""
     try:
-        probe_result(url, timeout, expected_name=expected_name)
+        probe_result(url, timeout, expected_name=expected_name, bearer=bearer)
     except CanaryError as exc:
         _die(exc.code, exc.msg)
 
 
 def main(argv: list[str]) -> int:
+    bearer = require_canary_bearer("canary")
     ap = argparse.ArgumentParser(description="Probe a public MCP endpoint.")
     ap.add_argument("--url", default=DEFAULT_URL, help=f"MCP endpoint URL (default {DEFAULT_URL})")
     ap.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT,
@@ -521,7 +583,7 @@ def main(argv: list[str]) -> int:
                     help="seconds between handle-assertion retries (default 3)")
     args = ap.parse_args(argv)
 
-    probe(args.url, args.timeout, expected_name=args.assert_name)
+    probe(args.url, args.timeout, expected_name=args.assert_name, bearer=bearer)
 
     if args.assert_handles:
         try:
@@ -530,13 +592,15 @@ def main(argv: list[str]) -> int:
                 args.timeout,
                 retries=args.assert_handles_retries,
                 delay=args.assert_handles_retry_delay,
+                bearer=bearer,
             )
         except CanaryError as exc:
             _die(exc.code, exc.msg)
 
     if args.verbose:
         suffix = (
-            " (canonical handle set advertised; converse auth gate reachable; "
+            " (anonymous initialize challenged; canonical handle set advertised; "
+            "converse refused anonymously and for canary; "
             "get_status uptime fields present; "
             f"identity_evidence={identity_state})"
             if args.assert_handles

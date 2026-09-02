@@ -142,7 +142,7 @@
           {/if}
           <span class="pulse__row pulse__row--quiet">
             <span class="dot" class:live={vitals.workflowActive} class:idle={!vitals.workflowActive} aria-hidden="true"></span>
-            <span class="pulse__k">{vitals.workflowActive ? 'recent workflow activity' : 'no recent workflow activity'}</span>
+            <span class="pulse__k">{vitals.activityVisible === false ? 'activity is visible to signed-in connectors only' : vitals.workflowActive ? 'recent workflow activity' : 'no recent workflow activity'}</span>
           </span>
           <span class="pulse__stamp ev">
             read {fmtRel(vitals.fetchedAt)}

@@ -70,16 +70,19 @@ def test_current_actor_prefers_authenticated_oauth_subject(
     assert _current_actor() == "oauth-subject-123"
 
 
-def test_current_actor_falls_back_to_env_without_request_identity(
+def test_current_actor_never_falls_back_to_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from tinyassets.api.engine_helpers import _current_actor
 
+    # UNIVERSE_SERVER_USER used to name the actor when no request identity
+    # was bound. An environment variable must never confer authority.
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "env-actor")
     set_provider(DevAuthProvider())
     auth_middleware(None)
 
-    assert _current_actor() == "env-actor"
+    with pytest.raises(PermissionError, match="Authentication required"):
+        _current_actor()
 
 
 def test_get_status_exposes_fingerprint_not_authenticated_subject(
@@ -155,4 +158,6 @@ async def test_auth_context_middleware_sets_actor_for_request(
     await middleware(scope, receive, send)
 
     assert seen == ["oauth-subject-456"]
-    assert _current_actor() == "env-actor"
+    # Outside the request there is nobody, not the env var.
+    with pytest.raises(PermissionError):
+        _current_actor()

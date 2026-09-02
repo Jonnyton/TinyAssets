@@ -3,133 +3,17 @@
  *
  * In production the Cloudflare Worker serves /mcp on the same origin. Local
  * previews can set NEXT_PUBLIC_MCP_PATH to a proxy or the live endpoint.
+ *
+ * The only request an anonymous browser can make is GET /mcp/pulse; every
+ * MCP call needs a bearer (no anonymous principal, 2026-09-02).
  */
 
 import type { Snapshot } from "./types";
-import {
-  assertPublicBrowserEndpoint,
-  pageInventoryCall,
-  publicGraphCall,
-  requirePublicUniverseCollection,
-  splitPageInventory,
-} from "../../shared/mcp/public-read-contract.js";
+import { assertPublicBrowserEndpoint } from "../../shared/mcp/public-read-contract.js";
 
 const MCP_PATH = assertPublicBrowserEndpoint(
   (typeof process !== "undefined" && process.env.NEXT_PUBLIC_MCP_PATH) || "/mcp",
 );
-
-let initialized = false;
-let sessionId: string | null = null;
-let nextId = 1;
-
-type RpcResp = {
-  jsonrpc: "2.0";
-  id: number;
-  result?: any;
-  error?: { code: number; message: string };
-};
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
-async function rpc(method: string, params: any = {}): Promise<any> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    Accept: "application/json, text/event-stream",
-  };
-  if (sessionId) headers["Mcp-Session-Id"] = sessionId;
-
-  const body = { jsonrpc: "2.0", id: nextId++, method, params };
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      const res = await fetch(MCP_PATH, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        credentials: "omit",
-      });
-
-      const sid = res.headers.get("Mcp-Session-Id");
-      if (sid && !sessionId) sessionId = sid;
-
-      if (!res.ok) {
-        if ([502, 503, 504].includes(res.status) && attempt < 2) {
-          await sleep(350 * (attempt + 1));
-          continue;
-        }
-        throw new Error(`Public MCP request failed (HTTP ${res.status})`);
-      }
-
-      const contentType = res.headers.get("Content-Type") ?? "";
-      let text = await res.text();
-      if (contentType.includes("text/event-stream")) {
-        const dataLine = text.split("\n").find((line) => line.startsWith("data:"));
-        if (!dataLine) throw new Error("SSE response missing data line");
-        text = dataLine.replace(/^data:\s*/, "");
-      }
-
-      const json = JSON.parse(text) as RpcResp;
-      if (json.error) {
-        const code = Number.isInteger(json.error.code) ? ` (code ${json.error.code})` : "";
-        throw new Error(`Public MCP request failed${code}`);
-      }
-      return json.result;
-    } catch (error) {
-      if (attempt < 2) {
-        await sleep(350 * (attempt + 1));
-        continue;
-      }
-    }
-  }
-
-  throw new Error("Public MCP read is unavailable");
-}
-
-async function ensureInit(): Promise<void> {
-  if (initialized) return;
-  await rpc("initialize", {
-    protocolVersion: "2025-06-18",
-    clientInfo: { name: "tinyassets-site-live", version: "0.1.0" },
-    capabilities: {},
-  });
-  try {
-    await fetch(MCP_PATH, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json, text/event-stream",
-        ...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
-      },
-      body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
-      credentials: "omit",
-    });
-  } catch {}
-  initialized = true;
-}
-
-async function callTool(name: string, args: Record<string, any>): Promise<any> {
-  await ensureInit();
-  const result = await rpc("tools/call", { name, arguments: args });
-  if (result?.structuredContent && typeof result.structuredContent === "object") {
-    return result.structuredContent;
-  }
-  const textItem = result?.content?.find((item: any) => item?.type === "text");
-  if (!textItem?.text) return null;
-  try {
-    const parsed = JSON.parse(textItem.text);
-    if (parsed && typeof parsed.result === "string") {
-      try {
-        return JSON.parse(parsed.result);
-      } catch {
-        return parsed.result;
-      }
-    }
-    return parsed;
-  } catch {
-    return textItem.text;
-  }
-}
 
 export type LiveResult = {
   goals: any[];
@@ -142,39 +26,23 @@ export type LiveResult = {
   fetchedAt: string;
 };
 
-export async function fetchPublicUniverses(limit = 100): Promise<any[]> {
-  const universesCall = publicGraphCall("graphs", limit);
-  return requirePublicUniverseCollection(
-    await callTool(universesCall.name, universesCall.args),
-    "read_graph graphs",
-    limit,
-  );
+export const PUBLIC_READ_NEEDS_SIGN_IN =
+  "public universe discovery needs a signed-in connector; showing the checked-in snapshot";
+
+/**
+ * There is no anonymous read of the MCP surface (founder, 2026-09-02): every
+ * request without a bearer is answered with a 401 challenge, initialize
+ * included. Public universe and page discovery therefore reject here,
+ * without a network call, so each page falls back to its checked-in snapshot
+ * and says why. The reachability signal lives in fetchVitals (GET /mcp/pulse).
+ */
+export async function fetchPublicUniverses(_limit = 100): Promise<any[]> {
+  throw new Error(PUBLIC_READ_NEEDS_SIGN_IN);
 }
 
-/** Fetch the same generic public data that the checked-in snapshot contains. */
+/** See fetchPublicUniverses: rejects without a network call. */
 export async function fetchLive(): Promise<LiveResult> {
-  // One browser MCP session owns initialization and session-id state, so keep
-  // these reads sequential instead of racing the first call through ensureInit.
-  const inventoryCall = pageInventoryCall();
-  const pageInventory = await callTool(inventoryCall.name, inventoryCall.args);
-  const wiki = splitPageInventory(pageInventory);
-  const universes = await fetchPublicUniverses();
-  return {
-    // Goals remain checked-in snapshot data until the server exposes a
-    // server-enforced public-only projection.
-    goals: [],
-    universes,
-    wiki: {
-      promoted: wiki.promoted,
-      drafts: wiki.drafts,
-    },
-    // splitPageInventory already proved this exact scope/note pair.
-    pageDiscovery: {
-      scope: wiki.scope,
-      scopeNote: wiki.scopeNote,
-    },
-    fetchedAt: new Date().toISOString(),
-  };
+  throw new Error(PUBLIC_READ_NEEDS_SIGN_IN);
 }
 
 function stringify(value: unknown): string {
@@ -223,63 +91,56 @@ export type Vitals = {
   fetchedAt: string;
   deployedAt?: string | null;
   gitSha?: string | null;
+  uptimeSeconds?: number | null;
   queue?: { pending: number; running: number; succeeded: number; failed: number; depth: number } | null;
   lastMovedAt?: string | null;
   universeCount?: number;
   goalCount?: number | null;
   workflowActive?: boolean;
   lastSignalSource?: "universe-activity" | null;
+  /** false when activity exists but is not visible to an anonymous browser. */
+  activityVisible?: boolean;
   error?: string;
 };
 
-const VITALS_SIGNAL_WINDOW_MS = 60 * 60 * 1000;
-
 /**
- * Read reachability and activity only from the public universe projection.
- * The operator get_status payload includes raw logs and identifiers, so public
- * browsers must not download it merely to select a few aggregate fields.
+ * Reachability and release facts from GET /mcp/pulse: git sha, image tag,
+ * deploy time, uptime. It is the one unauthenticated read the daemon serves
+ * and it names no universe and no user. Activity is not visible to an
+ * anonymous browser, so activityVisible is false and nothing here claims
+ * "no recent activity".
  */
 export async function fetchVitals(): Promise<Vitals> {
+  const fetchedAt = new Date().toISOString();
   try {
-    const universesCall = publicGraphCall("graphs", 100);
-    const publicUniverses = requirePublicUniverseCollection(
-      await callTool(universesCall.name, universesCall.args),
-      "read_graph graphs",
-      100,
-    );
-    let universeMovedMs: number | null = null;
-    for (const universe of publicUniverses) {
-      const ms = timestampMs(universe?.last_activity_at);
-      if (ms !== null && (universeMovedMs === null || ms > universeMovedMs)) {
-        universeMovedMs = ms;
-      }
-    }
-
-    const lastMovedMs = universeMovedMs;
-    const lastSignalSource: "universe-activity" | null =
-      universeMovedMs === null ? null : "universe-activity";
-
-    const recentSignal =
-      lastMovedMs !== null && Date.now() - lastMovedMs < VITALS_SIGNAL_WINDOW_MS;
-    const workflowActive = recentSignal;
-
+    const res = await fetch(`${MCP_PATH}/pulse`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      credentials: "omit"
+    });
+    if (!res.ok) throw new Error(`pulse HTTP ${res.status}`);
+    const pulse = await res.json();
+    if (!pulse || typeof pulse !== "object") throw new Error("pulse is not an object");
+    const sha = typeof pulse.git_sha === "string" ? pulse.git_sha.trim() : "";
+    const uptime = Number(pulse.uptime_seconds);
     return {
       reachable: true,
-      fetchedAt: new Date().toISOString(),
-      deployedAt: null,
-      gitSha: null,
+      fetchedAt,
+      deployedAt: normalizeTimestamp(pulse.deployed_at),
+      gitSha: sha ? sha.slice(0, 12) : null,
+      uptimeSeconds: Number.isFinite(uptime) ? uptime : null,
       queue: null,
-      lastMovedAt: lastMovedMs !== null ? new Date(lastMovedMs).toISOString() : null,
-      universeCount: publicUniverses.length,
+      lastMovedAt: null,
       goalCount: null,
-      workflowActive,
-      lastSignalSource,
+      workflowActive: false,
+      lastSignalSource: null,
+      activityVisible: false
     };
-  } catch (error) {
+  } catch {
     return {
       reachable: false,
-      fetchedAt: new Date().toISOString(),
-      error: "Public MCP read is unavailable",
+      fetchedAt,
+      error: "the /mcp/pulse read failed from your browser"
     };
   }
 }

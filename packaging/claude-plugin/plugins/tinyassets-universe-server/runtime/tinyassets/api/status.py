@@ -1017,6 +1017,47 @@ def _resolve_entry_universe(universe_id: str) -> tuple[str, bool]:
     return "", True
 
 
+def _platform_last_activity_at() -> str | None:
+    """Latest run progress across the platform's run ledger, ISO-8601 UTC, or
+    ``None`` when no run was ever recorded (or the ledger cannot be read).
+
+    Read from the ROOT ``.runs.db`` only. It carries no universe id and no
+    user: it answers "did anything run recently" and nothing else, which is
+    all the activity probe ever needed from the universe inspect it used to
+    read as nobody."""
+    import sqlite3
+    from datetime import datetime, timezone
+
+    from tinyassets.runs import runs_db_path
+
+    db = runs_db_path(_base_path())
+    if not db.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5.0)
+        try:
+            row = conn.execute(
+                "SELECT MAX(COALESCE(finished_at, started_at)) FROM runs"
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    raw = row[0] if row else None
+    if raw is None:
+        return None
+    try:
+        stamp = datetime.fromtimestamp(float(raw), tz=timezone.utc)
+    except (TypeError, ValueError, OverflowError, OSError):
+        try:
+            stamp = datetime.fromisoformat(str(raw))
+        except ValueError:
+            return None
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp.isoformat()
+
+
 def get_status(universe_id: str = "", include_conversation: bool = False) -> str:
     """Factual snapshot of the daemon's identity + routing config.
 
@@ -1057,6 +1098,9 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
             "identity_evidence": identity_evidence,
             "request_identity": request_identity,
             "schema_version": _STATUS_SCHEMA_VERSION,
+            # Present on every status shape the probes can meet, universe or
+            # not: the activity probe reads it instead of inspecting a universe.
+            "daemon": {"last_activity_at": _platform_last_activity_at()},
         })
     udir = _universe_dir(uid)
     universe_exists = udir.is_dir()
@@ -1515,6 +1559,10 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
         "auto_ship_health": auto_ship_health,
         "open_brain": open_brain,
         "release_state": release_state,
+        # Platform-wide, names no universe: the uptime probes read this instead
+        # of inspecting a universe, which the canary principal may not do
+        # (no-anonymous-principal D4).
+        "daemon": {"last_activity_at": _platform_last_activity_at()},
         "universe_id": uid,
         "universe_exists": universe_exists,
     }

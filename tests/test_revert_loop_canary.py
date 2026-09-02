@@ -24,6 +24,11 @@ if str(_SCRIPTS) not in sys.path:
 import revert_loop_canary as rlc  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _canary_token(monkeypatch):
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "t" * 40)
+
+
 def _now() -> _dt.datetime:
     return _dt.datetime(2026, 4, 23, 21, 0, 0, tzinfo=_dt.timezone.utc)
 
@@ -285,8 +290,12 @@ def _make_tool_response(
 class _StubPost:
     def __init__(self, steps: list[tuple[dict | None, str | None]]):
         self._steps = list(steps)
+        self.calls = []
 
-    def __call__(self, url, sid, payload, timeout, *, step_code):
+    def __call__(
+        self, url, sid, payload, timeout, *, step_code, bearer_token=None,
+    ):
+        self.calls.append({"payload": payload, "bearer_token": bearer_token})
         if not self._steps:
             raise AssertionError("stub ran out of responses")
         return self._steps.pop(0)
@@ -450,3 +459,24 @@ class TestRunCanaryEndToEnd:
         ]
         code, _ = self._run(tail)
         assert code == 3
+
+
+def test_every_post_carries_canary_bearer():
+    stub = _StubPost([
+        (_make_init_response(), "sid"),
+        (None, "sid"),
+        (_make_tool_response([]), "sid"),
+    ])
+    rlc.fetch_status_activity_tail("http://fake/mcp", 5.0, post_fn=stub)
+    assert all(call["bearer_token"] == "t" * 40 for call in stub.calls)
+
+
+def test_missing_token_exits_before_post(monkeypatch, capsys):
+    calls = []
+    monkeypatch.delenv("TINYASSETS_WIKI_CANARY_TOKEN", raising=False)
+    monkeypatch.setattr(rlc, "_post", lambda *a, **k: calls.append((a, k)))
+    with pytest.raises(SystemExit) as exc:
+        rlc.main([])
+    assert exc.value.code == 2
+    assert not calls
+    assert "TINYASSETS_WIKI_CANARY_TOKEN" in capsys.readouterr().err

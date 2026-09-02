@@ -67,10 +67,18 @@ jobs:
 
       - name: Start container
         run: |
+          # The daemon serves nobody anonymously: dev auth mode needs a named
+          # local operator, and the smoke below probes as the canary principal
+          # with a token minted here for this run only.
+          CANARY_TOKEN="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+          echo "::add-mask::${CANARY_TOKEN}"
+          echo "TINYASSETS_WIKI_CANARY_TOKEN=${CANARY_TOKEN}" >> "$GITHUB_ENV"
           docker run -d --rm \
               --name tinyassets-daemon-ci \
               -p 8001:8001 \
               -e TINYASSETS_IMAGE=tinyassets-daemon:ci \
+              -e UNIVERSE_SERVER_DEV_USER=ci-smoke \
+              -e TINYASSETS_WIKI_CANARY_TOKEN="${CANARY_TOKEN}" \
               tinyassets-daemon:ci
 
           # Give uvicorn + FastMCP a moment to bind. Poll rather than
@@ -81,7 +89,9 @@ jobs:
                  -H "Content-Type: application/json" \
                  -H "Accept: application/json, text/event-stream" \
                  -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' \
-                 | grep -q '^200$'; then
+                 | grep -qE '^(200|401)$'; then
+              # 401 is the daemon answering its own auth challenge to an
+              # anonymous initialize; that is reachability, not an error.
               echo "Daemon reachable after $i poll(s)"
               exit 0
             fi

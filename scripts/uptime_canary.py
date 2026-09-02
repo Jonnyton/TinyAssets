@@ -58,6 +58,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT / "scripts"))
 
+from _canary_common import require_canary_bearer  # noqa: E402
 from mcp_public_canary import CanaryError, probe_result  # noqa: E402
 
 DEFAULT_URL = "https://tinyassets.io/mcp"
@@ -218,6 +219,7 @@ def run_probe(
 
 
 def main(argv: list[str]) -> int:
+    require_canary_bearer("uptime-canary")
     ap = argparse.ArgumentParser(description="Layer-1 uptime canary.")
     ap.add_argument(
         "--url",

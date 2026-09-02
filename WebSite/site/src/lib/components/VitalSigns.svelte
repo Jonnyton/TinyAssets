@@ -45,7 +45,9 @@
     </span>
     <span class="cell">
       <span class="dot" class:live={vitals.workflowActive} class:idle={!vitals.workflowActive} aria-hidden="true"></span>
-      {#if vitals.workflowActive}
+      {#if vitals.activityVisible === false}
+        <span class="k">activity is visible to signed-in connectors only</span>
+      {:else if vitals.workflowActive}
         <span class="k">recent workflow activity</span>
         {#if vitals.lastMovedAt}<span class="ev">last signal {fmtRel(vitals.lastMovedAt)}</span>{/if}
       {:else}

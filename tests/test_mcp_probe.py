@@ -26,6 +26,27 @@ if str(_SCRIPTS) not in sys.path:
 
 import mcp_probe  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def _canary_token(monkeypatch):
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "t" * 40)
+
+
+def test_missing_token_exits_before_network(monkeypatch, capsys):
+    calls = []
+    monkeypatch.delenv("TINYASSETS_WIKI_CANARY_TOKEN", raising=False)
+    monkeypatch.setattr(
+        mcp_probe.urllib.request,
+        "urlopen",
+        lambda *a, **k: calls.append((a, k)),
+    )
+    monkeypatch.setattr(sys, "argv", ["mcp_probe", "status"])
+    with pytest.raises(SystemExit) as exc:
+        mcp_probe.main()
+    assert exc.value.code == 2
+    assert not calls
+    assert "TINYASSETS_WIKI_CANARY_TOKEN" in capsys.readouterr().err
+
 # ---------------------------------------------------------------------------
 # Helpers to build fake urllib responses
 # ---------------------------------------------------------------------------
@@ -151,6 +172,18 @@ class TestSessionId:
             mcp_probe._mcp_call("http://fake", "sess-xyz", {"method": "tools/list"})
 
         assert calls[0] == "sess-xyz"
+
+    def test_canary_bearer_is_sent(self):
+        calls = []
+
+        def capturing_urlopen(req, timeout=None):
+            calls.append(req.headers.get("Authorization"))
+            return _fake_resp(_INIT_RESP, "sess-xyz")
+
+        with patch("mcp_probe.urllib.request.urlopen", side_effect=capturing_urlopen):
+            mcp_probe._mcp_call("http://fake", None, {"method": "initialize"})
+
+        assert calls == ["Bearer " + "t" * 40]
 
 
 # ---------------------------------------------------------------------------

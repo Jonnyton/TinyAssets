@@ -25,6 +25,24 @@ import uptime_alarm  # noqa: E402
 import uptime_canary  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _canary_token(monkeypatch):
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "t" * 40)
+
+
+def test_missing_token_exits_before_network(monkeypatch, capsys):
+    calls = []
+    monkeypatch.delenv("TINYASSETS_WIKI_CANARY_TOKEN", raising=False)
+    monkeypatch.setattr(
+        uptime_canary, "probe_result", lambda *a, **k: calls.append((a, k)),
+    )
+    with pytest.raises(SystemExit) as exc:
+        uptime_canary.main([])
+    assert exc.value.code == 2
+    assert not calls
+    assert "TINYASSETS_WIKI_CANARY_TOKEN" in capsys.readouterr().err
+
+
 @pytest.fixture
 def tmp_log_env(tmp_path, monkeypatch):
     """Redirect canary + alarm I/O to tmp_path."""

@@ -68,6 +68,8 @@ jobs:
 
       # Layer-1a: MCP handshake. Proves the daemon answers `initialize`.
       - name: Probe canonical URL (handshake)
+        env:
+          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         id: probe
         continue-on-error: true
         run: |
@@ -97,7 +99,9 @@ jobs:
       # crashed" gap. Only runs if handshake was green (if the daemon
       # isn't answering initialize, the tool canary can't progress past
       # step 1 anyway — skip to save log noise).
-      - name: Tool-invocation canary (universe inspect)
+      - name: Tool-invocation canary (read_graph status)
+        env:
+          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         id: tool_probe
         continue-on-error: true
         if: steps.probe.outputs.handshake_status == '0'
@@ -130,7 +134,9 @@ jobs:
       # Only runs when both handshake AND tool-canary are green — if
       # the daemon isn't speaking MCP or its tool handler crashed,
       # last_activity_at is meaningless to check.
-      - name: Last-activity canary (node execution 24/7)
+      - name: Last-activity canary (platform run ledger 24/7)
+        env:
+          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         id: activity_probe
         continue-on-error: true
         if: >
@@ -164,6 +170,8 @@ jobs:
       # (new writes happening) WHILE all those writes are failing; that
       # is the exact state this canary targets.
       - name: Revert-loop canary (work-quality 24/7)
+        env:
+          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         id: revert_loop_probe
         continue-on-error: true
         if: >

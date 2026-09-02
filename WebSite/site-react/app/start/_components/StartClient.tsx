@@ -137,7 +137,7 @@ export default function StartClient() {
                   )}
                   <span className="pulse__row pulse__row--quiet">
                     <span className={`dot ${vitals.workflowActive ? "live" : "idle"}`} aria-hidden="true"></span>
-                    <span className="pulse__k">{vitals.workflowActive ? "workflow activity visible" : "no recent workflow activity"}</span>
+                    <span className="pulse__k">{vitals.activityVisible === false ? "activity is visible to signed-in connectors only" : vitals.workflowActive ? "workflow activity visible" : "no recent workflow activity"}</span>
                   </span>
                   <span className="pulse__stamp ev">
                     read {fmtRel(vitals.fetchedAt)}

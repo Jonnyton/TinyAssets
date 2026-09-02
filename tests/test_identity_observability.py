@@ -142,7 +142,7 @@ def test_authenticated_first_contact_has_explicit_identity_evidence(
     assert payload["request_identity"]["principal_fingerprint"].startswith("v1:")
 
 
-def test_anonymous_status_has_explicit_identity_evidence(
+def test_nobody_bound_gets_no_status_at_all(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -151,12 +151,10 @@ def test_anonymous_status_has_explicit_identity_evidence(
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     auth_middleware(None)
 
-    payload = json.loads(get_status("missing-universe"))
-
-    assert payload["request_identity"]["bearer_present"] is False
-    assert payload["request_identity"]["principal_fingerprint"].startswith(
-        "v1:anonymous:"
-    )
+    # Status used to describe an anonymous session ("v1:anonymous:..."). There
+    # is no such session: with nobody bound the read refuses.
+    with pytest.raises(PermissionError, match="Authentication required"):
+        get_status("missing-universe")
 
 
 def test_status_alias_returns_identical_request_identity(

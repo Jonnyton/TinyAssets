@@ -25,10 +25,33 @@ Stdlib only.
 from __future__ import annotations
 
 import json
+import os
+import sys
 import urllib.error
 import urllib.request
 from collections.abc import Callable
 from typing import Any
+
+CANARY_TOKEN_ENV = "TINYASSETS_WIKI_CANARY_TOKEN"
+
+
+def canary_bearer() -> str | None:
+    """Return the stripped canary bearer, or ``None`` when it is unset."""
+    token = os.environ.get(CANARY_TOKEN_ENV, "").strip()
+    return token or None
+
+
+def require_canary_bearer(prog: str) -> str:
+    """Return the canary bearer or terminate before any network access."""
+    token = canary_bearer()
+    if token is None:
+        print(
+            f"[{prog}] {CANARY_TOKEN_ENV} is required: no anonymous reads exist; "
+            "every probe is the canary principal",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    return token
 
 # MCP `notifications/initialized` is parameter-free and identical across
 # every canary client; consolidating eliminates 4 copies.

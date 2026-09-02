@@ -1,40 +1,21 @@
-"""Wiki write-roundtrip or gate + read canary — Layer-1 extension.
+"""Authenticated wiki write-roundtrip canary — Layer-1 extension.
 
-Probes the wiki MCP surface against the reserved canary draft
-(``drafts/notes/uptime-probe.md``). With
-``TINYASSETS_WIKI_CANARY_TOKEN`` present, it writes the draft with that scoped
-non-OAuth bearer and reads the content back anonymously. Without the token it
-keeps the post-#1441 policy assertion:
-
-- ``write_page`` returns the canonical pre-dispatch HTTP 401 with a non-empty
-  ``WWW-Authenticate`` OAuth challenge. Any dispatched JSON result (including
-  the retired rejection envelope) is red because it cannot launch OAuth.
-- ``read_page`` returns the persisted canary draft content verbatim
-  (reads stay open to anonymous callers by design).
-
-History: this was originally a write-then-read roundtrip via the ``wiki`` fat
-tool (BUG-028 class: slug normalization silently broke bug filing while the
-handshake stayed green). #1441 correctly gated anonymous writes. The scoped
-service token restores the persisted roundtrip without becoming an OAuth
-identity or authorizing any other page or action.
+First proves tokenless ``initialize`` receives the canonical Bearer challenge.
+Then the canary principal initializes a session, writes the exact reserved
+``drafts/notes/uptime-probe.md`` shape, and reads it back with the same bearer.
 
 Exit codes
 ----------
 0  — all probe steps passed.
 2  — MCP handshake failed (initialize / session).
-6  — scoped write or anonymous write-gate probe failed.
+6  — anonymous initialize was admitted or the scoped write failed.
 7  — wiki read failed or canary draft content mismatch.
 99 — unexpected error.
-
-Scope: production uses the scoped token. The no-token fallback is for
-auth-gated deployments only: a dev server intentionally leaves anonymous writes
-open, so its fallback gate assertion is red.
 
 Usage
 -----
     python scripts/wiki_canary.py
     python scripts/wiki_canary.py --url https://tinyassets.io/mcp --verbose
-    python scripts/wiki_canary.py --probe-id bisect-run-42
     python scripts/wiki_canary.py --once --format=gha   # GHA output mode
 
 Stdlib only.
@@ -44,20 +25,23 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import re
 import sys
 import time
 import uuid
 from pathlib import Path
-from urllib.error import HTTPError
 
 _SCRIPTS = Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPTS.parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
-from _canary_common import _INITIALIZED_NOTIF, _init_payload  # noqa: E402
+from _canary_common import (  # noqa: E402
+    _INITIALIZED_NOTIF,
+    _init_payload,
+    require_canary_bearer,
+)
+from mcp_public_canary import CanaryError  # noqa: E402
+from mcp_public_canary import _post as _status_post  # noqa: E402
 from mcp_tool_canary import (  # noqa: E402
     ToolCanaryError,
     _extract_structured_tool_payload,
@@ -81,19 +65,7 @@ _CANARY_CATEGORY = "notes"
 # the roundtrip check stays a simple substring match.
 _CANARY_CONTENT = "TinyAssets wiki uptime canary - automated write-roundtrip probe."
 _CANARY_RELATIVE_PATH = "drafts/notes/uptime-probe.md"
-_CANARY_TOKEN_ENV = "TINYASSETS_WIKI_CANARY_TOKEN"
-
 _INIT_PAYLOAD = _init_payload("wiki-canary")
-_PROBE_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
-
-
-def _filename_for_probe_id(probe_id: str | None) -> str:
-    if not probe_id:
-        return _CANARY_FILENAME
-    suffix = _PROBE_ID_SAFE_RE.sub("-", probe_id.strip()).strip("._-")
-    if not suffix:
-        raise ValueError("probe_id must contain at least one filename-safe character")
-    return f"{_CANARY_FILENAME}-{suffix[:80]}"
 
 
 def _wiki_write_payload(
@@ -103,9 +75,7 @@ def _wiki_write_payload(
     content: str = _CANARY_CONTENT,
 ) -> dict:
     # Canonical `write_page` full-page write (no old_text/new_text, no kind)
-    # so it always hits the anonymous-write gate — never the dry-run patch
-    # preview passthrough. dry_run=False is explicit: if the gate ever
-    # regressed, the mutation would land on the dedicated canary draft only.
+    # This exact shape is the canary principal's only allowed write.
     return {
         "jsonrpc": "2.0",
         "id": call_id,
@@ -162,18 +132,6 @@ def _emit_gha_kv(key: str, value: str) -> None:
         print(f"{key}={value}")
 
 
-def _is_oauth_challenge(exc: ToolCanaryError) -> bool:
-    """Return whether a write-call HTTP failure is the canonical OAuth gate."""
-    cause = exc.__cause__
-    if not isinstance(cause, HTTPError) or cause.code != 401:
-        return False
-    try:
-        challenge = cause.headers.get("WWW-Authenticate")
-    except Exception:
-        return False
-    return isinstance(challenge, str) and bool(challenge.strip())
-
-
 def _fresh_canary_content() -> str:
     """Return a unique marker so each credentialed read proves this write."""
     return f"{_CANARY_CONTENT} run={uuid.uuid4().hex}"
@@ -212,103 +170,106 @@ def _validate_write_response(resp: dict | None) -> None:
         )
 
 
+def _assert_anonymous_initialize_challenged(
+    url: str,
+    timeout: float,
+    *,
+    post_fn,
+) -> None:
+    try:
+        status, headers, body = post_fn(
+            url,
+            _INIT_PAYLOAD,
+            timeout,
+            accepted_http_statuses=frozenset({401}),
+        )
+    except CanaryError as exc:
+        if exc.code == 2 and exc.msg.startswith("HTTP "):
+            raise ToolCanaryError(
+                6, f"surface did not challenge anonymous initialize on {url}: {exc.msg}"
+            ) from exc
+        raise
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        payload = None
+    if (
+        status != 401
+        or not headers.get("www-authenticate", "").startswith("Bearer ")
+        or payload != {"error": "authentication_required"}
+    ):
+        raise ToolCanaryError(
+            6,
+            f"surface admitted an anonymous initialize on {url}: HTTP {status}",
+        )
+
+
 def run_canary(
     url: str,
     timeout: float,
     *,
     post_fn=None,
+    status_post_fn=None,
     verbose: bool = False,
-    canary_filename: str = _CANARY_FILENAME,
-    service_token: str | None = None,
+    bearer_token: str | None = None,
     canary_content: str = _CANARY_CONTENT,
 ) -> None:
-    """Run the credentialed roundtrip or anonymous gate + read canary.
+    """Challenge anonymous initialize, then run the scoped roundtrip.
 
     ``post_fn`` is injectable for tests (same signature as ``mcp_tool_canary._post``).
     Raises ``ToolCanaryError`` on any failure with the appropriate exit code.
 
-    ``canary_filename`` scopes only the anonymous WRITE-GATE probe target for
-    bisect replay. Credentialed mode refuses any non-reserved filename. The
-    READ step always targets the shared ``uptime-probe`` draft.
+    The authenticated write and read always target the reserved
+    ``uptime-probe`` draft required by the canary allowlist.
     """
+    bearer_token = bearer_token or require_canary_bearer("wiki-canary")
     post = post_fn or _post
+    status_post = status_post_fn or _status_post
 
-    # ---- Step 1: MCP handshake -------------------------------------------
-    resp, sid = post(url, None, _INIT_PAYLOAD, timeout, step_code=2)
+    # ---- Step 1: anonymous initialize is always challenged ---------------
+    _assert_anonymous_initialize_challenged(
+        url, timeout, post_fn=status_post,
+    )
+
+    # ---- Step 2: authenticated MCP handshake ------------------------------
+    resp, sid = post(
+        url, None, _INIT_PAYLOAD, timeout, step_code=2,
+        bearer_token=bearer_token,
+    )
     if resp is None or "result" not in resp:
         raise ToolCanaryError(2, f"initialize returned no result: {resp!r}")
     if "error" in resp:
         raise ToolCanaryError(2, f"initialize returned MCP error: {resp['error']!r}")
     if not sid:
         raise ToolCanaryError(2, "initialize response did not include mcp-session-id header")
-    post(url, sid, _INITIALIZED_NOTIF, timeout, step_code=2)
+    post(
+        url, sid, _INITIALIZED_NOTIF, timeout, step_code=2,
+        bearer_token=bearer_token,
+    )
     if verbose:
         print(f"[wiki-canary] handshake OK sid={sid!r}")
 
-    # ---- Step 2: credentialed write OR anonymous write-gate probe ----------
-    if service_token:
-        if canary_filename != _CANARY_FILENAME:
-            raise ToolCanaryError(
-                6,
-                "scoped service token can write only the reserved filename "
-                f"{_CANARY_FILENAME!r}",
-            )
-        write_resp, _ = post(
-            url,
-            sid,
-            _wiki_write_payload(2, content=canary_content),
-            timeout,
-            step_code=6,
-            bearer_token=service_token,
-        )
-        _validate_write_response(write_resp)
-        if verbose:
-            print("[wiki-canary] scoped write OK - reserved draft confirmed")
-    else:
-        # Canonical write auth is an HTTP 401 before MCP dispatch. Only the
-        # direct HTTPError cause with a usable challenge proves a client can
-        # begin OAuth; any returned tool JSON is a protocol regression.
-        try:
-            post(
-                url,
-                sid,
-                _wiki_write_payload(
-                    2,
-                    filename=canary_filename,
-                    content=canary_content,
-                ),
-                timeout,
-                step_code=6,
-            )
-        except ToolCanaryError as exc:
-            if not _is_oauth_challenge(exc):
-                cause = exc.__cause__
-                if isinstance(cause, HTTPError) and cause.code == 401:
-                    raise ToolCanaryError(
-                        6,
-                        "write_page HTTP 401 lacks a non-empty WWW-Authenticate "
-                        f"challenge: {exc.msg}",
-                    ) from exc
-                raise
-        else:
-            raise ToolCanaryError(
-                6,
-                "write_page returned a dispatched JSON result; expected HTTP 401 "
-                "with a non-empty WWW-Authenticate challenge pre-dispatch",
-            )
-        if verbose:
-            print(
-                "[wiki-canary] anonymous write-gate OK: HTTP 401 with "
-                "WWW-Authenticate present",
-            )
+    # ---- Step 3: scoped write ---------------------------------------------
+    write_resp, _ = post(
+        url,
+        sid,
+        _wiki_write_payload(2, content=canary_content),
+        timeout,
+        step_code=6,
+        bearer_token=bearer_token,
+    )
+    _validate_write_response(write_resp)
+    if verbose:
+        print("[wiki-canary] scoped write OK - reserved draft confirmed")
 
-    # ---- Step 3: anonymous read of the shared canary draft -----------------
+    # ---- Step 4: scoped read of the shared canary draft -------------------
     read_resp, _ = post(
         url,
         sid,
         _wiki_read_payload(3, filename=_CANARY_FILENAME),
         timeout,
         step_code=7,
+        bearer_token=bearer_token,
     )
     if read_resp is None or "result" not in read_resp:
         raise ToolCanaryError(7, f"wiki read returned no result: {read_resp!r}")
@@ -353,23 +314,23 @@ def run_probe(
     fmt: str = "log",
     *,
     post_fn=None,
+    status_post_fn=None,
     verbose: bool = False,
-    probe_id: str | None = None,
+    bearer_token: str | None = None,
 ) -> int:
     """Run one wiki roundtrip probe. Returns exit code (0=green, nonzero=red)."""
+    bearer_token = bearer_token or require_canary_bearer("wiki-canary")
     ts = _now_local_iso()
     start = time.monotonic()
-    canary_filename = _filename_for_probe_id(probe_id)
-    service_token = os.environ.get(_CANARY_TOKEN_ENV) or None
-    canary_content = _fresh_canary_content() if service_token else _CANARY_CONTENT
+    canary_content = _fresh_canary_content()
     try:
         run_canary(
             url,
             timeout,
             post_fn=post_fn,
+            status_post_fn=status_post_fn,
             verbose=verbose,
-            canary_filename=canary_filename,
-            service_token=service_token,
+            bearer_token=bearer_token,
             canary_content=canary_content,
         )
     except ToolCanaryError as exc:
@@ -391,14 +352,14 @@ def run_probe(
     _append_log(_format_green(ts, url, rtt_ms))
     if fmt == "gha":
         _emit_gha_kv("status", "0")
-        mode = "write+read" if service_token else "gate+read"
-        _emit_gha_kv("msg", f"OK wiki {mode} {url} rtt_ms={rtt_ms}")
+        _emit_gha_kv("msg", f"OK wiki write+read {url} rtt_ms={rtt_ms}")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
+    bearer = require_canary_bearer("wiki-canary")
     ap = argparse.ArgumentParser(
-        description="Wiki write-roundtrip or gate + read uptime canary.",
+        description="Authenticated wiki write-roundtrip uptime canary.",
     )
     ap.add_argument(
         "--url", default=DEFAULT_URL,
@@ -414,20 +375,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Output format: 'log' (default) or 'gha' ($GITHUB_OUTPUT).",
     )
     ap.add_argument("--verbose", action="store_true")
-    ap.add_argument(
-        "--probe-id",
-        help=(
-            "Optional anonymous-fallback replay id; the scoped-token mode "
-            "rejects non-reserved filenames."
-        ),
-    )
     args = ap.parse_args(argv)
     return run_probe(
         args.url,
         args.timeout,
         fmt=args.fmt,
         verbose=args.verbose,
-        probe_id=args.probe_id,
+        bearer_token=bearer,
     )
 
 

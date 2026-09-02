@@ -28,6 +28,48 @@ and never provision.
 - **WHEN** an authenticated caller calls `read_graph target=status`
 - **THEN** the read succeeds and no universe is created
 
+#### Scenario: a browser opens the endpoint
+- **WHEN** a browser GETs `/mcp` with `Accept: text/html`, or any client HEADs it
+- **THEN** the response is the same 401 challenge, not the discovery page
+- **AND** the discovery documents at `/mcp/.well-known/*` stay public, so a client can still find the authorization server
+
+### Requirement: One unauthenticated release read
+
+`GET /mcp/pulse` SHALL be served without a bearer and SHALL return exactly
+`git_sha`, `image_tag`, `deployed_at` and `uptime_seconds` from the release
+receipt, with empty strings when no receipt is present. It SHALL name no
+universe, no user and no run. It is the ONLY unauthenticated read the daemon
+serves: the deploy gate (`scripts/deployed_sha.py`) and the public website
+read it, and nothing else is exempt under `/mcp/pulse`.
+
+#### Scenario: the deploy gate reads production's sha
+- **WHEN** `GET /mcp/pulse` is requested with no bearer
+- **THEN** the response is HTTP 200 carrying the four release fields and nothing a user authored
+
+#### Scenario: a deeper path is not exempt
+- **WHEN** `GET /mcp/pulse/extra` is requested with no bearer
+- **THEN** the response is the 401 challenge
+
+### Requirement: Probes are the canary service principal
+
+The bearer `TINYASSETS_WIKI_CANARY_TOKEN` SHALL resolve to the service
+principal `canary`, which holds no capabilities. Before dispatch, every item
+of a single or batch JSON-RPC body under that bearer SHALL be one of:
+`initialize`, `notifications/initialized`, `tools/list`, `tools/call
+get_status` with no arguments, `tools/call read_graph` with exactly
+`{"target": "status"}`, and the reserved wiki canary's exact `write_page` /
+`read_page` shapes. Anything else, and any use of the bearer off `POST /mcp`,
+SHALL be refused with HTTP 403 before dispatch. The bearer SHALL NOT be
+downgraded to any other identity.
+
+#### Scenario: the canary probes liveness
+- **WHEN** the canary bearer accompanies `tools/call get_status` with no arguments
+- **THEN** the call is dispatched as the `canary` principal
+
+#### Scenario: a leaked canary bearer tries to read a universe
+- **WHEN** the canary bearer accompanies `tools/call read_graph target=graph`
+- **THEN** the response is HTTP 403 and no handler runs
+
 ## MODIFIED Requirements
 
 ### Requirement: Legacy Fat Tools Registered But Hidden

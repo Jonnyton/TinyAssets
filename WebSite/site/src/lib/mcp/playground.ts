@@ -100,6 +100,29 @@ function withheldTrace(trace: WireTrace): WireTrace {
   return safeTrace(trace, 'Response body withheld because it failed public validation.');
 }
 
+/** The 401 challenge, with its WWW-Authenticate header kept: that header IS the
+ * next step of a real connection, so the wire view shows it. */
+function challengeTrace(trace: WireTrace): WireTrace {
+  const safe = safeTrace(trace, trace.response.body);
+  const www = trace.response.headers['www-authenticate'];
+  return {
+    ...safe,
+    response: {
+      ...safe.response,
+      statusText: 'Unauthorized',
+      headers: { ...safe.response.headers, ...(www ? { 'www-authenticate': www } : {}) }
+    }
+  };
+}
+
+export type AuthChallengeStep = {
+  step: 'authenticate';
+  status: 401;
+  www_authenticate: string | null;
+  body: unknown;
+  next: string;
+};
+
 async function rpcWithTrace(method: string, params: unknown): Promise<{ result: any; trace: WireTrace }> {
   const reqHeaders: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -187,8 +210,31 @@ async function ensureInit(): Promise<WireTrace | undefined> {
 
 export async function callTool(name: string, args: Record<string, unknown>): Promise<CallResult> {
   assertPublicPlaygroundCall(name, args);
+  // Step one of a real connection. There is no anonymous session (founder,
+  // 2026-09-02): the surface answers an anonymous initialize with a 401
+  // challenge naming its authorization server. The playground shows that
+  // challenge as the result instead of pretending a read happened.
+  let initTrace: WireTrace | undefined;
   try {
-    const initTrace = await ensureInit();
+    initTrace = await ensureInit();
+  } catch (error: any) {
+    const failed: WireTrace | undefined = error?.trace;
+    if (failed && failed.response.status === 401) {
+      const parsed: AuthChallengeStep = {
+        step: 'authenticate',
+        status: 401,
+        www_authenticate: failed.response.headers['www-authenticate'] ?? null,
+        body: failed.response.body,
+        next: 'a connector signs in at the advertised authorization server, then retries with a bearer'
+      };
+      return { parsed, raw: { challenge: parsed }, trace: challengeTrace(failed) };
+    }
+    throw Object.assign(
+      new Error('The MCP handshake could not complete.'),
+      failed ? { trace: withheldTrace(failed) } : {}
+    );
+  }
+  try {
     const { result, trace } = await rpcWithTrace('tools/call', { name, arguments: args });
 
     // Canonical tool output lives in `structuredContent`; older servers may
@@ -304,6 +350,14 @@ export function parseInput(text: string): ParsedInput {
  */
 export function summarize(tool: string, parsed: any): string | null {
   if (parsed === null || parsed === undefined) return null;
+
+  if (parsed?.step === 'authenticate' && parsed?.status === 401) {
+    return (
+      'The endpoint answered the anonymous handshake with a 401 challenge: there is no ' +
+      'anonymous session. A chatbot signs in at the authorization server the challenge ' +
+      'names and retries with a bearer. Switch to wire to see the challenge itself.'
+    );
+  }
 
   if (tool === 'read_page') {
     if (Array.isArray(parsed?.results)) {

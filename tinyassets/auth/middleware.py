@@ -724,6 +724,37 @@ def identity_context(identity: Identity) -> Iterator[None]:
         _current_identity.reset(token)
 
 
+def bind_local_operator_identity() -> Identity:
+    """Bind the process-wide principal for a transport that carries no bearer
+    (stdio: the Claude plugin, a local `--transport stdio` run).
+
+    The principal is the local operator: ``UNIVERSE_SERVER_DEV_USER`` when
+    set, else the OS account the process runs as. Raises when neither names
+    anyone. There is no anonymous principal to fall back to (founder,
+    2026-09-02); before this the stdio server ran every call as nobody.
+    """
+    import getpass
+
+    from tinyassets.auth.provider import DEV_USER_ENV, DevAuthProvider
+
+    name = (os.environ.get(DEV_USER_ENV, "") or "").strip()
+    if not name:
+        try:
+            name = (getpass.getuser() or "").strip()
+        except Exception:  # noqa: BLE001 - no account name is a refusal below
+            name = ""
+    if not name:
+        raise RuntimeError(
+            f"a stdio server needs a named local operator: set {DEV_USER_ENV} "
+            "(there is no anonymous principal)"
+        )
+    identity = DevAuthProvider(user_id=name).resolve_token("stdio")
+    if identity is None:  # pragma: no cover - the dev provider always resolves
+        raise RuntimeError("the dev provider resolved no identity for the local operator")
+    _current_identity.set(identity)
+    return identity
+
+
 def current_bearer_present() -> bool:
     """Whether this request presented bearer material, without retaining it."""
     return _current_bearer_present.get()
@@ -802,7 +833,10 @@ class AuthContextMiddleware:
                 # canary_request_allowed, on the MCP endpoint, by POST; every
                 # item of a batch is checked before any of it is replayed. A
                 # valid bearer outside that world is refused, never downgraded.
-                if method != "POST" or not _auth_challenge_path(path):
+                if method != "POST" or path not in ("/mcp", "/mcp/"):
+                    # The endpoint itself, not the app, connect, hook or any
+                    # other /mcp/* route: those have their own authentication
+                    # and the canary has no business there.
                     await _send_forbidden_403(send, "the canary bearer may only probe /mcp")
                     return
                 body, messages, disconnected, oversized = await _buffer_request_body(receive)
@@ -950,8 +984,23 @@ def require_action_scope(
 
 
 def write_gate_rejection(handle: str) -> str | None:
-    """Retired anonymous-write gate. Every request that reaches a handle is a
-    named principal (the transport refused the rest), so there is nothing to
-    reject here; kept for its callers until the sink-deletion change removes
-    them. Always ``None``."""
-    return None
+    """The write handles' first check: a rejection envelope when NOBODY is
+    bound, else ``None``.
+
+    Over HTTP nobody never reaches a handle (the transport answered 401), so
+    this fires only for a direct caller with no identity: it refuses rather
+    than letting the call reach the scope check as nobody. It no longer
+    depends on the provider's mode; there is no mode in which nobody may
+    write (founder, 2026-09-02).
+    """
+    if current_identity_or_none() is not None:
+        return None
+    return json.dumps({
+        "status": "rejected",
+        "auth_required": True,
+        "tool": handle,
+        "error": (
+            "Authentication required: sign in through OAuth on this connector. "
+            "There is no anonymous access to this handle."
+        ),
+    })

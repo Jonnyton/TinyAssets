@@ -61,6 +61,29 @@ CLOUDFLARE_TUNNEL_TOKEN=
 # filtering that blocks outbound TLS.
 TINYASSETS_MCP_CANARY_URL=https://tinyassets.io/mcp
 
+# Bearer for the `canary` service principal. There is no anonymous read of
+# the MCP surface: the daemon answers 401 to every request without a bearer,
+# and this token is the ONE principal the uptime probes may use (the
+# container healthcheck above, scripts/mcp_public_canary.py, and every probe
+# workflow). It may only probe: initialize, tools/list, get_status,
+# read_graph target=status, and the reserved wiki draft. 32+ random bytes;
+# the SAME value must be the GitHub Actions secret of the same name
+# (deploy-prod.yml syncs the secret into this file on every deploy).
+#   python -c "import secrets; print(secrets.token_hex(32))"
+TINYASSETS_WIKI_CANARY_TOKEN=
+
+
+# ---------------------------------------------------------------------
+# Who the daemon serves as, when no OAuth provider is configured
+# ---------------------------------------------------------------------
+
+# With UNIVERSE_SERVER_AUTH unset (dev mode, the self-host default) every
+# bearer resolves to ONE named local operator, and the daemon refuses to
+# start until that operator is named here. A request with no bearer is
+# still refused. There is no anonymous principal. Production sets
+# UNIVERSE_SERVER_AUTH=workos and leaves this empty.
+UNIVERSE_SERVER_DEV_USER=
+
 
 # ---------------------------------------------------------------------
 # Subscription-backed LLM auth
