@@ -3776,7 +3776,11 @@ def _resolve_udir() -> Path:
         if not uid:
             base = _base_path()
             if base.is_dir():
-                subdirs = [d for d in base.iterdir() if d.is_dir()]
+                # Skip dot-dirs: the data root also holds operational state such as
+                # account deletion's transient `.deleting/` staging dir.
+                subdirs = sorted(
+                    d for d in base.iterdir() if d.is_dir() and not d.name.startswith(".")
+                )
                 if subdirs:
                     uid = subdirs[0].name
         if uid:
