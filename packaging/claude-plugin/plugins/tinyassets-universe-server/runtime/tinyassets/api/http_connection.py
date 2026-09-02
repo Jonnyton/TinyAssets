@@ -183,6 +183,31 @@ def _stored_git_scopes(resource: Any) -> frozenset[str]:
         format_git_scope(kind, repo) for kind, repo in connection_git_scopes(resource)
     )
 
+
+def _git_scopes_in(scopes_json: str) -> frozenset[str]:
+    """The git scopes in a stored ``scopes_json`` text, canonical.
+
+    Used wherever a write's CAS baseline is that same text, so the scopes the
+    write carries forward and the snapshot it is guarded by come from ONE
+    read (Codex round 3 on the 2026-09-02 rail change: the re-provision path
+    took them from an earlier parsed read and could drop a scope an
+    extension had just added).
+    """
+    from tinyassets.storage.workspace_authority import is_git_scope, parse_git_scope
+
+    try:
+        raw = json.loads(scopes_json)
+    except (TypeError, ValueError):
+        return frozenset()
+    found: set[str] = set()
+    for value in raw if isinstance(raw, list) else []:
+        if not is_git_scope(value):
+            continue
+        parsed = parse_git_scope(value)
+        if parsed:
+            found.add(format_git_scope(*parsed))
+    return frozenset(found)
+
 # Conservative fixed unprompted cap for an MVP outbound channel; tune later.
 _HTTP_ACTION_CAP = ActionCap("http_requests", 100, "requests")
 
@@ -459,15 +484,20 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     #    the dedicated update op follow-up lands. Credential-bearing read (trusted
     #    server code); the ref never reaches the projection.
     resource = ledger._get_connection_resource(connection_id)
+    # The ONE raw snapshot the extension at the end is guarded by. The git
+    # scopes carried forward come from it too, so a scope an extension added
+    # between this read and the write makes the CAS fail instead of being
+    # dropped by a payload derived from an older read (Codex round 3).
+    raw_policy = ledger.policy_json(connection_id) if resource is not None else None
     legacy_scope_upgrade = False
     endpoints_extend = False
-    if resource is not None:
+    if resource is not None and raw_policy is not None:
         # Scopes are otherwise a PROJECTION of the endpoint methods, so anything
         # not derivable from endpoints - a git scope - would silently vanish on
         # the next deposit and the sink would start refusing checkouts nobody
         # revoked. Carry the stored ones forward explicitly.
         http_scopes = tuple(
-            sorted(set(http_scopes) | _stored_git_scopes(resource))
+            sorted(set(http_scopes) | _git_scopes_in(raw_policy[1]))
         )
         # Every immutable field EXCEPT scopes must match for either idempotent reuse
         # or the bounded legacy-scope upgrade applied at the END of this handler.
@@ -621,7 +651,6 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     #    concurrent deposit that moved the policy makes this a no-op rather than
     #    a clobber; the caller sees the row as it actually stands.
     if endpoints_extend and resource is not None:
-        raw_policy = ledger.policy_json(connection_id)
         if raw_policy is None:
             return dict(_NOT_FOUND)
         try:
@@ -908,8 +937,6 @@ def _extend_preview(
     """
     from tinyassets.storage.workspace_authority import (
         git_host_for_endpoints,
-        is_git_scope,
-        parse_git_scope,
         validate_git_scopes,
     )
 
@@ -981,13 +1008,7 @@ def _extend_preview(
             continue
         seen.add(key)
         merged_dicts.append(as_dict)
-    stored_git_scopes = frozenset(
-        format_git_scope(kind, repo)
-        for kind, repo in (
-            parse_git_scope(s) for s in stored_scope_list if is_git_scope(s)
-        )
-        if kind
-    )
+    stored_git_scopes = _git_scopes_in(stored_scopes_json)
     new_git_scopes = requested_git_scopes - stored_git_scopes
     scopes = tuple(
         sorted(
