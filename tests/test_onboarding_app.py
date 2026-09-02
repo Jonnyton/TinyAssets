@@ -652,12 +652,12 @@ __APP_FUNCTIONS__
     }
     if(SCENARIO.draft) els["composer-input"].value=SCENARIO.draft;
     const note=new El("div"); const buttons=[new El("button"), new El("button")];
-    await answerRail(req, !!SCENARIO.dismiss, note, buttons);
+    await answerRail(req, SCENARIO.dismiss ? "clear" : "accept", note, buttons);
     out.composer=els["composer-input"].value;
     if(SCENARIO.secondRequest){
       const r2=SCENARIO.secondRequest;
       els["fb_"+r2.request_id]=new El("input"); els["mute_"+r2.request_id]=new El("input");
-      await answerRail(r2, false, new El("div"), [new El("button")]);
+      await answerRail(r2, "accept", new El("div"), [new El("button")]);
     }
     await new Promise(r=>setTimeout(r, 20));
     out.noteBeforeRelease=note.textContent; out.callsBeforeRelease=converseCalls.slice();
@@ -741,7 +741,8 @@ def _run_app(tmp_path, scenario: dict) -> dict:
     funcs = "\n".join(_js_function(html, f) for f in (
         "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
         "offerResend", "sendTurn", "checkForNewBuild", "loadHistory", "restoreInflight",
-        "answerLine", "answerRail", "flushSendQueue", "queueTurn",
+        "frameTitle", "answerLine", "replyLine", "refusedGrantLine", "answerRail",
+        "flushSendQueue", "queueTurn",
         "saveQueue", "readSavedQueue", "stillSaved", "forgetSavedItem", "savedItem",
         "restoreQueue", "claimedElsewhere", "offerSavedLine",
     ))
@@ -933,14 +934,14 @@ def test_an_approval_is_relayed_as_the_founders_line(tmp_path):
     assert out["refreshed"] == 1 and out["note"] == "Sent." and out["buttonsEnabled"]
 
 
-def test_feedback_rides_along_and_not_now_is_relayed_too(tmp_path):
+def test_feedback_rides_along_and_clear_is_relayed_too(tmp_path):
     out = _run_app(tmp_path, {
         "kind": "rail", "request": _REQ, "dismiss": True,
         "feedback": "ask again after the PR is open", "payload": {"reply": "ok"},
     })
     assert out["answered"][0]["dismiss"] is True
     assert out["answered"][0]["feedback"] == "ask again after the PR is open"
-    assert out["converseCalls"] == [f'Not now: "{_TITLE}" \u2014 ask again after the PR is open']
+    assert out["converseCalls"] == [f'Cleared: "{_TITLE}" \u2014 ask again after the PR is open']
 
 
 def test_a_relay_during_a_turn_waits_and_goes_out_when_the_turn_ends(tmp_path):
@@ -975,7 +976,7 @@ def test_dont_ask_again_and_agent_authored_titles_are_framed(tmp_path):
                               "payload": {"reply": "understood"}})
     assert out["answered"][0]["dont_ask_again"] is True
     assert out["converseCalls"] == [
-        "Not now: \"Extend 'github' access now\" (and don\u2019t ask me this again)"
+        "Cleared: \"Extend 'github' access now\" (and don\u2019t ask me this again)"
     ]
 
 

@@ -2126,7 +2126,7 @@
     // Feedback + "don't ask this again" (founder 2026-08-27): an approval needs a
     // way to disagree, and a standing way to stop being asked.
     const fb = document.createElement("label");
-    fb.className = "rtab-label"; fb.textContent = "Anything to tell it? (optional)";
+    fb.className = "rtab-label"; fb.textContent = "Reply or note (optional)";
     const fbi = document.createElement("input");
     fbi.type = "text"; fbi.id = "fb_" + req.request_id;
     fb.appendChild(fbi); box.appendChild(fb);
@@ -2141,14 +2141,22 @@
     const note = document.createElement("div");
     note.className = "rtab-note"; note.id = "note_" + req.request_id;
 
+    // Four verbs, the founder's (2026-09-02, after an approval that failed was
+    // read back as a decline): Accept and Deny are decisions the universe reads;
+    // Clear closes the tab with nothing decided; Send reply talks back and
+    // leaves the ask open.
     const row = document.createElement("div"); row.className = "rtab-row";
-    const submit = document.createElement("button");
-    submit.className = "btn btn--primary"; submit.textContent = "Send";
-    const dismiss = document.createElement("button");
-    dismiss.className = "btn btn--ghost"; dismiss.textContent = "Not now";
-    submit.addEventListener("click",()=>answerRail(req,false,note,[submit,dismiss]));
-    dismiss.addEventListener("click",()=>answerRail(req,true,note,[submit,dismiss]));
-    row.appendChild(submit); row.appendChild(dismiss);
+    const buttons = [];
+    const verb = (label, cls, mode) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "btn " + cls; b.textContent = label;
+      b.addEventListener("click",()=>answerRail(req,mode,note,buttons));
+      buttons.push(b); row.appendChild(b);
+    };
+    verb("Accept", "btn--primary", "accept");
+    verb("Deny", "btn--ghost", "deny");
+    verb("Clear", "btn--ghost", "clear");
+    verb("Send reply", "btn--link", "reply");
     box.appendChild(row); box.appendChild(note);
     return box;
   }
@@ -2159,14 +2167,18 @@
   // general ask with fields (a choice, a value) relays the values the
   // founder gave, not a bare "Approved" (Codex round 1, P1); a standing
   // "don't ask me this again" is said too (P2).
-  function answerLine(req, dismiss, payload){
+  // The agent's title, framed as metadata inside the founder's own line: one
+  // line, bounded, never a bare quote (Codex rounds 1-2 on the rail).
+  function frameTitle(req){
     const raw = (req && req.title) ? String(req.title) : "your request";
     const ws = new RegExp("\\s+", "g");
-    // Title AND field names are agent-authored (a custom agent's ask is not
-    // the founder's text): one line, bounded, never a bare quote, always
-    // inside the "Approved/Answered/Not now" frame (Codex rounds 1-2).
+    return String(raw).replace(ws, " ").trim().slice(0, 120).split('"').join("'");
+  }
+
+  function answerLine(req, mode, payload){
+    const ws = new RegExp("\\s+", "g");
     const frame = (s, max) => String(s).replace(ws, " ").trim().slice(0, max).split('"').join("'");
-    const title = frame(raw, 120);
+    const title = frameTitle(req);
     const values = (payload && payload.values) || {};
     // A secret field's VALUE never enters the thread: the key went to the
     // vault through answerRequest; the line says only that it was provided.
@@ -2174,7 +2186,8 @@
       .filter(f => f && f.type === "secret").map(f => f.name));
     const given = Object.keys(values).filter(k => String(values[k]||"").trim() !== "");
     let line;
-    if(dismiss) line = "Not now: \"" + title + "\"";
+    if(mode === "clear") line = "Cleared: \"" + title + "\"";
+    else if(mode === "deny") line = "Denied: \"" + title + "\"";
     else if(given.length){
       const parts = given.map(k => secretNames.has(k)
         ? frame(k, 60) + ": (provided)"
@@ -2186,12 +2199,34 @@
     return line;
   }
 
-  async function answerRail(req, dismiss, note, buttons){
-    const payload = { request_id: req.request_id };
+  // A reply leaves the ask open: it is a message to the universe about the
+  // ask, not a decision on it.
+  function replyLine(req, text){
+    return "About \"" + frameTitle(req) + "\": " + String(text).replace(new RegExp("\\s+", "g"), " ").trim().slice(0, 2000);
+  }
+
+  // A grant the platform refused after the founder said yes is the AGENT's
+  // to fix (the ask was mis-shaped), so the reason goes to the universe as
+  // the founder's line, and the founder reads one plain sentence.
+  function refusedGrantLine(req, detail){
+    return "Could not grant \"" + frameTitle(req) + "\": " + String(detail || "").replace(new RegExp("\\s+", "g"), " ").trim().slice(0, 600);
+  }
+
+  async function answerRail(req, mode, note, buttons){
     const fbEl = $("fb_" + req.request_id), muteEl = $("mute_" + req.request_id);
-    if(fbEl && fbEl.value.trim()) payload.feedback = fbEl.value.trim();
+    const text = fbEl && fbEl.value.trim() ? fbEl.value.trim() : "";
+    if(mode === "reply"){
+      if(!text){ note.textContent = "Type something to send."; return; }
+      if(fbEl) fbEl.value = "";
+      note.textContent = "Sent. The ask stays open until you accept, deny or clear it.";
+      sendTurn(replyLine(req, text), undefined, {relay:true, keepComposer:true});
+      return;
+    }
+    const payload = { request_id: req.request_id };
+    if(text) payload.feedback = text;
     if(muteEl && muteEl.checked) payload.dont_ask_again = true;
-    if(dismiss){ payload.dismiss = true; }
+    if(mode === "clear"){ payload.dismiss = true; }
+    else if(mode === "deny"){ payload.decision = "declined"; }
     else {
       const values = {};
       (req.fields||[]).forEach(f=>{
@@ -2201,10 +2236,18 @@
       payload.values = values;
     }
     buttons.forEach(b=>{ b.disabled = true; });
-    note.textContent = dismiss ? "Dismissing..." : "Sending...";
+    note.textContent = mode === "clear" ? "Clearing..." : mode === "deny" ? "Denying..." : "Sending...";
     try{
       const r = await MCP.answerRequest(payload);
-      if(r && r.error){ note.textContent = "Couldn't do that: " + (r.detail || r.error); }
+      if(r && r.error){
+        const actionAsk = req.action && req.action.type && req.action.type !== "answer";
+        if(mode === "accept" && actionAsk){
+          note.textContent = "This ask can't be granted as written. Your universe has been told why.";
+          sendTurn(refusedGrantLine(req, r.detail || r.error), undefined, {relay:true, keepComposer:true});
+        } else {
+          note.textContent = "Couldn't do that: " + (r.detail || r.error);
+        }
+      }
       else {
         // The answer is the founder's own line in the thread. Live 2026-08-29:
         // after each approval the universe sat idle until the founder typed
@@ -2213,11 +2256,11 @@
         // While a turn is in flight the line waits in sendTurn's queue and
         // goes out when the turn ends - never dropped, never overlapping.
         const busy = $("btn-send").disabled;
-        note.textContent = (r.receipt || (dismiss ? "Dismissed." : "Sent."))
+        note.textContent = (r.receipt || (mode === "clear" ? "Cleared." : mode === "deny" ? "Denied." : "Sent."))
           + (busy ? " Your universe will see it when its current turn ends." : "");
         railOpen = null;
         await refreshRail();
-        sendTurn(answerLine(req, dismiss, payload), undefined, {relay:true, keepComposer:true});
+        sendTurn(answerLine(req, mode, payload), undefined, {relay:true, keepComposer:true});
       }
     }catch(err){
       if(err.authRequired) return enterSignedOut();

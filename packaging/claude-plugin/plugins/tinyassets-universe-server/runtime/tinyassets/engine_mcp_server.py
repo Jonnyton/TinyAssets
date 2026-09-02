@@ -1040,6 +1040,13 @@ def write_graph(
     and what they answered. You cannot answer your own ask, and you should not
     try: that is theirs.
 
+    An ``extend_http`` ask is checked against the key you already hold when
+    you RAISE it. One that adds nothing comes back ``already_held`` with the
+    grant you have: act on it, do not ask again. One the answer would refuse
+    comes back ``ask_cannot_be_granted`` with the reason: fix the ask. The
+    owner never sees a tab that cannot be honoured. A git clone or push uses
+    the connection's git scopes and needs no HTTP endpoint on the git host.
+
     **A deposited credential is DURABLE, and you are asking for ONGOING ACCESS
     to a service — not for one-time permission to run one action.** It stays in
     the vault for future use until the owner removes it, so ask once per service

@@ -559,6 +559,11 @@ def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str
     except Exception as exc:  # noqa: BLE001 - endpoint validator
         return {"error": "endpoint_not_permitted", "detail": str(exc)}
 
+    if action.get("type") == "extend_http":
+        held = _extend_ask_verdict(_uid, action)
+        if held is not None:
+            return held
+
     # Include body AND fields. With only (kind, title, action), muting "Approve
     # this?" about a harmless draft also silenced "Approve this?" about deleting
     # production data — the `answer` action normalizes to a bare {"type":"answer"},
@@ -591,6 +596,63 @@ def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str
             ),
         }
     return {**row, "grant_sentence": _grant_sentence(row)}
+
+
+def _extend_ask_verdict(universe_id: str, action: dict[str, Any]) -> dict[str, Any] | None:
+    """Check an ``extend_http`` ask against the connection the owner already
+    holds, when the agent RAISES it. ``None`` means "raise the tab".
+
+    Two outcomes never reach the owner as a tab:
+
+    * the ask adds nothing -- the agent is told ``already_held`` with the
+      grant it has, so it acts instead of asking again (live 2026-09-02: the
+      universe re-asked for reach its git scopes already gave it);
+    * answering it would be refused -- the agent is told the exact reason
+      (``ask_cannot_be_granted``), because the agent can fix the ask and the
+      owner cannot. Before this the owner saw the ledger's sentence after
+      clicking yes, and the click was recorded as a decline.
+    """
+    from tinyassets.api.http_connection import preview_extend_http
+
+    preview = preview_extend_http(universe_id=universe_id, payload={
+        "destination": action.get("destination"),
+        "endpoints": action.get("endpoints") or None,
+        "scopes": action.get("scopes") or [],
+    })
+    if preview.get("error") == "not_found":
+        return _bad(
+            f'no key is deposited as "{action.get("destination")}" to extend; '
+            "raise a connect_http ask for it instead"
+        )
+    if preview.get("error"):
+        detail = str(preview.get("detail") or preview["error"])
+        git_host = str(preview.get("git_host") or "")
+        if git_host and git_host in (preview.get("asked_hosts") or []):
+            detail += (
+                f" The key already reaches {git_host} for git: a clone or push "
+                "uses the connection's git scopes and needs no HTTP endpoint on "
+                "that host."
+            )
+        return {
+            "error": "ask_cannot_be_granted",
+            "detail": detail,
+            "note": (
+                "Answering this ask would fail with exactly this reason, so no "
+                "tab was raised. Fix the ask, or drop it."
+            ),
+        }
+    if preview.get("status") == "unchanged":
+        return {
+            "status": "already_held",
+            "destination": preview.get("destination"),
+            "allowed_endpoints": preview.get("allowed_endpoints") or [],
+            "scopes": preview.get("scopes") or [],
+            "note": (
+                "You already hold everything this ask would grant, so nothing "
+                "was asked. Act on the grant you have."
+            ),
+        }
+    return None
 
 
 def _granted_lines(action: dict[str, Any]) -> list[str]:
@@ -952,6 +1014,30 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
         return {
             "status": "dismissed",
             "request_id": request_id,
+            "feedback": fb,
+            "suppressed": again,
+        }
+
+    if str(document.get("decision") or "").strip().lower() == "declined":
+        # Deny (founder 2026-09-02: "accept or denial or clear or send reply").
+        # A recorded no, distinct from Clear: the agent reads a decision, and
+        # with "don't ask me this again" it is a standing one. Nothing below
+        # runs -- for an action-bearing ask the answer IS the act, so a deny
+        # that fell through would extend the grant it was refusing.
+        fb = str(document.get("feedback") or "").strip()[:_MAX_ANSWER_CHARS]
+        if fb and _ENTROPY_RUN_RE.search(fb):
+            return _bad(
+                "that feedback looks like it contains a credential; it is stored "
+                "in the clear, so say it in words instead"
+            )
+        again = document.get("dont_ask_again") is True
+        resolve_request(udir, request_id, status="answered", answer=None,
+                        feedback=fb, dont_ask_again=again, decision="declined")
+        return {
+            "status": "answered",
+            "decision": "declined",
+            "request_id": request_id,
+            "answer": None,
             "feedback": fb,
             "suppressed": again,
         }
