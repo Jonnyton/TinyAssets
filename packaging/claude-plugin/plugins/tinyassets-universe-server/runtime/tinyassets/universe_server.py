@@ -1854,6 +1854,17 @@ _PLATFORM_FAULT_TELLS = (
 )
 
 
+#: The ``skip_class`` values that were EVIDENCED rather than defaulted.
+#: `classify_unavailable` (providers/diagnostics.py) assigns `auth_invalid`
+#: only when the provider's text carries an auth tell and falls back to
+#: `endpoint_unreachable` for everything else -- so that bucket means "no tell
+#: found", not "the network is down". Promoting it would tell an owner whose
+#: credential silently expired that it is "nothing you set up wrong" (Codex,
+#: review round 1, P6). `quota_or_cooldown` and `timed_out` are set by explicit
+#: measurement, never by a substring guess.
+_EVIDENCED_SKIP_CLASSES = frozenset({"auth_invalid", "quota_or_cooldown", "timed_out"})
+
+
 def _attempt_class(exc: BaseException) -> str | None:
     """The class of the last FAILED attempt, from either taxonomy.
 
@@ -1864,16 +1875,21 @@ def _attempt_class(exc: BaseException) -> str | None:
     attempt produced a notice saying the cause was unknown.
 
     Skips are ignored: a provider that was never tried explains nothing about
-    why the turn failed.
+    why the turn failed. And a `skip_class` is only promoted when it was
+    evidenced (`_EVIDENCED_SKIP_CLASSES`): the classifier's default bucket is
+    the absence of evidence, and an honest "we could not identify why" beats
+    a confident wrong sentence.
     """
     try:
         for attempt in reversed(getattr(exc, "attempts", None) or []):
             if getattr(attempt, "status", "") != "failed":
                 continue
-            for field in ("failure_class", "skip_class"):
-                value = getattr(attempt, field, None)
-                if value:
-                    return str(value)
+            streamed = getattr(attempt, "failure_class", None)
+            if streamed:
+                return str(streamed)
+            coarse = getattr(attempt, "skip_class", None)
+            if coarse and str(coarse) in _EVIDENCED_SKIP_CLASSES:
+                return str(coarse)
     except Exception:  # noqa: BLE001 - never break a failure path
         return None
     return None

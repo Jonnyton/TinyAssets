@@ -218,3 +218,44 @@ def test_sweeping_the_root_itself_does_not_consult_itself(dirs):
     queued = _queued(root)
     assert "root-old" in queued
     assert "root-young" not in queued
+
+
+# ------------------------------------------ could-not-look is not not-found
+
+
+def test_a_root_that_cannot_be_read_releases_NOTHING(dirs, caplog):
+    """Codex, review round 1, P2: a read failure at the root used to return the
+    same empty answer as "no such run", and the age bound then released the
+    lock -- so a busy WAL or a transient error could reap a LIVE run's locks
+    the moment they turned an hour old. Here the root file is garbage: the
+    lookup fails, and an old lock whose run is live there must stay held."""
+    import logging
+
+    from tinyassets.runs import _workspace_sweep_once, runs_db_path
+
+    root, universe = dirs
+    _run_row(root, "long-job", "running")
+    _lock(universe, "long-job", age_s=86_400)
+    runs_db_path(root).write_bytes(b"this is not a database" * 64)
+
+    with caplog.at_level(logging.ERROR):
+        _workspace_sweep_once(universe, claimant="test")
+
+    assert "long-job" not in _queued(universe), (
+        "a lookup failure was treated as run-unknown and released a live lock"
+    )
+    assert "could not read run statuses at the root" in caplog.text
+
+
+def test_a_root_that_cannot_be_read_holds_even_a_run_known_nowhere(dirs):
+    """The same rule for a lock the root would not have known anyway: with
+    the root unreadable the sweep cannot tell the two apart, so it waits."""
+    from tinyassets.runs import _workspace_sweep_once, runs_db_path
+
+    root, universe = dirs
+    _lock(universe, "vanished", age_s=86_400)
+    runs_db_path(root).write_bytes(b"this is not a database" * 64)
+
+    _workspace_sweep_once(universe, claimant="test")
+
+    assert "vanished" not in _queued(universe)

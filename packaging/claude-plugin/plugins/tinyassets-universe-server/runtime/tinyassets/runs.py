@@ -305,12 +305,17 @@ _ORPHAN_LOCK_MIN_AGE_S = 3600.0
 
 def _run_statuses_recorded_at_root(
     base_path: str | Path, run_ids: set[str],
-) -> dict[str, str]:
+) -> dict[str, str] | None:
     """``{run_id: status}`` for the given runs as the ROOT runs database has
-    them -- the database run rows are actually written to. Empty when the
-    sweep is already at the root, when there is no root database yet, or on
-    any read failure: an unknown answer must degrade to the age bound, never
-    to a release."""
+    them -- the database run rows are actually written to.
+
+    Empty when there is nowhere else to look: the sweep is already at the
+    root, or no root database exists yet (then no run was ever recorded, and
+    the age bound is the right evidence). ``None`` when the root COULD NOT BE
+    READ. The two are not the same answer: "not found" lets the age bound
+    release an old lock; "could not look" must release nothing, or a busy WAL
+    or a transient read error would reap a live run's locks the moment they
+    turned an hour old (Codex, review round 1, P2)."""
     if not run_ids:
         return {}
     try:
@@ -333,8 +338,11 @@ def _run_statuses_recorded_at_root(
             conn.close()
         return {str(row[0]): str(row[1]) for row in rows}
     except Exception:  # noqa: BLE001 - a sweep must never fail on a lookup
-        logger.exception("could not read run statuses at the root for the sweep")
-        return {}
+        logger.exception(
+            "could not read run statuses at the root; releasing no unknown-run "
+            "locks this pass"
+        )
+        return None
 
 
 def _workspace_sweep_once(base_path: str | Path, *, claimant: str) -> int:
@@ -410,10 +418,12 @@ def _workspace_sweep_once(base_path: str | Path, *, claimant: str) -> int:
             """
         ).fetchall()
         releasable: list[str] = []
-        if unknown_run_locks:
-            recorded = _run_statuses_recorded_at_root(
-                base_path, {row[0] for row in unknown_run_locks}
-            )
+        recorded = _run_statuses_recorded_at_root(
+            base_path, {row[0] for row in unknown_run_locks}
+        ) if unknown_run_locks else {}
+        # A failed lookup is not "unknown": it releases nothing. The lock
+        # waits for a pass that can actually read the root.
+        if recorded is not None:
             cutoff = time.time() - _ORPHAN_LOCK_MIN_AGE_S
             for run_id, acquired_at in unknown_run_locks:
                 status = recorded.get(run_id)

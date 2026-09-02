@@ -429,3 +429,41 @@ def test_the_streamed_class_still_wins_when_both_are_present():
         )],
     )
     assert "rate-limiting" in _served_failure_notice(exc)
+
+
+def test_the_classifiers_DEFAULT_bucket_is_not_promoted_to_a_diagnosis():
+    """Codex, review round 1, P6. `classify_unavailable` returns
+    `endpoint_unreachable` whenever the provider text carries no auth tell --
+    it is "no evidence found", not "the network is down". A claude quick-exit
+    on an expired credential reads "claude -p returned exit code 1 quickly --
+    API likely unavailable": no tell, so `endpoint_unreachable`, and promoting
+    it would tell the owner it is "nothing you set up wrong" and send them away
+    from reconnecting. The honest unknown wins."""
+    from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
+
+    exc = AllProvidersExhaustedError(
+        "Served provider 'claude-code' exhausted; universe authority forbids fallback widening.",
+        attempts=[ProviderAttemptDiagnostic(
+            provider="claude-code", status="failed", skip_class="endpoint_unreachable",
+            detail="claude -p returned exit code 1 quickly -- API likely unavailable",
+        )],
+    )
+    lowered = _served_failure_notice(exc).lower()
+    assert "could not identify" in lowered, lowered
+    assert "nothing you set up wrong" not in lowered
+    assert "exhausted" not in lowered
+
+
+def test_an_EVIDENCED_skip_class_is_still_promoted():
+    """`auth_invalid` is assigned only when the provider text carried an auth
+    tell; that is evidence and it must keep reaching the owner."""
+    from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
+
+    exc = AllProvidersExhaustedError(
+        "exhausted",
+        attempts=[ProviderAttemptDiagnostic(
+            provider="codex", status="failed", skip_class="auth_invalid",
+            detail="codex: 401 unauthorized",
+        )],
+    )
+    assert "reconnect" in _served_failure_notice(exc).lower()
