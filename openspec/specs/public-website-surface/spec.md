@@ -1,41 +1,89 @@
 # public-website-surface Specification
 
 ## Purpose
-Define the static public website's route, live-versus-snapshot provenance, browser MCP, operational presentation, install-copy, and indexing contracts.
+Define the public website's route set, its message, the live-versus-snapshot provenance of what it shows, the browser's public read boundary, the operational and plan copy, the brand mark, indexing, and the hosted-preview trust boundary. As built 2026-09-02 (`WebSite/site-react`, Next.js static export on `@tiny/design-system`).
+
 ## Requirements
-### Requirement: The Public Site Ships As A Static Multi-Route Application
+### Requirement: The Public Site Ships As One Static Multi-Route Application
 
-The canonical website under `WebSite/site` SHALL build with SvelteKit's static adapter and expose the checked-in public route set, including the home, start, goals, host, wiki, graph, loop, patch-loop, commons, catalog, economy, alliance, contribute, notebook, soul, patterns, fine-print, legal, and account surfaces. Retired `connect`, `status`, and `proof` routes SHALL remain soft-landing aliases that direct visitors to their current destinations rather than becoming dead links. The generated static assets SHALL include the canonical hostname, crawler policy, sitemap, brand marks, and machine-readable `llms.txt` committed with the site.
+The website source under `WebSite/site-react` SHALL build with Next.js static export (`output: "export"`, trailing slashes) and expose exactly the public routes `/`, `/start`, `/build`, `/commons`, `/developers`, `/fine-print`, `/legal`, and `/account`. Retired routes (`/host`, `/connect`, `/soul`, `/graph`, `/notebook`, `/goals`, `/goal`, `/catalog`, `/patterns`, `/wiki`, `/alliance`, `/contribute`, `/loop`, `/patch-loop`, `/proof`, `/status`, `/economy`) SHALL remain soft-landing aliases that name their destination, link to it, and follow after a short delay, and SHALL be marked `noindex`. There is no second site tree: the Svelte rollback source and its deploy workflow were retired on 2026-09-02, and rollback means redeploying an earlier revision. The generated static assets SHALL include the canonical hostname (`CNAME`), crawler policy, sitemap, brand marks, web manifest, `llms.txt`, and the `.well-known/openai-apps-challenge` file committed with the site.
 
-#### Scenario: A retired proof route is visited
+#### Scenario: A retired route is visited
 
-- **WHEN** a visitor opens `/proof` or `/status`
-- **THEN** the page explains that operational evidence moved to `/fine-print` and directs the visitor there
+- **WHEN** a visitor opens `/proof/`, `/status/`, `/host/`, or any other retired route
+- **THEN** the page says where the content went, links there, and lands on the destination without the visitor acting
 
 #### Scenario: Static production build is requested
 
-- **WHEN** the website build script runs successfully
-- **THEN** SvelteKit emits a static application containing the checked-in public routes and assets without requiring a website application server
+- **WHEN** `npm run build` runs in `WebSite/site-react`
+- **THEN** Next.js emits `out/<route>/index.html` for every public route and alias plus the static assets, without a website application server
 
-### Requirement: Public Project Views Distinguish Live Reads From Baked Snapshots
+### Requirement: Every Page Serves One Positioning And One Job
 
-The site SHALL carry baked MCP and repository snapshots for first paint and SHALL label baked values as snapshots. Browser refresh paths SHALL query the public MCP surface and GitHub API, stamp successful reads with their fetch time and source, and retain or disclose the most recent baked/good state when a live read fails. A failed live read MUST be rendered as unavailable or failed evidence and MUST NOT relabel baked counts, universes, goals, repository data, or loop events as live.
+The site SHALL present TinyAssets as a personal universe: a cloud agent that runs on the visitor's own Claude or ChatGPT subscription, builds any automation to any platform from a small set of primitives, learns its owner continuously, and runs around the clock under the owner's control. Each route SHALL have one job: `/` states the positioning and shows a real receipt; `/start` gets a person to a running universe on any surface; `/build` explains the primitives (connection, graph, code node, workspace, automation, brain) and honest failure; `/commons` shows public shapes to remix; `/developers` covers open source, the MCP endpoint and handles, and specs; `/fine-print` carries operational truth, plans, and boundaries; `/legal` carries terms, privacy, and disclosures; `/account` says accounts live in the app and how to delete one. Copy SHALL sell outcomes rather than mechanisms, SHALL name TinyAssets as the platform and Tiny as the universe a person talks to, SHALL describe a chatbot as a relay, and SHALL NOT advertise a platform-supplied model, a paid work market, tokens, host-run fleets, per-channel integration lists, the retired `Workflow` name, engagement metrics, or "powered by" a model vendor.
 
-#### Scenario: Live host read succeeds
+#### Scenario: The home page proof
 
-- **WHEN** the host page retrieves the current public universe list
-- **THEN** it replaces its visibly stamped baked list with public universes shaped from the live response
-- **AND** it displays a live read timestamp
+- **WHEN** a visitor reads the home page
+- **THEN** the proof is a receipt of a real run (fetch → code → write, pull request #2728, `README: 91 lines.`, merged 2026-08-30) with a link to the public pull request
+- **AND** the primary action is the web app at `https://tinyassets.io/mcp/app`
 
-#### Scenario: Live host read fails
+#### Scenario: Subscription copy stays truthful
 
-- **WHEN** the host page cannot retrieve the public universe list
-- **THEN** it identifies the read failure and continues to label any retained list with its snapshot or most-recent-good provenance
-- **AND** it does not show the retained data as a current live read
+- **WHEN** any page describes connecting a subscription
+- **THEN** ChatGPT/Codex is described as one tap and Claude as the person pasting their own setup token into the deposit form
+- **AND** no page presents a "Connect Claude" OAuth control
 
-### Requirement: Browser MCP Reads Use The Public Connector Contract
+### Requirement: Plans Are Described In Words, In One Place, And Do Not Overstate Enforcement
 
-The browser MCP client SHALL use JSON-RPC over HTTP, initialize an MCP session before tool calls, preserve a returned `Mcp-Session-Id`, accept JSON or server-sent-event responses, and retry transient failures up to three total attempts. In local development it SHALL send `/mcp-live` through the Vite proxy to `https://tinyassets.io/mcp`; in production it SHALL use same-origin `/mcp`. Tool calls SHALL prefer object-valued `structuredContent` and MAY parse text content only as a compatibility fallback. Public project reads SHALL use the current consolidated handles and actions rather than presenting snapshot data as a successful connector call.
+The site SHALL describe plans only in the `Plans` section of `/fine-print` (anchor `#plans`), stating that every universe is free and that premium costs USD 20 a month and raises the daily allowances for outside-world actions, compute, and storage. Because `tinyassets.usage_policy.enforcement_enabled()` defaults off — the meter records but the gate does not refuse — the section SHALL say so plainly: usage is metered, nobody is cut off today, and premium raises the allowances that will apply when the gate goes live. It SHALL NOT print allowance numbers while the gate is dark, SHALL NOT render an upgrade control until the app has one, and SHALL NOT describe hitting a limit as a thing that currently happens. `/start` MAY carry one sentence that links to the section. No other page, and no public text asset (`llms.txt`, `robots.txt`), states the price or what premium changes; a text asset MAY point at the section.
+
+#### Scenario: A visitor looks for pricing
+
+- **WHEN** a visitor opens `/fine-print/#plans`
+- **THEN** they read that every universe starts free, what premium changes in words, its monthly price, and that enforcement is not switched on yet, with no form, no button, and no numeric allowances
+
+#### Scenario: A grounding crawler reads the text assets
+
+- **WHEN** an AI-grounding crawler reads `/llms.txt`
+- **THEN** it finds that founding a universe is free and a pointer to `/fine-print/#plans`
+- **AND** it does not find the price or the premium benefit restated, so the two cannot drift apart
+
+### Requirement: Public Views Distinguish Live Reads From The Checked-In Snapshot
+
+The site SHALL carry a checked-in public snapshot (`lib/mcp-snapshot.json`: the public universe list with `fetched_at`) and SHALL label it as a snapshot with its date wherever it is shown. Browser refresh paths SHALL read the public MCP surface, stamp a successful read with its fetch time and source, and on failure SHALL retain the snapshot with its snapshot provenance and a visible failed-read reason. A failed live read MUST NOT relabel snapshot data as live. The snapshot SHALL be refreshed only by `scripts/snapshot-public.mjs`, which reads the same public projection the browser reads and fails closed if completeness cannot be proven.
+
+#### Scenario: Live commons read succeeds
+
+- **WHEN** `/commons` retrieves the public universe list
+- **THEN** it replaces the labelled snapshot rows with the live rows and shows a live read stamp with a relative time
+
+#### Scenario: Live commons read fails
+
+- **WHEN** `/commons` cannot retrieve the public universe list
+- **THEN** it shows the failed-read reason and the snapshot rows labelled with the snapshot's date
+- **AND** it does not present the snapshot as a current live read
+
+#### Scenario: No public universes exist
+
+- **WHEN** a live read succeeds with an empty list
+- **THEN** the page states that there are no public universes right now and that every universe starts private
+
+#### Scenario: A snapshot record is not explicitly discoverable
+
+- **WHEN** the checked-in snapshot holds a record whose `visibility` is missing, `private`, or any value other than `public`/`metadata_only`
+- **THEN** it is dropped before render by the same `sanitizePublicUniverse` allowlist a live read passes through (`lib/discoverable.js`), rather than shown as public
+- **AND** one bad record does not blank the list
+
+#### Scenario: The public list is raw rather than curated
+
+- **WHEN** the endpoint reports working or housekeeping universes as publicly discoverable
+- **THEN** `/commons` shows them and says the list is what the endpoint reports rather than a curated gallery
+- **AND** the site does not filter them out, which would make its own "what is public" claim false (open finding: `docs/concerns/2026-09-02-migration-records-are-publicly-discoverable.md`)
+
+### Requirement: Browser MCP Reads Use The Public Connector Contract And Only The Public Projection
+
+The browser MCP client (`lib/live.ts`) SHALL use JSON-RPC over HTTP, initialize an MCP session before tool calls, preserve a returned `Mcp-Session-Id`, accept JSON or server-sent-event responses, and retry transient failures up to three total attempts. In local development `npm run dev` SHALL proxy same-origin `/mcp` to `https://tinyassets.io/mcp`; in production the client SHALL use same-origin `/mcp`. Tool calls SHALL prefer object-valued `structuredContent` and MAY parse text content only as a compatibility fallback. The client SHALL expose only `fetchPublicUniverses` (`read_graph target=graphs`, sanitized to public scalars through `WebSite/shared/mcp/public-read-contract.js`) and `fetchVitals`. It MUST NOT call `get_status`, request goals or runs, default a missing visibility to public, or surface untrusted error detail from the endpoint. `scripts/public-boundary.test.mjs` and `scripts/canonical-mcp-contract.test.mjs` enforce this and run in `npm test`, which gates both the preview build and the production deploy.
 
 #### Scenario: Tool response includes structured content
 
@@ -50,41 +98,43 @@ The browser MCP client SHALL use JSON-RPC over HTTP, initialize an MCP session b
 #### Scenario: Gateway is transiently unavailable
 
 - **WHEN** an MCP request returns HTTP 502, 503, or 504 on an early attempt
-- **THEN** the client retries with bounded incremental delay and ultimately exposes an error if all three attempts fail
+- **THEN** the client retries with bounded incremental delay and ultimately exposes "Public MCP read is unavailable" if all three attempts fail
 
-### Requirement: Status And Loop Presentation Keep Distinct Operational Truths
+### Requirement: Reachability And Activity Stay Distinct Operational Truths
 
-The website SHALL distinguish server reachability from loop activity. Its vital-sign read SHALL require `get_status` and the public universe list to succeed before reporting the server as reachable, while failed goals or extension-run reads SHALL degrade to absent optional evidence. It SHALL derive loop-awake state from an active run, a running queue item, or a run/universe signal within the current one-hour window. Patch-loop presentation SHALL identify its source, warnings, current run/event evidence, and historical-terminal limitations, and SHALL fall back to the checked-in community-loop status or public GitHub monitor evidence when the live extension path has no current run. It MUST NOT collapse a reachable server into a claim that the work loop is moving.
+The `/fine-print` reachability strip SHALL derive server reachability from a successful public universe read and SHALL derive activity only from public universe timestamps within the current one-hour window. It MUST NOT collapse a reachable endpoint into a claim that work is moving, MUST NOT infer an executing run, and SHALL render a failed read as an unreachable reading rather than an error dressed as data. Site-wide live-data controls SHALL be named `Refresh MCP` (and `Refresh GitHub` where GitHub data is read).
 
-#### Scenario: Server is reachable but no recent work exists
+#### Scenario: Endpoint is reachable but quiet
 
-- **WHEN** status and public reads succeed but there is no active run, running queue item, or movement signal within one hour
-- **THEN** the site reports the server as reachable and the loop as asleep
+- **WHEN** the public read succeeds and no public universe moved within one hour
+- **THEN** the strip reports the endpoint as reachable and activity as quiet, with the last public movement time if any
 
-#### Scenario: Last extension run is historical
+#### Scenario: Endpoint is unreachable from the browser
 
-- **WHEN** the most recent patch-loop run is terminal and older than the historical cutoff
-- **THEN** the patch-loop feed records that limitation and seeks recent run or community-watch evidence
-- **AND** it does not present the old terminal run as active
+- **WHEN** the public read fails after its retries
+- **THEN** the strip reports "unreachable from your browser" with the bounded reason and states that this is itself a true reading
 
-### Requirement: Host And Install Copy States Current Availability Truthfully
+### Requirement: Start, Surfaces, And Availability Copy Are Truthful
 
-The public host surface SHALL describe the supported source path as Python 3.11+, repository clone, virtual environment, editable install, and the checked-in `tinyassets` or `tinyassets-mcp` entry points. It SHALL state that the Windows tray currently ships from source and that no packaged one-click installer is present in releases. It SHALL identify macOS/Linux tray support as in progress and SHALL identify hosted-cloud signup, pricing, and waitlist as unavailable, routing interest to the public project channel rather than rendering a non-functional signup control.
+`/start` SHALL present three steps (sign in; connect a subscription; say what real thing to finish) and the four surfaces with their real addresses: the web app at `https://tinyassets.io/mcp/app`, the chatbot connector URL `https://tinyassets.io/mcp` for Claude.ai and ChatGPT, the Android pre-release APK at the `android-latest` release asset, and the desktop app as unsigned builds from `desktop-app/` in the repository. `/fine-print` SHALL state plainly what does not exist: no platform model, no list of integrations, no signed desktop installer and no Play listing yet, no paid work market. `/developers` SHALL name `https://tinyassets.io/mcp` as the only public endpoint and list the seven canonical handles (`converse`, `read_graph`, `write_graph`, `run_graph`, `read_page`, `write_page`, `get_status`) with the source-install path (Python 3.11+, clone, editable install, `tinyassets-mcp` / `tinyassets-cli`).
 
-#### Scenario: Visitor asks for the Windows installer
+#### Scenario: Visitor asks for a desktop installer
 
-- **WHEN** a visitor reads the host setup section
-- **THEN** the site presents the source clone/install command path and explicitly states that no packaged installer exists yet
+- **WHEN** a visitor reads the desktop surface on `/start` or the fine print
+- **THEN** the site says builds are unsigned and come from the repository and links the desktop source, and does not present an installer download
 
-#### Scenario: Visitor explores hosted cloud
+### Requirement: The Mark Has One Source And Appears On Every Surface
 
-- **WHEN** a visitor reaches the hosted-cloud section
-- **THEN** the site states that there is no signup, waitlist, or pricing flow today and offers the current GitHub request route
-- **AND** it does not present hosted capacity as available
+The brand mark (a ring crossed low by a rule running off to the right, with one terracotta dot on the rule) SHALL be defined once in `tinyassets/desktop/icon_gen.py` and exported by `WebSite/brand/render_marks.py` to the site icons (`favicon.ico`, `icon.svg`, `apple-touch-icon.png`, `icon-192.png`, `icon-512.png`, `logo-mark.png`, `tinyassets-mark.png`), the repository brand assets under `assets/`, the desktop app build resources, the Windows tray icon, the Android launcher and splash density set, and the Play listing graphics; `WebSite/brand/render_og.py` SHALL render the OG card with the site's fonts. The site's inline React mark (`components/TinyAssetsMark.tsx`) SHALL be **generated** by the same exporter from the same constants rather than hand-maintained, so a geometry change cannot leave the web mark behind. The served web app SHALL carry the same mark as its favicon and brand glyph.
+
+#### Scenario: The mark changes
+
+- **WHEN** the geometry or palette in `icon_gen.py` changes and the exporters run
+- **THEN** every listed surface receives the new mark from the same drawing, and no exported raster is hand-edited
 
 ### Requirement: Public And Private Indexing Boundaries Are Declared
 
-The site's crawler policy SHALL allow public pages to search and AI-grounding crawlers while disallowing `/account`, `/auth/`, `/editor/`, and `/admin/` from indexing. The sitemap SHALL contain only intended public routes and SHALL use the canonical `https://tinyassets.io` origin. These declarations are advisory web metadata and MUST NOT be treated as authentication or access control for private application surfaces.
+The site's crawler policy SHALL allow public pages to search and AI-grounding crawlers while disallowing `/account`, `/auth/`, `/editor/`, and `/admin/` from indexing, and `/account` SHALL also carry `noindex` metadata. Because a crawler obeys only its most specific matching group and does not fall back to `*` (RFC 9309), every named agent and the wildcard SHALL share one group carrying both the allow and the exclusions; naming an agent in its own group would silently drop the exclusions for exactly that crawler. The sitemap SHALL contain only the seven intended public routes and SHALL use the canonical `https://tinyassets.io` origin with trailing slashes. These declarations are advisory web metadata and MUST NOT be treated as authentication or access control for private application surfaces.
 
 #### Scenario: Crawler requests policy
 
@@ -93,7 +143,7 @@ The site's crawler policy SHALL allow public pages to search and AI-grounding cr
 
 ### Requirement: Hosted Preview Source Pipeline Preserves The Untrusted-Build Boundary
 
-The hosted React preview source pipeline SHALL execute pull-request-controlled
+The hosted preview source pipeline SHALL execute pull-request-controlled
 install, test, and build commands only in an unprivileged workflow with
 read-only repository permission, no persisted checkout credential, and no
 deployment secret. A separate exact-trusted-default-branch workflow SHALL
@@ -105,8 +155,11 @@ and byte-compare that manifest before computing the published SHA-256 from the
 regenerated manifest bytes, MUST NOT execute artifact content, and SHALL use
 fixed trusted Worker code, Worker name, Wrangler configuration, exact action
 revisions, lockfile-pinned Wrangler, and a dedicated preview-only account
-credential. Credentialed publication MUST remain disabled until
-`activate-hosted-preview-publication` records accepted external isolation proof.
+credential. The validators and their tests live in `WebSite/site-react/scripts/`
+(`validate-preview-*.mjs`, `preview-worker-security.test.mjs`) and run from
+`WebSite/site-react` via `npm test`. Credentialed publication MUST remain
+disabled until `activate-hosted-preview-publication` records accepted external
+isolation proof.
 
 #### Scenario: Pull-request code builds a preview candidate
 
@@ -117,7 +170,7 @@ credential. Credentialed publication MUST remain disabled until
 #### Scenario: Any pull request changes repository source
 
 - **WHEN** any pull request is opened, reopened, or synchronized, including one that does not match the hosted-preview build paths
-- **THEN** an unfiltered read-only check runs the parsed trust-boundary contract and all preview validator fixtures
+- **THEN** an unfiltered read-only check runs the parsed trust-boundary contract and all preview validator fixtures from `WebSite/site-react`
 - **AND** branch protection can require that check without waiting for a path-filtered workflow that never starts
 
 #### Scenario: A successful same-repository build enters trusted intake
@@ -183,4 +236,4 @@ credential. Credentialed publication MUST remain disabled until
 - **WHEN** this source bootstrap is merged without an accepted `activate-hosted-preview-publication` receipt
 - **THEN** the GitHub preview environment holds no publication credential
 - **AND** no credentialed hosted preview is accepted as active or proven
-- **AND** the successor change and STATUS host-action remain open
+- **AND** the successor change and its host-action row remain open

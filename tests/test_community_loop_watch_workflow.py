@@ -71,7 +71,7 @@ def test_workflow_triggers_exclude_retired_cheat_loop_workflows():
     workflows = workflow_run.get("workflows", [])
 
     assert "Uptime canary" in workflows
-    assert "deploy-site" in workflows
+    assert "deploy-site-react" in workflows
     assert "Deploy prod" in workflows
     retired_names = [
         "Wiki " + "bug sync",

@@ -1,18 +1,23 @@
-# Tiny — Design System ("Field Notes")
+# TinyAssets — Design System ("Warm editorial")
 
 > Framework-agnostic design brief for AI design tools and coding agents.
-> This file is the high-leverage, provider-neutral artifact: any agent that
-> reads it can build on-brand UI without the compiled bundle. The compiled
-> React library (`dist/`) and DTCG tokens (`tokens/tiny.tokens.json`) are the
-> machine contracts; this is the rules layer.
+> This file is the rules layer. The compiled React library (`dist/`) and the
+> DTCG tokens (`tokens/tiny.tokens.json`, generated from
+> `src/styles/tokens.css`) are the machine contracts.
 
 ## 1. Theme & feeling
 
-Tiny's surface is **a naturalist's logbook crossed with a scientific
-instrument** — "Field Notes." Warm paper ground, ink text, calm and
-deliberate. Instruments don't bounce. A core distinction is **claim vs
-evidence, made typographic**: prose/claims use serif (voice) or sans
-(chrome); live data, ids, and timestamps are **always mono**.
+TinyAssets reads like **a well-set document about serious work**: paper
+ground, ink text, one warm accent, ruled lines, and run receipts. It is not a
+dashboard and it is not an AI product page. No sparkle, no glowing chat
+bubbles, no gradients, no dark "instrument panel" as the default surface.
+
+The core distinction is **claim versus evidence, made typographic**: prose is
+serif or sans; every live value, id, and timestamp is mono, always.
+
+The subject of the site is the user's **universe** (their own cloud agent
+with storage, connections, automations, and a brain). Copy sells outcomes
+("it merged its own PR"), never mechanisms ("AI-powered workflow engine").
 
 ## 2. Color (semantic roles → CSS variables)
 
@@ -20,85 +25,101 @@ Use the semantic variables, not raw hex. Full list in `tokens/tiny.tokens.json`.
 
 | Role | Variable | Use |
 |---|---|---|
-| Page ground (the desk) | `--bg-0` | body background |
-| Card / sheet | `--bg-1` … `--bg-3` | raised paper surfaces |
-| Text | `--fg-1` (strong) → `--fg-4` (faint) | ink hierarchy |
-| Action | `--ember-600` / `--accent` | **the one** primary action; never decorative |
-| Liveness | `--live-600` / `--signal-live` | **reserved** for genuine live evidence only |
-| Soul / lineage | `--violet-600` | forks, souls, lineage traces |
-| Borders | `--border-1` / `--border-2` | hairlines on paper |
-| Dark readout | `--panel`, `--on-panel` | the instrument panel where Tiny SHOWS data |
+| Page ground | `--bg-0` | body background (`#f4efe4`) |
+| Sheet / card | `--bg-1` … `--bg-3` | paper objects on the page |
+| Text | `--fg-1` (ink) → `--fg-4` (faint) | ink hierarchy |
+| Action / emphasis | `--ember-600` / `--accent` (`#b5471f`, terracotta) | **the one** accent: the primary action, the dot on the mark, one emphasised word |
+| Liveness | `--live-600` / `--signal-live` | **reserved** for genuine live evidence |
+| Idle | `--signal-idle` | asleep, a first-class state |
+| Error | `--signal-error` | failures that name their cause |
+| Rules | `--border-1` (hairline), `--border-2`, `--border-strong` | the ruled-table motif |
+| Ink block | `--panel`, `--on-panel` | a rare dark block (quotes, a receipt on ink) |
 
-**Hard rule:** green (`--live-*`) is load-bearing — only for genuinely live
-state. Amber (`--signal-idle`) for asleep/idle (a first-class state, not an
-error). Ember for action and error.
+**Hard rules:** green is load-bearing, only for genuinely live state. There is
+exactly one accent; the old violet variables now resolve to ink so a
+"secondary" object is quiet, not a second colour. No glows.
 
 ## 3. Typography
 
 Three families, each with a job:
 
-- **Voice** `--font-voice` (Newsreader serif) — Tiny's first-person prose, display headlines.
-- **Chrome** `--font-sans` (Inter) — UI labels, nav, body chrome.
-- **Evidence** `--font-mono` (IBM Plex Mono) — every live number, id, timestamp, address. No exceptions.
+- **Display / voice** `--font-display`, `--font-voice` (Fraunces, variable
+  optical size) — headlines and the universe's first-person prose. Weight 500
+  for headings, `"opsz" 144, "SOFT" 30` at hero size.
+- **Body** `--font-sans` (Source Sans 3) — paragraphs, labels, nav.
+- **Evidence** `--font-mono` (IBM Plex Mono) — every live number, id,
+  timestamp, address, receipt line. No exceptions.
 
-Scale: `--fs-xs` (11px) … `--fs-6xl` (96px). Headings use `--font-display`,
-weight 500, tight tracking (`--ls-tight`). Eyebrows/kickers use mono + wide
-caps tracking (`--ls-caps`) — that's the `RitualLabel` / `.eyebrow` vocabulary.
+Scale `--fs-xs` (11px) … `--fs-6xl` (92px). Eyebrows use mono, uppercase,
+wide tracking (`--ls-caps`) — the `RitualLabel` / `.eyebrow` vocabulary.
 
-## 4. Components (stylings + states)
+## 4. Components
 
-Real components ship in the React library; these are the patterns.
-
-- **Button** (`btn`) — variants `primary` (ember, the single key action) /
-  `secondary` (violet) / `ghost` (quiet outline) / `link`; sizes `sm|md|lg`.
-  Renders `<a>` when `href` is set. Hover lifts with `--glow-ember`.
-- **StatusPill** (`pill`) — `kind` live/idle/paid/self/error; `pulse` only when
-  truly live. Mono, uppercase, dot colour follows the liveness rule above.
-- **RitualLabel** (`ritual-label` / `.eyebrow`) — small-caps mono kicker.
+- **Button** (`btn`) — `primary` (terracotta; the single key action on a
+  surface) / `secondary` (ink fill) / `ghost` (hairline outline) / `link`;
+  sizes `sm|md|lg`. Renders `<a>` when `href` is set. No hover glow.
+- **StatusPill** (`pill`) — `kind` live/idle/paid/self/error on paper;
+  `pulse` only when truly live.
+- **RitualLabel** (`ritual-label` / `.eyebrow`) — mono kicker.
+- **Tick** — a provenance device: mono glyph + source label, optionally a link.
+- **Term** — inline first-use definition with an ink tooltip.
+- **Ladder** — an outcome ladder; a rung lights only with evidence.
 
 ## 5. Vocabulary classes (global, in `styles.css`)
 
-`.voice` (first-person prose), `.ev` (inline evidence/mono), `.eyebrow`
-(section kicker), `.dot.live/.idle/.error` (liveness dot), `.readout` (the dark
-instrument panel), `.stat` / `.stat__num` / `.stat__label` (a live reading),
-`.container` (max-width 1240px). Prefer these to reinventing styles.
+`.voice` (first-person prose), `.ev` (inline evidence), `.eyebrow`,
+`.dot.live/.idle/.error`, and the motif:
+
+- `.sheet` — a sheet of paper on the desk (card).
+- `.rule` — a labelled horizontal rule, like a ledger section head.
+- `.ledger` — a ruled table: hairlines between rows, a strong rule under the
+  head and at the foot.
+- `.receipt` — a run receipt: `dl` of `dt`/`dd` rows in mono between a heavy
+  top rule and a foot rule; `dd.ok` / `dd.err` colour the result line.
+- `.readout` — the rare ink block.
 
 ## 6. Layout, spacing, shape
 
-4px spacing base (`--s-1`=4 … `--s-24`=96). Radius `--radius-sm` (6) for chrome,
-`--radius-md` (10) for cards. Page content lives in `.container`
-(max-width 1240px, fluid side padding). Sections get vertical `--s-12` rhythm.
+4px spacing base (`--s-1`=4 … `--s-24`=96). Radii are small (`--radius-sm` 4,
+`--radius-card` 6): paper has corners, not pills. Page content lives in
+`.container` (max-width 1140px, fluid side padding). Sections breathe with
+`--s-16` rhythm. Measure: 60–64ch for prose.
 
 ## 7. Elevation & motion
 
-Graphite-soft shadows on paper (`--shadow-sm/md/lg`) — **never glow** except
-the deliberate `--glow-ember` on a primary action. Motion is calm:
-`--ease-summon` for entrances, `--dur-base` (200ms) default.
+Almost none. `--shadow-sm` is a one-pixel rest line; `--shadow-md` for a
+floating sheet. Motion is calm: `--dur-base` 200ms, `--ease-standard`.
 
 ## 8. Do / don't
 
-- DO reserve green for real liveness; DO use mono for all evidence; DO keep one
-  ember primary action per surface; DO treat idle/asleep as a normal state.
-- DON'T use pure black/white; DON'T make green decorative; DON'T add glows;
-  DON'T mix claim and evidence type registers.
+- DO reserve green for real liveness; DO set every id/timestamp in mono; DO keep
+  one terracotta action per surface; DO use rules and receipts, not cards with
+  shadows, to structure information.
+- DON'T use pure black/white; DON'T add a second accent; DON'T add glows or
+  gradients; DON'T mix claim and evidence type registers; DON'T print
+  engagement metrics.
 
-## 9. Agent build guide
+## 9. The mark
 
-Wrap any design so the token `:root` is present — import the library's
-`styles.css` (or `@tiny/design-system/styles.css`) once at the root; it carries
-tokens + reset + vocabulary. Then compose with the real components and the
-semantic variables. Read `tokens/tiny.tokens.json` for the exact token names and
-each component's `*.prompt.md` for usage. Example:
+A ring crossed low by a rule that runs off to the right, with one terracotta
+dot on the rule. Geometry and palette live in
+`tinyassets/desktop/icon_gen.py`; `WebSite/brand/render_marks.py` exports it to
+every surface. Inline it on the web from `WebSite/brand/mark.svg`.
+
+## 10. Agent build guide
+
+Import `@tiny/design-system/styles.css` once at the root (tokens + reset +
+vocabulary), then compose with the components and the semantic variables:
 
 ```tsx
 import "@tiny/design-system/styles.css";
-import { Button, StatusPill } from "@tiny/design-system";
+import { Button, StatusPill, RitualLabel } from "@tiny/design-system";
 
 <section className="container">
-  <span className="eyebrow">Live evidence</span>
-  <h1>Name a goal. Watch it run.</h1>
-  <p className="voice">I turn chat into <em>finished work</em>.</p>
-  <StatusPill kind="live" pulse>live</StatusPill>
-  <Button href="/start">Connect a chatbot</Button>
+  <RitualLabel>Start</RitualLabel>
+  <h1>A universe of your own.</h1>
+  <p>It runs on the subscription you already pay for.</p>
+  <Button href="https://tinyassets.io/mcp/app">Open the app</Button>
+  <StatusPill kind="live" pulse>reachable</StatusPill>
 </section>
 ```

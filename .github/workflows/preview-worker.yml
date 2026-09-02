@@ -11,11 +11,6 @@ on:
     paths:
       - 'WebSite/site-react/**'
       - 'WebSite/shared/**'
-      - 'WebSite/site/scripts/canonical-mcp-contract.test.mjs'
-      - 'WebSite/site/scripts/preview-worker-security.test.mjs'
-      - 'WebSite/site/scripts/validate-preview-*.mjs'
-      - 'WebSite/site/package.json'
-      - 'WebSite/site/package-lock.json'
       - 'WebSite/design-system/**'
       - '.github/workflows/preview-worker.yml'
       - '.github/workflows/preview-worker-deploy.yml'
@@ -47,18 +42,13 @@ jobs:
           npm ci
           npm run build
 
-      - name: Test preview-security contracts
-        working-directory: WebSite/site
-        run: |
-          npm ci
-          npm test
-
-      - name: Build static site (root, same-origin /mcp)
+      - name: Test preview-security contracts, then build the static site (root, same-origin /mcp)
         working-directory: WebSite/site-react
         env:
           NEXT_PUBLIC_MCP_PATH: '/mcp'
         run: |
           npm ci
+          npm test
           npm run build
           rm -f out/CNAME
 

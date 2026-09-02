@@ -32,7 +32,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
 # pystray requires a display; tolerate ImportError in headless
 # containers (the daemon's fantasy_daemon subprocess) so modules
@@ -48,12 +48,10 @@ logger = logging.getLogger(__name__)
 
 
 def _create_icon_image(size: int = 64) -> Image.Image:
-    """Generate a simple branded icon image."""
-    image = Image.new("RGB", (size, size), color=(73, 109, 137))
-    draw = ImageDraw.Draw(image)
-    # Draw "FA" text centred.
-    draw.text((size // 6, size // 6), "FA", fill=(255, 255, 255))
-    return image
+    """Generate the TinyAssets mark (the same drawing as app.ico)."""
+    from tinyassets.desktop.icon_gen import create_icon_image
+
+    return create_icon_image(size)
 
 
 def _load_icon_image(icon_path: str | Path | None = None) -> Image.Image:

@@ -1,6 +1,6 @@
 # App icon + splash
 
-- `icon.png` — 1024×1024 source (the site's logo mark on `#0b0b0f`).
+- `icon.png` — 1024×1024 source (the TinyAssets mark on its paper tile, on `#0b0b0f`).
 - `splash.png` — 2732×2732 source (the mark centred on `#0b0b0f`, matching the
   loading page).
 - `android/` — the **pre-rendered density set** the app actually ships: legacy
@@ -19,7 +19,8 @@ keeps CI free of an image toolchain and makes the shipped pixels reviewable.
 ```bash
 cd mobile
 python scripts/render_app_icons.py                                              # density set from icon.png
-python scripts/render_app_icons.py --from-logo ../WebSite/site/static/logo-mark.png   # also icon.png, splash.png, Play graphics
+python scripts/render_app_icons.py --from-logo ../assets/icon.png   # also icon.png, splash.png, Play graphics
+# or, for every surface at once: python ../WebSite/brand/render_marks.py
 ```
 
 `scripts/add_app_icons.py` fails the build if any file in `android/` is missing or

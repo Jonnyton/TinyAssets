@@ -1,12 +1,11 @@
 import type { Metadata } from "next";
-import LoopClient from "./_components/LoopClient";
+import { Moved } from "../_components/Moved";
 
 export const metadata: Metadata = {
-  title: "Workflow activity — Tiny",
-  description:
-    "Public workflow-graph activity from TinyAssets, read through the public graphs collection with explicit provenance.",
+  title: "Moved",
+  robots: { index: false, follow: true },
 };
 
-export default function LoopPage() {
-  return <LoopClient />;
+export default function Page() {
+  return <Moved to="/fine-print/" name="Fine print" line="Live activity readings moved to the fine print." />;
 }

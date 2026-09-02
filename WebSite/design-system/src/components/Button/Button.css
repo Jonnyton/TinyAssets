@@ -2,10 +2,12 @@
   font-family: var(--font-sans);
   font-weight: 600;
   line-height: 1;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   border: 1px solid transparent;
   cursor: pointer;
-  transition: all var(--dur-base) var(--ease-summon);
+  transition: background var(--dur-base) var(--ease-standard),
+    color var(--dur-base) var(--ease-standard),
+    border-color var(--dur-base) var(--ease-standard);
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -15,52 +17,55 @@
 .btn:disabled,
 .btn.disabled {
   cursor: not-allowed;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--paper-200);
   color: var(--fg-4);
   border-color: transparent;
 }
 /* Sizes */
-.btn--sm { font-size: 12px; padding: 7px 12px; }
-.btn--md { font-size: 14px; padding: 11px 18px; }
-.btn--lg { font-size: 15px; padding: 14px 22px; }
+.btn--sm { font-size: 13px; padding: 8px 12px; }
+.btn--md { font-size: 15px; padding: 11px 18px; }
+.btn--lg { font-size: 16px; padding: 14px 22px; }
 /* Variants */
 .btn--primary {
   background: var(--ember-600);
   color: var(--fg-on-ember);
 }
 .btn--primary:hover:not(:disabled):not(.disabled) {
-  background: var(--ember-500);
-  box-shadow: var(--glow-ember);
+  background: var(--ember-700);
 }
 .btn--primary:active:not(:disabled):not(.disabled) {
-  background: var(--ember-700);
+  background: var(--ember-900);
   transform: translateY(1px);
 }
+/* Secondary is a quiet ink object, never a second colour. */
 .btn--secondary {
-  background: rgba(138, 99, 206, 0.14);
-  color: var(--violet-200);
-  border-color: rgba(138, 99, 206, 0.42);
+  background: var(--ink-text-900);
+  color: var(--paper-50);
+  border-color: var(--ink-text-900);
 }
 .btn--secondary:hover:not(:disabled):not(.disabled) {
-  background: rgba(138, 99, 206, 0.22);
-  border-color: rgba(138, 99, 206, 0.7);
+  background: var(--ink-text-700);
+  border-color: var(--ink-text-700);
 }
 .btn--ghost {
   background: transparent;
   color: var(--fg-1);
-  border-color: var(--border-2);
+  border-color: var(--border-strong);
 }
 .btn--ghost:hover:not(:disabled):not(.disabled) {
-  background: rgba(255, 255, 255, 0.04);
-  border-color: rgba(255, 255, 255, 0.2);
+  background: var(--bg-1);
+  border-color: var(--ink-text-900);
 }
 .btn--link {
   background: transparent;
-  color: var(--ember-600);
+  color: var(--ember-700);
   padding: 0;
   border: none;
+  text-decoration: underline;
+  text-decoration-color: rgba(149, 58, 25, 0.35);
+  text-underline-offset: 3px;
 }
 .btn--link:hover:not(:disabled):not(.disabled) {
-  color: var(--ember-500);
-  text-decoration: underline;
+  color: var(--ember-900);
+  text-decoration-color: currentColor;
 }

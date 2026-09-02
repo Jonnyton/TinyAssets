@@ -1,172 +1,162 @@
-"""Icon generator for TinyAssets desktop application.
+"""The TinyAssets mark, and the one place its geometry lives.
 
-Generates a stylized open-book icon with a quill using Pillow.
-Color scheme: deep blue/purple background, gold/amber book.
+The mark is a ring (a universe) crossed low by a rule that runs off to the
+right (a ledger line, the site's receipt motif) with one warm dot sitting on
+the rule (the agent). Ink on paper, one accent, legible at 16 px.
+
+Every rendering of the mark comes from this module: the Windows tray ``.ico``
+(``generate_icon``), the brand exports under ``WebSite/brand/`` and
+``assets/``, the desktop and Android app icons, and the SVG the site inlines
+(``WebSite/brand/render_marks.py`` imports ``draw_mark`` and ``mark_svg``).
+Change the numbers here, re-run that script, and every surface follows.
 
 Exports
 -------
-generate_icon(output_path)
-    Render multi-size .ico to disk.
+draw_mark(size, tile=True)
+    Return a PIL Image of the mark at ``size`` px (RGBA; the tile version has
+    a rounded paper square behind the mark, the bare version is transparent).
+mark_svg(tile=True)
+    Return the same drawing as an SVG document string.
 create_icon_image(size)
-    Return a single PIL Image at the requested size.
+    Backwards-compatible alias for ``draw_mark(size)`` (tray + launcher).
+generate_icon(output_path)
+    Render the multi-size tray ``.ico``.
 """
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
+
+# ---- palette (matches WebSite/design-system/src/styles/tokens.css) ----------
+PAPER = (0xF6, 0xF1, 0xE6)  # --paper-100
+INK = (0x1E, 0x1A, 0x17)  # --ink-text-900
+ACCENT = (0xB5, 0x47, 0x1F)  # --ember-600 (terracotta)
+
+PAPER_HEX = "#f6f1e6"
+INK_HEX = "#1e1a17"
+ACCENT_HEX = "#b5471f"
+
+# ---- geometry, in a 64 x 64 box -------------------------------------------
+VIEWBOX = 64.0
+TILE_RADIUS = 14.0  # rounded corner of the paper tile
+RING_CX, RING_CY, RING_R = 32.0, 30.0, 18.5
+RING_STROKE = 5.0
+RULE_Y = 38.0
+RULE_X0, RULE_X1 = 15.5, 59.0
+RULE_STROKE = 4.0
+DOT_CX, DOT_CY, DOT_R = 32.0, 38.0, 6.0
+DOT_HALO = 2.5  # paper ring around the dot so it separates from the rule
+
+_SUPERSAMPLE = 4
+
+
+def _draw_at(size: int, tile: bool) -> Image.Image:
+    px = size * _SUPERSAMPLE
+    k = px / VIEWBOX
+    img = Image.new("RGBA", (px, px), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+
+    if tile:
+        d.rounded_rectangle(
+            [0, 0, px - 1, px - 1], radius=TILE_RADIUS * k, fill=PAPER + (255,)
+        )
+
+    # Ring.
+    w = RING_STROKE * k
+    d.ellipse(
+        [
+            (RING_CX - RING_R) * k,
+            (RING_CY - RING_R) * k,
+            (RING_CX + RING_R) * k,
+            (RING_CY + RING_R) * k,
+        ],
+        outline=INK + (255,),
+        width=max(1, round(w)),
+    )
+
+    # Rule: a flat-capped bar from inside the ring off to the right.
+    h = RULE_STROKE * k
+    d.rectangle(
+        [RULE_X0 * k, (RULE_Y * k) - h / 2, RULE_X1 * k, (RULE_Y * k) + h / 2],
+        fill=INK + (255,),
+    )
+
+    # Dot with a halo so it reads as sitting on the rule. On the tile the halo
+    # is paper; on the bare mark it is a transparent punch through the rule.
+    halo = (DOT_R + DOT_HALO) * k
+    halo_box = [DOT_CX * k - halo, DOT_CY * k - halo, DOT_CX * k + halo, DOT_CY * k + halo]
+    if tile:
+        d.ellipse(halo_box, fill=PAPER + (255,))
+    else:
+        punch = Image.new("L", (px, px), 255)
+        ImageDraw.Draw(punch).ellipse(halo_box, fill=0)
+        img.putalpha(ImageChops.darker(img.getchannel("A"), punch))
+        d = ImageDraw.Draw(img)
+    r = DOT_R * k
+    d.ellipse(
+        [DOT_CX * k - r, DOT_CY * k - r, DOT_CX * k + r, DOT_CY * k + r],
+        fill=ACCENT + (255,),
+    )
+
+    return img.resize((size, size), Image.LANCZOS)
+
+
+def draw_mark(size: int = 64, tile: bool = True) -> Image.Image:
+    """Render the mark at ``size`` px. ``tile`` adds the rounded paper square."""
+    if size < 8:
+        raise ValueError("mark size must be at least 8 px")
+    return _draw_at(int(size), bool(tile))
+
+
+def mark_svg(tile: bool = True) -> str:
+    """The same drawing as SVG (viewBox 0 0 64 64)."""
+    halo = DOT_R + DOT_HALO
+    parts = [
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" '
+        'width="64" height="64" role="img" aria-label="TinyAssets">'
+    ]
+    if tile:
+        parts.append(
+            f'<rect width="64" height="64" rx="{TILE_RADIUS:g}" fill="{PAPER_HEX}"/>'
+        )
+        rule_attrs = ""
+    else:
+        parts.append(
+            '<defs><mask id="ta-halo"><rect width="64" height="64" fill="#fff"/>'
+            f'<circle cx="{DOT_CX:g}" cy="{DOT_CY:g}" r="{halo:g}" fill="#000"/>'
+            "</mask></defs>"
+        )
+        rule_attrs = ' mask="url(#ta-halo)"'
+    parts.append(
+        f'<circle cx="{RING_CX:g}" cy="{RING_CY:g}" r="{RING_R:g}" fill="none" '
+        f'stroke="{INK_HEX}" stroke-width="{RING_STROKE:g}"/>'
+    )
+    parts.append(
+        f'<rect{rule_attrs} x="{RULE_X0:g}" y="{RULE_Y - RULE_STROKE / 2:g}" '
+        f'width="{RULE_X1 - RULE_X0:g}" height="{RULE_STROKE:g}" fill="{INK_HEX}"/>'
+    )
+    if tile:
+        parts.append(
+            f'<circle cx="{DOT_CX:g}" cy="{DOT_CY:g}" r="{halo:g}" fill="{PAPER_HEX}"/>'
+        )
+    parts.append(
+        f'<circle cx="{DOT_CX:g}" cy="{DOT_CY:g}" r="{DOT_R:g}" fill="{ACCENT_HEX}"/>'
+    )
+    parts.append("</svg>")
+    return "".join(parts) + "\n"
 
 
 def create_icon_image(size: int = 64) -> Image.Image:
-    """Create a branded TinyAssets icon at the given pixel size.
-
-    Draws a stylized open book with a quill pen on a deep blue-purple
-    background with gold/amber accents.
-    """
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-
-    # Background: rounded-feel circle with deep blue-purple gradient effect
-    bg_color = (30, 27, 75)  # deep indigo
-    draw.ellipse([0, 0, size - 1, size - 1], fill=bg_color)
-
-    # Inner glow ring
-    margin = max(1, size // 16)
-    glow_color = (55, 48, 110)
-    draw.ellipse(
-        [margin, margin, size - 1 - margin, size - 1 - margin],
-        fill=glow_color,
-    )
-
-    # Book colors
-    gold = (218, 165, 32)       # book cover / spine
-    page_color = (245, 235, 210)  # pages
-    quill_color = (255, 215, 0)   # quill highlight
-
-    cx, cy = size / 2, size / 2
-
-    # --- Open book (two pages) ---
-    # Left page
-    left_page = [
-        (cx - size * 0.35, cy - size * 0.12),
-        (cx - size * 0.04, cy - size * 0.18),
-        (cx - size * 0.04, cy + size * 0.22),
-        (cx - size * 0.35, cy + size * 0.16),
-    ]
-    draw.polygon(left_page, fill=page_color, outline=gold)
-
-    # Right page
-    right_page = [
-        (cx + size * 0.35, cy - size * 0.12),
-        (cx + size * 0.04, cy - size * 0.18),
-        (cx + size * 0.04, cy + size * 0.22),
-        (cx + size * 0.35, cy + size * 0.16),
-    ]
-    draw.polygon(right_page, fill=page_color, outline=gold)
-
-    # Spine line
-    spine_width = max(1, size // 32)
-    draw.line(
-        [(cx, cy - size * 0.20), (cx, cy + size * 0.24)],
-        fill=gold,
-        width=spine_width,
-    )
-
-    # Page lines on left page (text illusion)
-    line_width = max(1, size // 64)
-    for i in range(3):
-        y_off = cy - size * 0.06 + i * size * 0.07
-        x_start = cx - size * 0.30
-        x_end = cx - size * 0.08
-        draw.line(
-            [(x_start, y_off), (x_end, y_off)],
-            fill=(180, 160, 120),
-            width=line_width,
-        )
-
-    # Page lines on right page
-    for i in range(3):
-        y_off = cy - size * 0.06 + i * size * 0.07
-        x_start = cx + size * 0.08
-        x_end = cx + size * 0.30
-        draw.line(
-            [(x_start, y_off), (x_end, y_off)],
-            fill=(180, 160, 120),
-            width=line_width,
-        )
-
-    # --- Quill pen (diagonal from upper-right) ---
-    quill_width = max(1, size // 20)
-
-    # Quill shaft
-    tip_x = cx + size * 0.05
-    tip_y = cy + size * 0.10
-    end_x = cx + size * 0.38
-    end_y = cy - size * 0.35
-
-    draw.line(
-        [(tip_x, tip_y), (end_x, end_y)],
-        fill=quill_color,
-        width=quill_width,
-    )
-
-    # Feather vanes (two small triangles on shaft)
-    angle = math.atan2(end_y - tip_y, end_x - tip_x)
-    perp_angle = angle + math.pi / 2
-    mid_x = (tip_x + end_x) * 0.65 + end_x * 0.35
-    mid_y = (tip_y + end_y) * 0.65 + end_y * 0.35
-
-    feather_len = size * 0.10
-    fx1 = mid_x + feather_len * math.cos(perp_angle)
-    fy1 = mid_y + feather_len * math.sin(perp_angle)
-    fx2 = mid_x - feather_len * math.cos(perp_angle)
-    fy2 = mid_y - feather_len * math.sin(perp_angle)
-
-    # Upper feather vane
-    upper_tip_x = mid_x + size * 0.06 * math.cos(angle)
-    upper_tip_y = mid_y + size * 0.06 * math.sin(angle)
-    draw.polygon(
-        [(mid_x, mid_y), (fx1, fy1), (upper_tip_x, upper_tip_y)],
-        fill=(200, 180, 50),
-    )
-    # Lower feather vane
-    draw.polygon(
-        [(mid_x, mid_y), (fx2, fy2), (upper_tip_x, upper_tip_y)],
-        fill=(180, 155, 40),
-    )
-
-    # Nib (small triangle at writing end)
-    nib_len = size * 0.04
-    nib_x = tip_x - nib_len * math.cos(angle)
-    nib_y = tip_y - nib_len * math.sin(angle)
-    nib_w = size * 0.02
-    draw.polygon(
-        [
-            (nib_x, nib_y),
-            (tip_x + nib_w * math.cos(perp_angle), tip_y + nib_w * math.sin(perp_angle)),
-            (tip_x - nib_w * math.cos(perp_angle), tip_y - nib_w * math.sin(perp_angle)),
-        ],
-        fill=(60, 40, 20),
-    )
-
-    return img.convert("RGB")
+    """Create the TinyAssets icon at the given pixel size (paper tile)."""
+    return draw_mark(size, tile=True)
 
 
 def generate_icon(output_path: str | Path | None = None) -> Path:
-    """Generate a multi-size .ico file.
+    """Generate the multi-size tray ``.ico`` (16, 32, 48, 256).
 
-    Parameters
-    ----------
-    output_path : str or Path, optional
-        Where to write the .ico file.  Defaults to
-        ``tinyassets/desktop/app.ico``.
-
-    Returns
-    -------
-    Path
-        The path to the generated .ico file.
+    Defaults to ``tinyassets/desktop/app.ico``.
     """
     if output_path is None:
         output_path = Path(__file__).parent / "app.ico"
@@ -175,13 +165,14 @@ def generate_icon(output_path: str | Path | None = None) -> Path:
 
     sizes = [16, 32, 48, 256]
     images = [create_icon_image(s) for s in sizes]
-
-    # ICO format: save the largest, append the rest
     images[-1].save(
         output_path,
         format="ICO",
         sizes=[(s, s) for s in sizes],
         append_images=images[:-1],
     )
-
     return output_path
+
+
+if __name__ == "__main__":  # pragma: no cover
+    print(generate_icon())

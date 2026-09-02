@@ -1,18 +1,11 @@
 import type { Metadata } from "next";
-import GoalsClient from "./_components/GoalsClient";
-import styles from "./page.module.css";
+import { Moved } from "../_components/Moved";
 
 export const metadata: Metadata = {
-  title: "Goals — dated public examples",
-  description:
-    "A dated, checked-in snapshot of public goals on Tiny. A goal is an outcome; workflows compete to serve it; evidence-gated ladders make the outcome checkable.",
-  alternates: { canonical: "https://tinyassets.io/goals" },
+  title: "Moved",
+  robots: { index: false, follow: true },
 };
 
-export default function GoalsPage() {
-  return (
-    <div className={styles.page}>
-      <GoalsClient />
-    </div>
-  );
+export default function Page() {
+  return <Moved to="/commons/" name="Commons" line="Public goals became shapes in the commons." />;
 }

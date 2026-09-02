@@ -34,7 +34,7 @@ WORKFLOWS = {
     "observation": "uptime-canary.yml",
     "tier3": "tier3-oss-clone-nightly.yml",
     "deploy_prod": "deploy-prod.yml",
-    "deploy_site": "deploy-site.yml",
+    "deploy_site": "deploy-site-react.yml",
 }
 
 P0_OUTAGE_LABEL = "p0-outage"

@@ -1,86 +1,63 @@
 # Deploy `tinyassets.io`
 
-**Current production:** `WebSite/site-react/` (React/Next static export),
-published manually by `.github/workflows/deploy-site-react.yml`.
+**Production source:** `WebSite/site-react/` (Next.js static export), published
+manually by `.github/workflows/deploy-site-react.yml`. A merge to `main` does
+not deploy the site.
 
-**Retained rollback:** `WebSite/site/` (SvelteKit static build), published only
-by an explicit dispatch of `.github/workflows/deploy-site.yml`.
-
-Both workflows deploy to the same `github-pages` environment and share the
-`pages` concurrency group. Never run them concurrently. Neither source merge is
-deployment proof.
+The Svelte rollback tree and its `deploy-site.yml` were retired on 2026-09-02.
+Rolling back now means dispatching `deploy-site-react` on an earlier revision
+of `main`.
 
 ## Before a production deployment
 
-1. Make production edits in React first and build them:
+1. Build the design system, then the site:
 
    ```powershell
-   cd WebSite/site-react
+   cd WebSite/design-system
    npm ci
+   npm run build
+   cd ../site-react
+   npm ci
+   npm test
    npm run build
    ```
 
-2. Review the React development and production-exact previews described in
-   `WebSite/site-react/PREVIEW.md`.
-3. Mirror the intended user-visible behavior into the retained Svelte rollback
-   tree and verify it:
+2. Run the rendered sweep over the export and read the screenshots:
 
    ```powershell
-   cd WebSite/site
-   npm ci
-   npm run check
-   npm run build
+   python scripts/sweep.py --shots ../../out-shots
    ```
 
-4. Review the relevant Svelte rollback routes through `WebSite/preview.bat`.
-5. Merge the approved source through the normal review path.
+3. Check the live-data surfaces on `npm run dev` (which proxies `/mcp`): the
+   commons list and the fine-print reachability strip must render readable
+   records or an explicit, labelled empty or failed state after `Refresh MCP`.
+4. Merge the reviewed pull request through the normal path.
 
-The Svelte parity check protects rollback quality. It does not replace the
-React production build or authorize a Svelte deployment.
-
-## Publish the React production site
+## Publish
 
 1. Open GitHub Actions and select `deploy-site-react`.
-2. Choose the merged production revision.
+2. Choose the merged revision.
 3. Run the workflow with `confirm` set to `deploy`.
 4. Confirm the build job produces `WebSite/site-react/out` and the deploy job
    succeeds in the `github-pages` environment.
-5. Record the deployed source identity. A green merge or local build alone is
-   not a shipped result.
+5. Record the deployed revision. A green merge or a local build alone is not a
+   shipped result.
 
 ## Verify production
 
-Run the public MCP canary after the deployment:
-
 ```powershell
 python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp
+python scripts/deployed_sha.py --assert-contains <sha>
 ```
 
 Then load `https://tinyassets.io/` in a browser and exercise the routes and
-controls changed by the deployment. Verify rendered content, navigation,
-console errors, and meaningful live-data or explicit empty states.
+controls the deployment changed: rendered content, navigation, console errors,
+and meaningful live data or explicit empty states. Deployment evidence is the
+workflow result, the deployed revision, the public canary, and the rendered
+browser result.
 
-Deployment evidence is the workflow result, deployed source identity, public
-canary, and rendered browser result. Platform uptime evidence must be labeled
-separately from user-workflow activity. Do not substitute a community-watch
-signal or workflow-activity card for deployment verification.
+## Roll back
 
-## Roll back to Svelte
-
-Use the Svelte workflow only when an explicit production rollback is required.
-
-1. Select a revision whose Svelte tree has the required parity.
-2. Run `npm run check` and `npm run build` in `WebSite/site`.
-3. Dispatch `deploy-site` with `refresh_snapshot=false`. Full snapshot
-   regeneration is intentionally disabled until an audience-safe publication
-   manifest exists; retain the checked-in vetted snapshot.
-4. Re-run the public canary and rendered browser checks.
-5. Fix the React production source first, restore Svelte parity, and manually
-   redeploy React through `deploy-site-react`.
-
-Do not add push or schedule triggers to `deploy-site.yml`. Svelte is a
-dispatch-only rollback artifact, not the current deployment owner.
-
-The dated operational history and workflow rationale remain in
-`docs/runbooks/2026-06-24-site-react-cutover.md`, updated to reflect the
-completed cutover.
+Dispatch `deploy-site-react` with `confirm: deploy` on the last good revision
+of `main`, then re-run the canary and rendered checks. Fix forward on `main`
+and redeploy.
