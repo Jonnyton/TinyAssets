@@ -94,15 +94,14 @@ _MULTI_VALUE_AUTH_SCHEMES = frozenset(_MULTI_VALUE_FIELD_NAMES)
 _MAX_URL_CHARS = 300
 _SAFE_URL_RE = re.compile(r"^https://[^\s/@]+(?:/[^\s]*)?$")
 _MAX_ANSWER_CHARS = 2000
-#: An agent-requested grant stays narrow; a broader one is a deliberate manual
-#: deposit, chosen by a person in the explicit form.
-_MAX_REQUEST_METHODS = 2
-#: Enough for a real multi-call flow (a GitHub PR needs three) without
-#: becoming a way to ask for a whole API in one go.
-_MAX_REQUEST_ENDPOINTS = 6
-#: Git scopes one ask may carry. A workspace job names the repositories it works
-#: on; a list longer than this is a portfolio, not a job.
-_MAX_REQUEST_GIT_SCOPES = 6
+#: Every verb the egress layer knows. The owner reads each one on the tab and
+#: decides; a cap below the full set only made the agent raise a second ask.
+_MAX_REQUEST_METHODS = 5
+#: Bounded because the rail renders these to a person, not to keep an ask
+#: small: the owner decides what is too much (founder 2026-09-02, on limits).
+_MAX_REQUEST_ENDPOINTS = 40
+#: Git scopes one ask may carry.
+_MAX_REQUEST_GIT_SCOPES = 40
 
 #: An unbroken run this long is a credential, not prose. Feedback is free text
 #: stored in the clear, so it gets the same screen the resolver applies.

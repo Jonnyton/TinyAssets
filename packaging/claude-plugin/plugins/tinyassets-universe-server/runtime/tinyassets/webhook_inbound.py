@@ -40,13 +40,13 @@ logger = logging.getLogger(__name__)
 MAX_BODY_BYTES = 256 * 1024
 
 #: Per-token rate limit: a channel that fires a webhook storm cannot enqueue unbounded runs.
-_RATE_MAX = 60
+_RATE_MAX = 600
 _RATE_WINDOW_S = 60.0
 
 #: Per-universe aggregate cap over the same window: many tokens minted by one universe
 #: cannot together exceed this (Codex #3 — minting had no aggregate quota). Set comfortably
 #: above the per-token cap so a single well-behaved token is never starved.
-_UNIVERSE_RATE_MAX = 600
+_UNIVERSE_RATE_MAX = 6000
 
 #: Concurrency (not rate) back-pressure (Codex #5): the max number of in-flight (queued or
 #: running) inbound-triggered runs one universe may have at once. Beyond this the receiver

@@ -66,16 +66,22 @@ _REMIX_CAPABILITIES = ("read", "list", "write", "costly")
 
 #: Effect-spam rate limit for run_graph (Codex gate #5): at most this many
 #: engine-triggered runs per universe per rolling window.
+#:
+#: Sized from the founder's OWN usage (2026-09-02): deleting 56 probe branches
+#: and renaming one graph -- ordinary housekeeping in their own universe, on a
+#: day they described as light use -- hit the previous 20-per-hour engine cap
+#: mid-sweep. A per-user cap a light user reaches is a shape defect, not a
+#: safety property: the only platform invariant is not affecting OTHER users,
+#: and every one of these runs on the owner's own subscription. Cross-user
+#: capacity (provider slots, memory) is bounded elsewhere.
 _RUN_GRAPH_RATE_WINDOW_S = 3600
-_RUN_GRAPH_RATE_MAX = 20
+_RUN_GRAPH_RATE_MAX = 300
 # Runs of ANY kind (reads included) per window. Reads are reclassified off the
 # write budget once they prove they wrote nothing (tinyassets.engine_admissions),
 # but a loop of read-only runs is still bounded here: run_graph returns as soon
 # as the run is QUEUED, so this is what bounds compute on the owner's
-# subscription. Arithmetic: the concern's GitHub job is 5 runs plus up to 5
-# write_graph retunes = 10 admissions; with one full retry, 20; 60 leaves 3x
-# that. Every one of those 60 still runs on the owner's own subscription.
-_RUN_GRAPH_TOTAL_MAX = 60
+# subscription. Engine writes (write_graph, remix, brain) get two thirds of it.
+_RUN_GRAPH_TOTAL_MAX = 900
 
 
 def _bearer_ok(authorization_header, secret) -> bool:
@@ -765,7 +771,7 @@ _SERVED_PATCH_UPDATE_NODE_ALLOWED = frozenset({
 _SERVED_PATCH_STR_SETTERS = {
     "set_name": "name", "set_description": "description", "set_goal": "goal_id",
 }
-_SERVED_MAX_PATCH_OPS = 100
+_SERVED_MAX_PATCH_OPS = 1000
 
 
 def _sanitize_served_patch_changes(changes: object) -> str:

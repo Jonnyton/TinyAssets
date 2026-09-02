@@ -96,7 +96,7 @@ _MAX_SHAPE_ENTRIES = 40
 _MAX_HINTS = 20
 
 #: An inferred grant stays narrow; a broader one is a deliberate manual choice.
-_MAX_INFERRED_METHODS = 2
+_MAX_INFERRED_METHODS = 5
 
 #: A hint must look like a host or a URL. Anything else is a place a secret
 #: could hide, so it is refused rather than trimmed.

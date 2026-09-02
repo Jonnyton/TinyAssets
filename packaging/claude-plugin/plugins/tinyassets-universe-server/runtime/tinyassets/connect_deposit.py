@@ -524,7 +524,7 @@ def _result_page(*, ok: bool, heading: str, message: str) -> str:
 # security boundary.
 _DEPOSIT_RATE_LOCK = threading.Lock()
 _DEPOSIT_ATTEMPTS: dict[str, deque] = {}
-_DEPOSIT_RATE_MAX = 12       # deposit POSTs allowed per window per sub
+_DEPOSIT_RATE_MAX = 60       # deposit POSTs allowed per window per sub
 _DEPOSIT_RATE_WINDOW = 60.0  # seconds
 _DEPOSIT_RATE_MAX_SUBS = 4096  # bound the table
 

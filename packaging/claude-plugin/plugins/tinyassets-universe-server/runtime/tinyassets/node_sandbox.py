@@ -123,7 +123,7 @@ MAX_STDERR_BYTES = 64 * 1024
 MAX_USER_PRINT_BYTES = 64 * 1024
 
 #: How many ``invoke_mcp_action`` round-trips one node may make.
-MAX_RPC_CALLS = 32
+MAX_RPC_CALLS = 500
 
 #: Bound on a single RPC reply written back to the child.
 MAX_RPC_REPLY_BYTES = 1024 * 1024
@@ -142,7 +142,7 @@ WORKSPACE_MOUNT_POINT = "/workspace"
 
 #: Workspace caps (design D2 / graph-execution-substrate): per NODE, not per
 #: command, so a loop of small commands is bounded by the same numbers.
-MAX_WORKSPACE_COMMANDS = 64
+MAX_WORKSPACE_COMMANDS = 1000
 MAX_WORKSPACE_OUTPUT_BYTES = 1024 * 1024
 MAX_WORKSPACE_READ_BYTES = 1024 * 1024
 MAX_WORKSPACE_GLOB_RESULTS = 10_000

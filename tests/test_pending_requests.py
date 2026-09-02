@@ -247,7 +247,9 @@ def test_answering_deposits_under_the_policy_on_the_request(base):
     {"action": dict(_CRED["action"], path_template="")},
     {"action": dict(_CRED["action"], path_template="/{rest+}")},
     {"action": dict(_CRED["action"], host="https://api.github.com")},
-    {"action": dict(_CRED["action"], methods=["GET", "POST", "PUT"])},
+    # Every verb the egress layer knows is askable now (founder 2026-09-02, on
+    # limits); a verb it does not know is still refused.
+    {"action": dict(_CRED["action"], methods=["GET", "OPTIONS"])},
     {"action": dict(_CRED["action"], destination="GitHub PR")},
 ])
 def test_a_tab_the_deposit_could_not_honour_never_reaches_the_user(base, over):

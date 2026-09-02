@@ -105,7 +105,7 @@ _EDITABLE_EVALUATOR_PATHS: frozenset[str] = frozenset({
 #: Hard ceiling on a serialized draft definition. A draft is a document, not a
 #: data store; without a bound one session can exhaust the store.
 MAX_DEFINITION_BYTES = 512 * 1024
-MAX_OPERATIONS_PER_BATCH = 200
+MAX_OPERATIONS_PER_BATCH = 2000
 
 _PATH_SEGMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)((?:\[\d+\])*)$")
 

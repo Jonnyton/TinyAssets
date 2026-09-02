@@ -305,7 +305,7 @@ class EffectFailedError(Exception):
 _READ_VERBS = frozenset({"GET", "HEAD"})
 
 #: Per-root-run usage budgets (defaults; tier-raisable, never a shape rule).
-RUN_DISPATCHES_MAX = 500
+RUN_DISPATCHES_MAX = 5000
 RUN_BYTES_MAX = 256 * 1024 * 1024
 #: Charged when a delivered call did not report its sizes: the per-call caps.
 _UNKNOWN_REQUEST_BYTES = 8 * 1024 * 1024
