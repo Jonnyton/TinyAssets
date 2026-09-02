@@ -34,6 +34,9 @@
     .btn--ghost{background:var(--surface-2);color:var(--ink);border:1px solid var(--line)}
     .btn--link{background:none;color:var(--accent);padding:.4rem .3rem;font-size:.88rem}
     .btn--link:hover{text-decoration:underline}
+    .btn--danger{background:var(--err);color:#fff;font-weight:600}
+    .danger-zone{margin-top:1.5rem;border:1px solid var(--err);border-radius:var(--radius);padding:1rem 1.1rem}
+    .danger-zone h3{margin:0 0 .5rem}
     .btn:disabled{opacity:.5;cursor:default}
     /* chat */
     .chat-header{display:flex;align-items:center;justify-content:space-between;padding:.8rem 1rem;
@@ -153,6 +156,7 @@
         </div>
         <nav class="chat-actions">
           <button id="btn-plan" class="btn btn--link" hidden>Plan</button>
+          <button id="btn-account" class="btn btn--link">Account</button>
           <button id="btn-signout" class="btn btn--link">Sign out</button>
         </nav>
       </header>
@@ -183,10 +187,39 @@
     </section>
 
     <!-- Connect subscription (secondary). -->
+    <!-- Account: who you are here, and the in-app deletion path Google Play
+         requires (mirrored on tinyassets.io/account for the web). -->
+    <section id="view-account" class="view view--connect" hidden>
+      <header class="chat-header">
+        <div class="chat-title">Your account</div>
+        <nav class="chat-actions">
+          <button id="btn-account-back" class="btn btn--link">Back</button>
+        </nav>
+      </header>
+      <div class="connect-body">
+        <p>Your account is your sign-in plus the one universe bound to it. There is nothing
+        else to manage here yet — no separate website account, no profile.</p>
+        <div class="danger-zone">
+          <h3>Delete your account</h3>
+          <p>This deletes your universe — its memory, your conversation history, and any
+          subscription credential you deposited — cancels a paid plan immediately, and
+          removes your sign-in. It happens right away and cannot be undone.</p>
+          <p class="muted">Kept: content-free audit records keyed by an opaque id, invoices at
+          our payment processor, and nightly backups until they rotate out. The full list is
+          at tinyassets.io/account.</p>
+          <label class="field"><span>Type DELETE to confirm</span>
+            <input id="delete-confirm" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" /></label>
+          <button id="btn-delete-account" class="btn btn--danger" disabled>Delete my account</button>
+          <div id="delete-status" class="notice" role="status"></div>
+        </div>
+      </div>
+    </section>
+
     <section id="view-connect" class="view view--connect" hidden>
       <header class="chat-header">
         <div class="chat-title">Connect your subscription</div>
         <nav class="chat-actions">
+          <button id="btn-connect-account" class="btn btn--link">Account</button>
           <button id="btn-connect-back" class="btn btn--link">Back to chat</button>
         </nav>
       </header>
@@ -948,7 +981,7 @@
 
   // ---- UI ----
   const $=(id)=>document.getElementById(id);
-  const views={signin:$("view-signin"),chat:$("view-chat"),connect:$("view-connect")};
+  const views={signin:$("view-signin"),chat:$("view-chat"),connect:$("view-connect"),account:$("view-account")};
   function showView(n){ for(const k in views) views[k].hidden=(k!==n); }
   let hasMessages=false, statusTimer=null;
 
@@ -1355,7 +1388,11 @@
 
   function renderPlan(){
     const b = $("btn-plan");
-    if(!b || !PLAN) return;
+    // Inside the Android shell the plan/checkout UI stays hidden: a digital
+    // subscription bought inside a Play-installed app must use Play Billing,
+    // so the app is a consumption-only client of a plan bought on the web
+    // (docs/ops/google-play-launch.md §8).
+    if(!b || !PLAN || NATIVE) return;
     b.hidden = false;
     const ending = planEndsOn();
     if(PLAN.tier === "paid"){
@@ -1787,6 +1824,38 @@
     $("btn-rail-add").addEventListener("click",()=>showConnect(false));
     $("btn-connect-back").addEventListener("click",()=>{ showView("chat"); startHeartbeat(); loadPlan(); });
     $("btn-signout").addEventListener("click",async()=>{ sessionStorage.setItem("ta_force_login","1"); await endServerSession(); enterSignedOut(); });
+    // ---- account / deletion (the in-app path Google Play requires) ----
+    function showAccount(){ $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); }
+    function leaveAccount(){ if(engineConnected===true){ showView("chat"); startHeartbeat(); } else { showConnect(true); } }
+    $("btn-account").addEventListener("click", showAccount);
+    $("btn-connect-account").addEventListener("click", showAccount);
+    $("btn-account-back").addEventListener("click", leaveAccount);
+    $("delete-confirm").addEventListener("input",(e)=>{ $("btn-delete-account").disabled = e.target.value.trim()!=="DELETE"; });
+    $("btn-delete-account").addEventListener("click", deleteAccount);
+    async function deleteAccount(){
+      const btn=$("btn-delete-account"), st=$("delete-status");
+      if($("delete-confirm").value.trim()!=="DELETE") return;
+      btn.disabled=true; st.textContent="Deleting your account…";
+      const post=async()=>{ const h=authHeaders(); h["Content-Type"]="application/json";
+        return fetch("/mcp/app/account/delete",{method:"POST",credentials:"same-origin",headers:h,
+          body:JSON.stringify({confirm:"DELETE",session_ref:sessionRef()||undefined})}); };
+      try{
+        await ensureFreshToken();
+        let r = await post();
+        if(r.status===401 && await refreshAccessToken()) r = await post();
+        if(r.status===401){ sessionExpired(); return; }
+        const body = await r.json().catch(()=>({}));
+        if(!r.ok || body.deleted!==true){
+          st.textContent="Couldn't delete your account just now ("+(body.error||("HTTP "+r.status))+"). Try again, or email legal@tinyassets.io and we'll do it by hand.";
+          btn.disabled=false; return;
+        }
+        sessionStorage.setItem("ta_force_login","1"); clearSessionRef(); enterSignedOut();
+        let note="Your account and universe were deleted.";
+        if(body.identity!=="deleted") note+=" Your sign-in identity couldn't be removed automatically — email legal@tinyassets.io and we'll finish it.";
+        if(body.billing==="error"||body.billing==="unavailable") note+=" We couldn't reach the payment processor to cancel a paid plan — email legal@tinyassets.io so we can.";
+        $("signin-notice").textContent=note;
+      }catch(_e){ st.textContent="Couldn't reach the server. Try again in a moment."; btn.disabled=false; }
+    }
     $("btn-deposit").addEventListener("click",async()=>{
       const service=$("connect-service").value, out=$("connect-result");
       const materialEl=$("connect-material"), material=materialEl.value.trim(), btn=$("btn-deposit");

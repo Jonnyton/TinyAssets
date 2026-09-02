@@ -10,14 +10,18 @@ after ``npx cap add android`` — the same post-generate shape as
 ``add_app_scheme.py``.
 
 Fails loudly (exit 1) when the generated project carries an icon/splash PNG we
-have no replacement for, or when a replacement's pixel size differs from the
-template's file — a silently wrong-sized resource is exactly what Play's
-pre-launch report would flag later.
+have no replacement for, when a replacement's pixel size differs from the
+template's file, or when the manifest no longer points its launcher icon at
+``@mipmap/ic_launcher`` / ``@mipmap/ic_launcher_round`` — replacing files the
+manifest does not reference would report success and ship the template icon
+(Codex 2026-09-02). A silently wrong resource is exactly what Play's pre-launch
+report would flag later.
 
 Run from ``mobile/``: ``python3 scripts/add_app_icons.py``
 """
 from __future__ import annotations
 
+import re
 import shutil
 import struct
 import sys
@@ -25,8 +29,14 @@ from pathlib import Path
 
 MOBILE = Path(__file__).resolve().parents[1]
 RES = MOBILE / "android" / "app" / "src" / "main" / "res"
+MANIFEST = MOBILE / "android" / "app" / "src" / "main" / "AndroidManifest.xml"
 SRC = MOBILE / "resources" / "android"
 BACKGROUND = "#0B0B0F"  # matches capacitor.config.json android.backgroundColor
+# The manifest attributes that decide which resources the launcher actually shows.
+MANIFEST_ICON_REFS = (
+    ("android:icon", "@mipmap/ic_launcher"),
+    ("android:roundIcon", "@mipmap/ic_launcher_round"),
+)
 
 ADAPTIVE_ICON = """<?xml version="1.0" encoding="utf-8"?>
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
@@ -62,12 +72,35 @@ def is_target(rel: Path) -> bool:
     return False
 
 
+def manifest_icon_problems(manifest_text: str) -> list[str]:
+    """Every way the manifest could stop referencing the icons we install."""
+    problems: list[str] = []
+    for attr, want in MANIFEST_ICON_REFS:
+        found = re.search(rf'{re.escape(attr)}="([^"]*)"', manifest_text)
+        have = found.group(1) if found else None
+        if have != want:
+            problems.append(
+                f"AndroidManifest.xml {attr} is {have!r}, expected {want!r} — "
+                "the template changed; the pre-rendered icons would go unused"
+            )
+    return problems
+
+
 def main() -> int:
     if not RES.is_dir():
         print(f"error: {RES} missing — run `npx cap add android` first", file=sys.stderr)
         return 1
     if not SRC.is_dir():
         print(f"error: {SRC} missing — render it with scripts/render_app_icons.py", file=sys.stderr)
+        return 1
+    if not MANIFEST.is_file():
+        print(f"error: {MANIFEST} missing — template changed?", file=sys.stderr)
+        return 1
+    manifest_problems = manifest_icon_problems(MANIFEST.read_text(encoding="utf-8"))
+    if manifest_problems:
+        print("error: icon install aborted:", file=sys.stderr)
+        for p in manifest_problems:
+            print("  - " + p, file=sys.stderr)
         return 1
 
     targets = sorted(p for p in RES.rglob("*.png") if is_target(p.relative_to(RES)))

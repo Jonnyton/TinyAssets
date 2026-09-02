@@ -169,6 +169,7 @@ def test_route_is_mcp_app_get(monkeypatch):
         "/mcp/app/serving/bind",
         "/mcp/app/billing/status", "/mcp/app/billing/checkout",
         "/mcp/app/billing/cancel", "/mcp/app/billing/webhook",
+        "/mcp/app/account/delete",
     }
     assert "GET" in by_path["/mcp/app"].methods
     assert "GET" in by_path["/mcp/app/billing/status"].methods
@@ -178,7 +179,7 @@ def test_route_is_mcp_app_get(monkeypatch):
         "/mcp/app/openai/begin", "/mcp/app/openai/exchange", "/mcp/app/trace",
         "/mcp/app/serving/bind",
         "/mcp/app/billing/checkout", "/mcp/app/billing/cancel",
-        "/mcp/app/billing/webhook",
+        "/mcp/app/billing/webhook", "/mcp/app/account/delete",
     ):
         assert "POST" in by_path[post_only].methods
         assert "GET" not in by_path[post_only].methods
@@ -1326,3 +1327,12 @@ def test_a_credential_link_shows_where_it_goes_and_cannot_reach_back() -> None:
     page, _csp = render_app_html()
     assert 'new URL(f.url).host' in page, "the link does not show its host"
     assert '"noopener noreferrer"' in page
+
+
+def test_the_android_shell_shows_no_checkout_ui():
+    """Play's payments policy: a subscription sold inside a Play-installed app must use
+    Play Billing, so the native shell must never surface the Stripe plan/checkout UI."""
+    from pathlib import Path
+
+    html = (Path(onboarding.__file__).parent / "app.html").read_text(encoding="utf-8")
+    assert "if(!b || !PLAN || NATIVE) return;" in html

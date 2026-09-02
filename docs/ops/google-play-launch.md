@@ -1,9 +1,10 @@
 # Google Play launch — drive-everything runbook
 
 Everything needed to publish the TinyAssets Android app to Google Play, staged so
-the founder's only actions are: (1) create the Play Console account, (2) authorize
-the $25 one-time fee, (3) provide the upload keystore as a repo secret, and (4)
-click "roll out" after review. All content below is copy-paste ready.
+the founder's own actions are: (1) add the four upload-keystore secrets (one command,
+§3), (2) say "yes" in chat before the agent creates the app and its forms in the Play
+Console on the founder's Google account, (3) try the internal-test build on a phone,
+and (4) click **Roll out** after review. All content below is copy-paste ready.
 
 Package name (permanent once published): **`io.tinyassets.app`**
 (`mobile/capacitor.config.json`). App is the Capacitor shell over
@@ -18,7 +19,9 @@ Package name (permanent once published): **`io.tinyassets.app`**
 | Account | ~~Create a Google Play Developer account.~~ **Done** — developer `8089695267825659874`, identity verified 2026-08-24 (Play Console mail). | https://play.google.com/console/developers/8089695267825659874 |
 | Payment | ~~Authorize the $25 fee.~~ **Done** with the account. | — |
 | Signing key | The keystore is generated (§2, 2026-09-01). **Add its 4 values as repo secrets** — one command, §3. An agent cannot: `gh secret set` is denied to it. | your machine → GitHub secrets |
-| Publish | After the AAB uploads + review passes, click **Roll out**. | Play Console |
+| Console forms | Creating the app, its declarations (incl. US export laws), listing, Data safety, content rating and the internal-testing release are **form submissions on your Google account**: the agent drives them in the browser only after an explicit "yes" in chat. Nothing exists in the Console until then. | Play Console (agent, gated on your yes) |
+| Device check | Install the internal-test build from its opt-in link, sign in, chat once. | your phone |
+| Publish | Promote to Production → submit for review → click **Roll out**. | Play Console |
 
 Everything else below I build/stage.
 
@@ -150,30 +153,54 @@ Get started in seconds — sign in and say hello to your universe.
 ## 5. Privacy policy
 
 Play requires a public privacy-policy URL. The site's `/legal` page is the home for
-it; this change adds a Play-compliant privacy section there (what's collected: a
-sign-in identity via WorkOS, and the AI credential you deposit; how it's used;
-that it's not sold; deletion path). Confirm `https://tinyassets.io/legal` renders
-the privacy section before submitting.
+it (`WebSite/site-react/app/legal/page.tsx`, deployed by the manual
+`deploy-site-react.yml`). Its Privacy section now carries the four paragraphs Play's
+policy asks for — what is collected (email, user id, messages, files, deposited
+credential, billing records), who receives it (WorkOS, the user's own AI provider,
+Stripe, hosting), how it is protected (honest about the vault not being encrypted
+at rest and about the chatbot deposit path), and retention + deletion (immediate,
+in-app and at `/account`, email fallback within 30 days).
+
+Play also requires an **account-deletion path in-app and on the web** for any app
+with sign-in. Both exist as of 2026-09-02: the app's **Account → Delete my
+account** view (`POST /mcp/app/account/delete` → `tinyassets.account_deletion`)
+and `https://tinyassets.io/account`, which documents the steps, what is removed,
+what is kept, and the email route. Confirm `https://tinyassets.io/legal#app-data`
+and `https://tinyassets.io/account` render before submitting.
 
 ---
 
 ## 6. Data safety form (Play Console → App content → Data safety)
 
-Answer exactly:
+Play's taxonomy, not ours. Answer exactly:
 
 - **Does your app collect or share user data?** Yes.
-- **Data types collected:**
-  - *Personal info → Email address / User IDs* — collected, for **App
-    functionality** + **Account management**. Not shared. Processed on the
-    server. Required (sign-in).
-  - *App activity → other user-generated content* (the messages you send your
-    universe) — collected, for **App functionality**. Not shared.
-  - *Credentials* — the AI provider credential you deposit is stored in a secure
-    vault for **App functionality**; not shared; never used for ads.
-- **Is all data encrypted in transit?** Yes.
-- **Do you provide a way to request data deletion?** Yes — via the contact email /
-  account sign-out + deletion request.
+- **Is all of the user data collected by your app encrypted in transit?** Yes.
+- **Do you provide a way for users to request that their data is deleted?** Yes.
+- **Account creation:** Yes, the app lets users create an account (sign-in via
+  WorkOS AuthKit). **Account deletion URL:** `https://tinyassets.io/account`.
+  Deleting the account deletes all associated data → answer that no separate
+  partial-deletion option is offered.
+- **Data types collected** — each one *Collected*, *Not shared*, *Required*, *not
+  ephemeral*, with these purposes:
+
+  | Play category → data type | What it is here | Purposes |
+  |---|---|---|
+  | Personal info → **Email address** | sign-in email | App functionality, Account management |
+  | Personal info → **User IDs** | WorkOS user id | App functionality, Account management |
+  | Messages → **Other in-app messages** | what you say to your universe | App functionality |
+  | Files and docs → **Files and docs** | attachments you send it | App functionality |
+  | App activity → **Other user-generated content** | the AI-provider credential you deposit (Play has no "credentials" type; this is its category for user-entered content that fits nowhere else) | App functionality |
+
+  Do **not** declare Financial info → Purchase history unless the paid plan is
+  bought inside the Android app (see §8, payments).
+- **Shared with third parties?** No, for every type. WorkOS, Stripe and the
+  hosting provider act as service providers on our behalf, which Play does not
+  count as sharing; the AI provider receives messages only because the user
+  connected their own account to it — a user-initiated transfer, also excluded.
 - **Data sold?** No. **Used for ads?** No.
+- **Security practices:** encrypted in transit — Yes; deletion mechanism — Yes;
+  independent security review — No.
 
 ---
 
@@ -194,13 +221,20 @@ Answer exactly:
 - **Ads:** No ads → declare "No".
 - **Government app:** No. **Financial features:** No.
 - **News app:** No.
+- **Payments (Play's payments policy):** digital subscriptions bought *inside* an
+  app installed from Play must go through Google Play Billing. The Android shell
+  therefore shows **no plan/upgrade/checkout UI** — the SPA hides it when it runs
+  inside the Capacitor shell (`app.html`, `renderPlan` returns early when `NATIVE`), so the app is a
+  consumption-only client of a plan bought on the web. Do not add a Stripe link
+  to the Android build without switching to Play Billing.
 
 ---
 
 ## 9. Graphics (staged in `docs/ops/play-assets/` — see that folder)
 
-- **App icon:** 512×512 PNG (from `mobile` capacitor assets; regenerate via
-  `npm run assets` in `mobile/` if needed).
+- **App icon:** 512×512 PNG (rendered by `mobile/scripts/render_app_icons.py
+  --from-logo … --font …`, see `mobile/resources/README.md`; the committed file
+  is canonical — regenerate only to change the mark).
 - **Feature graphic:** 1024×500 PNG.
 - **Phone screenshots:** ≥2, 16:9 or 9:16, min 320px — captured from the live app
   (sign-in, a universe conversation). Capture procedure in §10.
@@ -219,8 +253,8 @@ Screenshots come from the live app so they're honest:
 ## 11. Submit (after §1–§10)
 
 1. Play Console → **Create app** — name `TinyAssets`, App, Free, declarations.
-2. Fill the listing (§4), Data safety (§6), Content rating (§7), Target audience
-   (§8), privacy URL (§4/§5), graphics (§9).
+2. Fill the listing (§4), Data safety incl. the account-deletion URL (§6), Content
+   rating (§7), Target audience (§8), privacy URL (§4/§5), graphics (§9).
 3. **Internal testing** release first (reaches testers in minutes): create a
    release → upload the CI-built `app-release.aab` → add your email as a tester →
    roll out → verify the full loop on a device.
@@ -237,6 +271,9 @@ Screenshots come from the live app so they're honest:
 - [x] Data safety + content rating answers (§6, §7)
 - [x] Privacy policy section (§5) — on the **production** `/legal` (React site) as of this
       change; #2507 had only put it on the retired Svelte site
+- [x] Account deletion (§5): in-app Account → Delete my account + `/account` web page
+      (2026-09-02); Data safety answers in Play's taxonomy (§6); no checkout UI in the
+      Android shell (§8)
 - [x] Founder: Play Console account + $25 (§0) — verified 2026-08-24
 - [x] Upload keystore generated (§2, 2026-09-01) + certificate pinned in the workflow
 - [ ] Founder: the four upload-keystore secrets (§3, one command)

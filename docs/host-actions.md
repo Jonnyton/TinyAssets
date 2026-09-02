@@ -233,9 +233,20 @@ printf '%s' upload | gh secret set ANDROID_UPLOAD_KEY_ALIAS
 printf '%s' "$ANDROID_UPLOAD_KEY_PASSWORD" | gh secret set ANDROID_UPLOAD_KEY_PASSWORD
 ```
 
-Then back the keystore up somewhere that is not this laptop. Everything after that (AAB
-build, listing, data safety, internal-testing release) is staged in
-`docs/ops/google-play-launch.md`; the only other click that is yours is **Roll out**.
+Then back the keystore up somewhere that is not this laptop.
+
+What remains after the secrets, and who does it (`docs/ops/google-play-launch.md` §11):
+
+| Step | Who |
+|---|---|
+| Build + download the signed AAB (`gh workflow run android-release.yml`) | agent |
+| Play Console: create the app, accept its declarations (incl. US export laws) | agent in the browser, **only after you say "yes" in chat** — it is a form submission on your Google account |
+| Store listing, Data safety, Content rating, Target audience, privacy URL, graphics | same — staged copy in §4–§9, agent fills, you approve |
+| Internal-testing release: upload the AAB, add yourself as tester, roll out | same |
+| Verify the loop on a real phone (install from the internal-test link, sign in, chat) | you |
+| Promote to Production → submit for review → **Roll out** | you (final click) |
+
+Nothing in the Console is created until you give the go-ahead.
 
 ### Mint the PAT that unblocks the deploy chain
 

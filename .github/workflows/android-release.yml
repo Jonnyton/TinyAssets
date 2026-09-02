@@ -93,14 +93,16 @@ jobs:
           ks="$RUNNER_TEMP/upload.jks"
           printf '%s' "$KEYSTORE_B64" | base64 -d > "$ks"
           trap 'rm -f "$ks"' EXIT
-          actual="$(keytool -list -v -keystore "$ks" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" | awk '/SHA256:/ {print $2; exit}')"
+          # Passwords reach keytool/jarsigner via `:env`, never argv — a same-job
+          # process could otherwise read them from /proc/*/cmdline (Codex 2026-09-02).
+          actual="$(keytool -list -v -keystore "$ks" -storepass:env KEYSTORE_PASSWORD -alias "$KEY_ALIAS" | awk '/SHA256:/ {print $2; exit}')"
           if [ "$actual" != "$EXPECTED_SHA256" ]; then
             echo "::error::upload keystore certificate fingerprint mismatch ($actual) — refusing to sign"
             exit 1
           fi
           echo "upload certificate fingerprint verified"
           jarsigner -sigalg SHA256withRSA -digestalg SHA-256 \
-            -keystore "$ks" -storepass "$KEYSTORE_PASSWORD" -keypass "$KEY_PASSWORD" \
+            -keystore "$ks" -storepass:env KEYSTORE_PASSWORD -keypass:env KEY_PASSWORD \
             "$AAB" "$KEY_ALIAS"
           jarsigner -verify "$AAB"
           echo "signed $AAB with upload key"
