@@ -47,10 +47,10 @@ class StaticAuthProvider(AuthProvider):
 @pytest.fixture(autouse=True)
 def _reset_auth_context() -> None:
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
     yield
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
 
 
 def test_current_actor_prefers_authenticated_oauth_subject(
@@ -79,7 +79,7 @@ def test_current_actor_never_falls_back_to_env(
     # was bound. An environment variable must never confer authority.
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "env-actor")
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
 
     with pytest.raises(PermissionError, match="Authentication required"):
         _current_actor()

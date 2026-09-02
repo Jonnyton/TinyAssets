@@ -58,10 +58,10 @@ def _identity_context(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
     monkeypatch.delenv("UNIVERSE_SERVER_USER", raising=False)
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
     yield
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
 
 
 def _create_universe(tmp_path, monkeypatch: pytest.MonkeyPatch) -> str:

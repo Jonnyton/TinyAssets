@@ -79,7 +79,7 @@ def _reset_auth():
     auth_middleware(None)
     yield
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
 
 
 def _rpc(method: str, name: str | None = None, **arguments: Any) -> dict:

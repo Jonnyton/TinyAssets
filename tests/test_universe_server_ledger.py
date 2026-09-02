@@ -120,10 +120,10 @@ def _restore_auth_provider():
     from tinyassets.auth.provider import DevAuthProvider
 
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
     yield
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
 
 
 def _own_universes_as(actor_id: str = "user_01TESTOWNER") -> None:

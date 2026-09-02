@@ -1636,7 +1636,7 @@ def attach_existing_child_run(
     child_run_id: str,
     child_branch_def_id: str = "",
     output_digest: str = "",
-    actor: str = "anonymous",
+    actor: str = "",   # no default principal; the caller names one or the write refuses
 ) -> dict[str, Any]:
     """Validate and attach a completed child run receipt to a waiting parent.
 
@@ -3741,7 +3741,7 @@ def execute_branch(
     branch: BranchDefinition,
     inputs: dict[str, Any],
     run_name: str = "",
-    actor: str = "anonymous",
+    actor: str = "",   # no default principal; the caller names one or the write refuses
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
@@ -3936,7 +3936,7 @@ def _execute_branch_core(
     branch: BranchDefinition,
     inputs: dict[str, Any],
     run_name: str = "",
-    actor: str = "anonymous",
+    actor: str = "",   # no default principal; the caller names one or the write refuses
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
@@ -4087,7 +4087,7 @@ def execute_branch_async(
     branch: BranchDefinition,
     inputs: dict[str, Any],
     run_name: str = "",
-    actor: str = "anonymous",
+    actor: str = "",   # no default principal; the caller names one or the write refuses
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
@@ -4180,7 +4180,7 @@ def execute_branch_version(
     branch_version_id: str,
     inputs: dict[str, Any],
     run_name: str = "",
-    actor: str = "anonymous",
+    actor: str = "",   # no default principal; the caller names one or the write refuses
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
@@ -4241,7 +4241,7 @@ def execute_branch_version_async(
     branch_version_id: str,
     inputs: dict[str, Any],
     run_name: str = "",
-    actor: str = "anonymous",
+    actor: str = "",   # no default principal; the caller names one or the write refuses
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,

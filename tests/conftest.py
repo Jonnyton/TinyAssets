@@ -168,7 +168,7 @@ def authenticate_request() -> Callable[[str | None], None]:
         auth_middleware(token)
 
     yield authenticate
-    auth_middleware(None)
+    auth_middleware("dev")
     set_provider(DevAuthProvider())
 
 
@@ -227,6 +227,68 @@ def _identity_fingerprint_key(monkeypatch):
         "pytest-only-identity-fingerprint-key-32-bytes",
     )
     monkeypatch.setenv("TINYASSETS_IDENTITY_FINGERPRINT_VERSION", "v1")
+
+
+#: Who the suite runs as. A direct call into an API in a test stands in for an
+#: authenticated request, so the suite binds a NAMED operator the way the
+#: transport would -- rather than leaving the ContextVar empty, which would
+#: make every such call refuse and say nothing about the code under test.
+TEST_OPERATOR = Identity(
+    user_id="dev-tests",
+    username="dev-tests",
+    display_name="dev-tests",
+    capabilities=["read", "write", "submit_request", "list", "costly", "admin"],
+)
+
+
+@pytest.fixture(autouse=True)
+def _signed_in_operator():
+    """Bind ``TEST_OPERATOR`` for every test, and unbind afterwards.
+
+    There is no anonymous principal (founder, 2026-09-02): with nothing bound,
+    ``current_identity()`` raises. A test that wants NOBODY says so --
+    ``auth_middleware(None)`` -- and asserts the refusal; a test that wants a
+    different subject sets its own provider. Neither is affected by this, and
+    both used to be the only way a test got an identity at all.
+    """
+    from tinyassets.auth import middleware as _mw
+
+    token = _mw._current_identity.set(TEST_OPERATOR)
+    try:
+        yield TEST_OPERATOR
+    finally:
+        try:
+            _mw._current_identity.reset(token)
+        except ValueError:
+            # A test that set the identity inside another context (or in a
+            # different task) leaves the token unresettable here; clearing is
+            # the equivalent end state.
+            _mw._current_identity.set(None)
+
+
+@pytest.fixture
+def signed_in():
+    """Run a block as a named subject: ``signed_in("workos|abc")``."""
+    from tinyassets.auth import middleware as _mw
+
+    tokens = []
+
+    def _bind(user_id: str, capabilities: Sequence[str] | None = None) -> Identity:
+        identity = Identity(
+            user_id=user_id,
+            username=user_id,
+            display_name=user_id,
+            capabilities=list(capabilities or TEST_OPERATOR.capabilities),
+        )
+        tokens.append(_mw._current_identity.set(identity))
+        return identity
+
+    yield _bind
+    for token in reversed(tokens):
+        try:
+            _mw._current_identity.reset(token)
+        except ValueError:
+            _mw._current_identity.set(None)
 
 
 @pytest.fixture(autouse=True)

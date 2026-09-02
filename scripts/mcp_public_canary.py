@@ -153,7 +153,7 @@ def _post(
     timeout: float,
     session_id: str | None = None,
     accepted_http_statuses: frozenset[int] = frozenset(),
-    bearer: Any = _FROM_ENV,
+    bearer: str | None = None,
 ) -> tuple[int, dict[str, str], bytes]:
     """POST one JSON-RPC frame. Return (status, headers, body). Raise on I/O.
 

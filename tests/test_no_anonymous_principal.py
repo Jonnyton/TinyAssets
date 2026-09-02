@@ -336,9 +336,9 @@ def test_a_registration_with_nobody_bound_refuses_rather_than_writing(
     assert all(n.get("node_id") != "never_written" for n in extensions._load_nodes())
 
 
-def test_a_legacy_anonymous_run_row_matches_no_caller(monkeypatch, tmp_path):
-    """Rows written before there was a principal are quarantined: unowned, so
-    every scoped caller is refused, rather than shared by all of them."""
+def test_a_legacy_row_with_no_owner_matches_no_caller():
+    """Its actor names nobody, so it must not be within reach of every scoped
+    signed-in caller -- which is what "anonymous" used to make it."""
     from tinyassets.api import runs as runs_api
 
     record = {"run_id": "r-legacy", "actor": "anonymous", "status": "failed"}
@@ -346,6 +346,22 @@ def test_a_legacy_anonymous_run_row_matches_no_caller(monkeypatch, tmp_path):
     assert runs_api._run_write_allowed(record) is False
     # A real universe-bound row still routes through the universe's own gate.
     assert runs_api._run_universe_id({"actor": "universe:u-1"}) == "u-1"
+
+
+def test_a_legacy_row_stays_reachable_to_its_own_owner(signed_in):
+    """Refusing here would delete the founder's own history from every list
+    without deleting anything. The actor is ignored as authority; ownership
+    decides, which is what ownership is for."""
+    from tinyassets.api import runs as runs_api
+
+    mine = {"run_id": "r-1", "actor": "anonymous", "owner_user_id": "founder-9"}
+    theirs = {"run_id": "r-2", "actor": "anonymous", "owner_user_id": "someone-else"}
+
+    signed_in("founder-9")
+    assert runs_api._run_read_allowed(mine) is True
+    assert runs_api._run_write_allowed(mine) is True
+    assert runs_api._run_read_allowed(theirs) is False
+    assert runs_api._run_write_allowed(theirs) is False
 
 
 def test_the_discovery_exemption_is_a_table_not_a_substring():

@@ -58,10 +58,10 @@ class _ResolveAlwaysProvider(AuthProvider):
 @pytest.fixture(autouse=True)
 def _reset_auth():
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
     yield
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
 
 
 def _drive(path: str, *, token: str | None, method: str = "POST") -> tuple[list[dict], bool]:

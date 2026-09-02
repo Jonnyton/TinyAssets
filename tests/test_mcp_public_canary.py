@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 from pathlib import Path
 
@@ -594,3 +595,63 @@ def test_authenticated_handle_posts_all_carry_canary_bearer(monkeypatch):
     canary.assert_canonical_handles("https://example/mcp", 5.0)
     assert calls
     assert all(call["bearer"] == _TOKEN for call in calls)
+
+
+def test_the_healthcheck_invocation_does_not_authenticate_its_anonymous_probe(monkeypatch):
+    """The exact shape `deploy/compose.yml` runs inside the container.
+
+    Codex found this red: the "anonymous" initialize omitted its bearer
+    argument, the transport defaulted to reading the environment, the request
+    went out authenticated, the daemon answered 200 -- and the canary reported
+    "surface admitted an anonymous initialize", exit 6. Deterministically, on
+    the first deploy, with a rollback as the outcome.
+
+    So this drives the REAL transport and asserts on the header it put on the
+    wire, per call, rather than on a fake whose defaults differ from
+    production's.
+    """
+    import urllib.request
+
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _TOKEN)
+    sent: list[tuple[str, str | None]] = []
+
+    class _Resp:
+        def __init__(self, status, headers, body):
+            self.status = status
+            self.headers = headers
+            self._body = body
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _urlopen(request, timeout=None, context=None):
+        method = json.loads(request.data)["method"]
+        sent.append((method, request.get_header("Authorization")))
+        if request.get_header("Authorization") is None:
+            # The new daemon: no bearer, no session.
+            raise urllib.error.HTTPError(
+                request.full_url, 401,
+                "Unauthorized",
+                {"www-authenticate": 'Bearer resource_metadata="https://x/.well-known/oauth-protected-resource"'},
+                io.BytesIO(b'{"error": "authentication_required"}'),
+            )
+        return _Resp(
+            200,
+            {"mcp-session-id": "s-1"},
+            json.dumps({
+                "jsonrpc": "2.0", "id": 1,
+                "result": {"protocolVersion": "2024-11-05",
+                           "serverInfo": {"name": "TinyAssets", "version": "1"}},
+            }).encode(),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+    canary.probe_result("https://example/mcp", 5.0, bearer=_TOKEN)
+
+    assert [auth for _, auth in sent] == [None, f"Bearer {_TOKEN}"], sent

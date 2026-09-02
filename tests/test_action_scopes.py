@@ -54,10 +54,10 @@ class StaticAuthProvider(AuthProvider):
 @pytest.fixture(autouse=True)
 def _reset_auth_provider() -> None:
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
     yield
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
 
 
 def test_action_scope_registry_is_derived_from_internal_dispatch_tables() -> None:

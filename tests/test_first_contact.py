@@ -54,10 +54,10 @@ def data_dir(tmp_path: Path, monkeypatch) -> Path:
 @pytest.fixture(autouse=True)
 def _reset_auth():
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
     yield
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
 
 
 def _login(sub: str = "founder-1", caps: list[str] | None = None) -> None:
@@ -511,6 +511,7 @@ def test_nobody_bound_first_contact_births_no_home(data_dir):
     from tinyassets.api.status import get_status
     from tinyassets.daemon_server import get_founder_home
 
+    auth_middleware(None)   # the suite signs in by default; this test means nobody
     # Nobody bound (the autouse reset): status refuses outright, so it can
     # neither birth a founder home nor a generated universe. There is no
     # anonymous principal to birth one for (founder, 2026-09-02).
@@ -589,6 +590,7 @@ def test_read_graph_status_stays_pure_no_birth(data_dir):
 def test_no_card_for_nobody_or_explicit_id(data_dir):
     from tinyassets.api.status import get_status
 
+    auth_middleware(None)   # the suite signs in by default; this test means nobody
     # nobody bound: refused, so no card and nothing resolved
     with pytest.raises(PermissionError):
         get_status()

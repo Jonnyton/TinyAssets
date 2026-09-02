@@ -62,7 +62,7 @@ def _login(user_id: str) -> None:
 
 def _logout() -> None:
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
 
 
 @pytest.fixture(autouse=True)

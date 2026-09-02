@@ -63,10 +63,8 @@ def _mcp_call(
     url: str,
     sid: str | None,
     payload: dict[str, Any],
-    bearer_token: Any = _FROM_ENV,
+    bearer_token: str | None = None,
 ) -> tuple[dict | None, str | None]:
-    if bearer_token is _FROM_ENV:
-        bearer_token = canary_bearer()
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",

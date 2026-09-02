@@ -235,11 +235,18 @@ def run_canary(
         bearer_token = canary_bearer()
     post = post_fn or _post
     status_post = status_post_fn or _status_post
+    # The reserved WRITE always carries the scoped token. The pre-cutover
+    # daemon honours it for exactly that one shape and refuses it everywhere
+    # else, so against that build the handshake and the read-back stay
+    # anonymous while the write still lands; against this build the negotiated
+    # bearer and the token are the same value (Codex round 2, P0).
+    write_bearer = bearer_token if bearer_token is not None else canary_bearer()
 
-    # ---- Step 1: anonymous initialize is always challenged ---------------
-    _assert_anonymous_initialize_challenged(
-        url, timeout, post_fn=status_post,
-    )
+    if bearer_token is not None:
+        # Only this build has that contract to keep.
+        _assert_anonymous_initialize_challenged(
+            url, timeout, post_fn=status_post,
+        )
 
     # ---- Step 2: authenticated MCP handshake ------------------------------
     resp, sid = post(
@@ -266,7 +273,7 @@ def run_canary(
         _wiki_write_payload(2, content=canary_content),
         timeout,
         step_code=6,
-        bearer_token=bearer_token,
+        bearer_token=write_bearer,
     )
     _validate_write_response(write_resp)
     if verbose:

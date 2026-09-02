@@ -75,10 +75,10 @@ class _FakeProvider(AuthProvider):
 @pytest.fixture(autouse=True)
 def _reset_auth_context():
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
     yield
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
 
 
 # ── provider policy ─────────────────────────────────────────────────────────

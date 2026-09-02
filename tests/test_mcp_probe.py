@@ -183,7 +183,11 @@ class TestSessionId:
 
         assert calls[0] == "sess-xyz"
 
-    def test_canary_bearer_is_sent(self):
+    def test_the_bearer_is_sent_when_given_and_omitted_when_not(self):
+        """The transport sends exactly what it is handed. An omitted bearer
+        means "send none" -- it must NOT reach for the environment, or the
+        deliberately anonymous probes authenticate themselves and the
+        assertion they exist to make becomes unfalsifiable (Codex round 2)."""
         calls = []
 
         def capturing_urlopen(req, timeout=None):
@@ -191,9 +195,13 @@ class TestSessionId:
             return _fake_resp(_INIT_RESP, "sess-xyz")
 
         with patch("mcp_probe.urllib.request.urlopen", side_effect=capturing_urlopen):
+            mcp_probe._mcp_call(
+                "http://fake", None, {"method": "initialize"},
+                bearer_token="t" * 40,
+            )
             mcp_probe._mcp_call("http://fake", None, {"method": "initialize"})
 
-        assert calls == ["Bearer " + "t" * 40]
+        assert calls == ["Bearer " + "t" * 40, None]
 
 
 # ---------------------------------------------------------------------------
