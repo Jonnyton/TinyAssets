@@ -863,10 +863,14 @@ def _full_channel_sentence(action: dict[str, Any]) -> str:
     # full grant on a Slack key would otherwise read as "git clone or push on
     # slack.com". Any other host gets the general clause below, which is true
     # for a Gitea box and harmless for a key that serves no git at all.
+    # Derived HERE from the hosts, never taken from the action. A row persisted
+    # before the derivation was tightened carries whatever the old code put
+    # there, and "slack.com" in that field would render as a git host (Codex
+    # code review round 2). The stored value is only honoured when it agrees.
+    recognised = FORGE_GIT_HOSTS.get(hosts[0]) if len(hosts) == 1 else ""
     declared = str(action.get("git_host") or "").strip().lower()
-    recognised = declared or (
-        FORGE_GIT_HOSTS.get(hosts[0]) if len(hosts) == 1 else ""
-    )
+    if declared and declared != recognised:
+        recognised = ""
     if recognised:
         git_clause = (
             f", and git clone or push to any repository it can reach on {recognised}, "

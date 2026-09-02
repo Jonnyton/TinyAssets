@@ -756,17 +756,72 @@ def test_an_unrecognised_single_host_is_never_named_as_a_forge():
     assert "Where that serves git" in sentence
 
 
-def test_a_stale_git_host_on_the_action_is_not_trusted():
-    """The extend sentence reads `git_host` off the action, which the rail
-    fills from a preview. A value that does not match a recognised forge for
-    the declared host is not repeated as one."""
+def test_a_stale_git_host_on_a_persisted_action_is_not_trusted():
+    """A row persisted before the derivation was tightened carries whatever
+    the old code put in `git_host`, and "slack.com" there rendered as a named
+    forge (Codex code review round 2). The sentence derives its own."""
     from tinyassets.api.pending_requests import _grant_sentence
 
     sentence = _grant_sentence({"action": {
         "type": "extend_http", "destination": "slack", "access": "full",
         "hosts": ["slack.com"], "git_host": "slack.com",
     }})
-    # The action's own git_host IS honoured for an extend -- the rail derived
-    # it -- so this documents the remaining trust boundary rather than
-    # asserting it away.
-    assert "slack.com" in sentence
+    assert "clone or push to any repository it can reach on slack.com" not in sentence
+    assert "Where that serves git" in sentence
+
+    # ...and a value that DOES agree with the derivation is still used.
+    github = _grant_sentence({"action": {
+        "type": "extend_http", "destination": "github", "access": "full",
+        "hosts": ["api.github.com"], "git_host": "github.com",
+    }})
+    assert "clone or push to any repository it can reach on github.com" in github
+
+
+def test_a_full_channel_carries_every_verb_not_just_the_synthesized_get(tmp_path):
+    """Codex code review round 2. The scope tuple is a FIFTH reader of the
+    grant: `ScopedConnectionProxy.request` refuses an out-of-scope verb BEFORE
+    the full-aware allowlist is consulted. A full deposit synthesizes one GET
+    endpoint, so deriving scopes from the endpoints left a full connection
+    unable to POST -- the headline promise, inert."""
+    from tinyassets.storage.outbound_connections import (
+        _SSRF_ALLOWED_METHODS,
+        _verb_within_scopes,
+    )
+
+    ledger = _ledger(tmp_path)
+    full = _create(
+        ledger,
+        scopes=tuple(sorted(_SSRF_ALLOWED_METHODS)),
+        access_mode=ACCESS_FULL,
+    )
+    for verb in _SSRF_ALLOWED_METHODS:
+        assert _verb_within_scopes(verb, full.scopes) is True, verb
+
+    exact = _create(ledger, connection_id="conn-exact", scopes=("GET",))
+    assert _verb_within_scopes("GET", exact.scopes) is True
+    assert _verb_within_scopes("POST", exact.scopes) is False
+
+
+def test_a_full_deposit_moves_an_existing_connection(tmp_path):
+    """Rotating a key with a full ask used to leave the connection exact: the
+    mode was read only inside the create branch, so the owner read "full
+    access" and got the endpoints they already had."""
+    ledger = _ledger(tmp_path)
+    _create(ledger)
+    assert ledger.access_mode("conn-1") == ACCESS_EXACT
+
+    endpoints_json, scopes_json = ledger.policy_json("conn-1")
+    assert ledger.set_access_mode(
+        connection_id="conn-1", access_mode=ACCESS_FULL, expected_mode=ACCESS_EXACT,
+        expected_endpoints_json=endpoints_json, expected_scopes_json=scopes_json,
+    ) is True
+    assert ledger.access_mode("conn-1") == ACCESS_FULL
+
+    import inspect
+
+    from tinyassets.api import http_connection as hc
+
+    # The deposit path does this itself, on an EXISTING connection.
+    body = inspect.getsource(hc.connect_http)
+    assert "set_access_mode(" in body
+    assert body.index("set_access_mode(") < body.index("Idempotent grant bound")

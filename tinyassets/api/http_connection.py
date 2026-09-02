@@ -56,6 +56,7 @@ from typing import Any
 
 from tinyassets.api.helpers import _base_path, _request_universe, _universe_dir
 from tinyassets.storage.outbound_connections import (
+    _SSRF_ALLOWED_METHODS,
     ACCESS_EXACT,
     ACCESS_FULL,
     ActionCap,
@@ -459,7 +460,16 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     # ``_validate_endpoint_methods``; sort for a deterministic, idempotency-stable
     # scope tuple. connection_type/connection_class/provider ("http") carry the type
     # discrimination, so scopes is free to hold the verbs.
-    http_scopes = tuple(sorted({m for e in parsed_endpoints for m in e.methods}))
+    if asked_access == ACCESS_FULL:
+        # A full channel is every verb the platform will put on a socket. The
+        # scope tuple is a FIFTH reader of the grant (`ScopedConnectionProxy`
+        # refuses an out-of-scope verb before the allowlist is consulted at
+        # all), so deriving it from the synthesized GET endpoint left a full
+        # connection unable to POST -- the headline promise, inert (Codex code
+        # review round 2). Not a wildcard: the five verbs, named.
+        http_scopes = tuple(sorted(_SSRF_ALLOWED_METHODS))
+    else:
+        http_scopes = tuple(sorted({m for e in parsed_endpoints for m in e.methods}))
     # A GIT scope is the one scope a caller supplies rather than the deposit
     # deriving it: nothing about an endpoint list says which repository a git
     # credential may clone. Only git scopes may be passed - HTTP verbs stay
@@ -632,6 +642,28 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
             return {"error": "endpoint_not_permitted", "detail": str(exc)}
         except ValueError as exc:
             return {"error": "connection_setup_invalid", "detail": str(exc)}
+
+    # 7a. A full deposit on a connection that already exists moves its mode.
+    #     `asked_access` used to be read only inside the create branch, so
+    #     rotating a key with a full ask left the connection exact: the owner
+    #     read "full access" and got the endpoints they already had (Codex code
+    #     review round 2). Compare-and-swap on the whole policy, like every
+    #     other mode move.
+    if asked_access == ACCESS_FULL and resource is not None:
+        # The SAME snapshot the re-provision above is guarded by. A second read
+        # here would be a second snapshot, which is the class the one-snapshot
+        # rule exists to prevent: a write landing between the two would pass
+        # one CAS and be lost by the other.
+        if raw_policy is not None and resource.access_mode == ACCESS_EXACT:
+            stored_endpoints_json, stored_scopes_json = raw_policy
+            if not ledger.set_access_mode(
+                connection_id=connection_id,
+                access_mode=ACCESS_FULL,
+                expected_mode=ACCESS_EXACT,
+                expected_endpoints_json=stored_endpoints_json,
+                expected_scopes_json=stored_scopes_json,
+            ):
+                return {"error": "connection_conflict", "resource": "connection"}
 
     # 7. Idempotent grant bound to the universe.
     grant = existing_grant
