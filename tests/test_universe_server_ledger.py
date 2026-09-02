@@ -73,7 +73,11 @@ def universe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     (base / uid).mkdir(parents=True)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", uid)
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "test-user")
+    # The actor is the SIGNED-IN principal, not an environment variable. Setting
+    # UNIVERSE_SERVER_USER used to decide who a write belonged to, which meant
+    # identity was a string anyone could set; the ledger now records whoever is
+    # bound.
+    _authenticate_ledger_submitter(uid, monkeypatch)
     return uid
 
 
@@ -334,12 +338,27 @@ def test_control_daemon_status_does_not_append(universe: str) -> None:
     assert not ledger_path.exists()
 
 
-def test_switch_universe_appends_ledger(universe: str) -> None:
+def test_switch_universe_appends_ledger(universe: str, monkeypatch) -> None:
+    """The tray's switch: the local single-tenant daemon writes
+    `.active_universe` and the daemon follows it.
+
+    This used to be selected by "the caller is anonymous", which stopped
+    separating anything once every caller had a principal -- the tray's switch
+    became dead code and no test noticed. The process being the local operator
+    is the actual condition.
+    """
     other = "other-uni"
     (us._base_path() / other).mkdir(parents=True)
 
+    from tinyassets.auth import middleware
+
+    monkeypatch.setattr(middleware, "_local_operator_process", True)
+
     out = _call("switch_universe", universe_id=other)
-    assert out["status"] == "switching"
+    assert out["status"] == "switching", out
+    assert (us._base_path() / ".active_universe").read_text(
+        encoding="utf-8"
+    ) == other
 
     entries = _ledger(other)
     assert len(entries) == 1
@@ -422,18 +441,27 @@ def test_ledger_survives_across_mixed_writes(
         assert entry["timestamp"]
 
 
-def test_actor_defaults_to_anonymous_without_env(
+def test_the_actor_is_the_signed_in_principal_never_anonymous(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """There is no anonymous principal (founder, 2026-09-02).
+
+    This asserted that a write with no `UNIVERSE_SERVER_USER` was recorded as
+    "anonymous" -- a ledger row saying a change was made by nobody. Removing
+    the environment variable does not remove the actor; it removes a way to
+    claim to be someone.
+    """
     base = tmp_path / "output"
     (base / "u").mkdir(parents=True)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "u")
     monkeypatch.delenv("UNIVERSE_SERVER_USER", raising=False)
+    _authenticate_ledger_submitter("u", monkeypatch)
 
     _call("set_premise", text="x")
     entries = json.loads((base / "u" / "ledger.json").read_text(encoding="utf-8"))
-    assert entries[0]["actor"] == "anonymous"
+    assert entries[0]["actor"] == "test-user"
+    assert entries[0]["actor"] != "anonymous"
 
 
 def test_truncate_caps_long_summaries(universe: str) -> None:

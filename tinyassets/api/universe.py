@@ -5811,7 +5811,7 @@ def _action_switch_universe(universe_id: str = "", **_kwargs: Any) -> str:
     # switch applies only to the current request/session scope — they select a
     # universe by passing `universe_id` on each tool call — and must NOT mutate
     # the host-global `.active_universe` marker that other users resolve through.
-    if permissions.is_authenticated_request():
+    if not permissions.is_local_single_tenant():
         return json.dumps({
             "universe_id": uid,
             "status": "selected",
@@ -5920,7 +5920,7 @@ def _action_create_universe(
         # ``.active_universe`` marker to decide which universe a chatbot speaks
         # as. Writing it on a founder create clobbers the marker to the
         # last-created home and leaks it to other founders' omitted-scope reads.
-        if not permissions.is_authenticated_request():
+        if permissions.is_local_single_tenant():
             marker = base / ".active_universe"
             marker.write_text(uid, encoding="utf-8")
             result["note"] = (

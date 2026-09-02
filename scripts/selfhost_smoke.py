@@ -251,7 +251,9 @@ def run(
     *,
     internal_parity: bool = False,
     llm_check_fn=None,  # injection seam: (url, timeout) -> dict; raises VerifyError on fail
-    bearer_token: str,
+    # ``None`` means a PRE-CUTOVER daemon, which refuses this bearer; the
+    # default keeps every existing caller (and test) working unchanged.
+    bearer_token: str | None = None,
 ) -> int:
     try:
         canonical_tools, canonical_status = probe_url(

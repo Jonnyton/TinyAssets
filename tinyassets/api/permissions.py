@@ -260,6 +260,20 @@ def is_authenticated_request() -> bool:
     return bool(current_request_actor_id())
 
 
+def is_local_single_tenant() -> bool:
+    """Whether this process is the local single-tenant daemon (stdio/sse tray),
+    as opposed to a served multi-tenant request.
+
+    Use this, never ``not is_authenticated_request()``, to decide whether a
+    host-global side effect is safe: with no anonymous principal every caller
+    is authenticated, so that test is always False and the side effect never
+    happens.
+    """
+    from tinyassets.auth.middleware import is_local_operator_process
+
+    return is_local_operator_process()
+
+
 def universe_public_read_allowed(universe_id: str) -> bool:
     """Return the explicit public-read rule for a universe.
 

@@ -82,8 +82,16 @@ def _reset_auth():
 
 
 def _anonymous() -> None:
-    set_provider(DevAuthProvider())
-    auth_middleware("dev")
+    """Nobody bound at all, which is what an unauthenticated request is.
+
+    Installing the dev provider and resolving "dev" produces a REAL signed-in
+    identity (the local operator), so this used to drive an authenticated
+    caller and assert a refusal that could not happen -- the test passed only
+    while `current_actor_id()` answered "" for that identity.
+    """
+    from tinyassets.auth.middleware import clear_identity
+
+    clear_identity()
 
 
 def _authenticate(user_id: str) -> None:

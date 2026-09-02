@@ -591,7 +591,12 @@ class TestSendMessageSpecCompileTimeValidation:
     """Compile-time validation: recipient_node_id not in branch raises error."""
 
     def test_unknown_recipient_raises_at_compile_time(self, tmp_path):
-        from tinyassets.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
+        from tinyassets.branches import (
+            BranchDefinition,
+            EdgeDefinition,
+            GraphNodeRef,
+            NodeDefinition,
+        )
         from tinyassets.graph_compiler import validate_message_recipients
 
         nd = NodeDefinition(node_id="n1", display_name="N1", prompt_template="do X")

@@ -738,6 +738,35 @@ def identity_context(identity: Identity) -> Iterator[None]:
         _current_identity.reset(token)
 
 
+#: True once this PROCESS has bound a local operator, which is what a
+#: single-tenant daemon does at startup and a served multi-tenant request never
+#: does. Process-wide on purpose: it describes the process, not the request.
+_local_operator_process = False
+
+
+def is_local_operator_process() -> bool:
+    """Whether this process is the local single-tenant daemon.
+
+    The distinction two call sites need and used to get wrong by asking "is the
+    caller authenticated". Under no-anonymous every caller is, so that question
+    stopped separating the tray from a served request and silently disabled the
+    tray's universe switch.
+    """
+    return _local_operator_process
+
+
+def clear_identity() -> None:
+    """Unbind the principal: no identity, no bearer.
+
+    What an UNAUTHENTICATED request actually is. Tests reached for it by
+    installing the dev provider and resolving a token, which produces a real
+    signed-in identity -- so a test that meant "nobody is here" was driving the
+    local operator and asserting a refusal that could not happen.
+    """
+    _current_identity.set(None)
+    _current_bearer_present.set(False)
+
+
 def bind_local_operator_identity() -> Identity:
     """Bind the process-wide principal for a transport that carries no bearer
     (stdio: the Claude plugin, a local `--transport stdio` run).
@@ -765,7 +794,10 @@ def bind_local_operator_identity() -> Identity:
     identity = DevAuthProvider(user_id=name).resolve_token("stdio")
     if identity is None:  # pragma: no cover - the dev provider always resolves
         raise RuntimeError("the dev provider resolved no identity for the local operator")
+    global _local_operator_process
+
     _current_identity.set(identity)
+    _local_operator_process = True
     return identity
 
 

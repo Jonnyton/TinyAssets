@@ -46,11 +46,19 @@ class StaticAuthProvider(AuthProvider):
 
 @pytest.fixture(autouse=True)
 def _reset_auth_context() -> None:
+    """Nobody bound between tests.
+
+    Resolving a "dev" token binds the LOCAL OPERATOR, which is a real
+    principal -- so the two tests below, which assert that nothing outside a
+    request confers authority, were running as somebody and could not raise.
+    """
+    from tinyassets.auth.middleware import clear_identity
+
     set_provider(DevAuthProvider())
-    auth_middleware("dev")
+    clear_identity()
     yield
     set_provider(DevAuthProvider())
-    auth_middleware("dev")
+    clear_identity()
 
 
 def test_current_actor_prefers_authenticated_oauth_subject(
@@ -79,7 +87,6 @@ def test_current_actor_never_falls_back_to_env(
     # was bound. An environment variable must never confer authority.
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "env-actor")
     set_provider(DevAuthProvider())
-    auth_middleware("dev")
 
     with pytest.raises(PermissionError, match="Authentication required"):
         _current_actor()

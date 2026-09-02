@@ -57,11 +57,17 @@ def _identity_context(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("TINYASSETS_IDENTITY_FINGERPRINT_KEY", _FINGERPRINT_KEY)
     monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
     monkeypatch.delenv("UNIVERSE_SERVER_USER", raising=False)
+    # Neutral means NOBODY BOUND, and no bearer presented. Resolving a "dev"
+    # token instead binds the local operator and records a bearer, which is a
+    # starting state, not a neutral one -- it leaked into the request-local
+    # bearer test below as ambient True.
+    from tinyassets.auth.middleware import clear_identity
+
     set_provider(DevAuthProvider())
-    auth_middleware("dev")
+    clear_identity()
     yield
     set_provider(DevAuthProvider())
-    auth_middleware("dev")
+    clear_identity()
 
 
 def _create_universe(tmp_path, monkeypatch: pytest.MonkeyPatch) -> str:
@@ -135,7 +141,9 @@ def test_authenticated_first_contact_has_explicit_identity_evidence(
     set_provider(_StaticProvider())
     auth_middleware(_BEARER)
 
-    payload = json.loads(get_status(universe_id))
+    # No universe exists yet -- that is the whole case -- so there is no id to
+    # name. A mechanical pass added one that is not in scope here.
+    payload = json.loads(get_status())
 
     assert payload["first_contact"]["event"] == "no_universe_yet"
     assert payload["request_identity"]["bearer_present"] is True

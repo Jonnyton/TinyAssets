@@ -24,12 +24,38 @@ import pytest
 from tinyassets.api.helpers import _base_path as _helpers_base_path
 
 
+def _become(user_id: str) -> None:
+    """Sign in as ``user_id``.
+
+    These tests used to set ``UNIVERSE_SERVER_USER``, which named the actor by
+    environment variable -- authority from a string anybody can set. The
+    autouse operator fixture rebinds between tests, so this does not leak.
+    """
+    from tinyassets.auth import middleware as _mw
+    from tinyassets.auth.provider import Identity
+
+    _mw._current_identity.set(
+        Identity(
+            user_id=user_id,
+            username=user_id,
+            display_name=user_id,
+            capabilities=[
+                "tinyassets.universe.read",
+                "tinyassets.universe.write",
+                "tinyassets.universe.admin",
+                "tinyassets.extensions.read",
+                "tinyassets.extensions.write",
+            ],
+        )
+    )
+
+
 @pytest.fixture
 def p5_env(tmp_path, monkeypatch, authenticate_request):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+    _become("tester")
     # Branch mutation requires a credential-derived subject. Without one the
     # extensions surface returns
     # `{"error": "Authenticated branch subject required."}` and these tests
@@ -365,12 +391,18 @@ def test_leaderboard_run_count(p5_env):
         br = BranchDefinition.from_dict(
             get_branch_definition(Path(_helpers_base_path()), branch_def_id=b1)
         )
-        execute_branch(_helpers_base_path(), branch=br, inputs={"x": "a"})
+        execute_branch(
+            _helpers_base_path(), branch=br, inputs={"x": "a"},
+            actor="universe:u-goals",
+        )
     for _ in range(2):
         br = BranchDefinition.from_dict(
             get_branch_definition(Path(_helpers_base_path()), branch_def_id=b2)
         )
-        execute_branch(_helpers_base_path(), branch=br, inputs={"x": "a"})
+        execute_branch(
+            _helpers_base_path(), branch=br, inputs={"x": "a"},
+            actor="universe:u-goals",
+        )
 
     result = _call(us, "goals", "leaderboard",
                    goal_id=gid, metric="run_count")

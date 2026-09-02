@@ -268,6 +268,7 @@ def test_a_code_node_that_raises_fails_the_run_as_code_node_failed(monkeypatch, 
     packets = {"fetch": _packet(), "write": _packet("PUT")}
     outcome = execute_branch(
         tmp_path, branch=branch, inputs={}, provider_call=_provider_for(packets),
+        actor="universe:u-test",
     )
     assert outcome.status == "failed"
     assert "code node 'edit' failed" in outcome.error and "KeyError" in outcome.error
@@ -582,7 +583,13 @@ def test_the_requests_context_crosses_the_executor_hop(monkeypatch, tmp_path):
     )
     branch = _linear(node)
     branch.state_schema = [{"name": "r", "type": "dict"}]
-    queued = runs.execute_branch_async(tmp_path, branch=branch, inputs={}, provider_call=None)
+    queued = runs.execute_branch_async(
+        tmp_path,
+        branch=branch,
+        inputs={},
+        provider_call=None,
+        actor="universe:u-test",
+    )
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         rec = runs.get_run(tmp_path, queued.run_id)
