@@ -204,9 +204,10 @@
           <p>This deletes your universe — its memory, your conversation history, and any
           subscription credential you deposited — cancels a paid plan immediately, and
           removes your sign-in. It happens right away and cannot be undone.</p>
-          <p class="muted">Kept: content-free audit records keyed by an opaque id, invoices at
-          our payment processor, and nightly backups until they rotate out. The full list is
-          at tinyassets.io/account.</p>
+          <p class="muted">Kept: audit records with the actor replaced by an opaque id and their
+          content emptied, published commons and settlement rows, invoices at our payment
+          processor, and server backups until they age out. The full list is at
+          tinyassets.io/account.</p>
           <label class="field"><span>Type DELETE to confirm</span>
             <input id="delete-confirm" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" /></label>
           <button id="btn-delete-account" class="btn btn--danger" disabled>Delete my account</button>
@@ -1425,6 +1426,16 @@
   };
 
   async function startSubscribe(){
+    // Play's payments policy: a digital subscription bought inside an app
+    // installed from Play must use Play Billing. The Android shell is therefore
+    // a consumption-only client of a plan bought on the web — and that has to
+    // be enforced here, not just by hiding the button, because "not purchasable
+    // from within the app" is a property of the code, not of the layout.
+    if(NATIVE){
+      appendMessage("system", "Plans are managed on the web at tinyassets.io — "
+        + "this app doesn't sell subscriptions.");
+      return;
+    }
     let out = null;
     try{
       const r = await billingFetch("/mcp/app/billing/checkout", "POST");
@@ -1845,6 +1856,15 @@
         if(r.status===401 && await refreshAccessToken()) r = await post();
         if(r.status===401){ sessionExpired(); return; }
         const body = await r.json().catch(()=>({}));
+        if(body && body.error==="deletion_blocked"){
+          // Someone else's data or live work is in scope. Say which, plainly:
+          // "try again shortly" is true for in-flight work, and the email route
+          // is the answer for the rest.
+          st.textContent="We can't delete your account yet: "
+            + (body.reasons||["something is still in use"]).join("; ")
+            + ". If this doesn't clear on its own, email legal@tinyassets.io and we'll finish it by hand.";
+          btn.disabled=false; return;
+        }
         if(!r.ok || body.deleted!==true){
           st.textContent="Couldn't delete your account just now ("+(body.error||("HTTP "+r.status))+"). Try again, or email legal@tinyassets.io and we'll do it by hand.";
           btn.disabled=false; return;
@@ -1853,6 +1873,7 @@
         let note="Your account and universe were deleted.";
         if(body.identity!=="deleted") note+=" Your sign-in identity couldn't be removed automatically — email legal@tinyassets.io and we'll finish it.";
         if(body.billing==="error"||body.billing==="unavailable") note+=" We couldn't reach the payment processor to cancel a paid plan — email legal@tinyassets.io so we can.";
+        if((body.unfinished||[]).length) note+=" Some of it needs finishing by hand; we've recorded exactly what, and legal@tinyassets.io can complete it.";
         $("signin-notice").textContent=note;
       }catch(_e){ st.textContent="Couldn't reach the server. Try again in a moment."; btn.disabled=false; }
     }

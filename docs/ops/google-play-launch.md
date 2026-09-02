@@ -181,23 +181,33 @@ Play's taxonomy, not ours. Answer exactly:
   WorkOS AuthKit). **Account deletion URL:** `https://tinyassets.io/account`.
   Deleting the account deletes all associated data → answer that no separate
   partial-deletion option is offered.
-- **Data types collected** — each one *Collected*, *Not shared*, *Required*, *not
-  ephemeral*, with these purposes:
+- **Data types collected** — each one *Collected*, *Not shared*, *not ephemeral*.
+  Play defines "required" as data the user has no choice about, so only sign-in
+  is required; everything else is **optional** because the user decides whether
+  to send it:
 
-  | Play category → data type | What it is here | Purposes |
-  |---|---|---|
-  | Personal info → **Email address** | sign-in email | App functionality, Account management |
-  | Personal info → **User IDs** | WorkOS user id | App functionality, Account management |
-  | Messages → **Other in-app messages** | what you say to your universe | App functionality |
-  | Files and docs → **Files and docs** | attachments you send it | App functionality |
-  | App activity → **Other user-generated content** | the AI-provider credential you deposit (Play has no "credentials" type; this is its category for user-entered content that fits nowhere else) | App functionality |
+  | Play category → data type | What it is here | Required? | Purposes |
+  |---|---|---|---|
+  | Personal info → **Email address** | sign-in email | Required | App functionality, Account management |
+  | Personal info → **User IDs** | WorkOS user id | Required | App functionality, Account management |
+  | Messages → **Other in-app messages** | what you say to your universe | Optional (you choose to write) | App functionality |
+  | Files and docs → **Files and docs** | attachments you send it | Optional (attaching is a choice) | App functionality |
+  | App activity → **Other user-generated content** | the AI-provider credential you deposit (Play has no "credentials" type; this is its category for user-entered content that fits nowhere else) | Optional (Connect can be skipped) | App functionality |
 
   Do **not** declare Financial info → Purchase history unless the paid plan is
   bought inside the Android app (see §8, payments).
-- **Shared with third parties?** No, for every type. WorkOS, Stripe and the
-  hosting provider act as service providers on our behalf, which Play does not
-  count as sharing; the AI provider receives messages only because the user
-  connected their own account to it — a user-initiated transfer, also excluded.
+- **Shared with third parties?** No, for every type — but the answer rests on two
+  of Play's named exclusions, so record why before submitting rather than
+  ticking "no" blind:
+  - *Service providers.* WorkOS (sign-in), Stripe (payments) and the hosting
+    provider process on our behalf under their standard data-processing terms.
+    Confirm each contract is actually in force for this account before relying
+    on the exclusion; a provider used without a DPA is a transfer, not a
+    service-provider relationship.
+  - *User-initiated transfer.* The AI provider receives the user's messages only
+    because the user connected their own account to it and the traffic runs on
+    their subscription. This is the exclusion Play describes for a transfer the
+    user asks for; the app makes the destination explicit at Connect time.
 - **Data sold?** No. **Used for ads?** No.
 - **Security practices:** encrypted in transit — Yes; deletion mechanism — Yes;
   independent security review — No.

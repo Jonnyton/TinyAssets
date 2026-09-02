@@ -47,6 +47,10 @@ MAIN_DB_TABLE_CLASSIFICATIONS = MappingProxyType({
     "vote_ballots": "reset_home_or_block",
     # Ownership and access are distinct.
     "founder_home": "reset_binding",
+    # Account-deletion tombstone: cleared with the binding, because a scoped
+    # reset deliberately KEEPS the login and must leave the identity able to
+    # birth a fresh home. Leaving it would make a reset test identity unusable.
+    "deleted_principals": "reset_binding",
     "universe_acl": "reset_subject_grants",
     # Global identity/auth/commons/audit records are preserved.
     "user_accounts": "preserve",
@@ -1482,6 +1486,15 @@ def _database_actions(
         actions.append(
             _row_action(conn, table="universe_acl", row=row, alias=alias)
         )
+    for row in _select_rows(
+        conn,
+        table="deleted_principals",
+        where="founder_sub = ?",
+        params=(principal,),
+    ):
+        actions.append(
+            _row_action(conn, table="deleted_principals", row=row, alias=alias)
+        )
     if home_id is None:
         return actions
 
@@ -2178,6 +2191,7 @@ def _delete_planned_rows(
         "vote_windows": 2,
         "founder_home": 3,
         "universe_acl": 3,
+        "deleted_principals": 3,
         "universe_rules": 4,
         "universes": 5,
     }

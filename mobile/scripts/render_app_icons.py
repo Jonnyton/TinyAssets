@@ -66,6 +66,12 @@ def _save(im: Image.Image, path: Path) -> None:
 
 
 def render_sources(logo_path: Path, font_path: Path, bold_path: Path) -> None:
+    # Load every dependency BEFORE writing anything: the first draft validated
+    # the font only when it reached the feature graphic, so a missing font left
+    # icon.png and splash.png already overwritten and the committed source set
+    # half-updated (Codex 2026-09-02).
+    _font(bold_path, 84)
+    _font(font_path, 30)
     logo = Image.open(logo_path).convert("RGBA")
     if logo.size[0] != logo.size[1]:
         raise SystemExit(f"logo must be square, got {logo.size}")

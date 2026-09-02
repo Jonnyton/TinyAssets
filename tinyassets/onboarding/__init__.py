@@ -980,7 +980,7 @@ async def _handle_account_delete(request: Any) -> Any:
     from starlette.concurrency import run_in_threadpool
     from starlette.responses import JSONResponse, PlainTextResponse
 
-    from tinyassets.account_deletion import AccountDeletionError
+    from tinyassets.account_deletion import AccountDeletionBlocked, AccountDeletionError
     from tinyassets.auth.middleware import current_identity, identity_context
 
     if not onboarding_enabled():
@@ -1014,6 +1014,15 @@ async def _handle_account_delete(request: Any) -> Any:
 
     try:
         receipt = await run_in_threadpool(_run)
+    except AccountDeletionBlocked as exc:
+        # Someone else's data, live work, or unsettled money is in scope. The
+        # reasons name no person and no content, so they are safe to show — and
+        # showing them is the difference between "try again" and "email us".
+        return JSONResponse(
+            {"error": "deletion_blocked", "reasons": str(exc).split("; ")},
+            status_code=409,
+            headers=_NO_STORE,
+        )
     except AccountDeletionError as exc:
         # Refused before anything changed (unsafe binding, no principal).
         return JSONResponse(
@@ -1031,6 +1040,7 @@ async def _handle_account_delete(request: Any) -> Any:
             "home_removed": bool(receipt.get("home_removed")),
             "billing": str(receipt.get("billing") or ""),
             "identity": str(receipt.get("identity") or ""),
+            "unfinished": list(receipt.get("unfinished_phases") or []),
         },
         headers=_NO_STORE,
     )

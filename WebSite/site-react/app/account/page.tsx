@@ -41,10 +41,19 @@ export default function AccountPage() {
           nothing further is charged).
         </p>
         <p className="stub__line">
-          <strong>Kept:</strong> content-free audit records keyed by an opaque id (no name,
-          email or content), the invoices our payment processor holds, and server backups
-          until they rotate out (at most six months). Nothing that could rebuild your
-          universe is retained.
+          <strong>Kept:</strong> audit records, with the actor replaced by an opaque id and
+          their summary, target and payload emptied; commons and ledger rows that are not
+          personal data (published author and branch definitions, goals, settlement history);
+          the invoices our payment processor holds; and server backups until they age out on
+          our retention schedule. Nothing that could rebuild your universe is retained.
+        </p>
+        <p className="stub__line">
+          <strong>If something can&apos;t complete</strong> — the payment processor is
+          unreachable, or a store is briefly locked — the app says so instead of claiming a
+          deletion that did not happen, we record exactly which step is outstanding, and we
+          finish it by hand. Deletion is also refused, with the reason shown, while another
+          person&apos;s data or live work is inside your universe; email us and we will sort
+          it out.
         </p>
 
         <h2 id="by-email">Can&apos;t sign in? Delete by email</h2>

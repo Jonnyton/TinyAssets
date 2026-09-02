@@ -465,6 +465,18 @@ def _initialize_author_server_locked(base_path: str | Path) -> Path:
         -- alone (is_universe_serial) does NOT prove generation provenance.
         platform_generated INTEGER NOT NULL DEFAULT 0
     );
+
+    -- Account-deletion tombstone. A deleted principal's own JWT stays valid at
+    -- this daemon until it expires and until the identity provider removes the
+    -- user, so without this row a second device could walk straight back into
+    -- first-contact and be handed a brand-new universe seconds after the person
+    -- deleted their account. `ensure_founder_home` refuses a tombstoned
+    -- principal. Cleared by the operator's scoped identity reset, which
+    -- deliberately keeps the login.
+    CREATE TABLE IF NOT EXISTS deleted_principals (
+        founder_sub TEXT PRIMARY KEY,
+        deleted_at  REAL NOT NULL
+    );
     """
     with _connect(base_path) as conn:
         conn.executescript(schema)
