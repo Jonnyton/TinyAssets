@@ -969,6 +969,26 @@ def write_graph(
     -- "their page calls this either X or Y" is honest and the owner can resolve
     it in a second. A confidently wrong label is worse than an uncertain one.
 
+    **Ask for the whole channel, not a path list.** Add ``"access": "full"`` to
+    a ``connect_http`` or ``extend_http`` ask and it means: everything this key
+    can do on this channel -- any path, any verb, and clone or push to any
+    repository it reaches on the channel's git host. One yes, and you never ask
+    about that channel again. A full ask carries NO ``endpoints`` and NO
+    ``scopes``; a full deposit names the channel's ``hosts`` instead, 1 to 4 of
+    them::
+
+        "action": {"type": "extend_http", "destination": "github",
+                   "access": "full"}
+
+        "action": {"type": "connect_http", "destination": "github",
+                   "auth_scheme": "bearer", "access": "full",
+                   "hosts": ["api.github.com"]}
+
+    Ask for exact endpoints ONLY when the owner asked for less. Three asks in
+    one afternoon for one key the owner had already decided to trust is the
+    failure this replaces: you are not being careful, you are making them
+    answer the same question in three shapes.
+
     **If you ALREADY hold a key for that destination, do not ask for it again.**
     Check ``read_graph target="connections"`` first. To widen an existing grant
     the action is ``extend_http`` on the same destination — new endpoints only,

@@ -56,10 +56,14 @@ from typing import Any
 
 from tinyassets.api.helpers import _base_path, _request_universe, _universe_dir
 from tinyassets.storage.outbound_connections import (
+    _SSRF_ALLOWED_METHODS,
+    ACCESS_EXACT,
+    ACCESS_FULL,
     ActionCap,
     ConnectionLedger,
     SsrfValidationError,
     _parse_allowed_endpoints,
+    normalize_access_mode,
 )
 from tinyassets.storage.workspace_authority import (
     GitScopeError,
@@ -143,6 +147,35 @@ _MAX_SECRET_CHARS = 200_000
 _MAX_ENDPOINTS = 200
 #: A connection may hold at most this many git scopes.
 _MAX_GIT_SCOPES = 200
+
+
+def _answered_policy_snapshot(document: dict) -> dict[str, str] | None:
+    """The policy an ``extend_http`` ask recorded when it rendered its sentence.
+
+    ``None`` when the ask carries none -- an older pending row, or a direct
+    call that never went through a tab. The caller then swaps against its own
+    read, which is what it did before this existed: no worse, and a stored ask
+    that DOES carry one is held to it.
+
+    Every field must be a non-empty string. A partial snapshot is a broken one,
+    and swapping against a broken snapshot would refuse every answer.
+    """
+    raw = document.get("policy_snapshot")
+    if not isinstance(raw, dict):
+        return None
+    snapshot = {
+        key: raw.get(key)
+        for key in ("access_mode", "endpoints_json", "scopes_json")
+    }
+    if not all(isinstance(v, str) and v for v in snapshot.values()):
+        return None
+    # The incarnation is OPTIONAL within a snapshot that has the rest: a row
+    # raised before it existed still gets the ask/answer drift check. Requiring
+    # it would silently downgrade those rows to no snapshot at all, which is
+    # the weaker guarantee wearing the stronger one's name.
+    incarnation = raw.get("incarnation")
+    snapshot["incarnation"] = incarnation if isinstance(incarnation, str) else ""
+    return snapshot  # type: ignore[return-value]
 
 
 def _requested_git_scopes(document: dict[str, Any]) -> frozenset[str]:
@@ -364,6 +397,10 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
         return {"error": "connection_setup_invalid", "detail": str(exc)}
 
     destination = str(document.get("destination") or "").strip().lower()
+    try:
+        asked_access = normalize_access_mode(document.get("access"))
+    except ValueError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
     if not _DESTINATION_RE.match(destination):
         return {
             "error": "connection_setup_invalid",
@@ -452,7 +489,16 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     # ``_validate_endpoint_methods``; sort for a deterministic, idempotency-stable
     # scope tuple. connection_type/connection_class/provider ("http") carry the type
     # discrimination, so scopes is free to hold the verbs.
-    http_scopes = tuple(sorted({m for e in parsed_endpoints for m in e.methods}))
+    if asked_access == ACCESS_FULL:
+        # A full channel is every verb the platform will put on a socket. The
+        # scope tuple is a FIFTH reader of the grant (`ScopedConnectionProxy`
+        # refuses an out-of-scope verb before the allowlist is consulted at
+        # all), so deriving it from the synthesized GET endpoint left a full
+        # connection unable to POST -- the headline promise, inert (Codex code
+        # review round 2). Not a wildcard: the five verbs, named.
+        http_scopes = tuple(sorted(_SSRF_ALLOWED_METHODS))
+    else:
+        http_scopes = tuple(sorted({m for e in parsed_endpoints for m in e.methods}))
     # A GIT scope is the one scope a caller supplies rather than the deposit
     # deriving it: nothing about an endpoint list says which repository a git
     # credential may clone. Only git scopes may be passed - HTTP verbs stay
@@ -617,11 +663,36 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
                 destination=destination,
                 credential_ref=credential_ref,
                 allowed_endpoints=endpoints,
+                # The mode the owner accepted. Defaulting it here stored an
+                # exact connection for a full yes (Codex code review round 1).
+                access_mode=asked_access,
             )
         except SsrfValidationError as exc:
             return {"error": "endpoint_not_permitted", "detail": str(exc)}
         except ValueError as exc:
             return {"error": "connection_setup_invalid", "detail": str(exc)}
+
+    # 7a. A full deposit on a connection that already exists moves its mode.
+    #     `asked_access` used to be read only inside the create branch, so
+    #     rotating a key with a full ask left the connection exact: the owner
+    #     read "full access" and got the endpoints they already had (Codex code
+    #     review round 2). Compare-and-swap on the whole policy, like every
+    #     other mode move.
+    if asked_access == ACCESS_FULL and resource is not None:
+        # The SAME snapshot the re-provision above is guarded by. A second read
+        # here would be a second snapshot, which is the class the one-snapshot
+        # rule exists to prevent: a write landing between the two would pass
+        # one CAS and be lost by the other.
+        if raw_policy is not None and resource.access_mode == ACCESS_EXACT:
+            stored_endpoints_json, stored_scopes_json = raw_policy
+            if not ledger.set_access_mode(
+                connection_id=connection_id,
+                access_mode=ACCESS_FULL,
+                expected_mode=ACCESS_EXACT,
+                expected_endpoints_json=stored_endpoints_json,
+                expected_scopes_json=stored_scopes_json,
+            ):
+                return {"error": "connection_conflict", "resource": "connection"}
 
     # 7. Idempotent grant bound to the universe.
     grant = existing_grant
@@ -775,6 +846,15 @@ def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
         _universe_dir(uid), credential_type="http", destination=destination
     )
     rows_removed = ledger.delete_connection(connection_id)
+    # Everything this key authorized goes with it. The connection id is
+    # deterministic per (universe, destination), so a re-deposit under the same
+    # name used to inherit the old repository consents -- a grant the owner
+    # revoked by removing the key, still active (full-channel-access D6).
+    from tinyassets.storage.effector_consents import revoke_consents_for_connection
+
+    removed_consents = revoke_consents_for_connection(
+        _universe_dir(uid), connection_id=connection_id, destination=destination
+    )
 
     return {
         "status": "removed",
@@ -783,6 +863,11 @@ def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
         "grant_id": grant_id,
         "secrets_removed": secrets_removed,
         "connection_removed": bool(rows_removed),
+        # What the removal took back, so a ROTATION can re-ask for exactly
+        # these and the owner is never asked to remember them. Inheriting them
+        # silently was the alternative, and it also survives a removal the
+        # owner meant as a revocation.
+        "removed_consents": removed_consents,
         # What it looked like, so putting it back does not start from memory.
         # The scheme too: an oauth1a connection re-deposited as the default
         # bearer is a different connection wearing the same name.
@@ -865,8 +950,13 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
         requested_git_scopes = _requested_git_scopes(document)
     except GitScopeError as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
+    try:
+        asked_access = normalize_access_mode(document.get("access"))
+    except ValueError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
     scope_only = not isinstance(added, list) or not added
-    if scope_only and not requested_git_scopes:
+    if scope_only and not requested_git_scopes and asked_access != ACCESS_FULL:
+        # A full ask names neither: it is the channel, not a list.
         return {
             "error": "connection_setup_invalid",
             "detail": (
@@ -878,12 +968,54 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     preview = _extend_preview(
         actor=actor, base=base, uid=uid, destination=destination,
         added=added, requested_git_scopes=requested_git_scopes,
+        access=asked_access,
     )
     if preview.get("error") or preview.get("status") == "unchanged":
         return preview
 
     ledger = preview["ledger"]
     connection_id = preview["connection_id"]
+    if preview.get("access") == ACCESS_FULL:
+        # The whole write: one mode, compare-and-swapped on the policy THE
+        # OWNER READ. When the ask carries the snapshot it rendered its
+        # sentence from, that is what the swap compares -- not this call's own
+        # fresh read, which would happily grant full on a host added while the
+        # tab sat open (Codex code review round 2, left open then).
+        expected = _answered_policy_snapshot(document) or {
+            "access_mode": preview["expected_access_mode"],
+            "endpoints_json": preview["stored_json"],
+            "scopes_json": preview["stored_scopes_json"],
+            "incarnation": preview.get("stored_incarnation") or "",
+        }
+        if not ledger.set_access_mode(
+            connection_id=connection_id,
+            access_mode=ACCESS_FULL,
+            expected_mode=expected["access_mode"],
+            expected_endpoints_json=expected["endpoints_json"],
+            expected_scopes_json=expected["scopes_json"],
+            # Which DEPOSIT the owner was answering about. Without it a key
+            # removed and replaced under the same destination with an identical
+            # policy matched every predicate (Codex code review round 3, P0).
+            expected_incarnation=expected["incarnation"] or None,
+        ):
+            return {
+                "error": "connection_conflict",
+                "resource": "connection",
+                "detail": (
+                    "this connection changed while the request was open, so the "
+                    "yes was not applied to a reach you did not see; ask again "
+                    "and the tab will name what is there now"
+                ),
+            }
+        resource = ledger._get_connection_resource(connection_id)
+        return {
+            "status": "extended",
+            "destination": destination,
+            "access": ACCESS_FULL,
+            "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
+            "scopes": list(resource.scopes),
+            "secret_reused": True,
+        }
     try:
         widened = ledger.extend_http_connection_endpoints(
             connection_id=connection_id,
@@ -904,6 +1036,7 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     return {
         "status": "extended",
         "destination": destination,
+        "access": ACCESS_EXACT,
         "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
         "scopes": list(resource.scopes),
         "secret_reused": True,
@@ -918,6 +1051,7 @@ def _extend_preview(
     destination: str,
     added: Any,
     requested_git_scopes: frozenset[str],
+    access: str = "exact",
 ) -> dict[str, Any]:
     """Everything ``extend_http`` decides BEFORE it writes, as one function.
 
@@ -985,6 +1119,49 @@ def _extend_preview(
     except (TypeError, ValueError) as exc:
         return {"error": "connection_setup_invalid", "detail": f"stored policy unreadable: {exc}"}
 
+    # The mode verdicts, derived from that SAME snapshot -- never from the
+    # parsed resource, which is a second read (full-channel-access D4, and the
+    # one-snapshot rule Codex established for this function).
+    stored_hosts = sorted({
+        str(e.get("host") or "").strip().lower()
+        for e in stored
+        if isinstance(e, dict) and str(e.get("host") or "").strip()
+    })
+    stored_mode = normalize_access_mode(resource.access_mode)
+    asked_mode = normalize_access_mode(access)
+    if stored_mode == ACCESS_FULL:
+        # The channel is already granted whole, so nothing an extension could
+        # name adds anything -- a full re-ask and an exact ask alike. The agent
+        # is told it holds the channel and acts, instead of asking the owner a
+        # question with no answer.
+        return {
+            "status": "unchanged",
+            "destination": destination,
+            "access": ACCESS_FULL,
+            "hosts": stored_hosts,
+            "allowed_endpoints": stored,
+            "scopes": stored_scope_list,
+        }
+    if asked_mode == ACCESS_FULL:
+        # exact -> full: the WRITE is the mode, compare-and-swapped on the mode
+        # this snapshot read. No endpoint or scope row changes, which is the
+        # whole point of the shape: nothing is stored as a wildcard.
+        return {
+            "status": "extends",
+            "destination": destination,
+            "connection_id": connection_id,
+            "ledger": ledger,
+            "access": ACCESS_FULL,
+            "expected_access_mode": stored_mode,
+            "stored_json": stored_json,
+            "stored_scopes_json": stored_scopes_json,
+            "stored_incarnation": ledger.incarnation(connection_id) or "",
+            "git_host": git_host_for_endpoints(stored_hosts, resource.provider),
+            "hosts": stored_hosts,
+            "allowed_endpoints": stored,
+            "scopes": stored_scope_list,
+        }
+
     scope_only = not isinstance(added, list) or not added
     try:
         # Scope-only: the connection keeps exactly the endpoints it has. They
@@ -1043,10 +1220,12 @@ def _extend_preview(
         and not new_git_scopes
     ):
         return {"status": "unchanged", "destination": destination,
+                "access": ACCESS_EXACT,
                 "allowed_endpoints": stored,
                 "scopes": stored_scope_list}
     return {
         "status": "extends",
+        "access": ACCESS_EXACT,
         "destination": destination,
         "connection_id": connection_id,
         "ledger": ledger,
@@ -1102,15 +1281,26 @@ def preview_extend_http(*, universe_id: str = "", payload: Any = None) -> dict[s
         requested_git_scopes = _requested_git_scopes(document)
     except GitScopeError as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
+    try:
+        asked_access = normalize_access_mode(document.get("access"))
+    except ValueError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
     preview = _extend_preview(
         actor=actor, base=base, uid=uid, destination=destination,
         added=document.get("endpoints"), requested_git_scopes=requested_git_scopes,
+        access=asked_access,
     )
-    # Serializable projection only: never the ledger or the resource.
+    # Serializable projection only: never the ledger or the resource. The
+    # three policy-snapshot fields ARE included: the raise records what it
+    # rendered its sentence from so the answer can swap against exactly that,
+    # and they carry no more than `allowed_endpoints` and `scopes` already do.
     return {
         key: value for key, value in preview.items()
         if key in ("error", "resource", "detail", "status", "destination",
-                   "allowed_endpoints", "scopes", "git_host", "asked_hosts")
+                   "allowed_endpoints", "scopes", "git_host", "asked_hosts",
+                   "access", "hosts",
+                   "expected_access_mode", "stored_json", "stored_scopes_json",
+                   "stored_incarnation")
     }
 
 

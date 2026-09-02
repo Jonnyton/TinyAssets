@@ -176,6 +176,22 @@ def _validated_action(raw: Any) -> dict[str, Any]:
                 "destination must be 2-127 chars of [a-z0-9._:-] starting "
                 "alphanumeric"
             )
+        if _validated_access(action) == "full":
+            # One yes for the whole channel (full-channel-access D1). It carries
+            # no endpoints and no scopes: naming some would say the owner is
+            # granting those, and they are granting everything the key can do.
+            if action.get("endpoints") or action.get("scopes"):
+                raise ValueError(
+                    'access "full" covers the whole channel, so it may not also '
+                    "carry endpoints or scopes"
+                )
+            return {
+                "type": "extend_http",
+                "destination": destination,
+                "endpoints": [],
+                "scopes": [],
+                "access": "full",
+            }
         # A scope-only widening carries no endpoints: a git scope needs none,
         # and the served rail documents exactly that shape. The deposit
         # validates it against the endpoints the connection ALREADY has, which
@@ -192,6 +208,7 @@ def _validated_action(raw: Any) -> dict[str, Any]:
             "destination": destination,
             "endpoints": endpoints,
             "scopes": _validated_git_scopes(action, endpoints, host_checked=not scope_only),
+            "access": "exact",
         }
     if kind == "remove_http":
         # TAKING BACK a key the owner deposited. No secret and no endpoints: the
@@ -232,6 +249,30 @@ def _validated_action(raw: Any) -> dict[str, Any]:
     # request would mean pasting the same key three times. A list of named exact
     # paths is still least privilege -- it is not a widening, and the user sees
     # every line before pasting once.
+    if _validated_access(action) == "full":
+        # A new key has no stored hosts yet, so a full deposit names the
+        # channel's host(s). One GET endpoint per host is recorded so the
+        # existing host derivation and the SSRF host pin have something to read;
+        # the AUTHORITY is the mode, not those rows (full-channel-access D1).
+        if action.get("endpoints"):
+            raise ValueError(
+                'access "full" names the channel with "hosts", not endpoints'
+            )
+        if action.get("scopes"):
+            raise ValueError(
+                'access "full" covers every repository the key reaches, so it '
+                "may not also carry scopes"
+            )
+        endpoints = _validated_full_host_endpoints(action)
+        return {
+            "type": "connect_http",
+            "destination": destination,
+            "auth_scheme": scheme,
+            "endpoints": endpoints,
+            "scopes": [],
+            "access": "full",
+            "hosts": [endpoint["host"] for endpoint in endpoints],
+        }
     endpoints = _validated_endpoint_list(action)
     return {
         "type": "connect_http",
@@ -239,7 +280,71 @@ def _validated_action(raw: Any) -> dict[str, Any]:
         "auth_scheme": scheme,
         "endpoints": endpoints,
         "scopes": _validated_git_scopes(action, endpoints),
+        "access": "exact",
     }
+
+
+#: A channel is 1-4 hosts. More than that is not one channel; it is a request
+#: to reach several services on one key, which the owner should see separately.
+_MAX_FULL_HOSTS = 4
+
+#: What a full deposit is missing when it names no host.
+HOSTS_REQUIRED = 'access "full" requires "hosts": the channel\'s host(s)'
+
+
+def _validated_access(action: dict[str, Any]) -> str:
+    """``"full"`` or ``"exact"``. Any other value is a refusal rather than a
+    silent downgrade: an agent that mistypes the field must be told, not
+    quietly given less than it asked the owner for."""
+    raw = action.get("access")
+    if raw is None:
+        return "exact"
+    text = str(raw).strip().lower()
+    if text not in ("full", "exact"):
+        raise ValueError('access must be "full" or "exact"')
+    return text
+
+
+def _validated_full_host_endpoints(action: dict[str, Any]) -> list[dict[str, Any]]:
+    """The 1-4 hosts a full deposit declares, as endpoint rows the deposit
+    parser has already accepted.
+
+    Running them through that parser is the point: "full" can never reach a
+    host the endpoint validator would have refused (an IP literal, a private
+    name, a percent-encoded host), because the same function decides. The rows
+    exist so host derivation and the SSRF host pin have something to read; the
+    authority is the connection's mode, never these rows.
+    """
+    from tinyassets.api.http_connection import _parse_allowed_endpoints
+
+    raw = action.get("hosts")
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(HOSTS_REQUIRED)
+    if len(raw) > _MAX_FULL_HOSTS:
+        raise ValueError(f"a channel may name at most {_MAX_FULL_HOSTS} hosts")
+    rows = [
+        {
+            "host": str(entry or "").strip().lower(),
+            "path_template": "/{path+}",
+            "methods": ["GET"],
+            "param_patterns": {"path": ".*"},
+        }
+        for entry in raw
+    ]
+    parsed = _parse_allowed_endpoints(rows)   # raises on anything the deposit refuses
+    seen: list[dict[str, Any]] = []
+    for endpoint in parsed:
+        if any(row["host"] == endpoint.host for row in seen):
+            continue
+        seen.append({
+            "host": endpoint.host,
+            "path_template": endpoint.path_template,
+            "methods": list(endpoint.methods),
+            "param_patterns": {name: pattern for name, pattern in endpoint.param_patterns},
+        })
+    return seen
 
 
 def _validated_git_scopes(
@@ -563,6 +668,12 @@ def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str
         held = _extend_ask_verdict(_uid, action)
         if held is not None:
             return held
+        if action.get("access") == "full":
+            # The sentence has to name the hosts this key actually reaches, and
+            # only the CONNECTION knows them -- a full ask carries no endpoints
+            # by design. Read once, here, so the row the owner sees and the row
+            # stored for the audit trail say the same thing.
+            action = {**action, **_full_channel_reach(_uid, action)}
 
     # Include body AND fields. With only (kind, title, action), muting "Approve
     # this?" about a harmless draft also silenced "Approve this?" about deleting
@@ -598,6 +709,55 @@ def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str
     return {**row, "grant_sentence": _grant_sentence(row)}
 
 
+def _full_channel_reach(universe_id: str, action: dict[str, Any]) -> dict[str, Any]:
+    """``{"hosts": [...], "git_host": "..."}`` for the connection a full
+    ``extend_http`` names, or ``{}`` when it cannot be read.
+
+    Empty is fine: the sentence falls back to "the hosts it already reaches",
+    which is vague but never wrong. Inventing a host would be worse.
+    """
+    from tinyassets.api.http_connection import preview_extend_http
+
+    try:
+        preview = preview_extend_http(universe_id=universe_id, payload={
+            "destination": action.get("destination"),
+            "access": "full",
+        })
+    except Exception:  # noqa: BLE001 - a sentence must never break the ask
+        return {}
+    reach: dict[str, Any] = {}
+    # The policy this sentence is written from. The answer swaps against it, so
+    # a yes can only land on the reach the owner actually read (Codex code
+    # review round 2, left open). Same single read: the words and the snapshot
+    # cannot disagree.
+    snapshot = {
+        "endpoints_json": preview.get("stored_json"),
+        "scopes_json": preview.get("stored_scopes_json"),
+        "access_mode": preview.get("expected_access_mode"),
+        # Which deposit this is. The id and the credential reference are both
+        # derived from (universe, destination), so neither changes when a key
+        # is removed and a different one put in its place.
+        "incarnation": preview.get("stored_incarnation"),
+    }
+    if all(isinstance(v, str) and v for v in snapshot.values()):
+        reach["policy_snapshot"] = snapshot
+    hosts = preview.get("hosts")
+    if isinstance(hosts, list) and hosts:
+        reach["hosts"] = [str(h) for h in hosts]
+    # Only a RECOGNISED forge is named. `git_host_for_endpoints` passes an
+    # unknown single host straight through -- correct for the platform, which
+    # must work with any forge, and wrong to repeat to an owner: it made a full
+    # grant on a Slack key read as "clone or push on slack.com" (Codex code
+    # review round 1). An unrecognised host gets the conditional clause.
+    from tinyassets.storage.workspace_authority import FORGE_GIT_HOSTS
+
+    git_host = str(preview.get("git_host") or "").strip().lower()
+    declared = [str(h).strip().lower() for h in (reach.get("hosts") or [])]
+    if git_host and len(declared) == 1 and FORGE_GIT_HOSTS.get(declared[0]) == git_host:
+        reach["git_host"] = git_host
+    return reach
+
+
 def _extend_ask_verdict(universe_id: str, action: dict[str, Any]) -> dict[str, Any] | None:
     """Check an ``extend_http`` ask against the connection the owner already
     holds, when the agent RAISES it. ``None`` means "raise the tab".
@@ -618,6 +778,10 @@ def _extend_ask_verdict(universe_id: str, action: dict[str, Any]) -> dict[str, A
         "destination": action.get("destination"),
         "endpoints": action.get("endpoints") or None,
         "scopes": action.get("scopes") or [],
+        # The ask's MODE. Without it a full ask was previewed as
+        # exact-with-no-endpoints and could not raise at all (Codex code
+        # review round 1, P0).
+        "access": action.get("access") or "exact",
     })
     if preview.get("error") == "not_found":
         return _bad(
@@ -685,6 +849,69 @@ def _granted_lines(action: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _full_channel_sentence(action: dict[str, Any]) -> str:
+    """The ONE sentence a full grant is (full-channel-access D5).
+
+    It says the whole thing plainly -- every host, every verb, and the git
+    clause when a git host resolves for the channel -- because "full" is
+    exactly the grant an owner must not have to infer. It never renders a
+    wildcard row: there is no wildcard, only a mode.
+    """
+    from tinyassets.storage.workspace_authority import FORGE_GIT_HOSTS
+
+    destination = action.get("destination")
+    hosts = [str(h).strip().lower() for h in (action.get("hosts") or []) if str(h).strip()]
+    if not hosts:
+        hosts = sorted({
+            str(e.get("host") or "").strip().lower()
+            for e in (action.get("endpoints") or [])
+            if isinstance(e, dict) and str(e.get("host") or "").strip()
+        })
+    where = ", ".join(hosts) if hosts else "the hosts it already reaches"
+    deposit = action.get("type") == "connect_http"
+    opening = (
+        f'Full access to the {destination} key you are about to paste'
+        if deposit
+        else f'Full access to your {destination} key'
+    )
+    # Only a forge we RECOGNISE gets named, because naming one is a claim: a
+    # full grant on a Slack key would otherwise read as "git clone or push on
+    # slack.com". Any other host gets the general clause below, which is true
+    # for a Gitea box and harmless for a key that serves no git at all.
+    # Derived HERE from the hosts, never taken from the action. A row persisted
+    # before the derivation was tightened carries whatever the old code put
+    # there, and "slack.com" in that field would render as a git host (Codex
+    # code review round 2). The stored value is only honoured when it agrees.
+    recognised = FORGE_GIT_HOSTS.get(hosts[0]) if len(hosts) == 1 else ""
+    declared = str(action.get("git_host") or "").strip().lower()
+    if declared and declared != recognised:
+        recognised = ""
+    if recognised:
+        git_clause = (
+            f", and git clone or push to any repository it can reach on {recognised}, "
+            "including checking that repository out and running its build in your "
+            "universe's sandbox"
+        )
+    elif len(hosts) == 1:
+        # One host, not a forge we recognise -- it may still be a Gitea or
+        # GitLab box, and a full grant does cover git there.
+        git_clause = (
+            ". Where that serves git, this covers clone and push to any "
+            "repository the key can reach there, including checking it out and "
+            "running its build in your universe's sandbox"
+        )
+    else:
+        # Several hosts: a git scope binds ONE host, so this channel carries no
+        # git authority at all and the sentence must not imply otherwise.
+        git_clause = ""
+    closing = (
+        " You paste it once."
+        if deposit
+        else " You do not need to paste it again."
+    )
+    return f"{opening}: anything the key itself can do at {where}{git_clause}.{closing}"
+
+
 def _grants_git(action: dict[str, Any]) -> bool:
     """Whether this ask carries git authority, which "reach" does not describe."""
     return any(
@@ -712,6 +939,8 @@ def _grant_sentence(row: dict[str, Any]) -> str:
             f"{host}/{action.get('repo')} with the key you already "
             "gave. Nothing to paste; this is the yes."
         )
+    if action.get("type") in ("extend_http", "connect_http") and action.get("access") == "full":
+        return _full_channel_sentence(action)
     if action.get("type") == "extend_http":
         lines = _granted_lines(action)
         if not lines:
@@ -1137,6 +1366,12 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
                 "destination": action["destination"],
                 "endpoints": action["endpoints"],
                 "scopes": action.get("scopes") or [],
+                # The mode the owner read on the tab and accepted. Dropping it
+                # here recorded an exact widening for a full yes.
+                "access": action.get("access") or "exact",
+                # ...and the policy that mode was read against, so the write
+                # cannot land on a reach that grew while the tab was open.
+                "policy_snapshot": action.get("policy_snapshot") or None,
             }),
         )
         if widened.get("error"):
@@ -1147,6 +1382,7 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             "status": "answered",
             "request_id": request_id,
             "destination": action["destination"],
+            "access": widened.get("access") or "exact",
             "receipt": _grant_sentence(row),
             "secret_reused": True,
         }
@@ -1228,6 +1464,10 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
                     "auth_scheme": action["auth_scheme"],
                     "allowed_endpoints": action["endpoints"],
                     "scopes": action.get("scopes") or [],
+                    # As above: the owner accepted a full channel, so the
+                    # connection is created full. It was stored exact, and the
+                    # first call outside the recorded endpoints was refused.
+                    "access": action.get("access") or "exact",
                 }
             ),
         )
