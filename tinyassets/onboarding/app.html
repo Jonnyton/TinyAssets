@@ -35,6 +35,9 @@
     .btn--link{background:none;color:var(--accent);padding:.4rem .3rem;font-size:.88rem}
     .btn--link:hover{text-decoration:underline}
     .btn--danger{background:var(--err);color:#fff;font-weight:600}
+    .legal-line{margin:1rem 0 0;font-size:.8rem;color:var(--ink-dim)}
+    .legal-link{color:var(--ink-dim);text-decoration:underline}
+    .legal-link:hover{color:var(--ink)}
     .danger-zone{margin-top:1.5rem;border:1px solid var(--err);border-radius:var(--radius);padding:1rem 1.1rem}
     .danger-zone h3{margin:0 0 .5rem}
     .btn:disabled{opacity:.5;cursor:default}
@@ -144,6 +147,15 @@
         <p class="lede">Your universe lives here. Sign in and meet the mind you're raising.</p>
         <button id="btn-signin" class="btn btn--primary">Sign in</button>
         <div id="signin-notice" class="notice" role="alert"></div>
+        <!-- Google Play's User Data policy requires a privacy policy link "within
+             the app itself", not only in the store listing or on a website, and
+             reachable in normal use rather than behind a menu. This is that link;
+             the Account view carries it too, for someone already signed in. -->
+        <p class="legal-line">
+          <a class="legal-link" data-external href="https://tinyassets.io/legal#privacy">Privacy policy</a>
+          &middot;
+          <a class="legal-link" data-external href="https://tinyassets.io/legal#terms">Terms</a>
+        </p>
       </div>
     </section>
 
@@ -213,6 +225,13 @@
           <button id="btn-delete-account" class="btn btn--danger" disabled>Delete my account</button>
           <div id="delete-status" class="notice" role="status"></div>
         </div>
+        <p class="legal-line">
+          <a class="legal-link" data-external href="https://tinyassets.io/legal#privacy">Privacy policy</a>
+          &middot;
+          <a class="legal-link" data-external href="https://tinyassets.io/legal#terms">Terms</a>
+          &middot;
+          <a class="legal-link" data-external href="https://tinyassets.io/account">Deleting your account</a>
+        </p>
       </div>
     </section>
 
@@ -1835,6 +1854,15 @@
     $("btn-rail-add").addEventListener("click",()=>showConnect(false));
     $("btn-connect-back").addEventListener("click",()=>{ showView("chat"); startHeartbeat(); loadPlan(); });
     $("btn-signout").addEventListener("click",async()=>{ sessionStorage.setItem("ta_force_login","1"); await endServerSession(); enterSignedOut(); });
+    // Legal links open OUTSIDE the app. In the Capacitor shell a plain <a> would
+    // navigate the WebView itself to tinyassets.io and strand the user with no
+    // way back to their universe; openExternal uses the in-app browser instead.
+    document.addEventListener("click", (e)=>{
+      const a = e.target && e.target.closest && e.target.closest("a[data-external]");
+      if(!a) return;
+      e.preventDefault();
+      openExternal(a.getAttribute("href"));
+    });
     // ---- account / deletion (the in-app path Google Play requires) ----
     function showAccount(){ $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); }
     function leaveAccount(){ if(engineConnected===true){ showView("chat"); startHeartbeat(); } else { showConnect(true); } }
