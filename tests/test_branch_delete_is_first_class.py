@@ -9,11 +9,12 @@ Tiny, in the app, 2026-09-02, asked "are you able to delete branches yet?":
 `delete_branch` has existed for months behind the deprecated `extensions`
 tool, author-gated. It was never put on `write_graph`, on either served
 surface. Inside your universe you are god; the only invariant is not
-affecting other users. So: an OWN, PRIVATE branch that nothing depends on
-deletes; a public one is refused (foreign graphs invoke public branches
-live); one with dependents is refused with every dependent named; internal
-patch snapshots are not dependents (Codex on the first cut: every patch
-mints two, so counting them made any edited branch undeletable).
+affecting other users. So: an OWN branch that nothing of the owner's depends
+on deletes, public or private (founder, 2026-09-02: a public branch is a
+shape others copy or remix into their own universe; it runs nothing for
+anyone else); one with dependents is refused with every dependent named;
+internal patch snapshots are not dependents (Codex on the first cut: every
+patch mints two, so counting them made any edited branch undeletable).
 """
 from __future__ import annotations
 
@@ -142,24 +143,19 @@ def test_a_non_author_cannot_even_probe_a_PUBLIC_branch_for_deletion(universe_su
     out = _delete(us, bid)
 
     assert out.get("error", "").startswith("Branch '"), out
-    assert out.get("error") not in ("branch_is_public", "branch_has_dependents")
+    assert out.get("error") != "branch_has_dependents"
     actor["id"] = "alice"
     assert bid in _listed(us)
 
 
-def test_a_PUBLIC_branch_is_refused_and_the_advertised_remediation_WORKS(universe_surface):
-    """Codex on the first cut: the refusal said 'make it private first', but
-    the patch that makes it private minted a version, and the version guard
-    then refused forever. The sequence has to actually complete."""
+def test_a_PUBLIC_branch_deletes_like_any_other(universe_surface):
+    """Founder, 2026-09-02: a public branch is a shape others copy or remix into
+    their own universe; it runs nothing for anyone else. So there is nothing to
+    protect on the far side of a delete, and the owner's own branch is theirs."""
     us, _actor = universe_surface
     bid = _create(us, "commons")
     _make_public(us, bid)
 
-    refused = _delete(us, bid)
-    assert refused.get("error") == "branch_is_public", refused
-    assert bid in _listed(us)
-
-    _make_private(us, bid)
     assert _delete(us, bid)["status"] == "deleted"
     assert bid not in _listed(us)
 
@@ -407,9 +403,8 @@ def test_a_universe_whose_soul_declares_it_as_the_LOOP_branch_is_named(universe_
 def test_a_FOREIGN_snapshot_from_the_public_days_does_not_block_forever(universe_surface, tmp_path):
     """Codex round 3: the owner cannot edit another author's branch, so a
     foreign published snapshot that invoked this branch while it was public
-    must not hold it. That invoker was already cut off when the branch went
-    private (a private child runs only for its author), which is the recorded
-    product decision."""
+    must not hold it. Under the founder's model a public branch runs nothing
+    for anyone else anyway: that invoker should have remixed."""
     us, actor = universe_surface
     child = _create(us, "was-public")
     _make_public(us, child)
@@ -502,27 +497,29 @@ def test_served_delete_refuses_another_identitys_branch(monkeypatch, tmp_path):
 
 
 def test_served_delete_reaches_the_GUARDED_handler_not_the_raw_one(monkeypatch, tmp_path):
-    """The raw `delete_branch` would delete a public branch; the guarded one
-    refuses it. Made public through the universe surface as the same author,
-    because the served patch sanitizer (rightly) refuses visibility changes."""
-    import tinyassets.universe_server as us
-    from tinyassets.api import permissions
+    """The raw `delete_branch` would delete a branch an active automation is
+    bound to; the guarded one names the automation instead."""
+    from tinyassets.automations import Automation, AutomationStore
 
     s = _bind(monkeypatch, tmp_path, actor="sub-9")
     created = json.loads(s.write_graph(
-        target="branch", operation="create", payload_json=json.dumps(_spec("goes-public")),
-        idempotency_key="served-create-public-0123456789",
+        target="branch", operation="create", payload_json=json.dumps(_spec("automated")),
+        idempotency_key="served-create-automated-0123456789",
     ))
     bid = created["branch_def_id"]
-    monkeypatch.setattr(us, "write_gate_rejection", lambda name: None)
-    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
-    monkeypatch.setattr(permissions, "current_actor_id", lambda: "sub-9")
-    monkeypatch.setattr(permissions, "current_request_actor_id", lambda: "sub-9")
-    _make_public(us, bid)
+    AutomationStore(tmp_path).insert(Automation(
+        automation_id="auto-served", universe_id="u-9", owner_principal_id="sub-9",
+        name="Nightly", branch_def_id=bid, trigger_kind="interval",
+        interval_seconds=3600, cron_expr="", inputs={}, desired_state="active",
+        pause_reason="", revision=1, created_at="2026-09-02T00:00:00Z",
+        updated_at="2026-09-02T00:00:00Z", retired_at="", last_due_at="",
+        last_run_id="", last_reason="", last_finished_at="",
+    ))
 
     out = json.loads(s.write_graph(target="branch", operation="delete", branch_id=bid))
 
-    assert out.get("error") == "branch_is_public", out
+    assert out.get("error") == "branch_has_dependents", out
+    assert out["dependents"]["automations"] == ["auto-served"]
 
 
 def test_served_delete_requires_branch_id(monkeypatch, tmp_path):

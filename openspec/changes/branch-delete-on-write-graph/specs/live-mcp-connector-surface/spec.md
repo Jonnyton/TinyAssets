@@ -9,7 +9,8 @@ both the universe surface and the served build surface, as an operation under th
 existing `write_graph` handle and not as a new advertised tool. The operation SHALL
 delete only a branch authored by the caller; for any other branch, including a
 public one, it SHALL answer with the same not-found envelope a private read gives.
-It SHALL refuse a public branch with `branch_is_public`. It SHALL refuse with
+A public branch is a shape others copy or remix into their own universe and runs
+nothing for anyone else, so it SHALL delete like any other. It SHALL refuse with
 `branch_has_dependents`, naming each dependent it found, when any of these
 readers still references the branch: an active automation (any universe), an
 active webhook, an active schedule or event subscription, a canonical goal
@@ -21,7 +22,7 @@ branch. A foreign snapshot that invoked the branch while it was public SHALL NOT
 count: it was cut off when the branch went private and is not the owner's to
 edit. Version ids SHALL be read uncapped. The branch's own patch snapshots in `branch_versions` SHALL NOT
 count as a dependency. The tool text on both surfaces SHALL name the operation
-and both refusals.
+and the refusal.
 
 #### Scenario: An own private branch nothing depends on is deleted
 
@@ -34,11 +35,10 @@ and both refusals.
 - **WHEN** the author has patched the branch (which minted version snapshots) and then calls delete
 - **THEN** it is deleted
 
-#### Scenario: A public branch is refused, and the remediation completes when nothing else depends on it
+#### Scenario: A public branch deletes like any other
 
-- **WHEN** the author calls delete on their public branch
-- **THEN** the result is `branch_is_public`
-- **AND** after `patch set_visibility private`, delete succeeds if no listed reader references the branch
+- **WHEN** the author calls delete on their public branch that nothing of theirs depends on
+- **THEN** it is deleted
 
 #### Scenario: Dependents are named, not broken
 
@@ -49,4 +49,4 @@ and both refusals.
 #### Scenario: A non-author cannot probe
 
 - **WHEN** a caller who is not the author calls delete on a public branch
-- **THEN** the result is the not-found envelope, not `branch_is_public`
+- **THEN** the result is the not-found envelope

@@ -17,7 +17,7 @@ deserves because the surface cannot show dependents any other way.
 | canonical goal bindings — default (`canonical_bindings`), personal (`goal_canonicals`), legacy (`goals.canonical_branch_version_id`) | a version; `invoke_branch_version` maps it back to the definition and loads it | **breaks** version-based invocation |
 | other branches' CURRENT definitions: `invoke_branch_spec.branch_def_id` / `invoke_branch_version_spec.branch_version_id` | the live child (`_authorize_child_ref` reloads it each execution) | **breaks** the invoking graph |
 | the author's other branches' PUBLISHED SNAPSHOTS with the same fields | the live child, reloaded at execution of the snapshot | **breaks** — even after the parent's current definition stopped naming the child |
-| a FOREIGN branch's snapshot from the child's public days | nothing the owner can repair; already fails closed since the child went private | not a dependent (see the product decision) |
+| a FOREIGN branch's snapshot from the child's public days | nothing the owner can repair; that user should have remixed | not a dependent (see the founder's model below) |
 | a universe's soul `loop_branch_def_id` | the live definition, queued on every admitted request | **breaks**: the universe queues a workflow that does not exist |
 | remix lineage (`parent_def_id`) | nothing live (remix copies the snapshot) | benign: the parent disappears from lineage reads |
 | this branch's own `branch_versions` rows | nothing; self-contained snapshots | benign — and every `patch_branch` mints two, so they must NOT count as publication |
@@ -27,9 +27,9 @@ deserves because the surface cannot show dependents any other way.
 
 1. Author only, not-found envelope otherwise (also for public branches, so
    existence is not confirmed by the refusal).
-2. `visibility == "public"` → `branch_is_public`. Remediation that actually
-   works: patch `set_visibility private`, then delete (patch snapshots do not
-   block, so the sequence completes when the branch is otherwise dependency-clean).
+2. Public or private makes no difference: a public branch is a shape others
+   copy or remix into their own universe and runs nothing for anyone else
+   (founder, 2026-09-02).
 3. Dependents → `branch_has_dependents` with `{automations, webhooks, schedules,
    subscriptions, goals, branches, universes}`, each a list of ids the owner can act on
    through operations that already exist. Automations, webhooks, schedules and
@@ -41,19 +41,20 @@ deserves because the surface cannot show dependents any other way.
    every universe directory whose soul declares the branch as its loop.
 4. Otherwise `delete_branch_definition` (hard delete of the definition row).
 
-## A product decision, recorded
+## The founder's model of a public branch (2026-09-02)
 
-Making a public branch private is the owner's right today (`set_visibility`
-checks nothing), and a foreign graph that invoked it while public fails
-closed at its next run (`_authorize_child_ref` permits a private child only
-to its author). Delete after that adds nothing: the foreign invoker was
-already cut off by the visibility change, which is the existing contract of
-public branches — they run at their owner's pleasure, and remixing (which
-copies) is how another user takes a durable dependency. Codex asked for this
-to be an explicit decision rather than an accident; it is recorded here and
-flagged to the founder. If the founder wants public branches to be
-un-withdrawable while anyone invokes them, that is a change to `set_visibility`,
-not to delete.
+"When a branch is public the way I thought of it is the shape is public for
+people to make a copy of or remix, create something similar for themselves,
+and their copy would exist in their own universe. So a public branch doesn't
+run anything, just carries information useful for others trying to do similar
+things."
+
+Consequences: no public refusal on delete; a foreign snapshot from the
+branch's public days is not a dependent (that user should have remixed); and
+the runtime's allowance for a foreign graph to invoke a public child LIVE
+(`graph_compiler._authorize_child_ref`) is contrary to the model and belongs
+in its own authority change — until then such an invoker fails closed at its
+next run, which is the correct outcome under the model.
 
 ## Not done here
 

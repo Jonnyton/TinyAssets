@@ -17,14 +17,15 @@ god; the ONLY platform invariant is not affecting other users.
   served build), as an operation under the pinned `write_graph` handle — no new
   advertised tool, the same move that made `get_branch` first-class.
 - A new guarded handler `delete_own_branch` (the old `delete_branch` stays on the
-  deprecated tool, unchanged): author-gated with the not-found envelope; refuses a
-  PUBLIC branch (foreign graphs invoke public branches live); refuses a branch
+  deprecated tool, unchanged): author-gated with the not-found envelope; deletes a
+  public branch like any other (a public branch is a shape others copy or remix,
+  it runs nothing for them — founder, 2026-09-02); refuses a branch
   that anything still depends on — automations bound to it in any universe, goals
   whose canonical binding points at one of its versions, the author's other
   branches that invoke it by id or version — naming every dependent so the owner
   can delete or re-point them first. Internal patch snapshots are not dependents.
 - `AutomationStore.list_for_branch`.
-- The tool text on both surfaces names the operation and the two refusals.
+- The tool text on both surfaces names the operation and the refusal.
 
 ## Impact
 
@@ -40,6 +41,6 @@ god; the ONLY platform invariant is not affecting other users.
   the second (webhooks, schedules, subscriptions, personal canonicals and
   snapshot invocations missing from the dependents; a 500-version cap; a broad
   exception guard; an overstated spec). This is the third cut, built to both.
-- A product decision is recorded in `design.md`: making a public branch private
-  is the owner's right and foreign invokers fail closed at their next run;
-  delete adds nothing to that. The founder can reverse it at `set_visibility`.
+- The founder's model of a public branch is recorded in `design.md`; the
+  runtime's allowance for foreign LIVE invocation of a public branch is contrary
+  to it and is filed for its own authority change.

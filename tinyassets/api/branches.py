@@ -890,16 +890,17 @@ def _branch_dependents(
 
 
 def _ext_branch_delete_own(kwargs: dict[str, Any]) -> str:
-    """Delete one of the caller's OWN private branches that nothing depends on.
+    """Delete one of the caller's OWN branches that nothing of theirs depends on.
 
     The served surfaces (`write_graph target=branch operation=delete`) route
     here rather than to `delete_branch`. Tiny, 2026-09-02: "I do not have a
     branch delete operation exposed right now ... 106 branches". Inside your
-    universe you are god; the only invariant is not affecting other users.
-    So a PUBLIC branch is refused (foreign graphs invoke public branches live,
-    `graph_compiler._authorize_child_ref`), and a branch with dependents is
-    refused with every dependent named so the owner can delete or re-point
-    them first. Internal patch snapshots are not dependents.
+    universe you are god; the only invariant is not affecting other users. A
+    PUBLIC branch is a shape others copy or remix into their own universe and
+    runs nothing for anyone else (founder, 2026-09-02), so it deletes like any
+    other. A branch the owner's own things still depend on is refused with
+    every dependent named so they can delete or re-point them first. Internal
+    patch snapshots are not dependents.
     """
     from tinyassets.daemon_server import delete_branch_definition
 
@@ -915,15 +916,6 @@ def _ext_branch_delete_own(kwargs: dict[str, Any]) -> str:
         # Same envelope as a private read by a non-author: existence is not
         # confirmed either way, even for a public branch.
         return _branch_not_found(selector)
-    if (branch.get("visibility", "public") or "public") == "public":
-        return json.dumps({
-            "error": "branch_is_public",
-            "branch_def_id": bid,
-            "detail": (
-                "This branch is public: other universes may invoke it live and "
-                "remix it. Patch it private first (set_visibility), then delete."
-            ),
-        })
     actor = _request_branch_actor() or ""
     dependents = _branch_dependents(base, branch_def_id=bid, actor=actor)
     if any(dependents.values()):

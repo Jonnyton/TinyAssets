@@ -872,12 +872,13 @@ def write_graph(
       edit is transactional (all-or-nothing). Publishing to the commons, changing
       visibility to public, and forking a foreign shape are NOT available here (they
       stay in the browser flow); a patched source_code node re-enters UNAPPROVED.
-    - ``operation="delete"`` — delete one of YOUR OWN private branches by
-      ``branch_id``. Refused with the reason when the branch is public (other
-      universes may invoke it live: patch it private first) or when something
-      still depends on it (``branch_has_dependents`` names the automations,
-      goals and invoking branches to delete or re-point first). Everything else
-      of yours deletes and is gone from ``read_graph target="branches"``.
+    - ``operation="delete"`` — delete one of YOUR OWN branches by ``branch_id``,
+      public or private (a public branch is a shape others copy; it runs nothing
+      for them). Refused only when something of yours still depends on it
+      (``branch_has_dependents`` names the automations, webhooks, schedules,
+      goals, invoking branches and universe loops to delete or re-point first).
+      Everything else of yours deletes and is gone from
+      ``read_graph target="branches"``.
 
     **Outbound channel node — the channel-agnostic way to add Slack, a webhook, or
     ANY HTTPS API with no service-specific code.** A node declaring
