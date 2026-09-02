@@ -412,6 +412,28 @@ class AutomationStore:
             conn.close()
         return [_from_row(row) for row in rows]
 
+    def list_for_branch(
+        self,
+        branch_def_id: str,
+        *,
+        include_retired: bool = False,
+    ) -> list[Automation]:
+        """Every automation, in ANY universe, bound to one branch. Used by the
+        branch delete guard: registration promises not to store an automation
+        that cannot fire, and deleting its branch would create exactly that."""
+        conn = self._connect(create=False)
+        if conn is None:
+            return []
+        query = "SELECT * FROM automations WHERE branch_def_id = ?"
+        if not include_retired:
+            query += " AND retired_at = ''"
+        query += " ORDER BY created_at ASC, automation_id ASC"
+        try:
+            rows = conn.execute(query, (branch_def_id,)).fetchall()
+        finally:
+            conn.close()
+        return [_from_row(row) for row in rows]
+
     def insert(self, automation: Automation) -> Automation:
         conn = self._connect(create=True)
         if conn is None:  # pragma: no cover - create=True always connects

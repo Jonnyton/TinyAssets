@@ -9,8 +9,11 @@ Tiny, in the app, 2026-09-02, asked "are you able to delete branches yet?":
 `delete_branch` has existed for months behind the deprecated `extensions`
 tool, author-gated. It was never put on `write_graph`, on either served
 surface. Inside your universe you are god; the only invariant is not
-affecting other users. So: an OWN, PRIVATE, UNPUBLISHED branch deletes; a
-public or published one is refused, because the commons may be remixing it.
+affecting other users. So: an OWN, PRIVATE branch that nothing depends on
+deletes; a public one is refused (foreign graphs invoke public branches
+live); one with dependents is refused with every dependent named; internal
+patch snapshots are not dependents (Codex on the first cut: every patch
+mints two, so counting them made any edited branch undeletable).
 """
 from __future__ import annotations
 
@@ -19,15 +22,18 @@ import json
 import pytest
 
 
-def _spec(name: str) -> dict:
+def _spec(name: str, *, invokes: str = "") -> dict:
+    node = {"node_id": "ready", "display_name": "Ready", "prompt_template": "Do the work."}
+    if invokes:
+        node = {
+            "node_id": "ready",
+            "display_name": "Ready",
+            "invoke_branch_spec": {"branch_def_id": invokes, "wait_mode": "blocking"},
+        }
     return {
         "name": name,
         "entry_point": "ready",
-        "node_defs": [{
-            "node_id": "ready",
-            "display_name": "Ready",
-            "prompt_template": "Do the work.",
-        }],
+        "node_defs": [node],
         "edges": [{"from": "START", "to": "ready"}, {"from": "ready", "to": "END"}],
         "state_schema": [{"name": "x", "type": "str"}],
     }
@@ -52,13 +58,33 @@ def universe_surface(monkeypatch, tmp_path):
     return us, actor
 
 
-def _create(us, name: str) -> str:
+def _create(us, name: str, **kw) -> str:
     out = json.loads(us.write_graph(
-        target="branch", operation="create", payload_json=json.dumps(_spec(name)),
+        target="branch", operation="create", payload_json=json.dumps(_spec(name, **kw)),
         idempotency_key=f"create-{name}-0123456789",
     ))
     assert "branch_def_id" in out, out
     return out["branch_def_id"]
+
+
+def _delete(us, bid: str) -> dict:
+    return json.loads(us.write_graph(target="branch", operation="delete", branch_id=bid))
+
+
+def _make_private(us, bid: str) -> None:
+    out = json.loads(us.write_graph(
+        target="branch", operation="patch", branch_id=bid,
+        changes_json=json.dumps([{"op": "set_visibility", "visibility": "private"}]),
+    ))
+    assert "error" not in out, out
+
+
+def _make_public(us, bid: str) -> None:
+    out = json.loads(us.write_graph(
+        target="branch", operation="patch", branch_id=bid,
+        changes_json=json.dumps([{"op": "set_visibility", "visibility": "public"}]),
+    ))
+    assert "error" not in out, out
 
 
 def _listed(us) -> set[str]:
@@ -71,22 +97,35 @@ def test_an_OWN_private_branch_deletes_and_is_gone_from_the_listing(universe_sur
     bid = _create(us, "probe")
     assert bid in _listed(us)
 
-    out = json.loads(us.write_graph(target="branch", operation="delete", branch_id=bid))
+    out = _delete(us, bid)
 
     assert out == {"branch_def_id": bid, "status": "deleted"}, out
     assert bid not in _listed(us)
 
 
-def test_another_authors_branch_cannot_be_deleted(universe_surface):
-    """Author-gated by the existing handler: a non-author sees not-found, the
-    same envelope get_branch uses, so existence is not confirmed."""
+def test_a_branch_that_was_PATCHED_still_deletes(universe_surface):
+    """Every patch mints pre- and post-patch version snapshots. They are not a
+    publication and must not make the branch undeletable."""
+    us, _actor = universe_surface
+    bid = _create(us, "edited")
+    patched = json.loads(us.write_graph(
+        target="branch", operation="patch", branch_id=bid,
+        changes_json=json.dumps([{"op": "set_description", "description": "edited once"}]),
+    ))
+    assert "error" not in patched, patched
+
+    assert _delete(us, bid)["status"] == "deleted"
+    assert bid not in _listed(us)
+
+
+def test_another_authors_PRIVATE_branch_reads_as_not_found(universe_surface):
     us, actor = universe_surface
     bid = _create(us, "alices")
     actor["id"] = "mallory"
 
-    out = json.loads(us.write_graph(target="branch", operation="delete", branch_id=bid))
+    out = _delete(us, bid)
 
-    assert "error" in out and "deleted" not in json.dumps(out)
+    assert out.get("error", "").startswith("Branch '"), out
     actor["id"] = "alice"
     assert bid in _listed(us), "a non-author deleted someone else's branch"
 
@@ -94,74 +133,156 @@ def test_another_authors_branch_cannot_be_deleted(universe_surface):
 def test_a_non_author_cannot_even_probe_a_PUBLIC_branch_for_deletion(universe_surface):
     """A public branch is readable by anyone, so the resolve step lets a
     non-author through; the author gate must still answer not-found before the
-    public/published reasons are given, or the gate is decoration."""
+    public reason is given, or the gate is decoration."""
     us, actor = universe_surface
     bid = _create(us, "alices-public")
-    patched = json.loads(us.write_graph(
-        target="branch", operation="patch", branch_id=bid,
-        changes_json=json.dumps([{"op": "set_visibility", "visibility": "public"}]),
-    ))
-    assert "error" not in patched, patched
+    _make_public(us, bid)
     actor["id"] = "mallory"
 
-    out = json.loads(us.write_graph(target="branch", operation="delete", branch_id=bid))
+    out = _delete(us, bid)
 
-    assert out.get("error", "").startswith("Branch '"), out   # not-found envelope
-    assert out.get("error") not in ("branch_is_public", "branch_is_published")
+    assert out.get("error", "").startswith("Branch '"), out
+    assert out.get("error") not in ("branch_is_public", "branch_has_dependents")
     actor["id"] = "alice"
     assert bid in _listed(us)
 
 
-def test_a_PUBLISHED_branch_is_refused_because_the_commons_may_depend_on_it(universe_surface):
-    us, _actor = universe_surface
-    bid = _create(us, "shared")
-    published = json.loads(us.write_graph(target="branch", operation="publish", branch_id=bid))
-    assert "error" not in published, published
-
-    out = json.loads(us.write_graph(target="branch", operation="delete", branch_id=bid))
-
-    assert out.get("error") == "branch_is_published", out
-    assert bid in _listed(us)
-
-
-def test_a_PUBLIC_branch_is_refused_because_it_is_in_the_commons(universe_surface):
+def test_a_PUBLIC_branch_is_refused_and_the_advertised_remediation_WORKS(universe_surface):
+    """Codex on the first cut: the refusal said 'make it private first', but
+    the patch that makes it private minted a version, and the version guard
+    then refused forever. The sequence has to actually complete."""
     us, _actor = universe_surface
     bid = _create(us, "commons")
-    patched = json.loads(us.write_graph(
-        target="branch", operation="patch", branch_id=bid,
-        changes_json=json.dumps([{"op": "set_visibility", "visibility": "public"}]),
-    ))
-    assert "error" not in patched, patched
+    _make_public(us, bid)
 
-    out = json.loads(us.write_graph(target="branch", operation="delete", branch_id=bid))
-
-    assert out.get("error") == "branch_is_public", out
+    refused = _delete(us, bid)
+    assert refused.get("error") == "branch_is_public", refused
     assert bid in _listed(us)
+
+    _make_private(us, bid)
+    assert _delete(us, bid)["status"] == "deleted"
+    assert bid not in _listed(us)
+
+
+# ------------------------------------------------ dependents are named, never broken
+
+
+def test_an_ACTIVE_automation_bound_to_the_branch_is_named_and_nothing_is_deleted(
+    universe_surface, tmp_path,
+):
+    """Registration promises never to store an automation that cannot fire;
+    deleting its branch would create exactly that, degrading asynchronously."""
+    from tinyassets.automations import Automation, AutomationStore
+
+    us, _actor = universe_surface
+    bid = _create(us, "nightly-source")
+    AutomationStore(tmp_path).insert(Automation(
+        automation_id="auto-1", universe_id="u-1", owner_principal_id="alice",
+        name="Nightly", branch_def_id=bid, trigger_kind="interval",
+        interval_seconds=3600, cron_expr="", inputs={}, desired_state="active",
+        pause_reason="", revision=1, created_at="2026-09-02T00:00:00Z",
+        updated_at="2026-09-02T00:00:00Z", retired_at="", last_due_at="",
+        last_run_id="", last_reason="", last_finished_at="",
+    ))
+
+    out = _delete(us, bid)
+
+    assert out.get("error") == "branch_has_dependents", out
+    assert out["dependents"]["automations"] == ["auto-1"]
+    assert bid in _listed(us)
+
+
+def test_a_RETIRED_automation_does_not_hold_the_branch(universe_surface, tmp_path):
+    from tinyassets.automations import Automation, AutomationStore
+
+    us, _actor = universe_surface
+    bid = _create(us, "was-nightly")
+    AutomationStore(tmp_path).insert(Automation(
+        automation_id="auto-old", universe_id="u-1", owner_principal_id="alice",
+        name="Old", branch_def_id=bid, trigger_kind="interval",
+        interval_seconds=3600, cron_expr="", inputs={}, desired_state="paused",
+        pause_reason="retired", revision=2, created_at="2026-09-01T00:00:00Z",
+        updated_at="2026-09-02T00:00:00Z", retired_at="2026-09-02T00:00:00Z",
+        last_due_at="", last_run_id="", last_reason="", last_finished_at="",
+    ))
+
+    assert _delete(us, bid)["status"] == "deleted"
+
+
+def test_a_goal_pinned_to_one_of_its_versions_is_named(universe_surface):
+    """`invoke_branch_version` maps a version back to its definition; a goal
+    whose canonical binding points at a version of this branch would break."""
+    us, _actor = universe_surface
+    bid = _create(us, "canon-source")
+    published = json.loads(us.write_graph(target="branch", operation="publish", branch_id=bid))
+    version_id = published.get("branch_version_id")
+    assert version_id, published
+    goal = json.loads(us.write_graph(target="goal", name="Ship it", description="a goal"))
+    goal_id = goal.get("goal_id") or (goal.get("goal") or {}).get("goal_id")
+    assert goal_id, goal
+    bound = json.loads(us.write_graph(
+        target="goal", operation="set_canonical", goal_id=goal_id, branch_version_id=version_id,
+    ))
+    assert "error" not in bound, bound
+
+    out = _delete(us, bid)
+
+    assert out.get("error") == "branch_has_dependents", out
+    assert goal_id in out["dependents"]["goals"]
+    assert bid in _listed(us)
+
+
+def test_a_branch_that_INVOKES_this_one_is_named(universe_surface):
+    us, _actor = universe_surface
+    child = _create(us, "child")
+    parent = _create(us, "parent", invokes=child)
+
+    out = _delete(us, child)
+
+    assert out.get("error") == "branch_has_dependents", out
+    assert out["dependents"]["branches"] == [parent]
+    assert child in _listed(us)
+    # Delete the invoker first, and the child is free.
+    assert _delete(us, parent)["status"] == "deleted"
+    assert _delete(us, child)["status"] == "deleted"
+
+
+def test_a_prompt_that_merely_MENTIONS_the_id_is_not_a_dependent(universe_surface):
+    """Dependents come from the structured child-ref fields, never free text."""
+    us, _actor = universe_surface
+    bid = _create(us, "mentioned")
+    spec = _spec("mentioner")
+    spec["node_defs"][0]["prompt_template"] = f"see branch {bid} for context"
+    out = json.loads(us.write_graph(
+        target="branch", operation="create", payload_json=json.dumps(spec),
+        idempotency_key="create-mentioner-0123456789",
+    ))
+    assert "branch_def_id" in out, out
+
+    assert _delete(us, bid)["status"] == "deleted"
 
 
 def test_delete_needs_a_branch_id(universe_surface):
     us, _actor = universe_surface
-    out = json.loads(us.write_graph(target="branch", operation="delete"))
-    assert "error" in out
+    assert "error" in json.loads(us.write_graph(target="branch", operation="delete"))
 
 
-def test_the_tool_text_names_delete_so_the_universe_can_find_it(universe_surface):
-    """Tiny checked its tool surface and found no delete. The text is the
-    surface."""
+def test_the_tool_text_names_delete_and_both_refusals(universe_surface):
     us, _ = universe_surface
     import inspect
 
-    doc = inspect.getdoc(us.write_graph) or ""
-    assert "delete" in doc.lower() and "branch" in doc.lower()
+    doc = (inspect.getdoc(us.write_graph) or "").lower()
+    assert "delete" in doc and "public" in doc and "depend" in doc
 
 
 # ------------------------------------------ the served build surface (engine)
 
 
-def _bind(monkeypatch, *, actor="sub-9", graph="u-9", allow=("u-9",)):
+def _bind(monkeypatch, tmp_path, *, actor="sub-9", graph="u-9", allow=("u-9",)):
     import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
 
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(s, "_ACTOR_ID", actor)
     monkeypatch.setattr(s, "_GRAPH_ID", graph)
     monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset(allow))
@@ -169,45 +290,75 @@ def _bind(monkeypatch, *, actor="sub-9", graph="u-9", allow=("u-9",)):
     return s
 
 
-def _capture(monkeypatch):
-    import tinyassets.api.extensions as ext
+def test_served_delete_runs_the_REAL_handler_under_the_bound_identity(monkeypatch, tmp_path):
+    """No stub: the served surface creates a branch as the bound identity, then
+    deletes it through the guarded handler, and the listing no longer has it."""
+    s = _bind(monkeypatch, tmp_path)
+    created = json.loads(s.write_graph(
+        target="branch", operation="create", payload_json=json.dumps(_spec("served-probe")),
+        idempotency_key="served-create-0123456789",
+    ))
+    bid = created.get("branch_def_id")
+    assert bid, created
+    listed = json.loads(s.read_graph(target="branches"))
+    assert bid in {b["branch_def_id"] for b in listed.get("branches", [])}
 
-    seen: dict = {}
+    out = json.loads(s.write_graph(target="branch", operation="delete", branch_id=bid))
 
-    def _impl(**kw):
-        seen.update(kw)
-        return json.dumps({"branch_def_id": kw.get("branch_def_id"), "status": "deleted"})
-
-    monkeypatch.setattr(ext, "_extensions_impl", _impl)
-    return seen
-
-
-def test_served_delete_forwards_to_the_guarded_handler(monkeypatch):
-    s = _bind(monkeypatch)
-    seen = _capture(monkeypatch)
-
-    out = json.loads(s.write_graph(target="branch", operation="delete", branch_id="b-1"))
-
-    assert out["status"] == "deleted"
-    assert seen["action"] == "delete_own_branch", seen
-    assert seen["branch_def_id"] == "b-1"
+    assert out == {"branch_def_id": bid, "status": "deleted"}, out
+    listed = json.loads(s.read_graph(target="branches"))
+    assert bid not in {b["branch_def_id"] for b in listed.get("branches", [])}
 
 
-def test_served_delete_requires_branch_id(monkeypatch):
-    s = _bind(monkeypatch)
-    seen = _capture(monkeypatch)
+def test_served_delete_refuses_another_identitys_branch(monkeypatch, tmp_path):
+    s = _bind(monkeypatch, tmp_path, actor="sub-9")
+    created = json.loads(s.write_graph(
+        target="branch", operation="create", payload_json=json.dumps(_spec("mine")),
+        idempotency_key="served-create-mine-0123456789",
+    ))
+    bid = created["branch_def_id"]
+    s2 = _bind(monkeypatch, tmp_path, actor="sub-other", graph="u-other", allow=("u-other",))
 
+    out = json.loads(s2.write_graph(target="branch", operation="delete", branch_id=bid))
+
+    assert "error" in out and "deleted" not in json.dumps(out)
+
+
+def test_served_delete_reaches_the_GUARDED_handler_not_the_raw_one(monkeypatch, tmp_path):
+    """The raw `delete_branch` would delete a public branch; the guarded one
+    refuses it. Made public through the universe surface as the same author,
+    because the served patch sanitizer (rightly) refuses visibility changes."""
+    import tinyassets.universe_server as us
+    from tinyassets.api import permissions
+
+    s = _bind(monkeypatch, tmp_path, actor="sub-9")
+    created = json.loads(s.write_graph(
+        target="branch", operation="create", payload_json=json.dumps(_spec("goes-public")),
+        idempotency_key="served-create-public-0123456789",
+    ))
+    bid = created["branch_def_id"]
+    monkeypatch.setattr(us, "write_gate_rejection", lambda name: None)
+    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: "sub-9")
+    monkeypatch.setattr(permissions, "current_request_actor_id", lambda: "sub-9")
+    _make_public(us, bid)
+
+    out = json.loads(s.write_graph(target="branch", operation="delete", branch_id=bid))
+
+    assert out.get("error") == "branch_is_public", out
+
+
+def test_served_delete_requires_branch_id(monkeypatch, tmp_path):
+    s = _bind(monkeypatch, tmp_path)
     out = json.loads(s.write_graph(target="branch", operation="delete"))
-
     assert "error" in out and "branch_id" in out["error"]
-    assert seen == {}, "the handler was reached without a branch id"
 
 
-def test_served_surface_advertises_delete(monkeypatch):
-    s = _bind(monkeypatch)
-    _capture(monkeypatch)
+def test_served_surface_advertises_delete(monkeypatch, tmp_path):
+    s = _bind(monkeypatch, tmp_path)
     out = json.loads(s.write_graph(target="branch", operation="destroy", branch_id="b-1"))
     assert "delete" in out["error"], "the refusal does not name the operation that exists"
     import inspect
 
-    assert "delete" in (inspect.getdoc(s.write_graph) or "").lower()
+    doc = (inspect.getdoc(s.write_graph) or "").lower()
+    assert "delete" in doc and "public" in doc and "depend" in doc

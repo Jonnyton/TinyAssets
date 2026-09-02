@@ -764,18 +764,91 @@ def _ext_branch_delete(kwargs: dict[str, Any]) -> str:
     return json.dumps({"branch_def_id": bid, "status": "deleted"})
 
 
+def _branch_dependents(
+    base: str, *, branch_def_id: str, actor: str,
+) -> dict[str, list[str]]:
+    """Everything that would break if this branch definition vanished.
+
+    * automations bound to it, in any universe (registration promises not to
+      store one that cannot fire; deleting the branch would create exactly
+      that, and the user would watch it degrade asynchronously);
+    * goals whose canonical binding points at one of its versions
+      (`invoke_branch_version` maps a version back to its definition);
+    * the author's other branches that invoke it by id or by version.
+
+    Internal patch snapshots in `branch_versions` are NOT dependents: every
+    patch mints one, so counting them would make any edited branch
+    undeletable (Codex on the first cut).
+    """
+    import sqlite3
+
+    from tinyassets.automations import AutomationStore
+    from tinyassets.branch_versions import list_branch_versions
+    from tinyassets.daemon_server import list_branch_definitions
+    from tinyassets.storage import db_path
+
+    versions = {
+        v.branch_version_id for v in list_branch_versions(base, branch_def_id, limit=500)
+    }
+    out: dict[str, list[str]] = {"automations": [], "goals": [], "branches": []}
+
+    out["automations"] = [
+        a.automation_id for a in AutomationStore(base).list_for_branch(branch_def_id)
+    ]
+
+    if versions:
+        goal_ids: set[str] = set()
+        db = db_path(base)
+        if db.exists():
+            conn = sqlite3.connect(db)
+            try:
+                placeholders = ",".join("?" for _ in versions)
+                params = tuple(versions)
+                for row in conn.execute(
+                    f"SELECT goal_id FROM canonical_bindings WHERE branch_version_id IN ({placeholders})",
+                    params,
+                ):
+                    goal_ids.add(str(row[0]))
+                try:
+                    for row in conn.execute(
+                        f"SELECT goal_id FROM goals WHERE canonical_branch_version_id IN ({placeholders})",
+                        params,
+                    ):
+                        goal_ids.add(str(row[0]))
+                except sqlite3.OperationalError:
+                    pass  # legacy column absent on a fresh database
+            finally:
+                conn.close()
+        out["goals"] = sorted(goal_ids)
+
+    for row in list_branch_definitions(base, author=actor, include_private=True):
+        other = str(row.get("branch_def_id") or "")
+        if not other or other == branch_def_id:
+            continue
+        nodes = row.get("node_defs") or ((row.get("graph") or {}).get("nodes")) or []
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            by_id = (node.get("invoke_branch_spec") or {}).get("branch_def_id")
+            by_version = (node.get("invoke_branch_version_spec") or {}).get("branch_version_id")
+            if by_id == branch_def_id or (by_version and by_version in versions):
+                out["branches"].append(other)
+                break
+    return out
+
+
 def _ext_branch_delete_own(kwargs: dict[str, Any]) -> str:
-    """Delete one of the caller's OWN private, unpublished branches.
+    """Delete one of the caller's OWN private branches that nothing depends on.
 
     The served surfaces (`write_graph target=branch operation=delete`) route
     here rather than to `delete_branch`. Tiny, 2026-09-02: "I do not have a
     branch delete operation exposed right now ... 106 branches". Inside your
-    universe you are god; the only invariant is not affecting other users. A
-    public branch is part of the remix commons and a published one has frozen
-    versions others may be bound to, so both are refused here with the reason
-    named -- the browser flow owns unpublishing.
+    universe you are god; the only invariant is not affecting other users.
+    So a PUBLIC branch is refused (foreign graphs invoke public branches live,
+    `graph_compiler._authorize_child_ref`), and a branch with dependents is
+    refused with every dependent named so the owner can delete or re-point
+    them first. Internal patch snapshots are not dependents.
     """
-    from tinyassets.branch_versions import list_branch_versions
     from tinyassets.daemon_server import delete_branch_definition
 
     selector = kwargs.get("branch_def_id", "").strip()
@@ -788,26 +861,28 @@ def _ext_branch_delete_own(kwargs: dict[str, Any]) -> str:
     bid, branch = resolved
     if not _branch_authorized(branch):
         # Same envelope as a private read by a non-author: existence is not
-        # confirmed either way.
+        # confirmed either way, even for a public branch.
         return _branch_not_found(selector)
     if (branch.get("visibility", "public") or "public") == "public":
         return json.dumps({
             "error": "branch_is_public",
             "branch_def_id": bid,
             "detail": (
-                "This branch is public, so it is part of the remix commons and "
-                "others may have built on it. Make it private first (or leave it), "
-                "then delete."
+                "This branch is public: other universes may invoke it live and "
+                "remix it. Patch it private first (set_visibility), then delete."
             ),
         })
-    if branch.get("published") or list_branch_versions(base, bid, limit=1):
+    actor = _request_branch_actor() or ""
+    dependents = _branch_dependents(base, branch_def_id=bid, actor=actor)
+    if any(dependents.values()):
         return json.dumps({
-            "error": "branch_is_published",
+            "error": "branch_has_dependents",
             "branch_def_id": bid,
+            "dependents": dependents,
             "detail": (
-                "This branch has published versions that goals or other bindings "
-                "may be pinned to. Unpublishing stays in the browser flow; a "
-                "private unpublished branch deletes here."
+                "Something of yours still uses this branch: delete or re-point "
+                "the automations, unset the goals' canonical binding, or edit the "
+                "branches that invoke it, then delete."
             ),
         })
     removed = delete_branch_definition(base, branch_def_id=bid)

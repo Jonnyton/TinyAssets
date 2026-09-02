@@ -763,8 +763,9 @@ def write_graph(
             With target=branch, create/remix/patch/publish/delete. Create and
             remix consume a complete Branch spec in payload_json; remix uses its
             fork_from field. Publish freezes the named branch_id. Delete removes
-            one of YOUR OWN private, unpublished branches by branch_id; a public
-            or published branch is refused with the reason.
+            one of YOUR OWN private branches by branch_id; a public branch, or
+            one an automation, goal binding or invoking branch still depends on,
+            is refused with the dependents named.
             With target=connection, connect_llm deposits the authenticated
             owner's own Claude/Codex subscription into this universe's private
             vault (owner-only; see payload_json). Also with target=connection,
