@@ -19,6 +19,8 @@ import shutil
 import sqlite3
 from pathlib import Path
 
+from tinyassets.universe_prune import INFRASTRUCTURE_DIRS
+
 # Universe-scoped tables in .tinyassets.db, cleared entirely. Every row belongs
 # to a universe (index / visibility / ownership / per-universe runtime + branch
 # INSTANCES). The reusable commons (branch_definitions, goals, gate_claims,
@@ -62,12 +64,13 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     ).fetchone() is not None
 
 
-#: What a clean-slate reset must NOT clear. Deliberately its own list rather
-#: than the universe definition: a reset clears every directory that is not
-#: platform infrastructure, INCLUDING the unowned leftovers a past prune left
-#: behind. Asking "is this a universe?" here would preserve exactly the
-#: directories the reset exists to remove.
-_RESET_PRESERVED_DIRS = frozenset({"lance", "output", "runs", "wiki"})
+#: What a clean-slate reset must NOT clear: platform infrastructure, and
+#: nothing else. A reset clears every other directory, INCLUDING the unowned
+#: leftovers a past prune left behind -- asking "is this a universe?" here
+#: would preserve exactly the directories the reset exists to remove. That is
+#: a different question from what to preserve, which is the same fact the
+#: prune reads, so it is read from the same place.
+_RESET_PRESERVED_DIRS = INFRASTRUCTURE_DIRS
 
 
 def universe_dirs(base: Path) -> list[Path]:

@@ -29,7 +29,19 @@ from typing import Any
 
 #: Platform infrastructure that shares the data root with universes. Not
 #: universes, and not leftovers either: deleting them breaks a running daemon.
-INFRASTRUCTURE_DIRS = frozenset({"lance", "output", "runs", "wiki"})
+#:
+#: This is the ONE definition -- `tinyassets/reset.py` imports it rather than
+#: keeping a second copy, and `test_a_universe_needs_an_owner.py` reads the
+#: source for every ``data_dir() / "<name>"`` directory and fails if one is
+#: missing here. `founder_offers` was missing, and a prune would have deleted
+#: every founder's stored offers.
+INFRASTRUCTURE_DIRS = frozenset({
+    "founder_offers",
+    "lance",
+    "output",
+    "runs",
+    "wiki",
+})
 
 #: Files whose presence says a directory held real work. Reported, never
 #: decisive: the founder decides, this only makes the decision informed.

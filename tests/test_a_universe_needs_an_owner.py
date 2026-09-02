@@ -15,6 +15,7 @@ universe aside created one.
 from __future__ import annotations
 
 import json
+import pathlib
 
 import pytest
 
@@ -24,6 +25,7 @@ from tinyassets.daemon_server import (
     owned_universe_ids,
     universe_owners,
 )
+from tinyassets.universe_prune import INFRASTRUCTURE_DIRS
 
 
 def _universe(base, name: str) -> None:
@@ -250,3 +252,52 @@ def test_a_prune_leaves_nothing_behind_to_prune(data_root):
     assert [u["id"] for u in listed["universes"]] == ["u-mine"]
     # ...and running it again has nothing to do.
     assert [r for r in plan(data_root) if r.removable] == []
+
+
+# --------------------------------------------------------------------------
+# the list stays complete
+# --------------------------------------------------------------------------
+
+
+def test_every_platform_directory_under_the_data_root_is_named_infrastructure():
+    """A directory the platform creates under the data root and nobody owns is
+    removable, so a missing name here is a delete of real data.
+
+    `founder_offers` was missing: `_founder_offers_path` creates
+    ``data_dir()/founder_offers`` to hold every founder's stored offers, no ACL
+    row ever names it, and `prune --apply` would have cut it. Reviewing the
+    constant by eye is what missed it, so this reads the source instead.
+    """
+    import re
+
+    repo_root = pathlib.Path(__file__).resolve().parent.parent
+    package = repo_root / "tinyassets"
+    assert package.is_dir(), package
+
+    # A universe directory, not infrastructure: it is subject to ownership like
+    # any other, which is the whole point of the change.
+    universe_dirs = {"default-universe"}
+
+    # A directory-name shape only: this must not match prose like
+    # ``data_dir() / "<name>"`` in a docstring.
+    pattern = re.compile(r'data_dir\(\)\s*/\s*"([A-Za-z0-9_.-]+)"')
+    found: dict[str, str] = {}
+    for source in package.rglob("*.py"):
+        for name in pattern.findall(source.read_text(encoding="utf-8")):
+            # A name carrying an extension is a file, not a directory.
+            if "." in name:
+                continue
+            found.setdefault(name, str(source.relative_to(repo_root)))
+
+    assert found, "the scan found nothing -- it stopped testing what it claims"
+
+    missing = {
+        name: where
+        for name, where in found.items()
+        if name not in INFRASTRUCTURE_DIRS and name not in universe_dirs
+    }
+    assert not missing, (
+        "these directories are created under the data root but are neither "
+        "platform infrastructure nor a universe, so a prune would delete "
+        f"them: {missing}"
+    )
