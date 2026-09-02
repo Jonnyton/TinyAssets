@@ -56,6 +56,10 @@ jobs:
           python3 scripts/add_app_scheme.py
           grep -n 'android:scheme="tinyassets"' android/app/src/main/AndroidManifest.xml
 
+      - name: Install the launcher icon + splash (pre-rendered, no image toolchain in CI)
+        working-directory: mobile
+        run: python3 scripts/add_app_icons.py
+
       - name: Build unsigned release bundle
         working-directory: mobile/android
         run: ./gradlew bundleRelease --no-daemon --stacktrace
@@ -75,6 +79,11 @@ jobs:
           KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
           AAB: ${{ steps.findaab.outputs.aab }}
+          # The upload certificate generated 2026-09-01 (keytool, RSA 2048, alias
+          # `upload`). A restored keystore that does not carry exactly this
+          # certificate must never sign a Play upload — fail closed, like the
+          # debug-keystore pin in android-build.yml.
+          EXPECTED_SHA256: "D0:BC:F2:FB:EA:4E:11:6D:87:DD:DD:BD:B2:4C:1E:28:53:7A:CA:77:BE:8E:69:BE:AD:52:C7:C1:C1:03:B2:11"
         run: |
           set -euo pipefail
           if [ -z "${KEYSTORE_B64:-}" ]; then
@@ -84,6 +93,12 @@ jobs:
           ks="$RUNNER_TEMP/upload.jks"
           printf '%s' "$KEYSTORE_B64" | base64 -d > "$ks"
           trap 'rm -f "$ks"' EXIT
+          actual="$(keytool -list -v -keystore "$ks" -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" | awk '/SHA256:/ {print $2; exit}')"
+          if [ "$actual" != "$EXPECTED_SHA256" ]; then
+            echo "::error::upload keystore certificate fingerprint mismatch ($actual) — refusing to sign"
+            exit 1
+          fi
+          echo "upload certificate fingerprint verified"
           jarsigner -sigalg SHA256withRSA -digestalg SHA-256 \
             -keystore "$ks" -storepass "$KEYSTORE_PASSWORD" -keypass "$KEY_PASSWORD" \
             "$AAB" "$KEY_ALIAS"
