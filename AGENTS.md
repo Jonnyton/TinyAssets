@@ -154,7 +154,7 @@ inventory is a WIP queue, not an archive of ambitions.
 
 ### Site preview / ship loop
 
-The site lives in `WebSite/site/`. For any non-trivial site edit read
+The site lives in `WebSite/site-react/`. For any non-trivial site edit read
 `.agents/skills/website-editing/SKILL.md` first — it owns the preview loop,
 capture conventions, and the build/ship pipeline.
 

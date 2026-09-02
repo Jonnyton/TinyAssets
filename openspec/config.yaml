@@ -5,7 +5,7 @@ context: |
   TinyAssets (formerly "Workflow"; the code rename to the `tinyassets/`
   package is complete): a goal-agnostic daemon engine + democratized
   production commons. Python 3.11+ backend (`tinyassets/` package,
-  `fantasy_daemon/` runtime entry), SvelteKit site (WebSite/site/), live
+  `fantasy_daemon/` runtime entry), Next.js static site (WebSite/site-react/), live
   MCP connector at https://tinyassets.io/mcp advertising the canonical
   handle set read_graph/write_graph/run_graph/read_page/write_page/converse
   plus get_status (authoritative spec:

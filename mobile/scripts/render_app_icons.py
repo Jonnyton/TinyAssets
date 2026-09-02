@@ -14,7 +14,10 @@ Two stages, both idempotent:
 
 Usage (from ``mobile/``):
     python scripts/render_app_icons.py
-    python scripts/render_app_icons.py --from-logo ../WebSite/site/static/logo-mark.png
+    python scripts/render_app_icons.py --from-logo ../assets/icon.png
+
+``WebSite/brand/render_marks.py`` runs the second form for you as part of exporting
+the mark to every surface.
 """
 from __future__ import annotations
 

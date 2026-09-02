@@ -1,10 +1,11 @@
 # Runbook — deploy the current React/Next production site
 
-**Status (2026-07-26):** the cutover is complete. `WebSite/site-react/` is the
-current production source for `tinyassets.io`. It is published manually through
-`.github/workflows/deploy-site-react.yml`. `WebSite/site/` is retained only as
-the dispatch-only Svelte rollback source through
-`.github/workflows/deploy-site.yml`.
+**Status (2026-09-02):** the cutover is complete and the Svelte rollback tree
+is retired. `WebSite/site-react/` is the only site source for `tinyassets.io`,
+published manually through `.github/workflows/deploy-site-react.yml`.
+`WebSite/site/` and `deploy-site.yml` were deleted on 2026-09-02; rolling back
+now means re-running `deploy-site-react` on an earlier revision. The steps
+below that mention the Svelte tree are historical.
 
 Both workflows deploy to the same `github-pages` environment and share the
 `pages` concurrency group. Never run them concurrently, and never add an

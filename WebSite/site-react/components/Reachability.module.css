@@ -1,0 +1,11 @@
+.strip {
+  display: grid;
+  gap: var(--s-4);
+  max-width: 720px;
+}
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-4);
+}

@@ -1,13 +1,11 @@
 import type { Metadata } from "next";
-import HostClient from "./_components/HostClient";
+import { Moved } from "../_components/Moved";
 
 export const metadata: Metadata = {
-  title: "Host — run Tiny on your own machine",
-  description:
-    "You don't have to host anything to use Tiny — the public engine runs 24/7. Hosting is for private universes on your own machine: your keys, your data, and the workflows you choose.",
-  alternates: { canonical: "https://tinyassets.io/host" },
+  title: "Moved",
+  robots: { index: false, follow: true },
 };
 
-export default function HostPage() {
-  return <HostClient />;
+export default function Page() {
+  return <Moved to="/start/" name="Start" line="Hosting became starting: your universe runs in the cloud on your subscription." />;
 }

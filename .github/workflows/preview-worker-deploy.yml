@@ -75,7 +75,7 @@ jobs:
           gh api "repos/${REPOSITORY}" > "${metadata}/repository.json"
           gh api "repos/${REPOSITORY}/actions/runs/${RUN_ID}/artifacts?name=${artifact_name}&per_page=100" > "${metadata}/artifacts.json"
 
-          node trusted-source/WebSite/site/scripts/validate-preview-run.mjs \
+          node trusted-source/WebSite/site-react/scripts/validate-preview-run.mjs \
             "${metadata}/run.json" \
             "${metadata}/workflow.json" \
             "${metadata}/pr.json" \
@@ -108,7 +108,7 @@ jobs:
           set -euo pipefail
           sanitized="${RUNNER_TEMP}/preview-sanitized"
           mkdir -p "${sanitized}"
-          node trusted-source/WebSite/site/scripts/validate-preview-artifact.mjs \
+          node trusted-source/WebSite/site-react/scripts/validate-preview-artifact.mjs \
             "${RUNNER_TEMP}/preview-untrusted" \
             "${sanitized}/out" > "${sanitized}/manifest.json"
 
@@ -166,7 +166,7 @@ jobs:
           deployment="${RUNNER_TEMP}/preview-deployment"
           manifest="${RUNNER_TEMP}/preview-sanitized/manifest.json"
           revalidated="${RUNNER_TEMP}/manifest.revalidated.json"
-          node trusted-source/WebSite/site/scripts/validate-preview-artifact.mjs \
+          node trusted-source/WebSite/site-react/scripts/validate-preview-artifact.mjs \
             "${RUNNER_TEMP}/preview-sanitized/out" \
             "${deployment}/out" > "${revalidated}"
           cmp "${manifest}" "${revalidated}"
@@ -236,7 +236,7 @@ jobs:
         run: |
           set -euo pipefail
           receipt="${RUNNER_TEMP}/preview-upload-receipt.json"
-          node "${GITHUB_WORKSPACE}/trusted-source/WebSite/site/scripts/validate-preview-upload.mjs" \
+          node "${GITHUB_WORKSPACE}/trusted-source/WebSite/site-react/scripts/validate-preview-upload.mjs" \
             "${RUNNER_TEMP}/wrangler-output.log" \
             "${PREVIEW_ALIAS}" > "${receipt}"
           {

@@ -1,152 +1,142 @@
 ---
 name: website-editing
-description: "Conventions for editing the TinyAssets production React/Next site and retained Svelte rollback site. Use for website copy, components, routes, content, styling, captures of real chatbot conversations, preview, or deploy. Covers production-first parity, preview loops, transparent-capture conventions, build/ship pipeline, and auto-iteration on recurring failures."
+description: "Conventions for editing the TinyAssets public site (WebSite/site-react, Next.js static export on @tiny/design-system). Use for website copy, components, routes, styling, the mark and brand assets, live-data surfaces, preview, tests, or deploy. Covers the preview loop, the copy rules, the public-read boundary, the build/test/sweep pipeline, and the manual deploy."
 ---
 
 # Website editing
 
-`WebSite/site-react/` is the current React/Next production source for
-`tinyassets.io`; it deploys manually through `deploy-site-react.yml`.
-`WebSite/site/` is the retained Svelte rollback source and deploys only through
-an explicit dispatch of `deploy-site.yml`. These are project-level website
-rules — they apply equally to every provider (Codex, Cursor, Aider, Claude Code,
-), but the detailed rules live here so `AGENTS.md` can stay lean. When in
-doubt, add website conventions to this skill and keep provider-specific files
-as pointers or harness notes.
+`WebSite/site-react/` is the only source for `tinyassets.io`. It is a Next.js
+14 App Router static export that consumes `@tiny/design-system`
+(`WebSite/design-system/`, tokens + base styles + components). It deploys
+manually through `deploy-site-react.yml`. The Svelte rollback tree was retired
+on 2026-09-02; do not recreate a second tree or a parity step.
+
+These are project-level website rules for every provider; `AGENTS.md` only
+points here.
 
 ## Before you edit anything
 
-1. **Read `WebSite/PREVIEW.md`** — the canonical two-tree preview loop.
-2. **Edit and build React first.** Preview `WebSite/site-react/` at `http://localhost:3000/`; use `WebSite/site-react/PREVIEW.md` for the production-exact and hosted paths.
-3. **Preserve Svelte rollback parity.** Mirror the intended user-visible behavior into `WebSite/site/` and preview it at the hard-pinned `http://localhost:5173/` through `WebSite/preview.bat`.
-4. **Read `WebSite/DEPLOY.md`** if you might ship — it covers the normal review/merge path, manual React deployment, dispatch-only Svelte rollback, and live verification.
+1. **Read `WebSite/PREVIEW.md`** (the preview loop) and, if you might ship,
+   `WebSite/DEPLOY.md`.
+2. **Know what the site is for.** One sentence the whole site serves: *your own
+   AI universe: a cloud agent that runs on your subscription, builds any
+   automation to any platform from primitives, learns you continuously, and
+   runs 24/7 under your control.* Every page has one job; the map is in
+   `openspec/specs/public-website-surface/spec.md`.
+3. **Tokens live in the design system.** Colour, type, spacing, and the
+   vocabulary classes (`.sheet`, `.rule`, `.ledger`, `.receipt`, `.ev`,
+   `.eyebrow`) come from `WebSite/design-system/src/styles/`. Edit
+   `tokens.css` (canonical), run `npm run build` there, and the site picks it
+   up. `DESIGN.md` there is the rules layer.
+4. **The mark has one source.** `tinyassets/desktop/icon_gen.py` owns the
+   geometry and palette; `python WebSite/brand/render_marks.py` exports it to
+   every surface (site icons, `assets/`, desktop, Android, tray, Play
+   listing) and `python WebSite/brand/render_og.py` renders the OG card.
+   Never hand-edit an exported PNG or ICO.
 
 ## The iteration loop
 
-Once the React dev server is up and Jonathan has the tab open at
-`localhost:3000/`:
-
 ```
-Jonathan:  "the hero subline is too long"
-Agent:     [edits the React production component, then mirrors Svelte parity]
-Jonathan:  [tab updates by itself]   ← HMR, no F5 needed
-Jonathan:  "yeah that's better"
+cd WebSite/site-react && npm run dev     # http://localhost:3000, live /mcp proxied
 ```
 
-You do **not** rebuild or redeploy to show a development change. The React dev
-server pushes updates to tabs on port 3000; Vite pushes Svelte rollback updates
-to tabs on port 5173. Each tree has its own preview. Review React first, then
-the Svelte parity result.
+Edit, the tab updates (HMR). If a tab ever needs F5, investigate; do not
+normalise the workaround. Copy and tokens are reviewed in the browser, not in
+the diff.
 
-If F5 is ever needed, that's a signal HMR misfired — **investigate**, don't normalize the workaround. The intended state is "edit a file, tab updates, no input from the user."
+## Copy rules
 
-## Transparent capture — when a page intentionally publishes a real chatbot conversation
+- **Sell outcomes, not mechanisms.** Never open with "AI-powered workflow
+  engine". Lead with what a universe finishes: a merged PR, a ledger, a
+  watched feed. The proof on the home page is a real receipt (PR #2728).
+- **Naming.** *TinyAssets* is the platform, site, and brand. *Tiny* is the
+  universe the person talks to; it speaks first person. A chatbot *relays* to
+  the universe; it never "embodies" it.
+- **Honest availability.** No platform model; Claude is a setup-token deposit,
+  not an OAuth button; ChatGPT/Codex is one tap. Android is a pre-release APK;
+  desktop builds are unsigned and from source. Say so in words.
+- **Plans in one place.** `/fine-print#plans` is the only page that describes
+  free versus premium ($20 a month, higher daily limits on outside-world
+  actions, compute and storage). No numbers until enforcement is live, no
+  upgrade control until the app has one. `/start` may carry one sentence
+  linking there.
+- **Do not advertise** the paid market, crypto or tokens, hardware, host-run
+  fleets, per-channel integration lists, the retired `Workflow` name, or
+  "powered by <model>". No engagement metrics anywhere.
+- **Hero** = ritual label + H1 + one lead paragraph + one primary action.
+  Secondary links are quiet text.
+- **Forms are never fake.** If there is no backend, use `mailto:` with real
+  fields.
+- **Affordance contract.** If it looks clickable it is clickable; prefer
+  `<a>`/`<button>` over clickable `<div>`s.
+- **Refresh labels are fixed:** `Refresh MCP` and `Refresh GitHub`.
+- **No phone numbers.**
 
-The homepage and `/loop` do not currently publish captured conversations;
-`/loop` is provenance-labelled generic workflow activity. If a future
-user-authored site design intentionally publishes a real chatbot conversation,
-the principle is: **when claiming transparency, the captured material has to
-BE the captured material — not a summary, not a paraphrase, not curated
-highlights.**
+## The public-read boundary (tested)
 
-Required when capturing a real conversation for the site:
+`lib/live.ts` reads only the public projection (`read_graph target=graphs`,
+`read_page` inventory) through `WebSite/shared/mcp/public-read-contract.js`.
+A public browser never downloads `get_status`, never requests goals or runs,
+never defaults a missing visibility to public, and never relabels the
+checked-in snapshot as a live read. `WebSite/site-react/scripts/public-boundary.test.mjs` and its canonical-contract
+sibling enforce this; extend them when you
+add a live surface.
 
-1. **Every word verbatim.** Use the Claude in Chrome browser tools to drive the actual chat in claude.ai. Use `get_page_text` to extract the rendered conversation. Don't reword. Don't shorten. Don't "tighten the prose."
-2. **Mirror the source's disclosure layers exactly.** Claude.ai uses summary chips that toggle to reveal thought traces, and inside long traces it has secondary "Show more / Show less" buttons. The website should mirror **both layers** with the same defaults — chips closed by default, long thoughts truncated by default with the same Show more cut.
-3. **Click every disclosure before claiming you have the full text.** Each chip has its own Show more. Re-extract via `get_page_text` after every expansion to make sure you've got it all.
-4. **Render the full diagram(s).** Real diagrams have specific node counts, edge labels, color groups. Hand-rolled SVGs are fine — but the SVG must be faithful to the source: same node count, same labels, same back-edges, same color groups (blue branch, warm gate, green live/done, dashed planned/terminal).
-5. **Anchor section verbatim.** When the chatbot lists "Anchors used: Goal X — …", reproduce the prose as a single block, not a bullet summary. The "honest caveat" line gets its own visually distinct callout.
-6. **Footer line names the source.** *"Captured 2026-MM-DD from claude.ai with the TinyAssets MCP connector attached. Every word above appears verbatim in the original chat."*
+## Routes
 
-**Anti-pattern:** writing "Loading tools — Goals — Wiki Knowledge Base × 3" and calling it a thought trace. That's a summary of tool calls, not the actual text. The actual text has Claude's reasoning between each tool call. Capture all of it.
+Six public routes plus legal: `/`, `/start`, `/build`, `/commons`,
+`/developers`, `/fine-print`, `/legal`, and `/account` (robots-disallowed).
+Every retired route is a soft-landing alias through `app/_components/Moved.tsx`
+(two-second redirect with a visible link). Nav items live in `lib/site.ts`
+(`NAV`); canonical URLs in `SITE`. Adding a nav item updates desktop and the
+phone drawer together.
 
-## Page conventions
+## Build, test, sweep, ship
 
-- **Hero**: H1 + ritual label + ONE lead paragraph. If you find yourself writing two intro paragraphs that overlap in meaning, consolidate.
-- **Home action discipline**: the homepage first screen should name the three primary user actions plainly. Live MCP/GitHub state supports those actions; it must not turn the home page into a catalog of every implementation.
-- **CTAs**: don't dilute. The home hero has one primary action; secondary CTAs go further down.
-- **Mobile**: TopNav has a hamburger drawer at `<=1000px`. If you add nav items, they go in `TopNav.svelte`'s `items` array — both the desktop nav and the mobile drawer auto-render.
-- **Stub pages and retired routes** (`/status`, `/account`, `/goals`, `/catalog`): keep them honest. `/wiki` is the canonical community wiki and public-work lens. `/goals` and `/catalog` are compatibility redirects only; do not advertise `/goals` in primary nav, CTAs, sitemap, or graph affordances.
-- **Forms**: never fake. If there's no backend yet, use `mailto:` (the alliance form does this). Real fields with `name=` attributes; `onsubmit` actually does something.
-- **Affordance contract**: if something looks clickable, it must be clickable. If it is not a real control/link, remove the button/card/chip hover treatment. Clickable site elements should either navigate to a real route/source, change visible UI state backed by the current MCP/repo snapshot, trigger a real refresh/probe, copy a real value, or open a live source such as MCP/GitHub/wiki data. Prefer `<button>` and `<a>` over clickable `<div>`s.
-- **Clickable cards use valid interactive markup.** If a whole card is a `<button>`, keep its children phrasing-only (`span`, `strong`, `small`, etc.); headings, paragraphs, and divs can be parsed outside the button and make only part of the card clickable. If the card needs block content, use an `<a>` for navigation or put a real button/link inside the card with a clearly bounded hit target, then verify by clicking the title/body text in Playwright.
-- **Refresh labels are fixed.** Site-wide live-data buttons are always named `Refresh MCP` and `Refresh GitHub`. Page-specific variants like `Probe MCP`, `Refresh goals`, or `Refresh branches` make the same command feel like different controls.
-- **Source readouts are evidence, not navigation.** `MCP source` / `GitHub source` cells should be static proof readouts unless they open the actual raw source in a clearly different context. Do not link a source readout to another page that repeats the same source readout.
-- **No adjacent duplicate destinations.** If two nearby clickable surfaces go to the same route/source, keep the clearer or richer one and remove, demote, or retarget the weaker one. A duplicate link is only acceptable when it is separated by context or serves a different workflow moment.
-- **Merge overlapping page jobs.** If two site pages are trying to do the same user job, pick the stronger live-data surface as canonical, remove the weaker page from primary navigation and graph affordances, and keep the old route only as a compatibility redirect/alias when existing links may exist.
-- **Graph navigation theme**: when a page presents itself as a live project lens, use the shared mini graph navigation pattern where it helps orientation: render a live MCP/repo-backed graph preview that links to `/graph` and highlights the current lens, rather than a static CTA tile.
-- **Graph truth layers.** `/graph` should not show project objects as visual orphans just because an explicit cross-reference has not been extracted yet. Add truthful relationship layers from live source structure first: bug tracker hub for BUG pages, goal/universe/wiki-draft hubs for MCP collections, GitHub branch hub for branch refs, and tag hubs for shared real tags. Keep explicit references visually stronger than collection/tag edges, and rename residual counts to "loose ends" or "isolated" so the page distinguishes missing specific routing from fake disconnection.
-- **Stage rails stay compact.** A 1-N workflow rail is navigation/status, not the detail pane. Do not let stage tiles stretch to match a tall neighboring event stream or carry full error/output text. Keep tiles compact, clamp long labels, and route verbose failure/output details to the current-run card or event stream. If there is room, include a short latest-event summary that leads with the useful event text, such as `ran - Intake Router`; avoid prefixes like `Last event:` when they crowd out the actual event. Never put raw prompt/output JSON in the rail. For historical/no-active-run stages, preserve recency in the tile with `Last ran <timestamp>` and put `See recent events` as the bottom cue instead of replacing the timestamp with a generic `status - see recent events` line.
-- **Selected-stage detail belongs below the rail when space allows.** If the user's primary interaction is clicking a 1-N rail, the clicked stage's explanation and live evidence should appear as a full-width downstream panel under the rail, not as a skinny sidecar that leaves empty space below the controls. The panel should surface real MCP/GitHub records: latest signal, source, run/node IDs, stage history, and explicit empty states. Detail cards must size to their own content, wrap long URLs/IDs, and keep long histories or raw live payloads in bounded scroll areas so selecting a busy stage cannot stretch or bleed text into neighboring boxes.
-- **No phone numbers.** Per user directive: async-first project. Phone refs were removed in 2026-04. If a future need surfaces, talk to the user before adding one back.
+```
+cd WebSite/design-system && npm run build      # after any token/component change
+cd ../site-react
+npm test                                       # contract + boundary + preview validators
+npm run build                                  # out/<route>/index.html for every route
+python scripts/sweep.py --shots ../../out-shots  # errs 0, warns 0, no overflow, aliases land
+node scripts/snapshot-public.mjs               # refresh lib/mcp-snapshot.json when it is stale
+```
 
-## Build + ship
+Before declaring done: the sweep is clean, the screenshots were looked at,
+and the live surfaces on `npm run dev` render readable records or an explicit
+labelled empty/failed state after `Refresh MCP`. Reject raw placeholders such
+as `{}`, `[]`, `undefined`, or epoch numbers.
 
-- **Production React/Next:** build `WebSite/site-react/` first with `npm ci`
-  and `npm run build`. The static export is `out/`. A merge does not publish
-  it; a host manually runs `deploy-site-react.yml` with `confirm: deploy`.
-- **Retained Svelte rollback:** mirror user-visible parity into
-  `WebSite/site/`, then run `npm ci`, `npm run check`, and `npm run build`.
-  `src/routes/+layout.ts` must retain `export const prerender = true;`, and
-  `svelte.config.js` must list every route. Its static output is `build/`.
-- New assets and route configuration belong in both trees when the production
-  change requires rollback parity.
-- Publish the reviewed website branch through the normal pull-request path.
-  A merge does not deploy either tree. After merge, follow
-  `WebSite/DEPLOY.md` for the manual React deployment and rendered live
-  verification.
-- `deploy-site.yml` is dispatch-only Svelte rollback. Never add push or cron
-  triggers or treat it as a second production pipeline.
-
-## Verification before shipping
-
-Before declaring a website edit "done":
-
-1. **Production build first**: `cd WebSite/site-react && npm run build` must
-   produce the expected static routes in `out/`.
-2. **Rollback parity build**: `cd WebSite/site && npm run check && npm run build`
-   must produce `build/<route>.html` for the retained Svelte routes.
-3. **Playwright sweep**: hit every affected route in the React preview first,
-   then the corresponding Svelte rollback route. Assert `errs: 0`, `warns: 0`,
-   and the key rendered elements.
-4. **For live-data controls**: click the real refresh button and assert the page renders meaningful data, not just a successful HTTP response or a changed source label. A pass requires the user-visible content to contain current, human-readable records or an explicit empty-state reason. Reject raw placeholders such as `{}`, `[]`, `undefined`, numeric epoch timestamps, stuck disabled buttons, or a green source label with no populated rows. Workflow activity must be provenance-labeled as ordinary user-workflow activity. If no current activity is available, show an explicit empty-state reason; never substitute community-watch or platform-uptime evidence. Uptime evidence is a separate, explicitly labeled surface.
-5. **For workflow rails**: measure rendered stage tiles in Playwright on desktop and mobile. Empty or lightly populated stages must not become tall vertical strips just because a neighboring event stream is tall, and long failure text must not force a tile to hundreds of pixels high. Verify stage text is visible without internal scrolling; verbose details belong in the current-run card or selected-stage panel. Click every 1-N stage control and assert a clear, nearby visible state change beyond a subtle border, such as a full-width selected-stage panel changing title, purpose, event count, live signals, source, run IDs, or node IDs.
-6. **For chat-capture pages**: assert defaults match the source's collapsed state (chips closed, long thoughts truncated). Then click and re-assert each disclosure layer.
-7. **For HMR-sensitive Svelte changes** (vite config, `+layout.ts`, prerender entries): rebuild from scratch (`rm -rf build` first) — stale `.svelte-kit/` artifacts can mask real failures.
+Ship through the normal pull-request path. A merge does not deploy. A host runs
+`deploy-site-react.yml` with `confirm: deploy`, then the canary and
+`deployed_sha.py` checks in `WebSite/DEPLOY.md`.
 
 ## Auto-iterate on recurring website failures
 
-When a website-related failure recurs, ratchet the prevention rather than fixing it again:
-
 | Recurrence | Ratchet |
 |---|---|
-| 1st  | Fix in place. Note it in the relevant doc. |
-| 2nd  | Add the rule to **this** SKILL.md and the relevant subsystem doc (PREVIEW.md / DEPLOY.md). |
-| 3rd  | Build a runnable check in `scripts/` that catches the failure pattern. |
-| 4th  | Wire as a PostToolUse hook in `.claude/hooks/` for Claude Code; runnable from any provider. |
+| 1st | Fix in place. Note it in the relevant doc. |
+| 2nd | Add the rule to **this** SKILL.md and PREVIEW.md / DEPLOY.md. |
+| 3rd | Build a runnable check under the site's `scripts/` directory (node test or the sweep). |
+| 4th | Wire it as a hook; runnable from any provider. |
 | Next | Pre-commit / CI gate. |
 
-Concrete examples that have already ratcheted:
-- **Cross-provider drift** → AGENTS.md rule → `scripts/check_cross_provider_drift.py` → the `cross-provider-drift` invariant, gated by `scripts/git-hooks/pre-commit`. Ladder: `AGENTS.md` § *Where new conventions live*.
-- **Build outputs no HTML** → noticed when `build/` had only static assets; root cause was missing `prerender = true` in `+layout.ts`. The "verification before shipping" rule above (assert `build/<route>.html` exists) prevents recurrence.
-- **Live-data false positive** → a workflow-activity refresh passed on button/source/no console errors while the event stream rendered `{}` details and raw epoch timestamps. The live-data control rule above prevents declaring success until the populated records are readable.
-- **Stretched workflow rail** → a 1-6 stage rail stretched to the full event-stream height, creating tall vertical strips where sparse text sat far from the visible top. The workflow-rail verification above requires bounding-box checks on desktop and mobile.
-- **Invisible stage click result** → stage buttons updated selection state but the page appeared unchanged to users. The workflow-rail verification above now requires clicking every stage and asserting a visible content change.
-- **Stale workflow accepted as current** → a readable historical terminal run was incorrectly treated as current activity. The live-data rule above requires freshness checks and an explicit empty state; uptime evidence stays separately labeled and never substitutes for user-workflow activity.
+Ratchets already in place: cross-provider drift (`cross-provider-drift`
+invariant); the public-read boundary (node tests); the rendered sweep
+(`WebSite/site-react/scripts/sweep.py`); exact workflow pinning for the hosted-preview trust
+boundary (the pinned preview-worker security test).
 
 ## Files involved
 
-| File                                          | What it is                                     |
-|-----------------------------------------------|------------------------------------------------|
-| `WebSite/site-react/`                         | Current production React/Next source           |
-| `WebSite/site-react/PREVIEW.md`               | React local and hosted preview details         |
-| `WebSite/site/`                               | Retained Svelte rollback source                |
-| `WebSite/preview.bat`                         | Svelte rollback preview launcher               |
-| `WebSite/preview-stop.bat`                    | Stops the Svelte Vite server                   |
-| `WebSite/PREVIEW.md`                          | Canonical two-tree preview loop                |
-| `WebSite/DEPLOY.md`                           | React deploy and Svelte rollback playbook      |
-| `.github/workflows/deploy-site-react.yml`     | Manual current-production deployment           |
-| `.github/workflows/deploy-site.yml`           | Dispatch-only Svelte rollback                  |
-| `WebSite/site/src/routes/+layout.ts`          | Svelte prerender invariant — do not delete     |
-| `WebSite/site/svelte.config.js`               | Svelte adapter-static prerender entries        |
-| `WebSite/site/vite.config.js`                 | Svelte dev proxy and HMR overlay               |
+| File | What it is |
+|---|---|
+| `WebSite/site-react/` | The site source |
+| `WebSite/site-react/lib/site.ts` | Canonical URLs and the nav |
+| `WebSite/site-react/lib/live.ts` | Browser public-read client |
+| `WebSite/site-react/scripts/` | Tests, snapshot baker, sweep, preview validators |
+| `WebSite/design-system/` | `@tiny/design-system`: tokens, base, components, `DESIGN.md` |
+| `WebSite/brand/` | The mark's SVGs and exporters |
+| `WebSite/shared/mcp/public-read-contract.js` | Public read contract shared by site and baker |
+| `WebSite/PREVIEW.md`, `WebSite/DEPLOY.md` | Preview loop; deploy and verify |
+| `.github/workflows/deploy-site-react.yml` | Manual production deployment |
+| `openspec/specs/public-website-surface/spec.md` | As-built spec of the public site |
