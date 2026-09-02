@@ -169,6 +169,12 @@ def _answered_policy_snapshot(document: dict) -> dict[str, str] | None:
     }
     if not all(isinstance(v, str) and v for v in snapshot.values()):
         return None
+    # The incarnation is OPTIONAL within a snapshot that has the rest: a row
+    # raised before it existed still gets the ask/answer drift check. Requiring
+    # it would silently downgrade those rows to no snapshot at all, which is
+    # the weaker guarantee wearing the stronger one's name.
+    incarnation = raw.get("incarnation")
+    snapshot["incarnation"] = incarnation if isinstance(incarnation, str) else ""
     return snapshot  # type: ignore[return-value]
 
 
@@ -979,6 +985,7 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
             "access_mode": preview["expected_access_mode"],
             "endpoints_json": preview["stored_json"],
             "scopes_json": preview["stored_scopes_json"],
+            "incarnation": preview.get("stored_incarnation") or "",
         }
         if not ledger.set_access_mode(
             connection_id=connection_id,
@@ -986,6 +993,10 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
             expected_mode=expected["access_mode"],
             expected_endpoints_json=expected["endpoints_json"],
             expected_scopes_json=expected["scopes_json"],
+            # Which DEPOSIT the owner was answering about. Without it a key
+            # removed and replaced under the same destination with an identical
+            # policy matched every predicate (Codex code review round 3, P0).
+            expected_incarnation=expected["incarnation"] or None,
         ):
             return {
                 "error": "connection_conflict",
@@ -1144,6 +1155,7 @@ def _extend_preview(
             "expected_access_mode": stored_mode,
             "stored_json": stored_json,
             "stored_scopes_json": stored_scopes_json,
+            "stored_incarnation": ledger.incarnation(connection_id) or "",
             "git_host": git_host_for_endpoints(stored_hosts, resource.provider),
             "hosts": stored_hosts,
             "allowed_endpoints": stored,
@@ -1287,7 +1299,8 @@ def preview_extend_http(*, universe_id: str = "", payload: Any = None) -> dict[s
         if key in ("error", "resource", "detail", "status", "destination",
                    "allowed_endpoints", "scopes", "git_host", "asked_hosts",
                    "access", "hosts",
-                   "expected_access_mode", "stored_json", "stored_scopes_json")
+                   "expected_access_mode", "stored_json", "stored_scopes_json",
+                   "stored_incarnation")
     }
 
 

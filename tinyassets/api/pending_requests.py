@@ -734,6 +734,10 @@ def _full_channel_reach(universe_id: str, action: dict[str, Any]) -> dict[str, A
         "endpoints_json": preview.get("stored_json"),
         "scopes_json": preview.get("stored_scopes_json"),
         "access_mode": preview.get("expected_access_mode"),
+        # Which deposit this is. The id and the credential reference are both
+        # derived from (universe, destination), so neither changes when a key
+        # is removed and a different one put in its place.
+        "incarnation": preview.get("stored_incarnation"),
     }
     if all(isinstance(v, str) and v for v in snapshot.values()):
         reach["policy_snapshot"] = snapshot

@@ -28,11 +28,13 @@ from tests.test_workspace_authority import (  # noqa: F401
     _reset_auth,
     base,
 )
-from tinyassets.storage.outbound_connections import (
+from tinyassets.storage.outbound_connections import (  # noqa: E402
+    _SSRF_ALLOWED_METHODS,
     ACCESS_EXACT,
     ACCESS_FULL,
     ConnectionLedger,
     SsrfValidationError,
+    _verb_within_scopes,
     normalize_access_mode,
 )
 from tinyassets.storage.workspace_authority import connection_access_mode, has_git_scope
@@ -978,3 +980,160 @@ def test_an_ask_without_a_snapshot_still_answers(base):  # noqa: F811
     assert ConnectionLedger(
         base / "outbound.db", verify_authenticated_principal=lambda: "alice",
     ).access_mode(deposited["connection_id"]) == "full"
+
+
+# ---------------------------------------------------------------------------
+# Codex code review round 3: the two P0s
+# ---------------------------------------------------------------------------
+
+
+def test_a_channel_upgraded_to_full_carries_every_verb(base):  # noqa: F811
+    """Codex code review round 3, P0. `extend_http` moves the mode and touches
+    no scope row -- nothing is stored as a wildcard, by design -- but both verb
+    gates tested membership in the stored tuple. So a GET-only connection
+    upgraded to full refused the owner's POST on a channel they had granted in
+    full, and the follow-up ask came back `already_held`: stranded."""
+    import json as _json
+
+    from tests.test_workspace_authority import _deposit, _login, _make_universe
+    from tinyassets.api.http_connection import extend_http
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    deposited = _deposit("u-1")
+
+    ledger = ConnectionLedger(
+        base / "outbound.db", verify_authenticated_principal=lambda: "alice",
+    )
+    connection_id = deposited["connection_id"]
+    resource = ledger._get_connection_resource(connection_id)
+    stored_verbs = {s for s in resource.scopes if not s.startswith("git_")}
+    assert "POST" not in stored_verbs or "DELETE" not in stored_verbs, resource.scopes
+
+    upgraded = extend_http(universe_id="u-1", payload=_json.dumps({
+        "destination": "github", "endpoints": [], "scopes": [], "access": "full",
+    }))
+    assert upgraded["status"] == "extended", upgraded
+    assert ledger.access_mode(connection_id) == ACCESS_FULL
+
+    # The scope rows did NOT change -- that is the shape working as intended.
+    after = ledger._get_connection_resource(connection_id)
+    assert set(after.scopes) == set(resource.scopes)
+
+    # ...and every verb the transport will send is nevertheless carried.
+    for verb in sorted(_SSRF_ALLOWED_METHODS):
+        assert _verb_within_scopes(verb, after.scopes, after.access_mode), verb
+    # Nothing outside that set is.
+    assert not _verb_within_scopes("TRACE", after.scopes, after.access_mode)
+    assert not _verb_within_scopes(
+        "git_read:octocat/hello", after.scopes, after.access_mode,
+    )
+    # And an exact connection is unchanged by any of this.
+    assert not _verb_within_scopes("DELETE", ("GET",), ACCESS_EXACT)
+
+
+def test_the_broker_dispatches_a_verb_a_full_channel_carries(tmp_path):
+    """The same P0 at the dispatcher, driven through it. The broker re-reads
+    the row before every call, so it must read the row's MODE too -- otherwise
+    the owner's POST is refused at the last gate on a channel they granted in
+    full."""
+    from tinyassets.storage.outbound_connections import CredentialBlindBroker
+
+    ledger = _ledger(tmp_path)
+    _create(ledger, scopes=("GET",))
+    ledger.grant_connection(
+        grant_id="grant-1", connection_id="conn-1",
+        owner_user_id="user-1", universe_id="u-1",
+    )
+
+    sent: list[str] = []
+
+    broker = CredentialBlindBroker(
+        ledger,
+        resolve_credential=lambda _ref, _ctype=None: "ghp_" + "x" * 30,
+        network_request=lambda **kw: sent.append(kw["verb"]) or {"status": 200},
+    )
+
+    # Exact: the stored verbs are the grant, so POST is refused.
+    with pytest.raises(PermissionError, match="outside the granted"):
+        broker.dispatch("grant-1", "POST", {"path": "/x"})
+    assert sent == []
+
+    endpoints_json, scopes_json = ledger.policy_json("conn-1")
+    assert ledger.set_access_mode(
+        connection_id="conn-1", access_mode=ACCESS_FULL, expected_mode=ACCESS_EXACT,
+        expected_endpoints_json=endpoints_json, expected_scopes_json=scopes_json,
+        expected_incarnation=ledger.incarnation("conn-1"),
+    ) is True
+
+    # The upgrade rewrote no scope row...
+    upgraded = ledger._get_connection_resource("conn-1")
+    assert upgraded.scopes == ("GET",)
+    # ...and the same POST now reaches the network.
+    broker.dispatch("grant-1", "POST", {"path": "/x"})
+    assert sent == ["POST"]
+
+    # A git scope is still not an HTTP verb, whatever the mode.
+    with pytest.raises(PermissionError, match="outside the granted"):
+        broker.dispatch("grant-1", "git_read:octocat/hello", {"path": "/x"})
+
+
+def test_a_replacement_key_with_an_identical_policy_does_not_inherit_the_yes(tmp_path):
+    """Codex code review round 3, P0. The connection id and the credential
+    reference are BOTH deterministic per (universe, destination), so a key
+    removed and a different one deposited with exactly the same endpoints and
+    scopes matched every compare-and-swap predicate -- and the owner's full
+    decision landed on a key they never granted it for.
+
+    My earlier test changed the host, so the endpoint text did the rejecting
+    and replacement detection was never exercised.
+    """
+    ledger = _ledger(tmp_path)
+    _create(ledger)
+    seen_endpoints, seen_scopes = ledger.policy_json("conn-1")
+    seen_incarnation = ledger.incarnation("conn-1")
+    assert seen_incarnation
+
+    ledger.delete_connection("conn-1")
+    # ...and a DIFFERENT key under the same destination, with an identical
+    # policy. Every field the swap used to compare is unchanged.
+    _create(ledger)
+    assert ledger.policy_json("conn-1") == (seen_endpoints, seen_scopes)
+    assert ledger.access_mode("conn-1") == ACCESS_EXACT
+    replacement = ledger.incarnation("conn-1")
+    assert replacement != seen_incarnation, "the deposit did not mint a new incarnation"
+
+    assert ledger.set_access_mode(
+        connection_id="conn-1", access_mode=ACCESS_FULL, expected_mode=ACCESS_EXACT,
+        expected_endpoints_json=seen_endpoints, expected_scopes_json=seen_scopes,
+        expected_incarnation=seen_incarnation,
+    ) is False
+    assert ledger.access_mode("conn-1") == ACCESS_EXACT, (
+        "a replacement key inherited a decision made about a different one"
+    )
+
+    # Answering about the key that is actually there works.
+    assert ledger.set_access_mode(
+        connection_id="conn-1", access_mode=ACCESS_FULL, expected_mode=ACCESS_EXACT,
+        expected_endpoints_json=seen_endpoints, expected_scopes_json=seen_scopes,
+        expected_incarnation=replacement,
+    ) is True
+
+
+def test_the_ask_records_which_deposit_it_is_about(base):  # noqa: F811
+    """The snapshot the tab carries names the deposit, so the answer can tell a
+    replacement from the key the owner read about."""
+    from tests.test_workspace_authority import _deposit, _login, _make_universe
+    from tinyassets.api.pending_requests import _full_channel_reach
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    deposited = _deposit("u-1")
+
+    reach = _full_channel_reach("u-1", {"destination": "github", "access": "full"})
+    snapshot = reach["policy_snapshot"]
+    ledger = ConnectionLedger(
+        base / "outbound.db", verify_authenticated_principal=lambda: "alice",
+    )
+    assert snapshot["incarnation"] == ledger.incarnation(deposited["connection_id"])
+    assert snapshot["incarnation"]

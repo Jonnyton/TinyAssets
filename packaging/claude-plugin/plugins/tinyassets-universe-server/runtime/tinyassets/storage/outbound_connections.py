@@ -23,6 +23,7 @@ import time
 import traceback
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -488,8 +489,12 @@ def _describe_child_exit(exitcode: int | None) -> str:
     return f" (exitcode {exitcode})"
 
 
-def _verb_within_scopes(verb: object, scopes: Iterable[str]) -> bool:
-    """Whether an HTTP verb is one this connection's scopes carry.
+def _verb_within_scopes(
+    verb: object,
+    scopes: Iterable[str],
+    access_mode: str = ACCESS_EXACT,
+) -> bool:
+    """Whether an HTTP verb is one this connection may dispatch.
 
     Authorization here is a membership test against the ``scopes`` tuple, and
     that tuple now also holds git scopes (``git_read:owner/name``), which are a
@@ -497,11 +502,21 @@ def _verb_within_scopes(verb: object, scopes: Iterable[str]) -> bool:
     against one repository, not that an arbitrary HTTP request may be dispatched.
     Without this check a caller could pass ``verb="git_read:owner/name"``, match
     by membership, and reach the credentialed dispatcher through the HTTP path.
+
+    ON A FULL CHANNEL the verb list is not the grant. Upgrading a GET-only
+    connection moves the mode and touches no scope row -- nothing is stored as
+    a wildcard, by design -- so testing membership left the owner's POST
+    refused on a channel they had granted in full, and the follow-up ask came
+    back ``already_held``: a stranded connection (Codex code review round 3,
+    P0). A full channel carries every verb the transport will send, and
+    nothing outside that set.
     """
     if not isinstance(verb, str) or not verb:
         return False
     if is_git_scope(verb):
         return False
+    if normalize_access_mode(access_mode) == ACCESS_FULL:
+        return verb in _SSRF_ALLOWED_METHODS
     return verb in scopes
 
 
@@ -660,10 +675,15 @@ class ScopedConnectionProxy:
     provider: str
     destination: str
     scopes: tuple[str, ...]
-    _channel: _ProxyChannel = field(repr=False, compare=False)
+    #: The mode read when the proxy opened. Defence in depth only -- the broker
+    #: re-reads the row and is the authority -- so a stale `exact` here refuses
+    #: a since-upgraded channel until the caller opens a new proxy, which is
+    #: the safe direction to be wrong in.
+    access_mode: str = ACCESS_EXACT
+    _channel: _ProxyChannel = field(repr=False, compare=False, default=None)  # type: ignore[assignment]
 
     def request(self, verb: str, request: object) -> Any:
-        if not _verb_within_scopes(verb, self.scopes):
+        if not _verb_within_scopes(verb, self.scopes, self.access_mode):
             raise PermissionError(
                 f"verb {verb!r} is outside the granted connection scope"
             )
@@ -695,7 +715,7 @@ class CredentialBlindBroker:
         resource = self._ledger._active_resource_for_grant(grant_id)
         if resource is None:
             raise GrantResolutionError("absent or revoked outbound connection grant")
-        if not _verb_within_scopes(verb, resource.scopes):
+        if not _verb_within_scopes(verb, resource.scopes, resource.access_mode):
             raise PermissionError(
                 f"verb {verb!r} is outside the granted connection scope"
             )
@@ -2677,7 +2697,14 @@ CREATE TABLE IF NOT EXISTS outbound_connections (
     connection_type TEXT NOT NULL DEFAULT '',
     auth_scheme     TEXT NOT NULL DEFAULT '',
     allowed_endpoints_json TEXT NOT NULL DEFAULT '[]',
-    access_mode     TEXT NOT NULL DEFAULT 'exact'
+    access_mode     TEXT NOT NULL DEFAULT 'exact',
+    -- Minted fresh on every deposit. The connection id and the credential_ref
+    -- are both deterministic per (universe, destination), so without this a
+    -- key removed and REPLACED under the same destination with an identical
+    -- policy matched every compare-and-swap predicate, and a stale full answer
+    -- applied the owner's decision to a key they never granted it for (Codex
+    -- code review round 3, P0).
+    incarnation     TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS outbound_connection_grants (
@@ -2817,6 +2844,7 @@ class ConnectionLedger:
                 # full-channel-access D2. Every existing row is `exact`: a
                 # migration must never widen an existing grant.
                 ("access_mode", "TEXT NOT NULL DEFAULT 'exact'"),
+                ("incarnation", "TEXT NOT NULL DEFAULT ''"),
             ):
                 if column not in connection_columns:
                     connection.execute(
@@ -2922,8 +2950,8 @@ class ConnectionLedger:
                     connection_id, owner_user_id, connection_class, scopes_json,
                     provider, destination, credential_ref, revoked_at,
                     connection_type, auth_scheme, allowed_endpoints_json,
-                    access_mode
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+                    access_mode, incarnation
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
                 """,
                 (
                     resource.connection_id,
@@ -2937,6 +2965,7 @@ class ConnectionLedger:
                     resource.auth_scheme,
                     json.dumps([ep.as_dict() for ep in resource.allowed_endpoints]),
                     resource.access_mode,
+                    uuid.uuid4().hex,
                 ),
             )
         # Return the REDACTED view — no caller (not even the creator) gets
@@ -3032,6 +3061,7 @@ class ConnectionLedger:
         expected_mode: str,
         expected_endpoints_json: str,
         expected_scopes_json: str,
+        expected_incarnation: str | None = None,
     ) -> bool:
         """Move a connection between ``exact`` and ``full`` under CAS.
 
@@ -3046,27 +3076,37 @@ class ConnectionLedger:
         the owner only ever saw one (Codex code review round 1). It also closes
         the remove-and-redeposit ABA, because a replacement row cannot carry
         the same endpoint and scope text by accident.
+
+        ``expected_incarnation`` closes the case where it CAN. The connection
+        id and the credential reference are both deterministic per
+        (universe, destination), so a key removed and a different one deposited
+        with an identical policy matched every other predicate, and the owner's
+        yes landed on a key they never saw (Codex code review round 3, P0).
+        Passing ``None`` keeps the older comparison, for a caller that has no
+        snapshot to offer.
         """
         wanted = normalize_access_mode(access_mode)
         expected = normalize_access_mode(expected_mode)
-        with self._connect() as connection:
-            cursor = connection.execute(
-                """
+        sql = """
                 UPDATE outbound_connections
                    SET access_mode = ?
                  WHERE connection_id = ?
                    AND access_mode = ?
                    AND allowed_endpoints_json = ?
                    AND scopes_json = ?
-                """,
-                (
-                    wanted,
-                    connection_id,
-                    expected,
-                    expected_endpoints_json,
-                    expected_scopes_json,
-                ),
-            )
+        """
+        params: list[Any] = [
+            wanted,
+            connection_id,
+            expected,
+            expected_endpoints_json,
+            expected_scopes_json,
+        ]
+        if expected_incarnation is not None:
+            sql += "           AND incarnation = ?\n"
+            params.append(expected_incarnation)
+        with self._connect() as connection:
+            cursor = connection.execute(sql, tuple(params))
             return cursor.rowcount > 0
 
     def access_mode(self, connection_id: str) -> str | None:
@@ -3094,6 +3134,22 @@ class ConnectionLedger:
         if row is None:
             return None
         return str(row["allowed_endpoints_json"]), str(row["scopes_json"])
+
+    def incarnation(self, connection_id: str) -> str | None:
+        """Which DEPOSIT this connection is, or ``None`` when there is none.
+
+        The id and the credential reference are both derived from
+        (universe, destination), so neither changes when a key is removed and a
+        different one deposited in its place. This does.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT incarnation FROM outbound_connections WHERE connection_id = ?",
+                (connection_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return str(row["incarnation"])
 
     def _get_connection_resource(
         self, connection_id: str
