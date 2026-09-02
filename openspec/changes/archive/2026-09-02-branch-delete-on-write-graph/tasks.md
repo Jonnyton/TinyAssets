@@ -34,7 +34,7 @@
 - [x] 8 Cross-family review: three rounds (the cap). Round 3 found the soul loop
       branch reader and the missing author filter on snapshot invokers; both applied
       without a fourth round, reported to the founder.
-- [ ] 9 Land; sync this delta into
-      `openspec/specs/live-mcp-connector-surface/spec.md`; archive.
+- [x] 9 Landed as #2763 (deployed 2026-09-02, production 5740994f); delta synced into
+      `openspec/specs/live-mcp-connector-surface/spec.md`; archived.
 - [ ] 10 Live proof: tiny deletes one of its probe branches from the app and it is
       gone from `read_graph target=branches`.
