@@ -267,7 +267,12 @@ def _source_code_problems(node_defs: Any) -> list[dict[str, Any]]:
     nor ``runnable: false`` about one it accepts (concern 2026-09-01: the
     receipt still encoded the retired approval gate, and the universe told the
     founder its PR-building branch needed an approval flow that does not
-    exist)."""
+    exist).
+
+    Scope: the owner's own branches through ``run_graph``. The bid-market
+    executor (``executors/node_bid.py``) keeps its own approval gate because
+    a bid-referenced node is another universe's code -- that boundary is
+    cross-user and is not what this receipt describes."""
     from tinyassets.graph_compiler import source_code_problems
 
     found: list[dict[str, Any]] = []
@@ -4068,6 +4073,7 @@ Wait, incremental stream, field-only output, and cancellation controls are not
 exposed by the advertised handles. Say so plainly rather than inventing them.
 
 The never-simulate rule lives in `control_station` (hard rule 5):
-if `run_graph` fails, the branch isn't validated, or a source_code node
-isn't approved, state the reason and stop.
+if `run_graph` fails, the branch isn't validated, or a code node will not
+compile (`source_code_problems`), state the reason and stop. Approval is
+provenance, never a gate.
 """

@@ -1530,8 +1530,15 @@ def _validate_source_code(node: NodeDefinition) -> None:
     SHOULD declare ``output_keys`` - anything it returns under another key is
     dropped, named in the node's event."""
     problems = source_code_problems(node.source_code or "", node.node_id)
-    if problems:
-        raise CompilerError(problems[0])
+    if not problems:
+        return
+    if problems[0].startswith(f"Node '{node.node_id}' source_code does not parse"):
+        # Keep the SyntaxError as __cause__, as the gate always did (Codex).
+        try:
+            compile(node.source_code or "", f"<node {node.node_id}>", "exec")
+        except SyntaxError as exc:
+            raise CompilerError(problems[0]) from exc
+    raise CompilerError(problems[0])
 
 
 _NODE_MCP_ACTION_ALIASES: dict[str, tuple[str, str]] = {

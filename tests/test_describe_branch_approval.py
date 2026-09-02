@@ -195,6 +195,35 @@ class TestDescribeBranchApproval:
         assert any("does not parse" in p for p in problem["problems"])
         assert "CODE NODE 'sc1' (Broken Runner) will not compile" in result["summary"]
 
+    def test_no_served_text_tells_the_agent_to_stop_on_approval(self):
+        """Codex round 1: two prompts still said "if a source-code node isn't
+        approved, stop". The agent plans from these; they must match the
+        receipt."""
+        import pathlib
+
+        import tinyassets.api.branches as branches
+        import tinyassets.api.prompts as prompts
+
+        for mod in (branches, prompts):
+            text = pathlib.Path(mod.__file__).read_text(encoding="utf-8")
+            assert "isn't approved" not in text, mod.__name__
+            assert "must be approved before it can run" not in text, mod.__name__
+        assert "approval never gates a run" in pathlib.Path(prompts.__file__).read_text(encoding="utf-8")
+
+    def test_a_syntax_refusal_keeps_its_cause(self):
+        from tinyassets.graph_compiler import CompilerError, _validate_source_code
+
+        class _Node:
+            node_id = "n"
+            source_code = "def run(state) return state"
+
+        try:
+            _validate_source_code(_Node())
+        except CompilerError as exc:
+            assert isinstance(exc.__cause__, SyntaxError)
+        else:
+            raise AssertionError("did not refuse")
+
     def test_disallowed_pattern_is_not_runnable(self):
         from tinyassets.graph_compiler import _DANGEROUS_PATTERNS
 
