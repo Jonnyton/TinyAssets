@@ -2907,6 +2907,7 @@ class ConnectionLedger:
         endpoints: Any,
         scopes: tuple[str, ...],
         expected_endpoints_json: str,
+        expected_scopes_json: str | None = None,
     ) -> bool:
         """ADD endpoints to an existing http connection. Never remove or replace.
 
@@ -2921,9 +2922,13 @@ class ConnectionLedger:
           superset; this re-checks nothing about intent but writes the union, so
           an endpoint another graph depends on cannot vanish here. Narrowing and
           removal stay unsupported (they are a different, destructive intent).
-        * **CAS-guarded.** The UPDATE matches on the exact endpoint JSON the
-          caller read, so a concurrent deposit that changed the policy in between
-          makes this a no-op instead of clobbering it.
+        * **CAS-guarded on BOTH columns it writes.** The UPDATE matches on the
+          exact endpoint JSON the caller read and, when the caller supplies it,
+          the exact scopes JSON too. Guarding endpoints alone let two scope-only
+          widenings race: the first wrote scope B without touching the
+          endpoints, so the second's CAS still matched and replaced B with A
+          (Codex on the 2026-09-02 rail change). Callers read both through
+          :meth:`policy_json`.
 
         Returns True when the row was updated.
         """
@@ -2934,21 +2939,39 @@ class ConnectionLedger:
             )
         new_scopes = tuple(_required("scope", scope) for scope in scopes)
         validate_git_scopes(new_scopes, hosts=[endpoint.host for endpoint in parsed])
+        where = "connection_id = ? AND allowed_endpoints_json = ?"
+        params: list[Any] = [
+            json.dumps([ep.as_dict() for ep in parsed]),
+            json.dumps(list(new_scopes)),
+            connection_id,
+            expected_endpoints_json,
+        ]
+        if expected_scopes_json is not None:
+            where += " AND scopes_json = ?"
+            params.append(expected_scopes_json)
         with self._connect() as connection:
             cursor = connection.execute(
-                """
-                UPDATE outbound_connections
-                SET allowed_endpoints_json = ?, scopes_json = ?
-                WHERE connection_id = ? AND allowed_endpoints_json = ?
-                """,
-                (
-                    json.dumps([ep.as_dict() for ep in parsed]),
-                    json.dumps(list(new_scopes)),
-                    connection_id,
-                    expected_endpoints_json,
-                ),
+                "UPDATE outbound_connections "
+                "SET allowed_endpoints_json = ?, scopes_json = ? "
+                f"WHERE {where}",
+                tuple(params),
             )
             return cursor.rowcount > 0
+
+    def policy_json(self, connection_id: str) -> tuple[str, str] | None:
+        """The stored ``(allowed_endpoints_json, scopes_json)`` exactly as
+        written, for a CAS-guarded extension to compare against. Reserialising
+        the parsed policy happens to round-trip today; comparing the raw text
+        cannot silently stop doing so."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT allowed_endpoints_json, scopes_json FROM outbound_connections "
+                "WHERE connection_id = ?",
+                (connection_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return str(row["allowed_endpoints_json"]), str(row["scopes_json"])
 
     def _get_connection_resource(
         self, connection_id: str

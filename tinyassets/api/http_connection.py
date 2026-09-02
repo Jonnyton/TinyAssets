@@ -861,7 +861,8 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
             connection_id=connection_id,
             endpoints=preview["merged"],
             scopes=preview["scopes"],
-            expected_endpoints_json=json.dumps(preview["stored"]),
+            expected_endpoints_json=preview["stored_json"],
+            expected_scopes_json=preview["stored_scopes_json"],
         )
     except GitScopeError as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
@@ -910,7 +911,7 @@ def _extend_preview(
         validate_git_scopes,
     )
 
-    connection_id, _grant_id = _ids(universe_id=uid, destination=destination)
+    connection_id, grant_id = _ids(universe_id=uid, destination=destination)
     ledger = ConnectionLedger(
         Path(base) / "outbound.db",
         verify_authenticated_principal=lambda: actor,
@@ -920,8 +921,26 @@ def _extend_preview(
         # Nothing to extend, or not this principal's connection. Uniform
         # envelope so this cannot be used to probe which destinations exist.
         return dict(_NOT_FOUND)
+    # The connection must ALSO be reachable through an active grant for this
+    # owner on this universe -- the same condition `read_graph
+    # target=connections` lists by. Without it an orphaned or revoked
+    # connection, invisible to the inventory, answered `already_held` with its
+    # endpoints and scopes: a new oracle for the served agent (Codex on the
+    # 2026-09-02 rail change).
+    grant = ledger.get_grant(grant_id)
+    if (
+        grant is None
+        or grant.revoked_at is not None
+        or grant.owner_user_id != actor
+        or grant.universe_id != uid
+    ):
+        return dict(_NOT_FOUND)
     if resource.revoked_at is not None:
         return {"error": "connection_conflict", "resource": "connection"}
+    raw_policy = ledger.policy_json(connection_id)
+    if raw_policy is None:
+        return dict(_NOT_FOUND)
+    stored_json, stored_scopes_json = raw_policy
 
     scope_only = not isinstance(added, list) or not added
     stored = [e.as_dict() for e in resource.allowed_endpoints]
@@ -988,6 +1007,8 @@ def _extend_preview(
         "connection_id": connection_id,
         "ledger": ledger,
         "stored": stored,
+        "stored_json": stored_json,
+        "stored_scopes_json": stored_scopes_json,
         "merged": merged_dicts,
         "scopes": scopes,
         "allowed_endpoints": merged_dicts,

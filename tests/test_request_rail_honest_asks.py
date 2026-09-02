@@ -155,6 +155,86 @@ def test_extending_never_stores_a_duplicate_endpoint(base):  # noqa: F811
     assert _stored_paths(base) == ["/repos/o/r/contents/t.json", "/repos/o/r/pulls"]
 
 
+def _ledger(root, actor="alice"):
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    return ConnectionLedger(root / "outbound.db",
+                            verify_authenticated_principal=lambda: actor)
+
+
+def test_a_tab_whose_key_was_revoked_after_it_was_raised_refuses_at_answer(base):  # noqa: F811
+    """Codex round 1, T5: the raise-time verdict is a snapshot; the answer
+    reruns it, and a grant revoked in between refuses with the uniform
+    envelope and writes nothing."""
+    from tinyassets.api.http_connection import _ids
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    _seed_connection("u-1")
+    ask = _ask("u-1", kind="API", title="also the theme file",
+               fields=[], action={"type": "extend_http", "destination": "github",
+                       "endpoints": [{"host": "api.github.com",
+                                      "path_template": "/repos/o/r/contents/t.json",
+                                      "methods": ["PUT"]}]})
+    assert ask["status"] == "pending"
+    _conn_id, grant_id = _ids(universe_id="u-1", destination="github")
+    assert _ledger(base).revoke_grant(grant_id) is True
+
+    out = _answer("u-1", request_id=ask["request_id"], values={})
+
+    assert out == {"error": "not_found", "resource": "connection"}
+    assert _stored_paths(base) == ["/repos/o/r/pulls"]
+
+
+def test_an_orphaned_connection_is_not_an_oracle(base):  # noqa: F811
+    """Codex round 1, T1: a connection whose grant is revoked is invisible to
+    `read_graph target=connections`; the raise-time verdict must not reveal
+    its endpoints through `already_held`."""
+    from tinyassets.api.http_connection import _ids
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    _seed_connection("u-1")
+    _conn_id, grant_id = _ids(universe_id="u-1", destination="github")
+    assert _ledger(base).revoke_grant(grant_id) is True
+
+    out = _ask("u-1", kind="API", title="let me open pull requests",
+               fields=[], action={"type": "extend_http", "destination": "github",
+                       "endpoints": [{"host": "api.github.com",
+                                      "path_template": "/repos/o/r/pulls",
+                                      "methods": ["POST"]}]})
+
+    assert out["error"] == "request_invalid"
+    assert "allowed_endpoints" not in out and "scopes" not in out
+
+
+def test_the_write_is_guarded_on_scopes_as_well_as_endpoints(base):  # noqa: F811
+    """Codex round 1, T3: two scope-only widenings read identical endpoints;
+    guarding endpoints alone let the second clobber the first's scope."""
+    from tinyassets.api.http_connection import _ids
+
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    _seed_connection("u-1")
+    conn_id, _grant_id = _ids(universe_id="u-1", destination="github")
+    ledger = _ledger(base)
+    endpoints_json, scopes_json = ledger.policy_json(conn_id)
+    endpoints = [e.as_dict() for e in ledger._get_connection_resource(conn_id).allowed_endpoints]
+
+    first = ledger.extend_http_connection_endpoints(
+        connection_id=conn_id, endpoints=endpoints,
+        scopes=("POST", "git_read:o/r"),
+        expected_endpoints_json=endpoints_json, expected_scopes_json=scopes_json)
+    assert first is True
+    # The same snapshot, a moment later: endpoints unchanged, scopes moved.
+    second = ledger.extend_http_connection_endpoints(
+        connection_id=conn_id, endpoints=endpoints,
+        scopes=("POST", "git_write:o/r"),
+        expected_endpoints_json=endpoints_json, expected_scopes_json=scopes_json)
+    assert second is False, "a stale scopes snapshot must not clobber"
+    assert "git_read:o/r" in ledger._get_connection_resource(conn_id).scopes
+
+
 def test_raise_time_and_answer_time_share_one_definition():
     """`extend_http` and the rail's verdict both go through `_extend_preview`:
     the source of the live bug was two definitions of what can be granted."""
