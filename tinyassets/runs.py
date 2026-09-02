@@ -303,6 +303,40 @@ def _enqueue_workspace_terminal(
 _ORPHAN_LOCK_MIN_AGE_S = 3600.0
 
 
+def _run_statuses_recorded_at_root(
+    base_path: str | Path, run_ids: set[str],
+) -> dict[str, str]:
+    """``{run_id: status}`` for the given runs as the ROOT runs database has
+    them -- the database run rows are actually written to. Empty when the
+    sweep is already at the root, when there is no root database yet, or on
+    any read failure: an unknown answer must degrade to the age bound, never
+    to a release."""
+    if not run_ids:
+        return {}
+    try:
+        from tinyassets.storage import data_dir
+
+        root = Path(data_dir())
+        if Path(base_path).resolve() == root.resolve():
+            return {}
+        db = runs_db_path(root)
+        if not db.exists():
+            return {}
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5.0)
+        try:
+            placeholders = ",".join("?" for _ in run_ids)
+            rows = conn.execute(
+                f"SELECT run_id, status FROM runs WHERE run_id IN ({placeholders})",
+                tuple(run_ids),
+            ).fetchall()
+        finally:
+            conn.close()
+        return {str(row[0]): str(row[1]) for row in rows}
+    except Exception:  # noqa: BLE001 - a sweep must never fail on a lookup
+        logger.exception("could not read run statuses at the root for the sweep")
+        return {}
+
+
 def _workspace_sweep_once(base_path: str | Path, *, claimant: str) -> int:
     """One periodic pass: enqueue leases orphaned by a terminal run that never
     reached the outbox (a crash between the two writes of an older code path),
@@ -341,34 +375,55 @@ def _workspace_sweep_once(base_path: str | Path, *, claimant: str) -> int:
                )
             """
         ).fetchall()
-        # And locks whose run this database has never heard of. The query above
+        # And locks whose run THIS database has never heard of. The query above
         # is an INNER JOIN, so it silently drops them -- and nothing else will
-        # ever release a lock whose run cannot be transitioned here. Runs are
-        # recorded per-universe as well as at the root, so a lock and its run
-        # can live in different files, and then the lock is permanent.
+        # ever release a lock whose run cannot be transitioned here.
+        #
+        # This is the live topology, not a corner case: the workspace effector
+        # keeps locks, leases and the outbox in the UNIVERSE's runs database,
+        # while a run's row and its terminal status are written to the ROOT
+        # one. So the terminal enqueue (`update_run_status` -> this module's
+        # `_enqueue_workspace_terminal`) runs against a database that holds no
+        # lock for the run, writes nothing, and every workspace run -- failed
+        # or succeeded -- leaves its universe lock and host slot held.
         #
         # Live 2026-09-01: `u-01kxm1vszd8hwp7em418asq8h9` could not check out
-        # anything because a lock from a run that had failed the previous day
-        # was still held, and the sweep could not see it to release it.
+        # anything because the lock from a run that had failed 27 hours earlier
+        # was still held; that run's row sat at the root with status `failed`,
+        # and the universe database's `runs` table was empty.
         #
-        # Age-bounded because a lock is written BEFORE its run row on a normal
-        # start: without this an unknown-run sweep would reap live work during
-        # that window.
+        # So consult the root, where runs are actually recorded: a run that is
+        # terminal there is released NOW (this is what lets one job follow
+        # another); a run that is live there keeps its lock however old it is;
+        # a run known nowhere is released only past `_ORPHAN_LOCK_MIN_AGE_S`,
+        # because a lock is written BEFORE its run row on a normal start.
         unknown_run_locks = conn.execute(
             """
-            SELECT k.run_id FROM workspace_locks AS k
-             WHERE k.acquired_at < ?
-               AND NOT EXISTS (
+            SELECT k.run_id, k.acquired_at FROM workspace_locks AS k
+             WHERE NOT EXISTS (
                    SELECT 1 FROM runs AS r WHERE r.run_id = k.run_id
                )
                AND NOT EXISTS (
                    SELECT 1 FROM workspace_outbox AS o
                     WHERE o.run_id = k.run_id AND o.done_at IS NULL
                )
-            """,
-            (time.time() - _ORPHAN_LOCK_MIN_AGE_S,),
+            """
         ).fetchall()
-        orphaned_locks = list(orphaned_locks) + list(unknown_run_locks)
+        releasable: list[str] = []
+        if unknown_run_locks:
+            recorded = _run_statuses_recorded_at_root(
+                base_path, {row[0] for row in unknown_run_locks}
+            )
+            cutoff = time.time() - _ORPHAN_LOCK_MIN_AGE_S
+            for run_id, acquired_at in unknown_run_locks:
+                status = recorded.get(run_id)
+                if status is None:
+                    if float(acquired_at or 0.0) < cutoff:
+                        releasable.append(run_id)
+                elif status in _TERMINAL_STATUSES:
+                    releasable.append(run_id)
+                # else: live at the root -- leave it alone.
+        orphaned_locks = list(orphaned_locks) + [(r,) for r in releasable]
         for run_id in {r[0] for r in orphaned_leases} | {r[0] for r in orphaned_locks}:
             _enqueue_workspace_terminal(conn, base_path, run_id)
     return workspace_pool.periodic_sweep(db, fs=RealPoolFilesystem(), claimant=claimant)
