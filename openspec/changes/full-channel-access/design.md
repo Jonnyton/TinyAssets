@@ -159,6 +159,17 @@ would let a weaker test pass:
    refuses narrowing on extend) and can be its own change if an owner asks.
 5. **"Full" is bounded to the declared hosts**, never dynamically to every
    host the credential could reach.
+6. **Removing a key revokes its workspace consents**, reversing a deliberate
+   convenience. `test_the_workspace_consent_survives_the_round_trip` asserted
+   that a consent SURVIVES a remove-and-redeposit, so rotating a key cost no
+   re-grant. The unstated cost: a connection id is fixed per (universe,
+   destination), so the surviving row also outlived a removal the owner meant
+   as a revocation, and a key deposited later under that name inherited
+   repository access nobody granted it. Rotation is served without
+   inheritance -- `remove_http` returns `removed_consents` beside the
+   endpoints and scopes it already returned, so the agent re-asks for exactly
+   those, and a key re-deposited with `access: "full"` needs none. Reversible:
+   drop the revoke call in `remove_http`.
 
 ## Dependency
 
