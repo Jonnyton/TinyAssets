@@ -498,9 +498,13 @@ def test_a_token_LIMIT_error_is_not_reported_as_an_expired_credential():
 @pytest.mark.parametrize("detail", [
     "Error: Not logged in. Run `codex login`.",
     "HTTP 401 Unauthorized",
+    "status 401",
     "oauth error: invalid_grant",
     "token expired; please reauthenticate",
     "credential file auth.json is unreadable",
+    # Codex 0.146 and Claude 2.1, verbatim (Codex, review round 3, V2).
+    "Your access token could not be refreshed. Please log out and sign in again.",
+    "Not logged in \u00b7 Please run /login",
 ])
 def test_narrow_credential_evidence_reaches_the_owner(detail):
     from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
@@ -516,6 +520,9 @@ def test_narrow_credential_evidence_reaches_the_owner(detail):
 
 @pytest.mark.parametrize("detail", [
     "input exceeds the model's maximum token limit",
+    # "401" inside a number is not an HTTP status (Codex, review round 3, V1).
+    "maximum token limit: 140123 tokens",
+    "request id 8401b2 timed out",
     "403 Forbidden: rate limit exceeded for this endpoint",
     "authorization server unreachable: connection refused",
     "",

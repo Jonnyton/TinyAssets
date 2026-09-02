@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import wraps
 from typing import Annotated, Any
@@ -1869,7 +1870,6 @@ _MEASURED_SKIP_CLASSES = frozenset({"quota_or_cooldown", "timed_out"})
 #: credential problem -- text that does not occur in a context-length, quota
 #: or network message. Bare "token"/"auth"/"403" are deliberately absent.
 _AUTH_EVIDENCE_TELLS = (
-    "401",
     "unauthorized",
     "invalid_token",
     "invalid token",
@@ -1890,12 +1890,24 @@ _AUTH_EVIDENCE_TELLS = (
     "re-authenticat",
     "no_credentials",
     "auth.json",
+    # Codex 0.146: "Your access token could not be refreshed. Please log out
+    # and sign in again." Claude: "Not logged in · Please run /login".
+    "could not be refreshed",
+    "log out and sign in",
+    "sign in again",
+    "run /login",
 )
+
+#: "401" only as a whole number: "maximum token limit: 140123 tokens" contains
+#: it as digits (Codex, review round 3, V1).
+_HTTP_401 = re.compile(r"(?<!\d)401(?!\d)")
 
 
 def _auth_evidence(attempt: Any) -> bool:
     """True when the attempt's detail names a credential problem narrowly."""
     detail = str(getattr(attempt, "detail", "") or "").lower()
+    if _HTTP_401.search(detail):
+        return True
     return any(tell in detail for tell in _AUTH_EVIDENCE_TELLS)
 
 
