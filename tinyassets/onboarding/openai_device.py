@@ -251,7 +251,7 @@ async def poll_device_auth(
 
 FLOW_TTL_SECONDS = 15 * 60
 _MAX_PENDING_FLOWS = 1000
-_MAX_PENDING_PER_USER = 3
+_MAX_PENDING_PER_USER = 10
 
 
 class _PendingFlow:

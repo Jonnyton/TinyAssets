@@ -140,10 +140,9 @@ def _secret_shape_error(scheme: str, secret: str) -> str:
 _DESTINATION_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{1,126}$")
 
 _MAX_SECRET_CHARS = 200_000
-_MAX_ENDPOINTS = 20
-#: A connection may hold at most this many git scopes. One ask should name the
-#: repositories the job actually touches, not a portfolio.
-_MAX_GIT_SCOPES = 20
+_MAX_ENDPOINTS = 200
+#: A connection may hold at most this many git scopes.
+_MAX_GIT_SCOPES = 200
 
 
 def _requested_git_scopes(document: dict[str, Any]) -> frozenset[str]:
@@ -184,7 +183,7 @@ def _stored_git_scopes(resource: Any) -> frozenset[str]:
     )
 
 # Conservative fixed unprompted cap for an MVP outbound channel; tune later.
-_HTTP_ACTION_CAP = ActionCap("http_requests", 100, "requests")
+_HTTP_ACTION_CAP = ActionCap("http_requests", 10_000, "requests")
 
 # Uniform absent-resource envelope for not-authenticated / not-admin / unknown
 # universe — a caller cannot probe existence through this surface (mirrors

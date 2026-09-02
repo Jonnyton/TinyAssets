@@ -305,7 +305,12 @@ class EffectFailedError(Exception):
 _READ_VERBS = frozenset({"GET", "HEAD"})
 
 #: Per-root-run usage budgets (defaults; tier-raisable, never a shape rule).
-RUN_DISPATCHES_MAX = 500
+RUN_DISPATCHES_MAX = 5000
+#: invoke_mcp_action round-trips per run, across every node and every resume.
+#: Sized with node_sandbox.MAX_RPC_CALLS (per node): a per-node allowance the
+#: run-wide counter refused at call 33 was two definitions of one cap (Codex
+#: on the 2026-09-02 limits change).
+RUN_RPC_CALLS_MAX = 5000
 RUN_BYTES_MAX = 256 * 1024 * 1024
 #: Charged when a delivered call did not report its sizes: the per-call caps.
 _UNKNOWN_REQUEST_BYTES = 8 * 1024 * 1024
@@ -670,8 +675,10 @@ class EffectChain:
         except (TypeError, ValueError):
             pass
 
-    def rpc_permit(self, cap: int = 32) -> None:
+    def rpc_permit(self, cap: int | None = None) -> None:
         """Count one ``invoke_mcp_action`` round-trip against the run's cap."""
+        if cap is None:
+            cap = RUN_RPC_CALLS_MAX
         with self.lock:
             self.rpc_calls += 1
             if self.rpc_calls > cap:

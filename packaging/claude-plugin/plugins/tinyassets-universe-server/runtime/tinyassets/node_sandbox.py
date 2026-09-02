@@ -123,7 +123,7 @@ MAX_STDERR_BYTES = 64 * 1024
 MAX_USER_PRINT_BYTES = 64 * 1024
 
 #: How many ``invoke_mcp_action`` round-trips one node may make.
-MAX_RPC_CALLS = 32
+MAX_RPC_CALLS = 500
 
 #: Bound on a single RPC reply written back to the child.
 MAX_RPC_REPLY_BYTES = 1024 * 1024
@@ -142,7 +142,7 @@ WORKSPACE_MOUNT_POINT = "/workspace"
 
 #: Workspace caps (design D2 / graph-execution-substrate): per NODE, not per
 #: command, so a loop of small commands is bounded by the same numbers.
-MAX_WORKSPACE_COMMANDS = 64
+MAX_WORKSPACE_COMMANDS = 1000
 MAX_WORKSPACE_OUTPUT_BYTES = 1024 * 1024
 MAX_WORKSPACE_READ_BYTES = 1024 * 1024
 MAX_WORKSPACE_GLOB_RESULTS = 10_000
@@ -743,7 +743,9 @@ def _make_workspace(conf, remaining):
     """Return the `ws` object bound to one workspace root."""
     root = _WsRoot(conf["root"]) if _WS_HAS_DIR_FD else _WsPathRoot(conf["root"])
     limits = conf.get("limits") or {}
-    max_commands = int(limits.get("max_commands", 64))
+    # The child runner has no module constants; 1000 is MAX_WORKSPACE_COMMANDS
+    # (a test pins the two together).
+    max_commands = int(limits.get("max_commands", 1000))
     max_output = int(limits.get("max_output_bytes", 1048576))
     max_read = int(limits.get("max_read_bytes", 1048576))
     max_glob = int(limits.get("max_glob_results", 10000))

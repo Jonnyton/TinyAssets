@@ -331,7 +331,7 @@ def test_rpc_runs_the_invoker_inside_the_requests_context(monkeypatch):
 
 def test_rpc_cap_is_per_run_not_per_node():
     chain = EffectChain(run_id="r9")
-    for _ in range(32):
+    for _ in range(effectors.RUN_RPC_CALLS_MAX):
         chain.rpc_permit()
     with pytest.raises(RuntimeError, match="too many"):
         chain.rpc_permit()
@@ -623,21 +623,21 @@ def test_parallel_siblings_that_both_overwrite_one_field_are_refused_at_compile(
 
 def test_resume_seeds_at_most_once_and_the_rpc_cap_from_the_interrupted_segment(monkeypatch):
     """R3 P0: a resumed run got an empty chain, so an effect fired before the
-    interrupt could fire again and 32 more RPCs were allowed."""
+    interrupt could fire again and a whole new RPC budget was allowed."""
     adapter = _Adapter({"fetch": _OK_GET})
     monkeypatch.setitem(effectors._EFFECTORS, SINK, adapter)
     chain = EffectChain(run_id="r16")
     chain.seed_from_output({
         "external_write_results": {"fetch": {SINK: {"delivered": True}}},
         "effects_fired_before": ["older"],
-        "rpc_calls": 31,
+        "rpc_calls": effectors.RUN_RPC_CALLS_MAX - 1,
         "invocation_depth": 2,
     })
     assert chain.already_fired == {"fetch", "older"} and chain.invocation_depth == 2
     with pytest.raises(EffectFailedError, match="already fired"):
         dispatch_node_effects(chain, _effect_node("fetch"), {"fetch_packet": _packet()})
     assert adapter.calls == []
-    chain.rpc_permit()                      # the 32nd of the run
+    chain.rpc_permit()                      # the last permitted call of the run
     with pytest.raises(RuntimeError, match="too many"):
         chain.rpc_permit()
 

@@ -89,7 +89,7 @@ CREATE INDEX IF NOT EXISTS idx_pending_requests_status
 
 #: A pending request occupies a tab in the user's face. More than this means
 #: something is looping, and a rail of identical tabs is not a rail.
-MAX_PENDING = 10
+MAX_PENDING = 50
 
 FIELD_TYPES = frozenset({"text", "secret", "choice"})
 
