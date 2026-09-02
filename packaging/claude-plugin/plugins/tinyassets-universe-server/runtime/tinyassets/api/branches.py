@@ -764,6 +764,58 @@ def _ext_branch_delete(kwargs: dict[str, Any]) -> str:
     return json.dumps({"branch_def_id": bid, "status": "deleted"})
 
 
+def _ext_branch_delete_own(kwargs: dict[str, Any]) -> str:
+    """Delete one of the caller's OWN private, unpublished branches.
+
+    The served surfaces (`write_graph target=branch operation=delete`) route
+    here rather than to `delete_branch`. Tiny, 2026-09-02: "I do not have a
+    branch delete operation exposed right now ... 106 branches". Inside your
+    universe you are god; the only invariant is not affecting other users. A
+    public branch is part of the remix commons and a published one has frozen
+    versions others may be bound to, so both are refused here with the reason
+    named -- the browser flow owns unpublishing.
+    """
+    from tinyassets.branch_versions import list_branch_versions
+    from tinyassets.daemon_server import delete_branch_definition
+
+    selector = kwargs.get("branch_def_id", "").strip()
+    if not selector:
+        return json.dumps({"error": "branch_def_id is required."})
+    base = str(_base_path())
+    resolved = _resolve_readable_branch(selector, base)
+    if resolved is None:
+        return _branch_not_found(selector)
+    bid, branch = resolved
+    if not _branch_authorized(branch):
+        # Same envelope as a private read by a non-author: existence is not
+        # confirmed either way.
+        return _branch_not_found(selector)
+    if (branch.get("visibility", "public") or "public") == "public":
+        return json.dumps({
+            "error": "branch_is_public",
+            "branch_def_id": bid,
+            "detail": (
+                "This branch is public, so it is part of the remix commons and "
+                "others may have built on it. Make it private first (or leave it), "
+                "then delete."
+            ),
+        })
+    if branch.get("published") or list_branch_versions(base, bid, limit=1):
+        return json.dumps({
+            "error": "branch_is_published",
+            "branch_def_id": bid,
+            "detail": (
+                "This branch has published versions that goals or other bindings "
+                "may be pinned to. Unpublishing stays in the browser flow; a "
+                "private unpublished branch deletes here."
+            ),
+        })
+    removed = delete_branch_definition(base, branch_def_id=bid)
+    if not removed:
+        return _branch_not_found(selector)
+    return json.dumps({"branch_def_id": bid, "status": "deleted"})
+
+
 def _ext_branch_add_node(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.engine_helpers import (
         _format_commit_failed,
@@ -3649,6 +3701,7 @@ _BRANCH_ACTIONS: dict[str, Any] = {
     "get_branch": _ext_branch_get,
     "list_branches": _ext_branch_list,
     "delete_branch": _ext_branch_delete,
+    "delete_own_branch": _ext_branch_delete_own,
     "add_node": _ext_branch_add_node,
     "connect_nodes": _ext_branch_connect_nodes,
     "set_entry_point": _ext_branch_set_entry_point,
@@ -3666,6 +3719,7 @@ _BRANCH_ACTIONS: dict[str, Any] = {
 _BRANCH_WRITE_ACTIONS: frozenset[str] = frozenset({
     "create_branch", "add_node", "connect_nodes",
     "set_entry_point", "add_state_field", "delete_branch",
+    "delete_own_branch",
     "build_branch", "patch_branch", "patch_nodes", "update_node",
     "approve_source_code",
 })

@@ -760,9 +760,11 @@ def write_graph(
             recurring run of one of YOUR workflows, owned by you, in your own
             universe. It runs on whichever provider that universe is serving on
             at the time, so rebinding the provider needs no change here.
-            With target=branch, create/remix/patch/publish. Create and remix
-            consume a complete Branch spec in payload_json; remix uses its
-            fork_from field. Publish freezes the named branch_id.
+            With target=branch, create/remix/patch/publish/delete. Create and
+            remix consume a complete Branch spec in payload_json; remix uses its
+            fork_from field. Publish freezes the named branch_id. Delete removes
+            one of YOUR OWN private, unpublished branches by branch_id; a public
+            or published branch is refused with the reason.
             With target=connection, connect_llm deposits the authenticated
             owner's own Claude/Codex subscription into this universe's private
             vault (owner-only; see payload_json). Also with target=connection,
@@ -1033,6 +1035,12 @@ def write_graph(
                 branch_def_id=branch_id,
                 notes=description,
             )
+        if branch_operation == "delete":
+            # Author-gated; refuses public/published shapes itself.
+            return _extensions_impl(
+                action="delete_own_branch",
+                branch_def_id=branch_id,
+            )
         if branch_operation == "patch":
             # PR-180 EDIT half: a founder patches their own branch graph via the
             # existing transactional patch_branch handler (author-gated: BUG-081).
@@ -1046,7 +1054,7 @@ def write_graph(
                 "error": "unknown_branch_operation",
                 "target": "branch",
                 "operation": operation,
-                "allowed_operations": ["create", "remix", "patch", "publish"],
+                "allowed_operations": ["create", "remix", "patch", "publish", "delete"],
             }
         )
     if normalized == "automation":
