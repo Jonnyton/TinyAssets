@@ -749,14 +749,18 @@ def test_extending_never_writes_a_second_vault_record(base):
 
 
 def test_extending_a_connection_that_does_not_exist_is_refused(base):
+    """Refused when RAISED (2026-09-02): the agent is told, the owner never
+    sees a tab that cannot be honoured. Answer-time is covered by extend_http
+    itself, which keeps the uniform not_found envelope."""
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
     ask = _ask("u-1", kind="API", title="widen nothing",
                fields=[], action={"type": "extend_http", "destination": "nope",
                        "endpoints": [{"host": "api.github.com",
                                       "path_template": "/x", "methods": ["PUT"]}]})
-    out = _answer("u-1", request_id=ask["request_id"], values={})
-    assert out == {"error": "not_found", "resource": "connection"}
+    assert ask["error"] == "request_invalid"
+    assert 'no key is deposited as "nope"' in ask["detail"]
+    assert _rail("u-1")["count"] == 0
 
 
 def test_an_extend_request_cannot_carry_a_secret_field(base):

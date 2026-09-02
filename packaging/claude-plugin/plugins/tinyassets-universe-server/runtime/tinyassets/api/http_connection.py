@@ -847,57 +847,21 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
             ),
         }
 
-    connection_id, _grant_id = _ids(universe_id=uid, destination=destination)
-    ledger = ConnectionLedger(
-        Path(base) / "outbound.db",
-        verify_authenticated_principal=lambda: actor,
+    preview = _extend_preview(
+        actor=actor, base=base, uid=uid, destination=destination,
+        added=added, requested_git_scopes=requested_git_scopes,
     )
-    resource = ledger._get_connection_resource(connection_id)
-    if resource is None or resource.owner_user_id != actor:
-        # Nothing to extend, or not this principal's connection. Uniform
-        # envelope so this cannot be used to probe which destinations exist.
-        return dict(_NOT_FOUND)
-    if resource.revoked_at is not None:
-        return {"error": "connection_conflict", "resource": "connection"}
+    if preview.get("error") or preview.get("status") == "unchanged":
+        return preview
 
-    stored = [e.as_dict() for e in resource.allowed_endpoints]
-    try:
-        # Scope-only: the connection keeps exactly the endpoints it has. They
-        # still go through the parser, because they are what the ledger will
-        # validate the git scopes' host rule against.
-        merged = _parse_allowed_endpoints(stored if scope_only else [*stored, *added])
-    except SsrfValidationError as exc:
-        return {"error": "endpoint_not_permitted", "detail": str(exc)}
-    except (ValueError, TypeError) as exc:
-        return {"error": "connection_setup_invalid", "detail": str(exc)}
-    merged_dicts = [e.as_dict() for e in merged]
-    stored_git_scopes = _stored_git_scopes(resource)
-    new_git_scopes = requested_git_scopes - stored_git_scopes
-    # "Nothing new" has to account for a scope-only widening: adding
-    # git_read:owner/name to a connection whose endpoints already cover what it
-    # needs changes no endpoint at all, and short-circuiting on endpoints alone
-    # left that ask with no route through this verb.
-    if (
-        _canonical_endpoint_set(merged_dicts) <= _canonical_endpoint_set(stored)
-        and not new_git_scopes
-    ):
-        return {"status": "unchanged", "destination": destination,
-                "allowed_endpoints": stored,
-                "scopes": list(resource.scopes)}
-
-    scopes = tuple(
-        sorted(
-            {m for e in merged for m in e.methods}
-            | requested_git_scopes
-            | stored_git_scopes
-        )
-    )
+    ledger = preview["ledger"]
+    connection_id = preview["connection_id"]
     try:
         widened = ledger.extend_http_connection_endpoints(
             connection_id=connection_id,
-            endpoints=merged_dicts,
-            scopes=scopes,
-            expected_endpoints_json=json.dumps(stored),
+            endpoints=preview["merged"],
+            scopes=preview["scopes"],
+            expected_endpoints_json=json.dumps(preview["stored"]),
         )
     except GitScopeError as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
@@ -917,4 +881,170 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     }
 
 
-__all__ = ["connect_http", "extend_http"]
+def _extend_preview(
+    *,
+    actor: str,
+    base: Any,
+    uid: str,
+    destination: str,
+    added: Any,
+    requested_git_scopes: frozenset[str],
+) -> dict[str, Any]:
+    """Everything ``extend_http`` decides BEFORE it writes, as one function.
+
+    The request rail calls this when the agent RAISES an ask, and
+    ``extend_http`` calls it when the owner answers -- so the two cannot
+    disagree. They did: on 2026-09-02 the founder's universe raised an ask that
+    added a ``github.com`` endpoint to a connection whose endpoints were all on
+    ``api.github.com``; the ask was accepted, the tab rendered, and the
+    founder's click on yes was refused by the ledger's one-host rule for git
+    scopes -- worded for the agent, shown to the founder, and recorded as a
+    "Not now" they never chose.
+
+    Returns an error envelope, ``{"status": "unchanged", ...}`` when the ask
+    adds nothing the connection does not already hold, or ``{"status":
+    "extends", ...}`` carrying exactly what the write needs.
+    """
+    from tinyassets.storage.workspace_authority import (
+        connection_git_host,
+        validate_git_scopes,
+    )
+
+    connection_id, _grant_id = _ids(universe_id=uid, destination=destination)
+    ledger = ConnectionLedger(
+        Path(base) / "outbound.db",
+        verify_authenticated_principal=lambda: actor,
+    )
+    resource = ledger._get_connection_resource(connection_id)
+    if resource is None or resource.owner_user_id != actor:
+        # Nothing to extend, or not this principal's connection. Uniform
+        # envelope so this cannot be used to probe which destinations exist.
+        return dict(_NOT_FOUND)
+    if resource.revoked_at is not None:
+        return {"error": "connection_conflict", "resource": "connection"}
+
+    scope_only = not isinstance(added, list) or not added
+    stored = [e.as_dict() for e in resource.allowed_endpoints]
+    try:
+        # Scope-only: the connection keeps exactly the endpoints it has. They
+        # still go through the parser, because they are what the ledger will
+        # validate the git scopes' host rule against.
+        merged = _parse_allowed_endpoints(stored if scope_only else [*stored, *added])
+    except SsrfValidationError as exc:
+        return {"error": "endpoint_not_permitted", "detail": str(exc)}
+    except (ValueError, TypeError) as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
+    # One row per distinct endpoint. The union used to keep duplicates, so an
+    # ask that repeated an endpoint the connection already had stored it twice
+    # (the founder's github connection carried three such pairs on 2026-09-02).
+    merged_dicts: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for endpoint in merged:
+        as_dict = endpoint.as_dict()
+        key = _canonical_policy([as_dict])
+        if key in seen:
+            continue
+        seen.add(key)
+        merged_dicts.append(as_dict)
+    stored_git_scopes = _stored_git_scopes(resource)
+    new_git_scopes = requested_git_scopes - stored_git_scopes
+    scopes = tuple(
+        sorted(
+            {m for e in merged for m in e.methods}
+            | requested_git_scopes
+            | stored_git_scopes
+        )
+    )
+    # The ledger's own rule, run here so an ask that would fail at the write
+    # fails at the RAISE, with the reason going to the agent that can act on it.
+    try:
+        validate_git_scopes(scopes, hosts=[e.host for e in merged])
+    except GitScopeError as exc:
+        asked_hosts = sorted({
+            str(e.get("host") or "").strip().lower()
+            for e in (added if isinstance(added, list) else [])
+            if isinstance(e, dict)
+        } - {""})
+        return {
+            "error": "connection_setup_invalid",
+            "detail": str(exc),
+            "git_host": connection_git_host(resource),
+            "asked_hosts": asked_hosts,
+        }
+    # "Nothing new" has to account for a scope-only widening: adding
+    # git_read:owner/name to a connection whose endpoints already cover what it
+    # needs changes no endpoint at all, and short-circuiting on endpoints alone
+    # left that ask with no route through this verb.
+    if (
+        _canonical_endpoint_set(merged_dicts) <= _canonical_endpoint_set(stored)
+        and not new_git_scopes
+    ):
+        return {"status": "unchanged", "destination": destination,
+                "allowed_endpoints": stored,
+                "scopes": list(resource.scopes)}
+    return {
+        "status": "extends",
+        "destination": destination,
+        "connection_id": connection_id,
+        "ledger": ledger,
+        "stored": stored,
+        "merged": merged_dicts,
+        "scopes": scopes,
+        "allowed_endpoints": merged_dicts,
+        "git_host": connection_git_host(resource),
+    }
+
+
+def preview_extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
+    """What answering an ``extend_http`` ask WOULD do, without doing it.
+
+    Same authentication, same admin gate, same parse and the same one-host
+    rule as :func:`extend_http`; nothing is written. The request rail uses it
+    to refuse an ask when it is raised (with the reason, to the agent) and to
+    answer an ask that adds nothing with ``unchanged`` instead of a tab.
+    """
+    from tinyassets.api import permissions
+    from tinyassets.daemon_server import list_universe_acl
+
+    if not permissions.is_authenticated_request():
+        return {"error": "authentication_required", "resource": "connection"}
+    actor = permissions.current_actor_id().strip()
+    if not actor or actor == "anonymous":
+        return {"error": "authentication_required", "resource": "connection"}
+    uid = _request_universe(universe_id)
+    base = _base_path()
+    admin = [
+        row
+        for row in list_universe_acl(base, universe_id=uid)
+        if row.get("actor_id") == actor and row.get("permission") == "admin"
+    ]
+    if not admin:
+        return dict(_NOT_FOUND)
+    try:
+        document = _payload(payload)
+    except ValueError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
+    destination = str(document.get("destination") or "").strip().lower()
+    if not _DESTINATION_RE.match(destination):
+        return {
+            "error": "connection_setup_invalid",
+            "detail": "destination must be 2-127 chars of [a-z0-9._:-] starting "
+                      "alphanumeric",
+        }
+    try:
+        requested_git_scopes = _requested_git_scopes(document)
+    except GitScopeError as exc:
+        return {"error": "connection_setup_invalid", "detail": str(exc)}
+    preview = _extend_preview(
+        actor=actor, base=base, uid=uid, destination=destination,
+        added=document.get("endpoints"), requested_git_scopes=requested_git_scopes,
+    )
+    # Serializable projection only: never the ledger or the resource.
+    return {
+        key: value for key, value in preview.items()
+        if key in ("error", "resource", "detail", "status", "destination",
+                   "allowed_endpoints", "scopes", "git_host", "asked_hosts")
+    }
+
+
+__all__ = ["connect_http", "extend_http", "preview_extend_http"]
