@@ -108,8 +108,8 @@ def _engine_run_admit(
     while ``_RUN_GRAPH_TOTAL_MAX`` still bounds runs of any kind. A dedicated
     ledger, NOT the shared runs table (Codex 2026-08-19 (b)).
 
-    ``fail_closed`` (Codex ADAPT 2026-08-22 #6): run_graph passes False — its
-    approved-source gate + allowlist are the primary controls, so a DB blip must
+    ``fail_closed`` (Codex ADAPT 2026-08-22 #6): run_graph passes False — the
+    OS sandbox + allowlist are the primary controls, so a DB blip must
     not wedge legitimate runs. remix/write_graph/brain pass True — the rolling cap
     IS a real safety bound on an autonomous write, so a DB error refuses. They
     also pass ``kind="engine"``: a durable mutation of the universe's own state
@@ -440,7 +440,7 @@ def run_graph(
     # Effect-spam rate limit (Codex gate #5): a prompt-injected engine could spam
     # run_graph on an already-approved effect branch (e.g. opening many PRs). Cap
     # the runs THIS universe can trigger via the engine per rolling window. The
-    # approved-source-hash gate already pins WHAT runs; this bounds HOW OFTEN.
+    # OS sandbox already bounds WHAT a code node can touch; this bounds HOW OFTEN.
     ticket, refused_by = _admission_parts(_engine_run_admit(want_ticket=True))
     if ticket is None:
         return _engine_refusal("run_graph", refused_by)

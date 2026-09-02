@@ -2602,11 +2602,12 @@ def _staged_branch_from_spec(
                 # is unchanged — NOT that a party the FORKER trusts approved it. A
                 # malicious commons author can publish source_code with a forged
                 # approved=True + matching hash; a naive fork would carry it and
-                # the forker's run would execute it. On a CROSS-AUTHOR fork, strip
-                # ALL executable approval so inherited code lands un-approved and
-                # the new author must re-approve before it can run. Attribution
-                # (node ``author``) is preserved; only the executable approval is
-                # dropped.
+                # a naive fork would carry that forged provenance. On a CROSS-AUTHOR
+                # fork, strip ALL executable approval so inherited code lands
+                # un-approved: the forker sees whose code it is, and it runs in the
+                # OS sandbox like any code node (approval never gates a run).
+                # Attribution (node ``author``) is preserved; only the approval
+                # provenance is dropped.
                 _forker = _request_branch_actor()
                 _cross_author = bool(parent.author) and parent.author != _forker
                 _carried = []
