@@ -1,0 +1,36 @@
+# Channel-specific code in the user substrate, per (file, channel).
+#
+# The founder's rule (2026-09-03): no GitHub-specific code on the
+# platform, and no other channel's either. This file is what exists
+# TODAY, so the number can only go down. Regenerate with:
+#     python scripts/check_channel_agnostic.py --update
+#
+# Total: 87 across 19 files.
+
+tinyassets/account_deletion.py:stripe:3
+tinyassets/action_result_delivery.py:github:1
+tinyassets/api/cloud_automations.py:github:2
+tinyassets/api/cloud_connections.py:github:11
+tinyassets/api/prompts.py:github:1
+tinyassets/api/universe.py:github:19
+tinyassets/api/webhook_ops.py:github:1
+tinyassets/auth/provider.py:github:6
+tinyassets/credential_vault.py:github:1
+tinyassets/credential_vault.py:slack:2
+tinyassets/credential_vault.py:twitter:1
+tinyassets/evaluation/patch_notes.py:github:2
+tinyassets/onboarding/__init__.py:stripe:3
+tinyassets/provider_assignment.py:slack:1
+tinyassets/storage/workspace_authority.py:github:4
+tinyassets/universe_bundle.py:github:2
+tinyassets/universe_server.py:github:5
+tinyassets/user_owned_cloud_automation.py:github:3
+tinyassets/webhook_inbound.py:github:3
+tinyassets/webhook_inbound.py:gitlab:2
+tinyassets/webhook_inbound.py:shopify:2
+tinyassets/webhook_inbound.py:slack:2
+tinyassets/webhook_inbound.py:stripe:2
+tinyassets/workspace_git.py:github:2
+tinyassets/workspace_provision.py:bitbucket:2
+tinyassets/workspace_provision.py:github:2
+tinyassets/workspace_provision.py:gitlab:2
