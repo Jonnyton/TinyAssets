@@ -123,7 +123,7 @@ function cx(...classes: Array<string | false | null | undefined>): string {
 }
 
 function modeFromVitals(vitals: Vitals | null): Mode {
-  return !vitals ? "reading" : !vitals.reachable ? "error" : vitals.workflowActive ? "awake" : "asleep";
+  return !vitals ? "reading" : vitals.authRequired ? "asleep" : !vitals.reachable ? "error" : vitals.workflowActive ? "awake" : "asleep";
 }
 
 function isShyModeFromView(view: TinyBotView): boolean {

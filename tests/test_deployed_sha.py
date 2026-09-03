@@ -83,7 +83,7 @@ def receipt(sha, **extra):
     return state
 
 
-def test_live_release_state_gets_pulse_without_authorization(monkeypatch):
+def test_live_release_state_gets_pulse_as_canary(monkeypatch):
     mod = load()
     seen = []
 
@@ -104,11 +104,12 @@ def test_live_release_state_gets_pulse_without_authorization(monkeypatch):
         return Response()
 
     monkeypatch.setattr(mod.urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "canary-token")
     result = mod.live_release_state("https://example/mcp/", 2.0)
     assert result["git_sha"] == "abc"
     assert seen[0].full_url == "https://example/mcp/pulse"
     assert seen[0].get_header("Accept") == "application/json"
-    assert seen[0].get_header("Authorization") is None
+    assert seen[0].get_header("Authorization") == "Bearer canary-token"
 
 
 def test_live_release_state_rejects_non_object(monkeypatch):
@@ -127,6 +128,7 @@ def test_live_release_state_rejects_non_object(monkeypatch):
             return b"[]"
 
     monkeypatch.setattr(mod.urllib.request, "urlopen", lambda *a, **k: Response())
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "canary-token")
     with pytest.raises(mod.DeployedShaError):
         mod.live_release_state("https://example/mcp", 2.0)
 
@@ -336,8 +338,8 @@ def test_pulse_request_names_itself_so_cloudflare_does_not_challenge_it(monkeypa
         return Response()
 
     monkeypatch.setattr(mod.urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "canary-token")
     mod.live_release_state("https://tinyassets.io/mcp", 2.0)
     agent = seen[0].get_header("User-agent")
     assert agent == mod.PULSE_USER_AGENT
     assert "urllib" not in (agent or "").lower()
-

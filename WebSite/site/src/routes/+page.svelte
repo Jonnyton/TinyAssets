@@ -286,6 +286,9 @@
           <span>right now: <strong>no recent public workflow signal</strong></span>
           {#if vitals.lastMovedAt}<span class="ev">last signal {fmtRel(vitals.lastMovedAt)} · read {fmtRel(vitals.fetchedAt)}</span>{/if}
         {/if}
+      {:else if vitals?.authRequired}
+        <span class="dot idle" aria-hidden="true"></span>
+        <span class="ev">live workflow activity is visible to signed-in connectors only</span>
       {:else if vitals}
         <span class="dot error" aria-hidden="true"></span>
         <span class="ev">couldn't read public activity just now — the live page retries</span>

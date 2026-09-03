@@ -21,15 +21,6 @@ _TOKEN = "t" * 40
 @pytest.fixture(autouse=True)
 def _canary_token(monkeypatch):
     monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _TOKEN)
-    # This daemon keeps the no-anonymous contract. Stated here rather than
-    # discovered over the network: the probe asks GET <url>/pulse, and a test
-    # that leaves that to a stub would consume a scripted response meant for
-    # `initialize`.
-    import _canary_common
-
-    monkeypatch.setattr(
-        _canary_common, "server_enforces_bearer", lambda url, timeout=10.0: True
-    )
 
 
 def _scripted_post(
@@ -583,6 +574,33 @@ def test_main_requires_token_before_network(monkeypatch, capsys):
     assert exc.value.code == 2
     assert not calls
     assert "TINYASSETS_WIKI_CANARY_TOKEN" in capsys.readouterr().err
+
+
+def test_pulse_only_sends_canary_bearer(monkeypatch):
+    import urllib.request
+
+    seen = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self, _limit):
+            return b'{"git_sha":"abc123"}'
+
+    def urlopen(request, timeout):
+        seen.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert canary._pulse_only("https://example/mcp", 5.0) == 0
+    assert seen[0][0].full_url == "https://example/mcp/pulse"
+    assert seen[0][0].get_header("Authorization") == f"Bearer {_TOKEN}"
 
 
 def test_authenticated_handle_posts_all_carry_canary_bearer(monkeypatch):

@@ -33,6 +33,9 @@
 <div class="vitals" class:hero={variant === 'hero'} aria-live="polite">
   {#if reading && !vitals}
     <span class="cell"><span class="dot" aria-hidden="true"></span><span class="k">reading my vital signs…</span></span>
+  {:else if vitals?.authRequired}
+    <span class="cell"><span class="dot idle" aria-hidden="true"></span><span class="k">live readings require a signed-in connector</span></span>
+    <span class="cell quiet"><span class="ev">{vitals.error}</span></span>
   {:else if vitals && !vitals.reachable}
     <span class="cell"><span class="dot error" aria-hidden="true"></span><span class="k">engine unreachable from your browser</span></span>
     <span class="cell quiet">this is itself a true reading — <span class="ev">{vitals.error}</span></span>

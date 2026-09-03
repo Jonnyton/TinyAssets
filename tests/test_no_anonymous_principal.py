@@ -4,8 +4,8 @@ The rule, tested at every seam the change touched:
 
 - identity is present or the call refuses (``current_identity`` raises, the
   dev provider needs a named operator, the stdio server binds one);
-- the ONE unauthenticated read the daemon serves is ``GET /mcp/pulse`` and it
-  names no universe and no user; everything else under ``/mcp`` is 401;
+- every route under ``/mcp`` requires a bearer; the canary service principal
+  may read exact ``GET /mcp/pulse`` and the receipt names no user or universe;
 - writes carry their principal explicitly (a run needs an actor, a git author
   needs an identity, a hook records its owner and hands it to the event).
 
@@ -22,6 +22,8 @@ import pytest
 
 from tinyassets.auth import middleware as mw
 from tinyassets.auth.provider import CANARY, DEV_USER_ENV, DevAuthProvider, Identity
+
+_CANARY_TOKEN = "c" * 40
 
 
 @pytest.fixture(autouse=True)
@@ -101,7 +103,7 @@ def test_stdio_falls_back_to_the_os_account_never_to_nobody(monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# the one unauthenticated read, through the real app
+# protected release read, through the real app
 # --------------------------------------------------------------------------
 
 
@@ -113,11 +115,12 @@ def client(monkeypatch, tmp_path):
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv(DEV_USER_ENV, "operator-app")
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _CANARY_TOKEN)
     with TestClient(create_streamable_http_app()) as test_client:
         yield test_client
 
 
-def test_pulse_is_served_without_a_bearer_and_names_nothing(client, tmp_path):
+def test_pulse_requires_a_bearer_and_canary_read_names_nothing(client, tmp_path):
     (tmp_path / "release-state.json").write_text(
         json.dumps({
             "receipt_available": True,
@@ -129,7 +132,11 @@ def test_pulse_is_served_without_a_bearer_and_names_nothing(client, tmp_path):
         }),
         encoding="utf-8",
     )
-    response = client.get("/mcp/pulse")
+    assert client.get("/mcp/pulse").status_code == 401
+    response = client.get(
+        "/mcp/pulse",
+        headers={"Authorization": f"Bearer {_CANARY_TOKEN}"},
+    )
     assert response.status_code == 200
     body = response.json()
     assert set(body) == {"git_sha", "image_tag", "deployed_at", "uptime_seconds"}
@@ -142,15 +149,19 @@ def test_pulse_is_served_without_a_bearer_and_names_nothing(client, tmp_path):
 
 
 def test_pulse_without_a_receipt_reports_empty_facts_not_an_error(client):
-    response = client.get("/mcp/pulse")
+    response = client.get(
+        "/mcp/pulse",
+        headers={"Authorization": f"Bearer {_CANARY_TOKEN}"},
+    )
     assert response.status_code == 200
     body = response.json()
     assert body["git_sha"] == "" and body["image_tag"] == "" and body["deployed_at"] == ""
 
 
 def test_pulse_is_exact_and_get_only(client):
-    assert client.post("/mcp/pulse").status_code in (401, 405)
-    assert client.get("/mcp/pulse/extra").status_code == 401
+    headers = {"Authorization": f"Bearer {_CANARY_TOKEN}"}
+    assert client.post("/mcp/pulse", headers=headers).status_code == 403
+    assert client.get("/mcp/pulse/extra", headers=headers).status_code == 403
 
 
 def test_initialize_without_a_bearer_is_challenged_through_the_app(client):

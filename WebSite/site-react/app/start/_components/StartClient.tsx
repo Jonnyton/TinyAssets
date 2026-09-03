@@ -120,6 +120,11 @@ export default function StartClient() {
             <div className="pulse" aria-live="polite">
               {reading && !vitals ? (
                 <span className="pulse__row"><span className="dot" aria-hidden="true"></span><span className="pulse__k">reading the endpoint…</span></span>
+              ) : vitals?.authRequired ? (
+                <>
+                  <span className="pulse__row"><span className="dot idle" aria-hidden="true"></span><span className="pulse__k">the door opens through sign-in</span></span>
+                  <span className="pulse__sub ev">live endpoint readings appear inside a signed-in connector</span>
+                </>
               ) : vitals && !vitals.reachable ? (
                 <>
                   <span className="pulse__row"><span className="dot error" aria-hidden="true"></span><span className="pulse__k">endpoint unreachable from your browser</span></span>
@@ -148,8 +153,8 @@ export default function StartClient() {
               ) : null}
             </div>
             <p className="cover__pulse-note voice">
-              — you&apos;re reading my pulse through the same door you&apos;re about to
-              walk through.
+              — paste the address into your chatbot; sign-in opens the door and
+              keeps every reading attached to a principal.
             </p>
           </div>
         </div>

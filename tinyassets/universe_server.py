@@ -3643,10 +3643,10 @@ def create_streamable_http_app() -> Starlette:
         else []
     )
 
-    # GET /mcp/pulse: release facts, no principal, no universe data
-    # (no-anonymous-principal D5). The deploy gate (scripts/deployed_sha.py) and
-    # the public website read it; it is the ONE unauthenticated read the daemon
-    # serves, which is why it is not an MCP call and carries nothing a user made.
+    # GET /mcp/pulse: release facts for the authenticated canary principal.
+    # The route carries no universe data, but still sits behind the same bearer
+    # boundary as the rest of /mcp so a release receipt never becomes a public
+    # side channel.
     import time as _pulse_time
 
     from starlette.responses import JSONResponse as _PulseJSON

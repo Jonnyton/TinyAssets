@@ -28,13 +28,6 @@ import uptime_canary  # noqa: E402
 @pytest.fixture(autouse=True)
 def _canary_token(monkeypatch):
     monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "t" * 40)
-    # This daemon keeps the no-anonymous contract. Stated here rather than
-    # discovered over the network: the probe asks GET <url>/pulse, and a test
-    # that leaves that to a stub would consume a scripted response meant for
-    # `initialize`.
-    monkeypatch.setattr(
-        uptime_canary, "server_enforces_bearer", lambda url, timeout=10.0: True
-    )
     monkeypatch.setattr(
         mcp_public_canary, "canary_bearer_for", lambda url, prog, timeout=10.0: "t" * 40
     )

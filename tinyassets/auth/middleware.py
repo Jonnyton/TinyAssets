@@ -540,12 +540,6 @@ def _auth_challenge_path(path: str) -> bool:
     # /mcp/app/billing/... route is exempt, so checkout and cancel stay identity-gated.
     if path == "/mcp/app/billing/webhook":
         return False
-    # Release facts for the deploy gate and the public website: git sha, image
-    # tag, deploy time, uptime. No universe data and no principal, which is why
-    # it is the one unauthenticated read the daemon serves (no-anonymous-
-    # principal D5). Exact path; nothing under it.
-    if path == "/mcp/pulse":
-        return False
     # Narrow, ordered exemption for the browser deposit flow: when enabled, its
     # own signed-state / signed-session validation is the sole boundary for these
     # routes, so they must not be swept into the MCP bearer 401. Scoped to exactly
@@ -942,31 +936,39 @@ class AuthContextMiddleware:
             canary_authorized = False
             if token and wiki_canary_token_matches(token):
                 # The canary SERVICE PRINCIPAL (no-anonymous-principal D4). Its
-                # bearer is valid for exactly the probe shapes in
-                # canary_request_allowed, on the MCP endpoint, by POST; every
-                # item of a batch is checked before any of it is replayed. A
-                # valid bearer outside that world is refused, never downgraded.
-                if method != "POST" or path not in ("/mcp", "/mcp/"):
+                # bearer is valid for the exact GET /mcp/pulse health read or
+                # the probe shapes in canary_request_allowed on the MCP POST
+                # endpoint. A valid bearer outside that world is refused,
+                # never downgraded.
+                if method == "GET" and path == "/mcp/pulse":
+                    _current_identity.set(CANARY)
+                    _current_bearer_present.set(True)
+                    canary_authorized = True
+                elif method != "POST" or path not in ("/mcp", "/mcp/"):
                     # The endpoint itself, not the app, connect, hook or any
                     # other /mcp/* route: those have their own authentication
                     # and the canary has no business there.
-                    await _send_forbidden_403(send, "the canary bearer may only probe /mcp")
-                    return
-                body, messages, disconnected, oversized = await _buffer_request_body(receive)
-                if oversized:
-                    await _send_payload_too_large_413(send)
-                    return
-                if disconnected or not canary_request_allowed(body):
                     await _send_forbidden_403(
-                        send, "the canary bearer may only initialize, list tools, "
-                        "read status, and write its own probe page"
+                        send,
+                        "the canary bearer may only probe /mcp or GET /mcp/pulse",
                     )
                     return
-                receive = _replay_receive(messages, receive)
-                _current_identity.set(CANARY)
-                _current_bearer_present.set(True)
-                set_wiki_canary_authority(is_exact_wiki_canary_request(body))
-                canary_authorized = True
+                else:
+                    body, messages, disconnected, oversized = await _buffer_request_body(receive)
+                    if oversized:
+                        await _send_payload_too_large_413(send)
+                        return
+                    if disconnected or not canary_request_allowed(body):
+                        await _send_forbidden_403(
+                            send, "the canary bearer may only initialize, list tools, "
+                            "read status, and write its own probe page"
+                        )
+                        return
+                    receive = _replay_receive(messages, receive)
+                    _current_identity.set(CANARY)
+                    _current_bearer_present.set(True)
+                    set_wiki_canary_authority(is_exact_wiki_canary_request(body))
+                    canary_authorized = True
             # The inbound webhook receiver's sole boundary is its unguessable URL
             # token + owner-bound handler; a generic channel may POST with its OWN
             # Authorization: Bearer. Skip ALL MCP bearer interpretation/401 on an
@@ -1002,8 +1004,8 @@ class AuthContextMiddleware:
                 if _auth_challenge_path(path):
                     # No bearer on the MCP endpoint -> 401 challenge, in EVERY auth
                     # mode: the client launches OAuth. The exempt paths (discovery,
-                    # the app shell and its token route, connect, hooks, billing
-                    # webhook, pulse) bind their own principal or read no state.
+                    # the app shell and its token route, connect, hooks, and the
+                    # billing webhook) bind their own principal.
                     await _send_auth_challenge_401(send, invalid_token=False)
                     return
             await self.app(scope, receive, send)

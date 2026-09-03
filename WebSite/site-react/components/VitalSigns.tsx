@@ -31,6 +31,16 @@ export function VitalSigns({ variant = "strip" }: { variant?: "hero" | "strip" }
           <span className="dot" aria-hidden="true" />
           <span className={styles.k}>reading my vital signs…</span>
         </span>
+      ) : vitals?.authRequired ? (
+        <>
+          <span className={styles.cell}>
+            <span className="dot idle" aria-hidden="true" />
+            <span className={styles.k}>live readings require a signed-in connector</span>
+          </span>
+          <span className={`${styles.cell} ${styles.quiet}`}>
+            <span className={styles.ev}>{vitals.error}</span>
+          </span>
+        </>
       ) : vitals && !vitals.reachable ? (
         <>
           <span className={styles.cell}>

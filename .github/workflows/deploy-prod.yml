@@ -314,7 +314,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${#TINYASSETS_WIKI_CANARY_TOKEN}" -lt 32 ]; then
-            echo "::warning::TINYASSETS_WIKI_CANARY_TOKEN is unset or under 32 bytes. The deploy continues and the container healthcheck is unaffected (it reads /mcp/pulse), but the probes that form an MCP session or write to the wiki will SKIP. Tracked by openspec/changes/oidc-bound-probe-principals."
+            echo "::error::TINYASSETS_WIKI_CANARY_TOKEN is unset or under 32 bytes. The protected pulse healthcheck and authenticated MCP probes require this service-principal credential."
+            exit 1
             echo "canary bearer absent — deep probes will skip"
             exit 0
           fi

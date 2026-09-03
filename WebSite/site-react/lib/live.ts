@@ -1,19 +1,11 @@
 /**
  * Browser-side live MCP client.
  *
- * In production the Cloudflare Worker serves /mcp on the same origin. Local
- * previews can set NEXT_PUBLIC_MCP_PATH to a proxy or the live endpoint.
- *
- * The only request an anonymous browser can make is GET /mcp/pulse; every
- * MCP call needs a bearer (no anonymous principal, 2026-09-02).
+ * Every request under /mcp needs a bearer. Public pages use checked-in
+ * snapshots until the visitor connects through an authenticated client.
  */
 
 import type { Snapshot } from "./types";
-import { assertPublicBrowserEndpoint } from "../../shared/mcp/public-read-contract.js";
-
-const MCP_PATH = assertPublicBrowserEndpoint(
-  (typeof process !== "undefined" && process.env.NEXT_PUBLIC_MCP_PATH) || "/mcp",
-);
 
 export type LiveResult = {
   goals: any[];
@@ -34,7 +26,7 @@ export const PUBLIC_READ_NEEDS_SIGN_IN =
  * request without a bearer is answered with a 401 challenge, initialize
  * included. Public universe and page discovery therefore reject here,
  * without a network call, so each page falls back to its checked-in snapshot
- * and says why. The reachability signal lives in fetchVitals (GET /mcp/pulse).
+ * and says why. Browser-side release and reachability reads are also withheld.
  */
 export async function fetchPublicUniverses(_limit = 100): Promise<any[]> {
   throw new Error(PUBLIC_READ_NEEDS_SIGN_IN);
@@ -45,49 +37,9 @@ export async function fetchLive(): Promise<LiveResult> {
   throw new Error(PUBLIC_READ_NEEDS_SIGN_IN);
 }
 
-function stringify(value: unknown): string {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return "";
-  }
-}
-
-function firstString(...values: unknown[]): string {
-  for (const value of values) {
-    const text = stringify(value).trim();
-    if (text) return text;
-  }
-  return "";
-}
-
-function normalizeTimestamp(value: unknown): string | null {
-  const text = firstString(value);
-  if (!text) return null;
-  if (typeof value === "number" || /^\d+(\.\d+)?$/.test(text)) {
-    const numeric = Number(text);
-    if (Number.isFinite(numeric)) {
-      const millis = numeric > 1_000_000_000_000 ? numeric : numeric * 1000;
-      const date = new Date(millis);
-      if (!Number.isNaN(date.getTime())) return date.toISOString();
-    }
-  }
-  const parsed = Date.parse(text);
-  return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
-}
-
-function timestampMs(value: unknown): number | null {
-  const normalized = normalizeTimestamp(value);
-  if (!normalized) return null;
-  const parsed = Date.parse(normalized);
-  return Number.isNaN(parsed) ? null : parsed;
-}
-
 export type Vitals = {
   reachable: boolean;
+  authRequired?: boolean;
   fetchedAt: string;
   deployedAt?: string | null;
   gitSha?: string | null;
@@ -98,51 +50,24 @@ export type Vitals = {
   goalCount?: number | null;
   workflowActive?: boolean;
   lastSignalSource?: "universe-activity" | null;
-  /** false when activity exists but is not visible to an anonymous browser. */
+  /** false when activity exists but is not visible without a signed-in client. */
   activityVisible?: boolean;
   error?: string;
 };
 
 /**
- * Reachability and release facts from GET /mcp/pulse: git sha, image tag,
- * deploy time, uptime. It is the one unauthenticated read the daemon serves
- * and it names no universe and no user. Activity is not visible to an
- * anonymous browser, so activityVisible is false and nothing here claims
- * "no recent activity".
+ * Public browser code has no bearer and therefore makes no MCP request. Return
+ * an explicit authorization state so the page never mislabels a protected
+ * endpoint as unreachable and never offers a refresh control that cannot work.
  */
 export async function fetchVitals(): Promise<Vitals> {
-  const fetchedAt = new Date().toISOString();
-  try {
-    const res = await fetch(`${MCP_PATH}/pulse`, {
-      method: "GET",
-      headers: { Accept: "application/json" },
-      credentials: "omit"
-    });
-    if (!res.ok) throw new Error(`pulse HTTP ${res.status}`);
-    const pulse = await res.json();
-    if (!pulse || typeof pulse !== "object") throw new Error("pulse is not an object");
-    const sha = typeof pulse.git_sha === "string" ? pulse.git_sha.trim() : "";
-    const uptime = Number(pulse.uptime_seconds);
-    return {
-      reachable: true,
-      fetchedAt,
-      deployedAt: normalizeTimestamp(pulse.deployed_at),
-      gitSha: sha ? sha.slice(0, 12) : null,
-      uptimeSeconds: Number.isFinite(uptime) ? uptime : null,
-      queue: null,
-      lastMovedAt: null,
-      goalCount: null,
-      workflowActive: false,
-      lastSignalSource: null,
-      activityVisible: false
-    };
-  } catch {
-    return {
-      reachable: false,
-      fetchedAt,
-      error: "the /mcp/pulse read failed from your browser"
-    };
-  }
+  return {
+    reachable: false,
+    authRequired: true,
+    fetchedAt: new Date().toISOString(),
+    activityVisible: false,
+    error: "live engine readings are available to signed-in connectors"
+  };
 }
 
 /** Shape live public data into the same structure used by /wiki and /graph. */

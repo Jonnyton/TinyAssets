@@ -109,7 +109,7 @@
   let lastContextKey = '';
 
   const mode = $derived<'reading' | 'awake' | 'asleep' | 'error'>(
-    !vitals ? 'reading' : !vitals.reachable ? 'error' : vitals.workflowActive ? 'awake' : 'asleep'
+    !vitals ? 'reading' : vitals.authRequired ? 'asleep' : !vitals.reachable ? 'error' : vitals.workflowActive ? 'awake' : 'asleep'
   );
   // Shy following only while he's actually up. Asleep/error = stationary, honestly.
   const shyMode = $derived(shyCapable && (mode === 'awake' || mode === 'reading'));

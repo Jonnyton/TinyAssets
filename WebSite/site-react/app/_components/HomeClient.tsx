@@ -258,6 +258,11 @@ export default function HomeClient() {
                   </>
                 )}
               </>
+            ) : vitals?.authRequired ? (
+              <>
+                <span className="dot idle" aria-hidden="true"></span>
+                <span className="ev">live workflow activity is visible to signed-in connectors only</span>
+              </>
             ) : vitals ? (
               <>
                 <span className="dot error" aria-hidden="true"></span>

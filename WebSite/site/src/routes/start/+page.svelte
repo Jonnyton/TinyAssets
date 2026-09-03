@@ -128,6 +128,9 @@
       <div class="pulse" aria-live="polite">
         {#if reading && !vitals}
           <span class="pulse__row"><span class="dot" aria-hidden="true"></span><span class="pulse__k">reading the endpoint…</span></span>
+        {:else if vitals?.authRequired}
+          <span class="pulse__row"><span class="dot idle" aria-hidden="true"></span><span class="pulse__k">the door opens through sign-in</span></span>
+          <span class="pulse__sub ev">live endpoint readings appear inside a signed-in connector</span>
         {:else if vitals && !vitals.reachable}
           <span class="pulse__row"><span class="dot error" aria-hidden="true"></span><span class="pulse__k">endpoint unreachable from your browser</span></span>
           <span class="pulse__sub ev">this is a true reading — {vitals.error}</span>
@@ -152,8 +155,8 @@
         {/if}
       </div>
       <p class="cover__pulse-note voice">
-        — you're reading my pulse through the same door you're about to
-        walk through.
+        — paste the address into your chatbot; sign-in opens the door and keeps
+        every reading attached to a principal.
       </p>
     </div>
   </div>

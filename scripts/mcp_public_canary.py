@@ -593,7 +593,7 @@ def probe(
 
 
 def _pulse_only(url: str, timeout: float, *, verbose: bool = False) -> int:
-    """Liveness from the public release facts. No session, no bearer, no tools.
+    """Liveness from release facts authorized as the canary principal.
 
     Exit 0 when the daemon answers `/mcp/pulse` with a git sha. Anything else
     is a dead or wedged process. Deliberately narrow: the container needs to
@@ -605,8 +605,13 @@ def _pulse_only(url: str, timeout: float, *, verbose: bool = False) -> int:
     import urllib.request
 
     endpoint = url.rstrip("/") + "/pulse"
+    bearer = canary_bearer_for(url, "canary", timeout)
     request = urllib.request.Request(
-        endpoint, headers={"User-Agent": "tinyassets-healthcheck/1.0"},
+        endpoint,
+        headers={
+            "Authorization": f"Bearer {bearer}",
+            "User-Agent": "tinyassets-healthcheck/1.0",
+        },
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -647,11 +652,10 @@ def main(argv: list[str]) -> int:
     ap.add_argument(
         "--pulse-only", action="store_true",
         help=(
-            "probe GET <url>/pulse and nothing else. The one unauthenticated "
-            "read the daemon serves (git sha, image tag, deploy time, uptime), "
-            "so a container can check its own liveness with no credential. It "
-            "proves the process is up and serving; it does NOT prove the tool "
-            "surface, which is what the authenticated probes are for."
+            "probe authenticated GET <url>/pulse and nothing else (git sha, "
+            "image tag, deploy time, uptime). It proves the process is up and "
+            "serving; it does NOT prove the tool surface, which is what the "
+            "full authenticated probe is for."
         ),
     )
     ap.add_argument("--assert-handles", action="store_true",
@@ -665,8 +669,6 @@ def main(argv: list[str]) -> int:
                     help="seconds between handle-assertion retries (default 3)")
     args = ap.parse_args(argv)
 
-    # Which contract does THIS daemon keep? Asked once, then honoured for every
-    # step, so one run never mixes the two.
     if args.pulse_only:
         return _pulse_only(args.url, args.timeout, verbose=args.verbose)
     bearer = canary_bearer_for(args.url, "canary", args.timeout)
@@ -687,25 +689,20 @@ def main(argv: list[str]) -> int:
             _die(exc.code, exc.msg)
 
     if args.verbose:
-        # Say what was actually asserted against THIS daemon, never the
-        # superset: a line claiming a check that did not run is worse than no
-        # line, because it is the line an operator trusts after a rollback.
         checks: list[str] = []
         if args.assert_handles:
-            checks = ["canonical handle set advertised", "converse refused anonymously"]
-            if bearer is not None:
-                checks.insert(0, "anonymous initialize challenged")
-                checks.append("converse refused for the canary")
+            checks = [
+                "unsigned initialize challenged",
+                "canonical handle set advertised",
+                "converse refused without a principal",
+                "converse refused for the canary",
+            ]
             checks.append("get_status uptime fields present")
             checks.append(f"identity_evidence={identity_state}")
-        elif bearer is not None:
-            checks = ["anonymous initialize challenged"]
+        else:
+            checks = ["unsigned initialize challenged"]
         suffix = f" ({'; '.join(checks)})" if checks else ""
-        contract = (
-            "reads as the canary principal"
-            if bearer is not None
-            else "PRE-CUTOVER daemon (no /mcp/pulse): probed anonymously"
-        )
+        contract = "reads as the canary principal"
         print(f"[canary] OK {args.url} [{contract}]{suffix}")
     return 0
 

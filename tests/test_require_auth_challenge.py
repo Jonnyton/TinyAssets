@@ -244,7 +244,7 @@ def test_dev_mode_challenges_a_missing_token_too():
         ("/mcp/app/settings", True),               # every other app route needs the bearer
         ("/mcp/app/billing/webhook", False),       # Stripe-signed
         ("/mcp/app/billing/checkout", True),
-        ("/mcp/pulse", False),                     # release facts, no principal (D5)
+        ("/mcp/pulse", True),                      # service-principal release facts
         ("/mcp/pulse/", True),                     # exact path, nothing under it
         ("/mcp/pulse/extra", True),
         ("/mcp/.well-known/oauth-protected-resource", False),

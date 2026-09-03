@@ -59,6 +59,11 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT / "scripts") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+
+from _canary_common import require_canary_bearer  # noqa: E402
+
 DEFAULT_URL = "https://tinyassets.io/mcp"
 #: Cloudflare answers the stdlib's default ``Python-urllib/3.x`` agent with a
 #: managed-challenge 403 (measured against the live surface 2026-09-02), which
@@ -103,76 +108,18 @@ def _git(*args: str) -> str:
     return proc.stdout.strip()
 
 
-def _legacy_release_state(url: str, timeout: float) -> dict[str, Any]:
-    """``release_state`` from a pre-cutover daemon's anonymous ``get_status``.
-
-    The shape this gate read before /mcp/pulse existed. Only reached when the
-    daemon 404s the pulse route, which is exactly the daemon that still serves
-    an anonymous MCP call.
-    """
-    sys.path.insert(0, str(REPO_ROOT / "scripts"))
-    try:
-        import mcp_public_canary as canary
-    except Exception as exc:  # pragma: no cover - import guard
-        raise DeployedShaError(f"cannot load mcp_public_canary: {exc}") from exc
-    try:
-        status, headers, _ = canary._post(url, canary._INIT_PAYLOAD, timeout)
-        if status != 200:
-            raise DeployedShaError(f"non-200 status {status} from {url}")
-        session_id = headers.get("mcp-session-id")
-        if session_id:
-            canary._post(
-                url,
-                {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
-                timeout,
-                session_id,
-            )
-        status, _, body = canary._post(
-            url,
-            {
-                "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-                "params": {"name": "get_status", "arguments": {}},
-            },
-            timeout,
-            session_id,
-        )
-        if status != 200:
-            raise DeployedShaError(f"non-200 status {status} from {url} (get_status)")
-        payload = canary._parse_sse_or_json(body)
-    except DeployedShaError:
-        raise
-    except Exception as exc:
-        raise DeployedShaError(f"probe failed against {url}: {exc}") from exc
-
-    result = payload.get("result", payload)
-    if isinstance(result, dict) and "structuredContent" in result:
-        result = result["structuredContent"]
-    if isinstance(result, dict) and "content" in result:
-        for block in result.get("content", []):
-            if not isinstance(block, dict):
-                continue
-            try:
-                result = json.loads(block.get("text", ""))
-                break
-            except json.JSONDecodeError:
-                continue
-    if not isinstance(result, dict):
-        raise DeployedShaError("get_status payload is not an object")
-    release_state = result.get("release_state")
-    if not isinstance(release_state, dict):
-        raise DeployedShaError(
-            "get_status carries no release_state object - cannot tell what is deployed"
-        )
-    return release_state
-
-
 def live_release_state(url: str, timeout: float) -> dict[str, Any]:
-    """Read the unauthenticated release receipt from ``/mcp/pulse``."""
+    """Read the release receipt as the canary service principal."""
     pulse_url = f"{url.rstrip('/')}/pulse"
+    bearer = require_canary_bearer("deployed-sha")
     request = urllib.request.Request(
         pulse_url,
         method="GET",
-        headers={"Accept": "application/json", "User-Agent": PULSE_USER_AGENT},
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {bearer}",
+            "User-Agent": PULSE_USER_AGENT,
+        },
     )
 
     try:
@@ -182,15 +129,7 @@ def live_release_state(url: str, timeout: float) -> dict[str, Any]:
                     f"non-200 status {response.status} from {pulse_url}"
                 )
             body = response.read()
-    except urllib.error.HTTPError as exc:  # noqa: F811 - narrower 404 branch below
-        if exc.code == 404:
-            # A daemon that does not serve /mcp/pulse is the pre-cutover build,
-            # which answers get_status anonymously. Falling back keeps THIS gate
-            # green from merge until the deploy lands, and after a rollback --
-            # without it, Hard Rule 14 could not be run at all in that window
-            # (Codex review, 2026-09-02, finding E). Delete with the rest of the
-            # cutover seam once production has been on the new image.
-            return _legacy_release_state(url, timeout)
+    except urllib.error.HTTPError as exc:
         raise DeployedShaError(f"non-200 status {exc.code} from {pulse_url}") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise DeployedShaError(f"probe failed against {pulse_url}: {exc}") from exc
