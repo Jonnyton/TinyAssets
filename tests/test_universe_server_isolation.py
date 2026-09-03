@@ -100,7 +100,10 @@ def _make_universe(base: Path, uid: str) -> Path:
     # exercise public-universe behavior.
     from tinyassets.api.visibility import set_universe_visibility
 
+    from tests.universe_helpers import own_universe
+
     ensure_universe_registered(base, universe_id=uid, universe_path=udir)
+    own_universe(base, uid)
     set_universe_visibility(uid, "public")
     return udir
 

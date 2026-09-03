@@ -229,6 +229,17 @@ def _identity_fingerprint_key(monkeypatch):
     monkeypatch.setenv("TINYASSETS_IDENTITY_FINGERPRINT_VERSION", "v1")
 
 
+@pytest.fixture
+def owned_universe():
+    """``owned_universe(base, "u-1")`` builds a REGISTERED, OWNED universe.
+
+    A universe is a directory somebody owns, so `mkdir` alone does not make
+    one (founder, 2026-09-02)."""
+    from tests.universe_helpers import own_universe
+
+    return own_universe
+
+
 @pytest.fixture(autouse=True)
 def _reset_runtime():
     """Clear runtime singletons before AND after every test to prevent leakage.

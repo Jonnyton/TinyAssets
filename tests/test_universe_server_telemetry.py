@@ -47,8 +47,11 @@ def _make_universe(
     paused: bool = False,
 ) -> Path:
     """Build a universe on disk with controllable liveness signals."""
+    from tests.universe_helpers import own_universe
+
     udir = base / uid
     udir.mkdir()
+    own_universe(base, uid)
     if premise is not None:
         (udir / "PROGRAM.md").write_text(premise, encoding="utf-8")
     if work_targets is not None:

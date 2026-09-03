@@ -74,6 +74,20 @@ class TestUniverseDir:
 # _default_universe
 # ---------------------------------------------------------------------------
 
+
+def _own_universe(base, name: str) -> None:
+    """Give ``name`` an owner, which is what makes a directory a universe."""
+    from tinyassets.daemon_server import ensure_universe_registered, grant_universe_access
+
+    ensure_universe_registered(
+        base, universe_id=name, universe_path=base / name, display_name=name,
+    )
+    grant_universe_access(
+        base, universe_id=name, actor_id="workos|test", permission="admin",
+        granted_by="test",
+    )
+
+
 class TestDefaultUniverse:
     def test_env_var_overrides(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
@@ -85,8 +99,92 @@ class TestDefaultUniverse:
         monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "my-default")
         (tmp_path / "my-default").mkdir()
         (tmp_path / "active-now").mkdir()
+        _own_universe(tmp_path, "my-default")
+        _own_universe(tmp_path, "active-now")
         (tmp_path / ".active_universe").write_text("active-now", encoding="utf-8")
         assert _default_universe() == "active-now"
+
+    def test_a_marker_naming_an_operational_store_is_not_followed(
+        self, tmp_path, monkeypatch,
+    ):
+        """Codex code review round 2, P1. The marker and the configured default
+        returned before any ownership check, so a stale `.active_universe`
+        naming `scratch` routed every request into the workspace pool."""
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+        monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
+        (tmp_path / "scratch").mkdir()
+        (tmp_path / "u-mine").mkdir()
+        _own_universe(tmp_path, "u-mine")
+        (tmp_path / ".active_universe").write_text("scratch", encoding="utf-8")
+        assert _default_universe() == "u-mine"
+
+    def test_a_pointer_resolves_to_the_directory_that_exists(
+        self, tmp_path, monkeypatch,
+    ):
+        """Codex verdict on head 8982b63e: the case-fold fix was half done.
+
+        `owned_universe_id` answers which ACL id a name means. Returning THAT
+        to a caller about to open a path is what broke on Linux: a directory
+        `U-Mine/` owned by ACL id `u-mine` resolved to `u-mine/`, which does
+        not exist there. A pointer names a directory, so the answer has to be
+        the directory's own spelling.
+        """
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+        monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
+        (tmp_path / "U-Mine").mkdir()
+        _own_universe(tmp_path, "u-mine")
+
+        # ...through the active marker,
+        (tmp_path / ".active_universe").write_text("u-mine", encoding="utf-8")
+        assert _default_universe() == "U-Mine"
+        assert (tmp_path / _default_universe()).is_dir()
+
+        # ...and through the configured default.
+        (tmp_path / ".active_universe").unlink()
+        monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "u-mine")
+        assert _default_universe() == "U-Mine"
+        assert (tmp_path / _default_universe()).is_dir()
+
+    def test_an_exact_pointer_wins_over_a_case_variant(
+        self, tmp_path, monkeypatch,
+    ):
+        """Codex verdict on head 8ef30734: the fold preferred the wrong one.
+
+        With both `U-Mine/` and `u-mine/` on a case-sensitive filesystem, the
+        scan took the first case-folded hit in sorted order, so the exact
+        pointer `u-mine` opened `U-Mine`. Folding exists to find a directory
+        restored under a different case, never to override the name the caller
+        actually gave.
+        """
+        import os
+
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+        monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
+        (tmp_path / "U-Mine").mkdir()
+        try:
+            (tmp_path / "u-mine").mkdir()
+        except OSError:
+            # Case-insensitive filesystem: the two names ARE one directory, so
+            # there is nothing to prefer and the sorted-order bug cannot bite.
+            pytest.skip("filesystem is case-insensitive")
+        _own_universe(tmp_path, "u-mine")
+        _own_universe(tmp_path, "U-Mine")
+
+        (tmp_path / ".active_universe").write_text("u-mine", encoding="utf-8")
+        assert _default_universe() == "u-mine"
+
+        (tmp_path / ".active_universe").write_text("U-Mine", encoding="utf-8")
+        assert _default_universe() == "U-Mine"
+        assert os.path.isdir(tmp_path / _default_universe())
+
+    def test_a_configured_default_still_answers_an_empty_data_root(
+        self, tmp_path, monkeypatch,
+    ):
+        """A fresh install names the universe it is about to create. It never
+        wins over one that exists."""
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "my-default")
+        assert _default_universe() == "my-default"
 
     def test_invalid_active_marker_ignored(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
@@ -95,18 +193,39 @@ class TestDefaultUniverse:
         (tmp_path / ".active_universe").write_text("../outside", encoding="utf-8")
         assert _default_universe() == "my-default"
 
-    def test_first_subdir_if_no_env(self, tmp_path, monkeypatch):
+    def test_first_owned_universe_if_no_env(self, tmp_path, monkeypatch):
+        """A universe is a directory somebody owns (founder 2026-09-02), so
+        the first OWNED one wins -- not the first directory."""
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
         (tmp_path / "alpha").mkdir()
         (tmp_path / "beta").mkdir()
+        _own_universe(tmp_path, "alpha")
+        _own_universe(tmp_path, "beta")
         assert _default_universe() == "alpha"
+
+    def test_an_operational_store_is_never_the_default_universe(
+        self, tmp_path, monkeypatch,
+    ):
+        """Codex code review 2026-09-02, P1. This returned the first non-hidden
+        directory, so `cloud-automation-inputs` or `daemon_wikis` -- which sort
+        before any serial id -- were handed to an anonymous caller as though
+        they were a universe."""
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+        monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
+        (tmp_path / "cloud-automation-inputs").mkdir()
+        (tmp_path / "daemon_wikis").mkdir()
+        (tmp_path / "u-mine").mkdir()
+        _own_universe(tmp_path, "u-mine")
+        assert _default_universe() == "u-mine"
 
     def test_skips_dotdirs(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
         (tmp_path / ".hidden").mkdir()
         (tmp_path / "visible").mkdir()
+        _own_universe(tmp_path, ".hidden")
+        _own_universe(tmp_path, "visible")
         assert _default_universe() == "visible"
 
     def test_fallback_when_empty(self, tmp_path, monkeypatch):
@@ -125,6 +244,8 @@ class TestDefaultUniverse:
         monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
         (tmp_path / "afile.txt").write_text("x")
         (tmp_path / "zdir").mkdir()
+        _own_universe(tmp_path, "afile.txt")
+        _own_universe(tmp_path, "zdir")
         # File is sorted before zdir alphabetically but must be skipped
         assert _default_universe() == "zdir"
 

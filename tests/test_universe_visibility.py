@@ -107,9 +107,14 @@ def _authenticate(user_id: str) -> None:
 
 
 def _make_universe(base: Path, uid: str, *, level: str | None = None) -> Path:
+    from tests.universe_helpers import own_universe
+
     udir = base / uid
     udir.mkdir(parents=True, exist_ok=True)
     ensure_universe_registered(base, universe_id=uid, universe_path=udir)
+    # A universe is a directory somebody OWNS (founder, 2026-09-02); `mkdir`
+    # alone used to be enough, which is how backups became universes.
+    own_universe(base, uid)
     if level is not None:
         vis.set_universe_visibility(uid, level)
     return udir
@@ -519,9 +524,13 @@ class TestForgeProbes:
         _anonymous()
         out = json.loads(us._action_list_universes())
         assert "forged" not in {u["id"] for u in out["universes"]}
-        # RED without the gate: the on-disk dir IS a listable universe; only the
-        # visibility gate withholds it.
-        assert us._is_listable_universe_dir(base / "forged") is True
+        # RED without the gate: the dir IS a listable universe -- owned, so a
+        # universe by definition -- and only the visibility gate withholds it.
+        from tinyassets.daemon_server import owned_universe_ids
+
+        assert us._is_listable_universe_dir(
+            base / "forged", owned_universe_ids(base)
+        ) is True
         assert vis.universe_visibility("forged") is vis.UNLISTED
 
     def test_forge_metadata_only_withholds_content(self, base):
@@ -582,15 +591,20 @@ class TestBackfill:
 class TestStartupGate:
     def test_gate_declares_undeclared_universes(self, base):
         _make_universe(base, "reg")   # registered rules row, no explicit level
-        (base / "bare").mkdir()       # bare dir, no rules row at all
-        assert not vis.is_declared("reg") and not vis.is_declared("bare")
+        _make_universe(base, "bare2")  # owned, no explicit level either
+        (base / "bare").mkdir()       # a bare dir: nobody owns it, so not a universe
+        assert not vis.is_declared("reg") and not vis.is_declared("bare2")
 
         summary = vis.run_visibility_startup_gate()
 
-        assert vis.is_declared("reg") and vis.is_declared("bare")
+        assert vis.is_declared("reg") and vis.is_declared("bare2")
         assert vis.universe_visibility("reg") is vis.PUBLIC
-        assert set(summary["declared_now"]) >= {"reg", "bare"}
+        assert set(summary["declared_now"]) >= {"reg", "bare2"}
         assert summary["undeclared_remaining"] == []
+        # The unowned directory is not a universe, so the gate has nothing to
+        # declare for it -- it used to be handed a visibility level.
+        assert not vis.is_declared("bare")
+        assert "bare" not in set(summary["declared_now"])
 
     def test_gate_derives_private_from_public_read(self, base):
         _make_universe(base, "priv")

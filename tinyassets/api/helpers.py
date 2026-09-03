@@ -67,21 +67,88 @@ def _universe_dir(universe_id: str) -> Path:
     return result
 
 
+def _owned_universe_dir_name(base, name: str) -> str:
+    """The DIRECTORY a pointer resolves to, or ``""``.
+
+    `owned_universe_id` answers a different question -- which ACL id a name
+    means -- and returning that answer to a caller who is about to open a path
+    is what broke on Linux: a directory `U-Mine/` owned by ACL id `u-mine`
+    resolved to `u-mine/`, which does not exist there (Codex verdict on head
+    8982b63e). A pointer names a directory, so the answer is the directory's
+    own spelling.
+
+    Requires BOTH: the directory exists, and somebody owns it.
+    """
+    from tinyassets.daemon_server import owned_universe_id
+
+    candidate = (name or "").strip()
+    if not candidate or candidate.startswith("."):
+        return ""
+    if not base.is_dir():
+        return ""
+    # AN EXACT MATCH WINS. Scanning sorted children and taking the first
+    # case-folded hit meant that with both `U-Mine/` and `u-mine/` present on a
+    # case-sensitive filesystem, the exact pointer `u-mine` opened `U-Mine`
+    # (Codex verdict on head 8ef30734). Case-folding exists to find a directory
+    # that was restored under a different case, never to prefer one over the
+    # name the caller actually gave.
+    folded = candidate.casefold()
+    fallback = ""
+    for child in sorted(base.iterdir()):
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        if child.name == candidate:
+            return child.name if owned_universe_id(base, child.name) else ""
+        if not fallback and child.name.casefold() == folded:
+            if owned_universe_id(base, child.name):
+                fallback = child.name
+    return fallback
+
+
 def _default_universe() -> str:
     """Return the default universe ID, or first available."""
     base = _base_path()
     from tinyassets.storage import active_universe_id
     active = active_universe_id(base)
+    # A MARKER OR AN ENV VALUE IS A POINTER, NOT A GRANT (Codex code review
+    # round 2, P1). Both returned before any ownership check, so a stale
+    # `.active_universe` or a configured default naming `scratch` routed
+    # requests into an operational directory.
+    from tinyassets.daemon_server import owned_universe_ids
+
     if active:
-        return active
+        resolved = _owned_universe_dir_name(base, active)
+        if resolved:
+            return resolved
 
     default = os.environ.get("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "")
     if default:
-        return default
+        resolved = _owned_universe_dir_name(base, default)
+        if resolved:
+            return resolved
+        # An unowned configured default still answers when the data root holds
+        # no universes at all -- a fresh install pointing at the name it is
+        # about to create. It never wins over a real one.
+        if not owned_universe_ids(base):
+            return default
 
+    # A universe is a directory somebody owns (founder 2026-09-02). This
+    # returned the first non-hidden directory under the data root, so an
+    # operational store sorting first -- `cloud-automation-inputs`,
+    # `daemon_wikis` -- was handed out as the default universe (Codex code
+    # review 2026-09-02, P1).
     if base.is_dir():
+        from tinyassets.daemon_server import owned_universe_ids
+
         for child in sorted(base.iterdir()):
-            if child.is_dir() and not child.name.startswith("."):
+            if (
+                child.is_dir()
+                and not child.name.startswith(".")
+                # The DIRECTORY name, resolved case-insensitively against the
+                # ACL, so a restored `U-Mine` is returned as the path that
+                # exists rather than the ACL spelling that does not.
+                and _owned_universe_dir_name(base, child.name)
+            ):
                 return child.name
     return "default-universe"
 
@@ -127,18 +194,24 @@ def _designated_public_universe() -> str:
     chatbot speaks as"). Env-designated default wins; otherwise the first
     non-serial public directory; else the literal ``default-universe``.
     """
-    default = os.environ.get("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "")
-    if default:
-        return default
     from tinyassets.ids import is_universe_serial
 
     base = _base_path()
+    default = os.environ.get("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "")
+    if default:
+        resolved = _owned_universe_dir_name(base, default)
+        if resolved:
+            return resolved
     if base.is_dir():
+        from tinyassets.daemon_server import owned_universe_ids
+
+        if default and not owned_universe_ids(base):
+            return default
         for child in sorted(base.iterdir()):
             if (
                 child.is_dir()
-                and not child.name.startswith(".")
                 and not is_universe_serial(child.name)
+                and _owned_universe_dir_name(base, child.name)
             ):
                 return child.name
     return "default-universe"

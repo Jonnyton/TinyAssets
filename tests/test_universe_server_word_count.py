@@ -48,7 +48,13 @@ def _declare_public(base: Path, uid: str, udir: Path) -> None:
     from tinyassets.api.visibility import set_universe_visibility
     from tinyassets.daemon_server import ensure_universe_registered
 
+    from tests.universe_helpers import own_universe
+
     ensure_universe_registered(base, universe_id=uid, universe_path=udir)
+    # ...and give it an owner. A universe is a directory somebody owns
+    # (founder, 2026-09-02); declaring a level on an unowned directory
+    # declares nothing, because it is not a universe.
+    own_universe(base, uid)
     set_universe_visibility(uid, "public")
 
 

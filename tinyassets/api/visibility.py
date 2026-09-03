@@ -389,12 +389,16 @@ def _discover_universe_ids() -> list[str]:
         return []
     try:
         from tinyassets.api.universe import _is_listable_universe_dir
+        from tinyassets.daemon_server import owned_universe_ids
+
+        owned = owned_universe_ids(base)
     except Exception:
         _is_listable_universe_dir = None  # type: ignore[assignment]
+        owned = set()
     ids: list[str] = []
     for child in sorted(base.iterdir()):
         if _is_listable_universe_dir is not None:
-            if not _is_listable_universe_dir(child):
+            if not _is_listable_universe_dir(child, owned):
                 continue
         elif not child.is_dir() or child.name.startswith("."):
             continue

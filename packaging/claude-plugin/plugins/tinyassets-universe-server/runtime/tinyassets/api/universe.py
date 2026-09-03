@@ -1731,19 +1731,21 @@ def _epoch2_operational_snapshot(udir: Path) -> dict[str, Any]:
     return _epoch2_operational_read(udir).summary
 
 
-_TOP_LEVEL_OPERATIONAL_DATA_DIRS = frozenset({
-    "lance",
-    "output",
-    "runs",
-    "wiki",
-})
+def _is_listable_universe_dir(path: Path, owned: set[str]) -> bool:
+    """A universe is a directory somebody OWNS (founder, 2026-09-02).
 
-
-def _is_listable_universe_dir(path: Path) -> bool:
+    This used to be a four-name denylist standing in for a definition, so the
+    platform's own backups and every prune's archive were universes, and each
+    new operational directory needed another name in the frozenset. Ownership
+    is the definition; operational directories need no list because they were
+    never universes.
+    """
     return (
         path.is_dir()
         and not path.name.startswith(".")
-        and path.name not in _TOP_LEVEL_OPERATIONAL_DATA_DIRS
+        # Case-folded, so a directory restored under a different case is still
+        # the universe its ACL row names (Codex code review round 2, P1).
+        and (path.name in owned or path.name.casefold() in owned)
     )
 
 
@@ -1766,11 +1768,13 @@ def _action_list_universes(**_kwargs: Any) -> str:
         })
 
     from tinyassets.api import visibility
+    from tinyassets.daemon_server import owned_universe_ids
 
+    owned = owned_universe_ids(base)
     universes = []
     hidden_by_visibility = 0
     for child in sorted(all_entries):
-        if not _is_listable_universe_dir(child):
+        if not _is_listable_universe_dir(child, owned):
             continue
         # Existence is a privileged, separately-granted capability: a universe
         # whose declared level withholds discovery (e.g. `unlisted`) is not
@@ -1812,17 +1816,83 @@ def _action_list_universes(**_kwargs: Any) -> str:
     return json.dumps(result)
 
 
+class _OwnershipUnavailable(RuntimeError):
+    """The ownership store could not be read. NOT the same as unowned."""
+
+
+def _owned_universe_id(uid: str) -> str:
+    """The owned id ``uid`` names, or ``""`` when nobody owns it.
+
+    Raises ``_OwnershipUnavailable`` when the store cannot be read. Returning
+    ``""`` there refused the request as "Universe not found", which tells the
+    caller an existing universe does not exist -- a lie, from a transient
+    SQLite lock (Codex code review round 3, P1). Fail closed AND loudly: the
+    request is still refused, but for the reason that is true.
+    """
+    from tinyassets.daemon_server import owned_universe_id
+
+    base = _base_path()
+    if not base.is_dir():
+        # No data root is not a broken store: there is nothing here, so nobody
+        # owns anything. Raising here turned every read on a fresh install into
+        # "Ownership store unavailable" (CI, 2026-09-02).
+        return ""
+    try:
+        return owned_universe_id(base, uid)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("ownership lookup failed for %s", uid)
+        raise _OwnershipUnavailable(str(exc)) from exc
+
+
+def _available_universe_ids() -> list[str]:
+    """What to offer when an id is not found: the universes SOMEBODY OWNS.
+
+    This used to list every directory under the data root, so a "not found"
+    answer published the whole graveyard -- the archives, the migration backup
+    and the operational stores -- to any caller who guessed a wrong id.
+    """
+    from tinyassets.daemon_server import owned_universe_ids
+
+    base = _base_path()
+    if not base.is_dir():
+        return []
+    try:
+        owned = owned_universe_ids(base)
+    except Exception:  # noqa: BLE001 - fail closed
+        logger.exception("ownership lookup failed while listing available ids")
+        return []
+    from tinyassets.api import visibility
+
+    return sorted(
+        d.name for d in base.iterdir()
+        if d.is_dir()
+        and not d.name.startswith(".")
+        and (d.name in owned or d.name.casefold() in owned)
+        # Existence is separately granted. Without this, asking for an id that
+        # does not exist answered with every owned universe, private and
+        # unlisted ones included -- the enumeration gate the listing applies,
+        # skipped by taking the error path (Codex code review round 3, P1).
+        and visibility.visibility_permits(d.name, "discover_existence")
+    )
+
+
 def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
 
-    if not udir.is_dir():
+    # A DIRECTORY IS NOT A UNIVERSE (Codex code review round 2, P1). Filtering
+    # the enumeration was half the fix: reading one BY ID still answered with a
+    # full universe payload for `cloud-automation-inputs` and for the migration
+    # backup, reproduced anonymously against production on 2026-09-02. The
+    # graveyard was still browsable, which is what the founder reported.
+    try:
+        owner_id = _owned_universe_id(uid)
+    except _OwnershipUnavailable as exc:
+        return json.dumps({"error": f"Ownership store unavailable: {exc}"})
+    if not udir.is_dir() or not owner_id:
         return json.dumps({
             "error": f"Universe '{uid}' not found.",
-            "available": [
-                d.name for d in _base_path().iterdir()
-                if d.is_dir() and not d.name.startswith(".")
-            ] if _base_path().is_dir() else [],
+            "available": _available_universe_ids(),
         })
 
     # Metadata gate: inspect returns describe-surface metadata (premise, daemon
@@ -5788,13 +5858,14 @@ def _action_switch_universe(universe_id: str = "", **_kwargs: Any) -> str:
 
     uid = universe_id
     udir = _universe_dir(uid)
-    if not udir.is_dir():
+    try:
+        owner_id = _owned_universe_id(uid)
+    except _OwnershipUnavailable as exc:
+        return json.dumps({"error": f"Ownership store unavailable: {exc}"})
+    if not udir.is_dir() or not owner_id:
         return json.dumps({
             "error": f"Universe '{uid}' not found.",
-            "available": [
-                d.name for d in _base_path().iterdir()
-                if d.is_dir() and not d.name.startswith(".")
-            ] if _base_path().is_dir() else [],
+            "available": _available_universe_ids(),
         })
 
     # Explicit universe selection is not global (universe-creation spec:
@@ -5872,7 +5943,38 @@ def _action_create_universe(
     if udir.exists():
         return json.dumps({"error": f"Universe '{uid}' already exists."})
 
+    founder = ""
     try:
+        # THE OWNER IS CLAIMED BEFORE THE DIRECTORY EXISTS (Codex code review
+        # 2026-09-02, P0). Creation used to make and seed the directory here and
+        # grant ownership ~90 lines later, which left a window where the
+        # directory was on disk and owned by nobody -- and "owned by nobody" is
+        # exactly what the prune removes. A concurrent prune could delete the
+        # tree while this call went on to write the ACL row and return
+        # "created". `first_contact` already claims the home before
+        # materializing; explicit creation now does the same.
+        founder = permissions.current_actor_id()
+        # NO UNOWNED UNIVERSE, EVER (founder rule 2026-08-28). This used to fall
+        # through to `founder_id: ""` -- it created the universe, granted
+        # nobody, bound nobody, and returned success. The question "whose is
+        # this?" then had no answer, and that question is what every
+        # multi-tenant guarantee is built on. Raising rolls the create back
+        # through the outer handler, which also takes the grant back.
+        if not permissions.is_authenticated_request() or not (founder or "").strip():
+            raise PermissionError(
+                "a universe must belong to someone: refusing to create one with no "
+                "authenticated owner"
+            )
+        from tinyassets.daemon_server import grant_universe_access
+
+        grant_universe_access(
+            base,
+            universe_id=uid,
+            actor_id=founder,
+            permission="admin",
+            granted_by=founder,
+        )
+
         udir.mkdir(parents=True, exist_ok=True)
         normalized_text = _normalize_escaped_text(text) if text.strip() else ""
         loop_branch_def_id = str(branch_def_id or "").strip()
@@ -5943,43 +6045,16 @@ def _action_create_universe(
         _visibility.set_universe_visibility(uid, create_level)
         result["visibility"] = create_level
 
-        founder = permissions.current_actor_id()
-        # NO UNOWNED UNIVERSE, EVER (founder rule 2026-08-28; enforced here
-        # 2026-08-29). This used to fall through to `founder_id: ""` — it created
-        # the universe, granted nobody, bound nobody, and returned success. The
-        # question "whose is this?" then had no answer, and that question is what
-        # every multi-tenant guarantee is built on.
-        #
-        # The public MCP surface already refuses at the door (`_universe_birth_refusal`),
-        # and `ensure_founder_home` needs `create_universe` scope, so no production
-        # path reaches here unauthenticated today. That made this a LATENT hole rather
-        # than a live one — and "no caller does that today" is precisely the reasoning
-        # that has been wrong twice already in this repo. An invariant the founder
-        # states should be structurally true, not true by luck.
-        #
-        # Raising rolls back the partial create through the outer handler, so a
-        # refusal never leaves a bare directory behind.
-        if not permissions.is_authenticated_request() or not (founder or "").strip():
-            raise PermissionError(
-                "a universe must belong to someone: refusing to create one with no "
-                "authenticated owner"
-            )
-        from tinyassets.daemon_server import grant_universe_access, set_founder_home
-
-        grant_universe_access(
-            base,
-            universe_id=uid,
-            actor_id=founder,
-            permission="admin",
-            granted_by=founder,
-        )
+        # The admin grant was written before the directory existed (top of
+        # this try). What is left here is the HOME binding, which needs the
+        # completed directory to decide whether an existing home is living.
         # Bind this as the founder's home when they don't already have a
         # LIVING one — no binding, or a binding to a removed/incomplete dir.
         # "Living" means COMPLETE (soul.md present), not a bare/partial dir,
         # so a broken home rebinds to this fresh one (Codex 2026-07-15).
         # Explicit later creates by a founder with a living home do NOT
         # reassign home.
-        from tinyassets.daemon_server import get_founder_home
+        from tinyassets.daemon_server import get_founder_home, set_founder_home
 
         _home = get_founder_home(base, founder)
         if not _home or not (base / _home / "soul.md").is_file():
@@ -6007,6 +6082,28 @@ def _action_create_universe(
                 shutil.rmtree(udir)
         except OSError:
             pass
+        # ...and the grant that was written before it, so a failed create
+        # leaves neither a bare directory nor an ACL row for a universe that
+        # never existed.
+        revoke_failed = ""
+        try:
+            from tinyassets.daemon_server import revoke_universe_access
+
+            if founder:
+                revoke_universe_access(base, universe_id=uid, actor_id=founder)
+        except Exception as revoke_exc:  # noqa: BLE001 - the create already failed
+            logger.exception("rollback: could not revoke the create grant for %s", uid)
+            revoke_failed = str(revoke_exc)
+        # An owner left holding an admin grant on a universe that does not
+        # exist has to be told, whatever the create failed with. Reporting it
+        # only for OSError meant a failure in seeding, visibility or home
+        # binding re-raised silently (Codex code review round 3, P1).
+        if revoke_failed:
+            return json.dumps({"error": (
+                f"Failed to create universe: {exc}. The ownership grant could "
+                f"NOT be taken back ({revoke_failed}); '{uid}' is claimed but "
+                "not created."
+            )})
         if isinstance(exc, OSError):
             return json.dumps({"error": f"Failed to create universe: {exc}"})
         raise

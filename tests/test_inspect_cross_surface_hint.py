@@ -31,6 +31,13 @@ def _call_inspect(universe_id="test-u"):
         }),
         patch("tinyassets.api.universe._list_output_tree", return_value=[]),
         patch("tinyassets.api.universe._base_path", return_value=Path("/fake")),
+        # A universe is a directory SOMEBODY OWNS now, and this fixture's is
+        # imaginary. These tests are about the cross_surface_hint field, so the
+        # owner is mocked alongside the directory rather than seeded.
+        patch(
+            "tinyassets.api.universe._owned_universe_id",
+            return_value=universe_id,
+        ),
     ):
         return json.loads(_action_inspect_universe(universe_id=universe_id))
 

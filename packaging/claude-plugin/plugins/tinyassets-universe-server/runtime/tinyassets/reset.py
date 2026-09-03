@@ -19,6 +19,8 @@ import shutil
 import sqlite3
 from pathlib import Path
 
+from tinyassets.universe_prune import INFRASTRUCTURE_DIRS, _universe_signal
+
 # Universe-scoped tables in .tinyassets.db, cleared entirely. Every row belongs
 # to a universe (index / visibility / ownership / per-universe runtime + branch
 # INSTANCES). The reusable commons (branch_definitions, goals, gate_claims,
@@ -62,14 +64,38 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     ).fetchone() is not None
 
 
-def universe_dirs(base: Path) -> list[Path]:
-    """Universe directories under ``base`` (excludes reserved operational dirs
-    like wiki/output/runs/lance and any dotfile)."""
-    from tinyassets.api.universe import _is_listable_universe_dir
+#: What a clean-slate reset must NOT clear: platform infrastructure, and
+#: nothing else. A reset clears every other directory, INCLUDING the unowned
+#: leftovers a past prune left behind -- asking "is this a universe?" here
+#: would preserve exactly the directories the reset exists to remove. That is
+#: a different question from what to preserve, which is the same fact the
+#: prune reads, so it is read from the same place.
+_RESET_PRESERVED_DIRS = INFRASTRUCTURE_DIRS
 
+
+def universe_dirs(base: Path) -> list[Path]:
+    """Directories a clean-slate reset clears: the universes, and the piles of
+    universes a past prune moved aside. Nothing else.
+
+    "Everything that is not platform infrastructure" was the old answer, and it
+    destroyed the migration backup `docs/host-actions.md` says in as many words
+    not to delete (Codex code review round 3, P0). The prune had learned the
+    difference and the reset had not, which is two definitions of one fact
+    again: a directory nobody recognises is not a universe, and clearing
+    universes is not licence to clear it.
+
+    An unowned prune archive IS still cleared -- it carries the signal, it
+    holds universes, and clearing those is exactly what a reset is for.
+    """
     if not base.is_dir():
         return []
-    return sorted(p for p in base.iterdir() if _is_listable_universe_dir(p))
+    return sorted(
+        p for p in base.iterdir()
+        if p.is_dir()
+        and not p.name.startswith(".")
+        and p.name not in _RESET_PRESERVED_DIRS
+        and _universe_signal(p)
+    )
 
 
 def reset(data_dir: Path, *, confirm: bool) -> dict[str, object]:

@@ -12,6 +12,39 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Paste the receipt on PR #2779 -- 30 seconds, and it is earned
+
+`pr-scope-guard` binds an exact-head review receipt to authority-path changes.
+The verdict exists and is independent: Codex APPROVED head
+`e7c917f3ea5201880475a71b36a0a730f5e9d27d` after rejecting two earlier heads,
+and both rejections were real defects in code I had reported as fixed. The
+transcripts are in
+`docs/audits/2026-09-02-universe-ownership-cross-family-review.md`.
+
+I cannot write the receipt myself. The harness blocks an agent from putting an
+`APPROVE` line into a merge gate, which is the right boundary -- the guard
+exists so a person signs off on authority paths, and an honest provenance does
+not change who is supposed to sign.
+
+One command, which reads the live head so the receipt cannot be stale:
+
+```
+cd <this repo>
+sed "s/__HEAD__/$(git rev-parse origin/claude/universe-list-is-a-directory-listing)/"     docs/audits/pr-2779-body.md > /tmp/2779.md && gh pr edit 2779 --body-file /tmp/2779.md
+```
+
+Or paste these three lines at the END of the PR body by hand, with the head
+from `git rev-parse origin/claude/universe-list-is-a-directory-listing`:
+
+```
+Drain-Review-Verdict: APPROVE
+Drain-Review-Head: <that sha>
+Drain-Review-Artifact: docs/audits/2026-09-02-universe-ownership-cross-family-review.md
+```
+
+Any push after that voids the receipt, so it goes on last. I have stopped
+committing to this branch for exactly that reason.
+
 ## Decide: what should be publicly discoverable, now that the site shows it?
 
 The rewritten `/commons` page lists what the endpoint reports as publicly
@@ -28,11 +61,36 @@ migration happened, and the page reads like an accident. The site does **not**
 filter them, deliberately: hiding rows while claiming to show "what is public"
 is exactly the dishonesty the public-read boundary exists to prevent.
 
-Your call, because the fix writes to live universe records. Suggested shape is
-in `docs/concerns/2026-09-02-migration-records-are-publicly-discoverable.md`:
-create maintenance holding records private, flip the seven existing ones (do
-not delete — they are migration backups), and decide whether an unpublished
-universe should default to `public` at all.
+**Half of this is answered in code** (branch
+`claude/universe-list-is-a-directory-listing`): a universe is now a directory
+somebody OWNS, so none of the seven appears in any listing, none resolves by
+id, and none can be handed out as a default. Once that deploys, `/commons`
+stops showing them without the site filtering anything — which is the honest
+version of the fix.
+
+**Two things are still yours to decide, and neither is automatic:**
+
+1. **The three prune archives** (`_removed_universes_20260828`,
+   `_removed_universes_20260829`, `_removed_legacy_20260829`) hold universes a
+   past cleanup moved aside rather than deleting. Run
+   `python scripts/prune_unowned_universe_dirs.py` in the daemon container to
+   see what each one holds — file count, size, and the notable files — then
+   `--apply` to cut them. It refuses anything owned, anything that is platform
+   infrastructure, and anything it cannot positively recognise as a former
+   universe.
+2. **The migration backup** (`_backup_subject_migration_20260829T055340Z`) is
+   deliberately NOT cuttable by that script, because this file already says do
+   not delete it. When you decide it has served its purpose, name it explicitly
+   with `--only` — the script still refuses it, so removing it is a deliberate
+   act outside this tool.
+
+`scratch`, `daemon_wikis` and `cloud-automation-inputs` are live platform
+storage, not buckets: the workspace pool, daemon memory, and retained user
+inputs. They are named as infrastructure and are never cut.
+
+The remaining question is unchanged and is a design one: should an unpublished
+universe default to `public` at all? Suggested shape in
+`docs/concerns/2026-09-02-migration-records-are-publicly-discoverable.md`.
 
 ## Decide: should a deposit serve the universe by itself?
 
