@@ -152,6 +152,40 @@ def test_response_sets_security_headers(monkeypatch):
     assert resp.headers["Cache-Control"] == "no-store"
 
 
+def test_voice_csp_and_disclosure_are_dark_until_both_flags(monkeypatch):
+    _render(monkeypatch)
+    monkeypatch.setenv("TINYASSETS_REALTIME_VOICE_ENABLED", "1")
+    html, csp = onboarding.render_app_html()
+    assert "https://api.openai.com" not in csp
+    assert '"enabled": false' in html
+
+    monkeypatch.setenv("TINYASSETS_ALLOW_REALTIME_VOICE_API", "1")
+    html, csp = onboarding.render_app_html()
+    assert (
+        "connect-src 'self' https://inventive-van-62-staging.authkit.app "
+        "https://api.openai.com"
+    ) in csp
+    assert '"enabled": true' in html
+    assert "microphone audio goes directly to OpenAI" in html
+    assert "separately from ChatGPT or" in html
+    assert "does not store the raw audio" in html
+
+
+def test_voice_client_keeps_converse_as_the_only_writer():
+    html, _csp = onboarding.render_app_html()
+    assert 'event.name!=="converse"' in html
+    assert "const payload=await MCP.converse(message);" in html
+    assert "Speak the function output exactly" in html
+    assert "if(!this.canonicalResponsePending)" in html
+    assert "if(this.audio) this.audio.muted=true" in html
+    assert "localStorage.setItem(voiceDisclosureKey(),\"accepted\")" in html
+    # Browser persistence is only the versioned disclosure receipt. Audio,
+    # ephemeral client secrets, and provider transcripts are never written.
+    assert "localStorage.setItem(voiceDisclosureKey()" in html
+    assert "localStorage.setItem(secret" not in html
+    assert "localStorage.setItem(event.transcript" not in html
+
+
 # --------------------------------------------------------------------------- #
 # route
 # --------------------------------------------------------------------------- #
@@ -166,6 +200,7 @@ def test_route_is_mcp_app_get(monkeypatch):
         "/mcp/app", "/mcp/app/token", "/mcp/app/me",
         "/mcp/app/openai/device/start", "/mcp/app/openai/device/poll",
         "/mcp/app/openai/begin", "/mcp/app/openai/exchange", "/mcp/app/trace",
+        "/mcp/app/voice/session",
         "/mcp/app/serving/bind",
         "/mcp/app/billing/status", "/mcp/app/billing/checkout",
         "/mcp/app/billing/cancel", "/mcp/app/billing/webhook",
@@ -177,6 +212,7 @@ def test_route_is_mcp_app_get(monkeypatch):
     for post_only in (
         "/mcp/app/token", "/mcp/app/openai/device/start", "/mcp/app/openai/device/poll",
         "/mcp/app/openai/begin", "/mcp/app/openai/exchange", "/mcp/app/trace",
+        "/mcp/app/voice/session",
         "/mcp/app/serving/bind",
         "/mcp/app/billing/checkout", "/mcp/app/billing/cancel",
         "/mcp/app/billing/webhook", "/mcp/app/account/delete",
@@ -520,6 +556,208 @@ def _js_function(html: str, name: str) -> str:
     # No regex-literal or nested-template lexing (Codex round 2, P2): the
     # functions extracted today contain neither, and a mis-cut span is a
     # syntax error that crashes the node harness - loud, never a silent pass.
+
+
+def _run_voice_states(tmp_path, events: list[str]) -> list[str]:
+    """Run the shipped transition table, rather than copying it into Python."""
+    import json
+    import os
+    import re
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:  # pragma: no cover - environment dependent
+        if os.environ.get("TINYASSETS_SKIP_JS_PROBE_TESTS"):
+            pytest.skip("node absent; skip explicitly requested via env")
+        pytest.fail("node executable not found - voice transitions are JavaScript")
+    html, _csp = onboarding.render_app_html()
+    table = re.search(r"const VOICE_TRANSITIONS=\{.*?\n  \};", html, re.DOTALL)
+    assert table, "app.html has no voice transition table"
+    program = "\n".join(
+        (
+            table.group(0),
+            _js_function(html, "voiceNextState"),
+            f"const events={json.dumps(events)};",
+            'let state="idle"; const seen=[state];',
+            "for(const event of events){state=voiceNextState(state,event);seen.push(state);}",
+            "console.log(JSON.stringify(seen));",
+        )
+    )
+    script = tmp_path / "voice_states.js"
+    script.write_text(program, encoding="utf-8")
+    proc = subprocess.run(
+        [node, str(script)], capture_output=True, text=True, encoding="utf-8", timeout=30
+    )
+    assert proc.returncode == 0, f"voice state harness crashed:\n{proc.stderr}"
+    return json.loads(proc.stdout)
+
+
+def _run_voice_adapter(tmp_path) -> dict:
+    """Drive the shipped Voice object with fake media/Realtime boundaries."""
+    import json
+    import os
+    import re
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:  # pragma: no cover - environment dependent
+        if os.environ.get("TINYASSETS_SKIP_JS_PROBE_TESTS"):
+            pytest.skip("node absent; skip explicitly requested via env")
+        pytest.fail("node executable not found - voice adapter is JavaScript")
+    html, _csp = onboarding.render_app_html()
+    table = re.search(r"const VOICE_(?:LABELS|TRANSITIONS)=\{.*?\n  \};", html, re.DOTALL)
+    assert table
+    # LABELS precedes TRANSITIONS; collect both independently.
+    labels = re.search(r"const VOICE_LABELS=\{.*?\n  \};", html, re.DOTALL)
+    transitions = re.search(r"const VOICE_TRANSITIONS=\{.*?\n  \};", html, re.DOTALL)
+    voice = re.search(r"const Voice=\{.*?\n  \};", html, re.DOTALL)
+    assert labels and transitions and voice
+    functions = "\n".join(
+        _js_function(html, name)
+        for name in ("voiceNextState", "voiceNormalize", "voiceDisclosureKey", "voiceFriendlyError")
+    )
+    shim = r"""
+const CFG={voice:{enabled:true,disclosure_version:1,max_session_seconds:1800}};
+const store={}; const localStorage={getItem:k=>store[k]||null,setItem:(k,v)=>store[k]=String(v)};
+class El{constructor(){this.hidden=true;this.disabled=false;this.textContent="";this.attrs={};}
+setAttribute(k,v){this.attrs[k]=v;} focus(){this.focused=true;} pause(){this.paused=true;}}
+const els={"btn-voice":new El(),"voice-disclosure":new El(),"btn-voice-accept":new El()};
+const $=id=>els[id]; let status=""; function setStatusLine(v){status=v||"";}
+const document={createElement:()=>new El()};
+const navigator={mediaDevices:{getUserMedia:async()=>({getTracks:()=>[]})}};
+let traces=[]; function trace(...args){traces.push(args);}
+let turns=[];
+async function sendVoiceTurn(message){
+  turns.push(message);return "Exact universe reply.";
+}
+async function ensureFreshToken(){} async function refreshAccessToken(){return false;}
+function authHeaders(){return {Authorization:"Bearer app"};} async function sleep(){}
+"""
+    scenario = r"""
+(async()=>{
+  const out={}; Voice.init(); out.initial=Voice.state;
+  Voice.requestStart(); out.disclosureShown=!els["voice-disclosure"].hidden;
+  const sent=[];
+  Voice.dc={readyState:"open",send:v=>sent.push(JSON.parse(v)),
+    close:()=>{out.dcClosed=true;}};
+  Voice.audio={muted:true};
+  await Voice.handleToolCall({type:"response.function_call_arguments.done",
+    call_id:"c1",name:"converse",arguments:'{"message":" hello "}'});
+  await Voice.handleToolCall({type:"response.function_call_arguments.done",
+    call_id:"c1",name:"converse",arguments:'{"message":" duplicate "}'});
+  Voice.handleServerEvent({type:"response.output_audio.delta",delta:"audio"});
+  Voice.handleServerEvent({type:"input_audio_buffer.speech_started"});
+  Voice.handleServerEvent({type:"response.output_audio_transcript.done",transcript:"Exact"});
+  out.afterBargeIn=Voice.state; out.mutedAfterBargeIn=Voice.audio.muted;
+  out.bargeInInterrupted=Voice.canonicalResponseInterrupted;
+  out.turns=turns; out.toolEvents=sent;
+  let stopped=0,pcClosed=0,audioPaused=0;
+  Voice.stream={getTracks:()=>[{stop:()=>stopped++}]}; Voice.pc={close:()=>pcClosed++};
+  Voice.audio={pause:()=>audioPaused++,srcObject:{}}; Voice.stop(false);
+  out.teardown={stopped,pcClosed,audioPaused,state:Voice.state};
+  let attempts=0; Voice.epoch=11; Voice.reconnecting=false; Voice.reconnectAttempts=0;
+  Voice._teardownTransport=()=>{};
+  Voice._connect=async()=>{
+    attempts++;if(attempts<3)throw new Error("offline");
+    Voice.reconnecting=false;Voice.state="listening";
+  };
+  await Voice.reconnect(11); out.reconnect={attempts,state:Voice.state};
+  Voice.canonicalResponsePending=false; Voice.audio={muted:true};
+  Voice.handleServerEvent({type:"response.output_audio.delta",delta:"ignored"});
+  out.untrusted={state:Voice.state,status};
+  Voice.state="speaking"; Voice.canonicalResponsePending=true;
+  Voice.expectedReply="Exact universe reply."; Voice.audio={muted:false};
+  Voice.handleServerEvent({type:"response.output_audio_transcript.done",transcript:"Different"});
+  out.mismatch={state:Voice.state,status,traces};
+  console.log(JSON.stringify(out));
+})().catch(e=>{console.error(e&&e.stack||e);process.exit(1);});
+"""
+    script = tmp_path / "voice_adapter.js"
+    script.write_text(
+        "\n".join(
+            (shim, labels.group(0), transitions.group(0), functions, voice.group(0), scenario)
+        ),
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [node, str(script)], capture_output=True, text=True, encoding="utf-8", timeout=30
+    )
+    assert proc.returncode == 0, f"voice adapter harness crashed:\n{proc.stderr}"
+    return json.loads(proc.stdout)
+
+
+def test_voice_state_machine_covers_turn_barge_in_and_reconnect(tmp_path):
+    assert _run_voice_states(
+        tmp_path,
+        [
+            "start",
+            "permission_granted",
+            "connected",
+            "speech_stopped",
+            "reply_ready",
+            "speech_started",  # barge-in while speaking
+            "disconnect",
+            "connected",
+            "stop",
+        ],
+    ) == [
+        "idle",
+        "requesting_permission",
+        "connecting",
+        "listening",
+        "thinking",
+        "speaking",
+        "listening",
+        "reconnecting",
+        "listening",
+        "idle",
+    ]
+
+
+def test_voice_state_machine_permission_failure_is_recoverable(tmp_path):
+    assert _run_voice_states(
+        tmp_path, ["start", "permission_denied", "retry", "permission_granted", "connected"]
+    ) == [
+        "idle",
+        "requesting_permission",
+        "error",
+        "requesting_permission",
+        "connecting",
+        "listening",
+    ]
+
+
+def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_path):
+    out = _run_voice_adapter(tmp_path)
+    assert out["initial"] == "idle"
+    assert out["disclosureShown"] is True
+    assert out["afterBargeIn"] == "listening" and out["mutedAfterBargeIn"] is True
+    assert out["bargeInInterrupted"] is True
+    assert out["turns"] == ["hello"]
+    assert out["toolEvents"][0] == {
+        "type": "conversation.item.create",
+        "item": {
+            "type": "function_call_output",
+            "call_id": "c1",
+            "output": "Exact universe reply.",
+        },
+    }
+    assert out["toolEvents"][1]["type"] == "response.create"
+    assert out["toolEvents"][1]["response"]["tool_choice"] == "none"
+    assert out["teardown"] == {
+        "stopped": 1,
+        "pcClosed": 1,
+        "audioPaused": 1,
+        "state": "idle",
+    }
+    assert out["reconnect"] == {"attempts": 3, "state": "listening"}
+    assert out["untrusted"]["state"] == "error"
+    assert "unverified reply" in out["untrusted"]["status"]
+    assert out["mismatch"]["state"] == "error"
+    assert "did not match" in out["mismatch"]["status"]
+    assert out["mismatch"]["traces"][0][0] == "voice_output_mismatch"
 
 
 # The real send/resend/build-check code, run in Node against a DOM shim. A

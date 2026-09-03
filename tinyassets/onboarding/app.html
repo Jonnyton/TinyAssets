@@ -108,6 +108,18 @@
     .btn--attach{align-self:flex-end;background:var(--surface-2);color:var(--ink);border:1px solid var(--line);
       padding:.55rem .6rem;font-size:1.1rem;line-height:1}
     .btn--attach:hover{background:var(--surface)}
+    .btn--voice{align-self:flex-end;background:var(--surface-2);color:var(--ink);border:1px solid var(--line);
+      padding:.55rem .7rem;min-width:4.3rem}
+    .btn--voice[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+    .btn--voice:disabled{opacity:.55;cursor:not-allowed}
+    .voice-dialog{position:fixed;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;
+      padding:1rem;background:rgba(5,6,15,.78)}
+    .voice-dialog[hidden]{display:none}
+    .voice-dialog-card{max-width:32rem;background:var(--surface);border:1px solid var(--line);
+      border-radius:14px;padding:1.2rem;box-shadow:0 18px 60px rgba(0,0,0,.45)}
+    .voice-dialog-card h2{margin:.1rem 0 .7rem}
+    .voice-dialog-card p{color:var(--ink-dim);line-height:1.45}
+    .voice-dialog-actions{display:flex;justify-content:flex-end;gap:.6rem;margin-top:1rem}
     .attachments{display:flex;flex-wrap:wrap;gap:.4rem;padding:.4rem 1rem 0}
     .chip{display:inline-flex;align-items:center;gap:.4rem;background:var(--surface-2);border:1px solid var(--line);
       border-radius:999px;padding:.2rem .6rem;font-size:.78rem;color:var(--ink)}
@@ -191,12 +203,30 @@
                accept=".txt,.md,.markdown,.json,.csv,.tsv,.yaml,.yml,.py,.js,.ts,.jsx,.tsx,.html,.htm,.css,.xml,.log,.sh,.rst,.ini,.toml,.env,.sql,text/*" />
         <button id="btn-attach" class="btn btn--attach" type="button"
                 title="Attach a file" aria-label="Attach a file">📎</button>
+        <button id="btn-voice" class="btn btn--voice" type="button"
+                aria-pressed="false" aria-label="Start voice conversation">Voice</button>
         <textarea id="composer-input" class="composer-input" rows="1"
                   placeholder="Message your universe" autocomplete="off"></textarea>
         <button id="btn-send" class="btn btn--primary btn--send" type="submit">Send</button>
       </form>
-      <div id="status-line" class="status-line"></div>
+      <div id="status-line" class="status-line" role="status" aria-live="polite"></div>
     </section>
+
+    <div id="voice-disclosure" class="voice-dialog" role="dialog" aria-modal="true"
+         aria-labelledby="voice-disclosure-title" hidden>
+      <div class="voice-dialog-card">
+        <h2 id="voice-disclosure-title">Before voice starts</h2>
+        <p>Your microphone audio goes directly to OpenAI for live speech. OpenAI API charges
+        apply to the API credential connected to your universe, separately from ChatGPT or
+        Codex subscriptions. TinyAssets keeps the words you send and your universe's text reply
+        in this conversation, but does not store the raw audio. OpenAI's API retention controls
+        still apply.</p>
+        <div class="voice-dialog-actions">
+          <button id="btn-voice-cancel" class="btn btn--link" type="button">Not now</button>
+          <button id="btn-voice-accept" class="btn btn--primary" type="button">Continue</button>
+        </div>
+      </div>
+    </div>
 
     <!-- Connect subscription (secondary). -->
     <!-- Account: who you are here, and the in-app deletion path Google Play
@@ -1057,6 +1087,250 @@
   }
   function setStatusLine(t){ $("status-line").textContent=t||""; }
 
+  // ---- Realtime voice -------------------------------------------------
+  // Voice owns only microphone, WebRTC, and turn timing. The universe's
+  // actual words still come from MCP.converse through sendVoiceTurn below.
+  const VOICE_LABELS={
+    unavailable:"Voice is not enabled on this TinyAssets host.",
+    idle:"Voice ready.", requesting_permission:"Waiting for microphone permission...",
+    connecting:"Connecting voice...", listening:"Listening...",
+    thinking:"Your universe is thinking...", speaking:"Your universe is speaking...",
+    reconnecting:"Reconnecting voice...", error:"Voice stopped. Typed chat still works."
+  };
+  const VOICE_TRANSITIONS={
+    unavailable:{enable:"idle"},
+    idle:{start:"requesting_permission"},
+    requesting_permission:{permission_granted:"connecting",permission_denied:"error",failure:"error",stop:"idle"},
+    connecting:{connected:"listening",disconnect:"reconnecting",failure:"error",stop:"idle"},
+    listening:{speech_started:"listening",speech_stopped:"thinking",disconnect:"reconnecting",failure:"error",stop:"idle"},
+    thinking:{reply_ready:"speaking",disconnect:"reconnecting",failure:"error",stop:"idle"},
+    speaking:{speech_started:"listening",done:"listening",disconnect:"reconnecting",failure:"error",stop:"idle"},
+    reconnecting:{connected:"listening",failure:"error",stop:"idle"},
+    error:{retry:"requesting_permission",stop:"idle"}
+  };
+  function voiceNextState(state,event){
+    const row=VOICE_TRANSITIONS[state]||{};
+    return row[event]||state;
+  }
+  function voiceNormalize(text){ return String(text||"").trim().replace(/\s+/g," "); }
+  function voiceDisclosureKey(){
+    const version=Number(CFG.voice&&CFG.voice.disclosure_version)||1;
+    return "ta_voice_disclosure_v"+version;
+  }
+  function voiceFriendlyError(code){
+    const messages={
+      voice_openai_credential_required:"Connect an OpenAI API credential to this universe before using voice.",
+      voice_openai_credential_rejected:"OpenAI rejected this universe's API credential.",
+      voice_provider_rate_limited:"OpenAI voice is rate-limited right now. Try again shortly.",
+      voice_session_rate_limited:"Too many voice connections were opened. Wait a minute and try again.",
+      voice_permission_denied:"Microphone permission was denied. Typed chat still works.",
+      voice_output_untrusted:"Voice stopped before playing an unverified reply. Typed chat still works.",
+      voice_output_mismatch:"Voice stopped because the spoken reply did not match the conversation text. Typed chat still works.",
+      no_home_universe:"Send one typed message first so your universe is ready.",
+      same_origin_required:"Voice was blocked by the app's security boundary.",
+      voice_disabled:"Voice is not enabled on this TinyAssets host."
+    };
+    return messages[code]||"Voice could not connect. Typed chat still works.";
+  }
+  const Voice={
+    state:"unavailable", pc:null, dc:null, stream:null, audio:null,
+    stopTimer:null, warnTimer:null, reconnecting:false, reconnectAttempts:0,
+    epoch:0, handledCalls:new Set(), expectedReply:"", canonicalResponsePending:false,
+    canonicalResponseInterrupted:false,
+    init(){
+      const enabled=!!(CFG.voice&&CFG.voice.enabled);
+      this.state=enabled?"idle":"unavailable";
+      const btn=$("btn-voice");
+      btn.disabled=!enabled;
+      btn.title=enabled?"Start a voice conversation":VOICE_LABELS.unavailable;
+      this._render();
+    },
+    _render(detail){
+      const btn=$("btn-voice"), active=!(["unavailable","idle","error"].includes(this.state));
+      btn.setAttribute("aria-pressed",active?"true":"false");
+      btn.setAttribute("aria-label",active?"Stop voice conversation":"Start voice conversation");
+      btn.textContent=active?"Stop":"Voice";
+      setStatusLine(detail||VOICE_LABELS[this.state]||"");
+    },
+    _event(event,detail){ this.state=voiceNextState(this.state,event); this._render(detail); },
+    _accepted(){ try{return localStorage.getItem(voiceDisclosureKey())==="accepted";}catch(_e){return false;} },
+    requestStart(){
+      if(this.state==="unavailable") return this._render();
+      if(!["idle","error"].includes(this.state)){ this.stop(); return; }
+      if(!this._accepted()){
+        this.returnFocus=document.activeElement;
+        $("voice-disclosure").hidden=false; $("btn-voice-accept").focus(); return;
+      }
+      this.start();
+    },
+    acceptDisclosure(){
+      try{localStorage.setItem(voiceDisclosureKey(),"accepted");}catch(_e){}
+      $("voice-disclosure").hidden=true; this.returnFocus=null; this.start();
+    },
+    cancelDisclosure(){
+      $("voice-disclosure").hidden=true;
+      const target=this.returnFocus&&typeof this.returnFocus.focus==="function"
+        ?this.returnFocus:$("btn-voice");
+      target.focus(); this.returnFocus=null;
+    },
+    async _credential(){
+      await ensureFreshToken();
+      const options={method:"POST",credentials:"same-origin",
+        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:"{}"};
+      let response=await fetch("/mcp/app/voice/session",options);
+      if(response.status===401 && await refreshAccessToken()){
+        options.headers=Object.assign({"Content-Type":"application/json"},authHeaders());
+        response=await fetch("/mcp/app/voice/session",options);
+      }
+      let doc={}; try{doc=await response.json();}catch(_e){}
+      if(!response.ok) throw new Error(doc.error||"voice_session_failed");
+      if(!doc.value||!doc.calls_url) throw new Error("voice_session_invalid");
+      return doc;
+    },
+    async start(){
+      this.stop(false);
+      const generation=++this.epoch;
+      this.handledCalls.clear(); this.expectedReply=""; this.reconnectAttempts=0;
+      this.state="idle"; this._event("start");
+      try{ await this._connect(generation,false); }
+      catch(error){ if(generation===this.epoch) this.fail(error); }
+    },
+    async _connect(generation,isReconnect){
+      if(!navigator.mediaDevices||typeof navigator.mediaDevices.getUserMedia!=="function")
+        throw new Error("voice_unsupported");
+      if(!isReconnect) this._render();
+      let stream;
+      try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true},video:false});}
+      catch(_error){ throw new Error("voice_permission_denied"); }
+      if(generation!==this.epoch){ stream.getTracks().forEach(track=>track.stop()); return; }
+      this.stream=stream;
+      if(!isReconnect) this._event("permission_granted"); else this._render();
+      const secret=await this._credential();
+      if(generation!==this.epoch) return this._teardownTransport();
+      if(typeof RTCPeerConnection!=="function") throw new Error("voice_unsupported");
+      const pc=new RTCPeerConnection(); this.pc=pc;
+      const audio=document.createElement("audio"); audio.autoplay=true; audio.muted=true; this.audio=audio;
+      pc.addEventListener("track",event=>{ if(event.streams&&event.streams[0]) audio.srcObject=event.streams[0]; });
+      stream.getTracks().forEach(track=>pc.addTrack(track,stream));
+      const dc=pc.createDataChannel("oai-events"); this.dc=dc;
+      dc.addEventListener("message",event=>this.handleServerEvent(event.data));
+      pc.addEventListener("connectionstatechange",()=>{
+        if(generation!==this.epoch) return;
+        if(["failed","disconnected"].includes(pc.connectionState)) this.reconnect(generation);
+      });
+      const opened=new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(new Error("voice_channel_timeout")),10000);
+        dc.addEventListener("open",()=>{clearTimeout(timer);resolve();},{once:true});
+        dc.addEventListener("error",()=>{clearTimeout(timer);reject(new Error("voice_channel_failed"));},{once:true});
+      });
+      const offer=await pc.createOffer(); await pc.setLocalDescription(offer);
+      const answer=await fetch(secret.calls_url,{method:"POST",body:offer.sdp,
+        headers:{Authorization:"Bearer "+secret.value,"Content-Type":"application/sdp"}});
+      // The temporary bearer is never retained beyond this stack frame.
+      if(!answer.ok) throw new Error("voice_call_failed");
+      await pc.setRemoteDescription({type:"answer",sdp:await answer.text()});
+      await opened;
+      if(generation!==this.epoch) return this._teardownTransport();
+      this.reconnecting=false; this.reconnectAttempts=0;
+      this.state=isReconnect?voiceNextState("reconnecting","connected"):voiceNextState("connecting","connected");
+      this._render(); this._armSessionLimit(secret.max_session_seconds);
+    },
+    _armSessionLimit(seconds){
+      clearTimeout(this.stopTimer); clearTimeout(this.warnTimer);
+      const limit=Math.max(60,Math.min(Number(seconds)||1800,3600));
+      this.warnTimer=setTimeout(()=>this._render("Voice will stop in five minutes."),Math.max(0,limit-300)*1000);
+      this.stopTimer=setTimeout(()=>this.stop(true,"Voice stopped at the session limit. Start again when you're ready."),limit*1000);
+    },
+    _send(event){ if(this.dc&&this.dc.readyState==="open") this.dc.send(JSON.stringify(event)); },
+    async handleToolCall(event){
+      const callId=String(event.call_id||"");
+      if(!callId||this.handledCalls.has(callId)||event.name!=="converse") return;
+      let args; try{args=JSON.parse(event.arguments||"{}");}catch(_e){return this.fail(new Error("voice_tool_invalid"));}
+      if(!args||typeof args.message!=="string"||!args.message.trim()) return this.fail(new Error("voice_tool_invalid"));
+      this.handledCalls.add(callId); this.state="thinking"; this._render();
+      try{
+        const reply=await sendVoiceTurn(args.message.trim());
+        this.expectedReply=reply; this.canonicalResponsePending=true;
+        this.canonicalResponseInterrupted=false;
+        if(this.audio) this.audio.muted=false;
+        this._send({type:"conversation.item.create",item:{type:"function_call_output",call_id:callId,output:reply}});
+        this._send({type:"response.create",response:{tool_choice:"none",output_modalities:["audio"],
+          instructions:"Speak the function output exactly. Do not add, remove, summarize, or answer anything else."}});
+      }catch(error){ this.fail(error); }
+    },
+    handleServerEvent(raw){
+      let event; try{event=typeof raw==="string"?JSON.parse(raw):raw;}catch(_e){return;}
+      if(!event||typeof event.type!=="string") return;
+      if(event.type==="input_audio_buffer.speech_started"){
+        // semantic VAD's interrupt_response=true performs provider cancellation.
+        // Mute immediately so no stale/unverified audio can leak through locally.
+        if(this.canonicalResponsePending) this.canonicalResponseInterrupted=true;
+        if(this.audio) this.audio.muted=true;
+        this.state="listening"; this._render(); return;
+      }
+      if(event.type==="input_audio_buffer.speech_stopped"){
+        this.state="thinking"; this._render(); return;
+      }
+      if(event.type==="response.function_call_arguments.done"){
+        this.handleToolCall(event); return;
+      }
+      if(event.type==="response.output_audio.delta"||event.type==="response.audio.delta"){
+        if(!this.canonicalResponsePending) return this.fail(new Error("voice_output_untrusted"));
+        if(this.audio&&this.audio.muted) return;
+        this.state="speaking"; this._render(); return;
+      }
+      if(event.type==="response.output_audio_transcript.done"||event.type==="response.audio_transcript.done"){
+        const actual=voiceNormalize(event.transcript);
+        const expected=voiceNormalize(this.expectedReply);
+        if(expected&&actual&&expected!==actual){
+          trace("voice_output_mismatch","expected_chars="+expected.length+" actual_chars="+actual.length+" state="+this.state);
+          // A barge-in intentionally truncates playback/transcript. It remains
+          // observable but is not a fidelity failure or reason to drop the mic.
+          if(!this.canonicalResponseInterrupted) this.fail(new Error("voice_output_mismatch"));
+        }
+        return;
+      }
+      if(event.type==="response.done"&&this.canonicalResponsePending){
+        this.canonicalResponsePending=false;
+        if(this.audio) this.audio.muted=true;
+        this.state="listening"; this._render(); return;
+      }
+      if(event.type==="error") this.fail(new Error("voice_provider_event"));
+    },
+    async reconnect(generation){
+      if(this.reconnecting||generation!==this.epoch) return;
+      this.reconnecting=true; this.state="reconnecting"; this._render();
+      this._teardownTransport();
+      while(this.reconnectAttempts<3&&generation===this.epoch){
+        this.reconnectAttempts++;
+        await sleep(400*Math.pow(2,this.reconnectAttempts-1));
+        try{await this._connect(generation,true);return;}catch(_e){this._teardownTransport();}
+      }
+      if(generation===this.epoch) this.fail(new Error("voice_reconnect_exhausted"));
+    },
+    _teardownTransport(){
+      clearTimeout(this.stopTimer);clearTimeout(this.warnTimer);this.stopTimer=null;this.warnTimer=null;
+      if(this.dc){try{this.dc.close();}catch(_e){}this.dc=null;}
+      if(this.pc){try{this.pc.close();}catch(_e){}this.pc=null;}
+      if(this.audio){try{this.audio.pause();this.audio.srcObject=null;}catch(_e){}this.audio=null;}
+      if(this.stream){try{this.stream.getTracks().forEach(track=>track.stop());}catch(_e){}this.stream=null;}
+    },
+    stop(announce=true,detail){
+      this.epoch++;this.reconnecting=false;this.reconnectAttempts=0;
+      this.canonicalResponsePending=false;this.canonicalResponseInterrupted=false;
+      this.expectedReply="";this._teardownTransport();
+      this.state=(CFG.voice&&CFG.voice.enabled)?"idle":"unavailable";
+      if(announce) this._render(detail); else this._render("");
+    },
+    fail(error){
+      this.epoch++;this.reconnecting=false;this.canonicalResponsePending=false;
+      this.canonicalResponseInterrupted=false;
+      if(this.audio)this.audio.muted=true;
+      this._teardownTransport();this.state="error";
+      this._render(voiceFriendlyError(error&&error.message));
+    }
+  };
+
   function renderConverse(payload){
     if(payload&&typeof payload.reply==="string"){ appendMessage("universe",payload.reply); return; }
     if(payload&&payload.status==="held"&&payload.reason==="setup_required"){
@@ -1289,6 +1563,31 @@
       // Deliberately NOT forgotten: the send failed, so the message is still the
       // user's to resend.
     }finally{ $("btn-send").disabled=false; turnStartedAt=0; flushSendQueue(); }
+  }
+
+  async function sendVoiceTurn(message){
+    // Voice does not queue silently behind another turn: overlapping speech
+    // would make delivery ambiguous. Keep the audio session alive, but ask the
+    // founder to wait and say the line again.
+    if($("btn-send").disabled) throw new Error("voice_turn_busy");
+    appendMessage("founder",message); rememberInflight(message,message);
+    $("btn-send").disabled=true; turnStartedAt=Date.now();
+    setStatusLine("Your universe is thinking...");
+    try{
+      const payload=await MCP.converse(message);
+      if(!payload||typeof payload.reply!=="string"){
+        if(payload&&payload.error){const served=new Error(payload.error);served.served=true;throw served;}
+        throw new Error("voice_converse_invalid");
+      }
+      appendMessage("universe",payload.reply); forgetInflight();
+      return payload.reply;
+    }catch(error){
+      if(error&&error.authRequired){ sessionExpired(); throw error; }
+      offerResend(message,message,error,{echoed:true,keepComposer:true});
+      throw error;
+    }finally{
+      $("btn-send").disabled=false; turnStartedAt=0; flushSendQueue();
+    }
   }
 
   // Explain a failed turn in the user's own terms and hand back a working
@@ -1551,9 +1850,9 @@
     $("btn-connect-back").textContent = "Go to your universe";
     setTimeout(()=>{ showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus(); loadPlan(); }, 1200);
   }
-  function enterSignedOut(){ clearInterval(statusTimer); MCP.sessionId=null;
+  function enterSignedOut(){ clearInterval(statusTimer); MCP.sessionId=null; Voice.stop(false);
     sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(EXP_KEY); cancelOpenAIFlow(); resetOpenAIUI(); showView("signin"); }
-  function showConnect(asGate){ showView("connect");
+  function showConnect(asGate){ Voice.stop(false); showView("connect");
     // Web has no loopback listener: the guided device-code path IS the path.
     if(!openaiBusy) resetOpenAIUI();
     $("btn-connect-back").textContent = asGate ? "Skip for now" : "Back to chat";
@@ -1835,6 +2134,17 @@
   }
 
   function wire(){
+    Voice.init();
+    $("btn-voice").addEventListener("click",()=>Voice.requestStart());
+    $("btn-voice-accept").addEventListener("click",()=>Voice.acceptDisclosure());
+    $("btn-voice-cancel").addEventListener("click",()=>Voice.cancelDisclosure());
+    $("voice-disclosure").addEventListener("keydown",event=>{
+      if(event.key==="Escape"){ event.preventDefault(); Voice.cancelDisclosure(); return; }
+      if(event.key!=="Tab") return;
+      const first=$("btn-voice-cancel"),last=$("btn-voice-accept");
+      if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}
+      else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
+    });
     $("btn-plan").addEventListener("click", onPlanClick);
     $("btn-openai-connect").addEventListener("click",connectOpenAI);
     $("btn-openai-code").addEventListener("click",async()=>{ await cancelOpenAIFlow(); showOpenAISetup(); });
@@ -1907,7 +2217,7 @@
       openExternal(a.getAttribute("href"));
     });
     // ---- account / deletion (the in-app path Google Play requires) ----
-    function showAccount(){ $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); }
+    function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); }
     function leaveAccount(){ if(engineConnected===true){ showView("chat"); startHeartbeat(); } else { showConnect(true); } }
     $("btn-account").addEventListener("click", showAccount);
     $("btn-connect-account").addEventListener("click", showAccount);
@@ -2615,7 +2925,9 @@
     document.addEventListener("visibilitychange", ()=>{
       if(document.visibilityState==="visible" && token()) ensureFreshToken().catch(()=>{});
       if(document.visibilityState==="visible") checkForNewBuild();
+      if(document.visibilityState!=="visible") Voice.stop(false);
     });
+    window.addEventListener("pagehide",()=>Voice.stop(false));
     setInterval(checkForNewBuild, 10*60*1000);
   }
 
