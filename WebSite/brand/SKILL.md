@@ -47,14 +47,14 @@ HTML file so the look is identical.
 
 ## The mark
 
-The monogram **TA** set in Fraunces SemiBold over a single ember rule — the
-same ruled line the site uses to separate sections. The letterform outlines
-live as path data in `../../tinyassets/desktop/icon_gen.py` and nowhere else,
-so nothing has to install a font to draw the mark.
+A circular badge: Mount Baker from the south, a wolf howling on the snowfield,
+a pale moon and a spiral galaxy overhead. The mountain is traced from a
+photograph, not drawn from memory — its flat summit plateau is the detail most
+stylisations get wrong. The whole scene lives as the `EMBLEM` layer list in
+`../../tinyassets/desktop/icon_gen.py` and nowhere else.
 
-- `mark.svg` — the bare mark, transparent, for use on the ink ground.
-- `mark-tile.svg` — the mark on its rounded ink tile, for app icons and any
-  light surface.
+- `mark.svg` — the circular badge, for use anywhere.
+- `mark-tile.svg` — the same scene squared off with rounded corners, for app icons.
 - `python render_marks.py` (from the repo root: `python WebSite/brand/render_marks.py`)
   exports every raster: site icons, `assets/`, desktop, tray, Android, Play.
 - `python render_og.py` renders the site's Open Graph card with the real fonts.

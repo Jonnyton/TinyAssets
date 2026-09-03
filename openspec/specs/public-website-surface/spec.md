@@ -125,12 +125,13 @@ The `/fine-print` reachability strip SHALL derive server reachability from a suc
 
 ### Requirement: The Mark Has One Source And Appears On Every Surface
 
-The brand mark (the monogram TA set in Fraunces over a single accent rule, cream on ink) SHALL be defined once in `tinyassets/desktop/icon_gen.py` and exported by `WebSite/brand/render_marks.py` to the site icons (`favicon.ico`, `icon.svg`, `apple-touch-icon.png`, `icon-192.png`, `icon-512.png`, `logo-mark.png`, `tinyassets-mark.png`), the repository brand assets under `assets/`, the desktop app build resources, the Windows tray icon, the Android launcher and splash density set, and the Play listing graphics; `WebSite/brand/render_og.py` SHALL render the OG card with the site's fonts. The site's inline React mark (`components/TinyAssetsMark.tsx`) SHALL be **generated** by the same exporter from the same constants rather than hand-maintained, so a geometry change cannot leave the web mark behind. The served web app SHALL carry the same mark as its favicon and brand glyph.
+The brand mark (a circular badge: Mount Baker seen from the south, a wolf howling on the snowfield, a pale moon and a spiral galaxy in the night sky) SHALL be defined once as the `EMBLEM` layer list in `tinyassets/desktop/icon_gen.py` -- with the mountain profile traced from a photograph of the real skyline rather than drawn by eye -- and exported by `WebSite/brand/render_marks.py` to the site icons (`favicon.ico`, `icon.svg`, `apple-touch-icon.png`, `icon-192.png`, `icon-512.png`, `logo-mark.png`, `tinyassets-mark.png`), the repository brand assets under `assets/`, the desktop app build resources, the Windows tray icon, the Android launcher and splash density set, and the Play listing graphics; `WebSite/brand/render_og.py` SHALL render the OG card with the site's fonts. The site's inline React mark (`components/TinyAssetsMark.tsx`) SHALL be **generated** by the same exporter from the same constants rather than hand-maintained, so a geometry change cannot leave the web mark behind. The served web app SHALL carry the same mark as its favicon and brand glyph.
 
 #### Scenario: The mark changes
 
-- **WHEN** the geometry or palette in `icon_gen.py` changes and the exporters run
-- **THEN** every listed surface receives the new mark from the same drawing, and no exported raster is hand-edited
+- **WHEN** the `EMBLEM` layer list or the palette in `icon_gen.py` changes and the exporters run
+- **THEN** every listed surface receives the new mark from the same description, and no exported raster or inline copy is hand-edited
+- **AND** the boundary test fails if the site's inline component carries a path `icon_gen.py` does not describe, so the traced mountain profile cannot be quietly redrawn by eye
 
 ### Requirement: Public And Private Indexing Boundaries Are Declared
 

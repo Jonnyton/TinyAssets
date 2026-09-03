@@ -220,42 +220,44 @@ test("the inline mark is generated from the one geometry source", () => {
     resolve(siteRoot, "../../tinyassets/desktop/icon_gen.py"),
     "utf8",
   );
-  // `RULE_X0, RULE_X1 = 9.0, 55.0` and friends.
-  const tuple = (names) => {
-    const m = iconGen.match(new RegExp(`^${names.join(", ")}\\s*=\\s*([0-9.,\\s]+)`, "m"));
-    assert.ok(m, `icon_gen.py defines ${names.join(", ")}`);
-    return m[1].split(",").map((v) => Number(v.trim()));
-  };
   const scalar = (name) => {
     const m = iconGen.match(new RegExp(`^${name}\\s*=\\s*([0-9.]+)`, "m"));
     assert.ok(m, `icon_gen.py defines ${name}`);
     return Number(m[1]);
   };
-  const [ruleX0, ruleX1] = tuple(["RULE_X0", "RULE_X1"]);
 
+  // The badge's own numbers must be the Python ones, so a drifted checkout is red.
   const svgNumbers = new Set(
-    [...mark.matchAll(/(?:rx|x|y|width|height)="([\d.]+)"/g)].map((m) => Number(m[1])),
+    [...mark.matchAll(/(?:cx|cy|r|rx|x|y|width|height)="([\d.]+)"/g)].map((m) => Number(m[1])),
   );
   for (const [label, value] of [
     ["viewBox", scalar("VIEWBOX")],
+    ["disc radius", scalar("DISC_R")],
+    ["rim radius", scalar("RIM_R")],
     ["tile radius", scalar("TILE_RADIUS")],
-    ["rule start", ruleX0],
-    ["rule width", ruleX1 - ruleX0],
-    ["rule y", scalar("RULE_Y")],
-    ["rule height", scalar("RULE_H")],
   ]) {
     assert.ok(svgNumbers.has(value), `${label} (${value}) must come from icon_gen.py`);
   }
 
-  // The letterforms themselves: the component must carry the exact outline
-  // data from icon_gen.py, never a redrawn approximation of it.
-  const pathInPython = iconGen.match(/TA_PATH = \(\n([\s\S]*?)\n\)/);
-  assert.ok(pathInPython, "icon_gen.py defines TA_PATH");
-  const joined = [...pathInPython[1].matchAll(/"([^"]*)"/g)].map((m) => m[1]).join("");
-  assert.ok(joined.length > 500, "TA_PATH carries real outline data");
-  const pathInMark = mark.match(/<path d="([^"]+)"/);
-  assert.ok(pathInMark, "the component renders the monogram path");
-  assert.equal(pathInMark[1], joined, "the inline mark uses icon_gen.py's outlines verbatim");
+  // The scene itself: every path in the component must be one that icon_gen.py
+  // actually describes, so nobody can redraw the mountain or the wolf by hand
+  // in the web copy. The mountain profile is traced from a photograph, so an
+  // "improved" version drawn by eye is exactly what this catches.
+  const inMark = [...mark.matchAll(/\sd="([^"]+)"/g)].map((m) => m[1].trim());
+  assert.ok(inMark.length >= 8, `expected the scene's paths, found ${inMark.length}`);
+  // Long paths are split across adjacent Python string literals, so drop the
+  // quotes before comparing rather than matching the source line breaks.
+  const inPython = iconGen.replace(/"\s*"/g, "").replace(/\s+/g, " ");
+  for (const d of inMark) {
+    const needle = d.replace(/\s+/g, " ");
+    assert.ok(
+      inPython.includes(needle.slice(0, 40)),
+      `the component's path "${needle.slice(0, 40)}…" must come from icon_gen.py`,
+    );
+  }
+  // And the mountain in particular is present, by its distinctive summit plateau.
+  assert.match(iconGen, /_SNOW = \(/);
+  assert.match(iconGen, /summit plateau|SUMMIT PLATEAU/i);
 });
 
 test("no public copy claims goals or runs are read live, or that the platform runs a model", () => {

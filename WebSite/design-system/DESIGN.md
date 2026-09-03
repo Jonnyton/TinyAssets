@@ -105,9 +105,14 @@ only. Motion is calm: `--dur-base` 200ms, `--ease-standard`.
 
 ## 9. The mark
 
-The monogram **TA**, set in Fraunces SemiBold over a single ember rule: a
-masthead, not a symbol to decode. The letterform outlines and the palette live
-in `tinyassets/desktop/icon_gen.py` (as path data, so no font file ships);
+A circular badge: **Mount Baker from the south**, a **wolf howling** on the
+snowfield, a pale **moon** and a spiral **galaxy** overhead. The mountain's
+profile is traced from a photograph of the real skyline, so it carries Baker's
+signature: a flat summit plateau rather than a peak, the jagged Lincoln and
+Colfax group at about half height on the left, and a long south-east flank.
+
+The scene lives as the `EMBLEM` layer list in `tinyassets/desktop/icon_gen.py`.
+Two renderers read it -- one emits SVG, the other rasterises with Pillow -- and
 `WebSite/brand/render_marks.py` exports every raster AND generates the site's
 inline React component, so the web mark cannot drift from the app icons.
 
