@@ -53,7 +53,7 @@ cd mobile
 npm ci
 npm run add:ios          # cap add ios (generates ios/; writes Package.swift, NOT a Podfile)
 npm run sync:ios         # cap sync ios
-python3 scripts/add_ios_scheme.py   # registers the tinyassets:// URL scheme
+python3 scripts/add_ios_scheme.py   # registers OAuth return + microphone purpose
 python3 scripts/add_ios_assets.py   # installs TinyAssets icon + splash, fails on drift
 npm run open:ios         # opens Xcode → Product > Archive → Distribute App > App Store Connect
 ```
@@ -127,6 +127,20 @@ Mirror the Play Data-safety answers (`google-play-launch.md` §6):
 - The deposited AI credential is stored for functionality; not sold; not for ads.
 - **Tracking:** No. **Third-party ads:** No.
 
+The generated app also carries `NSMicrophoneUsageDescription` with this exact
+purpose: "TinyAssets uses the microphone only while voice conversation is active
+so you can speak with your universe." This stages the native permission prompt;
+it does **not** by itself make voice release-ready. Keep realtime voice dark until
+a physical-device TestFlight run proves that capture stops and the microphone is
+released whenever the app backgrounds or the conversation ends.
+
+Before answering App Privacy for a voice-enabled build, re-evaluate **Audio Data**
+and **Other User Content** against the OpenAI retention configuration actually in
+production. TinyAssets does not persist raw audio and does retain the canonical
+conversation text, but those facts alone do not establish the complete disclosure
+for data processed by the provider. The account holder must approve the truthful
+answers shown in App Store Connect before submission.
+
 ---
 
 ## 6. Screenshots (App Store Connect requires per device size)
@@ -149,6 +163,9 @@ Mirror the Play Data-safety answers (`google-play-launch.md` §6):
 3. Upload the build (Xcode Archive → Distribute, or CI) → it appears under
    TestFlight + the app version.
 4. **TestFlight** internal testing → verify sign-in → connect → chat on a device.
+   If voice is enabled in that build, use a physical iPhone to verify start/stop,
+   permission denial, interruption, and backgrounding; confirm the microphone is
+   released in every stop path before proceeding.
 5. Select the build for the App Store version and choose **Manually release this
    version**. The founder then makes the separate **Submit for Review** decision.
 6. After approval, check the production web health and the TestFlight critical
@@ -182,6 +199,8 @@ and [unavailability procedure](https://developer.apple.com/help/app-store-connec
 
 - [x] iOS platform wired into the Capacitor project (`add:ios`/`sync:ios` scripts, `@capacitor/ios` dep)
 - [x] `tinyassets://` URL scheme patch (`scripts/add_ios_scheme.py`)
+- [x] Microphone purpose staged in generated `Info.plist` (voice remains dark)
+- [ ] Voice: physical-iPhone background/stop proof + privacy re-evaluation
 - [x] CI compile-check (`ios-build.yml`)
 - [x] Native TinyAssets icon/splash install, with template-drift checks
 - [x] Manual signed IPA + opt-in TestFlight workflow (`ios-release.yml`)

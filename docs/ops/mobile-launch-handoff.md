@@ -83,14 +83,22 @@ release into one `gh workflow run` — but nothing waits on it.
 
 ## Apple App Store
 
-**Not enrolled in the Apple Developer Program.** Checked, not assumed: Gmail holds one
-Apple message, an Apple Account email verification from 2026-08-24, with no enrollment
-confirmation, no App Store Connect welcome and no $99 receipt.
+**Apple Account creation was never completed, so the Developer Program cannot yet be
+enrolled.** Checked 2026-09-03, not assumed: Apple's recovery page rejects the attempted
+identifiers, while the only official Gmail thread contains two expired email-verification
+attempts and says no account is created without verification. There is no enrollment
+confirmation, App Store Connect welcome, or $99 receipt. The official creation form is
+preserved at `https://account.apple.com/account`; the account holder must complete its
+personal/password fields and fresh email/SMS verification in the browser.
 
 What is ready, stated precisely — the gap here is wider than "just enrol":
 
 - The Capacitor iOS platform, the `tinyassets://` URL-scheme patch, and the listing
   and App-Privacy copy in `docs/ops/app-store-launch.md`.
+- The generated `Info.plist` now includes the exact microphone purpose string for
+  the incoming realtime-voice slice. Voice remains dark: a physical-iPhone run must
+  prove background/stop release, and App Privacy must be re-evaluated against the
+  provider retention configuration before a voice-enabled build can be submitted.
 - `ios-build.yml` compiles green on `macos-15` runners, including after the Capacitor 8
   upgrade. `ios-release.yml` now adds the manual, fail-closed signed archive: a verified
   IPA artifact by default and an explicit opt-in App Store Connect/TestFlight upload.
@@ -109,7 +117,7 @@ Local evidence, Windows checkout, 2026-09-03:
   against Capacitor 8.5.1's generated Xcode project. The generated icon's SHA-256
   matched `resources/icon.png`; all three splash hashes matched `resources/splash.png`.
 - `python -m pytest -q tests/test_mobile_ios_release.py tests/test_onboarding_app.py
-  -k "mobile_ios_release or android_shell or app_itself_links"` — 10 passed, 83
+  -k "mobile_ios_release or android_shell or app_itself_links"` — 13 passed, 83
   deselected. The two account-deletion/native checkout guards also passed directly.
 - `actionlint .github/workflows/ios-build.yml .github/workflows/ios-release.yml` —
   passed (actionlint container on Windows).

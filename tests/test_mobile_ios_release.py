@@ -24,6 +24,15 @@ def _load_asset_installer():
     return module
 
 
+def _load_configuration_installer():
+    path = MOBILE / "scripts" / "add_ios_scheme.py"
+    spec = importlib.util.spec_from_file_location("add_ios_scheme", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _write_catalog(directory: Path, filenames: set[str]) -> None:
     directory.mkdir(parents=True)
     (directory / "Contents.json").write_text(
@@ -104,6 +113,49 @@ def test_ios_build_and_release_install_real_artwork() -> None:
     assert "python3 scripts/add_ios_assets.py" in build_workflow
     assert build_workflow.count('".github/workflows/ios-release.yml"') == 2
     assert "python3 scripts/add_ios_assets.py" in RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+
+def test_ios_configuration_installer_adds_release_keys_idempotently(
+    tmp_path: Path,
+) -> None:
+    installer = _load_configuration_installer()
+    info_plist = tmp_path / "Info.plist"
+    info_plist.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<plist>\n<dict>\n</dict>\n</plist>\n',
+        encoding="utf-8",
+    )
+
+    assert installer.install_configuration(info_plist) == 0
+    first = info_plist.read_text(encoding="utf-8")
+    assert first.count("<string>tinyassets</string>") == 1
+    assert first.count("<key>NSMicrophoneUsageDescription</key>") == 1
+    assert first.count(f"<string>{installer.MICROPHONE_PURPOSE}</string>") == 1
+
+    assert installer.install_configuration(info_plist) == 0
+    assert info_plist.read_text(encoding="utf-8") == first
+
+
+def test_ios_configuration_installer_rejects_conflicting_microphone_copy(
+    tmp_path: Path,
+) -> None:
+    installer = _load_configuration_installer()
+    info_plist = tmp_path / "Info.plist"
+    info_plist.write_text(
+        "<plist>\n<dict>\n"
+        "<key>NSMicrophoneUsageDescription</key>\n"
+        "<string>Unexpected copy</string>\n"
+        "</dict>\n</plist>\n",
+        encoding="utf-8",
+    )
+
+    assert installer.install_configuration(info_plist) == 1
+    assert "Unexpected copy" in info_plist.read_text(encoding="utf-8")
+
+
+def test_ios_workflows_verify_microphone_purpose_key() -> None:
+    expected = 'grep -q "<key>NSMicrophoneUsageDescription</key>"'
+    assert expected in BUILD_WORKFLOW.read_text(encoding="utf-8")
+    assert expected in RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
 
 def test_ios_release_is_manual_and_upload_is_opt_in() -> None:

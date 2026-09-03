@@ -258,29 +258,39 @@ Delete this paragraph on the next host-actions pass.
 
 ### Apple App Store: enroll — signing and TestFlight cannot start without it
 
-**Checked 2026-09-02, not assumed.** Gmail holds exactly one Apple message, an Apple
-Account email verification from 2026-08-24; there is no Developer Program enrollment
-confirmation, no App Store Connect welcome, and no $99 receipt. `developer.apple.com/account`
-asks for a sign-in I cannot complete (I must not enter a password), so the browser cannot
-confirm it either. On that evidence: **not enrolled**.
+**Checked 2026-09-03, not assumed.** Apple's recovery page rejects both attempted
+identifiers as an account that is not valid or supported. Gmail holds one official
+Apple verification thread with two expired attempts from 2026-08-23; each says the
+account cannot be used until verification and that no account is created without it.
+There is no enrollment confirmation, App Store Connect welcome, or $99 receipt. On
+that evidence: **Apple Account creation was never completed, and the Developer Program
+is not enrolled**. The official creation form is preserved at
+`https://account.apple.com/account` for the account holder to finish safely.
 
 Everything autonomous on the iOS build side is staged — the Capacitor platform,
 `tinyassets://` URL-scheme patch, native TinyAssets artwork, unsigned compile-check,
 manual signed-IPA workflow, opt-in TestFlight upload, and listing/App-Privacy copy.
 None of it can produce an installable app without account-owned signing material.
 
-1. **Enroll**: https://developer.apple.com/programs/enroll/ — $99/year, and identity
+1. Finish Apple Account creation in the preserved browser tab: enter the personal
+   fields and password, solve the captcha, then enter the fresh email/SMS codes there.
+   Never send a password or verification code through chat.
+
+2. **Enroll**: https://developer.apple.com/programs/enroll/ — $99/year, and identity
    verification usually takes a day or two, sometimes longer. **Start this first**, because
    the waiting is the long pole and it runs in parallel with everything else.
-2. Register the explicit App ID and App Store Connect app record for `io.tinyassets.app`,
+3. Register the explicit App ID and App Store Connect app record for `io.tinyassets.app`,
    accepting any current Apple agreement presented to the account holder.
-3. Create the Apple Distribution certificate + matching App Store Connect provisioning
+4. Create the Apple Distribution certificate + matching App Store Connect provisioning
    profile and an **App Store Connect API key**; add the six values in §3 of the runbook.
    Create a protected GitHub environment named `app-store` with founder approval for its
    upload job. You do NOT need a Mac — CI builds on `macos-15`.
-4. Capture real iPhone-sized screenshots from the signed app, verify sign-in → connect →
+5. Capture real iPhone-sized screenshots from the signed app, verify sign-in → connect →
    chat through TestFlight, complete the truthful console declarations, then make the final
    Submit for Review decision.
+6. If realtime voice is enabled in the candidate, review the final **Audio Data** and
+   **Other User Content** declarations against the provider retention configuration and
+   require physical-iPhone proof that capture stops on background/end before submission.
 
 ### Google Play: start the 12-tester closed test — this is the 14-day clock
 
