@@ -53,8 +53,32 @@ reviewer was told they do not block APPROVE:
 `anthropic_messages` / `bearer` mismatch (needs a deposit-contract change), and
 the two company names in the picker copy (needs the founder's wording).
 
-## Head note
+## Head note — what the receipt's head means here
 
-The review was performed against `9503bf71`. Committing this artifact advances
-the branch head; that commit adds this file only and changes no code, so the
-receipt head and the reviewed code are the same tree.
+The authority review was performed against **`9503bf71`**. The receipt in the PR
+body names a later head, because commits after the review advance it. Every such
+commit is docs or tests only; the reviewed code is unchanged, which is checked
+rather than asserted:
+
+```
+git diff 9503bf71 HEAD -- \
+  tinyassets/provider_serving_binding.py \
+  tinyassets/onboarding/serving.py \
+  tinyassets/providers/api_key_http_provider.py \
+  packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/provider_serving_binding.py
+```
+
+That diff is **empty** at the receipted head. Codex independently confirmed the
+same thing in a third pass. Commits since the review:
+
+- the review artifact itself (this file),
+- `docs/concerns/README.md`: link the concern filed by this lane, which the
+  index test requires at merge time,
+- `tests/test_status_says_what_is_true.py`: lift `SERVICE_LABELS` alongside
+  `serviceLabel` in its node extractor. This lane replaced a self-contained
+  ternary with a module-level table, and a second extractor (in a file the local
+  runs did not cover) threw `ReferenceError` before any assertion — caught by CI,
+  not by me.
+
+If a future commit touches an authority path, that diff stops being empty and
+this receipt must not be reused: get a fresh review at the new head.
