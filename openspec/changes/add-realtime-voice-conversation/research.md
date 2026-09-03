@@ -39,6 +39,24 @@ API documentation does not define an `OpenAI-Safety-Identifier` request header. 
 not invent that header: the stable signed-in identity remains the local mint-rate-limit key, and a
 provider safety identifier will be added only if OpenAI documents a Realtime-supported field.
 
+## Authentication compatibility
+
+As checked on 2026-09-03, the official [Realtime API reference](https://platform.openai.com/docs/api-reference/realtime)
+shows Realtime calls authenticated with `Authorization: Bearer $OPENAI_API_KEY`, and the official
+[API overview](https://developers.openai.com/api/reference/overview) documents API keys or
+workload-identity access tokens as API credentials. The official [API quickstart](https://developers.openai.com/api/docs/quickstart)
+also separates API-key setup and API billing from product subscription sign-in. These sources do
+not document a ChatGPT/Codex subscription session as authorization for Realtime audio. The absence
+is a product/API limitation inferred from the documented auth surface, not proof that a private or
+future route can never exist.
+
+Therefore TinyAssets does not send the Codex subscription token to Realtime and does not ask for a
+replacement key merely to finish this feature. The OpenAI adapter is ready only when an owner has
+already bound a compatible API-project credential to that universe. Otherwise Voice stays visible
+as locked. Future per-user adapters may use a documented subscription voice entitlement, local
+speech resources, or another provider's user-bound speech capability after their authority,
+privacy, and canonical-author contracts are specified; none may use maintainer or platform quota.
+
 ## Turn-taking and privacy
 
 Semantic VAD with medium eagerness is selected because it waits for semantic completion more

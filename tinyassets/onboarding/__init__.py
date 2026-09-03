@@ -939,6 +939,33 @@ async def _handle_voice_session(request: Any) -> Any:
     return JSONResponse(result, headers=_NO_STORE)
 
 
+async def _handle_voice_status(request: Any) -> Any:
+    """Report whether this founder's universe has voice-capable authority.
+
+    This is a read-only, secret-free preflight.  The client checks it before
+    showing disclosure or requesting microphone access, so an ordinary Codex
+    subscription is never mistaken for Realtime API authority.
+    """
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.onboarding.realtime_voice import voice_capability
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    identity = current_identity()
+    home = await run_in_threadpool(_read_home, identity)
+    result = await run_in_threadpool(
+        voice_capability, _universe_dir(home) if home else None
+    )
+    return JSONResponse(result, headers=_NO_STORE)
+
+
 _TRACE_STEPS = frozenset({
     "openai.listener", "openai.browser", "openai.callback", "openai.deeplink",
     "openai.complete", "openai.exchange", "openai.finish",
@@ -1575,6 +1602,7 @@ def onboarding_routes() -> list[Any]:
         Route("/mcp/app/openai/device/poll", _handle_openai_device_poll, methods=["POST"]),
         Route("/mcp/app/openai/begin", _handle_openai_begin, methods=["POST"]),
         Route("/mcp/app/openai/exchange", _handle_openai_exchange, methods=["POST"]),
+        Route("/mcp/app/voice/status", _handle_voice_status, methods=["GET"]),
         Route("/mcp/app/voice/session", _handle_voice_session, methods=["POST"]),
         Route("/mcp/app/me", _handle_me, methods=["GET"]),
         Route("/mcp/app/trace", _handle_trace, methods=["POST"]),

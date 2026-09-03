@@ -4,9 +4,9 @@ The shared app at `/mcp/app` is one HTML/JavaScript client used by the browser a
 
 OpenAI recommends WebRTC for browser and mobile Realtime clients and supports server-minted ephemeral client secrets, which keep the long-lived API key on the application server ([WebRTC guide](https://developers.openai.com/api/docs/guides/realtime-webrtc)). Realtime sessions are stateful but have a maximum duration of 60 minutes, and WebRTC sessions automatically truncate unplayed output when the user interrupts ([conversation guide](https://developers.openai.com/api/docs/guides/realtime-conversations)). Semantic VAD is designed to reduce premature turn boundaries and exposes configurable eagerness and interruption behavior ([VAD guide](https://developers.openai.com/api/docs/guides/realtime-vad)).
 
-The current generally documented model is `gpt-realtime-2.1`, an update to `gpt-realtime-2` with improved silence/noise handling and interruption behavior ([model page](https://developers.openai.com/api/docs/models/gpt-realtime-2.1)). It is API-metered compute and is not covered by a ChatGPT or Codex subscription. API data is not used for training by default, but abuse-monitoring logs may be retained for up to 30 days unless a different eligible data-control arrangement applies ([data controls](https://developers.openai.com/api/docs/guides/your-data)).
+The current generally documented model is `gpt-realtime-2.1`, an update to `gpt-realtime-2` with improved silence/noise handling and interruption behavior ([model page](https://developers.openai.com/api/docs/models/gpt-realtime-2.1)). As checked on 2026-09-03, OpenAI's public Realtime call reference requires `Authorization: Bearer $OPENAI_API_KEY`, while the API overview documents API keys or workload-identity access tokens as API credentials ([Realtime reference](https://platform.openai.com/docs/api-reference/realtime), [API overview](https://developers.openai.com/api/reference/overview)). The public documentation does not identify a ChatGPT/Codex subscription session as Realtime API authority. Treating the existing subscription token as such would therefore be an unsupported inference. API data is not used for training by default, but abuse-monitoring logs may be retained for up to 30 days unless a different eligible data-control arrangement applies ([data controls](https://developers.openai.com/api/docs/guides/your-data)).
 
-These constraints create two authority boundaries. TinyAssets must remain a relay whose primary writer is the universe's assigned subscription/owner-provided engine, and Realtime spend must be explicitly authorized against the user's own API credential. The mobile release work on `codex/ios-store-release` owns signing and store submission; this change owns the shared voice contract and will hand native permission/privacy requirements to that track.
+These constraints create one governing boundary: the universe may use only capabilities its user has bound to it. TinyAssets must remain a relay whose primary writer is the universe's assigned engine. A compatible user-owned voice resource may supply speech transport, but a platform/maintainer credential or another user's resource never may. Jonathan's existing Codex subscription continues to power his writer; because no documented Realtime-audio route exists through that authority, this change does not ask him for a separate key or spend ceiling merely to complete voice work. The mobile release work on `codex/ios-store-release` owns signing and store submission; this change owns the shared voice contract and will hand native permission/privacy requirements to that track.
 
 ## Goals / Non-Goals
 
@@ -14,8 +14,8 @@ These constraints create two authority boundaries. TinyAssets must remain a rela
 
 - Provide a first-class, foreground voice conversation mode with semantic turn-taking, visible states, barge-in, deterministic recovery, and a continuous canonical text history.
 - Keep `converse` as the sole primary writer and preserve its authorization, sandbox, assigned-engine, and transcript behavior.
-- Keep long-lived API credentials server-side and return only short-lived Realtime client credentials to an authenticated owner.
-- Make metered API use a separate, explicit, off-by-default choice with no platform-key or ambient-key fallback.
+- Reuse only a compatible voice resource already bound to the authenticated universe; keep any long-lived credential server-side and return only short-lived client authority.
+- Show Voice as locked before microphone capture when the universe lacks such a resource, with no platform-key, ambient-key, or cross-user fallback.
 - Make the first implementation slice testable without a microphone, paid API call, network access, deployment, or store submission.
 
 **Non-Goals:**
@@ -42,19 +42,21 @@ Alternatives rejected:
 
 ### 2. The client uses WebRTC and a server-minted ephemeral secret
 
-The app requests `POST /mcp/app/voice/session` with its existing authenticated session. The request has no caller-selected universe id in the first slice: the server resolves the same founder home universe used by `converse`. The server validates both voice flags, resolves only that universe owner's deposited OpenAI credential, calls OpenAI's `/v1/realtime/client_secrets` endpoint without an OpenAI SDK, and returns the short-lived secret plus non-secret expiry/model metadata. Responses use `Cache-Control: no-store`; secrets and Authorization headers are excluded from logs and errors.
+The app first requests the read-only `GET /mcp/app/voice/status` with its existing authenticated session. The server derives the founder home universe and returns only `ready`, `locked`, or `disabled` capability metadata. The client does not show the capture disclosure or request microphone access unless status is `ready`.
+
+For the initial OpenAI adapter, a ready app requests `POST /mcp/app/voice/session`. Neither route accepts a caller-selected universe id: the server resolves the same founder home universe used by `converse`. The server validates both host-side adapter gates, resolves only that universe owner's deposited OpenAI API credential, calls OpenAI's `/v1/realtime/client_secrets` endpoint without an OpenAI SDK, and returns the short-lived secret plus non-secret expiry/model metadata. Responses use `Cache-Control: no-store`; secrets and Authorization headers are excluded from logs and errors.
 
 The client sends the SDP directly to OpenAI over WebRTC. The app Content Security Policy gains only the minimum OpenAI connection origin while voice is enabled. Microphone tracks are stopped on leave, error, page hide, sign-out, and unload.
 
 The unified server SDP proxy was rejected because it puts TinyAssets on the media-session setup path and increases bandwidth and uptime responsibility. A long-lived key in JavaScript was rejected because it violates credential custody.
 
-### 3. Voice has a dedicated, additive allowance
+### 3. Universe-bound capability, not a host credential, authorizes voice
 
-`TINYASSETS_REALTIME_VOICE_ENABLED` controls whether the UI and broker are available, and `TINYASSETS_ALLOW_REALTIME_VOICE_API` separately authorizes metered Realtime API use. Both default false and both must be true. The latter does not enable API-key primary writers and does not weaken `TINYASSETS_ALLOW_API_KEY_PROVIDERS`.
+`TINYASSETS_REALTIME_VOICE_ENABLED` controls whether the UI adapter is available, and `TINYASSETS_ALLOW_REALTIME_VOICE_API` is a defense-in-depth host kill switch for the initial OpenAI API adapter. Both default false and both must be true. Neither flag is user spend authority, enables API-key primary writers, weakens `TINYASSETS_ALLOW_API_KEY_PROVIDERS`, or makes a platform credential eligible.
 
-The broker uses only a per-universe credential deposited under the custody owner's contract. It SHALL NOT read a process-global `OPENAI_API_KEY`, use a platform credential, or fall back to another universe's credential. Missing flags or credentials fail before any OpenAI request with a typed, user-actionable response.
+The broker uses only a compatible resource deposited under the requesting universe owner's contract. The initial adapter recognizes a deposited per-universe OpenAI API credential. It SHALL NOT reinterpret the existing Codex subscription session as Realtime authority, read a process-global `OPENAI_API_KEY`, use a platform credential, or fall back to another universe's resource. Missing flags or compatible resources fail before any OpenAI request. The app presents the latter as a locked capability, not as a demand that Jonathan supply a new key.
 
-This dedicated gate was chosen over reusing `TINYASSETS_ALLOW_API_KEY_PROVIDERS` because voice transport is not a routing candidate and users must be able to retain a subscription-only writer while separately deciding whether to pay for audio transport.
+This dedicated kill switch was chosen over reusing `TINYASSETS_ALLOW_API_KEY_PROVIDERS` because voice transport is not a routing candidate. Capability authority comes from the universe binding, so a subscription-only writer stays intact whether Voice is ready, locked, or later backed by a different user-owned adapter.
 
 ### 4. The default session is bounded and interruption-first
 
@@ -72,7 +74,7 @@ If the media connection drops while `MCP.converse` is in flight, that request is
 
 ### 6. Disclosure and usage visibility precede capture
 
-Before the first microphone permission request for a browser profile, the app discloses that audio is sent directly to OpenAI, TinyAssets stores only the canonical text exchange, OpenAI API charges apply to the user's credential, and provider retention controls apply. Acceptance is stored locally as a disclosure version, not as authority to spend; the two server-side flags and credential remain mandatory.
+Before the first microphone permission request for a browser profile, the app confirms that the universe still has a compatible bound resource, then discloses the exact provider path, that any provider use belongs to that resource's account, that TinyAssets never substitutes shared credentials, that TinyAssets stores only the canonical text exchange, and that provider retention controls apply. Acceptance is stored locally as a disclosure version; it is not authority to spend, and capability is checked again on each start.
 
 Realtime cost grows with both audio tokens and repeated conversation context ([cost guide](https://developers.openai.com/api/docs/guides/realtime-costs)). The UI may show provider-reported session usage as an estimate, clearly labeled non-billing-authoritative. No usage event may contain transcript text or raw audio.
 
@@ -89,20 +91,21 @@ The shared web app owns the voice UI and protocol. The iOS and Android projects 
 - [Reconnect can duplicate a costly/writing turn] -> Never automatically replay an in-flight or ambiguous `converse` request; require explicit retry.
 - [Browser and WebView microphone behavior differs] -> Isolate browser APIs behind an adapter and require deterministic mocks plus one observed browser and one real-device pass before enabling production.
 - [CSP or WebView changes can affect the public app] -> Keep the feature off by default, add only the required origin, run focused security tests, the public MCP canary, and a rendered chatbot conversation before rollout.
-- [A user may believe their ChatGPT/Codex subscription covers voice] -> State explicitly in setup and first-use disclosure that Realtime API billing is separate.
+- [A user may believe their ChatGPT/Codex subscription authorizes Realtime API voice] -> State that the current public API documentation does not expose that route; keep Voice locked unless a compatible user-owned resource is actually bound.
 
 ## Migration Plan
 
 1. Land the spec-reviewed broker policy, client state machine, and deterministic tests with both flags off. No live credential or network call is needed for verification.
 2. Add native microphone permissions and store disclosures in coordination with `codex/ios-store-release`; keep release channels unchanged.
-3. In a non-production owner-controlled environment, deposit a user-owned OpenAI key, enable both flags, and run a short metered browser/device session with a pre-agreed spend ceiling.
+3. In a non-production owner-controlled environment that already has a compatible user-bound voice resource, enable both adapter gates and run a short browser/device session under that resource's own limits. Do not solicit a separate key or budget merely for this rollout step.
 4. Verify turn-taking, interruption, canonical-history continuity, auth isolation, CSP, public canary, and rendered chatbot behavior. Record dated environment and commands.
 5. Enable for a small explicit cohort with a kill switch, bounded session duration, failure/latency/usage monitoring, and rollback by disabling either flag.
 6. Roll back by turning off `TINYASSETS_REALTIME_VOICE_ENABLED`; existing text conversation and stored history remain usable because no data migration occurs.
 
 ## Open Questions
 
-- Founder decision: approve user-owned per-universe OpenAI API credentials as the only initial funding model, or intentionally change `PLAN.md` and billing architecture for platform-funded voice. The design recommends user-owned only.
+- Product/API watch: does OpenAI later document Realtime audio through the existing ChatGPT/Codex subscription-authenticated route? If so, add that as a compatible per-universe adapter after review; until then it is unavailable, not emulated with a shared key.
+- Capability adapters: which user-bound local speech or other provider subscription resources can satisfy the voice contract without weakening canonical `converse` authorship?
 - Product validation: is generative spoken rendering faithful enough when canonical text is displayed, or must the output adapter change to deterministic TTS before rollout?
 - Rollout policy: what initial per-session duration and user-visible spend warning should production use after measured device tests?
 - Store review: which final Apple/Google privacy labels and wording are required for the exact shipped SDK-free WebRTC data path?

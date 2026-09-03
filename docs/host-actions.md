@@ -490,18 +490,6 @@ env (5.3); an isolated launch-region project (5.4). *Where:* Supabase account.
 
 ## Approvals and decisions
 
-### Approve the Realtime voice funding boundary and one metered proof budget
-
-Recommended boundary: Realtime voice uses only the signed-in founder's OpenAI API key deposited
-in that universe. A ChatGPT or Codex subscription does not fund OpenAI API usage, and TinyAssets
-must not fall back to a platform-owned key. When live proof is wanted, provide or deposit that key
-and approve a small explicit spend ceiling for one browser/device session. Until then both
-`TINYASSETS_REALTIME_VOICE_ENABLED` and `TINYASSETS_ALLOW_REALTIME_VOICE_API` stay off; code and
-unmetered tests can continue, but no paid Realtime request or production activation may occur.
-*Owner artifact:* `openspec/changes/add-realtime-voice-conversation/`.
-*Decision needed:* keep the recommended user-owned-only boundary, or separately authorize a
-future platform-funded product with budgets, abuse controls, and pricing.
-
 ### Approve an isolated canonical `/mcp` baseline environment + traffic envelope
 
 Provider-free, no maintainer quota, test identities with cleanup, canary-coordinated.

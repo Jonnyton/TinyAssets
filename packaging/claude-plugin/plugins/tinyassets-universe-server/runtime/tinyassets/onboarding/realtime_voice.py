@@ -18,7 +18,7 @@ import httpx
 REALTIME_CLIENT_SECRETS_URL = "https://api.openai.com/v1/realtime/client_secrets"
 REALTIME_CALLS_URL = "https://api.openai.com/v1/realtime/calls"
 REALTIME_MODEL = "gpt-realtime-2.1"
-VOICE_DISCLOSURE_VERSION = 1
+VOICE_DISCLOSURE_VERSION = 2
 VOICE_SESSION_MAX_SECONDS = 30 * 60
 VOICE_MINT_WINDOW_SECONDS = 60.0
 VOICE_MINTS_PER_WINDOW = 10
@@ -43,7 +43,12 @@ def _truthy(name: str) -> bool:
 
 
 def realtime_voice_enabled() -> bool:
-    """True only when UI availability and metered API use are both explicit."""
+    """True only when the adapter and its host-side kill switch are enabled.
+
+    These flags make the adapter reachable; they are not spend authority.  A
+    compatible resource explicitly bound to the requesting universe remains
+    mandatory.
+    """
 
     return _truthy("TINYASSETS_REALTIME_VOICE_ENABLED") and _truthy(
         "TINYASSETS_ALLOW_REALTIME_VOICE_API"
@@ -59,6 +64,39 @@ def public_voice_config() -> dict[str, Any]:
         "calls_url": REALTIME_CALLS_URL,
         "disclosure_version": VOICE_DISCLOSURE_VERSION,
         "max_session_seconds": VOICE_SESSION_MAX_SECONDS,
+    }
+
+
+def voice_capability(universe_dir: str | Path | None) -> dict[str, Any]:
+    """Return a secret-free view of this universe's voice capability.
+
+    OpenAI's public Realtime API documents API credentials as its authority.
+    A Codex/ChatGPT subscription binding is therefore not treated as a
+    compatible Realtime credential.  That is an adapter limitation, not a
+    license to borrow a process-global or maintainer credential.
+    """
+
+    if not realtime_voice_enabled():
+        return {"available": False, "state": "disabled", "reason": "voice_disabled"}
+    if universe_dir is None:
+        return {
+            "available": False,
+            "state": "locked",
+            "reason": "no_home_universe",
+        }
+
+    from tinyassets.credential_vault import resolve_llm_api_key
+
+    if resolve_llm_api_key(universe_dir, "OPENAI_API_KEY"):
+        return {
+            "available": True,
+            "state": "ready",
+            "resource": "user_bound_openai_api_credential",
+        }
+    return {
+        "available": False,
+        "state": "locked",
+        "reason": "voice_compatible_resource_required",
     }
 
 
@@ -147,7 +185,7 @@ async def mint_client_secret(
 
     api_key = resolve_llm_api_key(universe_dir, "OPENAI_API_KEY")
     if not api_key:
-        raise RealtimeVoiceError("voice_openai_credential_required", 409)
+        raise RealtimeVoiceError("voice_compatible_resource_required", 409)
 
     try:
         async with client_factory() as client:
@@ -201,4 +239,5 @@ __all__ = [
     "public_voice_config",
     "realtime_voice_enabled",
     "session_request",
+    "voice_capability",
 ]

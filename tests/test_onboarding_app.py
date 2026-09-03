@@ -167,8 +167,11 @@ def test_voice_csp_and_disclosure_are_dark_until_both_flags(monkeypatch):
     ) in csp
     assert '"enabled": true' in html
     assert "microphone audio goes directly to OpenAI" in html
-    assert "separately from ChatGPT or" in html
-    assert "does not store the raw audio" in html
+    assert "never substitutes a shared credential" in html
+    assert "compatible OpenAI Realtime resource you bound" in html
+    assert "not store the raw audio" in html
+    assert "Voice needs a compatible connection" in html
+    assert "supported local voice resource" in html
 
 
 def test_voice_client_keeps_converse_as_the_only_writer():
@@ -200,7 +203,7 @@ def test_route_is_mcp_app_get(monkeypatch):
         "/mcp/app", "/mcp/app/token", "/mcp/app/me",
         "/mcp/app/openai/device/start", "/mcp/app/openai/device/poll",
         "/mcp/app/openai/begin", "/mcp/app/openai/exchange", "/mcp/app/trace",
-        "/mcp/app/voice/session",
+        "/mcp/app/voice/status", "/mcp/app/voice/session",
         "/mcp/app/serving/bind",
         "/mcp/app/billing/status", "/mcp/app/billing/checkout",
         "/mcp/app/billing/cancel", "/mcp/app/billing/webhook",
@@ -209,6 +212,7 @@ def test_route_is_mcp_app_get(monkeypatch):
     assert "GET" in by_path["/mcp/app"].methods
     assert "GET" in by_path["/mcp/app/billing/status"].methods
     assert "GET" in by_path["/mcp/app/me"].methods
+    assert "GET" in by_path["/mcp/app/voice/status"].methods
     for post_only in (
         "/mcp/app/token", "/mcp/app/openai/device/start", "/mcp/app/openai/device/poll",
         "/mcp/app/openai/begin", "/mcp/app/openai/exchange", "/mcp/app/trace",
@@ -623,12 +627,19 @@ const CFG={voice:{enabled:true,disclosure_version:1,max_session_seconds:1800}};
 const store={}; const localStorage={getItem:k=>store[k]||null,setItem:(k,v)=>store[k]=String(v)};
 class El{constructor(){this.hidden=true;this.disabled=false;this.textContent="";this.attrs={};}
 setAttribute(k,v){this.attrs[k]=v;} focus(){this.focused=true;} pause(){this.paused=true;}}
-const els={"btn-voice":new El(),"voice-disclosure":new El(),"btn-voice-accept":new El()};
+const els={"btn-voice":new El(),"voice-disclosure":new El(),"btn-voice-accept":new El(),
+  "voice-unlock":new El(),"btn-voice-unlock-close":new El()};
 const $=id=>els[id]; let status=""; function setStatusLine(v){status=v||"";}
 const document={createElement:()=>new El()};
-const navigator={mediaDevices:{getUserMedia:async()=>({getTracks:()=>[]})}};
+let mediaRequests=0;
+const navigator={mediaDevices:{getUserMedia:async()=>{mediaRequests++;return {getTracks:()=>[]};}}};
 let traces=[]; function trace(...args){traces.push(args);}
 let turns=[];
+let capabilityDoc={available:false,state:"locked",reason:"voice_compatible_resource_required"};
+let fetched=[];
+async function fetch(url){
+  fetched.push(url);return {ok:true,status:200,json:async()=>capabilityDoc};
+}
 async function sendVoiceTurn(message){
   turns.push(message);return "Exact universe reply.";
 }
@@ -637,8 +648,15 @@ function authHeaders(){return {Authorization:"Bearer app"};} async function slee
 """
     scenario = r"""
 (async()=>{
-  const out={}; Voice.init(); out.initial=Voice.state;
-  Voice.requestStart(); out.disclosureShown=!els["voice-disclosure"].hidden;
+  const out={}; Voice.init(); await Voice.refreshCapability();
+  await Voice.requestStart();
+  out.locked={state:Voice.state,label:els["btn-voice"].textContent,
+    disclosureShown:!els["voice-disclosure"].hidden,
+    unlockShown:!els["voice-unlock"].hidden,mediaRequests,fetched:fetched.slice(),status};
+  Voice.closeUnlock();
+  capabilityDoc={available:true,state:"ready",resource:"user_bound_openai_api_credential"};
+  await Voice.refreshCapability(); out.initial=Voice.state;
+  await Voice.requestStart(); out.disclosureShown=!els["voice-disclosure"].hidden;
   const sent=[];
   Voice.dc={readyState:"open",send:v=>sent.push(JSON.parse(v)),
     close:()=>{out.dcClosed=true;}};
@@ -731,6 +749,13 @@ def test_voice_state_machine_permission_failure_is_recoverable(tmp_path):
 
 def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_path):
     out = _run_voice_adapter(tmp_path)
+    assert out["locked"]["state"] == "locked"
+    assert out["locked"]["label"] == "Voice · Connect"
+    assert out["locked"]["disclosureShown"] is False
+    assert out["locked"]["unlockShown"] is True
+    assert out["locked"]["mediaRequests"] == 0
+    assert set(out["locked"]["fetched"]) == {"/mcp/app/voice/status"}
+    assert "current ChatGPT or Codex subscription route" in out["locked"]["status"]
     assert out["initial"] == "idle"
     assert out["disclosureShown"] is True
     assert out["afterBargeIn"] == "listening" and out["mutedAfterBargeIn"] is True

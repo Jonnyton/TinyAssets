@@ -1,12 +1,17 @@
 ## ADDED Requirements
 
 ### Requirement: Voice mode is explicit, foreground-only, and accessible
-The shared TinyAssets app SHALL expose voice conversation only when the server reports it available, SHALL require an explicit user start action, and SHALL stop every microphone track when the user leaves voice mode, hides or unloads the app, signs out, or reaches an unrecoverable error.
+The shared TinyAssets app SHALL show Voice as ready only when the authenticated universe has a compatible user-bound resource, SHALL show it as an unlockable capability otherwise, SHALL require an explicit user start action, and SHALL stop every microphone track when the user leaves voice mode, hides or unloads the app, signs out, or reaches an unrecoverable error.
 
 #### Scenario: Voice is unavailable by default
 - **WHEN** either required voice allowance is disabled
 - **THEN** the app does not start microphone capture or request a Realtime client credential
 - **AND** it presents a concise unavailable reason without disabling typed conversation
+
+#### Scenario: Host supports Voice but the universe lacks a compatible resource
+- **WHEN** the signed-in app checks Voice capability and no compatible resource is bound to that universe
+- **THEN** Voice is visibly locked with an explanation that a compatible user-owned resource can unlock it
+- **AND** the app makes no microphone request, Realtime request, platform-credential lookup, or change to typed conversation
 
 #### Scenario: Every active state is perceivable
 - **WHEN** voice moves among requesting permission, connecting, listening, thinking, speaking, reconnecting, or error
@@ -61,12 +66,12 @@ The voice client SHALL treat media-session state as disposable, SHALL obtain a n
 - **THEN** it presents an explicit retry action
 - **AND** it does not retry without user intent
 
-### Requirement: Audio privacy and API cost are disclosed before capture
-The app SHALL disclose before its first microphone permission request that audio is sent directly to OpenAI, API charges apply to the user's own credential, TinyAssets stores the canonical text exchange but not raw audio, and provider retention controls apply.
+### Requirement: Audio privacy and resource use are disclosed before capture
+The app SHALL confirm capability and then disclose before its first microphone permission request that audio is sent to the selected voice provider, any provider use belongs to the universe's bound resource, TinyAssets never substitutes shared authority, TinyAssets stores the canonical text exchange but not raw audio, and provider retention controls apply.
 
 #### Scenario: First voice start requires current disclosure
 - **WHEN** the browser profile has not accepted the current disclosure version
-- **THEN** the app presents the disclosure before requesting microphone permission or a client credential
+- **THEN** the app first confirms a compatible resource and presents the disclosure before requesting microphone permission or a client credential
 - **AND** declining leaves typed conversation available and sends no audio
 
 #### Scenario: Raw audio is excluded from TinyAssets persistence

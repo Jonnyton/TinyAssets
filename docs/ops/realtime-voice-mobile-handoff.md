@@ -34,9 +34,12 @@ not change signing, enrollment, publication, or native release ownership.
 
 ## Coordinated acceptance
 
-Before enabling either platform, prove on a physical device that first-use disclosure precedes the
-OS permission prompt; deny and later retry work; headphones and speaker paths work; barge-in stops
-the current reply; backgrounding ends capture; reconnect is bounded; typed chat remains available
-after every voice failure; and a restored conversation contains exactly the canonical text turns,
-never raw audio or a synthetic duplicate. Use only a founder-approved user-owned API key and spend
-ceiling. Do not publish as part of this proof.
+Before enabling either platform, first prove that Voice is visibly locked and requests no
+microphone permission when the signed-in universe lacks a compatible user-owned voice resource.
+Then, on a test universe that already has such a resource bound, prove on a physical device that
+first-use disclosure precedes the OS permission prompt; deny and later retry work; headphones and
+speaker paths work; barge-in stops the current reply; backgrounding ends capture; reconnect is
+bounded; typed chat remains available after every voice failure; and a restored conversation
+contains exactly the canonical text turns, never raw audio or a synthetic duplicate. Do not ask
+Jonathan for a separate API key or spend ceiling merely to run this proof, do not use a shared
+fallback, and do not publish as part of this proof.

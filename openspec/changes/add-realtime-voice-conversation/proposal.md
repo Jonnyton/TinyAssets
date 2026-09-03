@@ -1,11 +1,12 @@
 ## Why
 
-TinyAssets conversations are text-only today, which prevents natural hands-free use and makes the mobile shells feel like web wrappers rather than first-class conversational clients. OpenAI's Realtime API can provide low-latency speech input, semantic turn detection, interruption, and speech output, but it is separately metered API compute and must not silently make TinyAssets the model provider or create a second author for the universe.
+TinyAssets conversations are text-only today, which prevents natural hands-free use and makes the mobile shells feel like web wrappers rather than first-class conversational clients. OpenAI's Realtime API can provide low-latency speech input, semantic turn detection, interruption, and speech output, but its documented authentication is API-project authority rather than the ChatGPT/Codex subscription session already bound to Jonathan's universe. Voice must therefore be capability-gated per universe and must not silently make TinyAssets the provider, payer, or second author.
 
 ## What Changes
 
 - Add an authenticated, explicitly enabled voice mode to the shared TinyAssets app surface so the web app and Capacitor mobile shells can support listening, thinking, speaking, interruption, reconnection, and accessible visible status.
-- Use browser/mobile WebRTC with a short-lived Realtime client credential minted by the TinyAssets server. The server may mint that credential only from the authenticated owner's per-universe OpenAI API credential and a voice-specific opt-in; it never exposes the long-lived key, falls back to an ambient host key, or spends platform-owned compute.
+- Reuse a compatible voice resource already bound to the authenticated universe. The initial OpenAI WebRTC adapter can mint a short-lived Realtime client credential only from that owner's deposited API credential; it never treats Codex subscription auth as API auth, exposes the long-lived key, falls back to an ambient/platform key, or aggregates spend across users.
+- Report capability readiness before requesting microphone access. A universe without a compatible user-owned subscription, credential, or local resource sees Voice as locked with an honest unlock explanation; typed conversation remains available and no provider or microphone request occurs.
 - Keep the existing assigned-engine `converse` turn as the sole primary writer. Realtime acts as a speech transport and function-call relay: a committed user utterance invokes the existing `converse` path, and the returned universe reply is spoken without replacement by a second model-authored answer.
 - Persist the same canonical text exchange already used across app and connector surfaces. Do not persist raw microphone audio. Show a first-use disclosure that audio is sent directly to OpenAI and that OpenAI API retention policies apply.
 - Define deterministic interruption, ambiguous-delivery, reconnect, session-expiry, permission-denial, and failure behavior. The first release is foreground-only and does not claim to resume an interrupted audio stream.
@@ -29,7 +30,7 @@ TinyAssets conversations are text-only today, which prevents natural hands-free 
 
 - Shared app: `tinyassets/onboarding/app.html` and its existing deterministic browser harness.
 - Server: a small authenticated voice-session policy/broker boundary and route under the app surface; no new public MCP tool handle.
-- Credentials and configuration: per-universe OpenAI credential lookup plus a new voice-specific, off-by-default environment allowance; no schema migration.
+- Credentials and configuration: per-universe compatible-resource lookup plus off-by-default adapter/kill-switch configuration; no schema migration and no platform credential path.
 - Conversation storage: existing canonical `principal:<subject>` text history only; raw audio remains outside TinyAssets persistence.
 - Mobile release track: a documented handoff for iOS and Android microphone permissions, privacy labels, foreground behavior, and store review copy. Signing, enrollment, screenshots, publication, and spend remain out of scope.
 - Operations: later staged rollout, usage/cost telemetry, kill switch, and rollback evidence are required before enabling the flag in production.

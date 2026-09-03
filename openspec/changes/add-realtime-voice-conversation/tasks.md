@@ -1,7 +1,7 @@
 ## 1. Contract and independent review
 
 - [x] 1.1 Obtain an opposite-provider architecture/security review of the proposal, design, and delta specs; resolve evidence-backed blockers before implementation.
-- [x] 1.2 Record the recommended user-owned billing decision and native/store handoff as durable founder and release-track actions.
+- [x] 1.2 Record universe authority as the capability boundary and the native/store handoff as durable design state; remove the obsolete request for a separate founder key or proof budget.
 
 ## 2. Safe reversible server slice
 
@@ -17,5 +17,5 @@
 ## 4. Native and rollout readiness
 
 - [ ] 4.1 Add coordinated iOS/Android microphone permissions and store privacy copy without changing signing, enrollment, publication, or release ownership.
-- [ ] 4.2 Run focused tests, lint, OpenSpec validation, public canary, rendered browser conversation, and one real-device voice pass where credentials and a spend ceiling are explicitly provided.
+- [ ] 4.2 Run focused tests, lint, OpenSpec validation, public canary, rendered browser conversation, and one real-device voice pass only after that test universe already has a compatible user-bound voice resource. Do not request a separate key or budget merely to satisfy this task.
 - [ ] 4.3 Obtain opposite-provider implementation review, document staged rollout/monitoring/kill-switch evidence, sync specs, and archive only after the change lands.

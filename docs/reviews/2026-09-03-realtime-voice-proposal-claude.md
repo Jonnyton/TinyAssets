@@ -2,6 +2,11 @@
 
 Date: 2026-09-03
 
+> Superseded in part by the founder's later 2026-09-03 authority correction. This review approved
+> the earlier proposal shape; it does not approve the revised subscription-compatibility finding,
+> capability-status route, or locked-resource UI. See
+> `docs/reviews/2026-09-03-realtime-voice-authority-correction-review.md`.
+
 Environment: read-only Claude Sonnet 5 peer in `codex/first-class-voice` at the proposal gate. The peer wrapper's stop hook replaced the saved final message with an unrelated dispatch-ledger tail; this review was recovered verbatim from the same Claude session transcript (`b4fb91f6-48f3-4fc0-84df-10b4e7bb373f`), where it appears as the completed pre-hook answer.
 
 **AGREE** — `converse` remains sole primary writer (Hard Rule 3, PLAN.md:263-275). `realtime-voice-conversation/spec.md:33-44` and `universe-personification-and-relay/spec.md:3-15` both force every spoken turn through `MCP.converse` exactly once and explicitly refuse to store/render an untooled Realtime answer. `provider-routing/spec.md:3-21` blocks the voice allowance from making API-key writers eligible even when `TINYASSETS_ALLOW_REALTIME_VOICE_API` is on. This is the correct shape and matches how the existing text path already refuses non-founder callers (`universe-personification-and-relay/spec.md:125`), so voice's founder-home-only resolution (design.md:44) isn't an invented restriction — it mirrors the current model.

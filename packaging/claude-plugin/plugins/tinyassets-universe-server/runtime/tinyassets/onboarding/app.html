@@ -216,14 +216,29 @@
          aria-labelledby="voice-disclosure-title" hidden>
       <div class="voice-dialog-card">
         <h2 id="voice-disclosure-title">Before voice starts</h2>
-        <p>Your microphone audio goes directly to OpenAI for live speech. OpenAI API charges
-        apply to the API credential connected to your universe, separately from ChatGPT or
-        Codex subscriptions. TinyAssets keeps the words you send and your universe's text reply
-        in this conversation, but does not store the raw audio. OpenAI's API retention controls
-        still apply.</p>
+        <p>Voice will use the compatible OpenAI Realtime resource you bound to this universe.
+        Your microphone audio goes directly to OpenAI for live speech, and any API use belongs
+        to that resource's account. TinyAssets never substitutes a shared credential. TinyAssets
+        keeps the words you send and your universe's text reply in this conversation, but does
+        not store the raw audio. OpenAI's API retention controls still apply.</p>
         <div class="voice-dialog-actions">
           <button id="btn-voice-cancel" class="btn btn--link" type="button">Not now</button>
           <button id="btn-voice-accept" class="btn btn--primary" type="button">Continue</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="voice-unlock" class="voice-dialog" role="dialog" aria-modal="true"
+         aria-labelledby="voice-unlock-title" hidden>
+      <div class="voice-dialog-card">
+        <h2 id="voice-unlock-title">Voice needs a compatible connection</h2>
+        <p>Your current ChatGPT or Codex subscription can keep powering your universe, but
+        OpenAI does not currently document that sign-in as authorization for Realtime audio.</p>
+        <p>Voice can unlock when this universe has a compatible user-owned subscription,
+        a voice credential you choose to bind, or a supported local voice resource. TinyAssets
+        will not substitute a shared account or move your conversation to another writer.</p>
+        <div class="voice-dialog-actions">
+          <button id="btn-voice-unlock-close" class="btn btn--primary" type="button">Keep typing</button>
         </div>
       </div>
     </div>
@@ -1092,6 +1107,8 @@
   // actual words still come from MCP.converse through sendVoiceTurn below.
   const VOICE_LABELS={
     unavailable:"Voice is not enabled on this TinyAssets host.",
+    checking:"Checking this universe's voice capability...",
+    locked:"Voice needs a compatible resource owned by this universe.",
     idle:"Voice ready.", requesting_permission:"Waiting for microphone permission...",
     connecting:"Connecting voice...", listening:"Listening...",
     thinking:"Your universe is thinking...", speaking:"Your universe is speaking...",
@@ -1099,6 +1116,7 @@
   };
   const VOICE_TRANSITIONS={
     unavailable:{enable:"idle"},
+    locked:{enable:"idle"},
     idle:{start:"requesting_permission"},
     requesting_permission:{permission_granted:"connecting",permission_denied:"error",failure:"error",stop:"idle"},
     connecting:{connected:"listening",disconnect:"reconnecting",failure:"error",stop:"idle"},
@@ -1119,8 +1137,8 @@
   }
   function voiceFriendlyError(code){
     const messages={
-      voice_openai_credential_required:"Connect an OpenAI API credential to this universe before using voice.",
-      voice_openai_credential_rejected:"OpenAI rejected this universe's API credential.",
+      voice_compatible_resource_required:"Voice is locked. Connect a compatible user-owned voice resource to this universe to unlock it. The current ChatGPT or Codex subscription route does not provide documented Realtime audio authorization.",
+      voice_openai_credential_rejected:"OpenAI rejected this universe's bound voice resource.",
       voice_provider_rate_limited:"OpenAI voice is rate-limited right now. Try again shortly.",
       voice_session_rate_limited:"Too many voice connections were opened. Wait a minute and try again.",
       voice_permission_denied:"Microphone permission was denied. Typed chat still works.",
@@ -1134,29 +1152,61 @@
   }
   const Voice={
     state:"unavailable", pc:null, dc:null, stream:null, audio:null,
+    capability:null,
     stopTimer:null, warnTimer:null, reconnecting:false, reconnectAttempts:0,
     epoch:0, handledCalls:new Set(), expectedReply:"", canonicalResponsePending:false,
     canonicalResponseInterrupted:false,
     init(){
       const enabled=!!(CFG.voice&&CFG.voice.enabled);
-      this.state=enabled?"idle":"unavailable";
+      this.state=enabled?"checking":"unavailable"; this.capability=null;
       const btn=$("btn-voice");
-      btn.disabled=!enabled;
-      btn.title=enabled?"Start a voice conversation":VOICE_LABELS.unavailable;
+      btn.disabled=true;
+      btn.title=enabled?"Checking this universe's voice capability":VOICE_LABELS.unavailable;
       this._render();
     },
     _render(detail){
-      const btn=$("btn-voice"), active=!(["unavailable","idle","error"].includes(this.state));
+      const btn=$("btn-voice"), active=!(["unavailable","checking","locked","idle","error"].includes(this.state));
+      const locked=this.state==="locked";
+      if(locked){btn.disabled=false;btn.title=VOICE_LABELS.locked;}
+      else if(this.state==="idle"||this.state==="error"){btn.disabled=false;btn.title="Start a voice conversation";}
+      else{btn.disabled=true;btn.title=VOICE_LABELS[this.state]||"Voice unavailable";}
       btn.setAttribute("aria-pressed",active?"true":"false");
-      btn.setAttribute("aria-label",active?"Stop voice conversation":"Start voice conversation");
-      btn.textContent=active?"Stop":"Voice";
+      btn.setAttribute("aria-label",locked?"Voice requires a compatible resource":(active?"Stop voice conversation":"Start voice conversation"));
+      btn.textContent=locked?"Voice · Connect":(active?"Stop":"Voice");
       setStatusLine(detail||VOICE_LABELS[this.state]||"");
     },
     _event(event,detail){ this.state=voiceNextState(this.state,event); this._render(detail); },
     _accepted(){ try{return localStorage.getItem(voiceDisclosureKey())==="accepted";}catch(_e){return false;} },
-    requestStart(){
+    _showUnlock(){
+      this.returnFocus=document.activeElement;
+      $("voice-unlock").hidden=false; $("btn-voice-unlock-close").focus();
+      this._render(voiceFriendlyError(this.capability&&this.capability.reason));
+    },
+    closeUnlock(){
+      $("voice-unlock").hidden=true;
+      const target=this.returnFocus&&typeof this.returnFocus.focus==="function"
+        ?this.returnFocus:$("btn-voice");
+      target.focus(); this.returnFocus=null;
+    },
+    async refreshCapability(){
+      if(!(CFG.voice&&CFG.voice.enabled)){this.capability={available:false,state:"disabled",reason:"voice_disabled"};this.state="unavailable";this._render();return false;}
+      try{
+        await ensureFreshToken();
+        let response=await fetch("/mcp/app/voice/status",{credentials:"same-origin",headers:authHeaders()});
+        if(response.status===401 && await refreshAccessToken()) response=await fetch("/mcp/app/voice/status",{credentials:"same-origin",headers:authHeaders()});
+        let doc={};try{doc=await response.json();}catch(_e){}
+        if(!response.ok) throw new Error(doc.error||"voice_status_failed");
+        this.capability=doc;
+        this.state=doc.available?"idle":(doc.state==="disabled"?"unavailable":"locked");
+        this._render(doc.available?undefined:voiceFriendlyError(doc.reason));
+        return !!doc.available;
+      }catch(_error){this.capability=null;this.state="checking";this._render("Voice capability could not be confirmed. Typed chat still works.");return false;}
+    },
+    async requestStart(){
       if(this.state==="unavailable") return this._render();
+      if(this.state==="locked"&&!await this.refreshCapability()) return this._showUnlock();
       if(!["idle","error"].includes(this.state)){ this.stop(); return; }
+      if(!await this.refreshCapability()) return;
       if(!this._accepted()){
         this.returnFocus=document.activeElement;
         $("voice-disclosure").hidden=false; $("btn-voice-accept").focus(); return;
@@ -1318,8 +1368,9 @@
     stop(announce=true,detail){
       this.epoch++;this.reconnecting=false;this.reconnectAttempts=0;
       this.canonicalResponsePending=false;this.canonicalResponseInterrupted=false;
+      $("voice-disclosure").hidden=true;$("voice-unlock").hidden=true;this.returnFocus=null;
       this.expectedReply="";this._teardownTransport();
-      this.state=(CFG.voice&&CFG.voice.enabled)?"idle":"unavailable";
+      this.state=this.capability&&this.capability.available?"idle":(this.capability&&this.capability.state==="locked"?"locked":((CFG.voice&&CFG.voice.enabled)?"checking":"unavailable"));
       if(announce) this._render(detail); else this._render("");
     },
     fail(error){
@@ -1707,6 +1758,7 @@
     }
     engineConnected = true;
     showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus();
+    Voice.refreshCapability();
     loadPlan();
     loadHistory();
   }
@@ -2138,6 +2190,10 @@
     $("btn-voice").addEventListener("click",()=>Voice.requestStart());
     $("btn-voice-accept").addEventListener("click",()=>Voice.acceptDisclosure());
     $("btn-voice-cancel").addEventListener("click",()=>Voice.cancelDisclosure());
+    $("btn-voice-unlock-close").addEventListener("click",()=>Voice.closeUnlock());
+    $("voice-unlock").addEventListener("keydown",event=>{
+      if(event.key==="Escape"){event.preventDefault();Voice.closeUnlock();}
+    });
     $("voice-disclosure").addEventListener("keydown",event=>{
       if(event.key==="Escape"){ event.preventDefault(); Voice.cancelDisclosure(); return; }
       if(event.key!=="Tab") return;

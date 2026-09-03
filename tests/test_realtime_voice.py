@@ -85,6 +85,33 @@ def _drive(
     return response.status_code, json.loads(response.body or b"{}"), dict(response.headers)
 
 
+def _drive_status(*, identity=None) -> tuple[int, dict, dict]:
+    from starlette.requests import Request
+
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.onboarding import onboarding_routes
+
+    route = next(r for r in onboarding_routes() if r.path == "/mcp/app/voice/status")
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/mcp/app/voice/status",
+            "headers": [(b"host", b"tinyassets.test")],
+            "query_string": b"",
+        }
+    )
+
+    async def run():
+        if identity is None:
+            return await route.endpoint(request)
+        with identity_context(identity):
+            return await route.endpoint(request)
+
+    response = asyncio.run(run())
+    return response.status_code, json.loads(response.body or b"{}"), dict(response.headers)
+
+
 def test_voice_requires_both_independent_flags(monkeypatch):
     for app_flag, api_flag, expected in (
         ("", "", False),
@@ -115,7 +142,7 @@ def test_public_config_contains_no_secret(monkeypatch):
         "enabled": True,
         "model": "gpt-realtime-2.1",
         "calls_url": "https://api.openai.com/v1/realtime/calls",
-        "disclosure_version": 1,
+        "disclosure_version": 2,
         "max_session_seconds": 1800,
     }
     assert "sk-ambient" not in json.dumps(config)
@@ -132,6 +159,33 @@ def test_session_policy_requires_only_the_converse_tool():
         "eagerness": "medium",
         "create_response": True,
         "interrupt_response": True,
+    }
+
+
+def test_capability_is_locked_without_a_user_bound_compatible_resource(
+    monkeypatch, tmp_path: Path
+):
+    _enable(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-ambient-forbidden")
+    import tinyassets.credential_vault as vault
+
+    monkeypatch.setattr(vault, "resolve_llm_api_key", lambda *_: "")
+    assert rv.voice_capability(tmp_path) == {
+        "available": False,
+        "state": "locked",
+        "reason": "voice_compatible_resource_required",
+    }
+
+
+def test_capability_is_ready_only_for_bound_resource(monkeypatch, tmp_path: Path):
+    _enable(monkeypatch)
+    import tinyassets.credential_vault as vault
+
+    monkeypatch.setattr(vault, "resolve_llm_api_key", lambda *_: "sk-user-bound")
+    assert rv.voice_capability(tmp_path) == {
+        "available": True,
+        "state": "ready",
+        "resource": "user_bound_openai_api_credential",
     }
 
 
@@ -158,7 +212,7 @@ def test_missing_owner_key_never_uses_ambient_or_network(monkeypatch, tmp_path: 
             )
         )
     assert (caught.value.code, caught.value.status) == (
-        "voice_openai_credential_required",
+        "voice_compatible_resource_required",
         409,
     )
     assert seen == {"path": tmp_path, "env_var": "OPENAI_API_KEY"}
@@ -359,3 +413,45 @@ def test_route_missing_home_is_actionable(monkeypatch):
         409,
         {"error": "no_home_universe"},
     )
+
+
+def test_status_route_is_authenticated_secret_free_and_locked(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    _enable(monkeypatch)
+    import tinyassets.credential_vault as vault
+    import tinyassets.onboarding as onboarding
+
+    monkeypatch.setattr(onboarding, "_read_home", lambda _identity: "u-owner-home")
+    monkeypatch.setattr(vault, "resolve_llm_api_key", lambda *_: "")
+    assert _drive_status()[:2] == (401, {"error": "authentication_required"})
+    status, body, headers = _drive_status(identity=_owner())
+    assert status == 200
+    assert body == {
+        "available": False,
+        "state": "locked",
+        "reason": "voice_compatible_resource_required",
+    }
+    assert headers["cache-control"] == "no-store"
+    assert "credential" not in json.dumps(body)
+
+
+def test_status_route_reports_ready_without_returning_bound_secret(
+    monkeypatch, tmp_path: Path
+):
+    monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    _enable(monkeypatch)
+    import tinyassets.credential_vault as vault
+    import tinyassets.onboarding as onboarding
+
+    monkeypatch.setattr(onboarding, "_read_home", lambda _identity: "u-owner-home")
+    monkeypatch.setattr(vault, "resolve_llm_api_key", lambda *_: "sk-bound-secret")
+    status, body, _headers = _drive_status(identity=_owner())
+    assert status == 200
+    assert body == {
+        "available": True,
+        "state": "ready",
+        "resource": "user_bound_openai_api_credential",
+    }
+    assert "sk-bound-secret" not in json.dumps(body)
