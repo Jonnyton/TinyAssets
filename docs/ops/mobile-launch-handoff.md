@@ -83,7 +83,7 @@ release into one `gh workflow run` — but nothing waits on it.
 
 ## Apple App Store
 
-**The Apple Account cannot yet be created, so the Developer Program cannot be enrolled.**
+**The Apple Account is created and signed in; Developer Program enrollment is next.**
 Checked 2026-09-03, not assumed: the official form accepted every field but returned only
 "Your account cannot be created at this time." No field-specific validation or new Apple
 email appeared, and Apple System Status reported Apple Account services available. That
@@ -92,8 +92,10 @@ Apple Support then reported making an unspecified change on its side and asked f
 new creation attempt. After the account holder retried, the browser reached the signed-in
 Apple Account **Sign-In & Security** page and showed two-factor authentication with a
 trusted phone number. Account creation is complete. Apple Developer Program enrollment,
-payment, and agreement acceptance have not begun. The support chat remains preserved;
-do not send another message without action-time approval.
+payment, and agreement acceptance have not begun. The account holder confirmed the
+account result and closed the completed support chat. The enrollment flow is preserved at
+the Apple Developer Agreement with **Agree** untouched; accepting that agreement, identity
+confirmation, and membership payment remain account-holder actions.
 
 What is ready, stated precisely — the gap here is wider than "just enrol":
 

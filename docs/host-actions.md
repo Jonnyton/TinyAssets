@@ -269,8 +269,8 @@ region, locked-account, or device-limit cause. Apple Support then reported makin
 unspecified change on its side and asked for one new creation attempt. After the account
 holder retried, the browser reached the signed-in Apple Account **Sign-In & Security**
 page and showed two-factor authentication with a trusted phone number. Account creation
-is therefore complete. The active support chat remains preserved; do not send a new
-support message without action-time approval.
+is therefore complete. The account holder confirmed that result and closed the completed
+Apple Support chat.
 
 Everything autonomous on the iOS build side is staged — the Capacitor platform,
 `tinyassets://` URL-scheme patch, native TinyAssets artwork, unsigned compile-check,
@@ -278,12 +278,15 @@ manual signed-IPA workflow, opt-in TestFlight upload, and listing/App-Privacy co
 None of it can produce an installable app without account-owned signing material.
 
 1. **Complete — Apple Account created and verified (2026-09-03).** The signed-in account
-   page shows two-factor authentication and a trusted phone number. No Apple Developer
-   Program enrollment, payment, or agreement acceptance has begun.
+   page shows two-factor authentication and a trusted phone number. The Developer Program
+   flow is staged at the Apple Developer Agreement; its **Agree** action is untouched.
 
-2. **Enroll**: https://developer.apple.com/programs/enroll/ — $99/year, and identity
-   verification usually takes a day or two, sometimes longer. **Start this first**, because
-   the waiting is the long pole and it runs in parallel with everything else.
+2. **Enroll**: review and accept the staged Apple Developer Agreement, then continue the
+   official enrollment flow at https://developer.apple.com/programs/enroll/. Agreement
+   acceptance, identity confirmation, and the $99/year membership purchase are account-
+   holder actions. Identity verification usually takes a day or two, sometimes longer.
+   **Start this first**, because the waiting is the long pole and it runs in parallel with
+   everything else.
 3. Register the explicit App ID and App Store Connect app record for `io.tinyassets.app`,
    accepting any current Apple agreement presented to the account holder.
 4. Create the Apple Distribution certificate + matching App Store Connect provisioning
