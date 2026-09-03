@@ -88,3 +88,16 @@ def test_the_rule_is_about_any_channel_not_just_github(channel):
     """The founder said GitHub because it was in front of them, and then said
     'nor should any other spasific channel code excist'."""
     assert channel in _module().CHANNELS
+
+
+@pytest.mark.parametrize(
+    "vendor", ["openai", "chatgpt", "anthropic", "claude", "ollama", "openrouter"]
+)
+def test_the_same_rule_covers_compute(vendor):
+    """Founder, same day: "the llm's the universe has access to ... all
+    agnostic shapes. we shouldnt have a chatgpt spacific path."
+
+    `connect_compute` already promises exactly that in its own contract -- ANY
+    compute provider, no per-provider code, no allowlist -- so the count is the
+    distance between the promise and the tree."""
+    assert vendor in _module().VENDORS

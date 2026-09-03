@@ -58,6 +58,20 @@ CHANNELS = (
     "notion", "shopify", "slack", "stripe", "twilio", "twitter",
 )
 
+#: The same rule for COMPUTE. Founder, 2026-09-03: "the llm's the universe has
+#: access to ... all agnostic shapes. we shouldnt have a chatgpt spacific path.
+#: the request popup that comes up if your universe isnt powered should allow
+#: the user to connect any llm source they want to thier universe."
+#:
+#: `connect_compute` already promises this in its own contract -- "ANY compute
+#: provider (Kimi, OpenRouter, any OpenAI-compatible endpoint, or a CLI
+#: subscription) ... no per-provider code, no allowlist" -- so what this counts
+#: is the distance between that promise and the tree.
+VENDORS = (
+    "anthropic", "chatgpt", "claude", "codex", "gemini", "grok", "groq",
+    "kimi", "mistral", "ollama", "openai", "openrouter",
+)
+
 #: The platform acting as itself, not as a user's substrate. See the module
 #: docstring: listed by name so the exemption is visible.
 PLATFORM_OWN = {
@@ -105,9 +119,9 @@ def survey() -> Counter:
             continue
         for text in runtime_strings(path):
             low = text.lower()
-            for channel in CHANNELS:
-                if channel in low:
-                    counts[(rel, channel)] += 1
+            for name in (*CHANNELS, *VENDORS):
+                if name in low:
+                    counts[(rel, name)] += 1
                     break
     return counts
 
