@@ -116,6 +116,14 @@ The dated evidence, smoke-test matrix, Android-vitals thresholds, track progress
 and first-release/update rollback plans live in
 [`android-release-verification.md`](android-release-verification.md).
 
+The next candidate also carries a dormant native microphone bridge for the
+first-class voice lane. It requests `RECORD_AUDIO` only after a web request from the
+exact production origin and a native disclosure/Continue tap, grants audio capture
+only, and tears capture down when the app backgrounds. **Do not enable the web voice
+flag, mention voice in the listing, or change Data safety answers until the internal
+phone matrix in the verification sheet is green.** Presence of the permission is not
+evidence that capture works or that audio is collected.
+
 ---
 
 ## 2. Generate the upload keystore (once, keep it secret)

@@ -31,3 +31,18 @@ merged-manifest candidates. Final focused result after adaptation: **16 passed**
 
 The operational P1 is closed by run `33812526724`. Signing, Play upload, policy
 submission, and rollout remain deliberately outside this review and change.
+
+## Later voice-native reconciliation
+
+After that verdict, the voice lane requested a native Android microphone slice on
+this branch. It adds `RECORD_AUDIO`, an exact-origin/audio-only WebView permission
+handler, a native Continue gesture before every grant, runtime permission handling,
+and background capture teardown. That later authority-sensitive diff is **not covered
+by the `ADAPT` verdict above**.
+
+On 2026-09-03, `scripts/peer_agent.py claude` failed before review output, and a
+direct `claude -p --safe-mode --permission-mode plan --model fable` retry reported
+that the Claude subscription had reached its monthly spend limit. Therefore this
+slice may be built and exercised in the draft PR, but the repository's independent
+cross-family landing gate remains open. Device proof and Play Data safety comparison
+also remain open; voice flags and store copy must stay off until both are closed.

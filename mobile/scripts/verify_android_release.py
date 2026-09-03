@@ -126,6 +126,7 @@ def verify_manifest(path: Path, release: AndroidRelease, *, merged: bool) -> Non
         "android.permission.INTERNET",
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
+        "android.permission.RECORD_AUDIO",
         f"{release.app_id}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",
     }
     unexpected = sorted(str(item) for item in permissions - allowed)
@@ -203,13 +204,31 @@ def verify_sources(mobile: Path, release: AndroidRelease) -> None:
     if not str(server.get("url", "")).startswith("https://"):
         raise ValueError("Capacitor server.url must be HTTPS")
 
-    for name in ("LocalCallbackPlugin.java", "LocalCallbackService.java"):
+    for name in (
+        "LocalCallbackPlugin.java",
+        "LocalCallbackService.java",
+        "VoiceWebChromeClient.java",
+    ):
         text = (mobile / "native/android" / name).read_text(encoding="utf-8")
         if not re.search(rf"^package\s+{re.escape(release.app_id)};", text, re.MULTILINE):
             raise ValueError(f"{name} package differs from {release.app_id}")
     plugin = (mobile / "native/android/LocalCallbackPlugin.java").read_text(encoding="utf-8")
     if f"package={release.app_id};end" not in plugin:
         raise ValueError("LocalCallbackPlugin intent package differs from release identity")
+    voice = (mobile / "native/android/VoiceWebChromeClient.java").read_text(encoding="utf-8")
+    safeguards = (
+        'TRUSTED_SCHEME = "https"',
+        'TRUSTED_HOST = "tinyassets.io"',
+        "PermissionRequest.RESOURCE_AUDIO_CAPTURE",
+        "resources.length == 1",
+        "activity.hasWindowFocus()",
+        "ActivityCompat.requestPermissions",
+        "Manifest.permission.RECORD_AUDIO",
+        "track.stop()",
+    )
+    missing = [item for item in safeguards if item not in voice]
+    if missing:
+        raise ValueError(f"VoiceWebChromeClient is missing release safeguards: {missing}")
 
 
 def verify_generated_java(mobile: Path, release: AndroidRelease) -> None:
@@ -219,7 +238,15 @@ def verify_generated_java(mobile: Path, release: AndroidRelease) -> None:
         raise ValueError("generated MainActivity package differs from release identity")
     if "registerPlugin(LocalCallbackPlugin.class)" not in main:
         raise ValueError("generated MainActivity did not register LocalCallbackPlugin")
-    for name in ("LocalCallbackPlugin.java", "LocalCallbackService.java"):
+    if "new VoiceWebChromeClient(bridge, this)" not in main:
+        raise ValueError("generated MainActivity did not install VoiceWebChromeClient")
+    if "voiceChromeClient.stopCapture(bridge.getWebView())" not in main:
+        raise ValueError("generated MainActivity does not stop microphone capture on pause")
+    for name in (
+        "LocalCallbackPlugin.java",
+        "LocalCallbackService.java",
+        "VoiceWebChromeClient.java",
+    ):
         source = mobile / "native/android" / name
         generated = package_dir / name
         if not generated.is_file() or _sha256(generated) != _sha256(source):

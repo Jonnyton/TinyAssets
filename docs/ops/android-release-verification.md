@@ -10,7 +10,7 @@ monitoring, and rollback shape.
 | Claim | Evidence | State |
 |---|---|---|
 | Generated app identity and SDK | Main run `33797592515`, commit `8b8e8a59`; downloaded `app-debug.apk` SHA-256 `5baadde6f09c0afcfcc34a0ccdc76613d3744280d7865abe05c6012bc548689e`; Android build-tools 36 `aapt dump badging` reports `io.tinyassets.app`, version `1 (1.0)`, min SDK 24, target/compile SDK 36 | Verified |
-| Compiled permissions | The same APK declares Internet, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC`, plus AndroidX's app-scoped signature permission; no camera, microphone, location, contacts, storage, advertising-id, SMS, or call-log permission | Verified |
+| Compiled permissions | Baseline APK `5baadde6...` declares Internet and foreground-service permissions but no microphone. The next candidate intentionally adds `RECORD_AUDIO` together with the native safeguards below; it still declares no camera, location, contacts, storage, advertising-id, SMS, or call-log permission | Baseline verified; candidate CI + device proof required |
 | Internal testing release | Repository handoff records Play release `1 (1.0)`, 3.1 MB, published 2026-09-03 11:10 and available to invited testers at the recorded opt-in link | Store receipt recorded; authenticated Console re-check unavailable because the browser automation bridge timed out twice on 2026-09-03 |
 | Release CI | Draft PR run `33812526724`, commit `d61b0a95`, succeeded on GitHub's Ubuntu runner on 2026-09-03: clean generation, release configuration/verification, `lintRelease bundleRelease`, real merged-manifest verification, and bundle location all passed. The ancestry/signing/upload steps were skipped on the PR by design. No green signed release-workflow run exists yet | Unsigned build verified; authorized signed run remains open |
 | Clean native generation | From a worktree with no generated `mobile/android/`, `npm ci --ignore-scripts --no-audit --no-fund`, `cap add android`, `cap sync android`, scheme/icon installation, release configuration, and `verify_android_release.py` completed on Windows on 2026-09-03 | Verified; full Gradle build remains a CI gate |
@@ -31,26 +31,24 @@ post-generation hardening now forces backup and cleartext traffic off, and the
 release verifier checks the source and merged release manifests. This change still
 needs a green CI artifact before it can replace the baseline evidence above.
 
-### Pending voice-branch compatibility gate
+### First-class voice native gate
 
-The separately owned first-class voice branch has declared Android-native work that
-is not in this candidate. The current permission allowlist deliberately rejects
-`RECORD_AUDIO`, so microphone access cannot be added as an accidental manifest-only
-change. If voice reaches the shared `/mcp/app` before this Android candidate ships,
-either hide/disable that control in Android or land all of these together before a
-bundle is accepted:
+The next Android candidate includes the native half of first-class voice while the
+web voice flag and store copy remain off. `VoiceWebChromeClient` denies every origin
+except normalized `https://tinyassets.io` on the default HTTPS port, denies camera or
+mixed-resource requests, and grants only WebView audio capture. A web-initiated
+request first shows a native disclosure; only the user's **Continue** tap opens the
+Android runtime microphone prompt. Active tracked media streams stop in `onPause`,
+and pending requests are denied in `onStop`/destroy. The release verifier requires
+that implementation and rejects any permission outside the explicit allowlist.
 
-- a pre-capture disclosure followed by Android's runtime microphone request;
-- a WebView permission handler that accepts only the exact
-  `https://tinyassets.io` origin, grants only audio capture, and denies every other
-  resource/origin;
-- capture teardown when the app backgrounds; and
-- a fresh Play Data safety comparison for voice/sound recordings and any canonical
-  text retained or sent to providers.
-
-Re-run the source, merged-manifest, device, and Play-disclosure gates after that
-integration. Do not loosen the permission allowlist before the native behavior and
-disclosure are present.
+This is build evidence, not device proof. Keep the web voice control/flag and Play
+voice copy dark until a real internal-test phone proves prompt ordering, denial,
+record/stop, Home/app-switch teardown, screen-lock teardown, and return-to-app state.
+Before enabling voice, compare the real data flow against Play Data safety for
+voice/sound recordings and for canonical text retained or sent to providers. Then
+replace the candidate evidence above with `aapt` output from the exact signed AAB/APK
+and a dated device result.
 
 ## Reproducible release inputs
 

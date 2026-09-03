@@ -28,6 +28,8 @@ PLUGIN_SRC = MOBILE / "native/android/LocalCallbackPlugin.java"
 PLUGIN_DST = JAVA_PKG_DIR / "LocalCallbackPlugin.java"
 SERVICE_SRC = MOBILE / "native/android/LocalCallbackService.java"
 SERVICE_DST = JAVA_PKG_DIR / "LocalCallbackService.java"
+VOICE_CHROME_SRC = MOBILE / "native/android/VoiceWebChromeClient.java"
+VOICE_CHROME_DST = JAVA_PKG_DIR / "VoiceWebChromeClient.java"
 
 # The loopback listener's keep-alive: a dataSync foreground service. Android 14+
 # requires the type in the manifest, and Play requires a matching Console
@@ -37,9 +39,11 @@ SERVICE_XML = """        <service
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 """
-PERMISSIONS_XML = """    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-"""
+REQUIRED_PERMISSIONS = (
+    "android.permission.FOREGROUND_SERVICE",
+    "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
+    "android.permission.RECORD_AUDIO",
+)
 
 FILTER = """            <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
@@ -64,13 +68,17 @@ MAIN_ACTIVITY_SRC = r"""package io.tinyassets.app;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
+import android.webkit.WebView;
 
 import com.getcapacitor.BridgeActivity;
+import com.getcapacitor.WebViewListener;
 
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class MainActivity extends BridgeActivity {
+    private VoiceWebChromeClient voiceChromeClient;
+
     // A shared OAuth callback URL (from the browser tab's Share button after a
     // failed localhost redirect). Only the loopback callback shape is accepted;
     // its query (code + state) is re-issued as the app's own deep link, which
@@ -96,13 +104,57 @@ public class MainActivity extends BridgeActivity {
         // Local (non-npm) plugin: the loopback OAuth catcher. Must be registered
         // before super.onCreate() loads the bridge.
         registerPlugin(LocalCallbackPlugin.class);
+        bridgeBuilder.addWebViewListener(new WebViewListener() {
+            @Override
+            public void onPageLoaded(WebView webView) {
+                VoiceWebChromeClient.installMediaTracker(webView);
+            }
+        });
         setIntent(rewriteSharedCallback(getIntent()));
         super.onCreate(savedInstanceState);
+        if (bridge != null) {
+            voiceChromeClient = new VoiceWebChromeClient(bridge, this);
+            bridge.getWebView().setWebChromeClient(voiceChromeClient);
+        }
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(rewriteSharedCallback(intent));
+    }
+
+    @Override
+    protected void onPause() {
+        if (voiceChromeClient != null && bridge != null) {
+            voiceChromeClient.stopCapture(bridge.getWebView());
+        }
+        super.onPause();
+    }
+
+    @Override
+    protected void onStop() {
+        if (voiceChromeClient != null && bridge != null) {
+            voiceChromeClient.stopCaptureAndDeny(bridge.getWebView());
+        }
+        super.onStop();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (voiceChromeClient != null && bridge != null) {
+            voiceChromeClient.stopCaptureAndDeny(bridge.getWebView());
+        }
+        super.onDestroy();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        boolean handled = voiceChromeClient != null
+            && voiceChromeClient.onRequestPermissionsResult(requestCode, permissions, results);
+        if (handled) {
+            return;
+        }
+        super.onRequestPermissionsResult(requestCode, permissions, results);
     }
 }
 """
@@ -174,13 +226,15 @@ def register_service() -> int:
             return 1
         text = text.replace(marker, SERVICE_XML + "    " + marker, 1)
         changed = True
-    if "FOREGROUND_SERVICE_DATA_SYNC" not in text:
-        marker = "</manifest>"
-        if marker not in text:
-            print("no </manifest> in manifest", file=sys.stderr)
-            return 1
-        text = text.replace(marker, PERMISSIONS_XML + marker, 1)
-        changed = True
+    marker = "</manifest>"
+    if marker not in text:
+        print("no </manifest> in manifest", file=sys.stderr)
+        return 1
+    for permission in REQUIRED_PERMISSIONS:
+        if f'android:name="{permission}"' not in text:
+            declaration = f'    <uses-permission android:name="{permission}" />\n'
+            text = text.replace(marker, declaration + marker, 1)
+            changed = True
     if changed:
         MANIFEST.write_text(text, encoding="utf-8")
         print("registered LocalCallbackService + foreground-service permissions")
@@ -190,13 +244,16 @@ def register_service() -> int:
 
 
 def install_plugin() -> int:
-    for src in (PLUGIN_SRC, SERVICE_SRC):
+    for src in (PLUGIN_SRC, SERVICE_SRC, VOICE_CHROME_SRC):
         if not src.exists():
             print(f"plugin source missing: {src}", file=sys.stderr)
             return 1
     JAVA_PKG_DIR.mkdir(parents=True, exist_ok=True)
-    PLUGIN_DST.write_text(PLUGIN_SRC.read_text(encoding="utf-8"), encoding="utf-8")
-    SERVICE_DST.write_text(SERVICE_SRC.read_text(encoding="utf-8"), encoding="utf-8")
+    # Preserve bytes so the release verifier's source hash stays stable on both
+    # Windows and Linux regardless of newline translation.
+    PLUGIN_DST.write_bytes(PLUGIN_SRC.read_bytes())
+    SERVICE_DST.write_bytes(SERVICE_SRC.read_bytes())
+    VOICE_CHROME_DST.write_bytes(VOICE_CHROME_SRC.read_bytes())
     current = MAIN_ACTIVITY.read_text(encoding="utf-8") if MAIN_ACTIVITY.exists() else ""
     if current == MAIN_ACTIVITY_SRC:
         print("MainActivity already current")
