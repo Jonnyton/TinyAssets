@@ -98,16 +98,15 @@ next host-actions pass.
 
 ## Blocking a proof path
 
-### claude.ai account out of credits — blocks the browser `ui-test` route
+### Claude subscription spend limit — blocks Claude-family review and browser `ui-test`
 
-*2026-08-25 22:18Z: composer disabled, "monthly spend limit … out of credits"; weekly reset
-2026-08-28 19:00 PDT.*
+*Reverified 2026-09-03: two `peer_agent.py claude` review dispatches exited 1, and a
+minimal direct diagnostic reported that the monthly spend limit was reached.*
 
-Raise the limit, **or** test via the desktop app — Electron over the live SPA, CDP-testable, and it
-runs on the founder's own deposited subscription rather than the metered account.
-
-`ui-test` is the final acceptance path for chatbot-facing changes (`AGENTS.md` § *Quality Gates*),
-so this blocks acceptance, not just convenience.
+Raise or reset the Claude usage limit. Until then, Codex-authored public-surface changes
+cannot obtain the required opposite-family review, and the claude.ai browser route cannot
+provide final rendered-chat acceptance. The desktop app remains available for supporting
+SPA checks, but it does not replace either required gate.
 
 ---
 
@@ -281,12 +280,11 @@ None of it can produce an installable app without account-owned signing material
    page shows two-factor authentication and a trusted phone number. The account holder
    also accepted the Apple Developer Agreement and declined optional developer-news email.
 
-2. **Complete — enrollment submitted and membership purchased (2026-09-03).** The account
-   holder completed personal information and Secure Checkout; Apple shows the order-
-   confirmation page. The signed-in developer portal currently shows **Pending** and says
-   the purchase may take up to 48 hours to process. Do not click **complete your purchase**
-   again or submit a duplicate charge. Wait for activation before creating signing or App
-   Store Connect credentials.
+2. **Complete — enrollment purchased and membership activated (2026-09-03).** The account
+   holder completed personal information and Secure Checkout. The signed-in developer portal
+   now shows program resources, a Team ID, and a 2027 renewal date. The Apple Developer
+   Program License Agreement and Apple Developer Agreement both show accepted on 2026-09-03.
+   No signing assets or App Store Connect API credentials have been created.
 3. Register the explicit App ID and App Store Connect app record for `io.tinyassets.app`,
    accepting any current Apple agreement presented to the account holder.
 4. Create the Apple Distribution certificate + matching App Store Connect provisioning

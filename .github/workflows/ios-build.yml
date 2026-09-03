@@ -59,6 +59,7 @@ jobs:
           python3 scripts/add_ios_scheme.py
           grep -q "<string>tinyassets</string>" ios/App/App/Info.plist
           grep -q "<key>NSMicrophoneUsageDescription</key>" ios/App/App/Info.plist
+          grep -q "<key>ITSAppUsesNonExemptEncryption</key>" ios/App/App/Info.plist
 
       - name: Install the app icon + splash (fail closed on template drift)
         working-directory: mobile

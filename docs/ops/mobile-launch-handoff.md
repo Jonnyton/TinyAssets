@@ -83,32 +83,26 @@ release into one `gh workflow run` — but nothing waits on it.
 
 ## Apple App Store
 
-**The Apple Account is created and signed in; Developer Program enrollment is next.**
-Checked 2026-09-03, not assumed: the official form accepted every field but returned only
-"Your account cannot be created at this time." No field-specific validation or new Apple
-email appeared, and Apple System Status reported Apple Account services available. That
-does not identify a phone, region, account-state, device-limit, or browser/network cause.
-Apple Support then reported making an unspecified change on its side and asked for one
-new creation attempt. After the account holder retried, the browser reached the signed-in
-Apple Account **Sign-In & Security** page and showed two-factor authentication with a
-trusted phone number. Account creation is complete. Apple Developer Program enrollment,
-payment, and identity confirmation are not complete. The account holder confirmed the
-account result, closed the completed support chat, accepted the Apple Developer Agreement,
-and declined optional developer-news email. The account holder then completed **Confirm
-your personal information** and Secure Checkout. Apple now shows the order-confirmation
-page, so enrollment submission and membership purchase are complete. Membership activation
-is not complete: the signed-in developer portal shows **Pending** and says the purchase may
-take up to 48 hours to process. Do not click **complete your purchase** again or risk a
-duplicate charge. No signing or App Store Connect credentials have been created.
+**Apple Developer Program membership is active.** Checked 2026-09-03, not inferred from
+the purchase receipt: the signed-in portal exposes App Store Connect and Certificates,
+IDs & Profiles, and shows a Team ID plus a 2027 renewal date. The Apple Developer Program
+License Agreement and Apple Developer Agreement both show accepted on 2026-09-03. No
+signing assets or App Store Connect API credentials have been created. The next portal steps are the
+explicit App ID and App Store Connect record; the exact values and confirmation boundaries
+are in `docs/ops/app-store-submission-packet.md`.
 
 What is ready, stated precisely — the gap here is wider than "just enrol":
 
 - The Capacitor iOS platform, the `tinyassets://` URL-scheme patch, and the listing
-  and App-Privacy copy in `docs/ops/app-store-launch.md`.
+  and App-Privacy copy in `docs/ops/app-store-launch.md`. The complete Apple-specific
+  metadata, privacy/age/export drafts, screenshot manifest, smoke checklist, and portal
+  sequence are in `docs/ops/app-store-submission-packet.md`.
 - The generated `Info.plist` now includes the exact microphone purpose string for
   the incoming realtime-voice slice. Voice remains dark: a physical-iPhone run must
   prove background/stop release, and App Privacy must be re-evaluated against the
   provider retention configuration before a voice-enabled build can be submitted.
+- The generated `Info.plist` declares `ITSAppUsesNonExemptEncryption = false`; the
+  current shell uses only exempt OS-provided HTTPS/TLS and no custom cryptography.
 - `ios-build.yml` compiles green on `macos-15` runners, including after the Capacitor 8
   upgrade. `ios-release.yml` now adds the manual, fail-closed signed archive: a verified
   IPA artifact by default and an explicit opt-in App Store Connect/TestFlight upload.

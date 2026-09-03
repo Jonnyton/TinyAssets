@@ -11,8 +11,10 @@ Bundle id: **`io.tinyassets.app`** (matches `mobile/capacitor.config.json`
 
 > **Picking this up cold? Read [`mobile-launch-handoff.md`](mobile-launch-handoff.md)
 > first.** This file is the procedure; that one is where both platforms actually
-> stand. The short version for iOS: nothing here can ship until the founder enrols
-> in the Apple Developer Program, and that is the long pole.
+> stand. The short version for iOS: Apple Developer Program membership activated
+> on 2026-09-03; App ID and App Store Connect setup are now the next gate.
+> The copy-ready form answers, asset manifest, smoke checklist, and exact portal
+> sequence live in [`app-store-submission-packet.md`](app-store-submission-packet.md).
 
 ---
 
@@ -20,8 +22,8 @@ Bundle id: **`io.tinyassets.app`** (matches `mobile/capacitor.config.json`
 
 | Step | Action | Where |
 |---|---|---|
-| Account | Enroll in the **Apple Developer Program** ($99/year). | https://developer.apple.com/programs/enroll/ |
-| Payment | Authorize the $99/yr fee. | during enrollment |
+| Account | **Complete 2026-09-03:** Apple Developer Program membership active. | developer.apple.com/account |
+| Payment | **Complete 2026-09-03:** annual membership purchase confirmed. | Apple Online Store |
 | App record | Register the explicit App ID and create the App Store Connect app record for `io.tinyassets.app` before any upload. Accept any current agreement Apple presents. | developer.apple.com / App Store Connect |
 | Signing assets | Create an Apple Distribution certificate + App Store Connect provisioning profile for `io.tinyassets.app`, and an **App Store Connect API key** for CI upload. Provide them as Actions secrets (§3). | developer.apple.com / App Store Connect |
 | Identity/tax/banking | Complete Apple's identity + (for paid apps) tax/banking. This app is free → tax/banking optional. | App Store Connect |
@@ -103,6 +105,10 @@ but does not select it for an App Store version or submit it for review.
 
 ## 4. App Store listing content (copy-paste)
 
+The complete copy-ready metadata, including description, internal SKU, version,
+privacy choices URL, copyright, review notes, age-rating draft, and export answer,
+is in [`app-store-submission-packet.md`](app-store-submission-packet.md).
+
 Reuse the Play content in `google-play-launch.md` §4 verbatim where it fits:
 
 - **Name:** `TinyAssets`
@@ -145,6 +151,9 @@ answers shown in App Store Connect before submission.
 ---
 
 ## 6. Screenshots (App Store Connect requires per device size)
+
+The ordered capture contract and accepted 6.9-inch pixel sizes are committed at
+[`app-store-assets/screenshot-manifest.json`](app-store-assets/screenshot-manifest.json).
 
 - iPhone 6.7" (or 6.9") screenshots, captured from the app (sign-in, a universe
   conversation, the Connect view). The two committed Play captures under
@@ -201,14 +210,16 @@ and [unavailability procedure](https://developer.apple.com/help/app-store-connec
 - [x] iOS platform wired into the Capacitor project (`add:ios`/`sync:ios` scripts, `@capacitor/ios` dep)
 - [x] `tinyassets://` URL scheme patch (`scripts/add_ios_scheme.py`)
 - [x] Microphone purpose staged in generated `Info.plist` (voice remains dark)
+- [x] Exempt OS-provided HTTPS/TLS export declaration staged in generated `Info.plist`
 - [ ] Voice: physical-iPhone background/stop proof + privacy re-evaluation
 - [x] CI compile-check (`ios-build.yml`)
 - [x] Native TinyAssets icon/splash install, with template-drift checks
 - [x] Manual signed IPA + opt-in TestFlight workflow (`ios-release.yml`)
 - [x] Listing content + App Privacy answers (§4, §5)
+- [x] Apple-specific metadata, age-rating/export drafts, screenshot manifest, and device checklist
 - [x] Founder: Apple Developer Program enrollment + $99 (§0)
-- [ ] Apple: membership activation (portal shows Pending; allow up to 48 hours)
-- [ ] Founder: App ID + App Store Connect app record + current agreements (§0)
+- [x] Apple: membership activated; portal shows Team ID and renewal date (2026-09-03)
+- [ ] Founder: App ID + App Store Connect app record (§0); current displayed agreements are accepted
 - [x] Protected `app-store` environment: founder approval + `main` only (§3)
 - [ ] Founder: signing assets / API key stored in `app-store` (§3)
 - [ ] Screenshots captured (§6)

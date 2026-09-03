@@ -13,6 +13,9 @@ REPO = Path(__file__).resolve().parents[1]
 MOBILE = REPO / "mobile"
 BUILD_WORKFLOW = REPO / ".github" / "workflows" / "ios-build.yml"
 RELEASE_WORKFLOW = REPO / ".github" / "workflows" / "ios-release.yml"
+SCREENSHOT_MANIFEST = (
+    REPO / "docs" / "ops" / "app-store-assets" / "screenshot-manifest.json"
+)
 
 
 def _load_asset_installer():
@@ -130,6 +133,8 @@ def test_ios_configuration_installer_adds_release_keys_idempotently(
     assert first.count("<string>tinyassets</string>") == 1
     assert first.count("<key>NSMicrophoneUsageDescription</key>") == 1
     assert first.count(f"<string>{installer.MICROPHONE_PURPOSE}</string>") == 1
+    assert first.count("<key>ITSAppUsesNonExemptEncryption</key>") == 1
+    assert "<key>ITSAppUsesNonExemptEncryption</key>\n\t<false/>" in first
 
     assert installer.install_configuration(info_plist) == 0
     assert info_plist.read_text(encoding="utf-8") == first
@@ -152,10 +157,50 @@ def test_ios_configuration_installer_rejects_conflicting_microphone_copy(
     assert "Unexpected copy" in info_plist.read_text(encoding="utf-8")
 
 
+def test_ios_configuration_installer_rejects_non_exempt_encryption_declaration(
+    tmp_path: Path,
+) -> None:
+    installer = _load_configuration_installer()
+    info_plist = tmp_path / "Info.plist"
+    info_plist.write_text(
+        "<plist>\n<dict>\n"
+        "<key>ITSAppUsesNonExemptEncryption</key>\n"
+        "<true/>\n"
+        "</dict>\n</plist>\n",
+        encoding="utf-8",
+    )
+
+    assert installer.install_configuration(info_plist) == 1
+    assert "<true/>" in info_plist.read_text(encoding="utf-8")
+
+
 def test_ios_workflows_verify_microphone_purpose_key() -> None:
     expected = 'grep -q "<key>NSMicrophoneUsageDescription</key>"'
     assert expected in BUILD_WORKFLOW.read_text(encoding="utf-8")
     assert expected in RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+
+def test_ios_workflows_verify_export_compliance_key() -> None:
+    expected = 'grep -q "<key>ITSAppUsesNonExemptEncryption</key>"'
+    assert expected in BUILD_WORKFLOW.read_text(encoding="utf-8")
+    assert expected in RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+
+def test_app_store_screenshot_manifest_is_an_honest_ios_capture_contract() -> None:
+    manifest = json.loads(SCREENSHOT_MANIFEST.read_text(encoding="utf-8"))
+    assert manifest["platform"] == "iOS"
+    assert 1 <= manifest["minimum_count"] <= manifest["maximum_count"] <= 10
+    assert manifest["alpha_allowed"] is False
+    assert set(manifest["accepted_pixel_sizes"]) == {
+        "1320x2868",
+        "1290x2796",
+        "1260x2736",
+    }
+    assert len(manifest["shots"]) == 5
+    assert all(shot["status"] == "blocked_until_ios_capture" for shot in manifest["shots"])
+    rules = " ".join(manifest["capture_rules"])
+    assert "actual iOS app" in rules
+    assert "Do not resize or frame Android screenshots" in rules
 
 
 def test_ios_release_is_manual_and_upload_is_opt_in() -> None:

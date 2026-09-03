@@ -29,7 +29,7 @@ export default function AccountPage() {
         <span className="eyebrow">Deleting your account</span>
       </div>
       <p>
-        You can delete your account yourself, in any of the apps — web, Android or desktop. It takes
+        You can delete your account yourself, in any of the apps — web, iOS, Android or desktop. It takes
         effect immediately and cannot be undone.
       </p>
       <ol>
