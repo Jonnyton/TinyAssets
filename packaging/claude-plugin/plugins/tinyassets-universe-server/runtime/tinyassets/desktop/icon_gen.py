@@ -296,26 +296,39 @@ def _place(points, transform):
 # --------------------------------------------------------------------------
 
 
-def _clip_mask(px: int, tile: bool) -> Image.Image:
+def _clip_mask(px: int, tile: bool, radius: float | None = None) -> Image.Image:
     k = px / VIEWBOX
     mask = Image.new("L", (px, px), 0)
     d = ImageDraw.Draw(mask)
     if tile:
-        d.rounded_rectangle([0, 0, px - 1, px - 1], radius=TILE_RADIUS * k, fill=255)
+        r = TILE_RADIUS if radius is None else radius
+        d.rounded_rectangle([0, 0, px - 1, px - 1], radius=r * k, fill=255)
     else:
         d.ellipse([(DISC_CX - DISC_R) * k, (DISC_CY - DISC_R) * k,
                    (DISC_CX + DISC_R) * k, (DISC_CY + DISC_R) * k], fill=255)
     return mask
 
 
-def draw_mark(size: int = 64, tile: bool = False) -> Image.Image:
-    """Render the badge at ``size`` px. ``tile`` squares it off for an app icon."""
+def draw_mark(
+    size: int = 64, tile: bool = False, radius: float | None = None
+) -> Image.Image:
+    """Render the badge at ``size`` px. ``tile`` squares it off for an app icon.
+
+    ``radius`` overrides the tile's corner rounding (ignored unless ``tile``).
+    Pass ``0`` for a full-bleed square, which is what the **App Store** requires:
+    Apple applies its own corner mask, so an icon that arrives already rounded on
+    a contrasting ground renders double-masked with dark wedges in the corners.
+    Android and the web want the default rounding, so this is an override rather
+    than a change of default.
+    """
     if size < 8:
         raise ValueError("mark size must be at least 8 px")
+    if radius is not None and radius < 0:
+        raise ValueError("radius must not be negative")
     size = int(size)
     px = size * _SUPERSAMPLE
     k = px / VIEWBOX
-    clip = _clip_mask(px, tile)
+    clip = _clip_mask(px, tile, radius)
     img = Image.new("RGBA", (px, px), (0, 0, 0, 0))
 
     for layer in EMBLEM:

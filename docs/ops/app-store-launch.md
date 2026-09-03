@@ -122,14 +122,12 @@ Mirror the Play Data-safety answers (`google-play-launch.md` §6):
 - iPhone 6.7" (or 6.9") screenshots, ≥3 — captured from the app (sign-in, a
   universe conversation, the Connect view). Same procedure as
   `google-play-launch.md` §10; staged in `docs/ops/play-assets/screenshots/`.
-- App icon: 1024×1024 — **do not upload `mobile/resources/icon.png` as-is.** It is the
-  right size and has no alpha, but it has the brand badge's rounded corners baked in,
-  and Apple requires a full-bleed square (it applies its own mask, so a pre-rounded
-  icon renders double-masked with dark wedges). A square variant has to be rendered
-  from `assets/icon.svg` with `rx="0"`, which is a brand call because it reveals art
-  the badge currently crops. Detail and evidence:
-  `docs/concerns/2026-09-03-app-store-icon-has-baked-rounded-corners.md`.
-  The rounding is correct for Android and the web, so only the Apple asset changes.
+- App icon: **`docs/ops/app-store-assets/icon-1024.png`** — square, opaque, ready to
+  upload. **Do not substitute `mobile/resources/icon.png`**: same size and also
+  alpha-free, but it carries the badge's rounded corners, and Apple applies its own
+  mask, so it renders double-masked with dark wedges in the corners. Re-render with
+  `WebSite/brand/render_marks.py` when the mark changes. Android and the web keep the
+  rounding, which is right for them.
 
 ---
 
@@ -169,6 +167,7 @@ Mirror the Play Data-safety answers (`google-play-launch.md` §6):
 - [ ] Screenshots captured (§6). The Play captures are 1080×1920 (9:16) and **cannot be
       resized** for Apple, which wants ~19.5:9 (1290×2796); they need re-capturing at the
       iPhone aspect against a signed-in app.
-- [ ] **Square 1024×1024 App Store icon** (§6) — the existing one is pre-rounded and
-      Apple would reject or double-mask it; see the concern file.
+- [x] **Square 1024×1024 App Store icon** — `docs/ops/app-store-assets/icon-1024.png`,
+      rendered 2026-09-03. The previously documented source was pre-rounded, which Apple
+      double-masks.
 - [ ] Build uploaded → TestFlight verified → submitted (§7)

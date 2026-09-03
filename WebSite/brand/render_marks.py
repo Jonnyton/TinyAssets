@@ -35,6 +35,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
+from PIL import Image  # noqa: E402  (after the sys.path insert above)
+
 from tinyassets.desktop import icon_gen  # noqa: E402
 from tinyassets.desktop.icon_gen import draw_mark, generate_icon, mark_svg  # noqa: E402
 
@@ -42,6 +44,7 @@ BRAND = REPO / "WebSite" / "brand"
 SITE_PUBLIC = REPO / "WebSite" / "site-react" / "public"
 SITE_COMPONENT = REPO / "WebSite" / "site-react" / "components" / "TinyAssetsMark.tsx"
 ASSETS = REPO / "assets"
+APP_STORE_ASSETS = REPO / "docs" / "ops" / "app-store-assets"
 DESKTOP_BUILD = REPO / "desktop-app" / "build"
 TRAY_ICO = REPO / "tinyassets" / "desktop" / "app.ico"
 APP_HTML = REPO / "tinyassets" / "onboarding" / "app.html"
@@ -174,6 +177,25 @@ def _png(path: Path, size: int, tile: bool) -> None:
     print(f"{path.relative_to(REPO).as_posix()} {size}x{size}")
 
 
+def _app_store_icon(path: Path) -> None:
+    """The App Store's 1024² marketing icon: square, opaque, no alpha.
+
+    Three of Apple's rules bite at once here and none of them match the rest of
+    the brand. The icon must be a full-bleed SQUARE — Apple applies its own
+    corner mask, so shipping the rounded badge renders double-masked with dark
+    wedges — and it must carry NO alpha channel, where every other surface we
+    export is RGBA. So this is the one output that overrides the tile radius and
+    flattens onto the badge's own background colour. Android and the web keep the
+    rounding, which is correct for them.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    art = draw_mark(1024, tile=True, radius=0)
+    flat = Image.new("RGB", art.size, icon_gen.SKY)
+    flat.paste(art, mask=art.getchannel("A"))
+    flat.save(path, optimize=True)
+    print(f"{path.relative_to(REPO).as_posix()} 1024x1024 square/no-alpha")
+
+
 def _ico(path: Path, sizes: tuple[int, ...]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     images = [draw_mark(s, tile=True) for s in sizes]
@@ -219,6 +241,9 @@ def main() -> int:
     _write(ASSETS / "brand" / "tinyassets-logo-icon.svg", tile_svg)
     _png(ASSETS / "brand" / "tinyassets-logo-mark.png", 512, tile=False)
     _write(ASSETS / "brand" / "tinyassets-logo-mark.svg", bare_svg)
+
+    # App Store listing icon — the one square, alpha-free export (see the helper).
+    _app_store_icon(APP_STORE_ASSETS / "icon-1024.png")
 
     # Desktop (electron-builder picks build/icon.* up by convention).
     _png(DESKTOP_BUILD / "icon.png", 512, tile=True)
