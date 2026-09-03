@@ -270,3 +270,94 @@ def test_constructor_rejects_non_api_key_http() -> None:
     )
     with pytest.raises(ValueError):
         ApiKeyHttpProvider(bad)
+
+
+# --------------------------------------------------------------------------- #
+# The user's own endpoint path.
+#
+# A compute connection registered through the app's "connect any LLM" pane
+# allowlists exactly the URL the user typed. Calling the protocol's canonical
+# path instead makes the broker refuse every endpoint whose path is not the
+# canonical one -- registerable, never servable (Codex, connect-any-llm P1).
+# --------------------------------------------------------------------------- #
+
+
+def _seed_single_path(base: Path, path: str, *, owner: str = "founder",
+                      universe: str = "u-x") -> None:
+    from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
+
+    ledger = ConnectionLedger(
+        base / "outbound.db", verify_authenticated_principal=lambda: owner
+    )
+    ledger.create_connection(
+        connection_id=_CONN_ID,
+        owner_user_id=owner,
+        connection_class="http",
+        connection_type="http",
+        auth_scheme="bearer",
+        scopes=("http",),
+        provider="http",
+        destination="compute:test",
+        credential_ref="vault://http/compute:test",
+        allowed_endpoints=[{"host": _HOST, "path_template": path, "methods": ["POST"]}],
+    )
+    ledger.grant_connection(
+        grant_id=_GRANT_ID,
+        connection_id=_CONN_ID,
+        owner_user_id=owner,
+        universe_id=universe,
+        unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
+    )
+
+
+def _ok_proxy() -> "_FakeProxy":
+    return _FakeProxy({
+        "status": 200,
+        "body": json.dumps({
+            "choices": [{"message": {"content": "hi"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }),
+    })
+
+
+def test_a_custom_granted_path_is_the_path_called(base: Path) -> None:
+    _seed_single_path(base, "/custom/chat")
+    proxy = _ok_proxy()
+    _run(ApiKeyHttpProvider(_definition(), proxy_override=proxy), base / "u-x")
+
+    _verb, wire = proxy.calls[0]
+    assert wire["url"] == "https://api.example.com/custom/chat", (
+        "the user's granted path was ignored in favour of the protocol default"
+    )
+
+
+def test_a_templated_path_is_not_treated_as_concrete() -> None:
+    """A placeholder is not a concrete path; guessing a substitution would be worse.
+
+    The ledger refuses a placeholder without `param_patterns`, so this guards the
+    selector directly rather than through a connection it cannot seed.
+    """
+    from tinyassets.providers.api_key_http_provider import _declared_path
+
+    templated = SimpleNamespace(allowed_endpoints=[
+        SimpleNamespace(host=_HOST, path_template="/v1/{model}/chat"),
+    ])
+    assert _declared_path(templated) == ""
+
+    concrete = SimpleNamespace(allowed_endpoints=[
+        SimpleNamespace(host=_HOST, path_template="/custom/chat"),
+    ])
+    assert _declared_path(concrete) == "/custom/chat"
+
+    none_declared = SimpleNamespace(allowed_endpoints=[])
+    assert _declared_path(none_declared) == ""
+
+
+def test_several_declared_paths_fall_back_to_the_protocol_path(base: Path) -> None:
+    """The two-endpoint connection the other tests use must not change behaviour."""
+    _seed(base)
+    proxy = _ok_proxy()
+    _run(ApiKeyHttpProvider(_definition(), proxy_override=proxy), base / "u-x")
+
+    _verb, wire = proxy.calls[0]
+    assert wire["url"] == "https://api.example.com/v1/chat/completions"

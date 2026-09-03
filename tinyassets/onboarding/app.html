@@ -390,7 +390,8 @@
               <input id="endpoint-model" type="text" placeholder="the model id your provider documents" autocomplete="off">
             </label>
             <label class="field"><span>API key</span>
-              <textarea id="endpoint-key" rows="2" placeholder="Your API key for that endpoint"></textarea>
+              <input id="endpoint-key" type="password" autocomplete="off" spellcheck="false"
+                     placeholder="Your API key for that endpoint">
             </label>
           </div>
 
@@ -1966,6 +1967,11 @@
       const protocol=$("endpoint-protocol").value;
       const model=$("endpoint-model").value.trim();
       const keyEl=$("endpoint-key"), key=keyEl.value.trim();
+      // Capture and clear FIRST, before any validation can return. Clearing only
+      // on the success path left the key sitting in the DOM (and restorable from
+      // browser history) whenever the URL was malformed or not https -- the exact
+      // inputs a user retypes most.
+      keyEl.value="";
       if(!name||!url||!model||!key){
         out.textContent="Name, endpoint URL, model and API key are all needed.";
         return null;
@@ -1977,7 +1983,6 @@
         out.textContent="The endpoint must be https, so your key is never sent in the clear.";
         return null;
       }
-      keyEl.value="";   // clear the secret from the DOM BEFORE any await
       out.textContent="Depositing securely...";
       const deposit=await MCP.connectHTTP(name,key,[{
         host:parsed.host,
@@ -2003,27 +2008,31 @@
       return ref;
     }
 
+    // Deposit -> register -> point the universe at it. A NAMED function, not an
+    // inline branch of the click handler, so the chain can be executed in a test:
+    // deleting the inline version left every source-text pin green.
+    async function connectEndpointFlow(out,btn){
+      btn.disabled=true;
+      try{
+        const ref=await depositEndpoint(out);
+        if(ref){
+          out.textContent="Registered. Pointing your universe at it...";
+          const sv=await serveOn(ref);
+          out.textContent=servingSentence($("endpoint-name").value.trim()||ref, sv);
+          if(sv&&sv.status==="serving") onEngineConnected();
+        }
+      }catch(err){
+        if(err.authRequired){ btn.disabled=false; return enterSignedOut(); }
+        out.textContent="Connect failed: "+err.message;
+      }finally{ btn.disabled=false; }
+    }
+
     $("btn-deposit").addEventListener("click",async()=>{
       const service=$("connect-service").value, out=$("connect-result");
       const materialEl=$("connect-material"), material=materialEl.value.trim(), btn=$("btn-deposit");
       out.hidden=false;
 
-      if(service==="__endpoint__"){
-        btn.disabled=true;
-        try{
-          const ref=await depositEndpoint(out);
-          if(ref){
-            out.textContent="Registered. Pointing your universe at it...";
-            const sv=await serveOn(ref);
-            out.textContent=servingSentence($("endpoint-name").value.trim()||ref, sv);
-            if(sv&&sv.status==="serving") onEngineConnected();
-          }
-        }catch(err){
-          if(err.authRequired){ btn.disabled=false; return enterSignedOut(); }
-          out.textContent="Connect failed: "+err.message;
-        }finally{ btn.disabled=false; }
-        return;
-      }
+      if(service==="__endpoint__"){ await connectEndpointFlow(out,btn); return; }
 
       if(!material){ out.textContent="Enter your subscription credential first."; return; }
       materialEl.value="";  // clear the secret from the DOM BEFORE any await, on every path

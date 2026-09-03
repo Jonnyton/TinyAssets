@@ -8,6 +8,7 @@ rendered page and run under node with a recording `fetch`.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 
@@ -40,7 +41,17 @@ def _extract() -> str:
     parts = [_function_source(html, n) for n in
              ("serveOn", "serviceLabel", "unservedCandidates", "healServing")]
     assert "let servingHealAttempted = false;" in html
-    return "let servingHealAttempted = false;\n" + "\n".join(parts)
+    # `serviceLabel` reads a module-level lookup rather than being a self-contained
+    # ternary (the connect-any-LLM lane: anything that is not one of the two
+    # subscription CLIs IS its own name). Lift the table with it, or the extracted
+    # bundle throws ReferenceError before a single assertion runs.
+    labels = re.search(r"^\s*const SERVICE_LABELS=.*?;$", html, re.M)
+    assert labels is not None, "SERVICE_LABELS is gone; serviceLabel cannot resolve"
+    return (
+        "let servingHealAttempted = false;\n"
+        + labels.group(0).strip() + "\n"
+        + "\n".join(parts)
+    )
 
 
 _HARNESS = r"""

@@ -206,35 +206,24 @@ def ensure_founder_serving(
     if not owner or owner == "anonymous" or not uid:
         return {"status": "held", "reason": "authentication_required"}
     with _gesture_lock(uid):
-        try:
-            return _ensure_founder_serving_locked(
-                base, universe_dir=universe_dir, owner=owner, uid=uid,
-                provider=provider,
-            )
-        except PermissionError as exc:
-            # A compute connection that is not this owner's, in this universe.
-            # `_open_serving_context` is the authority and it said no; say so
-            # rather than raising through a route that reports deposits.
-            return {
-                "status": "held",
-                "reason": "provider_not_yours",
-                "detail": str(exc),
-                "provider": provider,
-            }
-        except ValueError as exc:
-            # A name that is neither an alias nor a registered connection.
-            return {
-                "status": "held",
-                "reason": "unknown_provider",
-                "detail": str(exc),
-                "provider": provider,
-            }
+        # `_ensure_founder_serving_locked` classifies and RETURNS; it does not
+        # raise. The provider_not_yours / unknown_provider handlers that used to
+        # sit here could never fire, because its own broad catches ran first.
+        return _ensure_founder_serving_locked(
+            base, universe_dir=universe_dir, owner=owner, uid=uid,
+            provider=provider,
+        )
 
 
 def _ensure_founder_serving_locked(
     base: Path, *, universe_dir: str | Path, owner: str, uid: str, provider: str,
 ) -> dict[str, Any]:
-    from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
+    from tinyassets.provider_serving_binding import (
+        ServingProviderNotOwned,
+        UnknownServingProvider,
+        bind_serving_provider,
+        set_serving,
+    )
 
     try:
         _require_current_admin(base, universe_id=uid, owner=owner)
@@ -271,6 +260,19 @@ def _ensure_founder_serving_locked(
             "provider": provider,
             "agent_binding_id": final["agent_binding_id"],
             "revision": int(final["revision"]),
+        }
+    except ServingProviderNotOwned as exc:
+        # Classified BEFORE the broad catches below: they used to swallow both of
+        # these into provider_authority_denied / binding_invalid, which made the
+        # documented provider_not_yours + unknown_provider contract dead code.
+        return {
+            "status": "held", "reason": "provider_not_yours",
+            "detail": str(exc), "provider": provider,
+        }
+    except UnknownServingProvider as exc:
+        return {
+            "status": "held", "reason": "unknown_provider",
+            "detail": str(exc), "provider": provider,
         }
     except PermissionError as exc:
         return {"status": "held", "reason": "provider_authority_denied", "detail": str(exc)}
