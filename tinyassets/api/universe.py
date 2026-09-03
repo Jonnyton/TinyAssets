@@ -3541,8 +3541,16 @@ def _shorten(value: Any, max_chars: int) -> str:
     return text[: max(0, max_chars - 15)].rstrip() + "\n...[truncated]"
 
 
-def _github_repo() -> str:
-    return os.environ.get("TINYASSETS_GITHUB_REPO", "Jonnyton/TinyAssets")
+def _github_repo(explicit: str = "") -> str:
+    """The repository this read is about, from the CALLER or the deployment.
+
+    Never a literal. This used to default to the platform's own repository, so a
+    user asking their universe for change-loop context silently got the
+    founder's repo instead of theirs -- the "hidden constant" half of tiny's
+    row-5 criterion (2026-09-03): *no platform code path that assumes one named
+    repo*. An empty answer is honest; the caller reports it.
+    """
+    return (explicit or os.environ.get("TINYASSETS_GITHUB_REPO", "")).strip()
 
 
 def _github_get_json(
@@ -3677,6 +3685,7 @@ def _action_community_change_context(
     *,
     filter_text: str = "",
     limit: int = 10,
+    repo: str = "",
     **_kwargs: Any,
 ) -> str:
     """Read-only community change-loop context for chatbot review.
@@ -3688,7 +3697,17 @@ def _action_community_change_context(
       reviews.
     - "issue:NUMBER": issue metadata and recent comments.
     """
-    repo = _github_repo()
+    repo = _github_repo(repo)
+    if not repo:
+        return json.dumps({
+            "kind": "community_change_context",
+            "error": "no repository named",
+            "detail": (
+                "Name the repository: repo=\"owner/name\". This surface reads one "
+                "repository and the platform does not pick one for you. (A "
+                "deployment may set a default in its environment.)"
+            ),
+        })
     selector = (filter_text or "").strip().lower()
     try:
         n_limit = max(1, min(int(limit or 10), 25))
