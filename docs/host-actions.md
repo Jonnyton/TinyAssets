@@ -240,25 +240,6 @@ row; if yes, the concern above is the prerequisite.
 
 ## Credentials and accounts
 
-### Google Play: verify the contact phone number — BLOCKS EVERYTHING ELSE
-
-**Observed in the Play Console 2026-09-02.** `Create app` is greyed out with a padlock and
-"Complete account verifications to create new apps". The one outstanding verification is
-the contact phone number: `+12067997835` is on file but carries no verification tick, while
-both email addresses do. Until it is verified, no app can be created, so no listing, no
-upload, no internal test and no rollout can happen — the whole launch is behind this.
-
-Only you can do it: Google sends a code by SMS or voice call to that phone, and I cannot
-read it. Roughly a minute:
-
-1. https://play.google.com/console/u/0/developers/8089695267825659874/account
-2. **Contact details** → check the number is right → **Verify**
-3. Choose SMS or call, enter the code, **Verify**
-
-The `Create app` button un-greys once it goes through. Tell me and I will take the launch
-from there. (Earlier notes recorded "identity verified 2026-08-24" — that was a *different*
-verification; the phone step is separate and still open.)
-
 ### Google Play: `WORKOS_API_KEY` reaches the daemon — VERIFIED 2026-09-02, nothing for you
 
 Account deletion removes the user's WorkOS record through the management API, and that
@@ -405,9 +386,9 @@ What remains after the secrets, and who does it (`docs/ops/google-play-launch.md
 | Content rating (IARC) | **done** 2026-09-02 — Everyone / PEGI 3 |
 | Data safety | answered, **saved as a draft**; cannot submit until Target audience is done |
 | Internal-testing tester list | **done** — "Founder devices" attached to the track |
-| Build the signed AAB | agent, locally in a container, or in CI once the secrets exist |
-| Internal-testing release: upload the AAB, roll out | agent |
-| Verify the loop on a real phone (install from the internal-test link, sign in, chat) | **you** |
+| Build the signed AAB | **done** 2026-09-03 — built and signed in the container (`mobile/container/`), no secret needed |
+| Internal-testing release: upload the AAB, roll out | **done** 2026-09-03 11:10 — release `1 (1.0)`, track Active, 3.1 MB |
+| Verify the loop on a real phone (install from the internal-test link, sign in, chat) | **you — this is the live one.** Opt-in on the founder's Google account: https://play.google.com/apps/internaltest/4701716760893982267 |
 | Sign in details → Target audience → Data safety submit | blocked on the reviewer account above |
 | Closed test: 12 testers for 14 days, then apply for production access | **you** |
 | Promote to Production → submit for review → **Roll out** | you (final click) |
