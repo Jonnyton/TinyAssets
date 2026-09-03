@@ -96,21 +96,41 @@ jobs:
       # step a correctly signed TinyAssets build reaches TestFlight showing
       # Capacitor's blue placeholder. Fails closed: an asset set that did not
       # actually change is a silent regression to the placeholder.
-      - name: Install the app icon (or the build ships Capacitor's placeholder)
+      # Two separate ways this ships a wrong-looking app, both silent:
+      #   1. `cap add ios` writes Capacitor's blue placeholder icon and nothing
+      #      replaced it, so a correctly signed build reaches TestFlight wearing it.
+      #   2. Apple reads the App Store icon out of the asset catalog INSIDE the
+      #      uploaded build, not from separately uploaded listing metadata. So the
+      #      catalog has to be generated from the SQUARE source: resources/icon.png
+      #      is the rounded badge, and Apple masks it again, leaving dark wedges in
+      #      the corners. Staging a square PNG anywhere the build does not read
+      #      would have changed nothing (Codex, 2026-09-03).
+      - name: Install the app icon from the square iOS source
         working-directory: mobile
         run: |
           set -euo pipefail
           appicon="ios/App/App/Assets.xcassets/AppIcon.appiconset"
-          before="$(find "$appicon" -type f -name '*.png' -exec md5 -q {} + 2>/dev/null | sort | md5 -q || echo none)"
+
+          # capacitor-assets reads resources/icon.png. The checkout is ephemeral,
+          # so swap in the iOS source rather than teaching it a second path.
+          cp resources/icon-ios.png resources/icon.png
+          want="$(shasum -a 256 < resources/icon-ios.png | cut -d' ' -f1)"
+          got="$(shasum -a 256 < resources/icon.png | cut -d' ' -f1)"
+          if [ "$want" != "$got" ]; then
+            echo "::error::icon source swap did not take — refusing to build a rounded icon"
+            exit 1
+          fi
+          echo "icon source is the square iOS asset ($want)"
+
+          before="$(find "$appicon" -type f -name '*.png' -exec shasum -a 256 {} + 2>/dev/null | sort | shasum -a 256 || echo none)"
           npx --no-install capacitor-assets generate --ios
-          after="$(find "$appicon" -type f -name '*.png' -exec md5 -q {} + 2>/dev/null | sort | md5 -q || echo none)"
+          after="$(find "$appicon" -type f -name '*.png' -exec shasum -a 256 {} + 2>/dev/null | sort | shasum -a 256 || echo none)"
           if [ "$before" = "$after" ]; then
             echo "::error::capacitor-assets did not change $appicon — the build would ship the placeholder icon"
             exit 1
           fi
-          # A 1024 marketing icon must exist for App Store Connect to accept the build.
           find "$appicon" -name '*.png' | head -5
-          echo "app icon installed from mobile/resources/icon.png"
+          echo "app icon installed from the square source"
 
       # The certificate password reaches `security import` through argv, which is
       # not ideal and cannot be avoided: unlike keytool's `-storepass:env`, the

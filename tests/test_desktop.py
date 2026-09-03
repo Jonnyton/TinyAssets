@@ -714,6 +714,23 @@ class TestIconGen:
         with pytest.raises(ValueError):
             draw_mark(64, tile=True, radius=-1)
 
+    def test_radius_without_tile_is_refused(self):
+        """`draw_mark(1024, radius=0)` must not quietly return the disc.
+
+        `tile` defaults to False, so that call reads as "give me the square app
+        icon" and would otherwise produce the circular, transparent-cornered badge
+        — reintroducing the exact double-masking defect the parameter exists to
+        fix. Silently ignoring the argument is the trap.
+        """
+        from tinyassets.desktop.icon_gen import draw_mark
+
+        with pytest.raises(ValueError, match="tile=True"):
+            draw_mark(1024, radius=0)
+        with pytest.raises(ValueError):
+            draw_mark(64, tile=False, radius=13)
+        # The plain disc still works when no radius is asked for.
+        assert draw_mark(64, tile=False).size == (64, 64)
+
     def test_generate_icon_creates_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             out = Path(tmpdir) / "test.ico"

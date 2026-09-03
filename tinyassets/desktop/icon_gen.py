@@ -314,17 +314,30 @@ def draw_mark(
 ) -> Image.Image:
     """Render the badge at ``size`` px. ``tile`` squares it off for an app icon.
 
-    ``radius`` overrides the tile's corner rounding (ignored unless ``tile``).
-    Pass ``0`` for a full-bleed square, which is what the **App Store** requires:
-    Apple applies its own corner mask, so an icon that arrives already rounded on
-    a contrasting ground renders double-masked with dark wedges in the corners.
+    ``radius`` overrides the tile's corner rounding, in **viewBox units** (the
+    canvas is ``VIEWBOX`` = 64 across, and the default is ``TILE_RADIUS`` = 13);
+    values at or above half the viewBox all saturate to the same mask. Pass ``0``
+    for a full-bleed square, which is what the **App Store** requires: Apple
+    applies its own corner mask, so an icon that arrives already rounded on a
+    contrasting ground renders double-masked with dark wedges in the corners.
     Android and the web want the default rounding, so this is an override rather
     than a change of default.
+
+    It is an error to pass ``radius`` with ``tile=False``. ``tile`` defaults to
+    False, so ``draw_mark(1024, radius=0)`` reads as a request for the square icon
+    and would otherwise return the *circular, transparent-cornered* disc — quietly
+    reintroducing the exact defect the parameter exists to fix (Codex, 2026-09-03).
     """
     if size < 8:
         raise ValueError("mark size must be at least 8 px")
-    if radius is not None and radius < 0:
-        raise ValueError("radius must not be negative")
+    if radius is not None:
+        if not tile:
+            raise ValueError(
+                "radius applies to the tile mask; pass tile=True "
+                "(draw_mark(size, tile=True, radius=0) is the square app icon)"
+            )
+        if radius < 0:
+            raise ValueError("radius must not be negative")
     size = int(size)
     px = size * _SUPERSAMPLE
     k = px / VIEWBOX

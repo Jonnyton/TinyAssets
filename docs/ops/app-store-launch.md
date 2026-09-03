@@ -122,12 +122,13 @@ Mirror the Play Data-safety answers (`google-play-launch.md` §6):
 - iPhone 6.7" (or 6.9") screenshots, ≥3 — captured from the app (sign-in, a
   universe conversation, the Connect view). Same procedure as
   `google-play-launch.md` §10; staged in `docs/ops/play-assets/screenshots/`.
-- App icon: **`docs/ops/app-store-assets/icon-1024.png`** — square, opaque, ready to
-  upload. **Do not substitute `mobile/resources/icon.png`**: same size and also
-  alpha-free, but it carries the badge's rounded corners, and Apple applies its own
-  mask, so it renders double-masked with dark wedges in the corners. Re-render with
-  `WebSite/brand/render_marks.py` when the mark changes. Android and the web keep the
-  rounding, which is right for them.
+- App icon: **nothing to upload.** Apple reads it from the asset catalog inside the
+  build, so it is build input, not listing metadata. `ios-release.yml` generates the
+  catalog from **`mobile/resources/icon-ios.png`** (1024², square, RGB) and checks the
+  source by hash first. **Do not point it at `mobile/resources/icon.png`**: that is the
+  rounded badge, and Apple masks it again, leaving dark wedges. Both files are
+  alpha-free, so "RGB, no alpha" does not tell them apart — the square one has artwork
+  in the corners. Details: `docs/ops/app-store-assets/README.md`.
 
 ---
 
@@ -167,7 +168,7 @@ Mirror the Play Data-safety answers (`google-play-launch.md` §6):
 - [ ] Screenshots captured (§6). The Play captures are 1080×1920 (9:16) and **cannot be
       resized** for Apple, which wants ~19.5:9 (1290×2796); they need re-capturing at the
       iPhone aspect against a signed-in app.
-- [x] **Square 1024×1024 App Store icon** — `docs/ops/app-store-assets/icon-1024.png`,
-      rendered 2026-09-03. The previously documented source was pre-rounded, which Apple
-      double-masks.
+- [x] **Square 1024×1024 app icon** — `mobile/resources/icon-ios.png`, rendered
+      2026-09-03 and wired into `ios-release.yml`'s asset-catalog step. The previously
+      documented source was pre-rounded, which Apple double-masks.
 - [ ] Build uploaded → TestFlight verified → submitted (§7)

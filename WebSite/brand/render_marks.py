@@ -44,7 +44,7 @@ BRAND = REPO / "WebSite" / "brand"
 SITE_PUBLIC = REPO / "WebSite" / "site-react" / "public"
 SITE_COMPONENT = REPO / "WebSite" / "site-react" / "components" / "TinyAssetsMark.tsx"
 ASSETS = REPO / "assets"
-APP_STORE_ASSETS = REPO / "docs" / "ops" / "app-store-assets"
+MOBILE_RES = REPO / "mobile" / "resources"
 DESKTOP_BUILD = REPO / "desktop-app" / "build"
 TRAY_ICO = REPO / "tinyassets" / "desktop" / "app.ico"
 APP_HTML = REPO / "tinyassets" / "onboarding" / "app.html"
@@ -178,15 +178,18 @@ def _png(path: Path, size: int, tile: bool) -> None:
 
 
 def _app_store_icon(path: Path) -> None:
-    """The App Store's 1024² marketing icon: square, opaque, no alpha.
+    """The iOS app icon source: square, opaque, no alpha.
 
-    Three of Apple's rules bite at once here and none of them match the rest of
-    the brand. The icon must be a full-bleed SQUARE — Apple applies its own
-    corner mask, so shipping the rounded badge renders double-masked with dark
-    wedges — and it must carry NO alpha channel, where every other surface we
-    export is RGBA. So this is the one output that overrides the tile radius and
-    flattens onto the badge's own background colour. Android and the web keep the
-    rounding, which is correct for them.
+    Apple applies its own corner mask, so shipping the rounded badge renders
+    double-masked with dark wedges. It also rejects an alpha channel. So this is
+    the one output that overrides the tile radius and flattens to RGB; Android and
+    the web keep the rounding, which is correct for them.
+
+    It lands in ``mobile/resources/`` rather than a docs folder because it is
+    **build input, not listing metadata**: Apple reads the App Store icon out of
+    the asset catalog inside the uploaded build, so ``ios-release.yml`` feeds this
+    file to ``capacitor-assets`` before archiving. A square PNG staged anywhere the
+    build does not read would change nothing (Codex, 2026-09-03).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     art = draw_mark(1024, tile=True, radius=0)
@@ -242,8 +245,8 @@ def main() -> int:
     _png(ASSETS / "brand" / "tinyassets-logo-mark.png", 512, tile=False)
     _write(ASSETS / "brand" / "tinyassets-logo-mark.svg", bare_svg)
 
-    # App Store listing icon — the one square, alpha-free export (see the helper).
-    _app_store_icon(APP_STORE_ASSETS / "icon-1024.png")
+    # iOS app-icon source — the one square, alpha-free export (see the helper).
+    _app_store_icon(MOBILE_RES / "icon-ios.png")
 
     # Desktop (electron-builder picks build/icon.* up by convention).
     _png(DESKTOP_BUILD / "icon.png", 512, tile=True)
