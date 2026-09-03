@@ -97,9 +97,9 @@ account result, closed the completed support chat, accepted the Apple Developer 
 and declined optional developer-news email. The account holder then completed **Confirm
 your personal information** and Secure Checkout. Apple now shows the order-confirmation
 page, so enrollment submission and membership purchase are complete. Membership activation
-is not yet verified in the developer portal. A preserved Apple Developer sign-in is waiting
-for the account password and any two-factor challenge; no signing or App Store Connect
-credentials have been created.
+is not complete: the signed-in developer portal shows **Pending** and says the purchase may
+take up to 48 hours to process. Do not click **complete your purchase** again or risk a
+duplicate charge. No signing or App Store Connect credentials have been created.
 
 What is ready, stated precisely — the gap here is wider than "just enrol":
 

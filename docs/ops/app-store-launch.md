@@ -207,6 +207,7 @@ and [unavailability procedure](https://developer.apple.com/help/app-store-connec
 - [x] Manual signed IPA + opt-in TestFlight workflow (`ios-release.yml`)
 - [x] Listing content + App Privacy answers (§4, §5)
 - [x] Founder: Apple Developer Program enrollment + $99 (§0)
+- [ ] Apple: membership activation (portal shows Pending; allow up to 48 hours)
 - [ ] Founder: App ID + App Store Connect app record + current agreements (§0)
 - [x] Protected `app-store` environment: founder approval + `main` only (§3)
 - [ ] Founder: signing assets / API key stored in `app-store` (§3)

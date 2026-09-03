@@ -283,10 +283,10 @@ None of it can produce an installable app without account-owned signing material
 
 2. **Complete — enrollment submitted and membership purchased (2026-09-03).** The account
    holder completed personal information and Secure Checkout; Apple shows the order-
-   confirmation page. Membership activation is not yet verified in the developer portal.
-   The preserved Apple Developer sign-in is waiting for the account password and any two-
-   factor challenge; those credential steps remain with the account holder. After sign-in,
-   verify membership state before creating signing or App Store Connect credentials.
+   confirmation page. The signed-in developer portal currently shows **Pending** and says
+   the purchase may take up to 48 hours to process. Do not click **complete your purchase**
+   again or submit a duplicate charge. Wait for activation before creating signing or App
+   Store Connect credentials.
 3. Register the explicit App ID and App Store Connect app record for `io.tinyassets.app`,
    accepting any current Apple agreement presented to the account holder.
 4. Create the Apple Distribution certificate + matching App Store Connect provisioning
