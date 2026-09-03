@@ -275,6 +275,28 @@ reports `identity: not_configured`, tells the user, and writes a receipt under
 `python -c "from tinyassets.account_deletion import pending_deletions; print(pending_deletions('/data'))"`.
 Delete this paragraph on the next host-actions pass.
 
+### Apple App Store: enroll in the Apple Developer Program — nothing iOS can start without it
+
+**Checked 2026-09-02, not assumed.** Gmail holds exactly one Apple message, an Apple
+Account email verification from 2026-08-24; there is no Developer Program enrollment
+confirmation, no App Store Connect welcome, and no $99 receipt. `developer.apple.com/account`
+asks for a sign-in I cannot complete (I must not enter a password), so the browser cannot
+confirm it either. On that evidence: **not enrolled**.
+
+Everything on the iOS side is already staged — the Capacitor iOS platform, the
+`tinyassets://` URL-scheme patch, the unsigned compile-check in `ios-build.yml`, and the
+listing/App-Privacy copy in `docs/ops/app-store-launch.md`. None of it can produce an
+installable app without an account.
+
+1. **Enroll**: https://developer.apple.com/programs/enroll/ — $99/year, and identity
+   verification usually takes a day or two, sometimes longer. **Start this first**, because
+   the waiting is the long pole and it runs in parallel with everything else.
+2. Then the signing assets: a Distribution certificate, an App Store provisioning profile,
+   and an **App Store Connect API key** for CI upload (§3 of the runbook). You do NOT need a
+   Mac — CI builds on `macos-15` runners once those secrets exist.
+3. Then I create the App Store Connect record, fill the listing and App Privacy, and push a
+   build to TestFlight.
+
 ### Google Play: a reviewer test account — Play WILL reject without it
 
 Play Console -> App content -> **Sign in details** (formerly "App access"). Our app is
