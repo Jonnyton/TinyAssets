@@ -291,8 +291,9 @@ None of it can produce an installable app without account-owned signing material
    accepting any current Apple agreement presented to the account holder.
 4. Create the Apple Distribution certificate + matching App Store Connect provisioning
    profile and an **App Store Connect API key**; add the six values in §3 of the runbook.
-   Create a protected GitHub environment named `app-store` with founder approval for its
-   upload job. You do NOT need a Mac — CI builds on `macos-15`.
+   The protected GitHub environment `app-store` is complete: founder approval is required,
+   only `main` may deploy, and no secrets are present yet. You do NOT need a Mac — CI builds
+   on `macos-15`.
 5. Capture real iPhone-sized screenshots from the signed app, verify sign-in → connect →
    chat through TestFlight, complete the truthful console declarations, then make the final
    Submit for Review decision.

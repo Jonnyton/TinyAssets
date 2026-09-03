@@ -72,11 +72,12 @@ In Xcode: select the App target → Signing & Capabilities → your Team →
 
 ## 3. GitHub environment + secrets for signed builds
 
-Create a protected GitHub environment named **`app-store`** and require the
-founder's approval for deployments to it. Both release jobs use that environment,
-so neither a signing identity nor an upload credential is exposed to an
-unapproved run. Store all six values as `app-store` environment secrets; each
-step references only the subset it uses:
+The protected GitHub environment **`app-store`** was created on 2026-09-03. It
+requires the founder's approval and allows deployments only from `main`. Both
+release jobs use that environment, so neither a signing identity nor an upload
+credential is exposed to an unapproved run. No signing secrets are present yet.
+Store all six values as `app-store` environment secrets; each step references
+only the subset it uses:
 
 | Secret | Value |
 |---|---|
@@ -205,8 +206,9 @@ and [unavailability procedure](https://developer.apple.com/help/app-store-connec
 - [x] Native TinyAssets icon/splash install, with template-drift checks
 - [x] Manual signed IPA + opt-in TestFlight workflow (`ios-release.yml`)
 - [x] Listing content + App Privacy answers (§4, §5)
-- [ ] Founder: Apple Developer Program enrollment + $99 (§0)
+- [x] Founder: Apple Developer Program enrollment + $99 (§0)
 - [ ] Founder: App ID + App Store Connect app record + current agreements (§0)
-- [ ] Founder: signing assets / API key + protected `app-store` environment (§3)
+- [x] Protected `app-store` environment: founder approval + `main` only (§3)
+- [ ] Founder: signing assets / API key stored in `app-store` (§3)
 - [ ] Screenshots captured (§6)
 - [ ] Build uploaded → TestFlight verified → submitted/manual release (§7)
