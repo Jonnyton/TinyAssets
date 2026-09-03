@@ -13,7 +13,7 @@ three P1 findings plus P2 hardening notes. This table is the durable disposition
 
 | Review finding | Disposition |
 |---|---|
-| New Gradle/lint/merged-manifest gates have no green workflow run | Accepted. Draft PR run `33812289283` proved clean generation, release lint, and `bundleRelease`, then failed closed because AGP 8's real merged root omits `android:compileSdkVersion`. The verifier now reads package/version/min/target from that artifact and continues to assert compile SDK from generated Gradle input. A green rerun remains required; a signed run still requires the founder's upload secrets. |
+| New Gradle/lint/merged-manifest gates have no green workflow run | Resolved. Draft PR run `33812289283` proved clean generation, release lint, and `bundleRelease`, then failed closed because AGP 8's real merged root omits `android:compileSdkVersion`. The verifier was corrected to read package/version/min/target from that artifact and continue asserting compile SDK from generated Gradle input. Rerun `33812526724` at `d61b0a95` passed the complete unsigned release job; a signed run still requires the founder's upload secrets. |
 | Exact 1080×1920 listing screenshots were coupled to every debug APK build | Fixed. Default app verification checks packaged app artwork only. The release-only artwork gate checks Play media separately and accepts screenshots within Play's 320–3840 px / 2:1 bounds. |
 | `add_app_scheme.py` still claimed `dataSync` needed no Play justification | Fixed. The source comment now matches the required Play declaration and behavior-video gate. |
 | Signed workflow could fetch main anonymously after checkout removes credentials | Accepted under this repository's explicit public-repository invariant, documented inline. A private fork fails closed until it supplies read auth. Tag/manual signing is limited to commits already in main history. |
@@ -29,5 +29,5 @@ debuggable/version drift, unexpected microphone permission, an unprotected expor
 component, debug-workflow gate presence, runbook/version consistency, and zero/multiple
 merged-manifest candidates. Final focused result after adaptation: **16 passed**.
 
-The remaining P1 is operational rather than a code finding: open the PR and require
-its Android release build to pass on GitHub's Linux/JDK 21/Android SDK environment.
+The operational P1 is closed by run `33812526724`. Signing, Play upload, policy
+submission, and rollout remain deliberately outside this review and change.
