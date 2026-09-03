@@ -243,9 +243,9 @@ test("the inline mark is generated from the one geometry source", () => {
     assert.ok(svgNumbers.has(value), `${label} (${value}) must come from icon_gen.py`);
   }
 
-  // The scene itself. `render_marks.py` writes BOTH this component and
-  // WebSite/brand/mark{,-tile}.svg from the same layer list, so the two must
-  // agree shape for shape. Comparing them catches everything a hand-edit could
+  // The compact scene itself. `render_marks.py` writes BOTH this component and
+  // WebSite/brand/mark-{compact,tile}.svg from the same optical layer list, so
+  // the two must agree shape for shape. Comparing them catches every hand-edit
   // change -- a redrawn mountain, a moved circle, a dropped layer, a reordered
   // one -- which the earlier version of this test, comparing 40-character path
   // prefixes, did not: the broken mark passed all 235 tests.
@@ -264,7 +264,7 @@ test("the inline mark is generated from the one geometry source", () => {
   const [tileBody, discBody] = componentBodies;
 
   for (const [label, body, file] of [
-    ["disc", discBody, "../brand/mark.svg"],
+    ["disc", discBody, "../brand/mark-compact.svg"],
     ["tile", tileBody, "../brand/mark-tile.svg"],
   ]) {
     const exported = normalise(readFileSync(resolve(siteRoot, file), "utf8"));
