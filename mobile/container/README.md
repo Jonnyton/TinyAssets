@@ -4,7 +4,13 @@ This is the route that put the app on Google Play on 2026-09-03. It exists becau
 `gh secret set` is denied to the agent harness, so the four `ANDROID_UPLOAD_*` repo
 secrets that `android-release.yml` needs may not exist — but GitHub secrets were only
 ever *one* route to a signed bundle, not the goal. This container mirrors the
-workflow's own steps and needs no secret at all. It takes about five minutes.
+workflow's own steps and needs **no GitHub repository secrets**. It takes about five
+minutes.
+
+It is not credential-free, and the distinction matters: signing still consumes the
+real upload keystore and both of its passwords, read from `~/.tinyassets/android`
+mounted at `/keys` read-only. Anyone who can run `sign.sh` can sign as you. What this
+route removes is the need to copy those values into GitHub, not the need to hold them.
 
 Prefer `android-release.yml` when the secrets do exist. Use this when they do not,
 when you want to reproduce a CI failure locally, or when you need a bundle now.
@@ -43,13 +49,19 @@ here, or this stops being a faithful mirror and starts being a second opinion.
 
 ## Two things that will bite you
 
-**`build.sh` deletes `mobile/android` first, on purpose.** `cap add android` refuses
-to overwrite an existing platform, and — worse — `cap sync` *preserves* a stale
-`android/variables.gradle`. A tree generated under Capacitor 6 therefore keeps
+**`build.sh` moves `mobile/android` aside first, on purpose.** `cap add android`
+refuses to overwrite an existing platform, and — worse — `cap sync` *preserves* a
+stale `android/variables.gradle`. A tree generated under Capacitor 6 therefore keeps
 `minSdkVersion = 22` and compile/target 34 even after the dependency bump, and builds
-a bundle Play rejects while looking perfectly healthy. The directory is generated,
-gitignored and regenerated on the next line, so nothing is lost. CI never hits this
-because it always starts from a clean checkout.
+a bundle Play rejects while looking perfectly healthy. CI never hits this because it
+always starts from a clean checkout.
+
+It **moves** rather than deletes, to `mobile/android.superseded.<timestamp>` (also
+gitignored), and prints where it went. The container runs against a bind-mounted
+repo, so a delete here is a delete on your machine — and while that directory is
+generated and gitignored, gitignored is not disposable: native customization you
+have not committed exists on no remote and in no history. Clearing the snapshots is
+your call, not the script's.
 
 **`sign.sh` strips carriage returns from `upload-keystore.env`.** That file was written
 on Windows, so sourcing it directly leaves a trailing `\r` on every value and keytool

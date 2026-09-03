@@ -86,12 +86,18 @@ release into one `gh workflow run` — but nothing waits on it.
 Apple message, an Apple Account email verification from 2026-08-24, with no enrollment
 confirmation, no App Store Connect welcome and no $99 receipt.
 
-Everything else on the iOS side is ready:
+What is ready, stated precisely — the gap here is wider than "just enrol":
 
 - The Capacitor iOS platform, the `tinyassets://` URL-scheme patch, and the listing
   and App-Privacy copy in `docs/ops/app-store-launch.md`.
 - `ios-build.yml` compiles green on `macos-15` runners, including after the Capacitor 8
-  upgrade. **A Mac is not needed** — CI has macOS runners.
+  upgrade — but it builds **unsigned** (`CODE_SIGNING_ALLOWED=NO`), which is a
+  compile-check, not a shippable artifact. **There is no signed-archive or TestFlight
+  upload workflow in this repo yet**, and `app-store-launch.md` still has screenshots
+  outstanding. So enrolment unblocks the iOS side; it does not complete it, and the
+  archive/upload workflow has to be written before a build can reach App Store Connect.
+- **A Mac is still not needed** — CI has `macos-15` runners, and the signing workflow,
+  once written, would run there too.
 
 The enrollment is $99/year with a one-to-two day identity check, and it needs the
 founder: an agent must not create accounts or execute payments. It is the long pole on
@@ -102,6 +108,17 @@ produce an installable app.
 ---
 
 ## Traps already paid for — do not rediscover these
+
+- **Try a verification step before filing it as a founder action.** The Play contact
+  phone was written up here and in `docs/host-actions.md` as *"BLOCKS EVERYTHING"*, on
+  the reasoning that Google would send a code only the founder could read. It sent no
+  code: verifying took one click in the Console. The row then outlived its own truth by
+  a day, still telling the founder the launch was stuck behind them while the app was
+  already on internal testing. Both a wrong blocker and a stale one cost more than the
+  step would have.
+- **When a launch state changes, the table at the *top* of a doc is what rots.** §0 of
+  the Play runbook contradicted its own status checklist 350 lines below, because the
+  checklist got updated and the founder-facing summary did not. Update both or neither.
 
 - **Play requires `targetSdk` 36 for new apps since 2026-08-31.** Capacitor 6 pins 34,
   and a low target is **rejected at upload**, not warned about. We are on Capacitor 8

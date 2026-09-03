@@ -1,10 +1,13 @@
 # Google Play launch — drive-everything runbook
 
-Everything needed to publish the TinyAssets Android app to Google Play, staged so
-the founder's own actions are: (1) add the four upload-keystore secrets (one command,
-§3), (2) say "yes" in chat before the agent creates the app and its forms in the Play
-Console on the founder's Google account, (3) try the internal-test build on a phone,
-and (4) click **Roll out** after review. All content below is copy-paste ready.
+Everything needed to publish the TinyAssets Android app to Google Play. As of
+2026-09-03 the app is created, the listing and declarations are filled, and a signed
+bundle is live on the internal testing track, so the founder's remaining actions are:
+(1) try the internal-test build on a phone, (2) enable password sign-in in WorkOS and
+create a Play reviewer account — the one thing genuinely blocking the App content
+rows, (3) run the closed test Play requires before production access, and (4) click
+**Roll out** after review. The four upload-keystore secrets are **optional**: see §0.
+All content below is copy-paste ready.
 
 Package name (permanent once published): **`io.tinyassets.app`**
 (`mobile/capacitor.config.json`). App is the Capacitor shell over
@@ -34,8 +37,10 @@ Everything else below I build/stage.
 
 ## 1. What ships
 
-A signed **`.aab`** (Android App Bundle — Play's required format) produced by CI
-(`.github/workflows/android-release.yml`), signed with your **upload key**; Google
+A signed **`.aab`** (Android App Bundle — Play's required format) produced either by
+CI (`.github/workflows/android-release.yml`) or locally by `mobile/container/`, which
+mirrors the same steps and needs no repo secrets — that is how the shipped bundle was
+built. Signed with your **upload key**; Google
 holds the real app-signing key via **Play App Signing** (recommended default). The
 web app updates ship instantly (no store resubmit) — only a native-shell/config
 change needs a new AAB.
@@ -342,14 +347,23 @@ Screenshots come from the live app so they're honest:
 
 ## 11. Submit (after §1–§10)
 
-1. Play Console → **Create app** — name `TinyAssets`, App, Free, declarations.
-2. Fill the listing (§4), Data safety incl. the account-deletion URL (§6), Content
-   rating (§7), Target audience (§8), privacy URL (§4/§5), graphics (§9).
-3. **Internal testing** release first (reaches testers in minutes): create a
-   release → upload the CI-built `app-release.aab` → add your email as a tester →
-   roll out → verify the full loop on a device.
-4. Promote to **Production** → submit for review (hours–days) → **Roll out**.
-5. Enroll in **Play App Signing** when prompted (recommended default).
+Steps 1–3 are **done** (2026-09-02/03) and are kept here as the shape of a release,
+not as work outstanding:
+
+1. ~~Play Console → **Create app**~~ — done: name `TinyAssets`, App, Free, declarations
+   accepted, Play App Signing enrolled.
+2. ~~Fill the listing (§4), Data safety incl. the account-deletion URL (§6), Content
+   rating (§7), privacy URL (§4/§5), graphics (§9).~~ — done, except **Target audience
+   (§8)**, which Play refuses to open until Sign in details has a reviewer account.
+3. ~~**Internal testing** release~~ — done 2026-09-03 11:10: bundle built by
+   `mobile/container/`, uploaded, rolled out. Opt-in link in the status checklist below.
+
+Outstanding:
+
+4. Verify the full loop on a device from the internal-test link.
+5. Reviewer account → Sign in details → Target audience (§8) → submit Data safety.
+6. **Closed test**, 12 testers for 14 days, then apply for production access.
+7. Promote to **Production** → submit for review (hours–days) → **Roll out**.
 
 ---
 
