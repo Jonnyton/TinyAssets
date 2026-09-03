@@ -101,13 +101,57 @@ def test_anonymous_or_missing_universe_is_held_not_raised(tmp_path):
         )["status"]
         == "held"
     )
-    assert sv.ensure_founder_serving(
+    # A name that is neither alias nor registered connection is HELD, but for a
+    # real authority reason -- not because the platform keeps a vendor
+    # allowlist. It used to answer `unsupported_service` for anything but
+    # claude/codex, which refused every user with their own endpoint (founder,
+    # 2026-09-03: "we shouldnt have a chatgpt spacific path").
+    held = sv.ensure_founder_serving(
         base_path=tmp_path,
         universe_dir=tmp_path,
         owner_user_id="owner-1",
         universe_id="u-owner",
         service="gemini",
-    ) == {"status": "held", "reason": "unsupported_service"}
+    )
+    assert held["status"] == "held"
+    assert held["reason"] != "unsupported_service", held
+    assert held.get("detail"), "a refusal has to say why"
+
+
+def test_an_unnamed_service_is_held_rather_than_guessed(tmp_path):
+    """Opening the name up does not mean accepting an empty one."""
+    held = sv.ensure_founder_serving(
+        base_path=tmp_path,
+        universe_dir=tmp_path,
+        owner_user_id="owner-1",
+        universe_id="u-owner",
+        service="   ",
+    )
+    assert held == {"status": "held", "reason": "no_service_named"}
+
+
+def test_a_provider_that_is_not_yours_is_refused_by_ownership(tmp_path, monkeypatch):
+    """The gate is OWNERSHIP, which is why the name gate could go.
+
+    `_open_serving_context` raises PermissionError unless the grant's owner AND
+    universe match the caller. That refusal has to reach the caller as an
+    answer, not as an exception through a route that reports deposits.
+    """
+    from tinyassets import provider_serving_binding as psb
+
+    def _not_yours(*_a, **_k):
+        raise PermissionError("open provider connection grant is absent or revoked")
+
+    monkeypatch.setattr(psb, "_open_serving_context", _not_yours)
+    held = sv.ensure_founder_serving(
+        base_path=tmp_path,
+        universe_dir=tmp_path,
+        owner_user_id="owner-1",
+        universe_id="u-owner",
+        service="somebody-elses-connection",
+    )
+    assert held["status"] == "held"
+    assert held.get("detail")
 
 
 def test_claude_serving_refusal_is_reported_not_raised(tmp_path, monkeypatch):
