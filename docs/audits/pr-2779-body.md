@@ -124,7 +124,7 @@ fixed:
 Transcripts in `docs/audits/2026-09-02-universe-ownership-cross-family-review.md`.
 
 Drain-Review-Verdict: APPROVE
-Drain-Review-Head: e7c917f3ea5201880475a71b36a0a730f5e9d27d
+Drain-Review-Head: __HEAD__
 Drain-Review-Artifact: docs/audits/2026-09-02-universe-ownership-cross-family-review.md
 
 ### Not in this PR

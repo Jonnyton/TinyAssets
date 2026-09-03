@@ -26,19 +26,24 @@ I cannot write the receipt myself. The harness blocks an agent from putting an
 exists so a person signs off on authority paths, and an honest provenance does
 not change who is supposed to sign.
 
-Append these three lines to the PR body, last (any push voids the receipt):
+One command, which reads the live head so the receipt cannot be stale:
+
+```
+cd <this repo>
+sed "s/__HEAD__/$(git rev-parse origin/claude/universe-list-is-a-directory-listing)/"     docs/audits/pr-2779-body.md > /tmp/2779.md && gh pr edit 2779 --body-file /tmp/2779.md
+```
+
+Or paste these three lines at the END of the PR body by hand, with the head
+from `git rev-parse origin/claude/universe-list-is-a-directory-listing`:
 
 ```
 Drain-Review-Verdict: APPROVE
-Drain-Review-Head: e7c917f3ea5201880475a71b36a0a730f5e9d27d
+Drain-Review-Head: <that sha>
 Drain-Review-Artifact: docs/audits/2026-09-02-universe-ownership-cross-family-review.md
 ```
 
-The full body, receipt included, is already written and ready to apply:
-
-```
-gh pr edit 2779 --body-file <this repo>/docs/audits/pr-2779-body.md
-```
+Any push after that voids the receipt, so it goes on last. I have stopped
+committing to this branch for exactly that reason.
 
 ## Decide: what should be publicly discoverable, now that the site shows it?
 
