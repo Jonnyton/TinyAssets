@@ -258,6 +258,22 @@ test("the inline mark is generated from the one geometry source", () => {
   // And the mountain in particular is present, by its distinctive summit plateau.
   assert.match(iconGen, /_SNOW = \(/);
   assert.match(iconGen, /summit plateau|SUMMIT PLATEAU/i);
+
+  // No element may carry BOTH a transform and a clip-path. SVG resolves
+  // clip-path in the element's own user space, so the two together drag the
+  // badge outline along with the shape: it cut the galaxy out of the sky and
+  // clipped the wolf, while the Pillow renderer drew them correctly. The clip
+  // belongs on an outer group. This is the one way the two renderers of the
+  // same layer list can silently disagree, so it is pinned here.
+  for (const [element] of mark.matchAll(/<(?:circle|path|rect|g)\b[^>]*>/g)) {
+    const hasTransform = /\btransform=/.test(element);
+    const hasClip = /\bclipPath=|\bclip-path=/.test(element);
+    assert.ok(
+      !(hasTransform && hasClip),
+      `an element carries both a transform and a clip, which SVG applies in the ` +
+        `wrong order: ${element.slice(0, 120)}`,
+    );
+  }
 });
 
 test("no public copy claims goals or runs are read live, or that the platform runs a model", () => {

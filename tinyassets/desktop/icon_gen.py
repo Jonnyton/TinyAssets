@@ -406,14 +406,10 @@ def mark_svg(tile: bool = False) -> str:
                     f'stroke="{CREAM_HEX}" stroke-width="{RIM_W:g}" opacity=".9"/>'
                 )
             continue
-        clip = ' clip-path="url(#ta-badge)"' if layer.get("clip") else ""
         opacity = layer.get("opacity", 1.0)
         op = f' opacity="{opacity:g}"' if opacity != 1.0 else ""
         transform = layer.get("transform")
-        tf = ""
-        if transform:
-            tx, ty, scale = transform
-            tf = f' transform="translate({tx:g} {ty:g}) scale({scale:g})"'
+
         if kind == "sky":
             out.append(
                 f'<rect width="{VIEWBOX:g}" height="{VIEWBOX:g}" rx="{TILE_RADIUS:g}" '
@@ -422,21 +418,37 @@ def mark_svg(tile: bool = False) -> str:
                 else f'<circle cx="{DISC_CX:g}" cy="{DISC_CY:g}" r="{DISC_R:g}" '
                      f'fill="{_hex(layer["fill"])}"/>'
             )
-        elif kind == "circle":
-            out.append(
-                f'<circle{clip} cx="{layer["cx"]:g}" cy="{layer["cy"]:g}" '
+            continue
+
+        if kind == "circle":
+            shape = (
+                f'<circle cx="{layer["cx"]:g}" cy="{layer["cy"]:g}" '
                 f'r="{layer["r"]:g}" fill="{_hex(layer["fill"])}"{op}/>'
             )
         elif kind == "path":
-            out.append(
-                f'<path{clip}{tf} d="{layer["d"]}" fill="{_hex(layer["fill"])}"{op}/>'
-            )
+            shape = f'<path d="{layer["d"]}" fill="{_hex(layer["fill"])}"{op}/>'
         elif kind == "stroke":
-            out.append(
-                f'<path{clip}{tf} d="{layer["d"]}" fill="none" '
+            shape = (
+                f'<path d="{layer["d"]}" fill="none" '
                 f'stroke="{_hex(layer["stroke"])}" stroke-width="{layer["width"]:g}" '
                 f'stroke-linecap="round"{op}/>'
             )
+        else:
+            continue
+
+        # The clip MUST sit on a group outside the transform. SVG resolves
+        # clip-path in the element's own user space, so putting both on one
+        # element drags the badge outline along with the shape -- which cut the
+        # galaxy out of the sky entirely and clipped the wolf, while the Pillow
+        # renderer (which masks after placing) drew them correctly.
+        if transform:
+            tx, ty, scale = transform
+            shape = (
+                f'<g transform="translate({tx:g} {ty:g}) scale({scale:g})">{shape}</g>'
+            )
+        if layer.get("clip"):
+            shape = f'<g clip-path="url(#ta-badge)">{shape}</g>'
+        out.append(shape)
     out.append("</svg>")
     return "".join(out) + "\n"
 
