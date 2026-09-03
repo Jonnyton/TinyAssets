@@ -8,6 +8,11 @@ Apple Developer account + payment + signing assets + the final submit.
 Bundle id: **`io.tinyassets.app`** (matches `mobile/capacitor.config.json`
 `appId`; permanent once published).
 
+> **Picking this up cold? Read [`mobile-launch-handoff.md`](mobile-launch-handoff.md)
+> first.** This file is the procedure; that one is where both platforms actually
+> stand. The short version for iOS: nothing here can ship until the founder enrols
+> in the Apple Developer Program, and that is the long pole.
+
 ---
 
 ## 0. Founder-only actions (I cannot do these)

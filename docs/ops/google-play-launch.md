@@ -10,6 +10,10 @@ Package name (permanent once published): **`io.tinyassets.app`**
 (`mobile/capacitor.config.json`). App is the Capacitor shell over
 `https://tinyassets.io/mcp/app` — see `desktop-app/README.md` + `mobile/README.md`.
 
+> **Picking this up cold? Read [`mobile-launch-handoff.md`](mobile-launch-handoff.md)
+> first.** This file is the procedure; that one is where both platforms actually
+> stand, what is genuinely blocked on whom, and the traps already paid for.
+
 ---
 
 ## 0. Founder-only actions (I cannot do these)
