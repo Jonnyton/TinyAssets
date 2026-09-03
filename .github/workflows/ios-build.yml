@@ -45,7 +45,7 @@ jobs:
         working-directory: mobile
         run: npm ci --ignore-scripts --no-audit --no-fund
 
-      - name: Add + sync iOS platform (runs pod install)
+      - name: Add + sync iOS platform
         working-directory: mobile
         run: |
           npx --no-install cap add ios
@@ -61,8 +61,15 @@ jobs:
         working-directory: mobile/ios/App
         run: |
           set -euo pipefail
+          # Capacitor 8 wires plugins through Swift Package Manager whenever
+          # every plugin ships a Package.swift, so `cap sync ios` writes
+          # Package.swift and never runs `pod install` -- there is no
+          # .xcworkspace to build. Prefer the project, and fall back to a
+          # workspace only if a CocoaPods integration reappears.
+          target=(-project App.xcodeproj)
+          if [ -d App.xcworkspace ]; then target=(-workspace App.xcworkspace); fi
           xcodebuild \
-            -workspace App.xcworkspace \
+            "${target[@]}" \
             -scheme App \
             -configuration Debug \
             -sdk iphonesimulator \
