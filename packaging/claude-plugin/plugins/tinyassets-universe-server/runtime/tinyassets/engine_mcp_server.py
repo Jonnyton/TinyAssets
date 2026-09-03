@@ -774,6 +774,41 @@ _SERVED_PATCH_STR_SETTERS = {
 _SERVED_MAX_PATCH_OPS = 1000
 
 
+#: The verbs a caller reaches for, mapped to the op that does the job. `set_*`
+#: is the vocabulary; these are the names people try first.
+_SERVED_PATCH_OP_SYNONYMS = {
+    "rename": "set_name", "rename_branch": "set_name", "name": "set_name",
+    "title": "set_name", "describe": "set_description",
+    "description": "set_description", "tags": "set_tags", "goal": "set_goal",
+    "goal_id": "set_goal", "skills": "set_skills",
+}
+
+
+def _served_patch_op_for_fields(payload: dict) -> str:
+    """One sentence naming the op that would set these fields, or ``""``.
+
+    A caller who sends `{"name": "..."}` means `set_name` and is one sentence
+    away from succeeding. Saying only "must be an array" leaves them to guess
+    the vocabulary, which is what happened live.
+    """
+    wanted = [
+        (key, _SERVED_PATCH_OP_SYNONYMS[key])
+        for key in payload
+        if key in _SERVED_PATCH_OP_SYNONYMS
+    ]
+    if not wanted:
+        return ""
+    import json as _json
+
+    ops = []
+    for key, op in wanted:
+        field = _SERVED_PATCH_STR_SETTERS.get(op, key)
+        ops.append({"op": op, field: payload[key]})
+    return "You passed " + ", ".join(
+        repr(key) for key, _ in wanted
+    ) + "; send it as ops: " + _json.dumps(ops)
+
+
 def _sanitize_served_patch_changes(changes: object) -> str:
     """Validate a served patch op batch and return the sanitized changes_json.
 
@@ -786,8 +821,26 @@ def _sanitize_served_patch_changes(changes: object) -> str:
     """
     import json
 
+    if isinstance(changes, dict):
+        # The shape a caller reaches for when they think of a patch as "set
+        # these fields". Answer with the op that does it rather than the
+        # generic type error: tiny spent two sessions on this exact miss.
+        hint = _served_patch_op_for_fields(changes)
+        raise ValueError(
+            "patch changes must be a JSON array of ops" + (f". {hint}" if hint else "")
+        )
     if not isinstance(changes, list):
         raise ValueError("patch changes must be a JSON array of ops")
+    if not changes:
+        # A PATCH THAT CHANGES NOTHING IS NOT A PATCH. This returned
+        # `status: "patched"` with `ops_applied: 0`, so a caller who sent the
+        # wrong shape was told it worked and the branch was untouched (live
+        # 2026-09-03: a rename that "applied 0 ops and left the name
+        # unchanged", twice, across two sessions).
+        raise ValueError(
+            "a patch needs at least one op; an empty list changes nothing. "
+            "To rename: [{\"op\": \"set_name\", \"name\": \"New name\"}]"
+        )
     if len(changes) > _SERVED_MAX_PATCH_OPS:
         raise ValueError(f"too many patch ops (max {_SERVED_MAX_PATCH_OPS})")
     for op in changes:
