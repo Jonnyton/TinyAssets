@@ -405,65 +405,18 @@ def test_another_run_in_the_same_universe_is_workspace_busy(db: Path, roots: Roo
     assert rows(db, "SELECT lease_id FROM workspace_leases") == [("lease1",)]
 
 
-def test_another_universe_is_admitted_beside_the_first(db: Path, roots: Roots) -> None:
-    """The host bound is a CAPACITY bound, not a mutex between strangers.
-
-    One named slot meant any user's workspace job refused every other user's
-    with `workspace_busy` -- the plainest violation of the one platform-wide
-    floor, which is not affecting other users. Found live 2026-09-03 in the
-    founder's conversation with their universe.
-    """
-    admit_scratch(db, roots, lease_id_factory=_ids("lease1"))
-    admit_scratch(
-        db, roots, universe_id="u2", run_id="run-2", lease_id_factory=_ids("lease2")
-    )
-    assert lock_rows(db) == [
-        ("host", "slot-0", "run-1"),
-        ("host", "slot-1", "run-2"),
-        ("universe", "u1", "run-1"),
-        ("universe", "u2", "run-2"),
-    ]
-
-
-def test_the_host_still_refuses_when_every_slot_is_taken(db: Path, roots: Roots) -> None:
-    """The bound is still a bound: N concurrent jobs, then `workspace_busy`."""
-    for index in range(2):
-        admit_scratch(
-            db, roots, universe_id=f"u{index}", run_id=f"run-{index}",
-            lease_id_factory=_ids(f"lease{index}"), host_slots=2,
-        )
-    with pytest.raises(wp.WorkspacePoolRefused) as exc:
-        admit_scratch(
-            db, roots, universe_id="u-late", run_id="run-late",
-            lease_id_factory=_ids("lease-late"), host_slots=2,
-        )
-    assert exc.value.code == wp.REFUSED_BUSY
-    assert "all 2 host workspace slots are in use" in exc.value.detail
-    # The universe lock u-late acquired a moment earlier rolled back with it.
-    assert ("universe", "u-late", "run-late") not in lock_rows(db)
-
-
-def test_a_run_reuses_the_slot_it_already_holds(db: Path, roots: Roots) -> None:
-    """A run's later workspace nodes and its push are the same job, so they
-    take no second slot -- otherwise one run would exhaust the host by itself."""
-    admit_scratch(db, roots, lease_id_factory=_ids("lease1"), host_slots=1)
-    admit_scratch(
-        db, roots, repo_key="repo-2", lease_id_factory=_ids("lease2"), host_slots=1,
-    )
-    assert [row for row in lock_rows(db) if row[0] == "host"] == [
-        ("host", "slot-0", "run-1"),
-    ]
-
-
-def test_a_universe_still_cannot_split_one_job_across_branches(
+def test_the_host_slot_holds_off_another_universe_and_rolls_its_lock_back(
     db: Path, roots: Roots
 ) -> None:
-    """The per-universe lock stays a mutex, which is the point of it."""
     admit_scratch(db, roots, lease_id_factory=_ids("lease1"))
     with pytest.raises(wp.WorkspacePoolRefused) as exc:
-        admit_scratch(db, roots, run_id="run-other", lease_id_factory=_ids("lease3"))
+        admit_scratch(
+            db, roots, universe_id="u2", run_id="run-2", lease_id_factory=_ids("lease2")
+        )
     assert exc.value.code == wp.REFUSED_BUSY
-    assert "universe lock" in exc.value.detail
+    assert "host lock" in exc.value.detail
+    # The universe lock u2 acquired a moment earlier rolled back with everything else.
+    assert lock_rows(db) == [("host", "slot-0", "run-1"), ("universe", "u1", "run-1")]
 
 
 def test_processing_the_terminal_entry_releases_both_locks(db: Path, roots: Roots) -> None:
@@ -1115,10 +1068,7 @@ def test_without_a_wait_a_held_lock_refuses_at_once(db: Path, roots: Roots) -> N
 def test_a_bounded_wait_retries_until_the_lock_is_released(
     db: Path, roots: Roots
 ) -> None:
-    # ONE slot, so the host is genuinely full and there is something to wait
-    # for. The wait path is about a full host, and the smallest full host is a
-    # single slot; with the default four, `u2` is simply admitted.
-    lease = admit_scratch(db, roots, lease_id_factory=_ids("lease1"), host_slots=1)
+    lease = admit_scratch(db, roots, lease_id_factory=_ids("lease1"))
     with terminal_txn(db) as conn:
         wp.enqueue_terminal(conn, run_id="run-1", universe_id="u1", lease=lease)
     entry = wp.claim_next(db, claimant="test")
@@ -1140,7 +1090,6 @@ def test_a_bounded_wait_retries_until_the_lock_is_released(
         universe_id="u2",
         run_id="run-2",
         lease_id_factory=_ids("lease2"),
-        host_slots=1,
         wait_s=10.0,
         now=lambda: clock[0],
         sleep=_sleep,
@@ -1151,7 +1100,7 @@ def test_a_bounded_wait_retries_until_the_lock_is_released(
 
 
 def test_a_bounded_wait_gives_up_at_its_deadline(db: Path, roots: Roots) -> None:
-    admit_scratch(db, roots, lease_id_factory=_ids("lease1"), host_slots=1)
+    admit_scratch(db, roots, lease_id_factory=_ids("lease1"))
     clock = [1_000_000.0]
     slept: list[float] = []
 
@@ -1166,7 +1115,6 @@ def test_a_bounded_wait_gives_up_at_its_deadline(db: Path, roots: Roots) -> None
             universe_id="u2",
             run_id="run-2",
             lease_id_factory=_ids("lease2"),
-            host_slots=1,
             wait_s=1.2,
             now=lambda: clock[0],
             sleep=_sleep,

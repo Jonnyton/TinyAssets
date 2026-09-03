@@ -1,79 +1,79 @@
-# One workspace slot for the whole host
+# There is no host-wide workspace bound at all
 
-**Found 2026-09-03**, in the founder's live conversation with their universe.
-Tiny, reviewing what it can and cannot do:
+**Filed 2026-09-03. Corrected the same day**, after a cross-family review
+refuted the first version of this file. The original claim — that one workspace
+slot serialised every user on the host — was **wrong**, and the correction runs
+the opposite way.
 
-> The platform still appears to have a single-workspace bottleneck. A recent
-> workspace run on `2026-09-01 UTC` failed with `workspace_busy`, meaning one
-> active workspace job blocked another. That is a real limitation for
-> concurrent or multi-user complex workflow execution.
+## What I claimed, and why it was wrong
 
-It is right, and it is worse than a limitation: it is a cross-user one.
-
-## The cause
-
-`tinyassets/workspace_pool.py`:
+`tinyassets/workspace_pool.py` has two locks, and the second is named `host`:
 
 ```python
 HOST_SLOT = "slot-0"
+_acquire_lock(conn, scope=SCOPE_HOST, key=host_slot, ...)
 ```
 
-`admit()` takes two durable locks — one scoped to the universe, one scoped to
-the host:
+I read that as a global mutex and filed it as a P1 cross-user defect: any
+user's workspace job refusing every other user's. Codex refuted it with the one
+fact I never checked — **which database that row lives in**:
 
 ```python
-_acquire_lock(conn, scope=SCOPE_UNIVERSE, key=universe_id, ...)
-_acquire_lock(conn, scope=SCOPE_HOST,     key=host_slot,   ...)
+def _pool_db(base_path: Path) -> Path:
+    return runs.runs_db_path(base_path)      # <base_path>/.runs.db
 ```
 
-`host_slot` defaults to `HOST_SLOT` for every caller, so the host lock is one
-row: `scope='host', key='slot-0'`. The per-universe lock is correct — a
-universe should not split one job across parallel branches. The host lock is
-not: it serialises **every universe on the daemon through one slot**, so any
-user's checkout blocks every other user's.
+and `base_path` is the **universe directory**, which the module itself proves
+two hundred lines earlier:
 
-The refusal even says so out loud, and has all along:
+```python
+def _universe_id(base_path: str | Path | None) -> str:
+    return Path(base_path).name.strip()      # the dir name IS the universe id
+```
 
-> "Another workspace job of this universe (or the host's single slot) is
-> running."
+So every universe has its own `.runs.db`, and every universe has its own
+`slot-0`. Two users scan different files and both acquire a slot. **The lock
+named `host` has never crossed tenants**, and the cross-user defect I filed
+does not exist.
 
-## Why it matters more than throughput
+## What is actually true
 
-The founder's floor (2026-08-30) is that the ONLY platform-wide invariant is
-not affecting other users; inside their own universe the owner is god. A
-global mutex is the plainest possible violation of it: user B's job fails
-because user A is working, with no relationship between them.
+**1. Tiny's `workspace_busy` was the per-universe lock, working.** The refusal
+it hit on 2026-09-01 was its own universe's second job meeting the mutex that
+exists to stop one universe splitting a job across parallel branches. That is
+the intended behaviour, and it is the half of the refusal message that applies:
+*"Another workspace job of this universe (or the host's single slot)"*.
 
-It also caps the platform at one concurrent workspace user, which the "first
-1000 paid users" target in the same conversation cannot survive.
+**2. There is no host-wide capacity bound.** This is the real finding, and it
+is the inverse of the one I filed. Nothing stops N universes from running
+workspace jobs at once: no shared table, no host lock file, no admission
+counter above the universe. On a 1 vCPU / 2 GB box (see
+`capacity-is-memory-not-cpu`) concurrent checkouts of large repos are the
+plausible way to exhaust it, and the code that looks like it bounds this does
+not.
 
-## What a fix looks like
+**3. `wait_s` does not govern the wait.** `_connect` sets
+`PRAGMA busy_timeout = 30000`, so `BEGIN IMMEDIATE` can block for thirty
+seconds regardless of `wait_s`, and the retry loop catches only
+`WorkspacePoolRefused` — an expired busy timeout raises
+`sqlite3.OperationalError` and escapes as `workspace_checkout_failed`. So
+`wait_s=0` can block for thirty seconds, and `wait_s > 30` can fail early with
+the wrong error. Separate bug, same file.
 
-The host lock exists to bound concurrent disk and CPU on a 1 vCPU / 2 GB box
-(see `capacity-is-memory-not-cpu`), which is a real constraint. The bound
-should be a COUNT, not a single named slot: N slots, `slot-0..slot-N-1`, a run
-taking the first free one, N sized by host capacity and configurable. That
-keeps the capacity bound and removes the cross-user coupling.
+## Why the fix is not "more slots"
 
-## Done, in this change
+Adding N slots to a per-universe database bounds nothing: each universe still
+gets its own N. The first version of this branch did exactly that, passed its
+tests because the tests shared one database unlike production, and would have
+shipped a no-op wearing the name of a fix. It is reverted.
 
-`DEFAULT_HOST_SLOTS = 4`, and `_acquire_host_slot` takes the FIRST FREE slot
-inside the caller's `BEGIN IMMEDIATE`, so two admissions cannot pick the same
-one. It stays reentrant for a run that already holds a slot -- a run's later
-workspace nodes and its push are the same job and must not consume the host by
-themselves. The release path already deleted by `run_id` alone, so it needed no
-change.
+A real host bound needs a store above the universe — the platform root's
+database, or a lock file under the data root — and that is a storage-shape
+decision, not a constant to raise.
 
-The count is a **parameter, never an env read**: this module computes and
-admits, and `test_the_module_creates_no_directories_and_reads_no_env_vars`
-holds it to that. A caller that wants it configurable resolves it where reading
-configuration belongs.
+## What the misleading name should become
 
-The bound is still a bound. With every slot taken the refusal is
-`workspace_busy: all N host workspace slots are in use`, and the per-universe
-lock stays a mutex, which is what stops one universe splitting a job across
-parallel branches.
-
-Mutation-checked: pinning the loop back to one slot turns
-`test_another_universe_is_admitted_beside_the_first` red with the original
-symptom, `workspace_busy`.
+`SCOPE_HOST` and `HOST_SLOT` describe a scope the row does not have. Whatever
+bound gets built, those names should stop claiming host scope while living in a
+per-universe file; that naming is what made the misreading easy, and it will do
+it again.

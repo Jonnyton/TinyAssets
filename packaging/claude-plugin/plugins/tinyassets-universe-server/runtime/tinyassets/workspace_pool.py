@@ -40,21 +40,7 @@ DEFAULT_JOBS_PER_HOUR = 10
 DEFAULT_BYTES_PER_HOUR = 20 * GIB
 #: The rolling ledger window, in seconds.
 WINDOW_S = 3600
-#: How many workspace jobs may run on this host at once, ACROSS universes.
-#:
-#: This was one named slot, `slot-0`, and a single row in `workspace_locks`
-#: meant any user's job refused every other user's -- the plainest violation of
-#: the one platform-wide floor, which is not affecting other users. The bound
-#: itself is real (1 vCPU, 2 GB), so it stays a bound and stops being a mutex.
-#:
-#: A PARAMETER, never an env read: this module computes and admits, and
-#: `test_the_module_creates_no_directories_and_reads_no_env_vars` holds it to
-#: that. A caller that wants the count configurable resolves it where reading
-#: configuration belongs and passes it in.
-DEFAULT_HOST_SLOTS = 4
-
-#: Retained for callers that still name a slot directly. The admission path no
-#: longer uses it: a run takes the first FREE slot rather than a fixed one.
+#: One host-wide slot in this change; the runner sidecar is what lifts it.
 HOST_SLOT = "slot-0"
 DEFAULT_CLAIM_TTL_S = 300
 #: Import time, which is process start for every real caller. The startup
@@ -507,47 +493,6 @@ def _acquire_lock(
     )
 
 
-def _acquire_host_slot(
-    conn: sqlite3.Connection,
-    *,
-    slots: int,
-    run_id: str,
-    lease_id: str,
-    ts: float,
-) -> str:
-    """Take the first free host slot, or refuse. Returns the slot key.
-
-    Reentrant for a run that already holds one: a run's later workspace nodes
-    and its push reuse the slot it took, exactly as the single-slot version
-    did, and only the run's terminal outbox entry releases it.
-
-    The scan and the insert are in the caller's ``BEGIN IMMEDIATE``
-    transaction, so two admissions cannot pick the same free slot.
-    """
-    held: dict[str, str] = {
-        str(row[1]): str(row[0])
-        for row in conn.execute(
-            'SELECT run_id, "key" FROM workspace_locks WHERE scope = ?', (SCOPE_HOST,)
-        )
-    }
-    for key, holder in held.items():
-        if holder == run_id:
-            return key
-    for index in range(slots):
-        key = f"slot-{index}"
-        if key not in held:
-            conn.execute(
-                'INSERT INTO workspace_locks (scope, "key", run_id, lease_id, acquired_at) '
-                "VALUES (?, ?, ?, ?, ?)",
-                (SCOPE_HOST, key, run_id, lease_id, ts),
-            )
-            return key
-    raise WorkspacePoolRefused(
-        REFUSED_BUSY,
-        f"all {slots} host workspace slots are in use",
-    )
-
-
 def _no_universe_bytes(_universe_id: str) -> int:
     """Scratch never asks a universe what it is using: the placeholder that
     makes that explicit instead of leaving the callable None."""
@@ -571,7 +516,7 @@ def admit(
     lease_bytes_cap: int = DEFAULT_LEASE_BYTES_CAP,
     jobs_per_hour: int = DEFAULT_JOBS_PER_HOUR,
     bytes_per_hour: int = DEFAULT_BYTES_PER_HOUR,
-    host_slots: int = DEFAULT_HOST_SLOTS,
+    host_slot: str = HOST_SLOT,
     now: Callable[[], float] = time.time,
     lease_id_factory: Callable[[], str] = secrets.token_hex,
     process_started_at: float | None = None,
@@ -691,10 +636,7 @@ def admit(
                             f"+ {max_bytes} requested",
                         )
 
-                # (c) the durable job locks: one per universe, and one of the
-                # host's N slots. The universe lock is a mutex on purpose -- a
-                # universe must not split one job across parallel branches. The
-                # host lock is a CAPACITY bound and must never couple strangers.
+                # (c) the durable job locks: one per universe, one host-wide slot.
                 _acquire_lock(
                     conn,
                     scope=SCOPE_UNIVERSE,
@@ -703,12 +645,8 @@ def admit(
                     lease_id=lease_id,
                     ts=ts,
                 )
-                _acquire_host_slot(
-                    conn,
-                    slots=host_slots,
-                    run_id=run_id,
-                    lease_id=lease_id,
-                    ts=ts,
+                _acquire_lock(
+                    conn, scope=SCOPE_HOST, key=host_slot, run_id=run_id, lease_id=lease_id, ts=ts
                 )
 
                 # (d) reserve the maximum charge BEFORE any bytes move.
