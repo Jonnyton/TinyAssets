@@ -23,16 +23,19 @@
       "package.json"
     ],
     "win": {
+      "icon": "../assets/brand/tinyassets-app.ico",
       "target": [
         "nsis",
         "zip"
       ]
     },
     "mac": {
+      "icon": "../assets/brand/tinyassets-app.icns",
       "target": "dmg",
       "category": "public.app-category.productivity"
     },
     "linux": {
+      "icon": "../assets/icon.png",
       "target": "AppImage",
       "category": "Utility"
     }
