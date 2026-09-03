@@ -281,13 +281,12 @@ None of it can produce an installable app without account-owned signing material
    page shows two-factor authentication and a trusted phone number. The account holder
    also accepted the Apple Developer Agreement and declined optional developer-news email.
 
-2. **Enroll**: the account holder completed **Confirm your personal information**, and
-   Apple advanced to **Secure Checkout**. The preserved checkout requires the Apple Account
-   password before showing the exact price, renewal terms, and payment method. Credential
-   entry and the final membership purchase remain account-holder actions; do not submit a
-   charge without action-time approval of the exact checkout terms. Identity verification
-   may still take a day or two, sometimes longer. **Finish this first**, because the waiting
-   is the long pole and it runs in parallel with everything else.
+2. **Complete — enrollment submitted and membership purchased (2026-09-03).** The account
+   holder completed personal information and Secure Checkout; Apple shows the order-
+   confirmation page. Membership activation is not yet verified in the developer portal.
+   The preserved Apple Developer sign-in is waiting for the account password and any two-
+   factor challenge; those credential steps remain with the account holder. After sign-in,
+   verify membership state before creating signing or App Store Connect credentials.
 3. Register the explicit App ID and App Store Connect app record for `io.tinyassets.app`,
    accepting any current Apple agreement presented to the account holder.
 4. Create the Apple Distribution certificate + matching App Store Connect provisioning

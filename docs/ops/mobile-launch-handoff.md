@@ -95,10 +95,11 @@ trusted phone number. Account creation is complete. Apple Developer Program enro
 payment, and identity confirmation are not complete. The account holder confirmed the
 account result, closed the completed support chat, accepted the Apple Developer Agreement,
 and declined optional developer-news email. The account holder then completed **Confirm
-your personal information**, and Apple advanced to **Secure Checkout**. The preserved
-checkout requires the Apple Account password before it will show the exact price, renewal
-terms, and payment method. Credential entry and final membership purchase remain account-
-holder actions; no charge has been submitted.
+your personal information** and Secure Checkout. Apple now shows the order-confirmation
+page, so enrollment submission and membership purchase are complete. Membership activation
+is not yet verified in the developer portal. A preserved Apple Developer sign-in is waiting
+for the account password and any two-factor challenge; no signing or App Store Connect
+credentials have been created.
 
 What is ready, stated precisely — the gap here is wider than "just enrol":
 
