@@ -105,83 +105,16 @@ jobs:
       #      is the rounded badge, and Apple masks it again, leaving dark wedges in
       #      the corners. Staging a square PNG anywhere the build does not read
       #      would have changed nothing (Codex, 2026-09-03).
-      # Writes the asset catalog DIRECTLY from mobile/resources/icon-ios.png, with
-      # no image toolchain. Three reasons, each of which broke an earlier attempt:
-      #
-      #   1. `cap add ios` writes Capacitor's blue placeholder icon, so a correctly
-      #      signed build reaches TestFlight wearing it unless something replaces it.
-      #   2. Apple reads the App Store icon from THIS catalog, inside the uploaded
-      #      build — not from separately uploaded listing metadata. It must therefore
-      #      come from the square source: resources/icon.png is the rounded badge and
-      #      Apple masks it again, leaving dark wedges.
-      #   3. `capacitor-assets` cannot run here at all. It needs sharp's native
-      #      binary, which `npm ci --ignore-scripts` never installs, so the step
-      #      failed with "Cannot find module '../build/Release/sharp-*.node'" and
-      #      took the whole release with it (Codex round 2, 2026-09-03).
-      #
-      # Writing the catalog ourselves also makes provenance exact rather than
-      # inferred: the 1024 entry is byte-compared against the source, so no
-      # generator's source-selection order can quietly substitute another file.
-      # `sips` is part of macOS, so the smaller entries need nothing installed.
+      # `cap add ios` writes Capacitor's placeholder icon, and Apple reads the App
+      # Store icon out of this catalog inside the uploaded build — not from
+      # separately uploaded listing metadata — so it must come from the SQUARE
+      # source. The shared script carries the full reasoning, including why it does
+      # not use capacitor-assets. ios-build.yml runs the same script on every PR,
+      # so this path is exercised on a real macOS runner before a release needs it.
       - name: Write the app icon catalog from the square iOS source
         working-directory: mobile
-        run: |
-          set -euo pipefail
-          src="resources/icon-ios.png"
-          appicon="ios/App/App/Assets.xcassets/AppIcon.appiconset"
-          contents="$appicon/Contents.json"
-          [ -f "$src" ] || { echo "::error::$src missing"; exit 1; }
-          [ -f "$contents" ] || { echo "::error::$contents missing — catalog shape changed"; exit 1; }
+        run: bash scripts/write_app_icon_catalog.sh
 
-          # Each entry's pixel size is size x scale; entries without a filename are
-          # unassigned slots Xcode permits, and are skipped.
-          python3 - "$contents" > /tmp/appicon-entries <<'PY'
-          import json, sys
-          data = json.load(open(sys.argv[1], encoding="utf-8"))
-          seen = set()
-          for img in data.get("images", []):
-              name = img.get("filename")
-              if not name or name in seen:
-                  continue
-              seen.add(name)
-              w = float(img["size"].split("x")[0])
-              scale = float((img.get("scale") or "1x").rstrip("x"))
-              print(f"{name} {int(round(w * scale))}")
-          PY
-          # Strip CR defensively. python3 on a POSIX runner emits \n, but a trailing
-          # carriage return here would make every size compare as a non-integer, and
-          # this repo has already lost time to exactly that on the upload keystore.
-          tr -d '\r' < /tmp/appicon-entries > /tmp/appicon-entries.clean
-          mv /tmp/appicon-entries.clean /tmp/appicon-entries
-          [ -s /tmp/appicon-entries ] || { echo "::error::no icon entries in $contents"; exit 1; }
-
-          marketing=0
-          while read -r name px; do
-            dest="$appicon/$name"
-            if [ "$px" -eq 1024 ]; then
-              # The source is exactly 1024 — copy it, so the bytes Apple reads are
-              # the bytes we rendered, and prove it.
-              cp "$src" "$dest"
-              cmp -s "$src" "$dest" || { echo "::error::1024 icon does not match $src"; exit 1; }
-              marketing=1
-            else
-              sips -s format png -z "$px" "$px" "$src" --out "$dest" > /dev/null
-            fi
-            got="$(sips -g pixelWidth "$dest" | awk '/pixelWidth/ {print $2}')"
-            [ "$got" = "$px" ] || { echo "::error::$name is ${got}px, expected ${px}px"; exit 1; }
-            echo "  $name ${px}px"
-          done < /tmp/appicon-entries
-
-          if [ "$marketing" -ne 1 ]; then
-            echo "::error::no 1024 marketing entry in $contents — App Store Connect requires one"
-            exit 1
-          fi
-          echo "app icon catalog written from $src (1024 entry byte-identical)"
-
-      # The certificate password reaches `security import` through argv, which is
-      # not ideal and cannot be avoided: unlike keytool's `-storepass:env`, the
-      # `security` tool has no env-var form. The exposure is bounded to this
-      # ephemeral runner. Stated rather than papered over.
       - name: Import signing assets into a temporary keychain
         id: signing
         env:

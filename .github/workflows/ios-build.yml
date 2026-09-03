@@ -57,6 +57,16 @@ jobs:
           python3 scripts/add_ios_scheme.py
           grep -q "<string>tinyassets</string>" ios/App/App/Info.plist
 
+      # The release workflow depends on this script producing a catalog Xcode
+      # accepts, but ios-release.yml only runs on dispatch or a tag — and cannot
+      # run at all until the Apple account exists. Running it here means the parse,
+      # the sips resizes and the byte-exact 1024 copy are proven on a real macOS
+      # runner against a real Capacitor project on every PR, instead of first
+      # finding out during a release.
+      - name: Write the app icon catalog (same script the release build uses)
+        working-directory: mobile
+        run: bash scripts/write_app_icon_catalog.sh
+
       - name: Compile-check (unsigned, simulator)
         working-directory: mobile/ios/App
         run: |
