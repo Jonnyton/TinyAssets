@@ -1952,13 +1952,18 @@ def test_a_failed_checkout_closes_what_it_opened_and_owes_the_wipe(
 
 
 def test_a_lock_held_by_another_run_is_workspace_busy_not_a_quota_error(
-    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The pool's own refusal code is the answer, never a re-translation.
 
     A held lock reported as ``workspace_quota_exceeded`` tells the universe to
     wait for an hour when the truth is "another run is using it right now".
     """
+    # Row 6 made a busy slot WAIT rather than refuse at submit, so this test now
+    # exercises the wait. Shrink the platform bound instead of sleeping 60 s;
+    # the refusal it asserts is what happens once the wait is exhausted.
+    monkeypatch.setattr(wse, "_ADMIT_WAIT_S", 0.05)
     _root, universe_dir = _setup(tmp_path)
     first = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
     assert first.get("error_kind") is None, first
@@ -2630,3 +2635,75 @@ def test_the_mount_is_resolvable_only_through_the_chain(
     assert result["lease_generation"] == 1
     rows = _outbox_rows(workspace_pool_db(universe_dir))
     assert all(row["lease_id"] != "forged-lease" for row in rows), rows
+
+
+def test_a_checkout_waits_for_a_busy_slot_instead_of_dying_at_submit(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tiny's checklist row 6: a second workspace job must not hard-fail.
+
+    `workspace_pool.admit` already implements the wait -- it retries the whole
+    admission every LOCK_POLL_S until a deadline, on `REFUSED_BUSY` alone. The
+    only caller never passed `wait_s`, so it defaulted to 0.0 and refused
+    immediately. This drives the REAL effector and reads what it actually sends.
+    """
+    from tinyassets import workspace_pool
+
+    seen: list[dict] = []
+    real_admit = workspace_pool.admit
+
+    def spy_admit(*args, **kwargs):
+        seen.append(dict(kwargs))
+        return real_admit(*args, **kwargs)
+
+    monkeypatch.setattr(workspace_pool, "admit", spy_admit)
+    _root, universe_dir = _setup(tmp_path)
+    result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
+    assert result.get("error_kind") is None, result
+
+    assert seen, "the effector never reached the pool"
+    waits = [k.get("wait_s") for k in seen]
+    assert all(w is not None for w in waits), (
+        f"the checkout does not offer the pool a wait at all: {waits}"
+    )
+    assert all(float(w) > 0 for w in waits), (
+        f"a busy slot still refuses at submit rather than waiting: {waits}"
+    )
+    # The bound is the PLATFORM's and must stay under the node timeout (300s),
+    # or a "queued" job dies of timeout instead -- the same failure renamed.
+    assert all(0 < float(w) <= 120 for w in waits), waits
+
+
+def test_the_post_sweep_retry_does_not_wait_a_second_time(
+    tmp_path: Path, chain: EffectChain, fs_spy, no_real_git, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The wait and the stale-lock sweep must not compound.
+
+    The first attempt spends the whole budget; the sweep is recovery, not
+    contention. Waiting again would double the worst-case admission against a
+    300 s node timeout -- a stall wearing the name of a queue.
+    """
+    from tinyassets import runs as _runs
+    from tinyassets import workspace_pool
+    from tinyassets.workspace_pool import WorkspacePoolRefused
+
+    _root, universe_dir = _setup(tmp_path)
+    real_admit = workspace_pool.admit
+    waits: list[float] = []
+
+    def flaky_admit(*args, **kwargs):
+        waits.append(float(kwargs.get("wait_s", -1)))
+        if len(waits) == 1:
+            raise WorkspacePoolRefused("workspace_busy", "held by a finished run")
+        return real_admit(*args, **kwargs)
+
+    monkeypatch.setattr(workspace_pool, "admit", flaky_admit)
+    monkeypatch.setattr(
+        _runs, "_workspace_sweep_once",
+        lambda base, *, claimant: 1,
+    )
+    result = _run(tmp_path, _packet(), universe_dir=universe_dir, chain=chain)
+    assert result.get("error_kind") is None, result
+    assert len(waits) == 2, waits
+    assert waits[0] == wse._ADMIT_WAIT_S, "the first attempt did not offer the wait"
+    assert waits[1] == 0.0, f"the retry waited a second time: {waits}"
