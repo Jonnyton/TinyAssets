@@ -36,12 +36,13 @@ The site SHALL present TinyAssets as a personal universe: a cloud agent that run
 
 ### Requirement: Plans Are Described In Words, In One Place, And Do Not Overstate Enforcement
 
-The site SHALL describe plans only in the `Plans` section of `/fine-print` (anchor `#plans`), stating that every universe is free and that premium costs USD 20 a month and raises the daily allowances for outside-world actions, compute, and storage. Because `tinyassets.usage_policy.enforcement_enabled()` defaults off — the meter records but the gate does not refuse — the section SHALL say so plainly: usage is metered, nobody is cut off today, and premium raises the allowances that will apply when the gate goes live. It SHALL NOT print allowance numbers while the gate is dark, SHALL NOT render an upgrade control until the app has one, and SHALL NOT describe hitting a limit as a thing that currently happens. `/start` MAY carry one sentence that links to the section. No other page, and no public text asset (`llms.txt`, `robots.txt`), states the price or what premium changes; a text asset MAY point at the section.
+The site SHALL describe plans only in the `Plans` section of `/fine-print` (anchor `#plans`), stating that every universe is free and that premium costs USD 20 a month and raises what applies to it. The copy SHALL name the three dimensions as `tinyassets/usage_policy.py` actually implements them and no further: a DAILY ALLOWANCE for outside-world actions (the only dimension with a reservation path, `reserve_effect_quota`), a GUARD on compute ("a guard, not a product limit"), and a CAP on stored data ("capped, not charged", with per-universe attribution still known-wrong). Describing compute or storage as daily allowances overstates what exists. Because `tinyassets.usage_policy.enforcement_enabled()` defaults off — the meter records but the gate does not refuse — the section SHALL say so plainly: usage is metered, nobody is cut off today, and premium raises the allowances that will apply when the gate goes live. It SHALL NOT print allowance numbers while the gate is dark, SHALL NOT render an upgrade control until the app has one, and SHALL NOT describe hitting a limit as a thing that currently happens. `/start` MAY carry one sentence that links to the section. No other page, and no public text asset (`llms.txt`, `robots.txt`), states the price or what premium changes; a text asset MAY point at the section.
 
 #### Scenario: A visitor looks for pricing
 
 - **WHEN** a visitor opens `/fine-print/#plans`
 - **THEN** they read that every universe starts free, what premium changes in words, its monthly price, and that enforcement is not switched on yet, with no form, no button, and no numeric allowances
+- **AND** the three dimensions are described as an allowance, a guard and a cap respectively, matching the policy module rather than flattening all three into "daily limits"
 
 #### Scenario: A grounding crawler reads the text assets
 
@@ -125,12 +126,13 @@ The `/fine-print` reachability strip SHALL derive server reachability from a suc
 
 ### Requirement: The Mark Has One Source And Appears On Every Surface
 
-The brand mark (a ring crossed low by a rule running off to the right, with one terracotta dot on the rule) SHALL be defined once in `tinyassets/desktop/icon_gen.py` and exported by `WebSite/brand/render_marks.py` to the site icons (`favicon.ico`, `icon.svg`, `apple-touch-icon.png`, `icon-192.png`, `icon-512.png`, `logo-mark.png`, `tinyassets-mark.png`), the repository brand assets under `assets/`, the desktop app build resources, the Windows tray icon, the Android launcher and splash density set, and the Play listing graphics; `WebSite/brand/render_og.py` SHALL render the OG card with the site's fonts. The site's inline React mark (`components/TinyAssetsMark.tsx`) SHALL be **generated** by the same exporter from the same constants rather than hand-maintained, so a geometry change cannot leave the web mark behind. The served web app SHALL carry the same mark as its favicon and brand glyph.
+The brand mark (a circular badge: Mount Baker seen from the south, a wolf howling on the snowfield, a pale moon and a spiral galaxy in the night sky) SHALL be defined once as the `EMBLEM` layer list in `tinyassets/desktop/icon_gen.py` -- with the mountain profile traced from a photograph of the real skyline rather than drawn by eye -- and exported by `WebSite/brand/render_marks.py` to the site icons (`favicon.ico`, `icon.svg`, `apple-touch-icon.png`, `icon-192.png`, `icon-512.png`, `logo-mark.png`, `tinyassets-mark.png`), the repository brand assets under `assets/`, the desktop app build resources, the Windows tray icon, the Android launcher and splash density set, and the Play listing graphics; `WebSite/brand/render_og.py` SHALL render the OG card with the site's fonts. The site's inline React mark (`components/TinyAssetsMark.tsx`) SHALL be **generated** by the same exporter from the same constants rather than hand-maintained, so a geometry change cannot leave the web mark behind. The served web app SHALL carry the same mark as its favicon and brand glyph.
 
 #### Scenario: The mark changes
 
-- **WHEN** the geometry or palette in `icon_gen.py` changes and the exporters run
-- **THEN** every listed surface receives the new mark from the same drawing, and no exported raster is hand-edited
+- **WHEN** the `EMBLEM` layer list or the palette in `icon_gen.py` changes and the exporters run
+- **THEN** every listed surface receives the new mark from the same description, and no exported raster or inline copy is hand-edited
+- **AND** the boundary test fails if the site's inline component carries a path `icon_gen.py` does not describe, so the traced mountain profile cannot be quietly redrawn by eye
 
 ### Requirement: Public And Private Indexing Boundaries Are Declared
 

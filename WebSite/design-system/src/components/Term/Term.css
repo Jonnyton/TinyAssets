@@ -4,7 +4,7 @@
   cursor: help;
   outline: none;
 }
-.term:focus-visible { border-radius: 2px; box-shadow: 0 0 0 2px var(--ember-100); }
+.term:focus-visible { border-radius: 2px; box-shadow: 0 0 0 2px var(--accent-quiet); }
 .term__tip {
   position: absolute;
   left: 50%;
@@ -12,8 +12,8 @@
   transform: translateX(-50%) translateY(2px);
   width: max-content;
   max-width: 280px;
-  background: var(--ink-text-900);
-  color: var(--paper-50);
+  background: var(--panel);
+  color: var(--on-panel);
   font-family: var(--font-sans);
   font-size: 13px;
   font-style: normal;

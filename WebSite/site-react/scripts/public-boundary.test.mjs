@@ -172,8 +172,12 @@ test("plans are stated in exactly one place, and never overstate enforcement", (
   // and the price/benefit must not be restated anywhere it can drift.
   const finePrint = source("app/fine-print/page.tsx");
   assert.match(finePrint, /\$20 a month/);
-  assert.match(finePrint, /metered from day one/);
-  assert.match(finePrint, /is not switched on yet/);
+  assert.match(finePrint, /usage is metered/);
+  assert.match(finePrint, /is not switched on/);
+  // the three dimensions must be named as the policy implements them
+  assert.match(finePrint, /daily allowance/i);
+  assert.match(finePrint, /guard against a runaway loop/i);
+  assert.match(finePrint, /capacity cap/i);
   assert.doesNotMatch(finePrint, /\b5,?000\b|\b12,?000\b|\b20 GB\b/, "no allowance numbers while the gate is dark");
 
   const others = pages.filter((f) => !f.path.replace(/\\/g, "/").includes("app/fine-print/"));
@@ -220,38 +224,81 @@ test("the inline mark is generated from the one geometry source", () => {
     resolve(siteRoot, "../../tinyassets/desktop/icon_gen.py"),
     "utf8",
   );
-  // `RING_CX, RING_CY, RING_R = 32.0, 30.0, 18.5` and friends.
-  const tuple = (names) => {
-    const m = iconGen.match(new RegExp(`^${names.join(", ")}\\s*=\\s*([0-9.,\\s]+)$`, "m"));
-    assert.ok(m, `icon_gen.py defines ${names.join(", ")}`);
-    return m[1].split(",").map((v) => Number(v.trim()));
-  };
   const scalar = (name) => {
     const m = iconGen.match(new RegExp(`^${name}\\s*=\\s*([0-9.]+)`, "m"));
     assert.ok(m, `icon_gen.py defines ${name}`);
     return Number(m[1]);
   };
-  const [ringCx, ringCy, ringR] = tuple(["RING_CX", "RING_CY", "RING_R"]);
-  const [dotCx, dotCy, dotR] = tuple(["DOT_CX", "DOT_CY", "DOT_R"]);
-  const halo = dotR + scalar("DOT_HALO");
 
+  // The badge's own numbers must be the Python ones, so a drifted checkout is red.
   const svgNumbers = new Set(
-    [...mark.matchAll(/(?:cx|cy|r|rx|x|y|width|height|strokeWidth)="([\d.]+)"/g)].map((m) =>
-      Number(m[1]),
-    ),
+    [...mark.matchAll(/(?:cx|cy|r|rx|x|y|width|height)="([\d.]+)"/g)].map((m) => Number(m[1])),
   );
   for (const [label, value] of [
-    ["ring centre x", ringCx],
-    ["ring centre y", ringCy],
-    ["ring radius", ringR],
-    ["ring stroke", scalar("RING_STROKE")],
+    ["viewBox", scalar("VIEWBOX")],
+    ["disc radius", scalar("DISC_R")],
+    ["rim radius", scalar("RIM_R")],
     ["tile radius", scalar("TILE_RADIUS")],
-    ["dot centre x", dotCx],
-    ["dot centre y", dotCy],
-    ["dot radius", dotR],
-    ["halo radius", halo],
   ]) {
     assert.ok(svgNumbers.has(value), `${label} (${value}) must come from icon_gen.py`);
+  }
+
+  // The scene itself. `render_marks.py` writes BOTH this component and
+  // WebSite/brand/mark{,-tile}.svg from the same layer list, so the two must
+  // agree shape for shape. Comparing them catches everything a hand-edit could
+  // change -- a redrawn mountain, a moved circle, a dropped layer, a reordered
+  // one -- which the earlier version of this test, comparing 40-character path
+  // prefixes, did not: the broken mark passed all 235 tests.
+  const normalise = (svg) =>
+    svg
+      .replace(/^[\s\S]*?<svg[^>]*>/, "")
+      .replace(/<\/svg>[\s\S]*$/, "")
+      .replace(/<defs>[\s\S]*?<\/defs>/, "")
+      .replace(/\s*(clip-path|clipPath)=(?:"[^"]*"|\{`url\(#\$\{clipId\}\)`\})/g, "")
+      .replace(/\s*\/>/g, "/>")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const componentBodies = [...mark.matchAll(/<>([\s\S]*?)<\/>/g)].map((m) => m[1]);
+  assert.equal(componentBodies.length, 2, "the component renders a tile body and a disc body");
+  const [tileBody, discBody] = componentBodies;
+
+  for (const [label, body, file] of [
+    ["disc", discBody, "../brand/mark.svg"],
+    ["tile", tileBody, "../brand/mark-tile.svg"],
+  ]) {
+    const exported = normalise(readFileSync(resolve(siteRoot, file), "utf8"));
+    const inComponent = normalise(body);
+    // JSX camel-cases these; the exported SVG keeps them kebab-cased.
+    const asSvg = inComponent
+      .replace(/strokeWidth=/g, "stroke-width=")
+      .replace(/strokeLinecap=/g, "stroke-linecap=");
+    assert.equal(
+      asSvg,
+      exported,
+      `the component's ${label} body must be byte-identical to ${file}; ` +
+        `re-run WebSite/brand/render_marks.py rather than editing either by hand`,
+    );
+  }
+
+  // And the mountain in particular is present, by its distinctive summit plateau.
+  assert.match(iconGen, /_SNOW = \(/);
+  assert.match(iconGen, /summit plateau|SUMMIT PLATEAU/i);
+
+  // No element may carry BOTH a transform and a clip-path. SVG resolves
+  // clip-path in the element's own user space, so the two together drag the
+  // badge outline along with the shape: it cut the galaxy out of the sky and
+  // clipped the wolf, while the Pillow renderer drew them correctly. The clip
+  // belongs on an outer group. This is the one way the two renderers of the
+  // same layer list can silently disagree, so it is pinned here.
+  for (const [element] of mark.matchAll(/<(?:circle|path|rect|g)\b[^>]*>/g)) {
+    const hasTransform = /\btransform=/.test(element);
+    const hasClip = /\bclipPath=|\bclip-path=/.test(element);
+    assert.ok(
+      !(hasTransform && hasClip),
+      `an element carries both a transform and a clip, which SVG applies in the ` +
+        `wrong order: ${element.slice(0, 120)}`,
+    );
   }
 });
 

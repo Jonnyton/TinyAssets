@@ -12,7 +12,7 @@
   white-space: nowrap;
   transition: color var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard);
 }
-a.tick:hover { color: var(--ember-900); border-color: var(--ember-700); text-decoration: none; }
+a.tick:hover { color: var(--ember-500); border-color: var(--ember-600); text-decoration: none; }
 .tick--flat { border-bottom-style: none; }
 .tick__glyph { color: var(--ember-600); font-size: 10px; }
 .tick__ext { font-size: 9px; color: var(--fg-4); }

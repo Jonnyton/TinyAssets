@@ -1,119 +1,122 @@
 /* =========================================================
-   TinyAssets — Design Tokens · "Warm editorial"  (canonical source)
+   TinyAssets — Design Tokens · "Ink editorial"  (canonical source)
 
-   Paper ground, ink text, one warm accent (terracotta) for the
-   single action on a surface, a muted green reserved for genuinely
-   live evidence. Ruled lines and run receipts are the motif: the
-   site reads like a well-set document, not a dashboard.
+   Ink ground, cream text, one warm accent for the single action on
+   a surface, and a muted green reserved for genuinely live evidence.
+   Ruled lines and run receipts are the motif: the site reads like a
+   well-set document printed the other way round, not a dashboard.
+   The dark ground also matches the web app, so the site and the
+   product no longer look like two different products.
 
    This file is the CANONICAL CSS source of truth for tokens. The
    DTCG mirror (tokens/tiny.tokens.json) is generated FROM this file
    by tokens/extract-dtcg.mjs (`npm run tokens`), so tools never
-   drift. Variable names are stable; only values change between
-   identities, so consuming UIs keep rendering.
+   drift. Variable NAMES are stable across identities — only values
+   change — so consuming UIs keep rendering. The `paper-*` family is
+   therefore the surface ramp, darkest first, despite the name.
    ========================================================= */
 
 @import url("https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..700;1,9..144,300..700&family=Source+Sans+3:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap");
 
 :root {
-  color-scheme: light;
+  color-scheme: dark;
 
   /* ---------- CORE PALETTE ---------- */
-  /* Paper — warm, a little fibrous, never sterile white. */
-  --paper-50:  #fbf8f1;
-  --paper-100: #f6f1e6;
-  --paper-200: #efe8d9;
-  --paper-300: #e3d9c4;
-  --paper-400: #cdbfa3;
-  /* The page itself. Sheets (cards) sit on it in paper-50. */
-  --ground-0:  #f4efe4;
+  /* Surfaces, darkest (the page) to lightest (a raised sheet). */
+  --paper-50:  #1c1c16;
+  --paper-100: #232319;
+  --paper-200: #2b2b20;
+  --paper-300: #3a3a2c;
+  --paper-400: #4c4b3a;
+  /* The page itself. Everything else sits on it. */
+  --ground-0:  #14140f;
 
-  /* Ink — warm near-black, never pure #000. */
-  --ink-text-900: #1e1a17;
-  --ink-text-700: #3f3833;
-  --ink-text-500: #6b625a;
-  --ink-text-300: #9c9188;
+  /* Cream — the ink of this identity, never pure #fff. */
+  --ink-text-900: #f2efe6;
+  --ink-text-700: #cdc7ba;
+  --ink-text-500: #8f8a7e;
+  --ink-text-300: #6b675d;
 
-  /* Terracotta — the ONE accent. Action, emphasis, the dot on the mark. */
-  --ember-900: #6f2a11;
-  --ember-700: #953a19;
-  --ember-600: #b5471f;
-  --ember-500: #a8401b;   /* hover on paper needs more pigment, not less */
-  --ember-300: #d98b6a;
-  --ember-100: #f4e3d9;
+  /* Ember — the ONE accent. The rule under the mark, the primary action. */
+  --ember-900: #a44b21;
+  --ember-700: #c25c2e;
+  --ember-600: #e0703f;
+  --ember-500: #ea8459;   /* hover on ink needs more light, not less */
+  --ember-300: #f2a582;
+  --ember-100: #3a2318;
 
   /* Live green — RESERVED for genuine liveness and evidence links. */
-  --live-700: #2f6b3a;
-  --live-600: #3a7d47;
-  --live-100: #e0eddf;
+  --live-700: #4a9b63;
+  --live-600: #5fb87a;
+  --live-100: #1e3326;
 
-  /* The old violet family now resolves to ink so a "secondary" surface is
-     a quiet ink object, never a second brand colour. */
-  --violet-900: #1e1a17;
-  --violet-700: #3f3833;
-  --violet-600: #3f3833;
-  --violet-500: #3f3833;
-  --violet-400: #6b625a;
-  --violet-200: #3f3833;
-  --violet-100: #efe8d9;
+  /* The old violet family resolves to cream so a "secondary" surface is
+     a quiet object, never a second brand colour. */
+  --violet-900: #f2efe6;
+  --violet-700: #cdc7ba;
+  --violet-600: #cdc7ba;
+  --violet-500: #cdc7ba;
+  --violet-400: #8f8a7e;
+  --violet-200: #cdc7ba;
+  --violet-100: #2b2b20;
 
-  /* Bone (legacy names) = paper. */
-  --bone-50:  #fbf8f1;
-  --bone-100: #f6f1e6;
-  --bone-200: #efe8d9;
-  --bone-300: #e3d9c4;
-  --bone-500: #8a8073;
-  --bone-700: #3f3833;
+  /* Bone (legacy names) = the surface ramp. */
+  --bone-50:  #1c1c16;
+  --bone-100: #232319;
+  --bone-200: #2b2b20;
+  --bone-300: #3a3a2c;
+  --bone-500: #8f8a7e;
+  --bone-700: #cdc7ba;
 
-  /* Legacy ink family (remapped to paper-light equivalents). */
-  --ink-900: #1e1a17;
-  --ink-800: #f6f1e6;
-  --ink-700: #efe8d9;
-  --ink-600: #e8e0cd;
-  --ink-500: #dbd1b9;
-  --ink-400: #cdbfa3;
+  /* Legacy ink family (remapped onto the dark ramp). */
+  --ink-900: #f2efe6;
+  --ink-800: #232319;
+  --ink-700: #2b2b20;
+  --ink-600: #3a3a2c;
+  --ink-500: #4c4b3a;
+  --ink-400: #6b675d;
 
   /* Status — muted, honest. Idle is a first-class state, not an error. */
-  --signal-live: #3a7d47;
-  --signal-idle: #9a6b0a;
-  --signal-warn: #b8631a;
-  --signal-error: #a33a2a;
+  --signal-live: #5fb87a;
+  --signal-idle: #c9a227;
+  --signal-warn: #d98038;
+  --signal-error: #e0665a;
 
   /* ---------- SEMANTIC ---------- */
   --bg-0: var(--ground-0);
   --bg-1: var(--paper-50);
   --bg-2: var(--paper-100);
   --bg-3: var(--paper-200);
-  --bg-inset: var(--paper-200);
+  --bg-inset: var(--paper-100);
 
   --fg-1: var(--ink-text-900);
   --fg-2: var(--ink-text-700);
   --fg-3: var(--ink-text-500);
   --fg-4: var(--ink-text-300);
-  --fg-on-ember: #fbf8f1;
-  --fg-on-violet: #fbf8f1;
+  --fg-on-ember: #14140f;
+  --fg-on-violet: #14140f;
 
-  /* Rules are a motif, so hairlines are a touch stronger than usual. */
-  --border-1: rgba(30, 26, 23, 0.16);
-  --border-2: rgba(30, 26, 23, 0.32);
-  --border-strong: rgba(30, 26, 23, 0.72);
+  /* Rules are a motif, so hairlines carry more weight than usual. */
+  --border-1: rgba(242, 239, 230, 0.14);
+  --border-2: rgba(242, 239, 230, 0.28);
+  --border-strong: rgba(242, 239, 230, 0.55);
 
   --accent: var(--ember-600);
-  --accent-hover: var(--ember-700);
-  --accent-press: var(--ember-900);
-  --accent-quiet: rgba(181, 71, 31, 0.09);
+  --accent-hover: var(--ember-500);
+  --accent-press: var(--ember-700);
+  --accent-quiet: rgba(224, 112, 63, 0.14);
 
   --graph-violet: var(--ink-text-700);
-  --graph-violet-glow: rgba(30, 26, 23, 0.12);
+  --graph-violet-glow: rgba(242, 239, 230, 0.12);
 
-  /* ---------- PANEL (an ink block, used sparingly) ---------- */
-  --panel: #1e1a17;
-  --panel-raised: #2a2521;
-  --panel-line: #3f3833;
-  --on-panel: #f6f1e6;
-  --on-panel-soft: #b9b0a4;
-  --live-bright: #7fbf8c;
-  --violet-bright: #d98b6a;
+  /* ---------- PANEL (an inverted block: paper on ink, used sparingly) ---- */
+  --panel: #f2efe6;
+  --panel-raised: #fbf9f3;
+  --panel-line: #d9d3c4;
+  --on-panel: #14140f;
+  --on-panel-soft: #55524a;
+  --live-bright: #2f6b3a;
+  --violet-bright: #c25c2e;
 
   /* ---------- TYPE ---------- */
   --font-voice: "Fraunces", Georgia, "Times New Roman", serif;
@@ -168,12 +171,12 @@
   --s-20: 80px;
   --s-24: 96px;
 
-  /* ---------- ELEVATION (paper on a desk; almost none) ---------- */
-  --shadow-sm: 0 1px 0 rgba(30, 26, 23, 0.06);
-  --shadow-md: 0 1px 2px rgba(30, 26, 23, 0.06), 0 6px 18px rgba(30, 26, 23, 0.06);
-  --shadow-lg: 0 2px 6px rgba(30, 26, 23, 0.06), 0 16px 40px rgba(30, 26, 23, 0.08);
-  --glow-graph: 0 0 0 1px rgba(30, 26, 23, 0.2);
-  --glow-ember: 0 0 0 1px rgba(181, 71, 31, 0.35);
+  /* ---------- ELEVATION (on ink, depth is a lighter surface, not a shadow) */
+  --shadow-sm: 0 1px 0 rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.45), 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 4px 10px rgba(0, 0, 0, 0.5), 0 20px 48px rgba(0, 0, 0, 0.45);
+  --glow-graph: 0 0 0 1px rgba(242, 239, 230, 0.2);
+  --glow-ember: 0 0 0 1px rgba(224, 112, 63, 0.4);
 
   /* ---------- MOTION (calm) ---------- */
   --ease-summon: cubic-bezier(0.22, 1, 0.36, 1);

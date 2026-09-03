@@ -31,7 +31,7 @@ const tokens = JSON.parse(readFileSync(resolve(root, "tokens/tiny.tokens.json"),
 
 const manifest = {
   name: "@tiny/design-system",
-  designLanguage: "Field Notes",
+  designLanguage: "Ink editorial",
   styles: "@tiny/design-system/styles.css",
   tokensRef: "tokens/tiny.tokens.json",
   tokenGroups: Object.fromEntries(

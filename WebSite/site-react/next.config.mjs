@@ -3,8 +3,17 @@ const isDev = process.env.NODE_ENV === "development";
 // /<repo>/). Unset for the real apex deploy. e.g. PAGES_BASE_PATH=/tiny-preview
 const basePath = process.env.PAGES_BASE_PATH || "";
 
+// Builds and the dev server share .next by default, so running `npm run build`
+// while a preview is open silently deletes the modules the dev server has
+// loaded and every request 500s until it is restarted. That has cost a live
+// preview twice. Give the build its own directory instead.
+//   NEXT_DIST_DIR=.next-build npm run build
+// The static export still lands in out/, so the deploy is unaffected.
+const distDir = process.env.NEXT_DIST_DIR || ".next";
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  distDir,
   trailingSlash: true,
   images: { unoptimized: true },
   // The design system ships ESM dist; let Next transpile it.

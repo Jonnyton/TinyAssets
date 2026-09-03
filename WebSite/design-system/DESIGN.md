@@ -1,4 +1,4 @@
-# TinyAssets — Design System ("Warm editorial")
+# TinyAssets — Design System ("Ink editorial")
 
 > Framework-agnostic design brief for AI design tools and coding agents.
 > This file is the rules layer. The compiled React library (`dist/`) and the
@@ -7,10 +7,11 @@
 
 ## 1. Theme & feeling
 
-TinyAssets reads like **a well-set document about serious work**: paper
-ground, ink text, one warm accent, ruled lines, and run receipts. It is not a
-dashboard and it is not an AI product page. No sparkle, no glowing chat
-bubbles, no gradients, no dark "instrument panel" as the default surface.
+TinyAssets reads like **a well-set document about serious work, printed the
+other way round**: an ink ground, cream text, one warm accent, ruled lines, and
+run receipts. It is not a dashboard and it is not an AI product page. No
+sparkle, no glowing chat bubbles, no gradients. The dark ground also matches
+the web app, so the site and the product stop looking like two products.
 
 The core distinction is **claim versus evidence, made typographic**: prose is
 serif or sans; every live value, id, and timestamp is mono, always.
@@ -25,19 +26,21 @@ Use the semantic variables, not raw hex. Full list in `tokens/tiny.tokens.json`.
 
 | Role | Variable | Use |
 |---|---|---|
-| Page ground | `--bg-0` | body background (`#f4efe4`) |
-| Sheet / card | `--bg-1` … `--bg-3` | paper objects on the page |
-| Text | `--fg-1` (ink) → `--fg-4` (faint) | ink hierarchy |
-| Action / emphasis | `--ember-600` / `--accent` (`#b5471f`, terracotta) | **the one** accent: the primary action, the dot on the mark, one emphasised word |
+| Page ground | `--bg-0` | body background (`#14140f`) |
+| Raised surface | `--bg-1` … `--bg-3` | sheets lifted off the ground |
+| Text | `--fg-1` (cream) → `--fg-4` (faint) | type hierarchy |
+| Action / emphasis | `--ember-600` / `--accent` (`#e0703f`, ember) | **the one** accent: the primary action, the dot on the mark, one emphasised word |
 | Liveness | `--live-600` / `--signal-live` | **reserved** for genuine live evidence |
 | Idle | `--signal-idle` | asleep, a first-class state |
 | Error | `--signal-error` | failures that name their cause |
 | Rules | `--border-1` (hairline), `--border-2`, `--border-strong` | the ruled-table motif |
-| Ink block | `--panel`, `--on-panel` | a rare dark block (quotes, a receipt on ink) |
+| Paper block | `--panel`, `--on-panel` | the inversion: a rare printed sheet laid on the ink |
 
 **Hard rules:** green is load-bearing, only for genuinely live state. There is
-exactly one accent; the old violet variables now resolve to ink so a
-"secondary" object is quiet, not a second colour. No glows.
+exactly one accent; the violet variables resolve to cream so a "secondary"
+object is quiet, not a second colour. No glows. Token NAMES are stable across
+identities and only their values change, so `paper-*` is the surface ramp
+(darkest first) despite the name.
 
 ## 3. Typography
 
@@ -55,7 +58,7 @@ wide tracking (`--ls-caps`) — the `RitualLabel` / `.eyebrow` vocabulary.
 
 ## 4. Components
 
-- **Button** (`btn`) — `primary` (terracotta; the single key action on a
+- **Button** (`btn`) — `primary` (ember; the single key action on a
   surface) / `secondary` (ink fill) / `ghost` (hairline outline) / `link`;
   sizes `sm|md|lg`. Renders `<a>` when `href` is set. No hover glow.
 - **StatusPill** (`pill`) — `kind` live/idle/paid/self/error on paper;
@@ -76,7 +79,7 @@ wide tracking (`--ls-caps`) — the `RitualLabel` / `.eyebrow` vocabulary.
   head and at the foot.
 - `.receipt` — a run receipt: `dl` of `dt`/`dd` rows in mono between a heavy
   top rule and a foot rule; `dd.ok` / `dd.err` colour the result line.
-- `.readout` — the rare ink block.
+- `.readout` — the inversion: a printed sheet on the ink.
 
 ## 6. Layout, spacing, shape
 
@@ -87,24 +90,31 @@ wide tracking (`--ls-caps`) — the `RitualLabel` / `.eyebrow` vocabulary.
 
 ## 7. Elevation & motion
 
-Almost none. `--shadow-sm` is a one-pixel rest line; `--shadow-md` for a
-floating sheet. Motion is calm: `--dur-base` 200ms, `--ease-standard`.
+On ink, depth is a lighter surface rather than a shadow: raise a thing by
+moving it up the `--bg-*` ramp. Shadows exist for genuinely floating objects
+only. Motion is calm: `--dur-base` 200ms, `--ease-standard`.
 
 ## 8. Do / don't
 
 - DO reserve green for real liveness; DO set every id/timestamp in mono; DO keep
-  one terracotta action per surface; DO use rules and receipts, not cards with
+  one ember action per surface; DO use rules and receipts, not cards with
   shadows, to structure information.
-- DON'T use pure black/white; DON'T add a second accent; DON'T add glows or
+- DON'T use pure black or pure white; DON'T add a second accent; DON'T add glows or
   gradients; DON'T mix claim and evidence type registers; DON'T print
   engagement metrics.
 
 ## 9. The mark
 
-A ring crossed low by a rule that runs off to the right, with one terracotta
-dot on the rule. Geometry and palette live in
-`tinyassets/desktop/icon_gen.py`; `WebSite/brand/render_marks.py` exports it to
-every surface. Inline it on the web from `WebSite/brand/mark.svg`.
+A circular badge: **Mount Baker from the south**, a **wolf howling** on the
+snowfield, a pale **moon** and a spiral **galaxy** overhead. The mountain's
+profile is traced from a photograph of the real skyline, so it carries Baker's
+signature: a flat summit plateau rather than a peak, the jagged Lincoln and
+Colfax group at about half height on the left, and a long south-east flank.
+
+The scene lives as the `EMBLEM` layer list in `tinyassets/desktop/icon_gen.py`.
+Two renderers read it -- one emits SVG, the other rasterises with Pillow -- and
+`WebSite/brand/render_marks.py` exports every raster AND generates the site's
+inline React component, so the web mark cannot drift from the app icons.
 
 ## 10. Agent build guide
 

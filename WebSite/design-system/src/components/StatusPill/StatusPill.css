@@ -12,11 +12,11 @@
   border: 1px solid;
   background: var(--bg-1);
 }
-.pill--live   { color: var(--live-700);     border-color: rgba(58, 125, 71, 0.45); }
-.pill--idle   { color: var(--signal-idle);  border-color: rgba(154, 107, 10, 0.45); }
-.pill--paid   { color: var(--ember-700);    border-color: rgba(181, 71, 31, 0.45); }
+.pill--live   { color: var(--live-600);     border-color: rgba(95, 184, 122, 0.45); }
+.pill--idle   { color: var(--signal-idle);  border-color: rgba(201, 162, 39, 0.45); }
+.pill--paid   { color: var(--ember-600);    border-color: rgba(224, 112, 63, 0.45); }
 .pill--self   { color: var(--fg-2);         border-color: var(--border-2); }
-.pill--error  { color: var(--signal-error); border-color: rgba(163, 58, 42, 0.5); }
+.pill--error  { color: var(--signal-error); border-color: rgba(224, 102, 90, 0.5); }
 
 .pill .dot {
   width: 7px;

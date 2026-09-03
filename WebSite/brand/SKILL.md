@@ -29,12 +29,12 @@ HTML file so the look is identical.
 - **Never claim:** a platform-supplied model, a paid work market, tokens or
   crypto, host-run fleets, a list of integrations, or engagement metrics.
 
-## Visual DNA (warm editorial)
+## Visual DNA (ink editorial)
 
-- **Ground:** paper `#f4efe4`, sheets in `#fbf8f1`. Never white, never a dark
-  default.
-- **Ink:** `#1e1a17` for text; three quieter steps below it.
-- **One accent:** terracotta `#b5471f` for the single action on a surface, one
+- **Ground:** ink `#14140f`, raised surfaces `#1c1c16` and up. Never pure
+  black, never a light default.
+- **Cream:** `#f2efe6` for text; three quieter steps below it.
+- **One accent:** ember `#e0703f` for the single action on a surface, one
   emphasised word, and the dot in the mark. A muted green `#3a7d47` is reserved
   for genuine liveness. Nothing else is coloured.
 - **Type:** Fraunces (variable optical size) for display and first-person
@@ -47,13 +47,14 @@ HTML file so the look is identical.
 
 ## The mark
 
-A ring (a universe) crossed low by a rule that runs off to the right (a ledger
-line), with one terracotta dot on the rule (the agent). The geometry lives in
+A circular badge: Mount Baker from the south, a wolf howling on the snowfield,
+a pale moon and a spiral galaxy overhead. The mountain is traced from a
+photograph, not drawn from memory — its flat summit plateau is the detail most
+stylisations get wrong. The whole scene lives as the `EMBLEM` layer list in
 `../../tinyassets/desktop/icon_gen.py` and nowhere else.
 
-- `mark.svg` — the bare mark, transparent, for light grounds and inline use.
-- `mark-tile.svg` — the mark on its rounded paper tile, for app icons and dark
-  grounds.
+- `mark.svg` — the circular badge, for use anywhere.
+- `mark-tile.svg` — the same scene squared off with rounded corners, for app icons.
 - `python render_marks.py` (from the repo root: `python WebSite/brand/render_marks.py`)
   exports every raster: site icons, `assets/`, desktop, tray, Android, Play.
 - `python render_og.py` renders the site's Open Graph card with the real fonts.
@@ -63,15 +64,15 @@ Never hand-edit an exported PNG or ICO, and never redraw the mark by eye.
 ## Common tasks
 
 **A marketing page or hero:** import `@tiny/design-system/styles.css` (or paste
-the token `:root`). Ritual label, then an H1 in Fraunces, then one lead
-paragraph, then one terracotta button. Put the proof underneath as a
+the token `:root`). Ritual label, then an H1 in Fraunces cream on the ink
+ground, then one lead paragraph, then one ember button. Put the proof underneath as a
 `.receipt`, not as a testimonial.
 
 **An app surface:** hairline borders, `.sheet` for cards, `.ledger` for any
 table of records, mono for every value that came from a machine. One primary
 action per screen; secondary actions are ink-filled or quiet outlines.
 
-**A diagram:** ink strokes on paper, terracotta only for the element the reader
+**A diagram:** cream strokes on the ink ground, ember only for the element the reader
 must follow. Label nodes in mono.
 
 ## Files

@@ -1,303 +1,303 @@
 {
-  "$description": "Tiny — Field Notes design tokens (DTCG 2025.10). Generated from src/styles/tokens.css; do not hand-edit. Exact CSS variable names preserved under $extensions['tiny.var'].",
+  "$description": "TinyAssets — ink-editorial design tokens (DTCG 2025.10). Generated from src/styles/tokens.css; do not hand-edit. Exact CSS variable names preserved under $extensions['tiny.var'].",
   "color": {
     "paper-50": {
       "$type": "color",
-      "$value": "#fbf8f1",
+      "$value": "#1c1c16",
       "$extensions": {
         "tiny.var": "--paper-50"
       }
     },
     "paper-100": {
       "$type": "color",
-      "$value": "#f6f1e6",
+      "$value": "#232319",
       "$extensions": {
         "tiny.var": "--paper-100"
       }
     },
     "paper-200": {
       "$type": "color",
-      "$value": "#efe8d9",
+      "$value": "#2b2b20",
       "$extensions": {
         "tiny.var": "--paper-200"
       }
     },
     "paper-300": {
       "$type": "color",
-      "$value": "#e3d9c4",
+      "$value": "#3a3a2c",
       "$extensions": {
         "tiny.var": "--paper-300"
       }
     },
     "paper-400": {
       "$type": "color",
-      "$value": "#cdbfa3",
+      "$value": "#4c4b3a",
       "$extensions": {
         "tiny.var": "--paper-400"
       }
     },
     "ground-0": {
       "$type": "color",
-      "$value": "#f4efe4",
+      "$value": "#14140f",
       "$extensions": {
         "tiny.var": "--ground-0"
       }
     },
     "ink-text-900": {
       "$type": "color",
-      "$value": "#1e1a17",
+      "$value": "#f2efe6",
       "$extensions": {
         "tiny.var": "--ink-text-900"
       }
     },
     "ink-text-700": {
       "$type": "color",
-      "$value": "#3f3833",
+      "$value": "#cdc7ba",
       "$extensions": {
         "tiny.var": "--ink-text-700"
       }
     },
     "ink-text-500": {
       "$type": "color",
-      "$value": "#6b625a",
+      "$value": "#8f8a7e",
       "$extensions": {
         "tiny.var": "--ink-text-500"
       }
     },
     "ink-text-300": {
       "$type": "color",
-      "$value": "#9c9188",
+      "$value": "#6b675d",
       "$extensions": {
         "tiny.var": "--ink-text-300"
       }
     },
     "ember-900": {
       "$type": "color",
-      "$value": "#6f2a11",
+      "$value": "#a44b21",
       "$extensions": {
         "tiny.var": "--ember-900"
       }
     },
     "ember-700": {
       "$type": "color",
-      "$value": "#953a19",
+      "$value": "#c25c2e",
       "$extensions": {
         "tiny.var": "--ember-700"
       }
     },
     "ember-600": {
       "$type": "color",
-      "$value": "#b5471f",
+      "$value": "#e0703f",
       "$extensions": {
         "tiny.var": "--ember-600"
       }
     },
     "ember-500": {
       "$type": "color",
-      "$value": "#a8401b",
+      "$value": "#ea8459",
       "$extensions": {
         "tiny.var": "--ember-500"
       }
     },
     "ember-300": {
       "$type": "color",
-      "$value": "#d98b6a",
+      "$value": "#f2a582",
       "$extensions": {
         "tiny.var": "--ember-300"
       }
     },
     "ember-100": {
       "$type": "color",
-      "$value": "#f4e3d9",
+      "$value": "#3a2318",
       "$extensions": {
         "tiny.var": "--ember-100"
       }
     },
     "live-700": {
       "$type": "color",
-      "$value": "#2f6b3a",
+      "$value": "#4a9b63",
       "$extensions": {
         "tiny.var": "--live-700"
       }
     },
     "live-600": {
       "$type": "color",
-      "$value": "#3a7d47",
+      "$value": "#5fb87a",
       "$extensions": {
         "tiny.var": "--live-600"
       }
     },
     "live-100": {
       "$type": "color",
-      "$value": "#e0eddf",
+      "$value": "#1e3326",
       "$extensions": {
         "tiny.var": "--live-100"
       }
     },
     "violet-900": {
       "$type": "color",
-      "$value": "#1e1a17",
+      "$value": "#f2efe6",
       "$extensions": {
         "tiny.var": "--violet-900"
       }
     },
     "violet-700": {
       "$type": "color",
-      "$value": "#3f3833",
+      "$value": "#cdc7ba",
       "$extensions": {
         "tiny.var": "--violet-700"
       }
     },
     "violet-600": {
       "$type": "color",
-      "$value": "#3f3833",
+      "$value": "#cdc7ba",
       "$extensions": {
         "tiny.var": "--violet-600"
       }
     },
     "violet-500": {
       "$type": "color",
-      "$value": "#3f3833",
+      "$value": "#cdc7ba",
       "$extensions": {
         "tiny.var": "--violet-500"
       }
     },
     "violet-400": {
       "$type": "color",
-      "$value": "#6b625a",
+      "$value": "#8f8a7e",
       "$extensions": {
         "tiny.var": "--violet-400"
       }
     },
     "violet-200": {
       "$type": "color",
-      "$value": "#3f3833",
+      "$value": "#cdc7ba",
       "$extensions": {
         "tiny.var": "--violet-200"
       }
     },
     "violet-100": {
       "$type": "color",
-      "$value": "#efe8d9",
+      "$value": "#2b2b20",
       "$extensions": {
         "tiny.var": "--violet-100"
       }
     },
     "bone-50": {
       "$type": "color",
-      "$value": "#fbf8f1",
+      "$value": "#1c1c16",
       "$extensions": {
         "tiny.var": "--bone-50"
       }
     },
     "bone-100": {
       "$type": "color",
-      "$value": "#f6f1e6",
+      "$value": "#232319",
       "$extensions": {
         "tiny.var": "--bone-100"
       }
     },
     "bone-200": {
       "$type": "color",
-      "$value": "#efe8d9",
+      "$value": "#2b2b20",
       "$extensions": {
         "tiny.var": "--bone-200"
       }
     },
     "bone-300": {
       "$type": "color",
-      "$value": "#e3d9c4",
+      "$value": "#3a3a2c",
       "$extensions": {
         "tiny.var": "--bone-300"
       }
     },
     "bone-500": {
       "$type": "color",
-      "$value": "#8a8073",
+      "$value": "#8f8a7e",
       "$extensions": {
         "tiny.var": "--bone-500"
       }
     },
     "bone-700": {
       "$type": "color",
-      "$value": "#3f3833",
+      "$value": "#cdc7ba",
       "$extensions": {
         "tiny.var": "--bone-700"
       }
     },
     "ink-900": {
       "$type": "color",
-      "$value": "#1e1a17",
+      "$value": "#f2efe6",
       "$extensions": {
         "tiny.var": "--ink-900"
       }
     },
     "ink-800": {
       "$type": "color",
-      "$value": "#f6f1e6",
+      "$value": "#232319",
       "$extensions": {
         "tiny.var": "--ink-800"
       }
     },
     "ink-700": {
       "$type": "color",
-      "$value": "#efe8d9",
+      "$value": "#2b2b20",
       "$extensions": {
         "tiny.var": "--ink-700"
       }
     },
     "ink-600": {
       "$type": "color",
-      "$value": "#e8e0cd",
+      "$value": "#3a3a2c",
       "$extensions": {
         "tiny.var": "--ink-600"
       }
     },
     "ink-500": {
       "$type": "color",
-      "$value": "#dbd1b9",
+      "$value": "#4c4b3a",
       "$extensions": {
         "tiny.var": "--ink-500"
       }
     },
     "ink-400": {
       "$type": "color",
-      "$value": "#cdbfa3",
+      "$value": "#6b675d",
       "$extensions": {
         "tiny.var": "--ink-400"
       }
     },
     "signal-live": {
       "$type": "color",
-      "$value": "#3a7d47",
+      "$value": "#5fb87a",
       "$extensions": {
         "tiny.var": "--signal-live"
       }
     },
     "signal-idle": {
       "$type": "color",
-      "$value": "#9a6b0a",
+      "$value": "#c9a227",
       "$extensions": {
         "tiny.var": "--signal-idle"
       }
     },
     "signal-warn": {
       "$type": "color",
-      "$value": "#b8631a",
+      "$value": "#d98038",
       "$extensions": {
         "tiny.var": "--signal-warn"
       }
     },
     "signal-error": {
       "$type": "color",
-      "$value": "#a33a2a",
+      "$value": "#e0665a",
       "$extensions": {
         "tiny.var": "--signal-error"
       }
     },
     "bg-0": {
       "$type": "color",
-      "$value": "#f4efe4",
+      "$value": "#14140f",
       "$extensions": {
         "tiny.var": "--bg-0",
         "tiny.alias": "var(--ground-0)"
@@ -305,7 +305,7 @@
     },
     "bg-1": {
       "$type": "color",
-      "$value": "#fbf8f1",
+      "$value": "#1c1c16",
       "$extensions": {
         "tiny.var": "--bg-1",
         "tiny.alias": "var(--paper-50)"
@@ -313,7 +313,7 @@
     },
     "bg-2": {
       "$type": "color",
-      "$value": "#f6f1e6",
+      "$value": "#232319",
       "$extensions": {
         "tiny.var": "--bg-2",
         "tiny.alias": "var(--paper-100)"
@@ -321,7 +321,7 @@
     },
     "bg-3": {
       "$type": "color",
-      "$value": "#efe8d9",
+      "$value": "#2b2b20",
       "$extensions": {
         "tiny.var": "--bg-3",
         "tiny.alias": "var(--paper-200)"
@@ -329,15 +329,15 @@
     },
     "bg-inset": {
       "$type": "color",
-      "$value": "#efe8d9",
+      "$value": "#232319",
       "$extensions": {
         "tiny.var": "--bg-inset",
-        "tiny.alias": "var(--paper-200)"
+        "tiny.alias": "var(--paper-100)"
       }
     },
     "fg-1": {
       "$type": "color",
-      "$value": "#1e1a17",
+      "$value": "#f2efe6",
       "$extensions": {
         "tiny.var": "--fg-1",
         "tiny.alias": "var(--ink-text-900)"
@@ -345,7 +345,7 @@
     },
     "fg-2": {
       "$type": "color",
-      "$value": "#3f3833",
+      "$value": "#cdc7ba",
       "$extensions": {
         "tiny.var": "--fg-2",
         "tiny.alias": "var(--ink-text-700)"
@@ -353,7 +353,7 @@
     },
     "fg-3": {
       "$type": "color",
-      "$value": "#6b625a",
+      "$value": "#8f8a7e",
       "$extensions": {
         "tiny.var": "--fg-3",
         "tiny.alias": "var(--ink-text-500)"
@@ -361,7 +361,7 @@
     },
     "fg-4": {
       "$type": "color",
-      "$value": "#9c9188",
+      "$value": "#6b675d",
       "$extensions": {
         "tiny.var": "--fg-4",
         "tiny.alias": "var(--ink-text-300)"
@@ -369,42 +369,42 @@
     },
     "fg-on-ember": {
       "$type": "color",
-      "$value": "#fbf8f1",
+      "$value": "#14140f",
       "$extensions": {
         "tiny.var": "--fg-on-ember"
       }
     },
     "fg-on-violet": {
       "$type": "color",
-      "$value": "#fbf8f1",
+      "$value": "#14140f",
       "$extensions": {
         "tiny.var": "--fg-on-violet"
       }
     },
     "border-1": {
       "$type": "color",
-      "$value": "rgba(30, 26, 23, 0.16)",
+      "$value": "rgba(242, 239, 230, 0.14)",
       "$extensions": {
         "tiny.var": "--border-1"
       }
     },
     "border-2": {
       "$type": "color",
-      "$value": "rgba(30, 26, 23, 0.32)",
+      "$value": "rgba(242, 239, 230, 0.28)",
       "$extensions": {
         "tiny.var": "--border-2"
       }
     },
     "border-strong": {
       "$type": "color",
-      "$value": "rgba(30, 26, 23, 0.72)",
+      "$value": "rgba(242, 239, 230, 0.55)",
       "$extensions": {
         "tiny.var": "--border-strong"
       }
     },
     "accent": {
       "$type": "color",
-      "$value": "#b5471f",
+      "$value": "#e0703f",
       "$extensions": {
         "tiny.var": "--accent",
         "tiny.alias": "var(--ember-600)"
@@ -412,30 +412,30 @@
     },
     "accent-hover": {
       "$type": "color",
-      "$value": "#953a19",
+      "$value": "#ea8459",
       "$extensions": {
         "tiny.var": "--accent-hover",
-        "tiny.alias": "var(--ember-700)"
+        "tiny.alias": "var(--ember-500)"
       }
     },
     "accent-press": {
       "$type": "color",
-      "$value": "#6f2a11",
+      "$value": "#c25c2e",
       "$extensions": {
         "tiny.var": "--accent-press",
-        "tiny.alias": "var(--ember-900)"
+        "tiny.alias": "var(--ember-700)"
       }
     },
     "accent-quiet": {
       "$type": "color",
-      "$value": "rgba(181, 71, 31, 0.09)",
+      "$value": "rgba(224, 112, 63, 0.14)",
       "$extensions": {
         "tiny.var": "--accent-quiet"
       }
     },
     "graph-violet": {
       "$type": "color",
-      "$value": "#3f3833",
+      "$value": "#cdc7ba",
       "$extensions": {
         "tiny.var": "--graph-violet",
         "tiny.alias": "var(--ink-text-700)"
@@ -443,56 +443,56 @@
     },
     "graph-violet-glow": {
       "$type": "color",
-      "$value": "rgba(30, 26, 23, 0.12)",
+      "$value": "rgba(242, 239, 230, 0.12)",
       "$extensions": {
         "tiny.var": "--graph-violet-glow"
       }
     },
     "panel": {
       "$type": "color",
-      "$value": "#1e1a17",
+      "$value": "#f2efe6",
       "$extensions": {
         "tiny.var": "--panel"
       }
     },
     "panel-raised": {
       "$type": "color",
-      "$value": "#2a2521",
+      "$value": "#fbf9f3",
       "$extensions": {
         "tiny.var": "--panel-raised"
       }
     },
     "panel-line": {
       "$type": "color",
-      "$value": "#3f3833",
+      "$value": "#d9d3c4",
       "$extensions": {
         "tiny.var": "--panel-line"
       }
     },
     "on-panel": {
       "$type": "color",
-      "$value": "#f6f1e6",
+      "$value": "#14140f",
       "$extensions": {
         "tiny.var": "--on-panel"
       }
     },
     "on-panel-soft": {
       "$type": "color",
-      "$value": "#b9b0a4",
+      "$value": "#55524a",
       "$extensions": {
         "tiny.var": "--on-panel-soft"
       }
     },
     "live-bright": {
       "$type": "color",
-      "$value": "#7fbf8c",
+      "$value": "#2f6b3a",
       "$extensions": {
         "tiny.var": "--live-bright"
       }
     },
     "violet-bright": {
       "$type": "color",
-      "$value": "#d98b6a",
+      "$value": "#c25c2e",
       "$extensions": {
         "tiny.var": "--violet-bright"
       }
@@ -816,35 +816,35 @@
   "shadow": {
     "shadow-sm": {
       "$type": "shadow",
-      "$value": "0 1px 0 rgba(30, 26, 23, 0.06)",
+      "$value": "0 1px 0 rgba(0, 0, 0, 0.4)",
       "$extensions": {
         "tiny.var": "--shadow-sm"
       }
     },
     "shadow-md": {
       "$type": "shadow",
-      "$value": "0 1px 2px rgba(30, 26, 23, 0.06), 0 6px 18px rgba(30, 26, 23, 0.06)",
+      "$value": "0 2px 4px rgba(0, 0, 0, 0.45), 0 8px 24px rgba(0, 0, 0, 0.35)",
       "$extensions": {
         "tiny.var": "--shadow-md"
       }
     },
     "shadow-lg": {
       "$type": "shadow",
-      "$value": "0 2px 6px rgba(30, 26, 23, 0.06), 0 16px 40px rgba(30, 26, 23, 0.08)",
+      "$value": "0 4px 10px rgba(0, 0, 0, 0.5), 0 20px 48px rgba(0, 0, 0, 0.45)",
       "$extensions": {
         "tiny.var": "--shadow-lg"
       }
     },
     "glow-graph": {
       "$type": "shadow",
-      "$value": "0 0 0 1px rgba(30, 26, 23, 0.2)",
+      "$value": "0 0 0 1px rgba(242, 239, 230, 0.2)",
       "$extensions": {
         "tiny.var": "--glow-graph"
       }
     },
     "glow-ember": {
       "$type": "shadow",
-      "$value": "0 0 0 1px rgba(181, 71, 31, 0.35)",
+      "$value": "0 0 0 1px rgba(224, 112, 63, 0.4)",
       "$extensions": {
         "tiny.var": "--glow-ember"
       }

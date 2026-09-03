@@ -17,7 +17,7 @@
 .btn:disabled,
 .btn.disabled {
   cursor: not-allowed;
-  background: var(--paper-200);
+  background: var(--bg-2);
   color: var(--fg-4);
   border-color: transparent;
 }
@@ -31,21 +31,21 @@
   color: var(--fg-on-ember);
 }
 .btn--primary:hover:not(:disabled):not(.disabled) {
-  background: var(--ember-700);
+  background: var(--ember-500);
 }
 .btn--primary:active:not(:disabled):not(.disabled) {
-  background: var(--ember-900);
+  background: var(--ember-700);
   transform: translateY(1px);
 }
-/* Secondary is a quiet ink object, never a second colour. */
+/* Secondary is a quiet cream object, never a second colour. */
 .btn--secondary {
-  background: var(--ink-text-900);
-  color: var(--paper-50);
-  border-color: var(--ink-text-900);
+  background: var(--fg-1);
+  color: var(--bg-0);
+  border-color: var(--fg-1);
 }
 .btn--secondary:hover:not(:disabled):not(.disabled) {
-  background: var(--ink-text-700);
-  border-color: var(--ink-text-700);
+  background: var(--fg-2);
+  border-color: var(--fg-2);
 }
 .btn--ghost {
   background: transparent;
@@ -54,18 +54,18 @@
 }
 .btn--ghost:hover:not(:disabled):not(.disabled) {
   background: var(--bg-1);
-  border-color: var(--ink-text-900);
+  border-color: var(--fg-1);
 }
 .btn--link {
   background: transparent;
-  color: var(--ember-700);
+  color: var(--ember-600);
   padding: 0;
   border: none;
   text-decoration: underline;
-  text-decoration-color: rgba(149, 58, 25, 0.35);
+  text-decoration-color: rgba(224, 112, 63, 0.4);
   text-underline-offset: 3px;
 }
 .btn--link:hover:not(:disabled):not(.disabled) {
-  color: var(--ember-900);
+  color: var(--ember-500);
   text-decoration-color: currentColor;
 }
