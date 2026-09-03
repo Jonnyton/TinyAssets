@@ -181,7 +181,7 @@ def _handle_hook_inner(
     owner_principal_id = str(binding.get("owner_principal_id") or "").strip()
     if not owner_principal_id:
         # A hook minted before owners were recorded. It would run as nobody,
-        # which is exactly what no-anonymous-principal removes: refuse, say
+        # which is exactly what the fail-closed boundary removes: refuse, say
         # so in the log (the caller sees the uniform 404), and the owner
         # re-creates the hook or Source.
         logger.error(
@@ -317,7 +317,7 @@ def _emit_source_event(
     credential); ``event_id`` is the SERVER-side dedupe key so the bus also dedupes
     at-most-once (Codex #4). The subscription carries the universe binding; the
     owner rides on the event so the run binds to a person without a lookup on the
-    event thread (no-anonymous-principal D2). The in-flight reservation id rides
+    event thread (authenticated-owner boundary D2). The in-flight reservation id rides
     under a private inputs key so the fired run can link + release it.
     """
     from tinyassets.scheduler import SchedulerEvent, emit_event, is_running

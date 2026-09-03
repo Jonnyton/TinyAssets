@@ -465,8 +465,10 @@ class TestIdentityRoster:
             subject = str(raw_subject).strip()
             if not alias or not subject:
                 raise ValueError("roster aliases and subjects must be non-empty")
-            if subject == "anonymous":
-                raise ValueError("anonymous cannot be a test identity")
+            from tinyassets.principals import has_named_principal
+
+            if not has_named_principal(subject):
+                raise ValueError("an unbound subject cannot be a test identity")
             if alias in normalized:
                 raise ValueError(f"duplicate test identity alias: {alias}")
             normalized[alias] = subject

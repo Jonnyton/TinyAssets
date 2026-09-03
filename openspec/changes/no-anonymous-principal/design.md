@@ -115,10 +115,13 @@ change now includes the hosted connector's metadata + runtime linking contract.
 Authors: `BranchDefinition.author`, `NodeDefinition.author`, `extensions`
 authors, `branch_versions` publisher, `catalog/serializer` author, `market`
 claimer / staker / caller, `runtime_ops.owner_actor`, `selector_dispatch.actor`,
-`interlocutor.actor_id`: no `"anonymous"` default (PR 2). A missing author at
-write time raises; readers that meet a stored `"anonymous"` author treat it
-as unowned, never as a principal that can match a caller; a one-shot script
-lists such rows. The interlocutor tier `T0` is deleted.
+`interlocutor.actor_id`: no retired-marker default (continuation 3). A missing
+author at write time raises; readers normalize the historical marker through
+the dependency-free `tinyassets.principals.named_principal` compatibility
+decoder and treat the row as unowned, never as a principal that can match a
+caller. New source and schema defaults use the empty string. Interlocutor `T0`
+remains only as an internal public-projection classification; it carries an
+empty actor id and is unreachable through unsigned MCP transport.
 
 ## D3. Exempt paths keep their own named authentication
 
@@ -252,14 +255,14 @@ Each is decided below with the reason; any can be reversed by the founder.
    fixed `local-operator` is a default identity by another name.
 3. **Website: checked-in snapshot until signed in; the playground shows the
    challenge first.** Release pulse is not a public exception.
-4. **Legacy `"anonymous"` authors are unowned and listed, not rewritten.**
-   Rewriting attribution invents provenance; listing lets the founder decide
-   per row.
+4. **Historical synthetic authors stay unowned and are not rewritten.**
+   Rewriting attribution invents provenance. A single read-only compatibility
+   decoder recognizes the retired stored marker while no writer can emit it.
 5. **`/mcp/pulse` fields: `git_sha`, `image_tag`, `deployed_at`,
    `uptime_seconds`.** Nothing that names a universe or a user.
-6. **Legacy rows are quarantined, not fatal (Codex round 3).** OAuth sessions
-   whose `user_id` is `anonymous` are deleted by the migration (they were
-   never a person); run rows whose actor is `anonymous` are logged at ERROR
-   once at startup, listed, and never re-dispatched; hooks with no recorded
-   owner refuse delivery with a logged error and the caller's uniform 404
-   until the owner re-creates them. No deployment fails on legacy data.
+6. **Historical rows are quarantined, not fatal (Codex round 3).** Sessions
+   whose user id is the retired marker are deleted when resolved; run rows with
+   an unowned actor remain owner-reachable only when `owner_user_id` proves the
+   caller; hooks with no recorded owner refuse delivery with a logged error and
+   the caller's uniform 404 until the owner re-creates them. No deployment
+   fails merely because historical data exists.

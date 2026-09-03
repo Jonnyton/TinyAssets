@@ -467,7 +467,7 @@ def _action_escrow_lock(kwargs: dict[str, Any]) -> str:
     node_id = (kwargs.get("node_id") or "").strip()
     # Lock reserves the caller's OWN funded budget — always the authenticated
     # actor, never a caller-supplied identity (slice1a review CRITICAL 1).
-    claimer = (_current_actor() or "").strip() or "anonymous"
+    claimer = _current_actor().strip()
     currency = (kwargs.get("currency") or "MicroToken").strip()
     raw_amount = kwargs.get("amount", 0)
     try:
@@ -507,7 +507,7 @@ def _action_escrow_release(kwargs: dict[str, Any]) -> str:
     evidence = (kwargs.get("evidence") or "").strip()
     # Only the lock's staker (or host) may release it — pass the authenticated
     # actor so action_escrow_release can authorize ownership (CRITICAL 1).
-    caller_id = (_current_actor() or "").strip() or "anonymous"
+    caller_id = _current_actor().strip()
 
     if not recipient_id:
         return json.dumps({
@@ -545,7 +545,7 @@ def _action_escrow_refund(kwargs: dict[str, Any]) -> str:
     # Only the lock's staker (or host) may refund it — pass the authenticated
     # actor so action_escrow_refund can authorize ownership (CRITICAL round 2).
     # A write-scoped caller cannot cancel another actor's escrow by lock_id.
-    caller_id = (_current_actor() or "").strip() or "anonymous"
+    caller_id = _current_actor().strip()
 
     with _connect(_base_path()) as conn:
         result = action_escrow_refund(
@@ -611,7 +611,7 @@ def _action_escrow_fund(kwargs: dict[str, Any]) -> str:
 def _action_escrow_balance(kwargs: dict[str, Any]) -> str:
     """Read-only — a staker's escrow budget (total / reserved / spendable)."""
     # A balance is read FOR a principal. Falling back to an env var read one
-    # stranger's escrow for another (and, unset, read "anonymous"'s).
+    # stranger's escrow for another (and, unset, read an unowned bucket).
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.payments.actions import action_escrow_balance
     from tinyassets.storage import _connect
@@ -816,8 +816,9 @@ def _outcome_run_owner(run: dict[str, Any]) -> str:
     owner = str(run.get("owner_user_id") or "").strip()
     if owner:
         return owner
-    actor = str(run.get("actor") or "").strip()
-    return "" if actor == "anonymous" else actor
+    from tinyassets.principals import named_principal
+
+    return named_principal(run.get("actor"))
 
 
 def _action_record_outcome(kwargs: dict[str, Any]) -> str:
@@ -1020,7 +1021,9 @@ def _action_record_remix(kwargs: dict[str, Any]) -> str:
         credit_share = 0.0
     credit_share = max(0.0, min(1.0, credit_share))
 
-    actor_id = (kwargs.get("actor_id") or "anonymous").strip() or "anonymous"
+    from tinyassets.principals import named_principal
+
+    actor_id = named_principal(kwargs.get("actor_id"))
     owner_user_id = (kwargs.get("owner_user_id") or "").strip()
     daemon_id = (kwargs.get("daemon_id") or "").strip()
     runtime_instance_id = (kwargs.get("runtime_instance_id") or "").strip()
@@ -1568,7 +1571,7 @@ def _action_goal_get(kwargs: dict[str, Any]) -> str:
     # Phase 6.2.2 — viewer-aware. Private Branches owned by other
     # actors are excluded from this Goal's published Branch list.
     actor = _current_actor()
-    scope_actor = "" if actor == "anonymous" else actor
+    scope_actor = actor
     branches = branches_for_goal(
         _base_path(), goal_id=gid, viewer=actor,
     )
@@ -2297,7 +2300,7 @@ def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
 
     actor = _current_actor()
     scope_actor = (kwargs.get("scope") or "").strip()
-    if scope_actor and actor == "anonymous":
+    if scope_actor and not actor:
         return json.dumps({
             "status": "rejected",
             "error": "Authentication is required for a personal canonical.",
@@ -2786,7 +2789,7 @@ def goals(
         })
 
     # Auth scope gate — goals is a write-capable commons surface, so enforce the
-    # named action scope (resolve-always/WorkOS): anonymous callers may read but
+    # named action scope (resolve-always/WorkOS): public projections are separate;
     # not propose/update/bind/set_canonical/define_protocol/set_selector. Covers
     # write_graph(target="goal"), which routes here.
     from tinyassets.auth.middleware import require_action_scope

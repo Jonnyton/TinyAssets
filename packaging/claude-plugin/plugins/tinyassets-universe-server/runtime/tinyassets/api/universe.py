@@ -1603,7 +1603,9 @@ def _unavailable_epoch2_summary(error: str) -> dict[str, Any]:
 def _may_view_unscoped_epoch2_integrity(udir: Path) -> bool:
     """Restrict exact unscoped corruption counts to universe admins."""
     actor_id = permissions.current_actor_id()
-    if actor_id == "anonymous":
+    from tinyassets.principals import has_named_principal
+
+    if not has_named_principal(actor_id):
         return False
     try:
         from tinyassets.daemon_server import universe_access_permission
@@ -1833,7 +1835,7 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
     # be gated on the `read_metadata` capability — not merely the legacy read
     # gate. A content-only (`unlisted`) universe sets public_read=True to keep
     # content readable, which the legacy preflight allows; without this gate an
-    # anonymous caller would read its metadata even though the level withholds it.
+    # unbound caller would read its metadata even though the level withholds it.
     from tinyassets.api import permissions, visibility
 
     if not visibility.visibility_permits(uid, "read_metadata"):
@@ -5824,7 +5826,7 @@ def _action_switch_universe(universe_id: str = "", **_kwargs: Any) -> str:
             ),
         })
 
-    # Anonymous / dev single-tenant: write the active universe marker — the
+    # Local/dev single-tenant: write the active universe marker — the
     # tray app watches this file to switch the local daemon.
     marker = _base_path() / ".active_universe"
     try:
@@ -5912,7 +5914,7 @@ def _action_create_universe(
             ),
         }
 
-        # Auto-switch the daemon to the new universe — ONLY for anonymous / dev
+        # Auto-switch the daemon to the new universe — ONLY for local/dev
         # single-tenant (tray) creates. An authenticated founder's create is a
         # multi-tenant MCP operation: their universe is recorded as their
         # ``founder_home`` binding (below), and per the universe-creation spec

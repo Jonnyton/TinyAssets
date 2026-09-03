@@ -762,8 +762,10 @@ def _verified_import_lineage(
 
 
 def _author_and_key(author_id: str, idempotency_key: str) -> tuple[str, str]:
-    actor = (author_id or "").strip()
-    if not actor or actor == "anonymous":
+    from tinyassets.principals import named_principal
+
+    actor = named_principal(author_id)
+    if not actor:
         raise AgentValidationError("an authenticated author_id is required")
     key = (idempotency_key or "").strip()
     if len(key) > 128:
@@ -1020,12 +1022,14 @@ def create_binding(
 
     uid = (universe_id or "").strip()
     did = (definition_id or "").strip()
-    actor = (created_by or "").strip()
+    from tinyassets.principals import named_principal
+
+    actor = named_principal(created_by)
     if not uid:
         raise AgentValidationError("universe_id is required")
     if not did:
         raise AgentValidationError("definition_id is required")
-    if not actor or actor == "anonymous":
+    if not actor:
         raise AgentValidationError("an authenticated created_by actor is required")
     configuration = _normalize_binding_payload(payload)
     binding_id = f"agent_binding_{new_ulid()}"
@@ -1113,7 +1117,9 @@ def update_binding(
 
     uid = (universe_id or "").strip()
     bid = (binding_id or "").strip()
-    actor = (updated_by or "").strip()
+    from tinyassets.principals import named_principal
+
+    actor = named_principal(updated_by)
     if not uid or not bid:
         raise AgentValidationError("universe_id and binding_id are required")
     if (
@@ -1122,7 +1128,7 @@ def update_binding(
         or expected_revision < 1
     ):
         raise AgentValidationError("expected_revision must be a positive integer")
-    if not actor or actor == "anonymous":
+    if not actor:
         raise AgentValidationError("an authenticated updated_by actor is required")
     configuration = _normalize_binding_payload(payload)
     requested_definition = (definition_id or "").strip()

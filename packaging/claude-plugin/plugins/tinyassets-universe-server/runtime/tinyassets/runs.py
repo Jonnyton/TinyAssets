@@ -49,6 +49,7 @@ from tinyassets.graph_compiler import (
     compile_branch,
     seed_initial_state,
 )
+from tinyassets.principals import has_named_principal, named_principal
 
 logger = logging.getLogger(__name__)
 
@@ -1177,16 +1178,10 @@ def create_run(
     branch_task_id: str | None = None,
     queue_universe_id: str | None = None,
 ) -> str:
-    actor = (actor or "").strip()
-    if actor.lower() == "anonymous":
-        # The string is not a principal. A row carrying it is legacy data, and
-        # nothing may create a new one (Codex review, 2026-09-02).
-        raise ValueError(
-            'create_run needs a real principal; "anonymous" is not one'
-        )
+    actor = named_principal(actor)
     if not actor:
-        # No anonymous principal (founder, 2026-09-02): a run is somebody's.
-        raise ValueError("create_run needs an actor; refusing to record a run as nobody")
+        # A run is somebody's; no synthetic principal is minted.
+        raise ValueError("create_run actor must be a real principal; an unowned value is not one")
     initialize_runs_db(base_path)
     run_id = uuid.uuid4().hex[:16]
     resolved_owner_user_id = (
@@ -1378,7 +1373,7 @@ def update_run_status(
                             base_path,
                             event_id=f"execute_step:{run_id}:{status}",
                             event_type="execute_step",
-                            actor_id=row["actor"] or "anonymous",
+                            actor_id=named_principal(row["actor"]),
                             owner_user_id=row["owner_user_id"] or "",
                             daemon_id=row["daemon_id"] or "",
                             runtime_instance_id=row["runtime_instance_id"] or "",
@@ -2189,7 +2184,7 @@ def add_judgment(
     text: str,
     node_id: str | None = None,
     tags: list[str] | None = None,
-    author: str = "anonymous",
+    author: str = "",
 ) -> dict[str, Any]:
     """Persist a user's natural-language judgment of a run or node.
 
@@ -2943,7 +2938,7 @@ def _invoke_graph(
             return
         node_def_id = getattr(nd, "node_def_id", "") or getattr(nd, "node_id", "")
         author = getattr(nd, "author", "") or ""
-        if not node_def_id or not author or author == "anonymous":
+        if not node_def_id or not has_named_principal(author):
             return
         try:
             from tinyassets.contribution_events import record_contribution_event

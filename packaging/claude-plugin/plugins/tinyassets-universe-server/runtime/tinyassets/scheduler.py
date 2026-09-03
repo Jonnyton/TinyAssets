@@ -777,8 +777,8 @@ class SchedulerEvent:
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     payload: dict[str, Any] = field(default_factory=dict)
     #: The principal the fired run acts for. Stamped by the emitter from the
-    #: hook's owner (no-anonymous-principal D2); the event thread has no
-    #: request identity to fall back to, and there is no anonymous one.
+    #: hook's owner (authenticated-owner boundary D2); the event thread has no
+    #: request identity to fall back to, and there is no synthetic one.
     owner_principal_id: str = ""
 
 

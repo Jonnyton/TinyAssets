@@ -74,7 +74,7 @@ def is_exact_wiki_canary_request(body: bytes) -> bool:
     )
 
 
-#: The canary service principal's whole world (no-anonymous-principal D4).
+#: The canary service principal's whole world (change D4).
 #: Every item of a JSON-RPC body under the canary bearer must be one of these
 #: or the request is refused before dispatch. Kept this narrow on purpose: a
 #: leaked canary bearer can probe liveness and nothing else.

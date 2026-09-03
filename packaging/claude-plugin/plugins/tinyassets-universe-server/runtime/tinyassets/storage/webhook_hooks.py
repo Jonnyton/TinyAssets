@@ -114,7 +114,7 @@ def _connect(base_path: str | Path) -> sqlite3.Connection:
 
 def _migrate_hooks_owner(conn: sqlite3.Connection) -> None:
     """Add ``owner_principal_id`` to a store created before hooks recorded
-    their owner (no-anonymous-principal D2). Rows keep '' and REFUSE to
+    their owner (authenticated-owner boundary D2). Rows keep '' and REFUSE to
     deliver until their owner re-creates them: a hook that runs as nobody is
     the thing this change removes."""
     columns = {row[1] for row in conn.execute("PRAGMA table_info(webhook_hooks)")}
@@ -180,7 +180,7 @@ def mint(
     hash + prefix are persisted. The mint OPERATION checks ownership + authorship.
 
     ``owner_principal_id`` is the authenticated caller; every delivery on this
-    hook runs as them (no-anonymous-principal D2). Required and non-empty."""
+    hook runs as them (authenticated-owner boundary D2). Required and non-empty."""
     for name, val in (
         ("universe_id", universe_id),
         ("branch_def_id", branch_def_id),

@@ -53,6 +53,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from tinyassets.principals import named_principal
+
 logger = logging.getLogger(__name__)
 
 DB_FILENAME = ".automations.db"
@@ -866,11 +868,11 @@ def register_automation(
 
     base = Path(base_path)
     uid = str(universe_id or "").strip()
-    owner = str(owner_principal_id or "").strip()
+    owner = named_principal(owner_principal_id)
 
     if not assigned_queue_consumer_enabled():
         raise AutomationUnavailable("consumer_disabled")
-    if not owner or owner == "anonymous":
+    if not owner:
         raise AutomationUnavailable("authentication_required")
     if universe_access_permission(base, universe_id=uid, actor_id=owner) != "admin":
         raise AutomationUnavailable("owner_not_admin")

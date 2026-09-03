@@ -22,7 +22,7 @@ Public surface (back-compat re-exported via ``tinyassets.universe_server``):
     Public action ledger trio:
       _current_actor()               - resolve request auth identity, falling
                                        back to UNIVERSE_SERVER_USER (default
-                                       'anonymous'); patched 7+ times in tests
+                                       'unbound'); patched 7+ times in tests
       _append_ledger(udir, action, ..) - durable per-universe ledger writer
       _truncate(text, limit=140)     - whitespace-collapsing string truncator
                                        for ledger summary lines

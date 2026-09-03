@@ -113,12 +113,14 @@ def test_run_exit_2_when_network_fails(monkeypatch):
 
 def test_main_passes_custom_urls_to_run(monkeypatch):
     seen = {}
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "t" * 40)
 
     def _run(canonical, tunnel, timeout, *, internal_parity=False, bearer_token=None):
         seen["canonical"] = canonical
         seen["tunnel"] = tunnel
         seen["timeout"] = timeout
         seen["internal_parity"] = internal_parity
+        seen["bearer_token"] = bearer_token
         return 0
 
     monkeypatch.setattr(smoke, "run", _run)
@@ -132,6 +134,7 @@ def test_main_passes_custom_urls_to_run(monkeypatch):
     assert seen["tunnel"] == "https://tunnel.example.com/mcp"
     assert seen["timeout"] == 5.0
     assert seen["internal_parity"] is False
+    assert seen["bearer_token"] == "t" * 40
 
 
 # ---------------------------------------------------------------------------

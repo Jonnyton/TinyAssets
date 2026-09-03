@@ -191,9 +191,11 @@ def ensure_founder_serving(
     if provider is None:
         return {"status": "held", "reason": "unsupported_service"}
     base = Path(base_path)
-    owner = (owner_user_id or "").strip()
+    from tinyassets.principals import named_principal
+
+    owner = named_principal(owner_user_id)
     uid = (universe_id or "").strip()
-    if not owner or owner == "anonymous" or not uid:
+    if not owner or not uid:
         return {"status": "held", "reason": "authentication_required"}
     with _gesture_lock(uid):
         return _ensure_founder_serving_locked(

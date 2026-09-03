@@ -94,16 +94,23 @@ downgraded to any other identity.
 
 ### Requirement: Legacy Fat Tools Registered But Hidden
 
-The six legacy fat tools (`universe`, `community_change_context`,
-`extensions`, `goals`, `gates`, `wiki`) SHALL remain registered and
+The server SHALL keep the six legacy fat tools (`universe`, `community_change_context`,
+`extensions`, `goals`, `gates`, `wiki`) registered and
 dispatchable for one migration release while being hidden from `tools/list`
 by the `_DeprecatedToolVisibility` middleware. Every call to a hidden legacy
 tool SHALL be logged as deprecated. Like every handle they require a valid
-bearer; an unauthenticated call never reaches them.
+bearer: the transport SHALL challenge an unauthenticated call before it can
+reach them.
 
-#### Scenario: hidden legacy tool is still dispatchable
-- **WHEN** an authenticated caller invokes a hidden legacy tool
-- **THEN** it dispatches and the call is logged as deprecated
+#### Scenario: Legacy tool is absent from the advertised list but still callable
+
+- **WHEN** an authenticated client reads `tools/list` and then calls the legacy `universe` tool by name
+- **THEN** `universe` does not appear in the advertised list, the call still dispatches and returns a result, and a `deprecated-tool-call name=universe` warning is logged
+
+#### Scenario: Unauthenticated caller is refused before a legacy tool
+
+- **WHEN** an unauthenticated client calls a deprecated fat tool
+- **THEN** the transport returns an authentication challenge and the legacy tool is not dispatched
 
 ### Requirement: Custom agents route through canonical graph handles
 

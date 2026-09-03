@@ -203,7 +203,7 @@ def _bind_founder_identity(capabilities=_READ_CAPABILITIES):
     ``_RUN_CAPABILITIES`` so a run can submit while reads stay least-privilege.
     Returns the ContextVar token so the caller can reset it. Fail-closed: with no
     actor_id there is nothing to bind and the call refuses (there is no
-    anonymous principal to fall back to; founder, 2026-09-02).
+    synthetic principal to fall back to; founder, 2026-09-02).
     """
     from tinyassets.auth.middleware import _current_identity
     from tinyassets.auth.provider import Identity
@@ -245,7 +245,7 @@ _PINNED_READ_TARGETS = frozenset({
 def _binding_error() -> str | None:
     """Hard fail-closed: refuse every call unless BOTH ids are bound.
 
-    Codex #3: an empty actor_id must not degrade to an anonymous public read — it
+    Codex #3: an empty actor_id must not degrade to a public read — it
     must expose nothing. The wiring already refuses to launch this server without
     both ids, but defense-in-depth belongs at the call site too.
     """
@@ -2102,7 +2102,7 @@ def write_brain(
 # connect_http and this only references an EXISTING grant already bound to this
 # universe), creates no authority, enrolls nothing, and makes no provider routable
 # (design §1). It is owner-gated (connect_compute requires an explicit admin ACL row
-# for the bound founder; anonymous/non-admin get the uniform not_found), graph-PINNED
+# for the bound founder; unbound/non-admin get the uniform not_found), graph-PINNED
 # (universe_id is never caller-supplied, so the agent cannot register for another
 # universe), and — like remix/run_graph — held to the vetted-founder allowlist while
 # multi-tenant engine-write confinement is hardened. NO secret ever crosses this
@@ -2221,7 +2221,7 @@ def connect_compute(
 #    approve on this surface; the verb stays about outbound sinks.
 #  * Only action=="approve" is served (set_policy/get_policy are not exposed yet).
 #  * owner-gated (source_channel's impl requires an admin ACL row for the bound founder;
-#    anonymous / read-write collaborators get auth_failed), graph-PINNED (universe_id is
+#    unbound / read-write collaborators get auth_failed), graph-PINNED (universe_id is
 #    never caller-supplied — the agent cannot approve for another universe), secret-free
 #    (consent is a (sink, destination) allow, never a credential — the token is deposited
 #    out of band via the browser form / connect_http, deliberately NOT exposed here), and

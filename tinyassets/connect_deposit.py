@@ -559,7 +559,7 @@ def _run_deposit_as_sub(
     contextvar is set and reset IN THIS THREAD via the public ``identity_context``
     helper so ``connect_llm``'s actor resolution
     (``permissions.current_actor_id`` -> ``current_identity().user_id``) sees
-    exactly this founder — never anonymous, never a host/ambient identity. Every
+    exactly this founder — never unbound, never a host/ambient identity. Every
     gate inside ``connect_llm`` still runs: the explicit universe ``admin`` ACL
     row and the vault's owner-binding / atomic write.
     """
@@ -759,11 +759,9 @@ async def connect_callback(request):  # type: ignore[no-untyped-def]
     # cached, audience-bound resource-server validator. sub is the WorkOS user id
     # and IS the downstream ACL actor id.
     identity = await run_in_threadpool(_resolve_identity, access_token)
-    sub = (
-        identity.user_id
-        if identity is not None and identity.user_id and identity.user_id != "anonymous"
-        else ""
-    )
+    from tinyassets.principals import named_principal
+
+    sub = named_principal(identity.user_id if identity is not None else "")
     if not sub:
         return HTMLResponse(
             _result_page(
@@ -883,8 +881,10 @@ async def connect_root(request):  # type: ignore[no-untyped-def]
             status_code=400,
         )
 
-    sub = str(session.get("sub", ""))
-    if not sub or sub == "anonymous":
+    from tinyassets.principals import named_principal
+
+    sub = named_principal(session.get("sub"))
+    if not sub:
         return RedirectResponse(_LOGIN_PATH, status_code=302)
 
     if not _deposit_rate_ok(sub):

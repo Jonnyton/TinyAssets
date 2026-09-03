@@ -431,7 +431,7 @@ class NodeDefinition:
     handoffs: list[dict[str, Any]] = field(default_factory=list)
 
     # Legacy compat fields from NodeRegistration
-    author: str = "anonymous"
+    author: str = ""
     registered_at: str = ""
     enabled: bool = True
     approved: bool = False
@@ -913,7 +913,7 @@ class BranchDefinition:
     branch_def_id: str = field(default_factory=_new_id)
     name: str = ""
     description: str = ""
-    author: str = "anonymous"
+    author: str = ""
     domain_id: str = "workflow"
     # Phase 5: optional Goal binding. Empty string means no Goal. A
     # Goal captures the intent a Branch serves; many Branches can bind
@@ -1372,7 +1372,7 @@ class BranchDefinition:
     def fork(
         self,
         new_name: str = "",
-        author: str = "anonymous",
+        author: str = "",
     ) -> BranchDefinition:
         """Create a forked copy of this branch definition.
 

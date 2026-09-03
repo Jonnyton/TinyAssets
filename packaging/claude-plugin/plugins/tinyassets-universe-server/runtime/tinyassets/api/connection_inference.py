@@ -351,8 +351,10 @@ def resolve_connection(*, universe_id: str = "", payload: Any = None) -> dict[st
 
     if not permissions.is_authenticated_request():
         return {"error": "authentication_required", "resource": "connection"}
-    actor = permissions.current_actor_id().strip()
-    if not actor or actor == "anonymous":
+    from tinyassets.principals import named_principal
+
+    actor = named_principal(permissions.current_actor_id())
+    if not actor:
         return {"error": "authentication_required", "resource": "connection"}
 
     # Require an explicit `admin` ACL row for THIS actor on THIS universe —

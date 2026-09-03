@@ -109,7 +109,7 @@ class NodeRegistration:
     output_keys: list[str]
     source_code: str
     dependencies: list[str] = field(default_factory=list)
-    author: str = "anonymous"
+    author: str = ""
     registered_at: str = ""
     enabled: bool = True
     approved: bool = False
@@ -1102,7 +1102,9 @@ def _ext_manage(node_id: str, action: str) -> str:
 
     if action == "approve":
         actor = _current_actor()
-        registrant = (nodes[idx].get("author") or "").strip() or "anonymous"
+        from tinyassets.principals import named_principal
+
+        registrant = named_principal(nodes[idx].get("author"))
         if actor == registrant:
             return json.dumps({
                 "status": "rejected",

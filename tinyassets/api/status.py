@@ -1077,7 +1077,7 @@ def _resolve_entry_universe(universe_id: str) -> tuple[str, bool]:
     missing home; status only reports that no complete home is bound.
 
     - An explicit ``universe_id`` always wins.
-    - An anonymous / dev caller uses the legacy default resolution
+    - A local/dev caller uses the legacy default resolution
       (``.active_universe`` / first dir).
     - An authenticated founder with a bound, living home returns it.
     """
@@ -1652,7 +1652,7 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
         "release_state": release_state,
         # Platform-wide, names no universe: the uptime probes read these
         # instead of inspecting a universe, which the canary principal may not
-        # do (no-anonymous-principal D4).
+        # do (service-principal boundary D4).
         "daemon": {
             "last_activity_at": _platform_last_activity_at(),
             "worker_liveness": _platform_worker_liveness(),

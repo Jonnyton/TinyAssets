@@ -24,6 +24,7 @@ import jwt
 from jwt import PyJWKClient
 
 from tinyassets.auth.provider import AuthProvider, Identity
+from tinyassets.principals import named_principal
 
 logger = logging.getLogger("universe_server.auth.workos")
 
@@ -213,8 +214,8 @@ class WorkOSAuthProvider(AuthProvider):
             _log_token_rejection(_validation_failure_category(error))
             return None
 
-        sub = str(claims.get("sub", "")).strip()
-        if not sub or sub == "anonymous":
+        sub = named_principal(claims.get("sub"))
+        if not sub:
             _log_token_rejection("invalid_subject")
             return None
 
@@ -248,15 +249,13 @@ class WorkOSAuthProvider(AuthProvider):
         )
 
     def is_auth_required(self) -> bool:
-        # Never reject anonymous outright: anonymous callers may read public
-        # surfaces. Write enforcement is expressed via resolve_always_writes()
-        # so reads stay open (D0b). Keeping this False is intentional.
+        # The ASGI transport challenges every MCP request. This provider flag
+        # remains false so resolve-always action grants use coarse capabilities.
         return False
 
     def resolve_always_writes(self) -> bool:
-        # WorkOS is the production resolve-always mode: anonymous reads are
-        # allowed, but create/write/costly/admin require an authenticated
-        # founder holding the action's grant (require_action_scope enforces).
+        # WorkOS resolves every request before dispatch; action scopes add the
+        # per-operation grant check after transport authentication.
         return True
 
     # --- OAuth flow: AuthKit's job, not the Resource Server's --------------

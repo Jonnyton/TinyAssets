@@ -93,7 +93,7 @@ def _request_universe(universe_id: str = "") -> str:
     AUTHENTICATED founder resolves to their bound home (falling back to the
     identity-neutral public universe — never through the host-global
     ``.active_universe`` marker or another founder's serial home, which leaked
-    cross-founder on `universe action=inspect` and friends); an anonymous /
+    cross-founder on `universe action=inspect` and friends); an unbound /
     dev caller keeps the legacy single-tenant default resolution. Unlike
     get_status's ``_resolve_entry_universe`` this NEVER creates a universe.
     """

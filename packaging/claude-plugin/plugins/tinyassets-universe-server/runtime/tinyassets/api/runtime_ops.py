@@ -348,7 +348,7 @@ _MESSAGING_ACTIONS: dict[str, Any] = {
 #
 # Ownership of a schedule is DERIVED from the authenticated request, never read
 # from a caller field. ``owner_actor`` used to arrive in kwargs and default to
-# "anonymous", which made registration an unauthenticated self-issued authority
+# a synthetic actor, which made registration a self-issued authority
 # claim: anyone could schedule a branch and name whoever they liked as its owner.
 # The five schedule actions below ignore that kwarg entirely (it survives on the
 # ``extensions()`` signature only for the event-SUBSCRIPTION actions, a separate
@@ -763,7 +763,7 @@ def _action_subscribe_branch(kwargs: dict[str, Any]) -> str:
         })
     # A subscription is an authority row: the run it fires acts for its owner.
     # Defaulting to the literal string wrote one owned by nobody and later
-    # dispatched as `subscriber:anonymous` (Codex code review round 3). The
+    # dispatched with an unowned subscriber (Codex code review round 3). The
     # caller names an owner, or the request identity does.
     owner_actor = (kwargs.get("owner_actor") or "").strip()
     if not owner_actor:
@@ -773,7 +773,7 @@ def _action_subscribe_branch(kwargs: dict[str, Any]) -> str:
     if not owner_actor:
         return json.dumps({
             "error": "authentication_required",
-            "detail": "a subscription needs an owner; there is no anonymous one",
+            "detail": "a subscription needs an owner; there is no fallback one",
         })
     base = _base_path()
     initialize_runs_db(base)
@@ -802,7 +802,7 @@ def _action_unsubscribe_branch(kwargs: dict[str, Any]) -> str:
         return json.dumps({"error": "subscription_id is required."})
     # A subscription is an authority row: the run it fires acts for its owner.
     # Defaulting to the literal string wrote one owned by nobody and later
-    # dispatched as `subscriber:anonymous` (Codex code review round 3). The
+    # dispatched with an unowned subscriber (Codex code review round 3). The
     # caller names an owner, or the request identity does.
     owner_actor = (kwargs.get("owner_actor") or "").strip()
     if not owner_actor:
@@ -812,7 +812,7 @@ def _action_unsubscribe_branch(kwargs: dict[str, Any]) -> str:
     if not owner_actor:
         return json.dumps({
             "error": "authentication_required",
-            "detail": "a subscription needs an owner; there is no anonymous one",
+            "detail": "a subscription needs an owner; there is no fallback one",
         })
     base = _base_path()
     try:
@@ -891,4 +891,3 @@ _SCHEDULER_ACTIONS: dict[str, Any] = {
     "unpause_schedule": _action_unpause_schedule,
     "list_scheduler_subscriptions": _action_list_scheduler_subscriptions,
 }
-

@@ -308,8 +308,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = ap.parse_args(argv)
-    # Which contract does THIS daemon keep? Asked once, after the URL is
-    # known, so one run never mixes the pre- and post-cutover shapes.
+    # Every parity probe uses the canary service principal.
     bearer = canary_bearer_for(args.canonical, "selfhost-smoke", args.timeout)
     return run(
         args.canonical,

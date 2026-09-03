@@ -13,7 +13,7 @@ Resolution order (first hit wins):
    ``TinyAssets User <slug@users.noreply.tinyassets.local>``.
 
 There is no fallback: with no actor and no bound identity the commit has
-no author and this raises (founder, 2026-09-02: no anonymous principal).
+no author and this raises (founder, 2026-09-02: no synthetic principal).
 
 Using a ``users.noreply.tinyassets.local`` domain keeps commits
 attributable (the slug identifies which actor made the change) without

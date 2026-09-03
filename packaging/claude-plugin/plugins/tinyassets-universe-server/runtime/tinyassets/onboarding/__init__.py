@@ -529,7 +529,7 @@ async def _read_small_json(request: Any, limit: int = 4096) -> dict[str, Any] | 
 
 
 def _app_identity_required() -> Any:
-    """401 JSON when the request carries no resolved (non-anonymous) identity.
+    """401 JSON when the request carries no resolved named identity.
 
     The auth middleware resolves the app's bearer into the request identity
     contextvar before the handler runs; ``connect_llm`` re-checks it too."""

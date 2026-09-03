@@ -163,28 +163,42 @@ def _body(sent: list[dict]) -> bytes:
     return b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
 
 
+def _linking_challenge(sent: list[dict]) -> str:
+    payload = json.loads(_body(sent))
+    return payload["result"]["_meta"]["mcp/www_authenticate"][0]
+
+
 # --------------------------------------------------------------------------
-# no bearer: 401 for every shape, and the body is never read
+# no bearer: cached tool calls get a linking result; setup calls get transport 401
 # --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    "body",
+    ("body", "expected_status"),
     [
-        _rpc("tools/call", "write_graph", target="goal"),
-        _rpc("tools/call", "read_graph", target="status"),
-        _rpc("tools/call", "get_status"),
-        _rpc("initialize"),
-        _rpc("tools/list"),
-        [_rpc("tools/call", "read_graph"), _rpc("tools/call", "get_status")],
+        (_rpc("tools/call", "write_graph", target="goal"), 200),
+        (_rpc("tools/call", "read_graph", target="status"), 200),
+        (_rpc("tools/call", "get_status"), 200),
+        (_rpc("initialize"), 401),
+        (_rpc("tools/list"), 401),
+        ([_rpc("tools/call", "read_graph"), _rpc("tools/call", "get_status")], 200),
     ],
     ids=["write", "read", "status", "initialize", "tools_list", "read_batch"],
 )
-def test_every_anonymous_request_is_challenged(body):
+def test_every_anonymous_request_is_challenged(body, expected_status):
     sent, app_called, seen = _drive(body)
     assert not app_called
-    assert _status(sent) == 401
+    assert _status(sent) == expected_status
     assert seen == b""                          # nothing was read on nobody's behalf
+    if expected_status == 200:
+        payload = json.loads(_body(sent))
+        items = payload if isinstance(payload, list) else [payload]
+        assert all(
+            "mcp/www_authenticate" in item["result"]["_meta"]
+            and item["result"]["isError"] is True
+            for item in items
+        )
+        return
     wa = _www_authenticate(sent)
     assert wa.startswith("Bearer ")
     assert "resource_metadata=" in wa
@@ -192,12 +206,12 @@ def test_every_anonymous_request_is_challenged(body):
     assert json.loads(_body(sent)) == {"error": "authentication_required"}
 
 
-def test_chunked_anonymous_body_is_challenged_unread():
+def test_chunked_anonymous_body_gets_linking_challenge_without_dispatch():
     raw = json.dumps(_rpc("tools/call", "read_graph", target="status")).encode()
     mid = len(raw) // 2
     sent, app_called, seen = _drive(raw, chunks=[raw[:mid], raw[mid:]])
     assert not app_called
-    assert _status(sent) == 401
+    assert _status(sent) == 200
     assert seen == b""
 
 
@@ -219,15 +233,15 @@ def test_get_stream_and_delete_are_challenged_anonymously():
 def test_invalid_bearer_is_challenged_as_invalid():
     sent, app_called, _ = _drive(_rpc("tools/call", "read_graph"), token="bad")
     assert not app_called
-    assert _status(sent) == 401
-    assert 'error="invalid_token"' in _www_authenticate(sent)
+    assert _status(sent) == 200
+    assert 'error="invalid_token"' in _linking_challenge(sent)
 
 
 def test_dev_provider_challenges_a_missing_bearer_too():
     set_provider(DevAuthProvider())
     sent, app_called, _ = _drive(_rpc("tools/call", "write_graph", target="goal"))
     assert not app_called
-    assert _status(sent) == 401
+    assert _status(sent) == 200
 
 
 def test_dev_provider_names_the_local_operator_for_any_bearer():
@@ -250,7 +264,7 @@ def test_non_mcp_path_is_not_the_middleware_s_business():
 def test_challenge_header_matches_connect_time_challenge(monkeypatch):
     monkeypatch.setenv("WORKOS_MCP_RESOURCE", "https://tinyassets.io/mcp")
     sent, _, _ = _drive(_rpc("tools/call", "write_page", page="x"))
-    assert _www_authenticate(sent) == (
+    assert _linking_challenge(sent).startswith(
         'Bearer resource_metadata='
         '"https://tinyassets.io/mcp/.well-known/oauth-protected-resource"'
     )
@@ -421,8 +435,8 @@ def test_canary_token_is_off_when_absent_short_or_mismatched(monkeypatch, config
     sent, app_called, _ = _drive(_canary_write_rpc(), token=presented)
 
     assert not app_called
-    assert _status(sent) == 401                 # an unknown bearer, not the canary
-    assert "invalid_token" in _www_authenticate(sent)
+    assert _status(sent) == 200                 # linking result for an unknown bearer
+    assert "invalid_token" in _linking_challenge(sent)
 
 
 def test_canary_write_authority_is_set_only_for_the_exact_write(monkeypatch):

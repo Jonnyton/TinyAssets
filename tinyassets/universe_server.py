@@ -176,9 +176,7 @@ def _structured_return(raw):
     )
 
 
-def _register_structured_tool(
-    fn, *, title, tags, annotations, name=None, anonymous_write_challenge=False,
-):
+def _register_structured_tool(fn, *, title, tags, annotations, name=None):
     """Register an MCP adapter without changing the direct Python API.
 
     ``name`` pins the advertised wire name explicitly. The canonical
@@ -186,11 +184,7 @@ def _register_structured_tool(
     Anthropic connector API rejects any tool name that does not match
     ``^[a-zA-Z0-9_-]{1,64}$`` (no dots), which rejects the whole connector.
 
-    ``anonymous_write_challenge`` is retired (no-anonymous-principal): every
-    request without a valid bearer is challenged before dispatch, reads
-    included, so there is no pure-write classification to register. The
-    keyword is accepted and ignored until the sink-deletion change removes
-    it from the call sites.
+    Every request without a valid bearer is challenged before dispatch.
     """
     @wraps(fn)
     def _tool(*args, **kwargs):
@@ -701,9 +695,10 @@ def _universe_birth_refusal() -> dict | None:
     have one, we do not create. An unowned universe is precisely what this prevents.
     """
     from tinyassets.api.permissions import current_request_actor_id
+    from tinyassets.principals import named_principal
 
-    actor = (current_request_actor_id() or "").strip()
-    if not actor or actor == "anonymous":
+    actor = named_principal(current_request_actor_id())
+    if not actor:
         return {
             "error": "a universe belongs to a person — sign in before creating one.",
             "failure_class": "universe_requires_authenticated_subject",
@@ -1296,7 +1291,6 @@ _mcp_write_graph = _register_structured_tool(
     name="write_graph",
     title="Write Graph",
     tags={"graph", "tinyassets", "write"},
-    anonymous_write_challenge=True,
     annotations=ToolAnnotations(
         title="Write Graph",
         readOnlyHint=False,
@@ -1324,8 +1318,8 @@ def _inbound_event_run_fn(
 
     ``principal_id`` is the owner the run acts for. A SCHEDULE passes its stored
     owner; a Source EVENT passes the hook owner stamped on the event. Neither
-    thread has a request identity, and there is no anonymous one, so an empty
-    principal refuses (no-anonymous-principal D2)."""
+    thread has a request identity, and there is no synthetic one, so an empty
+    principal refuses (authenticated-owner boundary D2)."""
     from tinyassets.storage import data_dir, webhook_hooks
     from tinyassets.webhook_inbound import RESERVATION_INPUT_KEY
 
@@ -1512,7 +1506,6 @@ _mcp_run_graph = _register_structured_tool(
     name="run_graph",
     title="Run Graph",
     tags={"graph", "tinyassets", "run"},
-    anonymous_write_challenge=True,
     annotations=ToolAnnotations(
         title="Run Graph",
         readOnlyHint=False,
@@ -1729,7 +1722,7 @@ def write_page(
     # records it in its own canon (universe_intelligence.commit_learning).
     # Resolve the target the way converse/soul.edit do — explicit id, or the
     # authenticated founder's home. Only a write with NO universe target
-    # (anonymous/dev) is a shared COMMONS write, which the relay may still do;
+    # (local/dev) is a shared COMMONS write, which the relay may still do;
     # issue filings (kind=) above always stay on the commons.
     target_universe = "" if scope == "commons" else universe_id.strip()
     if scope != "commons" and not target_universe:
@@ -1799,7 +1792,6 @@ def write_page(
 _mcp_write_page = _register_structured_tool(
     write_page,
     name="write_page",
-    anonymous_write_challenge=True,
     title="Write Page",
     tags={"page", "wiki", "tinyassets", "write"},
     annotations=ToolAnnotations(
@@ -2155,7 +2147,7 @@ def converse(message: str = "", graph_id: str = "") -> str:
         return json.dumps({"error": "message is required."})
     # Fail-closed (worktree posture): only the authenticated founder may talk
     # with their own universe. The relay carries the founder's turn to an agent
-    # that acts on the founder's behalf, so an anonymous / non-owner caller must
+    # that acts on the founder's behalf, so an unbound / non-owner caller must
     # never reach it (M1 scope; public "talk to a stranger's universe" is a
     # later, separately-gated slice).
     if not is_authenticated_request():
@@ -2285,7 +2277,6 @@ def converse(message: str = "", graph_id: str = "") -> str:
 _mcp_converse = _register_structured_tool(
     converse,
     name="converse",
-    anonymous_write_challenge=True,
     title="Talk With Your Universe",
     tags={"universe", "tinyassets", "relay"},
     annotations=ToolAnnotations(
@@ -2429,7 +2420,7 @@ def universe(
     # not a founder/agent MCP surface. Their handlers trust a caller-supplied
     # `daemon_id` and only verify the daemon exists (not that the caller IS it),
     # so exposing them externally lets any authenticated founder poison — or any
-    # anonymous reader leak — an arbitrary daemon's memory (Codex review
+    # public-reader leak — an arbitrary daemon's memory (Codex review
     # 2026-07-03). The autonomous daemon writes/reads its own memory via the
     # direct `daemon_brain` path; block the external MCP surface entirely.
     if action.strip() in _DAEMON_SCOPED_ACTIONS:
@@ -3330,7 +3321,7 @@ class _DeprecatedToolVisibility(Middleware):
             # argument, so classifying per action would drift. They are hidden
             # from tools/list, and unavailable without a bound principal --
             # which over HTTP is every request, since the transport refuses
-            # the rest (no anonymous principal, 2026-09-02).
+            # the rest (no synthetic principal, 2026-09-02).
             if write_gate_rejection(name) is not None:
                 raise ToolError(
                     f"{name} is a deprecated tool and is not available "
@@ -3821,7 +3812,7 @@ def main(
         if transport in ("sse", "stdio"):
             # Neither transport carries a bearer, and neither runs behind the
             # auth middleware, so the principal is the local operator, bound
-            # once for the process (no-anonymous-principal). The ContextVar set
+            # once for the process (fail-closed principal boundary). The ContextVar set
             # here is copied into every task anyio starts under mcp.run().
             # Without it these two surfaces served every call as nobody --
             # which, now that current_identity() raises, is a refusal rather

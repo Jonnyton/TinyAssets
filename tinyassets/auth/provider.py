@@ -1,7 +1,7 @@
 """Auth providers — pluggable authentication backends.
 
 Two concrete providers:
-  - DevAuthProvider: no auth, all requests are "anonymous" (dev/tunnel mode)
+  - DevAuthProvider: every bearer resolves to one named local operator
   - OAuthProvider: OAuth 2.1 + PKCE with Dynamic Client Registration
 
 The provider is selected at TinyAssets Server startup based on UNIVERSE_SERVER_AUTH.
@@ -206,7 +206,7 @@ class PermissionScope:
 class PermissionContext:
     """Replay inputs that are not identity, action, or resource scope."""
 
-    actor_id: str = "anonymous"
+    actor_id: str = ""
     presented_grants: tuple[str, ...] = ()
     resource_policy_version: str = "permission-policy-v1"
     resolver_decision: ResolverDecision | None = None
@@ -702,7 +702,7 @@ def action_scope_audit() -> dict[str, Any]:
 #: The operational probes' service principal (canary scripts, the deploy gate).
 #: It holds NO capabilities: the auth middleware admits it only for the exact
 #: JSON-RPC shapes in ``tinyassets.auth.wiki_canary.canary_request_allowed``
-#: and refuses everything else before dispatch. There is no anonymous identity
+#: and refuses everything else before dispatch. There is no fallback identity
 #: any more (founder, 2026-08-22 and 2026-09-02): a request either resolves to
 #: a named principal or is refused.
 CANARY = Identity(
@@ -741,8 +741,8 @@ class AuthProvider(ABC):
     def resolve_always_writes(self) -> bool:
         """Resolve-always mode (default off).
 
-        When True, anonymous callers may still perform read-effect actions
-        (public reads), but every write/costly/admin action requires an
+        When True, read-effect actions may use a separately established public
+        projection, but every write/costly/admin action requires an
         authenticated principal holding the action's grant. This is the WorkOS
         production model (D0b): the per-universe ACL layer then confines an
         authenticated founder to their own universe. Providers that leave this
@@ -753,9 +753,8 @@ class AuthProvider(ABC):
     def writes_require_identity(self) -> bool:
         """Whether mutating MCP handles require a resolved identity.
 
-        Founder decision 2026-07-13 (production-mcp-sweep P0): reads stay
-        open, but OAuth-backed modes reject anonymous writes. Dev mode
-        keeps writes open for local and test flows. Merge note 2026-07-15:
+        OAuth-backed modes reject writes without a principal. Dev mode keeps
+        writes open for local and test flows. Merge note 2026-07-15:
         resolve-always mode (WorkOS/optional, D0b) is by definition an
         OAuth-backed write-gating mode, so it is folded in here — one
         semantic switch for the #1441 tool-layer gate and the pre-dispatch
@@ -815,7 +814,7 @@ DEV_USER_ENV = "UNIVERSE_SERVER_DEV_USER"
 class DevAuthProvider(AuthProvider):
     """Development provider: every bearer resolves to ONE named local operator.
 
-    There is no anonymous identity (founder, 2026-09-02). The operator names
+    There is no fallback identity (founder, 2026-09-02). The operator names
     themselves through ``UNIVERSE_SERVER_DEV_USER``; ``create_provider``
     refuses to start dev mode without it. A missing bearer is still refused
     by the transport, so local clients send any non-empty bearer.
@@ -826,7 +825,7 @@ class DevAuthProvider(AuthProvider):
         if not raw:
             raise RuntimeError(
                 f"dev auth mode needs {DEV_USER_ENV}: name the local operator "
-                "(there is no anonymous principal)"
+                "(there is no fallback principal)"
             )
         self._identity = Identity(
             user_id=raw,
@@ -1159,17 +1158,20 @@ class OAuthProvider(AuthProvider):
 
 
 class OptionalOAuthProvider(OAuthProvider):
-    """OAuth-backed provider that resolves identities without requiring auth."""
+    """Compatibility OAuth provider with the same fail-closed boundary."""
 
     def is_auth_required(self) -> bool:
+        # The ASGI transport owns the universal bearer challenge. Keep this
+        # compatibility flag false so resolve-always action grants retain their
+        # coarse WorkOS capability semantics after identity resolution.
         return False
 
     def resolve_always_writes(self) -> bool:
-        # Optional mode IS the resolve-always write model (D0b): anonymous callers
-        # get public reads, but every write/costly/admin action requires an
+        # Compatibility mode still uses the resolve-always write model: public
+        # projections are separate, and every write/costly/admin action requires an
         # authenticated principal holding the grant. Without this override both
         # gate flags are False, `require_action_scope` short-circuits, and an
-        # anonymous `write_graph target=universe` (create) slips through — the
+        # unbound `write_graph target=universe` (create) slips through — the
         # pre-deploy security gap (STATUS 2026-07-02). Fail closed for writes.
         # The base class derives writes_require_identity() from this flag, so
         # the #1441 tool-layer write gate engages in this mode too.

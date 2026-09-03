@@ -2789,8 +2789,10 @@ class ConnectionLedger:
             ) from None
         if not isinstance(principal_id, str):
             raise PermissionError("authenticated principal is required")
-        principal_id = principal_id.strip()
-        if not principal_id or principal_id == "anonymous":
+        from tinyassets.principals import named_principal
+
+        principal_id = named_principal(principal_id)
+        if not principal_id:
             raise PermissionError("authenticated principal is required")
         return principal_id
 

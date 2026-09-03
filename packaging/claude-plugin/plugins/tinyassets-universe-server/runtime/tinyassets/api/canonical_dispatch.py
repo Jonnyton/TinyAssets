@@ -264,8 +264,10 @@ def resolve_canonical_for_run(
             "goal": None,
         }
 
-    scope_actor = viewer.strip()
-    if scope_actor and scope_actor != "anonymous":
+    from tinyassets.principals import named_principal
+
+    scope_actor = named_principal(viewer)
+    if scope_actor:
         try:
             actor_canonical = get_goal_canonical(
                 base_path,

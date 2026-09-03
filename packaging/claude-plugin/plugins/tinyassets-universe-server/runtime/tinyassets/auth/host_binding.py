@@ -10,6 +10,7 @@ import jwt
 from jwt import PyJWKClient
 
 from tinyassets.auth.workos_provider import derive_endpoints
+from tinyassets.principals import has_named_principal
 
 _ALGORITHMS = ("RS256",)
 _MAX_INTERACTIVE_AUTH_AGE_SECONDS = 300
@@ -117,9 +118,8 @@ class HostBindingAuthValidator:
         subject = claims.get("sub")
         if (
             not isinstance(subject, str)
-            or not subject.strip()
+            or not has_named_principal(subject)
             or subject != subject.strip()
-            or subject.strip() == "anonymous"
         ):
             return None
 

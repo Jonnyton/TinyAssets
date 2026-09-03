@@ -134,8 +134,8 @@ class TestTierResolution:
         _anonymous()
         who = il.resolve_interlocutor_tier("u-pub")
         assert who.tier == il.T0
-        assert who.actor_id == "anonymous"
-        assert who.is_anonymous is True
+        assert who.actor_id == ""
+        assert who.is_public_visitor is True
         assert who.is_founder is False
 
     def test_authenticated_non_owner_is_t1(self, base):

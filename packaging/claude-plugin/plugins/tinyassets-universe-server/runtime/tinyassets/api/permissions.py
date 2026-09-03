@@ -235,7 +235,7 @@ def operator_request_transaction_checks(
 def current_request_actor_id() -> str:
     """The authenticated request subject, or "" when nothing is bound.
 
-    Never a stand-in: there is no anonymous principal (founder, 2026-09-02).
+    Never a stand-in: there is no synthetic principal (founder, 2026-09-02).
     Callers that need an actor treat "" as a refusal.
     """
     from tinyassets.auth.middleware import current_identity_or_none
@@ -265,7 +265,7 @@ def is_local_single_tenant() -> bool:
     as opposed to a served multi-tenant request.
 
     Use this, never ``not is_authenticated_request()``, to decide whether a
-    host-global side effect is safe: with no anonymous principal every caller
+    host-global side effect is safe: with a fail-closed boundary every caller
     is authenticated, so that test is always False and the side effect never
     happens.
     """

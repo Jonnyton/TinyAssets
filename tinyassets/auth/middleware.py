@@ -43,7 +43,7 @@ logger = logging.getLogger("universe_server.auth")
 # Request-local storage for per-request identity. ContextVar is required
 # because Streamable HTTP handlers run concurrently on the same event-loop
 # thread; thread-local storage would leak actors between async requests.
-# None means "no principal bound". There is no anonymous identity to fall back
+# None means "no principal bound". There is no synthetic identity to fall back
 # to (founder, 2026-09-02): code that needs an actor calls current_identity(),
 # which raises, and the transport has already answered 401 to any request that
 # would reach it unbound.
@@ -586,7 +586,7 @@ async def _send_auth_challenge_401(send: Any, *, invalid_token: bool) -> None:
     ``invalid_token=True`` is the present-but-bad-token case (RFC 6750
     ``error="invalid_token"``). ``False`` is a missing-credentials challenge —
     no error code, per RFC 6750 — used in require-auth mode so an unauthenticated
-    client launches the OAuth flow instead of proceeding anonymously.
+    client launches the OAuth flow instead of proceeding without a principal.
     """
     prm = _challenge_prm_url()
     if invalid_token:
@@ -729,7 +729,7 @@ async def _send_forbidden_403(send: Any, reason: str) -> None:
 
 
 async def _send_payload_too_large_413(send: Any) -> None:
-    """Reject an oversized anonymous body without buffering the rest of it."""
+    """Reject an oversized unsigned body without buffering the rest of it."""
     await send(
         {
             "type": "http.response.start",
@@ -770,7 +770,7 @@ def current_identity_or_none() -> Identity | None:
 def current_identity() -> Identity:
     """The current request's resolved identity, or a refusal.
 
-    There is no anonymous identity (founder, 2026-09-02). If nothing is
+    There is no fallback identity (founder, 2026-09-02). If nothing is
     bound, the caller is running outside an authenticated request and gets
     ``PermissionError`` -- never a stand-in principal.
     """
@@ -809,7 +809,7 @@ def is_local_operator_process() -> bool:
     """Whether this process is the local single-tenant daemon.
 
     The distinction two call sites need and used to get wrong by asking "is the
-    caller authenticated". Under no-anonymous every caller is, so that question
+    caller authenticated". Under the fail-closed boundary every caller is, so that question
     stopped separating the tray from a served request and silently disabled the
     tray's universe switch.
     """
@@ -834,7 +834,7 @@ def bind_local_operator_identity() -> Identity:
 
     The principal is the local operator: ``UNIVERSE_SERVER_DEV_USER`` when
     set, else the OS account the process runs as. Raises when neither names
-    anyone. There is no anonymous principal to fall back to (founder,
+    anyone. There is no fallback principal (founder,
     2026-09-02); before this the stdio server ran every call as nobody.
     """
     import getpass
@@ -850,7 +850,7 @@ def bind_local_operator_identity() -> Identity:
     if not name:
         raise RuntimeError(
             f"a stdio server needs a named local operator: set {DEV_USER_ENV} "
-            "(there is no anonymous principal)"
+            "(there is no fallback principal)"
         )
     identity = DevAuthProvider(user_id=name).resolve_token("stdio")
     if identity is None:  # pragma: no cover - the dev provider always resolves
@@ -935,7 +935,7 @@ class AuthContextMiddleware:
 
             canary_authorized = False
             if token and wiki_canary_token_matches(token):
-                # The canary SERVICE PRINCIPAL (no-anonymous-principal D4). Its
+                # The canary service principal (change D4). Its
                 # bearer is valid for the exact GET /mcp/pulse health read or
                 # the probe shapes in canary_request_allowed on the MCP POST
                 # endpoint. A valid bearer outside that world is refused,
@@ -1132,6 +1132,6 @@ def write_gate_rejection(handle: str) -> str | None:
         "tool": handle,
         "error": (
             "Authentication required: sign in through OAuth on this connector. "
-            "There is no anonymous access to this handle."
+            "There is no unsigned access to this handle."
         ),
     })
