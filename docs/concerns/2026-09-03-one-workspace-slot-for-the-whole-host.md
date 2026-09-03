@@ -55,6 +55,25 @@ should be a COUNT, not a single named slot: N slots, `slot-0..slot-N-1`, a run
 taking the first free one, N sized by host capacity and configurable. That
 keeps the capacity bound and removes the cross-user coupling.
 
-Not yet done. Filed here rather than fixed inline because it is a storage and
-admission change and the concurrency semantics deserve their own lane and a
-cross-family review.
+## Done, in this change
+
+`DEFAULT_HOST_SLOTS = 4`, and `_acquire_host_slot` takes the FIRST FREE slot
+inside the caller's `BEGIN IMMEDIATE`, so two admissions cannot pick the same
+one. It stays reentrant for a run that already holds a slot -- a run's later
+workspace nodes and its push are the same job and must not consume the host by
+themselves. The release path already deleted by `run_id` alone, so it needed no
+change.
+
+The count is a **parameter, never an env read**: this module computes and
+admits, and `test_the_module_creates_no_directories_and_reads_no_env_vars`
+holds it to that. A caller that wants it configurable resolves it where reading
+configuration belongs.
+
+The bound is still a bound. With every slot taken the refusal is
+`workspace_busy: all N host workspace slots are in use`, and the per-universe
+lock stays a mutex, which is what stops one universe splitting a job across
+parallel branches.
+
+Mutation-checked: pinning the loop back to one slot turns
+`test_another_universe_is_admitted_beside_the_first` red with the original
+symptom, `workspace_busy`.
