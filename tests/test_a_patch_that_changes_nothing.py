@@ -21,7 +21,6 @@ import pytest
 
 from tinyassets.engine_mcp_server import _sanitize_served_patch_changes
 
-
 # --------------------------------------------------------------------------
 # the served surface
 # --------------------------------------------------------------------------
