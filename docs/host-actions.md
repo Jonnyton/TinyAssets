@@ -283,27 +283,48 @@ signs with secrets an agent is not allowed to set (`gh secret set` is denied to 
 a Git Bash at the repo root:
 
 ```bash
-D="$HOME/.tinyassets/android"; set -a; . "$D/upload-keystore.env"; set +a
-gh secret set ANDROID_UPLOAD_KEYSTORE_B64 < "$D/tinyassets-upload.jks.b64"
+D="$HOME/.tinyassets/android"
+# `tr -d` is load-bearing: upload-keystore.env has Windows CRLF endings, so a
+# plain `. "$D/upload-keystore.env"` puts a trailing carriage return on every
+# value. A CR inside the secret makes the signing step fail with
+# "Keystore was tampered with, or password was incorrect", which sends you
+# hunting a corrupt keystore instead of a line ending. Verified 2026-09-03.
+set -a; . <(tr -d '\r' < "$D/upload-keystore.env"); set +a
+tr -d '\r\n' < "$D/tinyassets-upload.jks.b64" | gh secret set ANDROID_UPLOAD_KEYSTORE_B64
 printf '%s' "$ANDROID_UPLOAD_KEYSTORE_PASSWORD" | gh secret set ANDROID_UPLOAD_KEYSTORE_PASSWORD
-printf '%s' upload | gh secret set ANDROID_UPLOAD_KEY_ALIAS
-printf '%s' "$ANDROID_UPLOAD_KEY_PASSWORD" | gh secret set ANDROID_UPLOAD_KEY_PASSWORD
+printf '%s' "$ANDROID_UPLOAD_KEY_ALIAS"        | gh secret set ANDROID_UPLOAD_KEY_ALIAS
+printf '%s' "$ANDROID_UPLOAD_KEY_PASSWORD"     | gh secret set ANDROID_UPLOAD_KEY_PASSWORD
 ```
+
+To confirm the secrets took, re-run the release workflow: the signing step prints
+`upload certificate fingerprint verified` before it signs, and fails closed if the
+restored keystore does not carry certificate
+`D0:BC:F2:...:B2:11`. I have already verified that the keystore on disk carries
+exactly that certificate, so a mismatch after this points at the secret, not the key.
+
+**The alternative that needs no secrets at all.** I can build and sign the bundle
+locally in a container (JDK 21, node 22, Android SDK 36) and upload the `.aab` to
+the Console by hand — no GitHub secrets involved. That path is already working.
+The secrets are still worth setting, because they are what makes *every future
+release* one command instead of a manual build.
 
 Then back the keystore up somewhere that is not this laptop.
 
 What remains after the secrets, and who does it (`docs/ops/google-play-launch.md` §11):
 
-| Step | Who |
+| Step | State |
 |---|---|
-| Build + download the signed AAB (`gh workflow run android-release.yml`) | agent |
-| Play Console: create the app, accept its declarations (incl. US export laws) | agent in the browser, **only after you say "yes" in chat** — it is a form submission on your Google account |
-| Store listing, Data safety, Content rating, Target audience, privacy URL, graphics | same — staged copy in §4–§9, agent fills, you approve |
-| Internal-testing release: upload the AAB, add yourself as tester, roll out | same |
-| Verify the loop on a real phone (install from the internal-test link, sign in, chat) | you |
+| Play Console: app created, declarations accepted | **done** 2026-09-02 |
+| Store listing, graphics, privacy URL, Ads/Government/Financial/Health | **done** |
+| Content rating (IARC) | **done** 2026-09-02 — Everyone / PEGI 3 |
+| Data safety | answered, **saved as a draft**; cannot submit until Target audience is done |
+| Internal-testing tester list | **done** — "Founder devices" attached to the track |
+| Build the signed AAB | agent, locally in a container, or in CI once the secrets exist |
+| Internal-testing release: upload the AAB, roll out | agent |
+| Verify the loop on a real phone (install from the internal-test link, sign in, chat) | **you** |
+| Sign in details → Target audience → Data safety submit | blocked on the reviewer account above |
+| Closed test: 12 testers for 14 days, then apply for production access | **you** |
 | Promote to Production → submit for review → **Roll out** | you (final click) |
-
-Nothing in the Console is created until you give the go-ahead.
 
 ### Mint the PAT that unblocks the deploy chain
 
