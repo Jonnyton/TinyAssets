@@ -28,23 +28,43 @@ and never provision.
 - **WHEN** an authenticated caller calls `read_graph target=status`
 - **THEN** the read succeeds and no universe is created
 
+#### Scenario: hosted connector has a cached tool catalog but no bearer
+- **WHEN** it calls any canonical tool without a valid bearer
+- **THEN** no tool handler runs
+- **AND** the MCP error result carries `_meta["mcp/www_authenticate"]` with the routed protected-resource URL, an OAuth error code and an error description
+
+### Requirement: Canonical tools advertise OAuth-only security
+
+Every canonical tool descriptor SHALL advertise `securitySchemes` containing
+only OAuth2 with `openid`, `profile`, `email` and `offline_access`. It SHALL NOT
+advertise `noauth`. The compatibility `_meta.securitySchemes` mirror SHALL carry
+the identical value.
+
+#### Scenario: hosted connector lists tools
+- **WHEN** the authenticated connector lists the canonical tool catalog
+- **THEN** every returned tool carries identical top-level and compatibility OAuth-only security schemes
+
 #### Scenario: a browser opens the endpoint
 - **WHEN** a browser GETs `/mcp` with `Accept: text/html`, or any client HEADs it
 - **THEN** the response is the same 401 challenge, not the discovery page
 - **AND** the discovery documents at `/mcp/.well-known/*` stay public, so a client can still find the authorization server
 
-### Requirement: One unauthenticated release read
+### Requirement: Release reads use the named canary principal
 
-`GET /mcp/pulse` SHALL be served without a bearer and SHALL return exactly
+`GET /mcp/pulse` SHALL require a valid user bearer or the canary bearer and SHALL return exactly
 `git_sha`, `image_tag`, `deployed_at` and `uptime_seconds` from the release
 receipt, with empty strings when no receipt is present. It SHALL name no
-universe, no user and no run. It is the ONLY unauthenticated read the daemon
-serves: the deploy gate (`scripts/deployed_sha.py`) and the public website
-read it, and nothing else is exempt under `/mcp/pulse`.
+universe, no user and no run. The deploy gate (`scripts/deployed_sha.py`) reads
+it with the canary bearer. Public website clients SHALL NOT call it without a
+signed-in user's bearer.
 
 #### Scenario: the deploy gate reads production's sha
-- **WHEN** `GET /mcp/pulse` is requested with no bearer
+- **WHEN** `GET /mcp/pulse` is requested with the canary bearer
 - **THEN** the response is HTTP 200 carrying the four release fields and nothing a user authored
+
+#### Scenario: an unsigned browser requests pulse
+- **WHEN** `GET /mcp/pulse` is requested without a bearer
+- **THEN** the response is the OAuth 401 challenge and no release fields are returned
 
 #### Scenario: a deeper path is not exempt
 - **WHEN** `GET /mcp/pulse/extra` is requested with no bearer
@@ -59,7 +79,7 @@ of a single or batch JSON-RPC body under that bearer SHALL be one of:
 get_status` with no arguments, `tools/call read_graph` with exactly
 `{"target": "status"}`, and the reserved wiki canary's exact `write_page` /
 `read_page` shapes. Anything else, and any use of the bearer off `POST /mcp`,
-SHALL be refused with HTTP 403 before dispatch. The bearer SHALL NOT be
+except exact `GET /mcp/pulse`, SHALL be refused with HTTP 403 before dispatch. The bearer SHALL NOT be
 downgraded to any other identity.
 
 #### Scenario: the canary probes liveness

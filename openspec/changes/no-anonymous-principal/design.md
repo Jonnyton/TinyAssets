@@ -6,6 +6,12 @@ named as identity sources, the canary kept narrow, `/pulse` moved under the
 proxied prefix with `image_tag`, and the PR-1 boundary widened to what must
 land together.
 
+Extended under the founder-approved ownership takeover on 2026-09-03. The
+completed three review records remain preserved and no fourth review is
+opened. New live evidence showed that the direct configured MCP connection and
+the bundled `codex_apps` connector are separate credential planes, so this
+change now includes the hosted connector's metadata + runtime linking contract.
+
 ## D1. Identity is present or the request is refused
 
 `tinyassets/auth/middleware.py`
@@ -27,6 +33,12 @@ land together.
   The anonymous-write pre-dispatch classifier, the 1 MiB anonymous body cap
   and `register_anonymous_write_challenge_tool` are deleted: there is no
   anonymous request body to classify.
+- A cached hosted connector can issue `tools/call` before it has linked a
+  bearer. That exact unauthenticated shape is an authentication-bootstrap
+  response, not a tool dispatch: it returns an MCP error result carrying
+  `_meta["mcp/www_authenticate"]`. `initialize`, `tools/list`, non-tool JSON-RPC,
+  malformed requests, and oversized bodies still receive the transport
+  challenge/refusal. No handler runs and no principal is constructed.
 - `require_auth` / `require_action_scope`: the `user_id == "anonymous"`
   branches go; `current_identity()` already refused.
 
@@ -119,7 +131,6 @@ The routes that exist today, not a sketch:
 | `/mcp/connect/*` (the existing traversal-safe predicate, not a prefix) | connect-deposit session | the depositing user |
 | `/mcp/hooks/<id>` (the existing exactly-one-segment predicate, not a prefix) | per-hook secret | the hook's OWNER, stamped on the emitted event (D2) |
 | `/mcp/app/billing/webhook` | Stripe signature (already exempt with its own auth) | none: the handler binds the customer from the event |
-| `/mcp/pulse` | none | none: release facts only (D5) |
 
 Everything else, including `POST /mcp` `initialize`, is 401 without a valid
 bearer. The table is one predicate with a test per row, and no row is a
@@ -139,6 +150,8 @@ gain a capability set. It keeps its existing argument fence and gains a
   arguments, `tools/call read_graph target=status`, and the wiki canary's
   exact `write_page` / `read_page` shapes it already enforces. Anything else
   is refused before dispatch with a scope error.
+- `GET /mcp/pulse` is also admitted under that bearer and returns the four
+  release fields. The website never receives this service credential.
 - Where: in `AuthContextMiddleware.__call__`, after the bearer resolves to
   `canary` and before `await self.app`, validating every item of a single or
   batch JSON-RPC body before replaying it (Codex round 2). That is outside
@@ -151,17 +164,36 @@ gain a capability set. It keeps its existing argument fence and gains a
 - The 14 workflows pass the secret (`p0-outage-triage.yml` and
   `restart-daemon.yml` included).
 
-## D5. `GET /mcp/pulse` and the website
+## D5. Protected `GET /mcp/pulse` and the website
 
 - Under the `/mcp` prefix because the Cloudflare Worker proxies only `/mcp*`.
 - Body: `git_sha`, `image_tag`, `deployed_at`, `uptime_seconds`. `image_tag`
   is included because `scripts/deployed_sha.py` corroborates `git_sha` with
   it and exits "cannot tell" without it; the gate is not weakened.
-- Served before the auth middleware; reads `release-state.json` only.
-- `scripts/deployed_sha.py` reads it instead of `tools/call get_status`.
-- `WebSite/site/src/lib/mcp/live.ts`, `playground.ts`,
-  `site-react/lib/live.ts` read it. The playground's anonymous wire trace is
-  replaced by the 401 challenge as step one of a real connection.
+- Served through the auth middleware. Only a valid user bearer or the named,
+  exact-purpose canary bearer reaches it.
+- `scripts/deployed_sha.py` reads it with the canary bearer instead of
+  `tools/call get_status`.
+- Public website live clients do not call it without a user bearer. Until the
+  site has a signed-in session they show the checked-in snapshot and an honest
+  sign-in-required state. The playground's first live response is the OAuth
+  challenge.
+
+## D5a. Hosted connector OAuth contract
+
+The canonical seven tools advertise one OAuth-only security scheme with the
+OIDC scopes WorkOS can issue: `openid`, `profile`, `email`, `offline_access`.
+Both the top-level `securitySchemes` field and `_meta.securitySchemes` mirror are
+emitted because the installed MCP model permits extension fields and older
+OpenAI hosts read the compatibility mirror.
+
+Transport 401 remains the normal pre-session path. For a hosted connector that
+already cached the tool catalog, an unauthenticated `tools/call` returns a
+bounded JSON-RPC error result with `isError: true` and
+`_meta["mcp/www_authenticate"]`. It includes the routed protected-resource URL,
+an OAuth error code, and a human-readable description. The requested tool is
+never dispatched. A batch is eligible only when every item is a `tools/call`;
+mixed or malformed input gets the transport challenge.
 
 ## D6. Status reports presence, never a stand-in
 
@@ -176,39 +208,27 @@ tests they need. Codex round 1 established that the sink deletion cannot
 be a separate green PR for: `_app_identity_required`,
 `_bind_founder_identity`, `runs.actor` defaults and callers, and the
 Source-event propagation; those are in PR 1.
-**PR 2:** the remaining ~80 string gates and ~60 author defaults, the
-`grep anonymous tinyassets/` zero-line test.
-**PR 3:** spec sync, environment-variable catalog, Hard Rules 11 and 14
-gain the bearer, archive.
+**Continuation 2:** hosted connector metadata + runtime linking challenge and
+the corrected direct/bundled acceptance matrix.
+**Continuation 3:** the remaining string gates and author defaults, protected
+canary pulse, and the `grep anonymous tinyassets/` zero-line test.
+**Continuation 4:** spec sync, environment-variable catalog, Hard Rules 11 and
+14 bearer wording, archive.
 
-## D9. The cutover seam (Codex code review round 1, finding E)
+## D9. The cutover seam is removed
 
-The probes cannot simply require the bearer. The image production runs until
-this deploys honours that token only for the exact wiki write and answers an
-anonymous `initialize` with 200, so a probe that always authenticates is red
-against a healthy production for the whole window between merge and deploy --
-and permanently after a rollback, while the container's own healthcheck
-reports green. That is the worst shape available: a gate that fails on the
-build it is protecting.
+The prior design negotiated with the pre-cutover production by making an
+unauthenticated request and temporarily kept `/mcp/pulse` public. The founder's
+2026-09-03 platform-wide decision removes that exception. Every current probe
+sends the canary bearer and fails loudly when the deployed server cannot honor
+it. A rollback to a build that accepts only unsigned probes is an authentication
+regression, not a compatible state for the gate to mask.
 
-So a probe ASKS which contract the daemon keeps. `GET /mcp/pulse` is served
-only by this build, so a 200 identifies it and a 404 identifies the previous
-one (`scripts/_canary_common.server_enforces_bearer`). Each probe negotiates
-once in `main()`, after the URL is known, and honours that answer for every
-step of the run:
-
-- new daemon: send the bearer, assert the 401 challenge on an anonymous
-  `initialize`, assert 403 on a canary `converse`;
-- previous daemon: probe anonymously and say so in the verbose line, which
-  names only the checks that actually ran.
-
-`scripts/deployed_sha.py` does the same, falling back to the anonymous
-`get_status` read when `/mcp/pulse` 404s, so Hard Rule 14 is runnable
-throughout. Proven live 2026-09-02 from the branch: both gates green against
-the pre-cutover production.
-
-The seam is dated and deletes itself. PR 3 removes it once production has been
-on this image long enough that a rollback past it is not a scenario.
+This deliberately means the new deployed-sha contract is authoritative only
+after the protected-pulse build is running. Release automation uses its normal
+deployment receipt during that one cutover operation, then Hard Rule 14 resumes
+against the protected live endpoint. No code path falls back to an unsigned
+`get_status` read.
 
 ## D8. Testing
 
@@ -230,8 +250,8 @@ Each is decided below with the reason; any can be reversed by the founder.
    the probes never needed more.
 2. **Dev principal: `UNIVERSE_SERVER_DEV_USER`, fail-loud, no fixed name.** A
    fixed `local-operator` is a default identity by another name.
-3. **Website: pulse only; the playground shows the 401 challenge first.**
-   An anonymous MCP round-trip is exactly what the rule forbids.
+3. **Website: checked-in snapshot until signed in; the playground shows the
+   challenge first.** Release pulse is not a public exception.
 4. **Legacy `"anonymous"` authors are unowned and listed, not rewritten.**
    Rewriting attribution invents provenance; listing lets the founder decide
    per row.

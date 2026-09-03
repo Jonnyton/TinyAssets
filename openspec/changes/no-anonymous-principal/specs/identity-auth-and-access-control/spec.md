@@ -55,7 +55,7 @@ depositing user's session, matched by the existing traversal-safe
 predicate); inbound hook routes `/mcp/hooks/<id>` (exactly one path segment,
 the existing predicate; the hook's owner is stamped on the emitted event);
 `/mcp/app/billing/webhook` (Stripe-signed; the handler binds the customer
-from the event); and `GET /mcp/pulse` (release facts only). No other path
+from the event). No other path
 SHALL be exempt, and no exemption SHALL be a wildcard prefix.
 
 #### Scenario: inbound hook runs as its owner
@@ -66,9 +66,9 @@ SHALL be exempt, and no exemption SHALL be a wildcard prefix.
 - **WHEN** a valid secret arrives for a hook stored before owners were recorded
 - **THEN** the hook refuses to emit, naming the hook, and nothing runs
 
-#### Scenario: pulse carries no universe state
+#### Scenario: pulse without a principal
 - **WHEN** `GET /mcp/pulse` is called with no bearer
-- **THEN** the body carries only `git_sha`, `image_tag`, `deployed_at` and `uptime_seconds`
+- **THEN** it receives the OAuth 401 challenge and no release data
 
 ### Requirement: Runs and events carry an explicit actor
 
@@ -89,13 +89,14 @@ middleware SHALL admit a request under it only when every item of its
 JSON-RPC body (single or batch) is one of: `initialize`,
 `notifications/initialized`, `tools/list`, `tools/call get_status` with no
 arguments, `tools/call read_graph` with `target=status`, or the wiki canary's
-exact `write_page` / `read_page` shapes. Any other item SHALL be refused
-before dispatch. Every probe script in `scripts/` that calls the MCP endpoint
+exact `write_page` / `read_page` shapes. Exact `GET /mcp/pulse` is also
+admitted under the canary bearer. Any other item SHALL be refused before
+dispatch. Every probe script in `scripts/` that calls the MCP endpoint
 SHALL send the bearer; without the variable set the script SHALL exit 2
 naming it. `scripts/mcp_public_canary.py` SHALL assert that an
 unauthenticated `initialize` answers the 401 challenge, then use the bearer
-for `--assert-handles`. `scripts/deployed_sha.py` SHALL read `/mcp/pulse` and
-keep its `image_tag` corroboration.
+for `--assert-handles`. `scripts/deployed_sha.py` SHALL read `/mcp/pulse` with
+the canary bearer and keep its `image_tag` corroboration.
 
 #### Scenario: canary without its token
 - **WHEN** `mcp_public_canary.py --assert-handles` runs with the variable unset

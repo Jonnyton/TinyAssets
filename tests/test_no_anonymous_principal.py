@@ -263,7 +263,9 @@ def test_get_status_carries_the_daemon_block(monkeypatch, tmp_path):
     mw.auth_middleware("any")
     payload: dict[str, Any] = json.loads(get_status())
     assert "daemon" in payload
-    assert set(payload["daemon"]) == {"last_activity_at"}
+    assert payload["daemon"]["last_activity_at"] is None
+    assert "has_work" in payload["daemon"]
+    assert "worker_liveness" in payload["daemon"]
 
 
 # --------------------------------------------------------------------------

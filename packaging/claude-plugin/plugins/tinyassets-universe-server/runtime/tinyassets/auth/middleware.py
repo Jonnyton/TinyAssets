@@ -619,6 +619,73 @@ async def _send_auth_challenge_401(send: Any, *, invalid_token: bool) -> None:
     )
 
 
+def _tool_linking_challenge_body(
+    body: bytes,
+    *,
+    invalid_token: bool,
+) -> bytes | None:
+    """Build the bounded hosted-connector linking response for tools/call.
+
+    A hosted connector may have cached the tool catalog before linking. This
+    recognizes only a single tools/call or a batch made entirely of tools/call
+    requests. It never dispatches the requested tool and never constructs a
+    principal. Any other JSON-RPC shape stays on the transport-401 path.
+    """
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+    is_batch = isinstance(payload, list)
+    items = payload if is_batch else [payload]
+    if not items or any(
+        not isinstance(item, dict)
+        or item.get("method") != "tools/call"
+        or "id" not in item
+        for item in items
+    ):
+        return None
+
+    prm = _challenge_prm_url()
+    error = "invalid_token"
+    description = (
+        "The TinyAssets access token is invalid or expired; sign in again."
+        if invalid_token
+        else "Sign in to TinyAssets to continue."
+    )
+    challenge = (
+        f'Bearer resource_metadata="{prm}", error="{error}", '
+        f'error_description="{description}"'
+    )
+
+    def _result(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "jsonrpc": "2.0",
+            "id": item["id"],
+            "result": {
+                "content": [{
+                    "type": "text",
+                    "text": "Authentication required. Sign in to TinyAssets to continue.",
+                }],
+                "_meta": {"mcp/www_authenticate": [challenge]},
+                "isError": True,
+            },
+        }
+
+    response: Any = [_result(item) for item in items] if is_batch else _result(items[0])
+    return json.dumps(response, separators=(",", ":")).encode("utf-8")
+
+
+async def _send_tool_linking_challenge_200(send: Any, body: bytes) -> None:
+    """Return an MCP tool error that makes a hosted client open OAuth linking."""
+    await send({
+        "type": "http.response.start",
+        "status": 200,
+        "headers": [(b"content-type", b"application/json")],
+    })
+    await send({"type": "http.response.body", "body": body})
+
+
 # Hard cap on how much of a PROBE request body the canary check will buffer
 # (Codex review 2026-07-15: unbounded buffering of unauthenticated POSTs on a
 # public endpoint is a memory-DoS vector). A probe is a few hundred bytes.
@@ -911,6 +978,22 @@ class AuthContextMiddleware:
                 auth_middleware(token)
             identity = _current_identity.get()
             if not canary_authorized and not is_hook_route and identity is None:
+                linking_body = None
+                if method == "POST" and path in ("/mcp", "/mcp/"):
+                    request_body, _, disconnected, oversized = await _buffer_request_body(receive)
+                    if oversized:
+                        await _send_payload_too_large_413(send)
+                        return
+                    if not disconnected:
+                        linking_body = _tool_linking_challenge_body(
+                            request_body,
+                            invalid_token=bool(token),
+                        )
+                if linking_body is not None:
+                    # Authentication bootstrap only: the requested handler does
+                    # not run, no session state is read, and no identity exists.
+                    await _send_tool_linking_challenge_200(send, linking_body)
+                    return
                 if token:
                     # Present-but-invalid bearer -> 401 challenge (RFC 9728), on
                     # every path: a bad credential is never ignored.

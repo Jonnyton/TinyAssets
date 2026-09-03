@@ -11,6 +11,7 @@ keep their own named authentication.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import pytest
@@ -64,7 +65,13 @@ def _reset_auth():
     auth_middleware("dev")
 
 
-def _drive(path: str, *, token: str | None, method: str = "POST") -> tuple[list[dict], bool]:
+def _drive(
+    path: str,
+    *,
+    token: str | None,
+    method: str = "POST",
+    body: bytes = b"",
+) -> tuple[list[dict], bool]:
     """Run one request through AuthContextMiddleware; return (sent, app_called)."""
     called = {"hit": False}
 
@@ -78,8 +85,14 @@ def _drive(path: str, *, token: str | None, method: str = "POST") -> tuple[list[
     async def _send(msg):  # noqa: ANN001, ANN202
         sent.append(msg)
 
+    delivered = False
+
     async def _receive():  # noqa: ANN202
-        return {"type": "http.request", "body": b""}
+        nonlocal delivered
+        if delivered:
+            return {"type": "http.disconnect"}
+        delivered = True
+        return {"type": "http.request", "body": body}
 
     headers = []
     if token is not None:
@@ -99,6 +112,12 @@ def _www_authenticate(sent: list[dict]) -> str:
         if k == b"www-authenticate":
             return v.decode("latin1")
     return ""
+
+
+def _body(sent: list[dict]) -> bytes:
+    return b"".join(
+        m.get("body", b"") for m in sent if m["type"] == "http.response.body"
+    )
 
 
 def test_missing_token_on_mcp_is_challenged():
@@ -147,6 +166,59 @@ def test_invalid_token_is_challenged_as_invalid():
     assert not app_called
     assert _status(sent) == 401
     assert 'error="invalid_token"' in _www_authenticate(sent)
+
+
+def test_cached_hosted_tool_call_gets_linking_challenge_without_dispatch(monkeypatch):
+    monkeypatch.setenv("WORKOS_MCP_RESOURCE", "https://tinyassets.io/mcp")
+    set_provider(_ResolveAlwaysProvider())
+    request = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 42,
+        "method": "tools/call",
+        "params": {"name": "get_status", "arguments": {}},
+    }).encode()
+
+    sent, app_called = _drive("/mcp", token=None, body=request)
+
+    assert not app_called
+    assert _status(sent) == 200
+    payload = json.loads(_body(sent))
+    assert payload["id"] == 42
+    assert payload["result"]["isError"] is True
+    challenges = payload["result"]["_meta"]["mcp/www_authenticate"]
+    assert len(challenges) == 1
+    assert "resource_metadata=\"https://tinyassets.io/mcp/.well-known/" in challenges[0]
+    assert 'error="invalid_token"' in challenges[0]
+    assert "error_description=" in challenges[0]
+
+
+def test_mixed_unauthenticated_batch_stays_on_transport_challenge():
+    set_provider(_ResolveAlwaysProvider())
+    request = json.dumps([
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+    ]).encode()
+
+    sent, app_called = _drive("/mcp", token=None, body=request)
+
+    assert not app_called
+    assert _status(sent) == 401
+
+
+def test_every_advertised_tool_is_oauth_only():
+    from tinyassets.universe_server import mcp
+
+    tools = asyncio.run(mcp.list_tools(run_middleware=True))
+    assert tools
+    expected = [{
+        "type": "oauth2",
+        "scopes": ["openid", "profile", "email", "offline_access"],
+    }]
+    for tool in tools:
+        wire = tool.to_mcp_tool().model_dump(by_alias=True, exclude_none=True)
+        assert wire["securitySchemes"] == expected, tool.name
+        assert wire["_meta"]["securitySchemes"] == expected, tool.name
+        assert all(scheme["type"] != "noauth" for scheme in wire["securitySchemes"])
 
 
 def test_dev_mode_challenges_a_missing_token_too():

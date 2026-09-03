@@ -1,10 +1,9 @@
-# Tasks: no anonymous principal (PR 1 of 3: sources)
+# Tasks: no anonymous principal (owned continuation)
 
-Owner: claude-code. The remaining sink deletion (string gates, author
-defaults, the `grep anonymous tinyassets/` zero-line gate) and the spec
-sync/archive are proposed as their own changes when this one lands. Codex
-design rounds 1-2 fixed this PR's boundary: everything below must land
-together for the tree to be green.
+Owner: codex (founder-approved takeover 2026-09-03). Preserve the existing
+Claude implementation history and all three completed Codex review records;
+there is no fourth review round. Continuation work stays in this authority lane
+and lands as small, independently tested commits.
 
 - [x] 1. `auth/provider.py`: delete `ANONYMOUS`; `DevAuthProvider` resolves the
   named `UNIVERSE_SERVER_DEV_USER` and `create_provider()` fails loud without
@@ -23,7 +22,7 @@ together for the tree to be green.
   predicate (no wildcard prefixes): `/.well-known/*` and
   `/mcp/.well-known/*`; `/mcp/app` shell and `/mcp/app/token`;
   `/mcp/connect/*`; `/mcp/hooks/<id>`; `/mcp/app/billing/webhook`;
-  `/mcp/pulse`.
+  `/mcp/pulse` (superseded by continuation task 12).
 - [x] 4. Identity sources outside auth: `api/permissions.py` (no `"anonymous"`
   return), `api/engine_helpers.py` and every `UNIVERSE_SERVER_USER` fallback
   (deleted), `identity.py` git-author slug (from the bound identity, raises
@@ -45,7 +44,7 @@ together for the tree to be green.
   (fail closed, uniform 404 to the caller).
 - [x] 7. `GET /mcp/pulse`: `git_sha`, `image_tag`, `deployed_at`,
   `uptime_seconds`; no principal, no universe data; served before the auth
-  middleware.
+  middleware (superseded by continuation task 12: canary-authenticated).
 - [x] 8. The `canary` service principal: the bearer resolves to identity
   `canary`; a handle allowlist in `AuthContextMiddleware.__call__` (after the
   bearer resolves, before `await self.app`) validates every item of a single
@@ -67,6 +66,16 @@ together for the tree to be green.
   quarantined. `tests/test_no_anonymous_principal.py` is the change's own
   file. Codex design round 3 landed; code review rounds (<=3) next, verdicts
   in the PR.
-- [ ] 12. Live: canary green with the bearer; `deployed_sha.py --assert-contains`
-  green from `/mcp/pulse`; the founder's connector re-authenticates on the 401
-  and `get_status` shows `bearer_present: true`.
+- [ ] 12. Continuation + live acceptance:
+  - reconcile the later-head `get_status.daemon` test shape;
+  - add OAuth-only `securitySchemes` to every canonical tool and a bounded
+    `_meta["mcp/www_authenticate"]` runtime challenge that never dispatches;
+  - prove the corrected matrix: direct `workflow-live` and both bundled
+    connector aliases resolve the same principal/universe, or prompt linking
+    before returning any tool data;
+  - protect `/mcp/pulse` with the canary bearer and remove unsigned website
+    callers and the cutover fallback;
+  - delete remaining anonymous sinks/defaults and make
+    `grep anonymous tinyassets/` empty;
+  - sync specs/archive only after the bearer canary, deployed-sha gate, and
+    rendered connector acceptance are green on the deployed commit.

@@ -28,10 +28,13 @@ middleware's seed, the dev provider). Every other site is downstream of those.
    `PermissionError("Authentication required")` rather than returning a
    stand-in. Every `actor == "anonymous"` gate becomes unreachable and is
    deleted, not kept.
-2. **A missing bearer on the MCP endpoint is a 401 challenge, in every mode.**
+2. **A missing bearer on the MCP endpoint is an authentication challenge, in every mode.**
    `initialize`, `tools/list` and every `tools/call` included. MCP clients
-   start OAuth on that 401; that is the flow the founder connector already
-   relies on for writes. OAuth discovery routes, the app's own login and
+   start OAuth on the transport 401. Every advertised canonical tool also
+   declares OAuth-only `securitySchemes`; a cached hosted connector that calls
+   a tool without a bearer receives a tool error carrying
+   `_meta["mcp/www_authenticate"]`, with no tool dispatch. OAuth discovery
+   routes, the app's own login and
    session routes, the connect-deposit routes and inbound hook routes keep
    their own authentication and are not "anonymous": each binds a named
    principal (the signed-in user, the hook's owner) before any handler runs.
@@ -47,11 +50,10 @@ middleware's seed, the dev provider). Every other site is downstream of those.
    existing canary bearer (`TINYASSETS_WIKI_CANARY_TOKEN`, generalized to a
    `canary` service identity with read capability). The healthy signal for an
    unauthenticated `initialize` becomes the 401 challenge itself.
-6. **The public website reads a pulse, not a universe.** The three browser
-   clients that call `tools/call` with `credentials: omit` move to
-   `GET /pulse`: release sha, deploy time, uptime. No principal, because no
-   universe state and no action. That route is the only unauthenticated read
-   the daemon serves, and it is not an MCP call.
+6. **There is no unauthenticated pulse.** Release probes call `GET /pulse`
+   only as the named `canary` service principal. Public website pages use their
+   checked-in snapshot until a signed-in browser session can supply its bearer;
+   they do not treat release metadata as an exception to the platform rule.
 
 ## What does not change
 
@@ -66,18 +68,22 @@ middleware's seed, the dev provider). Every other site is downstream of those.
 Authority change, so this proposal and `design.md` precede code and get a
 Codex refutation round. Three PRs, each green on its own:
 
-1. **Sources.** Delete the sentinel and the five fallbacks; 401 on missing
-   token; named dev principal; named probes; `/pulse`; the spec deltas below.
-   Tests that asserted an anonymous read flip to the 401 or the refusal.
-2. **Sinks.** Delete the 81 now-unreachable gates and the 75 defaults, with
-   the authoring paths made to require an author.
-3. **Spec sync and archive.**
+1. **Sources.** The existing 14-commit history: delete the sentinel and five
+   fallbacks; transport challenge; named dev principal and probes; the spec
+   deltas below.
+2. **Hosted connector continuation.** OAuth-only metadata on every canonical
+   tool plus the runtime linking challenge, with direct and bundled connector
+   acceptance in the same fresh task.
+3. **Sinks and pulse.** Delete the remaining string gates and author defaults,
+   protect `/pulse` with the named canary, and make `grep anonymous tinyassets/`
+   empty. Each mechanical family is its own commit on this owned branch.
+4. **Spec sync and archive.**
 
 ## Risks
 
-- **Every MCP client must complete OAuth before `tools/list`.** Claude.ai and
-  ChatGPT do; a client that cannot will see a 401 with a `WWW-Authenticate`
-  challenge and a resource-metadata URL, which is the MCP standard.
+- **Every MCP client must complete OAuth before `tools/list`.** A direct client
+  sees the transport 401. A hosted client with a cached tool catalog sees the
+  tool-level linking challenge; neither path executes a tool as nobody.
 - **Probes need the token in every workflow that runs them** (14 workflows).
   A probe without it fails loudly at `initialize`, which is the honest signal.
 - **Hard Rules 11 and 14** keep their commands; the commands gain a bearer.

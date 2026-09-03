@@ -38,6 +38,7 @@ import uvicorn
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import Middleware
+from fastmcp.tools.function_tool import FunctionTool
 from mcp.types import ToolAnnotations
 from pydantic import Field
 from starlette.applications import Starlette
@@ -76,6 +77,28 @@ logger = logging.getLogger("universe_server")
 # ---------------------------------------------------------------------------
 
 _MCP_TEXT_CONTENT_MAX_CHARS = 6000
+_OAUTH_TOOL_SCOPES = ("openid", "profile", "email", "offline_access")
+
+
+def _oauth_security_schemes() -> list[dict[str, object]]:
+    """A fresh OAuth-only tool policy for OpenAI and standard MCP clients."""
+    return [{"type": "oauth2", "scopes": list(_OAUTH_TOOL_SCOPES)}]
+
+
+class _OAuthFunctionTool(FunctionTool):
+    """FunctionTool that emits the current and compatibility OAuth fields."""
+
+    def to_mcp_tool(self, **overrides):  # type: ignore[no-untyped-def]
+        tool = super().to_mcp_tool(**overrides)
+        schemes = _oauth_security_schemes()
+        meta = dict(tool.meta or {})
+        meta["securitySchemes"] = schemes
+        # mcp.types.Tool allows extension fields even though the SDK version
+        # pinned here does not yet declare securitySchemes as a typed member.
+        return tool.model_copy(update={
+            "securitySchemes": schemes,
+            "meta": meta,
+        })
 
 
 def _faithful_text_content(value: object) -> str:
@@ -196,13 +219,20 @@ def _register_structured_tool(
     # (3.2.0 ships no docstring extraction; 3.4.x does). See
     # tinyassets.mcp_schema_utils.
     _tool.__signature__, _tool.__annotations__ = describe_signature(fn)
-    return mcp.tool(
+    tool = _OAuthFunctionTool.from_function(
+        _tool,
         name=name or fn.__name__,
         title=title,
         tags=tags,
         annotations=annotations,
+        # OpenAI hosts historically read this compatibility mirror. The
+        # top-level extension field is added by _DeprecatedToolVisibility when
+        # tools/list crosses the protocol boundary.
+        meta={"securitySchemes": _oauth_security_schemes()},
         output_schema=None,
-    )(_tool)
+    )
+    mcp.add_tool(tool)
+    return tool
 
 
 mcp = FastMCP(
