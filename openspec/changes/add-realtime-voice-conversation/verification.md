@@ -56,8 +56,16 @@ history remain intact because voice adds no migration or audio storage.
 
 ## Native coordination
 
-- Android confirmed its current manifest verifier rejects `RECORD_AUDIO`; it will add permission
-  only with the exact-origin WebView gate, disclosure, background release, and Data safety update.
+- Android commits `6e855a58`, `ebff23bb`, and `146bfbdf` add `RECORD_AUDIO` only with an
+  exact-origin/audio-only WebView gate, a native Continue gesture before the runtime prompt,
+  foreground/focus revalidation, exact-request binding and cancellation handling, and pause/stop
+  teardown. On 2026-09-03 in the Android release worktree, the generated source/manifest verifier
+  passed and `tests/test_android_release_pipeline.py` reported **14 passed**. Draft PR #2793's
+  current-head CI at `146bfbdf` passed the Android debug APK, release AAB, iOS compile,
+  actionlint, invariants, preview-security, and scope gates; the broad required suite was still
+  running when this evidence was stamped. No Android device is attached to this host, and the
+  authority-sensitive native diff still needs opposite-provider review because the Claude
+  subscription reported its monthly limit. Store copy and the web voice flags remain dark.
 - iOS commit `9d0d4375` stages the handoff's exact `NSMicrophoneUsageDescription`, asserts it in
   unsigned and signed workflows, and keeps voice/privacy copy dark. On 2026-09-03 in the iOS
   release worktree, `python -m pytest -q tests/test_mobile_ios_release.py -k "microphone or
