@@ -522,6 +522,72 @@ def _js_function(html: str, name: str) -> str:
     # syntax error that crashes the node harness - loud, never a silent pass.
 
 
+def test_message_timestamps_use_viewer_timezone_and_preserve_the_instant(
+    tmp_path,
+):
+    """One instant crosses the calendar boundary between two viewers.
+
+    The visible label follows the requested viewer timezone, while the semantic
+    ISO datetime remains the same UTC instant. Missing legacy times stay honest.
+    """
+    import os
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:  # pragma: no cover - environment dependent
+        if os.environ.get("TINYASSETS_SKIP_JS_PROBE_TESTS"):
+            pytest.skip("node absent; skip explicitly requested via env")
+        pytest.fail("node executable not found - timestamp formatting runs in JavaScript")
+
+    html, _csp = onboarding.render_app_html()
+    formatter = _js_function(html, "formatMessageTimestamp")
+    instant = 1798763400  # 2027-01-01T00:30:00.000Z
+    program = formatter + f"""
+const instant={instant};
+console.log(JSON.stringify({{
+  losAngeles:formatMessageTimestamp(instant,"en-US","America/Los_Angeles"),
+  tokyo:formatMessageTimestamp(instant,"en-US","Asia/Tokyo"),
+  fallback:formatMessageTimestamp(instant,"en-US","Mars/Olympus"),
+  beforeDst:formatMessageTimestamp(1772962200,"en-US","America/Los_Angeles"),
+  afterDst:formatMessageTimestamp(1772965800,"en-US","America/Los_Angeles"),
+  legacy:formatMessageTimestamp(null,"en-US","America/Los_Angeles"),
+}}));
+"""
+    script = tmp_path / "message_timestamp_case.js"
+    script.write_text(program, encoding="utf-8")
+    proc = subprocess.run(
+        [node, str(script)], capture_output=True, text=True, encoding="utf-8", timeout=20
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+
+    assert out["losAngeles"]["iso"] == "2027-01-01T00:30:00.000Z"
+    assert out["tokyo"]["iso"] == out["losAngeles"]["iso"]
+    assert "Dec 31, 2026" in out["losAngeles"]["label"]
+    assert "Jan 1, 2027" in out["tokyo"]["label"]
+    assert out["losAngeles"]["zone"] == "America/Los_Angeles"
+    assert out["tokyo"]["zone"] == "Asia/Tokyo"
+    assert out["fallback"]["iso"] == out["losAngeles"]["iso"]
+    assert out["fallback"]["zone"] == "browser local time"
+    assert "GMT" in out["fallback"]["label"]
+    assert "1:30 AM PST" in out["beforeDst"]["label"]
+    assert "3:30 AM PDT" in out["afterDst"]["label"]
+    assert out["legacy"] is None
+
+    # The renderer exposes known instants semantically and never manufactures a
+    # datetime attribute for an unstamped legacy record.
+    assert 'document.createElement(stamp?"time":"span")' in html
+    assert "when.dateTime=stamp.iso" in html
+    assert "Date and time unavailable" in html
+    assert "appendMessage(who, t.text, null, t.ts)" in html
+    assert '? "universe" : "founder"' in html
+    assert 'role==="system"?"Notice":"You"' in html
+    assert 'className="msg msg--system"' not in html, (
+        "every visible notice must use the same timestamped message renderer"
+    )
+
+
 # The real send/resend/build-check code, run in Node against a DOM shim. A
 # string assertion could not tell "the in-flight record is kept" from "kept,
 # then forgotten one line later" (Codex round 1, P2: that mutation passed the
@@ -555,7 +621,13 @@ const els={
 };
 const $=id=>els[id];
 const messages=[];
-function appendMessage(role,text,extra){ messages.push({role,text}); }
+function appendMessage(role,text,extra){
+  if(role!=="system") messages.push({role,text});
+  const el=new El("div"); el.className="msg msg--"+role; el.textContent=text;
+  if(extra) el.appendChild(extra);
+  if(role==="system") els.thread.appendChild(el);
+  return el;
+}
 function setStatusLine(t){ els["status-line"].textContent=t||""; }
 function autoGrow(el){ el.style.height="auto"; }
 function sessionExpired(){ messages.push({role:"session-expired"}); }
@@ -837,7 +909,7 @@ def test_an_older_identical_prompt_does_not_count_as_delivery(tmp_path):
         "history": [_turn("founder", "continue", 600), _turn("universe", "ok", 600)],
     })
     assert out["inflight"]["message"] == "continue"
-    assert [m["role"] for m in out["messages"]] == ["you", "universe", "founder"]
+    assert [m["role"] for m in out["messages"]] == ["founder", "universe", "founder"]
 
 
 def test_a_message_delivered_while_away_is_not_restored(tmp_path):
@@ -848,7 +920,7 @@ def test_a_message_delivered_while_away_is_not_restored(tmp_path):
         "history": [_turn("founder", "continue", 60), _turn("universe", "done", 60)],
     })
     assert out["inflight"] is None
-    assert [m["role"] for m in out["messages"]] == ["you", "universe"]
+    assert [m["role"] for m in out["messages"]] == ["founder", "universe"]
 
 
 @pytest.mark.parametrize("scenario, reloads", [
@@ -880,7 +952,7 @@ def test_an_unconfirmed_message_survives_a_reload_and_says_so():
 
     html, _csp = render_app_html()
     assert "ta_inflight_turn" in html
-    assert "rememberInflight(message, display)" in html
+    assert "rememberInflight(message, display, sentAt)" in html
     # Cleared on success, KEPT on failure — a failed send is still the user's.
     assert "forgetInflight();" in html
     assert "the send failed, so the message is still the" in html
