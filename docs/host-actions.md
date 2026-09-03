@@ -265,21 +265,22 @@ validation on the page, and no new Apple email arrived. Apple Account and iCloud
 were available on Apple's System Status page, so this is not a documented system-wide
 outage. The visible evidence cannot distinguish a temporary server-side rejection from
 a browser/network-specific rejection; it does not support claiming a phone-reuse,
-region, locked-account, or device-limit cause. The failed form remains preserved without
-another submission. Apple Support is staged at **Apple Account → Other Apple Account
-Topics → Creating an Apple Account**, immediately before its Chat action.
+region, locked-account, or device-limit cause. Apple Support then reported making an
+unspecified change on its side and asked for one new creation attempt. After the account
+holder retried, the preserved browser advanced to Apple Account **Sign-In & Security**
+and a fresh Apple verification email arrived. This is strong evidence that the creation
+block was cleared, but account creation is not recorded as complete until the account
+holder confirms the final verification result. The active support chat remains preserved.
 
 Everything autonomous on the iOS build side is staged — the Capacitor platform,
 `tinyassets://` URL-scheme patch, native TinyAssets artwork, unsigned compile-check,
 manual signed-IPA workflow, opt-in TestFlight upload, and listing/App-Privacy copy.
 None of it can produce an installable app without account-owned signing material.
 
-1. Choose one official next attempt: wait and retry once from an up-to-date Apple
-   device/different network, or authorize starting the prepared Apple Support chat.
-   Do not repeatedly resubmit the web form. Support brief: "The official web creation
-   form accepts every field, then returns 'Your account cannot be created at this time.'
-   Recovery does not recognize the attempted identifier, no new verification email
-   arrives, and Apple System Status shows Apple Account services available."
+1. Confirm that the preserved Apple Account **Sign-In & Security** page represents a
+   successfully verified, signed-in account. If Apple still presents a verification step,
+   the account holder must complete it. Keep the support chat open until that result is
+   confirmed; do not send a new support message without action-time approval.
 
 2. **Enroll**: https://developer.apple.com/programs/enroll/ — $99/year, and identity
    verification usually takes a day or two, sometimes longer. **Start this first**, because
