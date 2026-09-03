@@ -189,7 +189,10 @@ def _ico(path: Path, sizes: tuple[int, ...]) -> None:
 def _icns(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     sizes = (16, 32, 64, 128, 256, 512, 1024)
-    images = [draw_mark(s, tile=True) for s in sizes]
+    images = [
+        draw_mark(s, tile=True, detail="micro" if s <= 32 else "compact")
+        for s in sizes
+    ]
     images[-1].save(path, format="ICNS", append_images=images[:-1])
     print(f"{path.relative_to(REPO).as_posix()} {sizes}")
 

@@ -698,6 +698,33 @@ class TestIconGen:
             48, tile=True, detail="compact"
         ).tobytes()
 
+    def test_icns_sizes_use_matching_optical_drawings(self, monkeypatch, tmp_path):
+        from WebSite.brand import render_marks
+
+        calls = []
+
+        class FakeImage:
+            def save(self, *_args, **_kwargs):
+                return None
+
+        def fake_draw_mark(size, *, tile, detail):
+            calls.append((size, tile, detail))
+            return FakeImage()
+
+        monkeypatch.setattr(render_marks, "draw_mark", fake_draw_mark)
+        monkeypatch.setattr(render_marks, "REPO", tmp_path)
+        render_marks._icns(tmp_path / "icon.icns")
+
+        assert calls == [
+            (16, True, "micro"),
+            (32, True, "micro"),
+            (64, True, "compact"),
+            (128, True, "compact"),
+            (256, True, "compact"),
+            (512, True, "compact"),
+            (1024, True, "compact"),
+        ]
+
     def test_micro_icon_keeps_the_ember_moon(self):
         icon = create_icon_image(32)
         assert any(
