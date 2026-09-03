@@ -224,6 +224,10 @@ def verify_sources(mobile: Path, release: AndroidRelease) -> None:
         "activity.hasWindowFocus()",
         "ActivityCompat.requestPermissions",
         "Manifest.permission.RECORD_AUDIO",
+        "if (pendingRequest != null)",
+        "onPermissionRequestCanceled",
+        "request == pendingRequest",
+        "isTrustedOrigin(current)",
         "track.stop()",
     )
     missing = [item for item in safeguards if item not in voice]

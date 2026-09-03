@@ -46,3 +46,12 @@ that the Claude subscription had reached its monthly spend limit. Therefore this
 slice may be built and exercised in the draft PR, but the repository's independent
 cross-family landing gate remains open. Device proof and Play Data safety comparison
 also remain open; voice flags and store copy must stay off until both are closed.
+
+A voice-lane review of the first draft found that an older disclosure callback could
+act on a newer pending WebView request, and that WebView cancellation was not handled.
+The implementation now rejects overlapping requests, binds each disclosure callback
+to its exact `PermissionRequest`, clears only a matching canceled request, dismisses
+stale dialogs, and revalidates the request origin, current WebView origin, audio-only
+resource set, window focus, and activity state immediately before granting. Focused
+tests and the release verifier enforce those source safeguards; the independent
+cross-family and device gates above remain open.

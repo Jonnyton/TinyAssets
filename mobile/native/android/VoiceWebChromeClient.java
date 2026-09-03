@@ -67,6 +67,7 @@ public final class VoiceWebChromeClient extends BridgeWebChromeClient {
     private final AppCompatActivity activity;
     private final Bridge bridge;
     private PermissionRequest pendingRequest;
+    private AlertDialog disclosureDialog;
 
     public VoiceWebChromeClient(Bridge bridge, AppCompatActivity activity) {
         super(bridge);
@@ -111,27 +112,47 @@ public final class VoiceWebChromeClient extends BridgeWebChromeClient {
             return;
         }
         if (pendingRequest != null) {
-            pendingRequest.deny();
+            // Never let a callback from an older disclosure act on a newer
+            // request. The page can retry after the in-flight request ends.
+            request.deny();
+            return;
         }
         pendingRequest = request;
         installMediaTracker(requestingWebView());
 
-        new AlertDialog.Builder(activity)
+        disclosureDialog = new AlertDialog.Builder(activity)
             .setTitle("Use your microphone?")
             .setMessage(
                 "TinyAssets will listen only while you record a voice message. "
                     + "Recording stops when you leave the app."
             )
-            .setPositiveButton("Continue", (dialog, which) -> continueAfterDisclosure())
-            .setNegativeButton("Not now", (dialog, which) -> denyPending())
-            .setOnCancelListener(dialog -> denyPending())
-            .show();
+            .setPositiveButton(
+                "Continue",
+                (dialog, which) -> continueAfterDisclosure(request)
+            )
+            .setNegativeButton("Not now", (dialog, which) -> denyPending(request))
+            .setOnCancelListener(dialog -> denyPending(request))
+            .create();
+        disclosureDialog.show();
     }
 
-    private void continueAfterDisclosure() {
+    @Override
+    public void onPermissionRequestCanceled(PermissionRequest request) {
+        activity.runOnUiThread(() -> {
+            if (request == pendingRequest) {
+                clearPending(request);
+            }
+        });
+    }
+
+    private void continueAfterDisclosure(PermissionRequest request) {
+        if (!canGrant(request)) {
+            denyPending(request);
+            return;
+        }
         if (ContextCompat.checkSelfPermission(activity, Manifest.permission.RECORD_AUDIO)
                 == PackageManager.PERMISSION_GRANTED) {
-            grantPending();
+            grantPending(request);
             return;
         }
         ActivityCompat.requestPermissions(
@@ -154,24 +175,48 @@ public final class VoiceWebChromeClient extends BridgeWebChromeClient {
             && results.length == 1
             && results[0] == PackageManager.PERMISSION_GRANTED;
         if (granted) {
-            grantPending();
+            grantPending(pendingRequest);
         } else {
-            denyPending();
+            denyPending(pendingRequest);
         }
         return true;
     }
 
-    private void grantPending() {
-        if (pendingRequest != null && isTrustedOrigin(pendingRequest.getOrigin())) {
-            pendingRequest.grant(new String[] { AUDIO_CAPTURE });
-            pendingRequest = null;
+    private boolean canGrant(PermissionRequest request) {
+        WebView webView = requestingWebView();
+        Uri current = Uri.parse(webView.getUrl() == null ? "" : webView.getUrl());
+        return request != null
+            && request == pendingRequest
+            && isTrustedOrigin(request.getOrigin())
+            && isTrustedOrigin(current)
+            && isAudioOnly(request)
+            && activity.hasWindowFocus()
+            && !activity.isFinishing();
+    }
+
+    private void grantPending(PermissionRequest request) {
+        if (canGrant(request)) {
+            request.grant(new String[] { AUDIO_CAPTURE });
+            clearPending(request);
+        } else {
+            denyPending(request);
         }
     }
 
-    private void denyPending() {
-        if (pendingRequest != null) {
-            pendingRequest.deny();
+    private void denyPending(PermissionRequest request) {
+        if (request != null && request == pendingRequest) {
+            request.deny();
+            clearPending(request);
+        }
+    }
+
+    private void clearPending(PermissionRequest request) {
+        if (request == pendingRequest) {
             pendingRequest = null;
+            if (disclosureDialog != null) {
+                disclosureDialog.dismiss();
+                disclosureDialog = null;
+            }
         }
     }
 
@@ -183,7 +228,7 @@ public final class VoiceWebChromeClient extends BridgeWebChromeClient {
     }
 
     public void stopCaptureAndDeny(WebView webView) {
-        denyPending();
+        denyPending(pendingRequest);
         stopCapture(webView);
     }
 }

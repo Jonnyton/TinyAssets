@@ -76,6 +76,10 @@ def test_android_release_config_matches_every_source_package_identity() -> None:
     assert "resources.length == 1" in voice
     assert "activity.hasWindowFocus()" in voice
     assert "ActivityCompat.requestPermissions" in voice
+    assert "if (pendingRequest != null)" in voice
+    assert "onPermissionRequestCanceled" in voice
+    assert "request == pendingRequest" in voice
+    assert "isTrustedOrigin(current)" in voice
     assert "track.stop()" in voice
 
 
