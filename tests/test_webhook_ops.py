@@ -31,10 +31,17 @@ def test_mint_returns_a_url_for_an_owned_branch(monkeypatch, tmp_path):
     ))
     assert out["branch_def_id"] == "b-1"
     assert out["url"].endswith("/mcp/hooks/" + out["token"])
-    # the token resolves in the store to this universe + branch (no source binding)
-    assert webhook_hooks.resolve(tmp_path, token=out["token"]) == {
-        "universe_id": "u-a", "branch_def_id": "b-1", "source_id": None,
-    }
+    # The token resolves to this universe + branch (no source binding) AND to
+    # the principal who minted it. A webhook token is somebody's: an exact-dict
+    # assertion written when nothing owned it would hide that.
+    from tinyassets.api import permissions
+
+    resolved = webhook_hooks.resolve(tmp_path, token=out["token"])
+    assert resolved["universe_id"] == "u-a"
+    assert resolved["branch_def_id"] == "b-1"
+    assert resolved["source_id"] is None
+    assert resolved["owner_principal_id"] == permissions.current_actor_id()
+    assert resolved["owner_principal_id"], "a token minted by nobody"
 
 
 def test_mint_refuses_a_branch_not_in_the_universe(monkeypatch, tmp_path):
