@@ -17,7 +17,7 @@ Automated evidence below is being refreshed for the new capability preflight and
 ## Automated evidence
 
 - `python -m pytest -q tests/test_realtime_voice.py tests/test_onboarding_app.py`
-  — **111 passed** after the authority correction. Coverage includes authenticated secret-free
+  — **112 passed** after the authority correction and merge with current `main`. Coverage includes authenticated secret-free
   capability status, ambient-key refusal, a locked UI that opens only the connection explanation,
   and the existing exact-writer/audio lifecycle contract.
 - `python -m pytest -q tests/test_mirror_parity_gate.py` — **15 passed** after rebuilding the

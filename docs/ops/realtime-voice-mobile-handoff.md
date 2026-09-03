@@ -43,3 +43,41 @@ bounded; typed chat remains available after every voice failure; and a restored 
 contains exactly the canonical text turns, never raw audio or a synthetic duplicate. Do not ask
 Jonathan for a separate API key or spend ceiling merely to run this proof, do not use a shared
 fallback, and do not publish as part of this proof.
+
+### Evidence packet and run order
+
+Record the pull-request head SHA, app build identifier, device model, OS version, test-universe id,
+bound resource kind (never its secret), UTC start/end, and the operator for every run. Screenshots
+must exclude tokens and OS account identifiers; network evidence records only origin, path, status,
+and timing.
+
+1. **Subscription-only authority proof.** Use a test universe powered by its own Codex subscription
+   with no Realtime-compatible resource. Confirm `GET /mcp/app/voice/status` returns secret-free
+   `locked` metadata. Tap `Voice · Connect`; confirm the capability dialog appears, the privacy
+   disclosure does not, the OS microphone prompt does not, and neither `/voice/session` nor an
+   OpenAI Realtime endpoint is contacted. Send one typed turn and record that the Codex writer still
+   answers through canonical `converse`.
+2. **Already-bound compatible-resource proof.** Only if a test user has independently chosen to
+   bind a compatible voice resource to that universe, enable the two non-production adapter gates.
+   Confirm status becomes `ready`, disclosure version 2 appears before the first OS microphone
+   prompt, and declining causes no session or audio request. Then accept, grant microphone access,
+   complete one short turn, and compare the visible/stored assistant text byte-for-byte with the
+   `converse` result before accepting spoken playback as evidence.
+3. **Lifecycle proof on each physical platform.** While speaking, interrupt once; background and
+   foreground once; disconnect and recover once; deny and later grant permission once; and exhaust
+   reconnect once in a controlled network-loss run. At each stop/error boundary verify the native
+   audio-capture indicator ends, all local tracks are released, no turn is submitted twice, and
+   typed chat remains usable.
+4. **Custody and persistence proof.** Confirm status/session responses are `no-store`, contain no
+   long-lived secret, and are scoped to the authenticated home universe. Confirm the conversation
+   store contains only the canonical founder/universe text pair—no microphone bytes, partial
+   transcripts, provider audio events, or temporary client secret. Remove or revoke the compatible
+   resource and confirm the same universe returns to `locked` without changing its writer.
+5. **Post-run safety proof.** Turn both non-production gates off, repeat the public MCP canary, and
+   record that production flags, signing, store submissions, billing configuration, and deployment
+   state were never changed by the acceptance run.
+
+Stop immediately on any cross-universe readiness, ambient/platform credential use, microphone
+prompt before ready/disclosure, non-canonical visible reply, duplicate `converse` call, audio that
+continues after a lifecycle stop, or secret-bearing log/response. Preserve the failure evidence,
+keep both gates off, and return the change to implementation review.
