@@ -24,6 +24,12 @@ session could not read the founder's recent conversation, because it had an
 anonymous identity. Explicit OAuth login did reach the founder universe from a
 fresh Codex process, so the identity mapping works once a bearer is present.
 
+A fresh post-login task exposed a second boundary. Its direct `workflow-live`
+tool carried the bearer, but the bundled `codex_apps` TinyAssets and Workflow
+tools both called the same live endpoint as anonymous and returned no linking
+challenge. The app's signed-in continuity and the exact MCP request identity
+are separate; continuity is never authentication evidence.
+
 The prior work is not missing: `claude/no-anonymous-principal` owns
 `openspec/changes/no-anonymous-principal`, has no PR, is 14 commits ahead and 18
 behind `origin/main`, and records 11 of 12 tasks complete. Its design calls itself
@@ -33,6 +39,13 @@ sign-in bootstrap that confer no platform data or action. Source search on that
 branch also still finds live anonymous defaults and string gates in the daemon,
 run, graph, and storage paths; its own design assigns removal of those sinks to
 later changes that do not yet exist.
+
+The existing branch implements the transport-level 401 challenge, but its seven
+canonical tool descriptors still advertise no `securitySchemes`, and the branch
+contains no runtime `_meta["mcp/www_authenticate"]` tool challenge. OpenAI's
+hosted connector contract requires both pieces to surface OAuth linking. The
+branch therefore covers a direct MCP client but does not yet prove the bundled
+connector path that reproduced this incident.
 
 The targeted authority suite on that exact branch head was run on 2026-09-03:
 
@@ -53,4 +66,7 @@ review budget nor an exact-head approval receipt. The owner/founder must decide
 how to land or supersede that branch. After that, the sink-removal and migration
 slices still need explicit owners and OpenSpec changes. `/mcp/pulse` must use a
 named service principal or become a discovery-only response before the
-platform-wide no-anonymous claim is true.
+platform-wide no-anonymous claim is true. The same owner decision must add the
+hosted connector requirements—per-tool OAuth metadata, runtime tool challenge,
+and fresh-task equality across direct and bundled connection paths—or explicitly
+supersede the current change.
