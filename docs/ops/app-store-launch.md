@@ -67,14 +67,24 @@ In Xcode: select the App target → Signing & Capabilities → your Team →
 
 ## 3. Repo secrets for CI-signed builds (optional; enables CI upload)
 
+These six names are read verbatim by `.github/workflows/ios-release.yml`. Copy them
+exactly — a near-miss name reads as "not set" and the workflow refuses to build.
+
 | Secret | Value |
 |---|---|
 | `APPLE_DISTRIBUTION_CERT_P12_B64` | base64 of your Distribution cert `.p12` |
 | `APPLE_DISTRIBUTION_CERT_PASSWORD` | the `.p12` password |
 | `APPLE_PROVISIONING_PROFILE_B64` | base64 of the App Store provisioning profile |
-| `APP_STORE_CONNECT_API_KEY_ID` / `_ISSUER_ID` / `_KEY_B64` | App Store Connect API key for `xcrun altool`/`notarytool` upload |
+| `APP_STORE_CONNECT_API_KEY_ID` | the key id, e.g. `2X9ABC3DEF` |
+| `APP_STORE_CONNECT_API_KEY_ISSUER_ID` | the issuer UUID from App Store Connect → Users and Access → Integrations |
+| `APP_STORE_CONNECT_API_KEY_B64` | base64 of the downloaded `AuthKey_<id>.p8` |
 
-(Until these exist, CI compile-checks only; you upload via Xcode from a Mac.)
+There is deliberately **no team-id secret**: `ios-release.yml` reads the team out of
+the provisioning profile, so these six are the whole set.
+
+Until they exist, `ios-release.yml` fails on its first step naming exactly which are
+missing, and `ios-build.yml` continues to compile-check unsigned. You can still upload
+by hand from a Mac via Xcode (§2) — the workflow is the route that does not need one.
 
 ---
 
@@ -121,8 +131,13 @@ Mirror the Play Data-safety answers (`google-play-launch.md` §6):
 1. App Store Connect → **My Apps → +** → New App (name `TinyAssets`, bundle
    `io.tinyassets.app`, SKU, primary language).
 2. Fill the listing (§4), App Privacy (§5), screenshots + icon (§6).
-3. Upload the build (Xcode Archive → Distribute, or CI) → it appears under
-   TestFlight + the app version.
+3. Upload the build → it appears under TestFlight + the app version. Two routes:
+   **CI** — set the six secrets (§3), then run the **iOS release IPA** workflow
+   (`gh workflow run ios-release.yml`, or push a `mobile-v*` tag). It archives,
+   exports and uploads on a `macos-15` runner, so no Mac is involved.
+   **By hand** — Xcode Archive → Distribute (§2), if you would rather watch it once
+   before trusting the pipeline. Reasonable: the workflow has never had an account to
+   run against.
 4. **TestFlight** internal testing → verify sign-in → connect → chat on a device.
 5. Select the build for the App Store version → **Submit for Review** → release
    (auto or manual).
@@ -133,9 +148,16 @@ Mirror the Play Data-safety answers (`google-play-launch.md` §6):
 
 - [x] iOS platform wired into the Capacitor project (`add:ios`/`sync:ios` scripts, `@capacitor/ios` dep)
 - [x] `tinyassets://` URL scheme patch (`scripts/add_ios_scheme.py`)
-- [x] CI compile-check (`ios-build.yml`)
+- [x] CI compile-check (`ios-build.yml`, unsigned — proves it compiles, ships nothing)
 - [x] Listing content + App Privacy answers (§4, §5)
-- [ ] Founder: Apple Developer Program enrollment + $99 (§0)
-- [ ] Founder: signing assets / API key (§3) — or build from a Mac (§2)
+- [x] **Signed release pipeline (`ios-release.yml`)** — archive → `.ipa` export →
+      App Store Connect upload, on `macos-15`. Written 2026-09-03 and **never run
+      green**, because there is no account to sign against; it fails closed naming the
+      missing secret. Unproven until the first real run, and the export options plist
+      it generates is the part verified so far (parsed, fields substituted).
+- [ ] Founder: Apple Developer Program enrollment + $99 (§0) — **the long pole; nothing
+      else on this list can be finished first**
+- [ ] Founder: signing assets / API key (§3). The team id is derived from the
+      provisioning profile, so the six secrets in §3 are the whole set.
 - [ ] Screenshots captured (§6)
 - [ ] Build uploaded → TestFlight verified → submitted (§7)
