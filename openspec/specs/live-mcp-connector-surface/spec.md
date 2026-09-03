@@ -350,3 +350,33 @@ and the refusal.
 
 - **WHEN** a caller who is not the author calls delete on a public branch
 - **THEN** the result is the not-found envelope
+
+### Requirement: Owned conversation UI shows viewer-local message instants
+
+The daemon-served conversation app at `/mcp/app`, including the same renderer
+embedded by the desktop and mobile shells, SHALL show a date and time on every
+founder, universe, and system-notice message. A known message instant SHALL be
+formatted by the browser in the viewing user's locale and local timezone with a
+visible timezone abbreviation or offset, while an HTML `time` element retains
+the same instant as a UTC ISO 8601 `datetime` value. Durable history SHALL use
+each turn's stored epoch timestamp; optimistic, queued, received, and generated
+notice messages SHALL use the corresponding client event time. An unstamped or
+malformed legacy turn SHALL say that its date and time are unavailable and
+SHALL NOT receive a fabricated `datetime` value.
+
+#### Scenario: One instant crosses a viewer date boundary
+
+- **WHEN** two viewers in Los Angeles and Tokyo render the same stored instant near midnight UTC
+- **THEN** each sees the date and time appropriate to their own timezone, including timezone context
+- **AND** both semantic `datetime` values identify the same UTC instant
+
+#### Scenario: Every message role carries time context
+
+- **WHEN** the app renders founder text, a universe reply, or a system notice
+- **THEN** the message metadata includes its role and its viewer-local date, time, and timezone context
+
+#### Scenario: Legacy missing time remains unknown
+
+- **WHEN** a durable legacy turn has no usable timestamp
+- **THEN** the app displays `Date and time unavailable`
+- **AND** it does not substitute page-load time or emit a machine-readable instant for that turn
