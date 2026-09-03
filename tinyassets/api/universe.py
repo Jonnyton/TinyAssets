@@ -1831,8 +1831,14 @@ def _owned_universe_id(uid: str) -> str:
     """
     from tinyassets.daemon_server import owned_universe_id
 
+    base = _base_path()
+    if not base.is_dir():
+        # No data root is not a broken store: there is nothing here, so nobody
+        # owns anything. Raising here turned every read on a fresh install into
+        # "Ownership store unavailable" (CI, 2026-09-02).
+        return ""
     try:
-        return owned_universe_id(_base_path(), uid)
+        return owned_universe_id(base, uid)
     except Exception as exc:  # noqa: BLE001
         logger.exception("ownership lookup failed for %s", uid)
         raise _OwnershipUnavailable(str(exc)) from exc
