@@ -122,7 +122,14 @@ Mirror the Play Data-safety answers (`google-play-launch.md` §6):
 - iPhone 6.7" (or 6.9") screenshots, ≥3 — captured from the app (sign-in, a
   universe conversation, the Connect view). Same procedure as
   `google-play-launch.md` §10; staged in `docs/ops/play-assets/screenshots/`.
-- App icon: 1024×1024 (from `mobile` capacitor assets, `npm run assets:ios`).
+- App icon: 1024×1024 — **do not upload `mobile/resources/icon.png` as-is.** It is the
+  right size and has no alpha, but it has the brand badge's rounded corners baked in,
+  and Apple requires a full-bleed square (it applies its own mask, so a pre-rounded
+  icon renders double-masked with dark wedges). A square variant has to be rendered
+  from `assets/icon.svg` with `rx="0"`, which is a brand call because it reveals art
+  the badge currently crops. Detail and evidence:
+  `docs/concerns/2026-09-03-app-store-icon-has-baked-rounded-corners.md`.
+  The rounding is correct for Android and the web, so only the Apple asset changes.
 
 ---
 
@@ -159,5 +166,9 @@ Mirror the Play Data-safety answers (`google-play-launch.md` §6):
       else on this list can be finished first**
 - [ ] Founder: signing assets / API key (§3). The team id is derived from the
       provisioning profile, so the six secrets in §3 are the whole set.
-- [ ] Screenshots captured (§6)
+- [ ] Screenshots captured (§6). The Play captures are 1080×1920 (9:16) and **cannot be
+      resized** for Apple, which wants ~19.5:9 (1290×2796); they need re-capturing at the
+      iPhone aspect against a signed-in app.
+- [ ] **Square 1024×1024 App Store icon** (§6) — the existing one is pre-rounded and
+      Apple would reject or double-mask it; see the concern file.
 - [ ] Build uploaded → TestFlight verified → submitted (§7)
