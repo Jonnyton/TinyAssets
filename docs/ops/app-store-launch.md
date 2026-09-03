@@ -12,7 +12,9 @@ Bundle id: **`io.tinyassets.app`** (matches `mobile/capacitor.config.json`
 > **Picking this up cold? Read [`mobile-launch-handoff.md`](mobile-launch-handoff.md)
 > first.** This file is the procedure; that one is where both platforms actually
 > stand. The short version for iOS: Apple Developer Program membership activated
-> on 2026-09-03; App ID and App Store Connect setup are now the next gate.
+> on 2026-09-03; the explicit App ID was registered and verified that day. App
+> Store Connect presented a new Terms of Service before the Apps page, so the
+> app record remains the next gate and the agreement is awaiting founder review.
 > The copy-ready form answers, asset manifest, smoke checklist, and exact portal
 > sequence live in [`app-store-submission-packet.md`](app-store-submission-packet.md).
 
@@ -24,7 +26,8 @@ Bundle id: **`io.tinyassets.app`** (matches `mobile/capacitor.config.json`
 |---|---|---|
 | Account | **Complete 2026-09-03:** Apple Developer Program membership active. | developer.apple.com/account |
 | Payment | **Complete 2026-09-03:** annual membership purchase confirmed. | Apple Online Store |
-| App record | Register the explicit App ID and create the App Store Connect app record for `io.tinyassets.app` before any upload. Accept any current agreement Apple presents. | developer.apple.com / App Store Connect |
+| App ID | **Complete 2026-09-03:** `TinyAssets iOS` / `io.tinyassets.app` registered and visible in the signed-in Identifiers list. | developer.apple.com |
+| App record | Review the newly presented App Store Connect Terms of Service, then create the app record for `io.tinyassets.app` before any upload. The terms were not accepted and no record was created. | App Store Connect |
 | Signing assets | Create an Apple Distribution certificate + App Store Connect provisioning profile for `io.tinyassets.app`, and an **App Store Connect API key** for CI upload. Provide them as Actions secrets (§3). | developer.apple.com / App Store Connect |
 | Identity/tax/banking | Complete Apple's identity + (for paid apps) tax/banking. This app is free → tax/banking optional. | App Store Connect |
 | Submit | Click **Submit for Review** after the build + metadata are in. | App Store Connect |
@@ -219,7 +222,8 @@ and [unavailability procedure](https://developer.apple.com/help/app-store-connec
 - [x] Apple-specific metadata, age-rating/export drafts, screenshot manifest, and device checklist
 - [x] Founder: Apple Developer Program enrollment + $99 (§0)
 - [x] Apple: membership activated; portal shows Team ID and renewal date (2026-09-03)
-- [ ] Founder: App ID + App Store Connect app record (§0); current displayed agreements are accepted
+- [x] Apple: explicit App ID `io.tinyassets.app` registered and verified (2026-09-03)
+- [ ] Founder: review the new App Store Connect Terms of Service; then create the app record (§0)
 - [x] Protected `app-store` environment: founder approval + `main` only (§3)
 - [ ] Founder: signing assets / API key stored in `app-store` (§3)
 - [ ] Screenshots captured (§6)

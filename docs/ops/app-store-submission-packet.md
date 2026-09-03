@@ -15,6 +15,8 @@ release the app.
 | App name | `TinyAssets` |
 | Explicit bundle ID | `io.tinyassets.app` |
 | Bundle ID description | `TinyAssets iOS` |
+| App ID registration | Complete 2026-09-03; verified in the signed-in Apple Developer Identifiers list |
+| App Store Connect record | Not created; a new Terms of Service is awaiting account-holder review |
 | SKU | `tinyassets-ios` |
 | Primary language | English (U.S.) |
 | Version | `1.0.0` |
@@ -194,10 +196,13 @@ one, so the server must remain compatible with the last released shell.
 
 ## Exact portal sequence from the active membership
 
-1. Developer portal → Certificates, IDs & Profiles → Identifiers → **+** → App
-   IDs → App → description `TinyAssets iOS` → explicit bundle ID
-   `io.tinyassets.app` → Register. Stop for confirmation immediately before Register.
-2. App Store Connect → Apps → **+** → New App → iOS; name `TinyAssets`; primary
+1. **Complete 2026-09-03:** Developer portal → Certificates, IDs & Profiles →
+   Identifiers → **+** → App IDs → App → description `TinyAssets iOS` → explicit
+   bundle ID `io.tinyassets.app` → Register. The signed-in Identifiers list showed
+   the resulting name and exact bundle ID.
+2. **Blocked before mutation:** App Store Connect presented a new Terms of Service
+   before the Apps page. The account holder must review and accept it. Then go to
+   Apps → **+** → New App → iOS; name `TinyAssets`; primary
    language English (U.S.); select the registered bundle ID; SKU
    `tinyassets-ios`; do not grant extra user access. Stop for confirmation
    immediately before Create.
@@ -224,7 +229,8 @@ one, so the server must remain compatible with the last released shell.
 
 ## External gates that remain
 
-- Action-time confirmation to register the App ID and create the app record.
+- Account-holder review and acceptance of the newly presented App Store Connect Terms
+  of Service, followed by separate action-time confirmation to create the app record.
 - A Mac/Xcode and explicit approval to create signing credentials/API key.
 - A signed build plus actual iPhone or iOS Simulator for authentic screenshots;
   a physical iPhone is required for microphone-release proof if voice ships.

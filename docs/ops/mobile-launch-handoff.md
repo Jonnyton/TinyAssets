@@ -87,9 +87,13 @@ release into one `gh workflow run` — but nothing waits on it.
 the purchase receipt: the signed-in portal exposes App Store Connect and Certificates,
 IDs & Profiles, and shows a Team ID plus a 2027 renewal date. The Apple Developer Program
 License Agreement and Apple Developer Agreement both show accepted on 2026-09-03. No
-signing assets or App Store Connect API credentials have been created. The next portal steps are the
-explicit App ID and App Store Connect record; the exact values and confirmation boundaries
-are in `docs/ops/app-store-submission-packet.md`.
+signing assets or App Store Connect API credentials have been created. The explicit App ID
+`io.tinyassets.app` was registered and verified on 2026-09-03 in the signed-in Apple
+Developer browser: the Identifiers list showed `TinyAssets iOS` and the exact bundle ID.
+The App Store Connect app record is still absent because a new Terms of Service appeared
+before the Apps page; it was left untouched for the account holder to review. The exact
+remaining values and confirmation boundaries are in
+`docs/ops/app-store-submission-packet.md`.
 
 What is ready, stated precisely — the gap here is wider than "just enrol":
 
