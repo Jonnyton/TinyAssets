@@ -118,6 +118,33 @@ class TestDefaultUniverse:
         (tmp_path / ".active_universe").write_text("scratch", encoding="utf-8")
         assert _default_universe() == "u-mine"
 
+    def test_a_pointer_resolves_to_the_directory_that_exists(
+        self, tmp_path, monkeypatch,
+    ):
+        """Codex verdict on head 8982b63e: the case-fold fix was half done.
+
+        `owned_universe_id` answers which ACL id a name means. Returning THAT
+        to a caller about to open a path is what broke on Linux: a directory
+        `U-Mine/` owned by ACL id `u-mine` resolved to `u-mine/`, which does
+        not exist there. A pointer names a directory, so the answer has to be
+        the directory's own spelling.
+        """
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+        monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
+        (tmp_path / "U-Mine").mkdir()
+        _own_universe(tmp_path, "u-mine")
+
+        # ...through the active marker,
+        (tmp_path / ".active_universe").write_text("u-mine", encoding="utf-8")
+        assert _default_universe() == "U-Mine"
+        assert (tmp_path / _default_universe()).is_dir()
+
+        # ...and through the configured default.
+        (tmp_path / ".active_universe").unlink()
+        monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "u-mine")
+        assert _default_universe() == "U-Mine"
+        assert (tmp_path / _default_universe()).is_dir()
+
     def test_a_configured_default_still_answers_an_empty_data_root(
         self, tmp_path, monkeypatch,
     ):

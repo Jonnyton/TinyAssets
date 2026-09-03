@@ -67,6 +67,36 @@ def _universe_dir(universe_id: str) -> Path:
     return result
 
 
+def _owned_universe_dir_name(base, name: str) -> str:
+    """The DIRECTORY a pointer resolves to, or ``""``.
+
+    `owned_universe_id` answers a different question -- which ACL id a name
+    means -- and returning that answer to a caller who is about to open a path
+    is what broke on Linux: a directory `U-Mine/` owned by ACL id `u-mine`
+    resolved to `u-mine/`, which does not exist there (Codex verdict on head
+    8982b63e). A pointer names a directory, so the answer is the directory's
+    own spelling.
+
+    Requires BOTH: the directory exists, and somebody owns it.
+    """
+    from tinyassets.daemon_server import owned_universe_id
+
+    candidate = (name or "").strip()
+    if not candidate or candidate.startswith("."):
+        return ""
+    if not base.is_dir():
+        return ""
+    folded = candidate.casefold()
+    for child in sorted(base.iterdir()):
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        if child.name != candidate and child.name.casefold() != folded:
+            continue
+        if owned_universe_id(base, child.name):
+            return child.name
+    return ""
+
+
 def _default_universe() -> str:
     """Return the default universe ID, or first available."""
     base = _base_path()
@@ -76,16 +106,16 @@ def _default_universe() -> str:
     # round 2, P1). Both returned before any ownership check, so a stale
     # `.active_universe` or a configured default naming `scratch` routed
     # requests into an operational directory.
-    from tinyassets.daemon_server import owned_universe_id, owned_universe_ids
+    from tinyassets.daemon_server import owned_universe_ids
 
     if active:
-        resolved = owned_universe_id(base, active)
+        resolved = _owned_universe_dir_name(base, active)
         if resolved:
             return resolved
 
     default = os.environ.get("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "")
     if default:
-        resolved = owned_universe_id(base, default)
+        resolved = _owned_universe_dir_name(base, default)
         if resolved:
             return resolved
         # An unowned configured default still answers when the data root holds
@@ -109,7 +139,7 @@ def _default_universe() -> str:
                 # The DIRECTORY name, resolved case-insensitively against the
                 # ACL, so a restored `U-Mine` is returned as the path that
                 # exists rather than the ACL spelling that does not.
-                and owned_universe_id(base, child.name)
+                and _owned_universe_dir_name(base, child.name)
             ):
                 return child.name
     return "default-universe"
@@ -161,13 +191,11 @@ def _designated_public_universe() -> str:
     base = _base_path()
     default = os.environ.get("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "")
     if default:
-        from tinyassets.daemon_server import owned_universe_id
-
-        resolved = owned_universe_id(base, default)
+        resolved = _owned_universe_dir_name(base, default)
         if resolved:
             return resolved
     if base.is_dir():
-        from tinyassets.daemon_server import owned_universe_id, owned_universe_ids
+        from tinyassets.daemon_server import owned_universe_ids
 
         if default and not owned_universe_ids(base):
             return default
@@ -175,7 +203,7 @@ def _designated_public_universe() -> str:
             if (
                 child.is_dir()
                 and not is_universe_serial(child.name)
-                and owned_universe_id(base, child.name)
+                and _owned_universe_dir_name(base, child.name)
             ):
                 return child.name
     return "default-universe"
