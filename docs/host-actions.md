@@ -416,7 +416,7 @@ What remains after the secrets, and who does it (`docs/ops/google-play-launch.md
 | Content rating (IARC) | **done** 2026-09-02 — Everyone / PEGI 3 |
 | Data safety | answered, **saved as a draft**; cannot submit until Target audience is done |
 | Internal-testing tester list | **done** — "Founder devices" attached to the track |
-| Build the signed AAB | **done** 2026-09-03 — built and signed in the container (`mobile/container/`), no secret needed |
+| Build the signed AAB | **done** 2026-09-03 — built and signed in the container (`mobile/container/`), no GitHub repository secrets — it reads the real upload keystore and both passwords from `/keys` |
 | Internal-testing release: upload the AAB, roll out | **done** 2026-09-03 11:10 — release `1 (1.0)`, track Active, 3.1 MB |
 | Verify the loop on a real phone (install from the internal-test link, sign in, chat) | **you — this is the live one.** Opt-in on the founder's Google account: https://play.google.com/apps/internaltest/4701716760893982267 |
 | Sign in details → Target audience → Data safety submit | blocked on the reviewer account above |
