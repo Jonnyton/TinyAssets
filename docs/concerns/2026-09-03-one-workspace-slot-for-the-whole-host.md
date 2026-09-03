@@ -1,5 +1,36 @@
 # One workspace slot for the whole host
 
+> **INVERTED 2026-09-03, same day.** The measurement below is real; the
+> conclusion drawn from it is **false**. The host lock is NOT host-wide, so it
+> does not couple users at all. Kept rather than deleted because the correction
+> is the useful part, and because two lanes were already built on the wrong
+> premise before it was caught.
+>
+> `_pool_db(base_path)` is `runs.runs_db_path(base_path)` = `<base_path>/.runs.db`,
+> and `base_path` for the workspace effector **is the universe directory** —
+> `_universe_id` derives the universe id from `Path(base_path).name`
+> (`tinyassets/effectors/workspace.py`, `tinyassets/runs.py::runs_db_path`).
+> So every universe has its OWN pool database, and the `scope='host',
+> key='slot-0'` row exists once **per universe**. User B never waits on user A's
+> host row. Found by cross-family review of the row-6 attempt.
+>
+> **The real defect is the inverse.** A host-scoped lock living in a
+> per-universe database provides **no host-wide capacity bound at all** — it is
+> a second per-universe lock wearing a host-shaped name. The 1 vCPU / 2 GB box
+> it was meant to protect is unprotected. Whether the platform wants a genuine
+> host bound is a live question; "N slots instead of one" is NOT the fix,
+> because the slots were never shared.
+>
+> **The genuine cross-user coupling is elsewhere:** `runs.py` executes every
+> universe's branches on a process-wide `ThreadPoolExecutor` with
+> `_DEFAULT_MAX_WORKERS = 4`. Anything that makes a run BLOCK rather than fail
+> fast — as the reverted row-6 wait did — lets one universe occupy the whole
+> pool and stall every other user. That is where to look.
+
+---
+
+## The original filing, unedited
+
 **Found 2026-09-03**, in the founder's live conversation with their universe.
 Tiny, reviewing what it can and cannot do:
 
