@@ -275,6 +275,44 @@ reports `identity: not_configured`, tells the user, and writes a receipt under
 `python -c "from tinyassets.account_deletion import pending_deletions; print(pending_deletions('/data'))"`.
 Delete this paragraph on the next host-actions pass.
 
+### Google Play: a reviewer test account — Play WILL reject without it
+
+Play Console -> App content -> **Sign in details** (formerly "App access"). Our app is
+behind WorkOS AuthKit, so the honest answer to "Is any part of your app restricted?" is
+**Yes**, and Google then demands working credentials:
+
+> "To review your app, we need to be able to access all parts of it using sign in details.
+> If we can't gain full access to your app, it may be rejected in review. **We can't create
+> new accounts**, use personal accounts to make purchases, or use free trials to review
+> your app."
+
+The form wants a name for the credential set, a username/email, a **password**, and any
+extra steps. Two reasons this is yours:
+
+1. I must not type a password into any field, and I must not invent credentials.
+2. It needs a real account that survives review, which is a decision about who that
+   account is, not a mechanical step.
+
+**What to decide first:** whether AuthKit has email+password sign-in enabled for us, or
+only Google OAuth. The app requests plain OIDC scopes (`openid profile email
+offline_access`), so either works from our side — it is a WorkOS dashboard setting.
+
+- **If password sign-in is available:** create something like `play-review@tinyassets.io`,
+  sign into the app once so its universe exists, and put the email + password in the form.
+  Consider connecting a cheap/free provider to it so a reviewer sees a working chat rather
+  than an empty Connect screen.
+- **If it is Google-OAuth-only:** either enable password sign-in in WorkOS for this one
+  account, or hand the reviewer a dedicated Google account. Enabling password auth is the
+  cleaner answer; handing over a Google account invites its own problems.
+
+Also fill "Any other information required for access" with the one thing a reviewer will
+otherwise trip on: **the app needs an AI provider connected before the chat does anything**,
+so either pre-connect one on the review account or tell them to press "Skip for now".
+
+**This blocks more than itself:** Target audience and content refuses to start until Sign
+in details is complete, and content rating follows from that. So this one item gates three
+of the remaining checklist rows.
+
 ### Google Play: add the four upload-keystore secrets (one command)
 
 The Play developer account exists (identity verified 2026-08-24) and the upload keystore was
