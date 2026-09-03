@@ -1,4 +1,4 @@
-# A second workspace job should wait, not die
+# A second workspace job should wait, not die — and a blocking thread is not a queue
 
 ## Why
 
@@ -14,48 +14,64 @@ Tiny's checklist, row 6, in its own words (2026-09-03):
 It hit this live: run `8f30bb9abf2b492f` held the universe lock and the next job
 was refused at submit.
 
-**The waiting machinery already exists and is unreachable.**
-`workspace_pool.admit()` takes `wait_s` and `sleep`, and its loop
-(`workspace_pool.py`, the `while True` around `_attempt()`) retries the WHOLE
-admission every `LOCK_POLL_S` (0.5s) until a deadline, on exactly one refusal
-code — `REFUSED_BUSY`, which is `workspace_busy`. It deliberately does not wait
-on quota or a full pool, because those will not clear inside a node's timeout.
-That is precisely the semantic row 6 asks for.
+## What was tried, and why it was withdrawn
 
-Its only caller never passes it. `effectors/workspace.py::_admit()` (both call
-sites) omits `wait_s`, so it defaults to `0.0` and refuses immediately. The
-sweep-once-retry-once around it is for locks held by *finished* runs, not for
-real contention.
+`workspace_pool.admit()` already takes `wait_s` and retries the whole admission
+every `LOCK_POLL_S` until a deadline, on `REFUSED_BUSY` alone. Its only caller
+never passed it, so it defaulted to `0.0`. Passing a bounded 60 s from
+`effectors/workspace.py` was implemented, tested and mutation-checked
+(commit `1800cb83`), then **reverted** on the cross-family review.
 
-So the platform already has the primitive, tested and documented, and the
-surface never offers it — the same shape as the connect picker that could bind
-any provider while showing two.
+**It made a cross-user problem worse.** `runs.py` runs every universe's branches
+on a process-wide `ThreadPoolExecutor` with `_DEFAULT_MAX_WORKERS = 4`. A run
+that blocks in `admit` holds one of those four workers for the whole wait.
+Before the change a busy admission failed fast and released the worker; after
+it, four waiting jobs from ONE universe occupy the entire pool and no other
+user's run can start at all. That is a direct breach of the only platform-wide
+invariant — not affecting other users — traded for a same-user convenience.
+
+Codex, on the reverted commit: *"queue same-universe successors before
+allocating a run-executor worker, waking one when the holder terminates. A
+blocking effector thread is not an execution queue."* That is right, and it is
+the shape this change should have had.
+
+Two further findings from the same review, both accepted:
+
+- **Total admission time has no finite bound.** The node's own provider call can
+  spend ~300 s before `_wrap_with_effects` even dispatches admission; then the
+  wait, a SQLite `BEGIN IMMEDIATE`, an unbounded sweep over filesystem trees,
+  and the retry. A single monotonic deadline must span node execution, startup
+  reconciliation, admission, sweep and retry — not a constant that only *looks*
+  like it fits inside the node timeout.
+- **The tests proved plumbing, not queueing.** They asserted the argument
+  reaching `admit`, under an uncontended admission. `admit` could accept and
+  ignore `wait_s` and they would still pass. Real coverage drives two
+  same-universe admissions, releases the first during an injected sleep, and
+  asserts the second proceeds on its own.
+
+## A premise this change was built on is FALSE
+
+`docs/concerns/2026-09-03-one-workspace-slot-for-the-whole-host.md` claims
+`HOST_SLOT = "slot-0"` serialises every universe on the daemon through one slot.
+**It does not.** `_pool_db(base_path)` resolves to `runs.runs_db_path(base_path)`
+= `<base_path>/.runs.db`, and `base_path` for the workspace effector is the
+UNIVERSE directory (`_universe_id` derives the universe id from
+`Path(base_path).name`). So every universe has its own pool database, and the
+`scope='host', key='slot-0'` row lives in each one separately. User B never
+waits on user A's host row.
+
+The real consequence is the opposite of the filed one: the host slot provides
+**no host-wide capacity bound at all** — it is a second per-universe lock
+wearing a host-shaped name. Whether the platform wants a genuine host bound is a
+separate question from row 6, and it is not answered by that concern as written.
 
 ## What changes
 
-The workspace effector passes a bounded `wait_s` derived from the time the node
-can actually afford, so a second same-universe job waits for the first instead
-of dying at submit. The bound is the caller's, never the packet's: a
-packet-chosen wait is a packet choosing how long to occupy a slot.
+Nothing yet, deliberately. The next attempt must queue admission **outside** the
+run-executor worker, so a waiting job holds no shared thread, and carry one
+deadline across the whole path. Until then row 6 stands open and the honest
+answer to tiny is that the second job still refuses.
 
 ## Non-goals
 
-- **The host slot stays a separate lane.** `HOST_SLOT = "slot-0"` is a single
-  global mutex defaulted for every caller (`workspace_pool.py:44,519,649`,
-  re-verified 2026-09-03), so any user's job blocks every other user's. That is
-  a cross-user violation of the one platform-wide floor and is filed at
-  `docs/concerns/2026-09-03-one-workspace-slot-for-the-whole-host.md`. Waiting
-  makes it *degrade* rather than fail, which is strictly better but is not the
-  fix — the fix is N slots. Row 6 does not pass on the host lock alone, and this
-  change does not close that concern.
-- Durable cross-process queueing that survives past a node's timeout. A bounded
-  wait satisfies "queued and later runs automatically" for contention shorter
-  than the wait; a job longer than the bound still refuses. If tiny judges that
-  insufficient, the follow-on is a real queue, and its verdict decides.
-- Storage shape, lease accounting and the refusal taxonomy are untouched.
-
-## Open question for the reviewer
-
-Whether a bounded wait meets row 6 or only softens it. Tiny wrote "queued and
-later runs automatically"; a wait is not a queue. This change is proposed as the
-smallest honest step, and the row is NOT claimed passed until tiny says so.
+Storage shape, lease accounting and the refusal taxonomy are untouched.

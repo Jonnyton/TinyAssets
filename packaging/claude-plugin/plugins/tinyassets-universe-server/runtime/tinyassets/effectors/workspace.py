@@ -91,19 +91,6 @@ WORKSPACE_READ_EFFECTS = frozenset(
 _MAX_BUNDLE_BYTES = 512 * 1024 * 1024
 #: What one checkout may move before the pool refuses it (D4's lease bound).
 _DEFAULT_MAX_CHECKOUT_BYTES = 4 * 1024 * 1024 * 1024
-
-#: How long a checkout waits for a busy slot before refusing. Tiny's checklist,
-#: row 6: a second workspace job in the same universe must not die at submit.
-#: `workspace_pool.admit` already implements the wait -- it retries the WHOLE
-#: admission every LOCK_POLL_S until this deadline, and only on REFUSED_BUSY, so
-#: a quota or a full pool still refuses at once instead of hanging. Its only
-#: caller took the 0.0 default, which is why the capability was unreachable.
-#:
-#: The bound is the PLATFORM's, never the packet's: a packet-chosen wait is a
-#: packet choosing how long it may occupy a slot, which is a cross-user effect.
-#: Kept well under the 300 s node timeout, or a "queued" job dies of timeout
-#: instead -- the same failure wearing a different name.
-_ADMIT_WAIT_S = 60.0
 _JAIL_EXPORT_DIR = ".tiny-export"
 #: The one directory inside a lease that becomes ``/workspace``. ONE name for
 #: every operation: the lease layout is what the pool wipes, the outbox
@@ -814,7 +801,7 @@ def _checkout(
             f"startup reconciliation failed: {type(exc).__name__}",
         ) from None
 
-    def _admit(wait_s: float = _ADMIT_WAIT_S) -> Any:
+    def _admit() -> Any:
         return workspace_pool.admit(
             db,
             universe_id=universe_id,
@@ -827,7 +814,6 @@ def _checkout(
             max_bytes=_DEFAULT_MAX_CHECKOUT_BYTES,
             pool_root=scratch_pool_root(base_path),
             universe_root=universe_workspace_root(base_path),
-            wait_s=wait_s,
             **_universe_quota_kwargs(storage, base_path),
         )
 
@@ -849,11 +835,7 @@ def _checkout(
             logger.exception("workspace sweep before retry failed")
             raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
         try:
-            # No second wait: the first attempt already spent the full budget,
-            # and the sweep is stale-lock recovery, not contention. Waiting
-            # again would double the worst-case admission against a 300 s node
-            # timeout and turn a clear refusal into a stall.
-            lease = _admit(wait_s=0.0)
+            lease = _admit()
         except Exception as retry_exc:
             raise _Refused(
                 _pool_error_kind(retry_exc),
@@ -1129,7 +1111,7 @@ def _create(
                 "it, and re-opening one is not available in this release",
             )
 
-    def _admit(wait_s: float = _ADMIT_WAIT_S) -> Any:
+    def _admit() -> Any:
         return workspace_pool.admit(
             db,
             universe_id=universe_id,
@@ -1143,7 +1125,6 @@ def _create(
             max_bytes=_DEFAULT_MAX_CHECKOUT_BYTES,
             pool_root=scratch_pool_root(base_path),
             universe_root=universe_workspace_root(base_path),
-            wait_s=wait_s,
             **_universe_quota_kwargs(storage, base_path),
         )
 
@@ -1161,11 +1142,7 @@ def _create(
             logger.exception("workspace sweep before retry failed")
             raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
         try:
-            # No second wait: the first attempt already spent the full budget,
-            # and the sweep is stale-lock recovery, not contention. Waiting
-            # again would double the worst-case admission against a 300 s node
-            # timeout and turn a clear refusal into a stall.
-            lease = _admit(wait_s=0.0)
+            lease = _admit()
         except Exception as retry_exc:
             raise _Refused(
                 _pool_error_kind(retry_exc),
