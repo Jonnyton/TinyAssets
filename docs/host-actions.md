@@ -256,27 +256,50 @@ reports `identity: not_configured`, tells the user, and writes a receipt under
 `python -c "from tinyassets.account_deletion import pending_deletions; print(pending_deletions('/data'))"`.
 Delete this paragraph on the next host-actions pass.
 
-### Apple App Store: enroll in the Apple Developer Program — nothing iOS can start without it
+### Apple App Store: enroll — signing and TestFlight cannot start without it
 
-**Checked 2026-09-02, not assumed.** Gmail holds exactly one Apple message, an Apple
-Account email verification from 2026-08-24; there is no Developer Program enrollment
-confirmation, no App Store Connect welcome, and no $99 receipt. `developer.apple.com/account`
-asks for a sign-in I cannot complete (I must not enter a password), so the browser cannot
-confirm it either. On that evidence: **not enrolled**.
+**Checked 2026-09-03, not assumed.** The account holder completed Apple's official
+creation form, but the final step returned only **"Your account cannot be created at
+this time."** There is no field-specific email, phone, birthday, country, or password
+validation on the page, and no new Apple email arrived. Apple Account and iCloud Sign-In
+were available on Apple's System Status page, so this is not a documented system-wide
+outage. The visible evidence cannot distinguish a temporary server-side rejection from
+a browser/network-specific rejection; it does not support claiming a phone-reuse,
+region, locked-account, or device-limit cause. Apple Support then reported making an
+unspecified change on its side and asked for one new creation attempt. After the account
+holder retried, the browser reached the signed-in Apple Account **Sign-In & Security**
+page and showed two-factor authentication with a trusted phone number. Account creation
+is therefore complete. The account holder confirmed that result and closed the completed
+Apple Support chat.
 
-Everything on the iOS side is already staged — the Capacitor iOS platform, the
-`tinyassets://` URL-scheme patch, the unsigned compile-check in `ios-build.yml`, and the
-listing/App-Privacy copy in `docs/ops/app-store-launch.md`. None of it can produce an
-installable app without an account.
+Everything autonomous on the iOS build side is staged — the Capacitor platform,
+`tinyassets://` URL-scheme patch, native TinyAssets artwork, unsigned compile-check,
+manual signed-IPA workflow, opt-in TestFlight upload, and listing/App-Privacy copy.
+None of it can produce an installable app without account-owned signing material.
 
-1. **Enroll**: https://developer.apple.com/programs/enroll/ — $99/year, and identity
-   verification usually takes a day or two, sometimes longer. **Start this first**, because
-   the waiting is the long pole and it runs in parallel with everything else.
-2. Then the signing assets: a Distribution certificate, an App Store provisioning profile,
-   and an **App Store Connect API key** for CI upload (§3 of the runbook). You do NOT need a
-   Mac — CI builds on `macos-15` runners once those secrets exist.
-3. Then I create the App Store Connect record, fill the listing and App Privacy, and push a
-   build to TestFlight.
+1. **Complete — Apple Account created and verified (2026-09-03).** The signed-in account
+   page shows two-factor authentication and a trusted phone number. The account holder
+   also accepted the Apple Developer Agreement and declined optional developer-news email.
+
+2. **Complete — enrollment submitted and membership purchased (2026-09-03).** The account
+   holder completed personal information and Secure Checkout; Apple shows the order-
+   confirmation page. The signed-in developer portal currently shows **Pending** and says
+   the purchase may take up to 48 hours to process. Do not click **complete your purchase**
+   again or submit a duplicate charge. Wait for activation before creating signing or App
+   Store Connect credentials.
+3. Register the explicit App ID and App Store Connect app record for `io.tinyassets.app`,
+   accepting any current Apple agreement presented to the account holder.
+4. Create the Apple Distribution certificate + matching App Store Connect provisioning
+   profile and an **App Store Connect API key**; add the six values in §3 of the runbook.
+   The protected GitHub environment `app-store` is complete: founder approval is required,
+   only `main` may deploy, and no secrets are present yet. You do NOT need a Mac — CI builds
+   on `macos-15`.
+5. Capture real iPhone-sized screenshots from the signed app, verify sign-in → connect →
+   chat through TestFlight, complete the truthful console declarations, then make the final
+   Submit for Review decision.
+6. If realtime voice is enabled in the candidate, review the final **Audio Data** and
+   **Other User Content** declarations against the provider retention configuration and
+   require physical-iPhone proof that capture stops on background/end before submission.
 
 ### Google Play: start the 12-tester closed test — this is the 14-day clock
 

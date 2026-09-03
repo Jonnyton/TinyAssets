@@ -1,28 +1,31 @@
-# TinyAssets — Android app (Capacitor)
+# TinyAssets mobile app (Capacitor: Android + iOS)
 
-A native Android app that wraps the live TinyAssets web app. It is a thin,
+A native Android/iOS app that wraps the live TinyAssets web app. It is a thin,
 maintainable **Capacitor** shell whose WebView loads `https://tinyassets.io/mcp/app`
 (configured in `capacitor.config.json` → `server.url`). Because that page, the
 `/mcp` API, and the AuthKit sign-in all live on the same origin (`tinyassets.io`),
-the WorkOS OAuth round-trip stays inside the app and Just Works — no deep-link
-plumbing. Web-app changes ship instantly (no store resubmit); the store build only
+the native shell handles the WorkOS OAuth return through `tinyassets://auth`.
+Web-app changes ship instantly (no store resubmit); the store build only
 changes when the native shell, icon, or config change.
 
 > **Architecture:** app shell = Capacitor + a few native plugins (splash, status
 > bar, app lifecycle). Product logic (sign-in, connect subscription, chat) is the
-> web app, reused verbatim. iOS can be added later with `npx cap add ios` — the
-> same `server.url` works.
+> web app, reused verbatim on both platforms.
 
 ## What I (the app author) can build vs. what needs you
 
 **Built here:** the Capacitor project, config, native-plugin set, loading/offline
-fallback page, and this runbook. It compiles to an APK/AAB with the standard
-commands below.
+fallback page, Android debug/release lanes, iOS compile/release lanes, and store
+runbooks. Android produces an APK/AAB; iOS produces an unsigned simulator build
+on every change and a signed IPA when the Apple signing assets are provided.
 
 **Needs you (identity / accounts / payment — I can't do these):**
-- A **Google Play Developer** account ($25 one-time) → https://play.google.com/console
-- An **upload keystore** (you generate + keep it secret; it signs your uploads)
-- The store listing + the actual upload & submission for review
+- Store accounts and their agreements/payments.
+- Signing identities that the account owner creates and keeps secret.
+- Legal/privacy declarations and the final submissions for review.
+
+Current launch state and exact owner-only asks live in
+`docs/ops/mobile-launch-handoff.md` and `docs/host-actions.md`.
 
 ## Prerequisites (on your build machine)
 
@@ -51,15 +54,20 @@ npx cap add android          # generates the android/ native project
 npx cap sync android         # copies www/ + config into the native project
 ```
 
-## App icon + splash (optional but recommended before release)
+## App icon + splash (required for release)
 
-Put a square **1024×1024 PNG** at `resources/icon.png` (and optionally
-`resources/splash.png` 2732×2732), then:
+The committed `resources/icon.png` (1024×1024) and `resources/splash.png`
+(2732×2732) are the canonical artwork. CI installs them after generating each
+native project and fails if the Capacitor template changes shape. To regenerate
+the Android density set after intentionally changing the source art:
 
 ```bash
-npx @capacitor/assets generate --android
-npx cap sync android
+python scripts/render_app_icons.py
+python scripts/add_app_icons.py  # after `npx cap add android`
 ```
+
+The unused `@capacitor/assets` dependency was removed because its pinned image
+stack carried high/critical build-chain advisories. See `resources/README.md`.
 
 ## Build & test a debug APK (on a device/emulator)
 
@@ -107,14 +115,42 @@ subscription** → **chat with your universe**.
 4. Enrolling in **Play App Signing** (recommended default) lets Play manage the
    final signing key; your upload keystore only signs uploads.
 
+## Build and release iOS
+
+The generated `ios/` project is not tracked. On a Mac with Xcode:
+
+```bash
+cd mobile
+npm ci --ignore-scripts --no-audit --no-fund
+npx cap add ios
+npx cap sync ios
+python3 scripts/add_ios_scheme.py
+python3 scripts/add_ios_assets.py
+cd ios/App
+xcodebuild -project App.xcodeproj -scheme App \
+  -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+  CODE_SIGNING_ALLOWED=NO build
+```
+
+`.github/workflows/ios-build.yml` runs that unsigned compile check on every
+mobile change. `.github/workflows/ios-release.yml` is manual-only: it validates
+an App Store provisioning profile against `io.tinyassets.app`, imports the Apple
+Distribution identity into an ephemeral keychain, archives and exports a signed
+IPA, verifies it, and publishes the IPA plus checksum/manifest as a short-lived
+workflow artifact. Both release jobs use the protected `app-store` environment.
+Its `upload_to_testflight` input defaults to false; when
+explicitly enabled it validates and uploads the IPA to App Store Connect, but it
+never submits the app for review. See `docs/ops/app-store-launch.md` for secrets
+and account steps.
+
 ## Notes / follow-ups
 
 - `appId` is `io.tinyassets.app` (change in `capacitor.config.json` before first
   publish if you want a different package name — it's permanent once published).
-- The WebView allow-list (`server.allowNavigation`) includes `tinyassets.io` and
-  `*.authkit.app` so the WorkOS login page loads. If you move AuthKit to a
-  production domain, add it there.
+- The WebView allow-list is intentionally scoped to `tinyassets.io`. Provider
+  authentication opens in the system browser and returns via `tinyassets://auth`.
 - To harden Play review against "minimum functionality," the native plugins here
   give real device integration; a later pass can add push notifications
   (`@capacitor/push-notifications`) for run/agent updates.
-- iOS later: `npx cap add ios` + an Apple Developer account ($99/yr) + a Mac/Xcode.
+- App Store screenshots must be captured at an Apple-accepted iPhone size; the
+  current 1080×1920 Play captures are not valid App Store screenshot dimensions.

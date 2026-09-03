@@ -6,6 +6,10 @@ node_modules/
 # remove this line and commit the android/ directory.
 /android/
 
+# Generated native iOS project (regenerate with `npx cap add ios`). Every
+# customization is applied by scripts/add_ios_scheme.py and add_ios_assets.py.
+/ios/
+
 # `container/build.sh` moves an existing android/ aside instead of deleting it
 # (Hard Rule 13). Those snapshots are generated native code and must not become
 # untracked noise in a public repo.
