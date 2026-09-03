@@ -215,13 +215,38 @@ Play's taxonomy, not ours. Answer exactly:
 
 ---
 
-## 7. Content rating (App content → Content rating questionnaire)
+## 7. Content rating — DONE (IARC, submitted 2026-09-02)
 
-- Category: **Utility / Productivity / Communication**.
-- Violence / sexual / profanity / controlled substances: **No**.
-- User-generated content / user communication: **Yes** (the user chats with an AI;
-  no user-to-user social feed) — declare in-app communication accordingly.
-- Expected result: rated **Everyone / PEGI 3** (confirm from the questionnaire).
+Recorded as answered, not as predicted. Re-take the questionnaire only if the app
+gains a surface that changes one of these, and then match this table so the rating
+does not move under us.
+
+- **Category step:** email `ops@tinyassets.io`; category **All Other App Types**
+  (the only non-game option offered — the earlier "Utility / Productivity /
+  Communication" guess is not a choice this questionnaire presents); IARC terms
+  agreed.
+
+| Question | Answer | Why |
+|---|---|---|
+| Downloaded App — ratings-relevant content in the app package | No | The APK is a Capacitor shell; it ships no content of its own. |
+| User Content Sharing — users interact or exchange content with **other users** | No | The app shell has four views (sign-in, chat, connect, account). There is no discovery, remix, or user-to-user surface in it. |
+| Online Content — content not in the initial download, incl. **generated AI content** | **Yes** | This is the one Yes. The chat is served, and it is AI-generated. Answering No here would be a misrepresentation. |
+| Violence | No | Seller-catalog scoped; we publish no catalog. |
+| Sexuality | No | Same. |
+| Language — potentially offensive language | No | Question explicitly excludes user-generated content. |
+| Controlled Substance | No | Seller-catalog scoped. |
+| Promotion or Sale of Age-Restricted Products | No | |
+| Misc — shares precise location with other users | No | |
+| Misc — allows purchase of digital goods | No | The Android build is consumption-only (see §8 payments). |
+| Misc — cash rewards / gift cards / play-to-earn / crypto / NFTs | No | None of it is in the app. |
+| Misc — is a web browser or search engine | No | A WebView pinned to our own origin is not a general browser. |
+| Misc — primarily news or educational | No | |
+
+**Resulting ratings:** ClassInd **L**, ESRB **Everyone**, PEGI **3**, USK **0**,
+IARC generic **3+**. Content descriptors: none.
+
+Note the Yes on Online Content expands the questionnaire from 3 questions to 13 —
+that is expected, not a mis-click.
 
 ---
 
@@ -274,23 +299,49 @@ Screenshots come from the live app so they're honest:
 
 ---
 
-## Status checklist (I keep this current)
+## Status checklist (I keep this current — last swept 2026-09-02)
+
+Play Console's own counter reads **8 of 11** on "Provide app information and create your
+store listing".
+
+Done:
 
 - [x] Package id decided (`io.tinyassets.app`)
 - [x] Release AAB CI workflow (`android-release.yml`)
-- [x] Listing content written (§4)
-- [x] Data safety + content rating answers (§6, §7)
+- [x] Listing content written (§4) and **entered in the Console**
 - [x] Privacy policy section (§5) — on the **production** `/legal` (React site) as of this
       change; #2507 had only put it on the retired Svelte site
+- [x] In-app privacy policy link — Play's User Data policy requires the link *inside* the
+      app, not only on the listing. Added to the sign-in card and Account view (#2778).
 - [x] Account deletion (§5): in-app Account → Delete my account + `/account` web page
-      (2026-09-02); Data safety answers in Play's taxonomy (§6); no checkout UI in the
-      Android shell (§8)
+      (2026-09-02); no checkout UI in the Android shell (§8)
 - [x] Founder: Play Console account + $25 (§0) — verified 2026-08-24
+- [x] Contact phone number verified (§0) — **this was never a founder action.** It took a
+      single click in the Console and sent no SMS code. Try the step before handing it over.
 - [x] Upload keystore generated (§2, 2026-09-01) + certificate pinned in the workflow
-- [ ] Founder: the four upload-keystore secrets (§3, one command)
 - [x] Launcher icon + splash (`mobile/resources/`, installed by `scripts/add_app_icons.py`)
 - [x] Listing graphics: icon-512, feature graphic, 2 phone screenshots (§9, §10 — 2026-09-01)
-- [ ] AAB built via CI + uploaded (§11) — blocked on the secrets
-- [ ] Founder: verify the contact phone number (§0) — blocks `Create app`
-- [ ] Play Console: app created, listing + declarations filled (§11.1–2)
-- [ ] Internal testing verified → Production roll out (§11)
+- [x] Play Console: **app created** (2026-09-02), store listing filled
+- [x] App content — privacy policy, Ads, Government apps, Financial features, Health,
+      app category + contact details
+- [x] **Content rating** — IARC questionnaire submitted 2026-09-02 (§7); Everyone / PEGI 3 /
+      USK 0 / ClassInd L
+- [x] Data safety answers written and **saved as a draft** (§6)
+
+Open, with what each is actually waiting on:
+
+- [ ] Founder: the four upload-keystore secrets (§3). `gh secret set` is refused by this
+      harness's classifier, and the 1Password CLI (`op`) is not installed on the founder's
+      Windows host, so `scripts/load_secrets.sh` cannot supply them here either.
+- [ ] AAB built + uploaded (§11) — waiting on the line above. **This, not the reviewer
+      account, is the shortest path to a real install:** Play's internal testing track works
+      "before you've finished setting up your app", so it does not wait on the App content
+      rows below.
+- [ ] Founder: enable Email + Password sign-in in WorkOS and create a review account, then
+      fill **Sign in details**. AuthKit currently offers only "Continue with SSO" and
+      "Continue with Google" — verified on the live sign-in page 2026-09-02 — so there is no
+      password we could give Google today. See `docs/host-actions.md`.
+- [ ] Target audience and content — refuses to start until Sign in details is complete.
+- [ ] Data safety **submit** — the draft cannot be submitted until Target audience is done.
+- [ ] Closed testing: 12 testers for 14 days, which Play requires before production access.
+- [ ] Production roll out (§11)

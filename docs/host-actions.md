@@ -275,6 +275,92 @@ reports `identity: not_configured`, tells the user, and writes a receipt under
 `python -c "from tinyassets.account_deletion import pending_deletions; print(pending_deletions('/data'))"`.
 Delete this paragraph on the next host-actions pass.
 
+### Apple App Store: enroll in the Apple Developer Program — nothing iOS can start without it
+
+**Checked 2026-09-02, not assumed.** Gmail holds exactly one Apple message, an Apple
+Account email verification from 2026-08-24; there is no Developer Program enrollment
+confirmation, no App Store Connect welcome, and no $99 receipt. `developer.apple.com/account`
+asks for a sign-in I cannot complete (I must not enter a password), so the browser cannot
+confirm it either. On that evidence: **not enrolled**.
+
+Everything on the iOS side is already staged — the Capacitor iOS platform, the
+`tinyassets://` URL-scheme patch, the unsigned compile-check in `ios-build.yml`, and the
+listing/App-Privacy copy in `docs/ops/app-store-launch.md`. None of it can produce an
+installable app without an account.
+
+1. **Enroll**: https://developer.apple.com/programs/enroll/ — $99/year, and identity
+   verification usually takes a day or two, sometimes longer. **Start this first**, because
+   the waiting is the long pole and it runs in parallel with everything else.
+2. Then the signing assets: a Distribution certificate, an App Store provisioning profile,
+   and an **App Store Connect API key** for CI upload (§3 of the runbook). You do NOT need a
+   Mac — CI builds on `macos-15` runners once those secrets exist.
+3. Then I create the App Store Connect record, fill the listing and App Privacy, and push a
+   build to TestFlight.
+
+### Google Play: a reviewer test account — and AuthKit has no password to give it
+
+Play Console -> App content -> **Sign in details** (formerly "App access"). Our app is
+behind WorkOS AuthKit, so the honest answer to "Is any part of your app restricted?" is
+**Yes** — the form's own Yes branch lists "Google Account sign in, and / or SSO", which is
+exactly what we use. Google then warns, in the dialog itself:
+
+> "If we can't review your app, you may be prevented from releasing updates, or your app
+> may be removed from Google Play. Reviewers are unable to create accounts, **use their own
+> existing accounts**, or use free trials to access your app. They are also unable to
+> contact you for more information."
+
+**The fork in the earlier draft of this file is now closed.** I checked the live AuthKit
+sign-in page (`https://unassuming-environment-16.authkit.app/`, the issuer the served app
+config actually names) on 2026-09-02. It offers exactly two things: an email box whose
+button reads **"Continue with SSO"**, and **"Continue with Google"**. There is no
+email-and-password option. So password sign-in is **not enabled** in our WorkOS
+environment, and no credential we could hand Google today would work.
+
+That leaves one clean action and one poor one:
+
+- **Enable Email + Password authentication in the WorkOS dashboard** (Authentication ->
+  sign-in methods), then create a single review account such as `play-review@tinyassets.io`
+  and sign into the app once so its universe exists. This is the one I recommend: it
+  produces a reusable credential with no second factor, which is what Google's own guidance
+  asks for ("provide reusable sign in details that don't expire").
+- **Hand over a dedicated Google account.** Works in principle, but a fresh Google account
+  signing in from a reviewer's machine invites exactly the 2-step-verification and
+  new-device challenges Google's guidance tells us to avoid. Prefer the first option.
+
+Why this is yours and not mine: I must not create accounts, and I must not type a password
+into any field. Both halves of this are the parts I am barred from.
+
+**The exact form, so it is a two-minute job when you have the credential.** "Add details"
+opens a dialog with:
+
+| Field | Required | What to put |
+|---|---|---|
+| Name | yes | `Reviewer account` |
+| Username, email address, or phone number | no* | the review account's email |
+| Password | no* | the review account's password |
+| Any other information required to access your app | no | see the paragraph below |
+| "…provide full access to all the features and content within this app" | checkbox | tick it |
+
+\* Marked optional by the form, but leaving them empty is what gets an app rejected —
+the reviewer has no other way in.
+
+For the free-text box, the one thing a reviewer will otherwise trip on is that **the app
+needs an AI provider connected before the chat does anything**. Either connect one on the
+review account beforehand, or say so there and point at the "Skip for now" control.
+
+**What it actually gates (corrected 2026-09-02):** Target audience and content refuses to
+start until Sign in details is complete — verified by opening it and reading the block:
+"You must complete the Sign in details section before starting the Target audience and
+content questionnaire." Data safety is answered and saved as a draft but cannot be
+submitted until Target audience is done. So this gates **two** remaining rows, not three.
+Content rating was *not* gated and is now complete (IARC, submitted 2026-09-02, Everyone /
+PEGI 3 / USK 0 / ClassInd L).
+
+**This does not block a real install.** Play's internal testing track explicitly works
+"before you've finished setting up your app" — the App content checklist gates *production*
+access, not internal testing. The shortest path to the app being installable from Play by a
+real person is the upload keystore below, not this section.
+
 ### Google Play: add the four upload-keystore secrets (one command)
 
 The Play developer account exists (identity verified 2026-08-24) and the upload keystore was
