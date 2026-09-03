@@ -1,7 +1,7 @@
 name: iOS build
 
-# Compile-checks the iOS Capacitor app on a macOS runner (Xcode + CocoaPods
-# pre-installed). Like the web app, product logic lives in the live SPA the shell
+# Compile-checks the iOS Capacitor app on a macOS runner. Like the web app,
+# product logic lives in the live SPA the shell
 # wraps, so a new build is only needed when the native shell/config changes.
 #
 # This builds UNSIGNED for the simulator to verify the project compiles — no
@@ -17,10 +17,12 @@ on:
     paths:
       - "mobile/**"
       - ".github/workflows/ios-build.yml"
+      - ".github/workflows/ios-release.yml"
   pull_request:
     paths:
       - "mobile/**"
       - ".github/workflows/ios-build.yml"
+      - ".github/workflows/ios-release.yml"
 
 permissions:
   contents: read
@@ -56,6 +58,10 @@ jobs:
         run: |
           python3 scripts/add_ios_scheme.py
           grep -q "<string>tinyassets</string>" ios/App/App/Info.plist
+
+      - name: Install the app icon + splash (fail closed on template drift)
+        working-directory: mobile
+        run: python3 scripts/add_ios_assets.py
 
       - name: Compile-check (unsigned, simulator)
         working-directory: mobile/ios/App

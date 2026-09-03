@@ -7,13 +7,11 @@
     "add:android": "cap add android",
     "sync": "cap sync android",
     "open:android": "cap open android",
-    "assets": "capacitor-assets generate --android",
     "build:debug": "cap sync android && cd android && gradlew.bat assembleDebug",
     "build:release": "cap sync android && cd android && gradlew.bat bundleRelease",
     "add:ios": "cap add ios",
     "sync:ios": "cap sync ios",
-    "open:ios": "cap open ios",
-    "assets:ios": "capacitor-assets generate --ios"
+    "open:ios": "cap open ios"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.1",
@@ -25,7 +23,6 @@
     "@capacitor/status-bar": "^8.0.3"
   },
   "devDependencies": {
-    "@capacitor/assets": "^3.0.5",
     "@capacitor/cli": "^8.5.1"
   },
   "engines": {

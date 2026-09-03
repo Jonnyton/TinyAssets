@@ -5,6 +5,10 @@
 - `splash.png` — 2732×2732 source (the badge centred on `#14140f`, matching the
   loading page and the site ground). Every splash size is a cover-fit centre-crop of this, so editing
   it changes what ships.
+- iOS uses those two sources directly: `scripts/add_ios_assets.py` replaces the
+  generated Xcode asset catalog's 1024×1024 icon and all three 2732×2732 splash
+  entries. It fails on missing files, wrong dimensions, or catalog drift so a
+  release cannot silently ship Capacitor's placeholder artwork.
 - `android/` — the **pre-rendered density set** the app actually ships: legacy
   launcher icons (48–192 px, square + round), adaptive-icon foregrounds
   (108–432 px, mark at 66% so no launcher mask clips it) and the splash at every

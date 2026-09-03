@@ -12,8 +12,9 @@ Runbooks stay where they are — `docs/ops/google-play-launch.md` and
 ## The one-line status
 
 **Google Play: installable today, but only by invited testers.** Public availability
-is at minimum 14 days away and needs 12 real people. **Apple: not started**, and it
-cannot start without the founder.
+is at minimum 14 days away and needs 12 real people. **Apple: the code/build lane is
+ready; account enrollment, signing assets, the app record, screenshots, and review
+still require founder-owned state.**
 
 ---
 
@@ -91,19 +92,36 @@ What is ready, stated precisely — the gap here is wider than "just enrol":
 - The Capacitor iOS platform, the `tinyassets://` URL-scheme patch, and the listing
   and App-Privacy copy in `docs/ops/app-store-launch.md`.
 - `ios-build.yml` compiles green on `macos-15` runners, including after the Capacitor 8
-  upgrade — but it builds **unsigned** (`CODE_SIGNING_ALLOWED=NO`), which is a
-  compile-check, not a shippable artifact. **There is no signed-archive or TestFlight
-  upload workflow in this repo yet**, and `app-store-launch.md` still has screenshots
-  outstanding. So enrolment unblocks the iOS side; it does not complete it, and the
-  archive/upload workflow has to be written before a build can reach App Store Connect.
-- **A Mac is still not needed** — CI has `macos-15` runners, and the signing workflow,
-  once written, would run there too.
+  upgrade. `ios-release.yml` now adds the manual, fail-closed signed archive: a verified
+  IPA artifact by default and an explicit opt-in App Store Connect/TestFlight upload.
+  It never submits for App Review. The build installs the committed TinyAssets icon and
+  splash instead of Capacitor's placeholders.
+- `app-store-launch.md` still has real iPhone screenshots outstanding. The existing
+  1080×1920 Play captures are not valid Apple screenshot dimensions and must not be
+  dressed up as native iPhone captures.
+- **A Mac is still not needed** — both iOS workflows run on `macos-15` CI runners.
+
+Local evidence, Windows checkout, 2026-09-03:
+
+- `npm ci --ignore-scripts --no-audit --no-fund && npx --no-install cap add ios &&
+  npx --no-install cap sync ios && python scripts/add_ios_scheme.py && python
+  scripts/add_ios_assets.py` — passed
+  against Capacitor 8.5.1's generated Xcode project. The generated icon's SHA-256
+  matched `resources/icon.png`; all three splash hashes matched `resources/splash.png`.
+- `python -m pytest -q tests/test_mobile_ios_release.py tests/test_onboarding_app.py
+  -k "mobile_ios_release or android_shell or app_itself_links"` — 10 passed, 83
+  deselected. The two account-deletion/native checkout guards also passed directly.
+- `actionlint .github/workflows/ios-build.yml .github/workflows/ios-release.yml` —
+  passed (actionlint container on Windows).
+- `npm audit --audit-level=high` — passed after removing unused
+  `@capacitor/assets`; three moderate `uuid` findings remain and are recorded in
+  `docs/concerns/2026-09-03-capacitor-cli-uuid-advisory.md`.
 
 The enrollment is $99/year with a one-to-two day identity check, and it needs the
 founder: an agent must not create accounts or execute payments. It is the long pole on
 the Apple side in exactly the way the 14-day closed test is on the Play side, so it is
-worth starting before anything else. Until it exists, no iOS work of any kind can
-produce an installable app.
+worth starting before anything else. Until it exists and supplies signing assets,
+the release workflow cannot produce an installable IPA or reach TestFlight.
 
 ---
 
