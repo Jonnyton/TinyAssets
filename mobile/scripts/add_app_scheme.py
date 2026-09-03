@@ -124,7 +124,7 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
-    protected void onPause() {
+    public void onPause() {
         if (voiceChromeClient != null && bridge != null) {
             voiceChromeClient.stopCapture(bridge.getWebView());
         }
@@ -132,7 +132,7 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
-    protected void onStop() {
+    public void onStop() {
         if (voiceChromeClient != null && bridge != null) {
             voiceChromeClient.stopCaptureAndDeny(bridge.getWebView());
         }
@@ -140,7 +140,7 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
-    protected void onDestroy() {
+    public void onDestroy() {
         if (voiceChromeClient != null && bridge != null) {
             voiceChromeClient.stopCaptureAndDeny(bridge.getWebView());
         }
