@@ -97,8 +97,12 @@
     .msg--founder{align-self:flex-end;background:var(--accent);color:var(--accent-ink);border-bottom-right-radius:4px}
     .msg--universe{align-self:flex-start;background:var(--surface-2);border:1px solid var(--line);border-bottom-left-radius:4px}
     .msg--system{align-self:center;background:transparent;color:var(--warn);font-size:.85rem;text-align:center;max-width:90%}
-    .msg-role{display:block;font-size:.72rem;letter-spacing:.3px;margin-bottom:.25rem;opacity:.85}
+    .msg-meta{display:flex;align-items:baseline;justify-content:space-between;gap:.15rem 1rem;flex-wrap:wrap;
+              margin-bottom:.25rem;font-size:.72rem;letter-spacing:.3px;opacity:.85}
+    .msg-role{font-weight:600}
+    .msg-time{font-variant-numeric:tabular-nums;letter-spacing:0;white-space:nowrap}
     .msg--universe .msg-role{color:var(--universe)}
+    .msg--system .msg-meta{justify-content:center;gap:.65rem}
     .setup-cta{margin-top:.6rem}
     .composer{display:flex;gap:.5rem;padding:.7rem 1rem;border-top:1px solid var(--line);background:var(--surface);
       padding-bottom:max(.7rem,env(safe-area-inset-bottom))}
@@ -1045,15 +1049,53 @@
   function showView(n){ for(const k in views) views[k].hidden=(k!==n); }
   let hasMessages=false, statusTimer=null;
 
-  function appendMessage(role,text,extra){
+  function formatMessageTimestamp(epochSeconds, locale, timeZone){
+    if(typeof epochSeconds!=="number" || !Number.isFinite(epochSeconds) || epochSeconds<0) return null;
+    const date=new Date(epochSeconds*1000);
+    if(Number.isNaN(date.getTime())) return null;
+    try{
+      const formatter=new Intl.DateTimeFormat(locale||undefined,{
+        year:"numeric",month:"short",day:"numeric",hour:"numeric",minute:"2-digit",
+        timeZoneName:"short",timeZone:timeZone||undefined,
+      });
+      const resolvedZone=formatter.resolvedOptions().timeZone||timeZone||"local time";
+      return {label:formatter.format(date),iso:date.toISOString(),zone:resolvedZone};
+    }catch(_e){
+      // A known instant remains known even on a browser with incomplete Intl
+      // timezone-name support. Date#toString is still viewer-local and includes
+      // a GMT offset (and usually a zone name), while ISO preserves the instant.
+      return {label:date.toString(),iso:date.toISOString(),zone:"browser local time"};
+    }
+  }
+
+  function appendMessage(role,text,extra,instant){
     if(!hasMessages){ const e=$("thread-empty"); if(e) e.remove(); hasMessages=true; }
     const thread=$("thread"), el=document.createElement("div");
     el.className="msg msg--"+role;
-    if(role!=="system"){ const l=document.createElement("span"); l.className="msg-role";
-      l.textContent=role==="universe"?"Universe":"You"; el.appendChild(l); }
-    el.appendChild(document.createTextNode(text));
+    const meta=document.createElement("span"); meta.className="msg-meta";
+    const l=document.createElement("span"); l.className="msg-role";
+    l.textContent=role==="universe"?"Universe":role==="system"?"Notice":"You";
+    meta.appendChild(l);
+    // A missing legacy timestamp stays visibly unknown. Using render/load time
+    // here would invent history and make the page look more certain than its data.
+    const stamp=(arguments.length<4)
+      ? formatMessageTimestamp(Date.now()/1000)
+      : formatMessageTimestamp(instant);
+    const when=document.createElement(stamp?"time":"span"); when.className="msg-time";
+    if(stamp){
+      when.dateTime=stamp.iso;
+      when.textContent=stamp.label;
+      when.title=stamp.zone+" · "+stamp.iso;
+    }else{
+      when.textContent="Date and time unavailable";
+      when.title="This legacy message has no recorded timestamp";
+    }
+    meta.appendChild(when); el.appendChild(meta);
+    const body=document.createElement("span"); body.className="msg-body";
+    body.textContent=text; el.appendChild(body);
     if(extra) el.appendChild(extra);
     thread.appendChild(el); thread.scrollTop=thread.scrollHeight;
+    return el;
   }
   function setStatusLine(t){ $("status-line").textContent=t||""; }
 
@@ -1086,9 +1128,10 @@
   // storage, so the build check's hold on a running turn never depends on
   // localStorage being writable.
   let turnStartedAt=0;
-  function rememberInflight(message, display){
+  function rememberInflight(message, display, sentAt){
     try{ localStorage.setItem(INFLIGHT_KEY, JSON.stringify(
-      {message, display: display||message, ts: Date.now()})); }catch(_e){}
+      {message, display: display||message,
+       ts:(typeof sentAt==="number" && Number.isFinite(sentAt))?sentAt:Date.now()})); }catch(_e){}
   }
   function forgetInflight(){ try{ localStorage.removeItem(INFLIGHT_KEY); }catch(_e){} }
   function readInflight(){
@@ -1183,15 +1226,12 @@
     retainedItems.forEach(i=>offerSavedLine(i, now));
   }
   function offerSavedLine(item, now){
-    const note=document.createElement("div");
-    note.className="msg msg--system";
-    const thread=$("thread");
     if(item.scope && item.scope!==queueScope){
       // Another universe's line: not this founder's to read, send or drop.
       // It stays on disk for that universe's own page.
-      note.textContent="A line queued in another universe's session on this browser is "+
-        "waiting there; open that universe to send or discard it.";
-      thread.appendChild(note); thread.scrollTop=thread.scrollHeight;
+      appendMessage("system","A line queued in another universe's session on this browser is "+
+        "waiting there; open that universe to send or discard it.",null,
+        now/1000);
       return;
     }
     const stale = now-(item.ts||0) > QUEUE_MAX_AGE_MS;
@@ -1199,16 +1239,12 @@
       String(item.display||item.message).slice(0, 200) + "\u201d";
     if(stale) text += " \u2014 queued more than three hours ago";
     if(!item.scope) text += " \u2014 queued before this page had recorded its universe, so check it is meant for this one";
-    note.textContent = text + ". ";
     const send=document.createElement("button");
     send.className="btn btn--link"; send.textContent="Send it now";
     send.addEventListener("click", ()=>{
       note.remove();
       if(!stillSaved(item)){
-        const gone=document.createElement("div");
-        gone.className="msg msg--system";
-        gone.textContent="That line was already sent or discarded in another window.";
-        thread.appendChild(gone); thread.scrollTop=thread.scrollHeight;
+        appendMessage("system","That line was already sent or discarded in another window.");
         return;
       }
       forgetSavedItem(item);
@@ -1216,13 +1252,12 @@
       // clears whatever the founder is typing.
       sendTurn(item.message, item.display, {relay:true, keepInflight: !!readInflight(), keepComposer:true});
     });
-    note.appendChild(send);
+    const note=appendMessage("system",text+". ",send,now/1000);
     note.appendChild(document.createTextNode(" "));
     const drop=document.createElement("button");
     drop.className="btn btn--link"; drop.textContent="Discard";
     drop.addEventListener("click", ()=>{ note.remove(); forgetSavedItem(item); });
     note.appendChild(drop);
-    thread.appendChild(note); thread.scrollTop=thread.scrollHeight;
   }
   function flushSendQueue(){
     if($("btn-send").disabled || !sendQueue.length) return;
@@ -1250,9 +1285,11 @@
     // From the founder's side the message IS sent: it shows in the thread now
     // and the composer clears, exactly as an immediate send; it waits its turn
     // on the wire and is not drawn again when it goes out.
-    if(!opts.echoed) appendMessage("founder", display || message);
+    const queuedAt=Date.now();
+    if(!opts.echoed) appendMessage("founder", display || message, null, queuedAt/1000);
     input.value=""; input.style.height="auto";
-    sendQueue.push({message, display, opts: Object.assign({}, opts, {echoed:true}), ts: Date.now()});
+    sendQueue.push({message, display,
+      opts: Object.assign({}, opts, {echoed:true,sentAt:queuedAt}), ts: queuedAt});
     setStatusLine("Your universe is thinking... " + sendQueue.length + " waiting");
     saveQueue();   // last: a failed save replaces the status line with why
   }
@@ -1265,10 +1302,12 @@
     // embedded verbatim). They differ only when an attachment rode along.
     // `opts.echoed` says the bubble is ALREADY on screen (a resend, or a message
     // restored after a reload) - drawing it twice would read as two sends.
-    if(!opts.echoed) appendMessage("founder", display || message);
+    const sentAt=(typeof opts.sentAt==="number" && Number.isFinite(opts.sentAt))
+      ? opts.sentAt : Date.now();
+    if(!opts.echoed) appendMessage("founder", display || message, null, sentAt/1000);
     // A line sent from a restore offer is a SIDE send: it must not take over
     // the in-flight record of an unconfirmed turn still on screen.
-    if(!opts.keepInflight) rememberInflight(message, display);
+    if(!opts.keepInflight) rememberInflight(message, display, sentAt);
     // A relayed answer or a side send did not come from the composer: what
     // the founder is typing there stays (Codex round 3).
     const input=$("composer-input");
@@ -1295,14 +1334,11 @@
   // button. Transport failures carry `err.transport`; anything else is a real
   // reply from the universe and is reported as it came.
   function offerResend(message, display, err, opts){
-    const note=document.createElement("div");
-    note.className="msg msg--system";
-    note.textContent=(err&&err.transport)
+    const notice=(err&&err.transport)
       ? "That didn\u2019t get through \u2014 "+err.message+". Your message is safe."
       : (err&&err.served)
         ? err.message   // the server already wrote the user-facing sentence
         : "Couldn\u2019t reach your universe: "+((err&&err.message)||"unknown error");
-    note.appendChild(document.createTextNode(" "));
     const again=document.createElement("button");
     again.className="btn btn--link"; again.textContent="Send it again";
     again.addEventListener("click", ()=>{
@@ -1310,9 +1346,7 @@
       // send and keeps the earlier unconfirmed record - Codex round 3).
       note.remove(); sendTurn(message, display, Object.assign({}, opts||{}, {echoed:true}));
     });
-    note.appendChild(again);
-    const thread=$("thread");
-    thread.appendChild(note); thread.scrollTop=thread.scrollHeight;
+    const note=appendMessage("system",notice+" ",again);
   }
 
   async function pollStatus(){
@@ -2546,8 +2580,8 @@
       const stamped = turns.every(t=>t && typeof t.ts==="number");
       const ordered = stamped ? turns.slice().sort((a,b)=>a.ts-b.ts) : turns.slice();
       ordered.forEach(t=>{
-        const who = (t && t.speaker === "universe") ? "universe" : "you";
-        if(t && typeof t.text === "string" && t.text) appendMessage(who, t.text);
+        const who = (t && t.speaker === "universe") ? "universe" : "founder";
+        if(t && typeof t.text === "string" && t.text) appendMessage(who, t.text, null, t.ts);
       });
       restoreInflight(turns);
     }catch(_e){
@@ -2582,10 +2616,8 @@
       (typeof last.ts !== "number" || last.ts*1000 >= (pending.ts||0) - 60*1000);
     if(already){ forgetInflight(); restoreQueue(); return; }
     inflightRestored = true;
-    appendMessage("founder", pending.display);
-    const note = document.createElement("div");
-    note.className = "msg msg--system";
-    note.textContent = "This message was never confirmed — the reply did not arrive. ";
+    appendMessage("founder", pending.display, null,
+      typeof pending.ts==="number"?pending.ts/1000:null);
     const again = document.createElement("button");
     again.className = "btn btn--link"; again.textContent = "Send it again";
     again.addEventListener("click", ()=>{
@@ -2593,8 +2625,8 @@
       note.remove(); forgetInflight();
       sendTurn(pending.message, pending.display, {echoed:true});
     });
-    note.appendChild(again);
-    $("thread").appendChild(note);
+    const note=appendMessage("system",
+      "This message was never confirmed — the reply did not arrive. ",again);
     // A line queued behind the unconfirmed turn (an approval, typically) is
     // offered below it, never sent on its own: the founder decides what goes
     // out, and in what order, once they see both.
