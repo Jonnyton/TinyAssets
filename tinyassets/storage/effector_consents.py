@@ -162,6 +162,89 @@ def revoke_consent(
         return cur.rowcount > 0
 
 
+#: The sink whose consent destinations embed the connection id
+#: (``"<op>:<connection_id>:<host>/<owner>/<name>"``, per
+#: ``workspace_consent_destination``).
+_CONNECTION_KEYED_SINK = "workspace"
+#: The sink whose consent destination is the connection's DESTINATION LABEL
+#: with no id in it at all -- so it cannot be found by scanning for the id, and
+#: survived removal to be inherited by the next deposit under the same name.
+_DESTINATION_KEYED_SINK = "authenticated_external_call"
+
+
+def _keyed_on_connection(
+    sink: str,
+    destination: str,
+    connection_id: str,
+    connection_destination: str,
+) -> bool:
+    """Whether this consent row belongs to THIS connection.
+
+    Per sink, because the two sinks key differently and a single positional
+    guess was wrong in both directions (Codex code review round 1): scanning
+    every sink for ``split(":")[1]`` swept in a foreign row whose destination
+    merely LOOKED like ``x:<id>:y``, and missed the connection's own outbound
+    consent, which carries the destination label and no id.
+    """
+    if sink == _CONNECTION_KEYED_SINK:
+        return destination.split(":")[1:2] == [connection_id]
+    if sink == _DESTINATION_KEYED_SINK:
+        return bool(connection_destination) and destination == connection_destination
+    return False
+
+
+def revoke_consents_for_connection(
+    universe_dir: str | Path,
+    *,
+    connection_id: str,
+    destination: str = "",
+    revoked_at: float | None = None,
+) -> list[str]:
+    """Revoke every consent keyed on ``connection_id``. Returns their
+    destinations, so the caller can tell the owner what it took back.
+
+    A workspace consent destination is ``"<op>:<connection_id>:<host>/<repo>"``
+    (``workspace_consent_destination``), so the connection is IN the key and a
+    removal can find its own rows without touching anyone else's. Scoped on
+    purpose: a universe holds several connections, and a universe-wide sweep
+    would revoke consents for keys the owner never removed.
+
+    Why it exists: ``remove_http`` deleted the ledger row and left these
+    active, and a connection id is deterministic per ``(universe,
+    destination)`` -- so re-depositing the same destination silently inherited
+    the old repository consents. Taking a key back has to take back everything
+    it authorized (full-channel-access D6).
+    """
+    token = str(connection_id or "").strip()
+    destination_token = str(destination or "").strip()
+    if not token:
+        return []
+    initialize_consents_db(universe_dir)
+    ts = revoked_at if revoked_at is not None else time.time()
+    # The connection id is the SECOND colon-separated field. Matching on the
+    # exact position, not a substring, so a repository or host that happens to
+    # contain another connection's name cannot be swept in.
+    with _connect(universe_dir) as conn:
+        rows = conn.execute(
+            "SELECT sink, destination FROM effector_consents WHERE revoked_at IS NULL"
+        ).fetchall()
+        hits = [
+            (row["sink"], row["destination"])
+            for row in rows
+            if _keyed_on_connection(
+                str(row["sink"]), str(row["destination"]), token, destination_token
+            )
+        ]
+        for sink, destination in hits:
+            conn.execute(
+                "UPDATE effector_consents SET revoked_at = ? "
+                "WHERE sink = ? AND destination = ?",
+                (ts, sink, destination),
+            )
+        conn.commit()
+    return sorted(destination for _, destination in hits)
+
+
 def is_consent_active(
     universe_dir: str | Path,
     *,

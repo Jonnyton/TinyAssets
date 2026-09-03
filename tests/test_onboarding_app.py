@@ -169,6 +169,7 @@ def test_route_is_mcp_app_get(monkeypatch):
         "/mcp/app/serving/bind",
         "/mcp/app/billing/status", "/mcp/app/billing/checkout",
         "/mcp/app/billing/cancel", "/mcp/app/billing/webhook",
+        "/mcp/app/account/delete",
     }
     assert "GET" in by_path["/mcp/app"].methods
     assert "GET" in by_path["/mcp/app/billing/status"].methods
@@ -178,7 +179,7 @@ def test_route_is_mcp_app_get(monkeypatch):
         "/mcp/app/openai/begin", "/mcp/app/openai/exchange", "/mcp/app/trace",
         "/mcp/app/serving/bind",
         "/mcp/app/billing/checkout", "/mcp/app/billing/cancel",
-        "/mcp/app/billing/webhook",
+        "/mcp/app/billing/webhook", "/mcp/app/account/delete",
     ):
         assert "POST" in by_path[post_only].methods
         assert "GET" not in by_path[post_only].methods
@@ -1326,3 +1327,33 @@ def test_a_credential_link_shows_where_it_goes_and_cannot_reach_back() -> None:
     page, _csp = render_app_html()
     assert 'new URL(f.url).host' in page, "the link does not show its host"
     assert '"noopener noreferrer"' in page
+
+
+def test_the_android_shell_shows_no_checkout_ui():
+    """Play's payments policy: a subscription sold inside a Play-installed app must use
+    Play Billing, so the native shell must never surface the Stripe plan/checkout UI."""
+    from pathlib import Path
+
+    html = (Path(onboarding.__file__).parent / "app.html").read_text(encoding="utf-8")
+    assert "if(!b || !PLAN || NATIVE) return;" in html
+
+
+def test_the_app_itself_links_a_privacy_policy():
+    """Google Play's User Data policy: a privacy policy link must be "within the
+    app itself", not only in the store listing or on a website, and reachable in
+    normal use rather than behind a menu. The app had none — zero occurrences of
+    the word — which would have failed review."""
+    from pathlib import Path
+
+    html = (Path(onboarding.__file__).parent / "app.html").read_text(encoding="utf-8")
+    # On the signed-OUT card, so it is reachable before anyone signs in.
+    signin = html[html.index('id="view-signin"'):html.index('id="view-chat"')]
+    assert "https://tinyassets.io/legal#privacy" in signin
+    # And for someone already signed in, on the Account view.
+    account = html[html.index('id="view-account"'):html.index('id="view-connect"')]
+    assert "https://tinyassets.io/legal#privacy" in account
+    assert "https://tinyassets.io/account" in account
+    # Opened externally: a plain navigation would strand a Capacitor user with no
+    # way back to their universe.
+    assert 'a[data-external]' in html
+    assert "openExternal(a.getAttribute(\"href\"))" in html

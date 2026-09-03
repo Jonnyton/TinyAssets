@@ -970,6 +970,84 @@ async def _handle_serving_bind(request: Any) -> Any:
 
 
 
+async def _handle_account_delete(request: Any) -> Any:
+    """Delete the signed-in user's account: their universe (memory, history,
+    deposited credentials), every row keyed to it, any paid plan (cancelled
+    now), and the sign-in identity itself. The app's Account view posts here;
+    ``tinyassets.io/account`` documents the same path for the web. Google Play
+    requires both. Same-origin JSON + an explicit ``confirm: "DELETE"`` body so
+    a cross-site post or a stray click cannot erase an account."""
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.account_deletion import AccountDeletionBlocked, AccountDeletionError
+    from tinyassets.auth.middleware import current_identity, identity_context
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    cfg = app_config()
+    if not _same_origin_json(request, str(cfg.get("resource") or "")):
+        return JSONResponse(
+            {"error": "cross_origin_rejected"}, status_code=403, headers=_NO_STORE
+        )
+    data = await _read_small_json(request)
+    if data is None:
+        return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
+    if str(data.get("confirm", "")).strip() != "DELETE":
+        return JSONResponse(
+            {"error": "confirmation_required"}, status_code=400, headers=_NO_STORE
+        )
+    session_ref = str(data.get("session_ref", "")).strip()
+    if not _valid_handle(session_ref):
+        session_ref = ""
+    identity = current_identity()
+
+    def _run() -> dict[str, Any]:
+        from tinyassets.account_deletion import delete_account
+        from tinyassets.api.helpers import _base_path
+
+        with identity_context(identity):
+            return delete_account(_base_path(), founder_sub=identity.user_id)
+
+    try:
+        receipt = await run_in_threadpool(_run)
+    except AccountDeletionBlocked as exc:
+        # Someone else's data, live work, or unsettled money is in scope. The
+        # reasons name no person and no content, so they are safe to show — and
+        # showing them is the difference between "try again" and "email us".
+        return JSONResponse(
+            {"error": "deletion_blocked", "reasons": str(exc).split("; ")},
+            status_code=409,
+            headers=_NO_STORE,
+        )
+    except AccountDeletionError as exc:
+        # Refused before anything changed (unsafe binding, no principal).
+        return JSONResponse(
+            {"error": "deletion_refused", "detail": str(exc)},
+            status_code=409,
+            headers=_NO_STORE,
+        )
+    # The account is gone; end this device's renewable session the way logout
+    # does. Other devices' refresh handles die with the identity or expire.
+    if session_ref:
+        _drop_refresh_session(session_ref)
+    response = JSONResponse(
+        {
+            "deleted": True,
+            "home_removed": bool(receipt.get("home_removed")),
+            "billing": str(receipt.get("billing") or ""),
+            "identity": str(receipt.get("identity") or ""),
+            "unfinished": list(receipt.get("unfinished_phases") or []),
+        },
+        headers=_NO_STORE,
+    )
+    response.delete_cookie(_REFRESH_COOKIE, path=_REFRESH_COOKIE_PATH)
+    return response
+
+
 async def _handle_billing_status(request: Any) -> Any:
     """Current tier + usage for the signed-in user's home universe."""
     from starlette.concurrency import run_in_threadpool
@@ -1415,6 +1493,7 @@ def onboarding_routes() -> list[Any]:
         Route("/mcp/app/billing/checkout", _handle_billing_checkout, methods=["POST"]),
         Route("/mcp/app/billing/cancel", _handle_billing_cancel, methods=["POST"]),
         Route("/mcp/app/billing/webhook", _handle_billing_webhook, methods=["POST"]),
+        Route("/mcp/app/account/delete", _handle_account_delete, methods=["POST"]),
     ]
 
 

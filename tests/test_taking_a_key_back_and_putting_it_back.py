@@ -96,10 +96,24 @@ def test_the_connection_id_is_the_same_one_afterwards(base):
     assert _connection(base, "u-1") is not None, "the connection did not come back"
 
 
-def test_the_workspace_consent_survives_the_round_trip(base):
-    """The owner should not have to re-grant checkout consent for a key they are
-    simply rotating. The consent row is keyed by connection id, which is stable,
-    so it still points at the connection that came back."""
+def test_removing_the_key_takes_back_what_it_authorized(base):
+    """Removal REVOKES the consents keyed on that connection.
+
+    This test used to assert the opposite -- that a consent survives a
+    remove-and-redeposit, so an owner rotating a key would not have to
+    re-grant checkout. That convenience had a cost the comment did not say
+    out loud: a connection id is deterministic per (universe, destination),
+    so the surviving row also outlives a removal the owner meant as a
+    revocation, and a key deposited later under the same name inherits
+    repository access nobody granted it.
+
+    Taking a key back takes back what it authorized. Rotation is served
+    without inheritance: ``remove_http`` returns ``removed_consents`` beside
+    the endpoints and scopes it already returned, so the agent re-asks for
+    exactly those and the owner is never asked to remember them -- and a key
+    re-deposited with ``access: "full"`` needs no per-repository consent at
+    all. Decision recorded in docs/host-actions.md; reversible.
+    """
     from tinyassets.storage.effector_consents import list_consents
 
     udir = _make_universe(base, "u-1", admin="alice")
@@ -116,29 +130,30 @@ def test_the_workspace_consent_survives_the_round_trip(base):
                            "consents": ["workspace_checkout"]})
     assert granted.get("request_id"), granted
     assert not _answer("u-1", request_id=granted["request_id"], values={}).get("error")
+
     def _keys():
         return {r.get("destination")
                 for r in list_consents(udir, sink="workspace")}
 
-    # Read the key the system WROTE rather than predicting it. An expected value
-    # spelled here would be a second definition of the destination competing
-    # with `workspace_consent_destination`, and two spellings of one authority
-    # key is the defect this PR has been chasing all day. (It is written against
-    # the CONNECTION's host -- api.github.com -- not the git host.)
+    # Read the key the system WROTE rather than predicting it. An expected
+    # value spelled here would be a second definition of the destination
+    # competing with `workspace_consent_destination`.
     granted_keys = _keys()
     assert granted_keys, "consent was never written"
     [key] = granted_keys
     assert conn_id in key, "the consent is not keyed by the connection"
 
-    _remove_through_the_rail("u-1")
-    assert _keys() == granted_keys, (
-        "removing the key also revoked the owner's consent"
-    )
+    removed = _remove_through_the_rail("u-1")
+
+    assert _keys() == set(), "removing the key left its consents active"
+    # And it SAYS what it took, so a rotation can re-ask for exactly that.
+    if isinstance(removed, dict) and "removed_consents" in removed:
+        assert set(removed["removed_consents"]) == granted_keys
 
     _deposit("u-1", secret="ghp_" + "y" * 36,
              scopes=[f"git_read:{REPO}", f"git_write:{REPO}"])
-    assert _keys() == granted_keys, (
-        "the consent no longer matches the connection that came back"
+    assert _keys() == set(), (
+        "the re-deposited key inherited a consent nobody granted it"
     )
 
 

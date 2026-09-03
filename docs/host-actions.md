@@ -240,6 +240,41 @@ row; if yes, the concern above is the prerequisite.
 
 ## Credentials and accounts
 
+### Google Play: verify the contact phone number — BLOCKS EVERYTHING ELSE
+
+**Observed in the Play Console 2026-09-02.** `Create app` is greyed out with a padlock and
+"Complete account verifications to create new apps". The one outstanding verification is
+the contact phone number: `+12067997835` is on file but carries no verification tick, while
+both email addresses do. Until it is verified, no app can be created, so no listing, no
+upload, no internal test and no rollout can happen — the whole launch is behind this.
+
+Only you can do it: Google sends a code by SMS or voice call to that phone, and I cannot
+read it. Roughly a minute:
+
+1. https://play.google.com/console/u/0/developers/8089695267825659874/account
+2. **Contact details** → check the number is right → **Verify**
+3. Choose SMS or call, enter the code, **Verify**
+
+The `Create app` button un-greys once it goes through. Tell me and I will take the launch
+from there. (Earlier notes recorded "identity verified 2026-08-24" — that was a *different*
+verification; the phone step is separate and still open.)
+
+### Google Play: `WORKOS_API_KEY` reaches the daemon — VERIFIED 2026-09-02, nothing for you
+
+Account deletion removes the user's WorkOS record through the management API, and that
+upstream deletion is also what ends sessions on other devices (their refresh handles are
+opaque to the daemon). The key is not in the repo or in `deploy/`, so I checked the host:
+`/etc/tinyassets/env` carries exactly one `WORKOS_API_KEY=` line, and
+`docker exec tinyassets-daemon printenv WORKOS_API_KEY` returns an `sk_`-prefixed value of
+the expected length. So a real deletion will remove the sign-in identity, which is what
+`/legal` and `/account` promise.
+
+If that ever stops being true, deletion still removes every byte of the user's data and
+reports `identity: not_configured`, tells the user, and writes a receipt under
+`.account-deletions/` — check it with
+`python -c "from tinyassets.account_deletion import pending_deletions; print(pending_deletions('/data'))"`.
+Delete this paragraph on the next host-actions pass.
+
 ### Google Play: add the four upload-keystore secrets (one command)
 
 The Play developer account exists (identity verified 2026-08-24) and the upload keystore was
@@ -255,9 +290,20 @@ printf '%s' upload | gh secret set ANDROID_UPLOAD_KEY_ALIAS
 printf '%s' "$ANDROID_UPLOAD_KEY_PASSWORD" | gh secret set ANDROID_UPLOAD_KEY_PASSWORD
 ```
 
-Then back the keystore up somewhere that is not this laptop. Everything after that (AAB
-build, listing, data safety, internal-testing release) is staged in
-`docs/ops/google-play-launch.md`; the only other click that is yours is **Roll out**.
+Then back the keystore up somewhere that is not this laptop.
+
+What remains after the secrets, and who does it (`docs/ops/google-play-launch.md` §11):
+
+| Step | Who |
+|---|---|
+| Build + download the signed AAB (`gh workflow run android-release.yml`) | agent |
+| Play Console: create the app, accept its declarations (incl. US export laws) | agent in the browser, **only after you say "yes" in chat** — it is a form submission on your Google account |
+| Store listing, Data safety, Content rating, Target audience, privacy URL, graphics | same — staged copy in §4–§9, agent fills, you approve |
+| Internal-testing release: upload the AAB, add yourself as tester, roll out | same |
+| Verify the loop on a real phone (install from the internal-test link, sign in, chat) | you |
+| Promote to Production → submit for review → **Roll out** | you (final click) |
+
+Nothing in the Console is created until you give the go-ahead.
 
 ### Mint the PAT that unblocks the deploy chain
 
