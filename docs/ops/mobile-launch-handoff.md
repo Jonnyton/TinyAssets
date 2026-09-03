@@ -92,10 +92,12 @@ Apple Support then reported making an unspecified change on its side and asked f
 new creation attempt. After the account holder retried, the browser reached the signed-in
 Apple Account **Sign-In & Security** page and showed two-factor authentication with a
 trusted phone number. Account creation is complete. Apple Developer Program enrollment,
-payment, and agreement acceptance have not begun. The account holder confirmed the
-account result and closed the completed support chat. The enrollment flow is preserved at
-the Apple Developer Agreement with **Agree** untouched; accepting that agreement, identity
-confirmation, and membership payment remain account-holder actions.
+payment, and identity confirmation are not complete. The account holder confirmed the
+account result, closed the completed support chat, accepted the Apple Developer Agreement,
+and declined optional developer-news email. The preserved enrollment flow is now at
+**Confirm your personal information**. It requires legal name, phone number, and physical
+address, and warns that the name cannot be changed after **Continue**; that identity step
+and membership payment remain account-holder actions.
 
 What is ready, stated precisely — the gap here is wider than "just enrol":
 

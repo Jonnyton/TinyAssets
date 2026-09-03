@@ -278,14 +278,15 @@ manual signed-IPA workflow, opt-in TestFlight upload, and listing/App-Privacy co
 None of it can produce an installable app without account-owned signing material.
 
 1. **Complete — Apple Account created and verified (2026-09-03).** The signed-in account
-   page shows two-factor authentication and a trusted phone number. The Developer Program
-   flow is staged at the Apple Developer Agreement; its **Agree** action is untouched.
+   page shows two-factor authentication and a trusted phone number. The account holder
+   also accepted the Apple Developer Agreement and declined optional developer-news email.
 
-2. **Enroll**: review and accept the staged Apple Developer Agreement, then continue the
-   official enrollment flow at https://developer.apple.com/programs/enroll/. Agreement
-   acceptance, identity confirmation, and the $99/year membership purchase are account-
+2. **Enroll**: the preserved official flow is staged at **Confirm your personal
+   information**. The account holder must enter the legal name shown on government ID,
+   phone number, and physical address; Apple warns that the name cannot be changed after
+   **Continue**. Identity confirmation and the $99/year membership purchase remain account-
    holder actions. Identity verification usually takes a day or two, sometimes longer.
-   **Start this first**, because the waiting is the long pole and it runs in parallel with
+   **Finish this first**, because the waiting is the long pole and it runs in parallel with
    everything else.
 3. Register the explicit App ID and App Store Connect app record for `io.tinyassets.app`,
    accepting any current Apple agreement presented to the account holder.
