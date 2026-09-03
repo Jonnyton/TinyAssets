@@ -3137,6 +3137,18 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             "status": "rejected",
             "error": "changes_json must decode to a JSON list.",
         })
+    if not changes:
+        # A patch with no ops used to return `status: "patched"` with
+        # `ops_applied: 0` -- a success receipt for an untouched branch. Fail
+        # loudly instead (Hard Rule 8); live 2026-09-03, a rename reported as
+        # applied twice and never landed.
+        return json.dumps({
+            "status": "rejected",
+            "error": (
+                "changes_json is an empty list; a patch needs at least one op. "
+                "To rename: [{\"op\": \"set_name\", \"name\": \"New name\"}]"
+            ),
+        })
 
     resolved = _resolve_readable_branch(selector, str(_base_path()))
     if resolved is None:
