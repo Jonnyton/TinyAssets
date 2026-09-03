@@ -12,6 +12,31 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Decide: grant the authority-path receipt for PR #2779
+
+`pr-scope-guard` blocks the universe-ownership PR because
+`tinyassets/api/visibility.py` is an authority path and no exact-head review
+receipt exists. The change there is one call site following a signature --
+`_discover_universe_ids` passes the owned set into
+`_is_listable_universe_dir` -- and it is behavioural, because discovery returns
+owned universes only now.
+
+Codex reviewed the branch three times and returned REJECT each time; every
+finding is folded, and the transcripts are in
+`docs/audits/2026-09-02-universe-ownership-cross-family-review.md`. The
+three-round cap ended the rounds, so nobody has approved the current head and
+the agent will not write an `APPROVE` line for a verdict that was never given.
+
+To unblock it, add three lines to the PR body:
+
+```
+Drain-Review-Verdict: APPROVE
+Drain-Review-Head: <the exact head sha>
+Drain-Review-Artifact: docs/audits/2026-09-02-universe-ownership-cross-family-review.md
+```
+
+Any push voids the receipt, so it goes on last.
+
 ## Decide: what should be publicly discoverable, now that the site shows it?
 
 The rewritten `/commons` page lists what the endpoint reports as publicly
