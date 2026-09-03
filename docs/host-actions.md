@@ -292,15 +292,46 @@ They run in parallel and neither depends on the other.
 
 What it needs from you:
 
-1. **Twelve people with Google accounts** who will opt in and stay opted in. They do not
-   have to use the app daily — they have to remain on the tester list for the full 14
-   days. Removing someone mid-window can reset progress, so over-recruit rather than
-   land on exactly twelve.
-2. Play Console → **Test and release → Testing → Closed testing** → create a track and
-   add them, by email list or Google Group. A Google Group is easier to change later.
-3. Tell me when they are in, and I will take the release itself — the build is already
-   signed and the internal-testing track is live, so promoting a bundle to the closed
-   track is not new work.
+1. Recruit **15–18 people with Google accounts** so ordinary drop-off cannot take the
+   continuously opted-in count below 12. Ask for a clear yes before adding an address;
+   do not place personal email addresses in this repository.
+2. Play Console → **Test and release → Testing → Closed testing** → create one track.
+   Prefer a dedicated Google Group because membership can be maintained without
+   rewriting the release; an email list is acceptable if that is simpler.
+3. Promote the already phone-verified bundle (or a strictly newer version code), copy
+   the opt-in link, and send the invitation below. The 14-day clock begins only after
+   at least 12 people have actually opted in, not when invitations are sent.
+4. Keep a private tracker with invitee, consent, opt-in confirmed, install confirmed,
+   Android/device, three task results, feedback, and opt-out date. Check the Play
+   tester count daily and recruit replacements early. Never remove a tester during the
+   window unless they ask to leave.
+
+Suggested invitation (send only after the closed-track link exists):
+
+> TinyAssets is running a private 14-day Google Play test. Please open **[opt-in
+> link]** while signed into the Google account you gave me, tap **Become a tester**,
+> install from Play, and stay opted in through **[end date and timezone]**. During the
+> test, please try: (1) launch/sign-in, (2) open Connect and return without exposing a
+> credential, and (3) send one ordinary test message if your account is configured.
+> Report crashes, stuck screens, sign-in trouble, or confusing copy at **[private
+> feedback route]**. Do not enter confidential or regulated information. You may leave
+> at any time; tell me so I can replace the test slot.
+
+Engagement plan — Google can reject a production-access application for insufficient
+testing even when the count/duration minimum was met:
+
+| When | Operator check | Tester request |
+|---|---|---|
+| Day 0 | Confirm ≥12 actual opt-ins in Play; save the start timestamp and expected end timestamp. | Opt in and install from Play. |
+| Days 1–3 | Triage install/sign-in failures; replace drop-offs before the count falls below 12. | Complete launch/sign-in and one navigation task. |
+| Days 4–10 | Review feedback plus Play crashes/ANRs; ship fixes only with a higher version code and re-smoke. | Exercise Connect return/cancel and an ordinary message where configured. |
+| Days 11–13 | Confirm ≥12 remain opted in and all launch-blocking defects have dispositions. | Recheck the latest build and submit final feedback. |
+| After 14 complete days | Capture the Console eligibility state before applying for production access. | No action unless asked to verify a fix. |
+
+This does not require daily use from every person, but it does require a real,
+representative test rather than twelve idle list entries. Google's current rule and
+engagement guidance are at
+<https://support.google.com/googleplay/android-developer/answer/14151465>.
 
 After the 14 days: apply for production access, which Google reviews separately, and
 only then can the app be promoted to Production and be publicly downloadable.
@@ -308,7 +339,7 @@ only then can the app be promoted to Production and be publicly downloadable.
 Do not confuse this with the internal-testing track already running — internal testing
 does not count toward the requirement, no matter how long it runs.
 
-### Google Play: a reviewer test account — and AuthKit has no password to give it
+### Google Play: create a reusable reviewer account — password sign-in is disabled
 
 Play Console -> App content -> **Sign in details** (formerly "App access"). Our app is
 behind WorkOS AuthKit, so the honest answer to "Is any part of your app restricted?" is
@@ -327,13 +358,18 @@ button reads **"Continue with SSO"**, and **"Continue with Google"**. There is n
 email-and-password option. So password sign-in is **not enabled** in our WorkOS
 environment, and no credential we could hand Google today would work.
 
-That leaves one clean action and one poor one:
+That leaves one clean action and one poor one. WorkOS documents that AuthKit supports
+Email + Password and that the hosted UI exposes only the methods enabled in the
+dashboard (<https://workos.com/docs/authkit/email-password>,
+<https://workos.com/docs/authkit/hosted-ui>), so this is configuration/account work,
+not a new app authentication implementation:
 
-- **Enable Email + Password authentication in the WorkOS dashboard** (Authentication ->
+- **Enable Email + Password authentication in the WorkOS dashboard** (Authentication →
   sign-in methods), then create a single review account such as `play-review@tinyassets.io`
-  and sign into the app once so its universe exists. This is the one I recommend: it
-  produces a reusable credential with no second factor, which is what Google's own guidance
-  asks for ("provide reusable sign in details that don't expire").
+  and sign into the app once from a clean browser so its universe exists. Keep MFA,
+  magic-link, location approval, and expiring OTP requirements off for this dedicated
+  account. This is the one I recommend: it produces a reusable credential with no
+  second factor, which is what Google's own guidance requires.
 - **Hand over a dedicated Google account.** Works in principle, but a fresh Google account
   signing in from a reviewer's machine invites exactly the 2-step-verification and
   new-device challenges Google's guidance tells us to avoid. Prefer the first option.
@@ -355,9 +391,28 @@ opens a dialog with:
 \* Marked optional by the form, but leaving them empty is what gets an app rejected —
 the reviewer has no other way in.
 
-For the free-text box, the one thing a reviewer will otherwise trip on is that **the app
-needs an AI provider connected before the chat does anything**. Either connect one on the
-review account beforehand, or say so there and point at the "Skip for now" control.
+Before filling the form, verify from a clean browser/device that the credential works
+twice without an email challenge and reaches the signed-in app. Then decide how the
+reviewer gets the app's substantive chat surface: provision a dedicated, review-safe AI
+provider connection on that account, or document the intentionally unconnected state
+and the **Skip for now** path. Do not attach a founder/personal provider credential to
+the reviewer account. If no non-personal way exists to exercise chat, that is a product
+access blocker to resolve before claiming that the account provides full access.
+
+Use this free-text instruction after verifying its labels against the exact candidate:
+
+> Open TinyAssets. Tap **Sign in**. Enter the reviewer email and password above, then
+> continue. No one-time code, organization selection, or location approval is required.
+> After sign-in, TinyAssets opens the account's universe. To inspect provider setup,
+> open **Connect**. **[If a review-safe provider is preconnected: identify it and the
+> safe test action.] [Otherwise: tap Skip for now; state clearly which chat behavior is
+> unavailable and why.]** Account and privacy controls are under **Account**.
+
+The bracketed branch must be replaced with observed truth; do not submit it verbatim.
+Store the actual password only in Play Console's credential field/password manager,
+never in this file, an issue, a chat, screenshots, or CI logs. Re-check it immediately
+before every submitted build. Google's reviewer-access requirements are at
+<https://support.google.com/googleplay/android-developer/answer/15748846>.
 
 **What it actually gates (corrected 2026-09-02):** Target audience and content refuses to
 start until Sign in details is complete — verified by opening it and reading the block:

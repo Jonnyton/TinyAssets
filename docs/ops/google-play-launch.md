@@ -283,6 +283,17 @@ Play's taxonomy, not ours. Answer exactly:
   | Files and docs → **Files and docs** | attachments you send it | Optional (attaching is a choice) | App functionality |
   | App activity → **Other user-generated content** | the AI-provider credential you deposit (Play has no "credentials" type; this is its category for user-entered content that fits nowhere else) | Optional (Connect can be skipped) | App functionality |
 
+  **Voice is intentionally absent from this saved-data draft.** The Android
+  candidate contains dormant microphone plumbing, but the web control and store copy
+  remain off. Before enabling it, record the real phone/network behavior and take one
+  of these evidence-backed branches:
+
+  | Observed voice behavior | Data safety consequence |
+  |---|---|
+  | Raw audio leaves the device or is retained by TinyAssets/a provider | Add **Audio files → Voice or sound recordings** and accurately mark collection, sharing, retention/ephemeral handling, optionality, and purpose. |
+  | Audio stays on-device and only a transcript leaves the device | Do not add the audio type solely for local processing; keep the retained/sent transcript under **Messages → Other in-app messages**, and preserve device/network proof. |
+  | Behavior cannot be proved | Keep voice disabled and do not guess at the declaration. |
+
   Do **not** declare Financial info → Purchase history unless the paid plan is
   bought inside the Android app (see §8, payments).
 - **Shared with third parties?** No, for every type — but the answer rests on two
@@ -300,6 +311,11 @@ Play's taxonomy, not ours. Answer exactly:
 - **Data sold?** No. **Used for ads?** No.
 - **Security practices:** encrypted in transit — Yes; deletion mechanism — Yes;
   independent security review — No.
+
+This section is a **policy draft, not legal approval**. Immediately before submission,
+compare every selected Console row against the exact release's permissions, SDKs,
+live privacy notice, account-deletion behavior, and processor contracts. The founder
+must approve the final answers; an agent must not make that declaration.
 
 ---
 
@@ -367,6 +383,20 @@ The exact staged copy and video shot list are in
 evidence, not a submitted legal/policy declaration. The founder must review the facts
 and authorize the Console submission.
 
+Use this approval packet only after the internal-phone recording matches it:
+
+| Play prompt | Draft answer / evidence |
+|---|---|
+| Foreground-service type | `dataSync` |
+| Feature using it | User-initiated **Connect OpenAI** subscription sign-in. TinyAssets temporarily runs a local loopback callback listener while the external browser completes OAuth; a persistent notification keeps the operation visible. |
+| Why it cannot be deferred | If the listener is not ready while the external sign-in completes, its local callback cannot be received and the user must restart sign-in. No background sync or user content is lost. |
+| What happens if interrupted | The callback is not delivered, the attempt times out, and no credential from that attempt is stored. The user can retry. |
+| Video evidence | Tap **Connect OpenAI**; show the foreground-service notification; complete or cancel the browser step; return to TinyAssets; show the notification disappearing. Redact account identifiers, callback parameters, and secrets. |
+
+Do not submit if the notification is absent, remains after success/cancel/timeout, the
+service starts without the user's Connect action, or the callback/credential behavior
+differs from the draft. Record the discrepancy and fix/retest first.
+
 ---
 
 ## 9. Graphics (staged in `docs/ops/play-assets/` — see that folder)
@@ -375,8 +405,9 @@ and authorize the Console submission.
   --from-logo … --font …`, see `mobile/resources/README.md`; the committed file
   is canonical — regenerate only to change the mark).
 - **Feature graphic:** 1024×500 PNG.
-- **Phone screenshots:** ≥2, 16:9 or 9:16, min 320px — captured from the live app
-  (sign-in, a universe conversation). Capture procedure in §10.
+- **Phone screenshots:** ≥2, 16:9 or 9:16, min 320px — captured from the live app.
+  The staged pair is the signed-out screen plus the Connect view; dimensions and
+  privacy state are recorded in the asset README. Capture procedure in §10.
 
 ---
 
@@ -384,8 +415,15 @@ and authorize the Console submission.
 
 Screenshots come from the live app so they're honest:
 1. Open `https://tinyassets.io/mcp/app` (or the installed app) at phone width.
-2. Capture: the sign-in screen, a universe conversation, the Connect view.
-3. Save to `docs/ops/play-assets/screenshots/` and upload in the listing.
+2. Capture a representative set without account, universe, credential, branch, run,
+   debug, notification, or browser-chrome identifiers.
+3. Save to `docs/ops/play-assets/screenshots/`; run the release artwork verifier;
+   visually inspect every file; only then upload it in the listing.
+
+On 2026-09-03, a clean 540×960 signed-out capture replaced the stale conversation
+image that exposed an internal universe id and implementation discussion. The staged
+pair now passes the repository's Play artwork rules. This is asset readiness, not
+evidence that the Console listing has been updated.
 
 ---
 
@@ -442,6 +480,8 @@ Done:
 - [x] **targetSdk 36** via Capacitor 8 (§1a) — Play rejects anything less for a new app
 - [x] Internal-testing tester list "Founder devices"
 - [x] **Signed AAB built and uploaded** — see "How to build one" below
+- [x] Unsafe conversation screenshot removed; clean live signed-out capture staged
+      alongside the Connect capture (not uploaded by this change)
 
 Open, with what each actually waits on:
 
@@ -460,6 +500,9 @@ Open, with what each actually waits on:
       the container build below needs none of them — but they turn every future release
       into one `gh workflow run` instead of a manual build.
 - [ ] Closed testing: 12 testers for 14 days, then apply for production access.
+- [ ] Independent cross-family review of the later voice-native slice. The original
+      release review does not cover it; the prepared request and exact retry path are
+      in `docs/audits/2026-09-03-android-store-release-claude-review.md`.
 - [ ] Production roll out (§11) — your final click.
 
 ### How to build a signed AAB with no GitHub secrets

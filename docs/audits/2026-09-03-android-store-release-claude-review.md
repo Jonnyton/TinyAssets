@@ -55,3 +55,22 @@ stale dialogs, and revalidates the request origin, current WebView origin, audio
 resource set, window focus, and activity state immediately before granting. Focused
 tests and the release verifier enforce those source safeguards; the independent
 cross-family and device gates above remain open.
+
+## Compliant retry path
+
+The bounded read-only contract is now in
+[`2026-09-03-android-voice-review-request.md`](2026-09-03-android-voice-review-request.md).
+After the Claude subscription budget resets, run exactly one review from the repository
+root (do not run concurrent peers):
+
+```text
+python scripts/peer_agent.py claude --timeout 900 --out output/android-voice-review.md --prompt-file docs/audits/2026-09-03-android-voice-review-request.md
+```
+
+Accept a result only when the process exits 0, the output file is newly written, the
+review contains the requested structured disagreements, and it ends with the required
+verdict line. Copy the dated verdict and finding dispositions into this audit, fix and
+reverify any `ADAPT` result, and stop after the repository's three-round maximum. A
+missing/stale file, provider error, timeout, same-family review, or green CI does not
+close the gate. Until a valid verdict exists, keep the PR draft, do not land the
+authority-sensitive slice, and keep voice flags/store copy off.
