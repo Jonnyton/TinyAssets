@@ -56,8 +56,16 @@ def _effect_node(node_id, verb="GET", input_keys=(), **extra):
     )
 
 
+#: Every run in this file executes as this actor, and the branches it builds
+#: are authored by it. Code runs in the universe that authored it, so a branch
+#: with no author is foreign to every actor -- which used to be invisible only
+#: because `author` and the run actor both defaulted to "anonymous" and two
+#: placeholders compared equal.
+ACTOR = "universe:u-test"
+
+
 def _linear(*nodes):
-    b = BranchDefinition(name="chain", entry_point=nodes[0].node_id)
+    b = BranchDefinition(name="chain", entry_point=nodes[0].node_id, author=ACTOR)
     b.node_defs = list(nodes)
     b.graph_nodes = [GraphNodeRef(id=n.node_id, node_def_id=n.node_id) for n in nodes]
     edges = [EdgeDefinition(from_node="START", to_node=nodes[0].node_id)]
@@ -268,7 +276,7 @@ def test_a_code_node_that_raises_fails_the_run_as_code_node_failed(monkeypatch, 
     packets = {"fetch": _packet(), "write": _packet("PUT")}
     outcome = execute_branch(
         tmp_path, branch=branch, inputs={}, provider_call=_provider_for(packets),
-        actor="universe:u-test",
+        actor=ACTOR,
     )
     assert outcome.status == "failed"
     assert "code node 'edit' failed" in outcome.error and "KeyError" in outcome.error
@@ -517,7 +525,7 @@ def test_evidence_merges_into_a_callers_terminal_output(monkeypatch, tmp_path):
     runs.initialize_runs_db(tmp_path)
     created = runs.create_run(
         tmp_path, branch_def_id="b", thread_id="t15", inputs={}, run_name="x",
-        actor="universe:u-test",
+        actor=ACTOR,
     )
     run_id = created if isinstance(created, str) else getattr(created, "run_id", "")
     chain = EffectChain(run_id=run_id)
@@ -588,7 +596,7 @@ def test_the_requests_context_crosses_the_executor_hop(monkeypatch, tmp_path):
         branch=branch,
         inputs={},
         provider_call=None,
-        actor="universe:u-test",
+        actor=ACTOR,
     )
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:

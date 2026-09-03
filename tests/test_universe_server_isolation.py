@@ -232,9 +232,13 @@ class TestUniverseAclEnforcement:
             text="Anonymous write attempt.",
         ))
 
-        assert out["error"] == "universe_access_denied"
-        assert out["actor_id"] == "anonymous"
-        assert out["required_permission"] == "write"
+        # The write is still refused; the REASON moved. An unauthenticated
+        # caller used to reach the ACL check as a principal named "anonymous"
+        # and be denied there. There is no such principal, so the refusal
+        # happens at the door -- which is the stronger version of the same
+        # guarantee, and the universe is untouched either way.
+        assert out["error"] == "Authentication required"
+        assert "actor_id" not in out or not out.get("actor_id")
         assert not (universe_base / "public" / "PROGRAM.md").exists()
 
     def test_anonymous_can_read_public_universe(self, universe_base):

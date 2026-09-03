@@ -62,8 +62,23 @@ class TestQueryRunsUniverseAcl:
             update_universe_rules,
         )
 
+        # A SIGNED-IN OUTSIDER, not an anonymous one. The guarantee is that a
+        # private universe's runs never reach a caller who cannot read it; an
+        # anonymous caller now reaches nothing at all, so testing with one
+        # would assert the door instead of the filter. This caller is real and
+        # holds no grant on either universe -- `pub` is readable because it is
+        # public, `priv` is not.
+        from tinyassets.auth.provider import Identity
+
         mw.set_provider(DevAuthProvider())
-        mw.auth_middleware(None)  # anonymous caller
+        mw._current_identity.set(Identity(
+            user_id="workos|outsider",
+            username="outsider",
+            capabilities=[
+                "tinyassets.extensions.read",
+                "tinyassets.universe.read",
+            ],
+        ))
         for uid, public in (("pub", True), ("priv", False)):
             udir = tmp_path / uid
             udir.mkdir(parents=True, exist_ok=True)
