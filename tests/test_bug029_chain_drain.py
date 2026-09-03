@@ -172,14 +172,22 @@ class TestChainDrainWarning:
 
 
 class TestGetStatusCooldownField:
-    def test_get_status_has_per_provider_cooldown_remaining(self):
+    """These read the FULL status shape, which needs a universe to report on.
+
+    They used to get it by being nobody: an unauthenticated caller fell through
+    to the single-tenant default universe. A signed-in founder with no home
+    gets the short "no universe bound to this account yet" shape instead, which
+    is correct and carries no provider state -- so the tests bind a home.
+    """
+
+    def test_get_status_has_per_provider_cooldown_remaining(self, founder_home):
         """get_status must include per_provider_cooldown_remaining dict."""
         from tinyassets.universe_server import get_status
         payload = json.loads(get_status())
-        assert "per_provider_cooldown_remaining" in payload
+        assert "per_provider_cooldown_remaining" in payload, payload
         assert isinstance(payload["per_provider_cooldown_remaining"], dict)
 
-    def test_per_provider_cooldown_remaining_values_are_ints(self):
+    def test_per_provider_cooldown_remaining_values_are_ints(self, founder_home):
         """All values in per_provider_cooldown_remaining must be non-negative ints."""
         from tinyassets.universe_server import get_status
         remaining = json.loads(get_status())["per_provider_cooldown_remaining"]
@@ -187,7 +195,7 @@ class TestGetStatusCooldownField:
             assert isinstance(seconds, int), f"{provider}: expected int, got {type(seconds)}"
             assert seconds >= 0, f"{provider}: negative cooldown seconds"
 
-    def test_schema_contract_includes_per_provider_field(self):
+    def test_schema_contract_includes_per_provider_field(self, founder_home):
         """Contract test: schema_version=1 contract must include the new field."""
         from tinyassets.universe_server import get_status
         payload = json.loads(get_status())

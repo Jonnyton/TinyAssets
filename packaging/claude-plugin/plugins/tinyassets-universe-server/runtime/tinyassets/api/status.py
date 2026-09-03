@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -985,6 +986,84 @@ def _compute_supervisor_liveness_uncached(
     return out
 
 
+_LOGGER = logging.getLogger("universe_server.status")
+
+
+def _platform_has_work() -> bool:
+    """Whether ANY universe on this daemon has active work targets.
+
+    The activity canary needs it to tell healthy idleness from a stall: a live
+    worker with nothing queued is fine, a live worker with work queued and no
+    recent activity is not. Reading it per-universe was possible only for a
+    caller who could inspect a universe, which the canary principal cannot.
+    """
+    base = _base_path()
+    if not base.is_dir():
+        return False
+    for child in sorted(base.iterdir()):
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        try:
+            targets = _read_json(child / "work_targets.json")
+        except Exception:  # noqa: BLE001 - observability never breaks a read
+            continue
+        if isinstance(targets, list) and any(
+            isinstance(item, dict) and item.get("lifecycle") == "active"
+            for item in targets
+        ):
+            return True
+    return False
+
+
+def _platform_worker_liveness() -> dict[str, Any]:
+    """The worst worker on this daemon, across every universe.
+
+    ``last_activity_at`` alone cannot tell a wedged worker from a quiet one --
+    it goes stale for both -- so the activity canary reads this beside it. One
+    wedged worker is a wedged platform, so the summary is the worker with the
+    OLDEST heartbeat, not an average and not the healthiest.
+
+    ``{"present": False}`` when no universe has a worker heartbeat at all,
+    which is the same shape the per-universe view uses for "nothing to say".
+    Never raises: an unreadable universe contributes nothing rather than
+    breaking the surface the probes ride on.
+    """
+    from tinyassets.api.universe import _worker_liveness
+
+    base = _base_path()
+    if not base.is_dir():
+        return {"present": False}
+
+    worst: dict[str, Any] | None = None
+    universes = 0
+    for child in sorted(base.iterdir()):
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        try:
+            summary = _worker_liveness(child)
+        except Exception:  # noqa: BLE001 - observability never breaks a read
+            _LOGGER.exception("worker liveness unreadable for %s", child.name)
+            continue
+        if not summary.get("present"):
+            continue
+        universes += 1
+        if worst is None or float(summary.get("beat_age_s") or 0.0) > float(
+            worst.get("beat_age_s") or 0.0
+        ):
+            worst = summary
+
+    if worst is None:
+        return {"present": False}
+    out = {
+        key: value for key, value in worst.items()
+        # `workers` is a per-universe list and would name universes on a
+        # platform surface a canary reads without universe access.
+        if key not in ("workers",)
+    }
+    out["universes_with_workers"] = universes
+    return out
+
+
 def _resolve_entry_universe(universe_id: str) -> tuple[str, bool]:
     """Resolve a status scope. Returns ``(uid, founder_has_no_home)``.
 
@@ -1099,8 +1178,14 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
             "request_identity": request_identity,
             "schema_version": _STATUS_SCHEMA_VERSION,
             # Present on every status shape the probes can meet, universe or
-            # not: the activity probe reads it instead of inspecting a universe.
-            "daemon": {"last_activity_at": _platform_last_activity_at()},
+            # not: the activity probe reads these instead of inspecting a
+            # universe. Both, because `last_activity_at` goes stale for a quiet
+            # platform as well as a wedged one.
+            "daemon": {
+                "last_activity_at": _platform_last_activity_at(),
+                "worker_liveness": _platform_worker_liveness(),
+                "has_work": _platform_has_work(),
+            },
         })
     udir = _universe_dir(uid)
     universe_exists = udir.is_dir()
@@ -1559,10 +1644,14 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
         "auto_ship_health": auto_ship_health,
         "open_brain": open_brain,
         "release_state": release_state,
-        # Platform-wide, names no universe: the uptime probes read this instead
-        # of inspecting a universe, which the canary principal may not do
-        # (no-anonymous-principal D4).
-        "daemon": {"last_activity_at": _platform_last_activity_at()},
+        # Platform-wide, names no universe: the uptime probes read these
+        # instead of inspecting a universe, which the canary principal may not
+        # do (no-anonymous-principal D4).
+        "daemon": {
+            "last_activity_at": _platform_last_activity_at(),
+            "worker_liveness": _platform_worker_liveness(),
+            "has_work": _platform_has_work(),
+        },
         "universe_id": uid,
         "universe_exists": universe_exists,
     }

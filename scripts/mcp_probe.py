@@ -37,7 +37,7 @@ _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
-from _canary_common import canary_bearer, canary_bearer_for  # noqa: E402
+from _canary_common import canary_bearer_for  # noqa: E402
 
 #: "Not specified" -- distinct from an explicit ``None``, which means "this
 #: daemon is pre-cutover, send no bearer". Omitting the argument reads the
