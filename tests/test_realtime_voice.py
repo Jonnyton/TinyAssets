@@ -154,7 +154,7 @@ def test_missing_owner_key_never_uses_ambient_or_network(monkeypatch, tmp_path: 
     with pytest.raises(rv.RealtimeVoiceError) as caught:
         asyncio.run(
             rv.mint_client_secret(
-                tmp_path, user_id="user_owner", client_factory=forbidden_client
+                tmp_path, client_factory=forbidden_client
             )
         )
     assert (caught.value.code, caught.value.status) == (
@@ -179,7 +179,7 @@ def test_mint_posts_server_owned_policy_and_returns_only_ephemeral_fields(
     def handler(request: httpx.Request) -> httpx.Response:
         seen["url"] = str(request.url)
         seen["authorization"] = request.headers["Authorization"]
-        seen["safety"] = request.headers["OpenAI-Safety-Identifier"]
+        seen["headers"] = dict(request.headers)
         seen["body"] = json.loads(request.content)
         return httpx.Response(
             200,
@@ -193,14 +193,12 @@ def test_mint_posts_server_owned_policy_and_returns_only_ephemeral_fields(
     result = asyncio.run(
         rv.mint_client_secret(
             tmp_path,
-            user_id="user_owner",
             client_factory=_client_with(handler),
         )
     )
     assert seen["url"] == rv.REALTIME_CLIENT_SECRETS_URL
     assert seen["authorization"] == f"Bearer {owner_key}"
-    assert seen["safety"] == rv.safety_identifier("user_owner")
-    assert "user_owner" not in seen["safety"]
+    assert "openai-safety-identifier" not in seen["headers"]
     assert seen["body"] == rv.session_request()
     assert result == {
         "value": ephemeral,
@@ -237,7 +235,6 @@ def test_upstream_statuses_become_stable_secret_free_errors(
         asyncio.run(
             rv.mint_client_secret(
                 tmp_path,
-                user_id="user_owner",
                 client_factory=_client_with(handler),
             )
         )
@@ -289,10 +286,10 @@ def test_route_scopes_distinct_identities_to_distinct_home_universes(
     )
     seen = []
 
-    async def mint(path, *, user_id):
-        seen.append((path, user_id))
+    async def mint(path):
+        seen.append(path)
         return {
-            "value": f"ek_{user_id}_ephemeral_value_12345",
+            "value": f"ek_{path.name}_ephemeral_value_12345",
             "expires_at": 123,
             "model": rv.REALTIME_MODEL,
             "calls_url": rv.REALTIME_CALLS_URL,
@@ -303,8 +300,8 @@ def test_route_scopes_distinct_identities_to_distinct_home_universes(
     assert _drive({}, identity=_owner("owner-a"))[0] == 200
     assert _drive({}, identity=_owner("owner-b"))[0] == 200
     assert seen == [
-        ((tmp_path / "u-owner-a").resolve(), "owner-a"),
-        ((tmp_path / "u-owner-b").resolve(), "owner-b"),
+        (tmp_path / "u-owner-a").resolve(),
+        (tmp_path / "u-owner-b").resolve(),
     ]
 
 
@@ -334,8 +331,8 @@ def test_route_resolves_home_and_returns_no_store(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(onboarding, "_read_home", lambda identity: "u-owner-home")
     seen = {}
 
-    async def mint(path, *, user_id):
-        seen.update(path=path, user_id=user_id)
+    async def mint(path):
+        seen.update(path=path)
         return {
             "value": "ek_route_ephemeral_value_12345",
             "expires_at": 123,
@@ -348,10 +345,7 @@ def test_route_resolves_home_and_returns_no_store(monkeypatch, tmp_path: Path):
     status, body, headers = _drive({}, identity=_owner("user_exact"))
     assert status == 200
     assert body["value"].startswith("ek_route_")
-    assert seen == {
-        "path": (tmp_path / "u-owner-home").resolve(),
-        "user_id": "user_exact",
-    }
+    assert seen == {"path": (tmp_path / "u-owner-home").resolve()}
     assert headers["cache-control"] == "no-store"
 
 

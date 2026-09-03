@@ -14,6 +14,11 @@ Paid Realtime calls: none
 - `openspec validate add-realtime-voice-conversation --strict` — **valid**.
 - `python scripts/openspec_flow.py check-change add-realtime-voice-conversation --provider codex`
   — **ALLOWED**, with the pre-existing global WIP count of four reported.
+- After removing the undocumented `OpenAI-Safety-Identifier` header:
+  `python -m pytest -q tests/test_realtime_voice.py tests/test_onboarding_app.py` — **107 passed**;
+  `python -m pytest -q tests/test_mirror_parity_gate.py` — **15 passed**; focused Ruff and strict
+  OpenSpec validation remained green. The stable signed-in identity still keys TinyAssets' local
+  mint limiter, but no provider identity header is invented outside the documented Realtime schema.
 
 The deterministic browser harness executes the shipped JavaScript transition table and `Voice`
 adapter under Node. It covers permission failure/retry, barge-in muting with tolerated truncated
@@ -53,7 +58,9 @@ history remain intact because voice adds no migration or audio storage.
 
 - Android confirmed its current manifest verifier rejects `RECORD_AUDIO`; it will add permission
   only with the exact-origin WebView gate, disclosure, background release, and Data safety update.
-- iOS staged the handoff's exact `NSMicrophoneUsageDescription` while keeping voice dark. Its
-  submission remains gated on a physical-iPhone background/end capture-release proof and final
-  Audio Data / Other User Content answers. Runtime background-stop proof remains owned by the
-  voice track during reconciliation.
+- iOS commit `9d0d4375` stages the handoff's exact `NSMicrophoneUsageDescription`, asserts it in
+  unsigned and signed workflows, and keeps voice/privacy copy dark. On 2026-09-03 in the iOS
+  release worktree, `python -m pytest -q tests/test_mobile_ios_release.py -k "microphone or
+  configuration"` reported **3 passed, 8 deselected**. The commit remains on the separate release
+  branch; submission still requires a signed physical-iPhone background/end capture-release proof
+  and final Audio Data / Other User Content answers.

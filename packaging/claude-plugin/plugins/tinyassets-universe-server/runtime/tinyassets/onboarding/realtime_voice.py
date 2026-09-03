@@ -7,7 +7,6 @@ tool calls the existing authenticated ``converse`` MCP operation.
 
 from __future__ import annotations
 
-import hashlib
 import os
 import time
 from collections.abc import Callable
@@ -61,16 +60,6 @@ def public_voice_config() -> dict[str, Any]:
         "disclosure_version": VOICE_DISCLOSURE_VERSION,
         "max_session_seconds": VOICE_SESSION_MAX_SECONDS,
     }
-
-
-def safety_identifier(user_id: str) -> str:
-    """Stable privacy-preserving provider abuse identifier.
-
-    WorkOS subjects are high-entropy identifiers.  A domain-separated digest
-    lets OpenAI correlate abuse for this product without receiving the subject.
-    """
-
-    return hashlib.sha256(f"tinyassets-realtime:{user_id}".encode()).hexdigest()
 
 
 def allow_client_secret_mint(user_id: str, *, now: float | None = None) -> bool:
@@ -143,7 +132,6 @@ def _default_client() -> httpx.AsyncClient:
 async def mint_client_secret(
     universe_dir: str | Path,
     *,
-    user_id: str,
     client_factory: ClientFactory = _default_client,
 ) -> dict[str, Any]:
     """Mint one scoped ephemeral secret from the owner's deposited API key.
@@ -170,7 +158,6 @@ async def mint_client_secret(
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                     "Accept": "application/json",
-                    "OpenAI-Safety-Identifier": safety_identifier(user_id),
                 },
             )
     except httpx.HTTPError as exc:
@@ -213,6 +200,5 @@ __all__ = [
     "mint_client_secret",
     "public_voice_config",
     "realtime_voice_enabled",
-    "safety_identifier",
     "session_request",
 ]

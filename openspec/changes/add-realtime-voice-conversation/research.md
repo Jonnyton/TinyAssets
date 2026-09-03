@@ -34,6 +34,11 @@ muted-output gate, and canonical `converse` result as layered controls; the ephe
 credential-custody boundary, not a cryptographic guarantee that an altered client cannot choose a
 different Realtime configuration against its owner's own API account.
 
+The official client-secret schema does not expose a `safety_identifier` field, and the official
+API documentation does not define an `OpenAI-Safety-Identifier` request header. TinyAssets does
+not invent that header: the stable signed-in identity remains the local mint-rate-limit key, and a
+provider safety identifier will be added only if OpenAI documents a Realtime-supported field.
+
 ## Turn-taking and privacy
 
 Semantic VAD with medium eagerness is selected because it waits for semantic completion more

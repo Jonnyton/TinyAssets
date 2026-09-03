@@ -931,9 +931,7 @@ async def _handle_voice_session(request: Any) -> Any:
             {"error": "no_home_universe"}, status_code=409, headers=_NO_STORE
         )
     try:
-        result = await mint_client_secret(
-            _universe_dir(home), user_id=identity.user_id
-        )
+        result = await mint_client_secret(_universe_dir(home))
     except RealtimeVoiceError as exc:
         return JSONResponse(
             {"error": exc.code}, status_code=exc.status, headers=_NO_STORE
