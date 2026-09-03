@@ -356,9 +356,9 @@
               <option value="__endpoint__">Any other LLM &mdash; your own endpoint</option>
             </select>
             <small class="dev-note">Named by the credential you hand over, not by whose
-            it is: the platform keeps no vendor list. Whichever you pick, it is YOUR
-            credential doing the thinking &mdash; it is sealed into the sandbox read-only
-            and the platform never substitutes one of its own.</small>
+            it is: the platform keeps no vendor list. Whichever you pick, the thinking
+            runs on YOUR credential &mdash; the platform never substitutes one of its
+            own, and never starts a metered trial on your behalf.</small>
           </label>
 
           <!-- The subscription path: one credential, because a Max/Pro plan is
@@ -1587,7 +1587,10 @@
   function serviceLabel(service){ return SERVICE_LABELS[service] || service; }
   function sentenceCase(s){ return s ? s.charAt(0).toUpperCase()+s.slice(1) : s; }
   function servingSentence(service, sv){
-    const label=sentenceCase(serviceLabel(service));
+    // Sentence-case OUR labels only. A user's endpoint name is their name:
+    // capitalising it turned `iPhoneLLM` into `IPhoneLLM`.
+    const known=Object.prototype.hasOwnProperty.call(SERVICE_LABELS, service);
+    const label=known?sentenceCase(serviceLabel(service)):serviceLabel(service);
     if(sv&&sv.status==="serving") return label+" connected. Your universe thinks and works on it from the next turn.";
     const why=(sv&&(sv.detail||sv.reason))?(": "+(sv.detail||sv.reason)):"";
     return label+" credential saved, but your universe is not running on it yet"+why+".";

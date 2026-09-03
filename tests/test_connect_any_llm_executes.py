@@ -47,6 +47,23 @@ def _extract() -> str:
     )
 
 
+def _extract_labels() -> str:
+    """`servingSentence` plus the two helpers it needs, for the label tests."""
+    import re as _re
+
+    from tinyassets.onboarding import render_app_html
+
+    html, _csp = render_app_html()
+    labels = _re.search(r"const SERVICE_LABELS=\{.*?\};", html, _re.S)
+    assert labels is not None, "the label table is gone"
+    return "\n".join([
+        labels.group(0),
+        _function_source(html, "serviceLabel"),
+        _function_source(html, "sentenceCase"),
+        _function_source(html, "servingSentence"),
+    ])
+
+
 _HARNESS = r"""
 const calls = [];
 // The DOM the function reads. `value` is what a user typed; clearing it is the
@@ -260,3 +277,43 @@ def test_a_refused_deposit_never_reaches_serving():
     assert out["calls"] == [], "a refused deposit still tried to point the universe"
     assert out["engineConnected"] == 0
     assert out["btnDisabled"] is False
+
+
+# --- the label a user actually reads -----------------------------------------
+
+_LABEL_HARNESS = r"""
+%(app)s
+const arg = process.argv[process.argv.length - 1];
+const [service, status] = arg.split("|");
+console.log(JSON.stringify({out: servingSentence(service, {status})}));
+"""
+
+
+def _label(service: str, status: str = "serving") -> str:
+    script = _LABEL_HARNESS % {"app": _extract_labels()}
+    proc = subprocess.run(
+        [_NODE, "-e", script, "--", f"{service}|{status}"],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout.strip().splitlines()[-1])["out"]
+
+
+def test_a_users_own_endpoint_name_is_never_recapitalised():
+    """Their name is their name. Sentence-casing everything turned `iPhoneLLM`
+    into `IPhoneLLM` (Codex, round 3)."""
+    assert _label("iPhoneLLM").startswith("iPhoneLLM "), _label("iPhoneLLM")
+    assert _label("openrouter-eu").startswith("openrouter-eu "), _label("openrouter-eu")
+
+
+def test_our_own_labels_still_open_the_sentence():
+    for service in ("claude", "codex"):
+        out = _label(service)
+        assert out[0].isupper(), f"{service}: {out!r} does not open a sentence"
+        assert "Claude" not in out and "OpenAI" not in out, out
+
+
+def test_a_held_bind_says_so_under_the_users_own_name():
+    out = _label("my gateway", status="held")
+    assert out.startswith("my gateway ")
+    assert "not running on it yet" in out
