@@ -11,5 +11,11 @@ Staging for the Play Console listing (see `../google-play-launch.md`). All rende
   conversation and the Connect view. Re-capture per §10 of the runbook when the
   app's look changes.
 
+**Production screenshot gate (2026-09-03):** both captures have valid Play dimensions,
+but `01-universe-conversation.png` shows an internal universe id and implementation/debug
+discussion. Replace it with a clean real conversation before production review; do not
+manufacture a mock app screen. The browser automation bridge timed out during the
+2026-09-03 audit, so no honest replacement was captured in that pass.
+
 The app's own launcher icon + splash come from `mobile/resources/` (see its README);
 this folder is only what the store listing uploads.

@@ -29,9 +29,9 @@ PLUGIN_DST = JAVA_PKG_DIR / "LocalCallbackPlugin.java"
 SERVICE_SRC = MOBILE / "native/android/LocalCallbackService.java"
 SERVICE_DST = JAVA_PKG_DIR / "LocalCallbackService.java"
 
-# The loopback listener's keep-alive: a dataSync foreground service (Android
-# 14 requires a declared type; dataSync needs no Play-review justification and
-# its daily budget vastly exceeds a sign-in). Stopped when the flow ends.
+# The loopback listener's keep-alive: a dataSync foreground service. Android 14+
+# requires the type in the manifest, and Play requires a matching Console
+# declaration plus behavior video. Stopped when the user flow ends.
 SERVICE_XML = """        <service
             android:name=".LocalCallbackService"
             android:exported="false"
@@ -136,6 +136,33 @@ def register_scheme() -> int:
     return 0
 
 
+def harden_application() -> int:
+    """Keep authenticated WebView state out of backups and reject cleartext."""
+    text = MANIFEST.read_text(encoding="utf-8")
+    matches = list(re.finditer(r"<application\b[^>]*>", text, re.DOTALL))
+    if len(matches) != 1:
+        print(f"expected one <application> tag, found {len(matches)}", file=sys.stderr)
+        return 1
+    match = matches[0]
+    tag = match.group(0)
+    for attr, value in (
+        ("android:allowBackup", "false"),
+        ("android:usesCleartextTraffic", "false"),
+    ):
+        pattern = rf'{re.escape(attr)}="[^"]*"'
+        if re.search(pattern, tag):
+            tag = re.sub(pattern, f'{attr}="{value}"', tag, count=1)
+        else:
+            tag = tag[:-1] + f'\n        {attr}="{value}">'
+    updated = text[: match.start()] + tag + text[match.end() :]
+    if updated != text:
+        MANIFEST.write_text(updated, encoding="utf-8")
+        print("disabled Android backup + cleartext traffic")
+    else:
+        print("Android backup + cleartext hardening already current")
+    return 0
+
+
 def register_service() -> int:
     """Declare the keep-alive foreground service + its permissions."""
     text = MANIFEST.read_text(encoding="utf-8")
@@ -177,11 +204,13 @@ def install_plugin() -> int:
     # Replace ONLY a recognized MainActivity: Capacitor's untouched template
     # (an empty BridgeActivity subclass) or a version this script wrote earlier
     # (carries its plugin registration). Anything hand-customized is left alone.
-    template = bool(re.fullmatch(
-        r"\s*package io\.tinyassets\.app;\s*import com\.getcapacitor\.BridgeActivity;\s*"
-        r"public class MainActivity extends BridgeActivity\s*\{\s*\}\s*",
-        current,
-    ))
+    template = bool(
+        re.fullmatch(
+            r"\s*package io\.tinyassets\.app;\s*import com\.getcapacitor\.BridgeActivity;\s*"
+            r"public class MainActivity extends BridgeActivity\s*\{\s*\}\s*",
+            current,
+        )
+    )
     ours = "registerPlugin(LocalCallbackPlugin.class)" in current
     if current and not (template or ours):
         print("customized MainActivity; refusing to overwrite", file=sys.stderr)
@@ -195,6 +224,9 @@ def main() -> int:
     if not MANIFEST.exists():
         print(f"manifest not found: {MANIFEST} (run `npx cap add android` first)", file=sys.stderr)
         return 1
+    rc = harden_application()
+    if rc:
+        return rc
     rc = register_scheme()
     if rc:
         return rc

@@ -74,6 +74,12 @@ jobs:
         working-directory: mobile
         run: python3 scripts/add_app_icons.py
 
+      - name: Apply version + verify Android release identity, SDK, manifest and artwork
+        working-directory: mobile
+        run: |
+          python3 scripts/configure_android_release.py
+          python3 scripts/verify_android_release.py
+
       - name: Restore the stable debug signing key (main only)
         # Android's debug signing config reads ~/.android/debug.keystore
         # (alias androiddebugkey, store/key password "android"). Restoring the

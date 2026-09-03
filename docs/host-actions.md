@@ -420,8 +420,31 @@ What remains after the secrets, and who does it (`docs/ops/google-play-launch.md
 | Internal-testing release: upload the AAB, roll out | **done** 2026-09-03 11:10 — release `1 (1.0)`, track Active, 3.1 MB |
 | Verify the loop on a real phone (install from the internal-test link, sign in, chat) | **you — this is the live one.** Opt-in on the founder's Google account: https://play.google.com/apps/internaltest/4701716760893982267 |
 | Sign in details → Target audience → Data safety submit | blocked on the reviewer account above |
+| Foreground-service declaration + behavior video | **you** — exact gate below |
 | Closed test: 12 testers for 14 days, then apply for production access | **you** |
 | Promote to Production → submit for review → **Roll out** | you (final click) |
+
+### Google Play: review and submit the foreground-service declaration
+
+The Android bundle declares a `dataSync` foreground service because **Connect
+OpenAI** starts a short-lived local callback listener while subscription OAuth is
+open in the external browser. For apps targeting Android 14+, Play requires a
+foreground-service declaration with the use case, interruption/defer impact, and a
+demonstration video. This is a Console attestation, so the final truth check and
+submission are yours.
+
+After installing the next candidate from Play:
+
+1. Record one short phone video: tap **Connect OpenAI**, show the persistent
+   notification while the browser is open, return to TinyAssets, then show the
+   notification disappearing. Redact all account identifiers and secrets.
+2. In Play Console, open **App content → Foreground service permissions** and use
+   the staged wording and video shot list in
+   `docs/ops/android-release-verification.md`.
+3. Submit only if the recording confirms that exact behavior. If the notification
+   remains, the callback cannot be interrupted as described, or the function has
+   changed, stop and return the discrepancy to an agent instead of attesting to the
+   draft.
 
 ### Mint the PAT that unblocks the deploy chain
 

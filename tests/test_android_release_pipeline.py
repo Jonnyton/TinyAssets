@@ -1,0 +1,317 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+MOBILE = ROOT / "mobile"
+
+
+def _load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+configure = _load("configure_android_release", MOBILE / "scripts/configure_android_release.py")
+scheme = _load("add_app_scheme", MOBILE / "scripts/add_app_scheme.py")
+verify = _load("verify_android_release", MOBILE / "scripts/verify_android_release.py")
+
+
+def _generated_mobile(tmp_path: Path) -> Path:
+    mobile = tmp_path / "mobile"
+    (mobile / "android/app").mkdir(parents=True)
+    (mobile / "capacitor.config.json").write_text(
+        json.dumps({"appId": "io.tinyassets.app"}), encoding="utf-8"
+    )
+    (mobile / "android-release.json").write_text(
+        json.dumps(
+            {
+                "appId": "io.tinyassets.app",
+                "versionCode": 27,
+                "versionName": "1.4.2",
+                "minSdk": 24,
+                "targetSdk": 36,
+                "compileSdk": 36,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (mobile / "android/variables.gradle").write_text(
+        "minSdkVersion = 24\ncompileSdkVersion = 36\ntargetSdkVersion = 36\n",
+        encoding="utf-8",
+    )
+    (mobile / "android/app/build.gradle").write_text(
+        """android {\n    namespace "io.tinyassets.app"\n    defaultConfig {\n"""
+        """        applicationId "io.tinyassets.app"\n        versionCode 1\n"""
+        """        versionName "1.0"\n    }\n}\n""",
+        encoding="utf-8",
+    )
+    return mobile
+
+
+def test_android_release_config_matches_every_source_package_identity() -> None:
+    release = configure.load_release(MOBILE)
+    capacitor = json.loads((MOBILE / "capacitor.config.json").read_text(encoding="utf-8"))
+    assert release.app_id == capacitor["appId"] == "io.tinyassets.app"
+    for path in (MOBILE / "native/android").glob("*.java"):
+        assert f"package {release.app_id};" in path.read_text(encoding="utf-8")
+    injector = (MOBILE / "scripts/add_app_scheme.py").read_text(encoding="utf-8")
+    assert f"package {release.app_id};" in injector
+    assert "registerPlugin(LocalCallbackPlugin.class)" in injector
+
+
+def test_configure_android_release_is_deterministic_and_idempotent(tmp_path: Path) -> None:
+    mobile = _generated_mobile(tmp_path)
+    configured = configure.configure(mobile, expected_version="1.4.2")
+    first = (mobile / "android/app/build.gradle").read_text(encoding="utf-8")
+    configure.configure(mobile, expected_version="1.4.2")
+    assert (mobile / "android/app/build.gradle").read_text(encoding="utf-8") == first
+    assert configured.version_code == 27
+    assert "versionCode 27" in first
+    assert 'versionName "1.4.2"' in first
+
+
+def test_configure_android_release_rejects_tag_or_package_drift(tmp_path: Path) -> None:
+    mobile = _generated_mobile(tmp_path)
+    with pytest.raises(ValueError, match="tag version"):
+        configure.configure(mobile, expected_version="1.4.3")
+    gradle = mobile / "android/app/build.gradle"
+    gradle.write_text(
+        gradle.read_text(encoding="utf-8").replace(
+            'applicationId "io.tinyassets.app"', 'applicationId "example.wrong.app"'
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="package identity drift"):
+        configure.configure(mobile)
+
+
+def test_android_release_rejects_a_gradle_injectable_version_name(tmp_path: Path) -> None:
+    mobile = _generated_mobile(tmp_path)
+    release_path = mobile / "android-release.json"
+    release = json.loads(release_path.read_text(encoding="utf-8"))
+    release["versionName"] = '1.4.2";apply(plugin:"wrong")//'
+    release_path.write_text(json.dumps(release), encoding="utf-8")
+    with pytest.raises(ValueError, match="versionName"):
+        configure.load_release(mobile)
+
+    release_path.write_text("[]", encoding="utf-8")
+    with pytest.raises(ValueError, match="JSON object"):
+        configure.load_release(mobile)
+
+
+def test_manifest_hardening_disables_backup_and_cleartext(tmp_path: Path, monkeypatch) -> None:
+    manifest = tmp_path / "AndroidManifest.xml"
+    manifest.write_text(
+        '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n'
+        '  <application android:allowBackup="true" android:label="TinyAssets">\n'
+        "  </application>\n</manifest>\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(scheme, "MANIFEST", manifest)
+    assert scheme.harden_application() == 0
+    first = manifest.read_text(encoding="utf-8")
+    assert 'android:allowBackup="false"' in first
+    assert 'android:usesCleartextTraffic="false"' in first
+    assert scheme.harden_application() == 0
+    assert manifest.read_text(encoding="utf-8") == first
+
+
+def _release() -> configure.AndroidRelease:
+    return configure.AndroidRelease(
+        app_id="io.tinyassets.app",
+        version_code=27,
+        version_name="1.4.2",
+        min_sdk=24,
+        target_sdk=36,
+        compile_sdk=36,
+    )
+
+
+def _source_manifest() -> str:
+    return (
+        """<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n"""
+        """  <uses-permission android:name="android.permission.INTERNET"/>\n"""
+        """  <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>\n"""
+        """  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>\n"""
+        """  <application android:allowBackup="false" android:usesCleartextTraffic="false">\n"""
+        """    <activity android:name=".MainActivity" android:exported="true">\n"""
+        """      <intent-filter><action android:name="android.intent.action.VIEW"/>"""
+        """<category android:name="android.intent.category.DEFAULT"/>"""
+        """<category android:name="android.intent.category.BROWSABLE"/>"""
+        """<data android:scheme="tinyassets" android:host="auth"/></intent-filter>\n"""
+        """      <intent-filter><action android:name="android.intent.action.SEND"/>"""
+        """<category android:name="android.intent.category.DEFAULT"/>"""
+        """<data android:mimeType="text/plain"/></intent-filter>\n"""
+        """    </activity>\n"""
+        """    <service android:name=".LocalCallbackService" android:exported="false" """
+        """android:foregroundServiceType="dataSync"/>\n"""
+        """  </application>\n</manifest>\n"""
+    )
+
+
+def test_release_manifest_gate_accepts_only_the_intended_surface(tmp_path: Path) -> None:
+    release = _release()
+    manifest = tmp_path / "AndroidManifest.xml"
+    manifest.write_text(_source_manifest(), encoding="utf-8")
+    verify.verify_manifest(manifest, release, merged=False)
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            'android:allowBackup="false"', 'android:allowBackup="true"'
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="allowBackup"):
+        verify.verify_manifest(manifest, release, merged=False)
+
+
+@pytest.mark.parametrize(
+    "addition,error",
+    [
+        (
+            '<uses-permission android:name="android.permission.RECORD_AUDIO"/>',
+            "permission drift",
+        ),
+        (
+            '<receiver android:name=".LeakyReceiver" android:exported="true"/>',
+            "exported component",
+        ),
+    ],
+)
+def test_manifest_gate_rejects_permission_or_exported_surface_drift(
+    tmp_path: Path, addition: str, error: str
+) -> None:
+    manifest = tmp_path / "AndroidManifest.xml"
+    text = _source_manifest()
+    anchor = "<application" if addition.startswith("<uses-permission") else "</application>"
+    text = text.replace(anchor, addition + "\n  " + anchor, 1)
+    manifest.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match=error):
+        verify.verify_manifest(manifest, _release(), merged=False)
+
+
+def test_merged_release_manifest_gate_catches_debuggable_and_version_drift(
+    tmp_path: Path,
+) -> None:
+    release = _release()
+    text = _source_manifest().replace(
+        '<manifest xmlns:android="http://schemas.android.com/apk/res/android">',
+        '<manifest xmlns:android="http://schemas.android.com/apk/res/android" '
+        'package="io.tinyassets.app" android:versionCode="27" '
+        'android:versionName="1.4.2" android:compileSdkVersion="36">\n'
+        '  <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="36"/>\n'
+        '  <uses-permission '
+        'android:name="io.tinyassets.app.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"/>',
+    ).replace(
+        "</application>",
+        '<receiver android:name="androidx.profileinstaller.ProfileInstallReceiver" '
+        'android:exported="true" android:permission="android.permission.DUMP"/>\n'
+        "  </application>",
+    )
+    manifest = tmp_path / "AndroidManifest.xml"
+    manifest.write_text(text, encoding="utf-8")
+    verify.verify_manifest(manifest, release, merged=True)
+
+    manifest.write_text(
+        text.replace(
+            'android:usesCleartextTraffic="false"',
+            'android:usesCleartextTraffic="false" android:debuggable="true"',
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="debuggable"):
+        verify.verify_manifest(manifest, release, merged=True)
+
+    manifest.write_text(
+        text.replace('android:versionCode="27"', 'android:versionCode="28"'),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="versionCode"):
+        verify.verify_manifest(manifest, release, merged=True)
+
+
+def test_release_workflow_has_fail_closed_release_gates() -> None:
+    workflow = (ROOT / ".github/workflows/android-release.yml").read_text(encoding="utf-8")
+    for required in (
+        "configure_android_release.py",
+        "verify_android_release.py",
+        "lintRelease bundleRelease",
+        "verify_android_release.py --merged",
+        "jarsigner -verify",
+        "keytool -printcert -jarfile",
+        "sha256sum",
+        "if-no-files-found: error",
+    ):
+        assert required in workflow
+    assert "pull_request:" in workflow
+    assert workflow.count("if: github.event_name != 'pull_request'") == 3
+    assert "git merge-base --is-ancestor" in workflow
+    assert 'if [ -n "$RELEASE_TAG" ] && [ -z "$expected" ]' in workflow
+
+    debug = (ROOT / ".github/workflows/android-build.yml").read_text(encoding="utf-8")
+    assert "configure_android_release.py" in debug
+    assert "verify_android_release.py" in debug
+
+
+def test_release_runbook_version_matches_android_release_json() -> None:
+    release = configure.load_release(MOBILE)
+    runbook = (ROOT / "docs/ops/google-play-launch.md").read_text(encoding="utf-8")
+    assert f"version code `{release.version_code}`" in runbook
+    assert re.search(rf"version\s+name `{re.escape(release.version_name)}`", runbook)
+
+
+def test_find_merged_manifest_requires_exactly_one_candidate(tmp_path: Path) -> None:
+    mobile = tmp_path / "mobile"
+    with pytest.raises(ValueError, match="found 0"):
+        verify.find_merged_manifest(mobile)
+    first = mobile / "android/app/build/intermediates/merged_manifest/release/one"
+    first.mkdir(parents=True)
+    (first / "AndroidManifest.xml").write_text("<manifest/>", encoding="utf-8")
+    assert verify.find_merged_manifest(mobile) == first / "AndroidManifest.xml"
+    second = mobile / "android/app/build/intermediates/merged_manifest/release/two"
+    second.mkdir()
+    (second / "AndroidManifest.xml").write_text("<manifest/>", encoding="utf-8")
+    with pytest.raises(ValueError, match="found 2"):
+        verify.find_merged_manifest(mobile)
+
+
+def test_committed_android_and_play_artwork_has_release_dimensions() -> None:
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(MOBILE / "scripts/verify_android_release.py"),
+            "--source-only",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_artwork_gate_can_validate_an_independent_brand_lane() -> None:
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(MOBILE / "scripts/verify_android_release.py"),
+            "--mobile-root",
+            str(MOBILE),
+            "--artwork-only",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr

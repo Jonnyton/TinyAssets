@@ -5,8 +5,9 @@ Everything needed to publish the TinyAssets Android app to Google Play. As of
 bundle is live on the internal testing track, so the founder's remaining actions are:
 (1) try the internal-test build on a phone, (2) enable password sign-in in WorkOS and
 create a Play reviewer account — the one thing genuinely blocking the App content
-rows, (3) run the closed test Play requires before production access, and (4) click
-**Roll out** after review. The four upload-keystore secrets are **optional**: see §0.
+rows, (3) review and submit the foreground-service declaration staged in §8a, (4) run
+the closed test Play requires before production access, and (5) click **Roll out**
+after review. The four upload-keystore secrets are **optional**: see §0.
 All content below is copy-paste ready.
 
 Package name (permanent once published): **`io.tinyassets.app`**
@@ -94,6 +95,26 @@ correct. CI is immune because it always starts clean.
 **Do not "fix" a future rejection by lowering the target.** The number only ever
 goes up; re-check the page above before each release, because the August cutover
 repeats annually.
+
+---
+
+## 1b. Version and release gates — generated defaults are not a release strategy
+
+`mobile/android-release.json` is the checked-in Android release source of truth. It
+records the next candidate: package `io.tinyassets.app`, version code `2`, version
+name `1.0.1`, min SDK 24, target/compile SDK 36. The existing internal-track artifact
+is code `1`, name `1.0`; promoting that exact artifact between tracks needs no rebuild.
+
+Before uploading any new AAB, increase `versionCode`; Play never accepts a code it has
+seen before, even on a test track. A `mobile-v<versionName>` tag must match the file's
+`versionName` exactly. Both the GitHub workflow and local container now regenerate the
+platform, apply the checked-in version, verify identity/SDK/permissions/artwork, run
+`lintRelease`, verify Gradle's merged release manifest, sign with the pinned upload
+certificate, and emit a SHA-256 file beside the AAB.
+
+The dated evidence, smoke-test matrix, Android-vitals thresholds, track progression,
+and first-release/update rollback plans live in
+[`android-release-verification.md`](android-release-verification.md).
 
 ---
 
@@ -325,6 +346,21 @@ that is expected, not a mis-click.
 
 ---
 
+## 8a. Foreground-service declaration — required before production review
+
+The app targets Android 14+ and declares a `dataSync` foreground service for the
+short-lived, user-initiated local OAuth callback listener. Google's current rule
+requires every foreground-service type to be declared in Play Console with a feature
+description, defer/interruption impact, and demonstration video. The earlier claim
+that this type needed no Play declaration was false.
+
+The exact staged copy and video shot list are in
+[`android-release-verification.md`](android-release-verification.md). They are prepared
+evidence, not a submitted legal/policy declaration. The founder must review the facts
+and authorize the Console submission.
+
+---
+
 ## 9. Graphics (staged in `docs/ops/play-assets/` — see that folder)
 
 - **App icon:** 512×512 PNG (rendered by `mobile/scripts/render_app_icons.py
@@ -362,8 +398,9 @@ Outstanding:
 
 4. Verify the full loop on a device from the internal-test link.
 5. Reviewer account → Sign in details → Target audience (§8) → submit Data safety.
-6. **Closed test**, 12 testers for 14 days, then apply for production access.
-7. Promote to **Production** → submit for review (hours–days) → **Roll out**.
+6. Review and submit the foreground-service declaration (§8a), including its video.
+7. **Closed test**, 12 testers for 14 days, then apply for production access.
+8. Promote to **Production** → submit for review (hours–days) → **Roll out**.
 
 ---
 
@@ -381,6 +418,9 @@ Outstanding:
 
 Play Console's App content counter reads **8 of 11**. That counter gates
 *production*, not internal testing — which is why the app is installable now.
+The foreground-service declaration was not independently recorded in the Console
+handoff; Google's current policy requires it, so treat it as unverified even if the
+counter still shows only three incomplete rows.
 
 Done:
 
@@ -406,6 +446,8 @@ Open, with what each actually waits on:
       See `docs/host-actions.md`.
 - [ ] Sign in details → Target audience → Data safety submit — the chain that unlocks
       the last three App content rows, all gated on the account above.
+- [ ] Foreground-service declaration (§8a): confirm the Console row, record the
+      user-initiated OAuth callback video, founder reviews the staged facts, then submit.
 - [ ] Founder: the four `ANDROID_UPLOAD_*` secrets. Not on the critical path any more —
       the container build below needs none of them — but they turn every future release
       into one `gh workflow run` instead of a manual build.
@@ -415,19 +457,26 @@ Open, with what each actually waits on:
 ### How to build a signed AAB with no GitHub secrets
 
 The release workflow is the nice path, but it is not the only one, and it was never
-the blocker it looked like. A container that mirrors the workflow's own steps
-produces the same artifact in about five minutes:
+the blocker it looked like. A container that mirrors the workflow's build half
+produces the same verified **unsigned** bundle in about five minutes; `sign.sh` then
+applies the upload key:
 
 - **Toolchain**: Ubuntu 24.04, **JDK 21** (Capacitor 8 compiles at source/target 21),
   **node 22**, Android **platform 36** + **build-tools 36.0.0**.
-- **Build**: `npm ci` → `rm -rf android` → `cap add android` → `cap sync android` →
-  `add_app_scheme.py` → `add_app_icons.py` → `gradlew bundleRelease`.
+- **Build**: `npm ci` → preserve any old `android/` as a superseded snapshot →
+  `cap add android` → `cap sync android` → `add_app_scheme.py` → `add_app_icons.py` →
+  `configure_android_release.py` → `verify_android_release.py` →
+  `gradlew lintRelease bundleRelease` → merged-manifest verification.
 - **Sign**: the workflow's own jarsigner step, including the fail-closed certificate
   pin, with passwords passed via `-storepass:env` so they never reach argv. Strip
   CRLF from `upload-keystore.env` first — see `docs/host-actions.md` for why.
 - **Upload**: the Console's file input accepts the `.aab` directly.
 
-The `rm -rf android` is load-bearing: `cap add android` refuses to overwrite an
-existing platform, and `cap sync` *preserves* a stale `variables.gradle`, so a tree
-generated under Capacitor 6 keeps minSdk 22 / SDK 34 and would build a bundle Play
-rejects while looking perfectly healthy.
+Fresh generation is load-bearing: `cap add android` refuses to overwrite an existing
+platform, and `cap sync` *preserves* a stale `variables.gradle`, so a tree generated
+under Capacitor 6 keeps minSdk 22 / SDK 34 and would build a bundle Play rejects while
+looking perfectly healthy. The release config asserts those generated SDK values; it
+does not rewrite the dependency-owned template. The container moves an existing
+directory aside; it does not delete untracked native work. Create a `mobile-v*` tag
+only after its commit is in `main`; the signing workflow rejects refs outside main's
+history.
