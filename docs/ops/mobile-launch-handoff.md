@@ -83,13 +83,14 @@ release into one `gh workflow run` — but nothing waits on it.
 
 ## Apple App Store
 
-**Apple Account creation was never completed, so the Developer Program cannot yet be
-enrolled.** Checked 2026-09-03, not assumed: Apple's recovery page rejects the attempted
-identifiers, while the only official Gmail thread contains two expired email-verification
-attempts and says no account is created without verification. There is no enrollment
-confirmation, App Store Connect welcome, or $99 receipt. The official creation form is
-preserved at `https://account.apple.com/account`; the account holder must complete its
-personal/password fields and fresh email/SMS verification in the browser.
+**The Apple Account cannot yet be created, so the Developer Program cannot be enrolled.**
+Checked 2026-09-03, not assumed: the official form accepted every field but returned only
+"Your account cannot be created at this time." No field-specific validation or new Apple
+email appeared, and Apple System Status reported Apple Account services available. That
+does not identify a phone, region, account-state, device-limit, or browser/network cause.
+Apple's supported next steps are to wait and try one different device/network route, or
+use Apple Support. The preserved support tab is staged at **Apple Account → Other Apple
+Account Topics → Creating an Apple Account**, immediately before starting Chat.
 
 What is ready, stated precisely — the gap here is wider than "just enrol":
 

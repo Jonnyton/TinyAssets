@@ -258,23 +258,28 @@ Delete this paragraph on the next host-actions pass.
 
 ### Apple App Store: enroll — signing and TestFlight cannot start without it
 
-**Checked 2026-09-03, not assumed.** Apple's recovery page rejects both attempted
-identifiers as an account that is not valid or supported. Gmail holds one official
-Apple verification thread with two expired attempts from 2026-08-23; each says the
-account cannot be used until verification and that no account is created without it.
-There is no enrollment confirmation, App Store Connect welcome, or $99 receipt. On
-that evidence: **Apple Account creation was never completed, and the Developer Program
-is not enrolled**. The official creation form is preserved at
-`https://account.apple.com/account` for the account holder to finish safely.
+**Checked 2026-09-03, not assumed.** The account holder completed Apple's official
+creation form, but the final step returned only **"Your account cannot be created at
+this time."** There is no field-specific email, phone, birthday, country, or password
+validation on the page, and no new Apple email arrived. Apple Account and iCloud Sign-In
+were available on Apple's System Status page, so this is not a documented system-wide
+outage. The visible evidence cannot distinguish a temporary server-side rejection from
+a browser/network-specific rejection; it does not support claiming a phone-reuse,
+region, locked-account, or device-limit cause. The failed form remains preserved without
+another submission. Apple Support is staged at **Apple Account → Other Apple Account
+Topics → Creating an Apple Account**, immediately before its Chat action.
 
 Everything autonomous on the iOS build side is staged — the Capacitor platform,
 `tinyassets://` URL-scheme patch, native TinyAssets artwork, unsigned compile-check,
 manual signed-IPA workflow, opt-in TestFlight upload, and listing/App-Privacy copy.
 None of it can produce an installable app without account-owned signing material.
 
-1. Finish Apple Account creation in the preserved browser tab: enter the personal
-   fields and password, solve the captcha, then enter the fresh email/SMS codes there.
-   Never send a password or verification code through chat.
+1. Choose one official next attempt: wait and retry once from an up-to-date Apple
+   device/different network, or authorize starting the prepared Apple Support chat.
+   Do not repeatedly resubmit the web form. Support brief: "The official web creation
+   form accepts every field, then returns 'Your account cannot be created at this time.'
+   Recovery does not recognize the attempted identifier, no new verification email
+   arrives, and Apple System Status shows Apple Account services available."
 
 2. **Enroll**: https://developer.apple.com/programs/enroll/ — $99/year, and identity
    verification usually takes a day or two, sometimes longer. **Start this first**, because
