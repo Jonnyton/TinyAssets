@@ -113,7 +113,24 @@ positive universe signal, that is a labelling gap rather than a data-loss one:
 `lancedb` carries no universe marker and no archive prefix, so the prune
 refuses it as "not a universe directory" whether or not the label is there.
 
-## The receipt this branch does not carry
+## The verdict on the exact head
+
+After the three findings rounds closed, the merge gate asked for a verdict on
+the exact head -- a different question from another findings round, and the one
+`pr-scope-guard` is built around. It took three heads to earn:
+
+| Head | Verdict | What it caught |
+|---|---|---|
+| `8982b63e` | REJECT | Round-3 finding #6 was half fixed: the resolvers returned the ACL's spelling, so `U-Mine/` owned by `u-mine` resolved to a path that does not exist on Linux. |
+| `8ef30734` | REJECT | The fix introduced the mirror defect: the scan took the first case-folded hit in sorted order, so with both directories present the exact pointer `u-mine` opened `U-Mine`. |
+| `abd300df` | **APPROVE** | "all seven round-3 findings are fixed. Focused tests: 73 passed, 1 filesystem-dependent skip. No new defect found." |
+
+Both rejections were real defects in code I had reported as fixed. That is the
+gate working, not ceremony.
+
+## The receipt
+
+
 
 `pr-scope-guard` asks for an exact-head review receipt because
 `tinyassets/api/visibility.py` is an authority path. The change to it is one
@@ -121,7 +138,6 @@ call site following a signature: `_discover_universe_ids` passes the owned set
 into `_is_listable_universe_dir`. That is small, and it is still behavioural --
 discovery now returns owned universes only, which is the point of the change.
 
-No `Drain-Review-Verdict: APPROVE` line is written here, because no reviewer
-approved this head: round 3 returned REJECT and its findings were folded
-afterwards without a fourth round, per the cap. Granting the receipt is the
-host's call, and this file is the artifact it would cite.
+The receipt on the pull request cites this file and the APPROVE above, at head
+`abd300df59aec10357159b8a13c600f265fb54de`. Any push voids it, so it goes on
+last.
