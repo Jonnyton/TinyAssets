@@ -17,11 +17,11 @@ Package name (permanent once published): **`io.tinyassets.app`**
 | Step | Action | Where |
 |---|---|---|
 | Account | ~~Create a Google Play Developer account.~~ **Done** — developer `8089695267825659874`, identity verified 2026-08-24 (Play Console mail). | https://play.google.com/console/developers/8089695267825659874 |
-| **Phone** | **BLOCKS EVERYTHING.** Contact phone `+12067997835` is on file but NOT verified, so `Create app` is greyed out with "Complete account verifications to create new apps" (observed 2026-09-02). Google sends a code by SMS or call; only you can read it. Developer account → Contact details → **Verify**. | Play Console |
+| Phone | ~~Verify the contact phone `+12067997835`.~~ **Done 2026-09-02 — and it was never a founder action.** It took one click in the Console and sent no SMS code, despite the padlock text implying otherwise. Try such a step before handing it over. | — |
 | Payment | ~~Authorize the $25 fee.~~ **Done** with the account. | — |
-| Signing key | The keystore is generated (§2, 2026-09-01). **Add its 4 values as repo secrets** — one command, §3. An agent cannot: `gh secret set` is denied to it. | your machine → GitHub secrets |
-| Console forms | Creating the app, its declarations (incl. US export laws), listing, Data safety, content rating and the internal-testing release are **form submissions on your Google account**: the agent drives them in the browser only after an explicit "yes" in chat. Nothing exists in the Console until then. | Play Console (agent, gated on your yes) |
-| Device check | Install the internal-test build from its opt-in link, sign in, chat once. | your phone |
+| Signing key | The keystore is generated (§2, 2026-09-01). Adding its 4 values as repo secrets is **optional, not blocking** — `mobile/container/` builds and signs the bundle with no secret at all, and that is how the shipped build was made. Worth doing anyway: it turns each future release into one `gh workflow run`. One command, §3; an agent cannot run it (`gh secret set` is denied to it). | your machine → GitHub secrets |
+| Console forms | Creating the app, its declarations (incl. US export laws), listing, Data safety, content rating and the internal-testing release are **form submissions on your Google account**: the agent drives them in the browser only after an explicit "yes" in chat. Those named here are **done** (2026-09-02/03); what is left needs the reviewer account below. | Play Console (agent, gated on your yes) |
+| **Device check** | **The live one.** Install the internal-test build, sign in, chat once: <https://play.google.com/apps/internaltest/4701716760893982267> | your phone |
 | Publish | Promote to Production → submit for review → click **Roll out**. | Play Console |
 
 Everything else below I build/stage.
