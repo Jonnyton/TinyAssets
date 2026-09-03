@@ -26,7 +26,13 @@ import pytest
 
 from tinyassets.desktop.dashboard import DashboardHandler, DashboardMetrics
 from tinyassets.desktop.host_tray import HostTrayService
-from tinyassets.desktop.icon_gen import create_icon_image, generate_icon
+from tinyassets.desktop.icon_gen import (
+    ACCENT,
+    create_icon_image,
+    draw_mark,
+    generate_icon,
+    mark_svg,
+)
 from tinyassets.desktop.launcher import LauncherApp, _default_universe_path
 from tinyassets.desktop.notifications import NotificationManager
 from tinyassets.desktop.tray import TrayApp, _create_icon_image
@@ -669,6 +675,40 @@ class TestIconGen:
         colors = img.getcolors(maxcolors=1000)
         assert colors is not None
         assert len(colors) > 1
+
+    def test_optical_variants_are_distinct(self):
+        """Large, app, and favicon art must not be one illustration resized."""
+        full = draw_mark(64, tile=False, detail="full")
+        compact = draw_mark(64, tile=False, detail="compact")
+        micro = draw_mark(64, tile=False, detail="micro")
+        assert full.tobytes() != compact.tobytes()
+        assert compact.tobytes() != micro.tobytes()
+        assert mark_svg(tile=False, detail="full") != mark_svg(
+            tile=False, detail="compact"
+        )
+
+    def test_favicon_sizes_use_micro_drawing(self):
+        assert create_icon_image(16).tobytes() == draw_mark(
+            16, tile=True, detail="micro"
+        ).tobytes()
+        assert create_icon_image(32).tobytes() == draw_mark(
+            32, tile=True, detail="micro"
+        ).tobytes()
+        assert create_icon_image(48).tobytes() == draw_mark(
+            48, tile=True, detail="compact"
+        ).tobytes()
+
+    def test_micro_icon_keeps_the_ember_moon(self):
+        icon = create_icon_image(32)
+        assert any(
+            icon.getpixel((x, y))[:3] == ACCENT
+            for y in range(icon.height)
+            for x in range(icon.width)
+        )
+
+    def test_unknown_detail_fails_loudly(self):
+        with pytest.raises(ValueError, match="detail must be"):
+            draw_mark(64, detail="miniature")
 
     def test_generate_icon_creates_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
