@@ -46,7 +46,6 @@ def app_with_slow_tool(tmp_path, monkeypatch):
     (scaled) ping interval. Removed again so the canonical tool set is not
     widened for any other test."""
     from tinyassets import universe_server as us
-
     from tinyassets.auth.middleware import set_provider
     from tinyassets.auth.provider import AuthProvider, Identity
 

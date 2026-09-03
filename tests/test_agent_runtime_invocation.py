@@ -589,7 +589,10 @@ def test_missed_or_reused_live_boundary_creates_nothing(tmp_path, authenticate_r
     authenticate_request("user::alice")
     service, _resolver = _service(tmp_path)
     missed = _capture(service)
-    authenticate_request(None)
+    # A DIFFERENT live request, not nobody. Unbinding the caller entirely made
+    # `current_identity()` refuse for authentication before the boundary check
+    # ran, so the test proved the door rather than the boundary it names.
+    authenticate_request("user::alice")
 
     with pytest.raises(AgentInvocationAdmissionBlocked, match="live request"):
         service.admit(missed, _request())

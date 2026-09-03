@@ -55,12 +55,6 @@ class TestQueryRunsUniverseAcl:
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         _init(tmp_path)
         from tinyassets.auth import middleware as mw
-        from tinyassets.auth.provider import DevAuthProvider
-        from tinyassets.daemon_server import (
-            ensure_universe_registered,
-            ensure_universe_rules,
-            update_universe_rules,
-        )
 
         # A SIGNED-IN OUTSIDER, not an anonymous one. The guarantee is that a
         # private universe's runs never reach a caller who cannot read it; an
@@ -68,7 +62,12 @@ class TestQueryRunsUniverseAcl:
         # would assert the door instead of the filter. This caller is real and
         # holds no grant on either universe -- `pub` is readable because it is
         # public, `priv` is not.
-        from tinyassets.auth.provider import Identity
+        from tinyassets.auth.provider import DevAuthProvider, Identity
+        from tinyassets.daemon_server import (
+            ensure_universe_registered,
+            ensure_universe_rules,
+            update_universe_rules,
+        )
 
         mw.set_provider(DevAuthProvider())
         mw._current_identity.set(Identity(
