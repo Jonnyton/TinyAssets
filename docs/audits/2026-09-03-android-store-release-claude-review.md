@@ -13,7 +13,7 @@ three P1 findings plus P2 hardening notes. This table is the durable disposition
 
 | Review finding | Disposition |
 |---|---|
-| New Gradle/lint/merged-manifest gates have no green workflow run | Accepted. The release workflow now runs its unsigned build on pull requests. A green PR run remains required before merge; a signed run still requires the founder's upload secrets. |
+| New Gradle/lint/merged-manifest gates have no green workflow run | Accepted. Draft PR run `33812289283` proved clean generation, release lint, and `bundleRelease`, then failed closed because AGP 8's real merged root omits `android:compileSdkVersion`. The verifier now reads package/version/min/target from that artifact and continues to assert compile SDK from generated Gradle input. A green rerun remains required; a signed run still requires the founder's upload secrets. |
 | Exact 1080×1920 listing screenshots were coupled to every debug APK build | Fixed. Default app verification checks packaged app artwork only. The release-only artwork gate checks Play media separately and accepts screenshots within Play's 320–3840 px / 2:1 bounds. |
 | `add_app_scheme.py` still claimed `dataSync` needed no Play justification | Fixed. The source comment now matches the required Play declaration and behavior-video gate. |
 | Signed workflow could fetch main anonymously after checkout removes credentials | Accepted under this repository's explicit public-repository invariant, documented inline. A private fork fails closed until it supplies read auth. Tag/manual signing is limited to commits already in main history. |

@@ -208,7 +208,7 @@ def test_merged_release_manifest_gate_catches_debuggable_and_version_drift(
         '<manifest xmlns:android="http://schemas.android.com/apk/res/android">',
         '<manifest xmlns:android="http://schemas.android.com/apk/res/android" '
         'package="io.tinyassets.app" android:versionCode="27" '
-        'android:versionName="1.4.2" android:compileSdkVersion="36">\n'
+        'android:versionName="1.4.2">\n'
         '  <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="36"/>\n'
         '  <uses-permission '
         'android:name="io.tinyassets.app.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"/>',

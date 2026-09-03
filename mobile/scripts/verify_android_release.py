@@ -83,13 +83,11 @@ def verify_manifest(path: Path, release: AndroidRelease, *, merged: bool) -> Non
             "package": root.get("package"),
             "versionCode": root.get(A + "versionCode"),
             "versionName": root.get(A + "versionName"),
-            "compileSdk": root.get(A + "compileSdkVersion"),
         }
         wanted = {
             "package": release.app_id,
             "versionCode": str(release.version_code),
             "versionName": release.version_name,
-            "compileSdk": str(release.compile_sdk),
         }
         drift = [
             f"{key}={values[key]!r}, expected {wanted[key]!r}"
