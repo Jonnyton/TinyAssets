@@ -21,6 +21,7 @@ each operation opens, commits, closes.
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import contextvars
 import copy
@@ -225,16 +226,30 @@ def _mark_orphaned_run_if_needed(
 # ---------------------------------------------------------------------------
 
 _WORKSPACE_RECONCILE_LOCK = threading.Lock()
-#: (pid, resolved data root) pairs whose startup sweep SUCCEEDED and whose
-#: sweeper thread is running. Keyed by pid so a forked worker never inherits
-#: the parent's claim; reset after fork as well (Codex, code round 1).
+#: (pid, resolved data root) pairs whose startup sweep SUCCEEDED. Keyed by pid
+#: so a forked worker never inherits the parent's claim; reset after fork as
+#: well (Codex, code round 1).
 _WORKSPACE_RECONCILED: set[tuple[int, str]] = set()
 _WORKSPACE_RECONCILING: set[tuple[int, str]] = set()
+
+
+@dataclass(frozen=True)
+class _WorkspaceSweeperHandle:
+    """The owned lifecycle of one periodic workspace sweeper."""
+
+    stop_event: threading.Event
+    thread: threading.Thread
+
+
+_WORKSPACE_SWEEPERS: dict[tuple[int, str], _WorkspaceSweeperHandle] = {}
 
 
 def _reset_workspace_reconciliation_after_fork() -> None:
     _WORKSPACE_RECONCILED.clear()
     _WORKSPACE_RECONCILING.clear()
+    # A fork retains Python objects but not the parent's other threads. Never
+    # mistake those dead handles for sweepers owned by the child.
+    _WORKSPACE_SWEEPERS.clear()
 
 
 if hasattr(os, "register_at_fork"):  # pragma: no branch - POSIX only
@@ -474,14 +489,112 @@ def _workspace_sweep_kick_body(base_path: str | Path) -> None:
         logger.exception("workspace sweep kick failed")
 
 
-def _workspace_sweeper_loop(base_path: str | Path, interval_s: float) -> None:
+def _workspace_sweeper_loop(
+    base_path: str | Path,
+    interval_s: float,
+    stop_event: threading.Event,
+    sweep_once: Callable[..., int],
+) -> None:
     claimant = f"sweeper:{os.getpid()}"
-    while True:
-        time.sleep(interval_s)
+    while not stop_event.wait(interval_s):
         try:
-            _workspace_sweep_once(base_path, claimant=claimant)
+            # The worker owns the callable it started with. Looking it up from
+            # module globals on every tick lets a later test monkeypatch (or a
+            # hot reload) redirect an already-running production worker.
+            sweep_once(base_path, claimant=claimant)
         except Exception:  # noqa: BLE001 - the loop must outlive one bad pass
             logger.exception("workspace sweep failed")
+
+
+def _start_workspace_sweeper(
+    base_path: str | Path,
+    interval_s: float,
+    sweep_once: Callable[..., int] = _workspace_sweep_once,
+) -> _WorkspaceSweeperHandle:
+    """Start and register one stoppable sweeper for ``base_path``.
+
+    ``sweep_once`` is deliberately captured when this function is defined.
+    The periodic worker must not follow later process-global monkeypatches.
+    Tests that exercise the loop can inject their own callable directly.
+    """
+    key = (os.getpid(), str(Path(base_path).resolve()))
+    stop_event = threading.Event()
+    thread = threading.Thread(
+        target=_workspace_sweeper_loop,
+        args=(base_path, interval_s, stop_event, sweep_once),
+        name="workspace-sweeper",
+        daemon=True,
+    )
+    handle = _WorkspaceSweeperHandle(stop_event=stop_event, thread=thread)
+    with _WORKSPACE_RECONCILE_LOCK:
+        current = _WORKSPACE_SWEEPERS.get(key)
+        if current is not None and current.thread.is_alive():
+            return current
+        _WORKSPACE_SWEEPERS[key] = handle
+    try:
+        thread.start()
+    except BaseException:
+        with _WORKSPACE_RECONCILE_LOCK:
+            if _WORKSPACE_SWEEPERS.get(key) is handle:
+                _WORKSPACE_SWEEPERS.pop(key, None)
+        raise
+    return handle
+
+
+def _stop_workspace_sweeper(
+    base_path: str | Path,
+    *,
+    timeout_s: float = 5.0,
+) -> bool:
+    """Stop and join one periodic sweeper; return whether it has stopped.
+
+    Removing the reconciliation marker makes a later caller rerun the startup
+    barrier before starting a replacement worker.
+    """
+    key = (os.getpid(), str(Path(base_path).resolve()))
+    with _WORKSPACE_RECONCILE_LOCK:
+        handle = _WORKSPACE_SWEEPERS.get(key)
+    if handle is None:
+        with _WORKSPACE_RECONCILE_LOCK:
+            _WORKSPACE_RECONCILED.discard(key)
+        return True
+    handle.stop_event.set()
+    if handle.thread is threading.current_thread():
+        return False
+    handle.thread.join(timeout=max(0.0, timeout_s))
+    stopped = not handle.thread.is_alive()
+    if stopped:
+        with _WORKSPACE_RECONCILE_LOCK:
+            if _WORKSPACE_SWEEPERS.get(key) is handle:
+                _WORKSPACE_SWEEPERS.pop(key, None)
+                _WORKSPACE_RECONCILED.discard(key)
+    return stopped
+
+
+def _stop_all_workspace_sweepers(*, timeout_s: float = 5.0) -> bool:
+    """Stop every owned sweeper within one shared timeout budget."""
+    with _WORKSPACE_RECONCILE_LOCK:
+        handles = [
+            (key, handle)
+            for key, handle in _WORKSPACE_SWEEPERS.items()
+            if key[0] == os.getpid()
+        ]
+    for _key, handle in handles:
+        handle.stop_event.set()
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    for _key, handle in handles:
+        if handle.thread is not threading.current_thread():
+            handle.thread.join(timeout=max(0.0, deadline - time.monotonic()))
+    stopped = all(not handle.thread.is_alive() for _key, handle in handles)
+    with _WORKSPACE_RECONCILE_LOCK:
+        for key, handle in handles:
+            if not handle.thread.is_alive() and _WORKSPACE_SWEEPERS.get(key) is handle:
+                _WORKSPACE_SWEEPERS.pop(key, None)
+                _WORKSPACE_RECONCILED.discard(key)
+    return stopped
+
+
+atexit.register(_stop_all_workspace_sweepers)
 
 
 def _ensure_scratch_root(base: Path) -> Path:
@@ -505,6 +618,7 @@ def ensure_workspace_reconciled(
     *,
     start_sweeper: bool = True,
     interval_s: float = _WORKSPACE_SWEEP_INTERVAL_S,
+    sweep_once: Callable[..., int] = _workspace_sweep_once,
 ) -> bool:
     """Once per process per data root: finish every outbox entry left by an
     earlier process (the admission barrier of the scratch-storage spec) and
@@ -530,10 +644,7 @@ def ensure_workspace_reconciled(
             logger.info("workspace startup sweep finished %d outbox entries", done)
         _reconcile_push_intents(base_path, when="startup")
         if start_sweeper:
-            threading.Thread(
-                target=_workspace_sweeper_loop, args=(base_path, interval_s),
-                name="workspace-sweeper", daemon=True,
-            ).start()
+            _start_workspace_sweeper(base_path, interval_s, sweep_once)
     except BaseException:
         # A failed attempt is not a completed one: the next caller retries.
         with _WORKSPACE_RECONCILE_LOCK:
@@ -541,7 +652,10 @@ def ensure_workspace_reconciled(
         raise
     with _WORKSPACE_RECONCILE_LOCK:
         _WORKSPACE_RECONCILING.discard(key)
-        _WORKSPACE_RECONCILED.add(key)
+        # A concurrent stop after registration deliberately wins: the next
+        # caller reruns the startup barrier and starts a fresh worker.
+        if not start_sweeper or key in _WORKSPACE_SWEEPERS:
+            _WORKSPACE_RECONCILED.add(key)
     return True
 
 

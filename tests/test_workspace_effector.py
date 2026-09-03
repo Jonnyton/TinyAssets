@@ -32,6 +32,15 @@ SHA = "c" * 40
 TOKEN = "ghp_EFFECTORTOKEN0123456789ABCDEFGHI"
 
 
+@pytest.fixture(autouse=True)
+def _stop_workspace_sweepers_after_each_test():
+    """Each temp workspace owns and closes its periodic worker."""
+    yield
+    from tinyassets import runs
+
+    assert runs._stop_all_workspace_sweepers(timeout_s=2)
+
+
 # --------------------------------------------------------------------------- #
 # Scaffolding
 # --------------------------------------------------------------------------- #

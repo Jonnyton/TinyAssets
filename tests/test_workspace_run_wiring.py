@@ -7,7 +7,9 @@ every workspace refusal is a first-class failure class with an action.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -255,6 +257,57 @@ def test_the_reconciler_retries_after_a_failed_attempt(tmp_path, monkeypatch):
     assert runs.ensure_workspace_reconciled(base, start_sweeper=False) is True
     assert runs.ensure_workspace_reconciled(base, start_sweeper=False) is False
     assert calls["n"] == 2
+
+
+def test_a_periodic_sweeper_owns_its_dependency_and_stops_promptly(
+    tmp_path, monkeypatch
+):
+    """An old worker cannot call a later test's process-global monkeypatch."""
+    base = tmp_path / "data"
+    owned_calls: list[str] = []
+    foreign_calls: list[str] = []
+    swept = threading.Event()
+
+    def owned_sweep(_base, *, claimant):
+        owned_calls.append(claimant)
+        swept.set()
+        return 0
+
+    monkeypatch.setattr(workspace_pool, "startup_sweep", lambda *a, **k: 0)
+    monkeypatch.setattr(runs, "_reconcile_push_intents", lambda *a, **k: 0)
+    assert runs.ensure_workspace_reconciled(
+        base, interval_s=0.01, sweep_once=owned_sweep,
+    ) is True
+    handle = runs._WORKSPACE_SWEEPERS[(os.getpid(), str(base.resolve()))]
+    monkeypatch.setattr(
+        runs,
+        "_workspace_sweep_once",
+        lambda _base, *, claimant: foreign_calls.append(claimant) or 0,
+    )
+    assert swept.wait(2), "the periodic worker did not run"
+    assert handle.thread.is_alive()
+    assert foreign_calls == [], "the old worker followed a later global monkeypatch"
+
+    assert runs._stop_workspace_sweeper(base, timeout_s=2) is True
+    assert not handle.thread.is_alive()
+    calls_after_stop = len(owned_calls)
+    time.sleep(0.03)
+    assert len(owned_calls) == calls_after_stop, "the stopped worker ran again"
+
+
+def test_stopping_a_sweeper_requires_the_startup_barrier_again(
+    tmp_path, monkeypatch
+):
+    base = tmp_path / "data"
+    monkeypatch.setattr(workspace_pool, "startup_sweep", lambda *a, **k: 0)
+    monkeypatch.setattr(runs, "_reconcile_push_intents", lambda *a, **k: 0)
+
+    assert runs.ensure_workspace_reconciled(base, interval_s=60) is True
+    first = runs._WORKSPACE_SWEEPERS[(os.getpid(), str(base.resolve()))]
+    assert runs._stop_workspace_sweeper(base, timeout_s=2) is True
+    assert not first.thread.is_alive()
+
+    assert runs.ensure_workspace_reconciled(base, start_sweeper=False) is True
 
 
 def test_the_periodic_pass_repairs_an_orphaned_active_lease(tmp_path, monkeypatch):
