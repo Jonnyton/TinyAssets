@@ -101,13 +101,114 @@ def test_anonymous_or_missing_universe_is_held_not_raised(tmp_path):
         )["status"]
         == "held"
     )
-    assert sv.ensure_founder_serving(
+    # A name that is neither alias nor registered connection is HELD, but for a
+    # real authority reason -- not because the platform keeps a vendor
+    # allowlist. It used to answer `unsupported_service` for anything but
+    # claude/codex, which refused every user with their own endpoint (founder,
+    # 2026-09-03: "we shouldnt have a chatgpt spacific path").
+    held = sv.ensure_founder_serving(
         base_path=tmp_path,
         universe_dir=tmp_path,
         owner_user_id="owner-1",
         universe_id="u-owner",
         service="gemini",
-    ) == {"status": "held", "reason": "unsupported_service"}
+    )
+    assert held["status"] == "held"
+    assert held["reason"] != "unsupported_service", held
+    assert held.get("detail"), "a refusal has to say why"
+
+
+def test_an_unnamed_service_is_held_rather_than_guessed(tmp_path):
+    """Opening the name up does not mean accepting an empty one."""
+    held = sv.ensure_founder_serving(
+        base_path=tmp_path,
+        universe_dir=tmp_path,
+        owner_user_id="owner-1",
+        universe_id="u-owner",
+        service="   ",
+    )
+    assert held == {"status": "held", "reason": "no_service_named"}
+
+
+def test_a_provider_that_is_not_yours_is_refused_by_ownership(tmp_path, monkeypatch):
+    """The gate is OWNERSHIP, which is why the name gate could go.
+
+    Two REAL owners, two real universes, a real connection ledger. The previous
+    version of this test monkeypatched `_open_serving_context` to raise, so it
+    would have stayed green with the ownership comparison deleted (Codex, on the
+    connect-any-llm lane).
+    """
+    from tinyassets.providers.definition import register_definition
+    from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    udir = _seed(tmp_path)                      # owner-1 / u-owner, admin
+    (tmp_path / "u-other").mkdir(exist_ok=True)
+
+    # owner-2's connection, granted to owner-2's universe. Nothing about it is
+    # owner-1's, but owner-1 names its definition.
+    grant_id = "http_grant_" + "b" * 32
+    ledger = ConnectionLedger(
+        tmp_path / "outbound.db", verify_authenticated_principal=lambda: "owner-2"
+    )
+    ledger.create_connection(
+        connection_id="conn_" + "b" * 32,
+        owner_user_id="owner-2",
+        connection_class="http",
+        connection_type="http",
+        auth_scheme="bearer",
+        scopes=("http",),
+        provider="http",
+        destination="compute:not-yours",
+        credential_ref="vault://http/compute:not-yours",
+        allowed_endpoints=[
+            {"host": "api.example.com", "path_template": "/v1/chat/completions",
+             "methods": ["POST"]},
+        ],
+    )
+    ledger.grant_connection(
+        grant_id=grant_id,
+        connection_id="conn_" + "b" * 32,
+        owner_user_id="owner-2",
+        universe_id="u-other",
+        unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
+    )
+    # Registered inside owner-1's universe, pointing at owner-2's grant: the
+    # confused-deputy shape the ownership check exists to refuse.
+    foreign = register_definition(
+        universe_id="u-owner", owner_user_id="owner-1", access_method="api_key_http",
+        protocol="openai_chat", model="some-model", ref=grant_id,
+    )
+
+    held = sv.ensure_founder_serving(
+        base_path=tmp_path,
+        universe_dir=udir,
+        owner_user_id="owner-1",
+        universe_id="u-owner",
+        service=foreign.id,
+    )
+    assert held["status"] == "held", held
+    assert held["reason"] == "provider_not_yours", held
+    # And nothing was bound as a side effect of the refusal.
+    with pytest.raises(PermissionError):
+        _serving_binding(tmp_path)
+
+
+def test_a_name_that_is_no_provider_here_reads_as_unknown(tmp_path, monkeypatch):
+    """Missing and foreign must stay indistinguishable: `get_definition` is
+    universe-scoped, so another universe's id lands on the same answer as a
+    typo. That is what keeps the bind surface from being an existence oracle."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    udir = _seed(tmp_path)
+
+    held = sv.ensure_founder_serving(
+        base_path=tmp_path,
+        universe_dir=udir,
+        owner_user_id="owner-1",
+        universe_id="u-owner",
+        service="provdef_" + "9" * 32,
+    )
+    assert held["status"] == "held" and held["reason"] == "unknown_provider", held
 
 
 def test_claude_serving_refusal_is_reported_not_raised(tmp_path, monkeypatch):
