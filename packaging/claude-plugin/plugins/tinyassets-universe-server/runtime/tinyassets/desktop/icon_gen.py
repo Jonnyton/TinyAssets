@@ -1,11 +1,11 @@
 """The TinyAssets mark, and the one place its geometry lives.
 
 The mark is a circular badge: **Mount Baker seen from the south**, a **wolf
-howling** on the snowfield, the **moon** in the brand's ember, and the
-**galaxy** arcing overhead. The mountain is the broad glaciated dome it
-actually is from that side, with the Black Buttes as the jagged rock group to
-the west (left from the south) and a few ruled crevasse lines that double as
-the site's own rule motif.
+howling** on the snowfield, a pale **moon**, and a spiral **galaxy** overhead.
+The mountain's profile is traced from a photograph rather than drawn from
+memory, so it carries Baker's signature: a flat summit plateau instead of a
+peak, the jagged Lincoln and Colfax group at about half that height on the
+west (left, from the south), and a long south-east flank.
 
 Every rendering comes from the ``EMBLEM`` layer list below: the Windows tray
 ``.ico`` (``generate_icon``), the brand exports under ``WebSite/brand/`` and
@@ -35,7 +35,6 @@ generate_icon(output_path)    the multi-size tray ``.ico``.
 
 from __future__ import annotations
 
-import math
 import re
 from pathlib import Path
 
@@ -206,17 +205,23 @@ EMBLEM = _emblem()
 # path handling: one flattener, shared by both renderers
 # --------------------------------------------------------------------------
 
-_TOKEN = re.compile(r"([MLHVQCAZ])([^MLHVQCAZ]*)", re.I)
+_TOKEN = re.compile(r"([MLHVQCZ])([^MLHVQCZ]*)", re.I)
 _NUM = re.compile(r"[-+]?[0-9]*\.?[0-9]+")
 
 
 def _flatten(path: str, steps: int = 14) -> list[list[tuple[float, float]]]:
-    """M/L/H/V/Q/C/A/Z into closed polygons.
+    """M/L/H/V/Q/C/Z into closed polygons.
 
-    Only the arc form this module uses appears (``a r r 0 f s dx dy`` drawing a
-    half circle), so arcs are sampled as semicircles rather than implementing
-    the full endpoint parameterisation.
+    Arcs are deliberately NOT supported. An earlier version sampled ``A`` as a
+    semicircle, which silently mangled the wolf when its rounded masses were
+    written as arc paths; they are native circle layers now. A path containing
+    an arc will raise rather than render something subtly wrong.
     """
+    if re.search(r"[Aa]", path):
+        raise ValueError(
+            "arcs are not supported in EMBLEM paths -- use a circle layer, or "
+            "express the curve with Q/C"
+        )
     contours: list[list[tuple[float, float]]] = []
     current: list[tuple[float, float]] = []
     x = y = 0.0
@@ -269,18 +274,6 @@ def _flatten(path: str, steps: int = 14) -> list[list[tuple[float, float]]]:
                         u ** 3 * x + 3 * u * u * t * c1x + 3 * u * t * t * c2x + t ** 3 * nx,
                         u ** 3 * y + 3 * u * u * t * c1y + 3 * u * t * t * c2y + t ** 3 * ny,
                     ))
-                x, y = nx, ny
-        elif upper == "A":
-            # `a rx ry rot large sweep dx dy` — always a half circle here.
-            for i in range(0, len(nums) - 6, 7):
-                rx, _ry, _rot, _large, sweep, dx, dy = nums[i : i + 7]
-                nx, ny = (x + dx, y + dy) if relative else (dx, dy)
-                mx, my = (x + nx) / 2, (y + ny) / 2
-                for step in range(1, steps + 1):
-                    a = math.pi * step / steps
-                    direction = 1 if sweep else -1
-                    current.append((mx - rx * math.cos(a) * (1 if nx >= x else -1),
-                                    my + direction * rx * math.sin(a)))
                 x, y = nx, ny
         elif upper == "Z":
             if current:
@@ -369,8 +362,13 @@ def draw_mark(size: int = 64, tile: bool = False) -> Image.Image:
         elif kind == "stroke":
             for contour in _flatten(layer["d"]):
                 pts = [(cx * k, cy * k) for cx, cy in _place(contour, layer.get("transform"))]
+                # SVG scales stroke width with the element's transform, so
+                # Pillow must too or the galaxy's arms come out heavier here
+                # than on the web (Codex review, 2026-09-02).
+                stroke_scale = layer["transform"][2] if layer.get("transform") else 1.0
                 draw.line(pts, fill=layer["stroke"] + (alpha,),
-                          width=max(1, round(layer["width"] * k)), joint="curve")
+                          width=max(1, round(layer["width"] * stroke_scale * k)),
+                          joint="curve")
 
         if layer.get("clip", False):
             existing = layer_img.getchannel("A")

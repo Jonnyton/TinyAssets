@@ -44,6 +44,7 @@ SITE_COMPONENT = REPO / "WebSite" / "site-react" / "components" / "TinyAssetsMar
 ASSETS = REPO / "assets"
 DESKTOP_BUILD = REPO / "desktop-app" / "build"
 TRAY_ICO = REPO / "tinyassets" / "desktop" / "app.ico"
+APP_HTML = REPO / "tinyassets" / "onboarding" / "app.html"
 
 # The generated component is TSX, so its lines follow JSX conventions, not ruff's.
 # ruff: noqa: E501
@@ -130,6 +131,34 @@ def _write_component() -> None:
     print(SITE_COMPONENT.relative_to(REPO).as_posix())
 
 
+def _write_app_html() -> None:
+    """Point the served web app's favicon and brand glyph at the same badge.
+
+    This was hand-patched once and then went stale the moment the mark changed:
+    the app was still showing a retired monogram while every other surface had
+    moved on (Codex review, 2026-09-02). Generating it closes that gap.
+    """
+    import re
+    from urllib.parse import quote
+
+    data_uri = "data:image/svg+xml," + quote(icon_gen.mark_svg(tile=True).strip(),
+                                             safe="/:=,;'#")
+    html = APP_HTML.read_text(encoding="utf-8")
+    before = html
+    html = re.sub(r'<link rel="icon" href="data:image/svg\+xml,[^"]*" />',
+                  f'<link rel="icon" href="{data_uri}" />', html, count=1)
+    html = re.sub(r'--brand-mark:url\("data:image/svg\+xml,[^"]*"\);',
+                  f'--brand-mark:url("{data_uri}");', html, count=1)
+    if data_uri not in html:
+        raise SystemExit(
+            "render_marks: could not place the badge in app.html -- its favicon "
+            "link or --brand-mark variable no longer matches the expected shape"
+        )
+    if html != before:
+        APP_HTML.write_text(html, encoding="utf-8", newline="\n")
+    print(APP_HTML.relative_to(REPO).as_posix())
+
+
 def _write(path: Path, data: str | bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if isinstance(data, str):
@@ -195,6 +224,9 @@ def main() -> int:
     _png(DESKTOP_BUILD / "icon.png", 512, tile=True)
     _ico(DESKTOP_BUILD / "icon.ico", (16, 32, 48, 64, 128, 256))
     _icns(DESKTOP_BUILD / "icon.icns")
+
+    # The served web app.
+    _write_app_html()
 
     # Tray.
     generate_icon(TRAY_ICO)

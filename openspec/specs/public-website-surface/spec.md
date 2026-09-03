@@ -36,12 +36,13 @@ The site SHALL present TinyAssets as a personal universe: a cloud agent that run
 
 ### Requirement: Plans Are Described In Words, In One Place, And Do Not Overstate Enforcement
 
-The site SHALL describe plans only in the `Plans` section of `/fine-print` (anchor `#plans`), stating that every universe is free and that premium costs USD 20 a month and raises the daily allowances for outside-world actions, compute, and storage. Because `tinyassets.usage_policy.enforcement_enabled()` defaults off — the meter records but the gate does not refuse — the section SHALL say so plainly: usage is metered, nobody is cut off today, and premium raises the allowances that will apply when the gate goes live. It SHALL NOT print allowance numbers while the gate is dark, SHALL NOT render an upgrade control until the app has one, and SHALL NOT describe hitting a limit as a thing that currently happens. `/start` MAY carry one sentence that links to the section. No other page, and no public text asset (`llms.txt`, `robots.txt`), states the price or what premium changes; a text asset MAY point at the section.
+The site SHALL describe plans only in the `Plans` section of `/fine-print` (anchor `#plans`), stating that every universe is free and that premium costs USD 20 a month and raises what applies to it. The copy SHALL name the three dimensions as `tinyassets/usage_policy.py` actually implements them and no further: a DAILY ALLOWANCE for outside-world actions (the only dimension with a reservation path, `reserve_effect_quota`), a GUARD on compute ("a guard, not a product limit"), and a CAP on stored data ("capped, not charged", with per-universe attribution still known-wrong). Describing compute or storage as daily allowances overstates what exists. Because `tinyassets.usage_policy.enforcement_enabled()` defaults off — the meter records but the gate does not refuse — the section SHALL say so plainly: usage is metered, nobody is cut off today, and premium raises the allowances that will apply when the gate goes live. It SHALL NOT print allowance numbers while the gate is dark, SHALL NOT render an upgrade control until the app has one, and SHALL NOT describe hitting a limit as a thing that currently happens. `/start` MAY carry one sentence that links to the section. No other page, and no public text asset (`llms.txt`, `robots.txt`), states the price or what premium changes; a text asset MAY point at the section.
 
 #### Scenario: A visitor looks for pricing
 
 - **WHEN** a visitor opens `/fine-print/#plans`
 - **THEN** they read that every universe starts free, what premium changes in words, its monthly price, and that enforcement is not switched on yet, with no form, no button, and no numeric allowances
+- **AND** the three dimensions are described as an allowance, a guard and a cap respectively, matching the policy module rather than flattening all three into "daily limits"
 
 #### Scenario: A grounding crawler reads the text assets
 

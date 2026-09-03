@@ -60,26 +60,29 @@ export default function FinePrintPage() {
                     every surface. Runs on your own subscription.
                   </td>
                   <td>
-                    Daily allowances for outside-world actions, compute minutes and storage, set well
-                    above ordinary use.
+                    A daily allowance for actions that reach the outside world, a guard on compute so
+                    a runaway loop cannot burn your day, and a cap on stored data. All set well above
+                    ordinary use.
                   </td>
                 </tr>
                 <tr>
                   <td>Premium, $20 a month</td>
                   <td>The same universe, nothing held back.</td>
-                  <td>Higher daily allowances on all three.</td>
+                  <td>More of each.</td>
                 </tr>
               </tbody>
             </table>
           </div>
           <p className="note">
-            Being straight about where this stands: your usage is metered from day one, but the gate
-            that would refuse an action for exceeding an allowance is not switched on yet. It stays
-            off until the accounting behind it is provably exact, because refusing your work on a
-            number we do not trust is worse than not refusing it. So today nobody is cut off, and
-            premium raises the allowances that apply when the gate goes live. Upgrading will happen
-            per account inside the app; there is no control for it yet, and no page here pretends
-            otherwise. Questions:{" "}
+            Being straight about where this stands. Outside-world actions are the one dimension with
+            a real daily allowance, and even that gate is not switched on: usage is metered, but
+            nothing is refused for exceeding it. It stays off until the accounting behind it is
+            provably exact, because refusing your work on a number we do not trust is worse than not
+            refusing it. Compute is a guard against a runaway loop rather than a budget you spend,
+            and stored data is a capacity cap, not a daily figure. So today nobody is cut off, and
+            premium raises what applies when the gate goes live. Upgrading will happen per account
+            inside the app; there is no control for it yet, and no page here pretends otherwise.
+            Questions:{" "}
             <a href={`mailto:${SITE.contact.general}`}>{SITE.contact.general}</a>. The platform never
             bills you for a model; your subscription is your own.
           </p>

@@ -172,8 +172,12 @@ test("plans are stated in exactly one place, and never overstate enforcement", (
   // and the price/benefit must not be restated anywhere it can drift.
   const finePrint = source("app/fine-print/page.tsx");
   assert.match(finePrint, /\$20 a month/);
-  assert.match(finePrint, /metered from day one/);
-  assert.match(finePrint, /is not switched on yet/);
+  assert.match(finePrint, /usage is metered/);
+  assert.match(finePrint, /is not switched on/);
+  // the three dimensions must be named as the policy implements them
+  assert.match(finePrint, /daily allowance/i);
+  assert.match(finePrint, /guard against a runaway loop/i);
+  assert.match(finePrint, /capacity cap/i);
   assert.doesNotMatch(finePrint, /\b5,?000\b|\b12,?000\b|\b20 GB\b/, "no allowance numbers while the gate is dark");
 
   const others = pages.filter((f) => !f.path.replace(/\\/g, "/").includes("app/fine-print/"));
@@ -239,22 +243,44 @@ test("the inline mark is generated from the one geometry source", () => {
     assert.ok(svgNumbers.has(value), `${label} (${value}) must come from icon_gen.py`);
   }
 
-  // The scene itself: every path in the component must be one that icon_gen.py
-  // actually describes, so nobody can redraw the mountain or the wolf by hand
-  // in the web copy. The mountain profile is traced from a photograph, so an
-  // "improved" version drawn by eye is exactly what this catches.
-  const inMark = [...mark.matchAll(/\sd="([^"]+)"/g)].map((m) => m[1].trim());
-  assert.ok(inMark.length >= 8, `expected the scene's paths, found ${inMark.length}`);
-  // Long paths are split across adjacent Python string literals, so drop the
-  // quotes before comparing rather than matching the source line breaks.
-  const inPython = iconGen.replace(/"\s*"/g, "").replace(/\s+/g, " ");
-  for (const d of inMark) {
-    const needle = d.replace(/\s+/g, " ");
-    assert.ok(
-      inPython.includes(needle.slice(0, 40)),
-      `the component's path "${needle.slice(0, 40)}…" must come from icon_gen.py`,
+  // The scene itself. `render_marks.py` writes BOTH this component and
+  // WebSite/brand/mark{,-tile}.svg from the same layer list, so the two must
+  // agree shape for shape. Comparing them catches everything a hand-edit could
+  // change -- a redrawn mountain, a moved circle, a dropped layer, a reordered
+  // one -- which the earlier version of this test, comparing 40-character path
+  // prefixes, did not: the broken mark passed all 235 tests.
+  const normalise = (svg) =>
+    svg
+      .replace(/^[\s\S]*?<svg[^>]*>/, "")
+      .replace(/<\/svg>[\s\S]*$/, "")
+      .replace(/<defs>[\s\S]*?<\/defs>/, "")
+      .replace(/\s*(clip-path|clipPath)=(?:"[^"]*"|\{`url\(#\$\{clipId\}\)`\})/g, "")
+      .replace(/\s*\/>/g, "/>")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const componentBodies = [...mark.matchAll(/<>([\s\S]*?)<\/>/g)].map((m) => m[1]);
+  assert.equal(componentBodies.length, 2, "the component renders a tile body and a disc body");
+  const [tileBody, discBody] = componentBodies;
+
+  for (const [label, body, file] of [
+    ["disc", discBody, "../brand/mark.svg"],
+    ["tile", tileBody, "../brand/mark-tile.svg"],
+  ]) {
+    const exported = normalise(readFileSync(resolve(siteRoot, file), "utf8"));
+    const inComponent = normalise(body);
+    // JSX camel-cases these; the exported SVG keeps them kebab-cased.
+    const asSvg = inComponent
+      .replace(/strokeWidth=/g, "stroke-width=")
+      .replace(/strokeLinecap=/g, "stroke-linecap=");
+    assert.equal(
+      asSvg,
+      exported,
+      `the component's ${label} body must be byte-identical to ${file}; ` +
+        `re-run WebSite/brand/render_marks.py rather than editing either by hand`,
     );
   }
+
   // And the mountain in particular is present, by its distinctive summit plateau.
   assert.match(iconGen, /_SNOW = \(/);
   assert.match(iconGen, /summit plateau|SUMMIT PLATEAU/i);
