@@ -18,6 +18,7 @@ universe, serving or not.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from types import SimpleNamespace
@@ -182,6 +183,9 @@ def test_the_app_heal_does_not_fire_on_the_new_reason():
         "globalThis.authHeaders = () => ({});",
         "globalThis.appendMessage = () => {};",
         "let servingHealAttempted = false;",
+        # `serviceLabel` reads a module-level table, so lift it too or the whole
+        # bundle throws ReferenceError before a single assertion runs.
+        re.search(r"const SERVICE_LABELS=\{.*?\};", html, re.S).group(0),
         fn("serveOn"), fn("serviceLabel"), fn("unservedCandidates"), fn("healServing"),
         "const status = (reason) => ({active_host: {llm_endpoint_bound: 'codex'},"
         " supervisor_liveness: {epoch2_operational: {consumer_pump: [{reason}]},"
