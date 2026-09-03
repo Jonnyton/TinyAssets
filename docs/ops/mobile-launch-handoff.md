@@ -89,11 +89,11 @@ Checked 2026-09-03, not assumed: the official form accepted every field but retu
 email appeared, and Apple System Status reported Apple Account services available. That
 does not identify a phone, region, account-state, device-limit, or browser/network cause.
 Apple Support then reported making an unspecified change on its side and asked for one
-new creation attempt. After the account holder retried, the preserved browser advanced
-to Apple Account **Sign-In & Security** and a fresh Apple verification email arrived.
-That is strong evidence the creation block was cleared, but account creation remains
-unconfirmed until the account holder reports the final verification result. The support
-chat remains preserved; do not send another message without action-time approval.
+new creation attempt. After the account holder retried, the browser reached the signed-in
+Apple Account **Sign-In & Security** page and showed two-factor authentication with a
+trusted phone number. Account creation is complete. Apple Developer Program enrollment,
+payment, and agreement acceptance have not begun. The support chat remains preserved;
+do not send another message without action-time approval.
 
 What is ready, stated precisely — the gap here is wider than "just enrol":
 
