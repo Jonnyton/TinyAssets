@@ -31,32 +31,47 @@ canonical one, so every endpoint whose path was not `/v1/chat/completions` was
 registerable and never servable. `_declared_path` in
 `tinyassets/providers/api_key_http_provider.py` now calls what the user granted.
 
-## 2. The picker still reads two company names to the user (P2)
+## 2. The picker's company names — RESOLVED 2026-09-03
 
-`<option>` labels and `SERVICE_LABELS` render "Claude subscription" and "OpenAI
-subscription". The repo's own rule — enforced by
-`test_the_deposit_form_names_protocols_not_companies` — is that `value="..."`
-attributes are the wire contract and exempt, while everything a user *reads*
-must name nobody. That test starts at `connect-endpoint`, so it never sees these
-two.
+Founder's ruling: **reword neutrally.** Done in this lane. The two options and
+`SERVICE_LABELS` are now named by the CREDENTIAL SHAPE the user hands over ("a
+subscription — you paste an OAuth token" / "...a signed-in CLI's auth.json";
+"your OAuth subscription" / "your CLI subscription"). The `value="claude"` /
+`value="codex"` wire ids are unchanged, so existing bindings keep working.
 
-Founder, 2026-09-02: *"must also be all agnostic shapes ... nor should any other
-spasific channel code excist."*
+`test_the_whole_connect_surface_names_no_vendor` and
+`test_the_serving_status_lines_name_no_vendor` now cover the picker and the
+status lines, which the pane-scoped test could not see. Both mutation-checked:
+putting either company name back goes red.
 
-Not renamed unilaterally, because the two options are the user's own
-subscription credentials and a user has to be able to tell which one to paste. A
-neutral label that leaves them guessing is a worse product, and this is the
-founder's stated rule, so the wording is the founder's call.
+**Correction worth keeping.** I first put this to the founder as "these two
+options are host-CLI-backed", implying they conflict with "the platform never
+supplies an LLM", and the founder reasonably chose to CUT them. That framing was
+wrong. `bind_serving_provider` calls `adopt_llm_subscription_custody(...)` and
+the CLI runs against a sealed read-only snapshot of the USER's deposited
+credential (`credential_snapshot_dir` -> a private tmpfs `CODEX_HOME`). The host
+supplies the binary; the user supplies the credential — which is the BYO-LLM
+model, not the platform lending an LLM. Cutting them would have deleted the
+working subscription path for every user. What IS host state is
+`llm_endpoint_bound` in `get_status` (§ below), and conflating the two is what
+produced the bad question.
 
-**Decision needed:** the exact replacement wording, or an explicit exemption for
-"the name of a credential the user is being asked to supply".
+## The real host-state problem, which is NOT this one
 
-## Why this is not just tidy-up
+`get_status` reports `active_host.llm_endpoint_bound` — computed from the
+daemon container's own filesystem (`shutil.which("codex")` plus
+`~/.codex/auth.json` existing) — and has **no per-universe serving field at
+all**, alongside a cooldown table for six host providers that may never serve
+anyone. A universe with no serving binding therefore reads as powered.
 
-The deeper version of the same question is live right now: `tiny`'s universe has
-a `subscription_cli` `codex` provider registered that resolves to the *daemon
-host's* CLI. Per [[no-host-writer-ever-prune-all-fleets]] the platform must never
-supply an LLM, so that provider must never serve. If the two subscription options
-are host-CLI-backed rather than user-credential-backed, they are not "vendor
-labels to rename" — they are a route that should not exist at all. Worth
-answering before rewording anything.
+That is what tiny hit on 2026-09-03: prompt nodes failing
+`permission_denied:provider_not_bound` while workspace and http branches
+completed, with status insisting a provider was bound. It concluded "internal
+runtime mismatch" and told the founder *"this does not look like a case where
+I'm waiting on your approval"* — the opposite of the truth. The universe simply
+had nothing serving, and the founder was the only one who could fix it.
+
+Filed separately from the two items above because it is a different defect: not
+copy, not a missing capability, but a field named for a per-universe fact that
+measures a host fact. The fix is a real per-universe serving field in
+`get_status`, not a better caveat string.

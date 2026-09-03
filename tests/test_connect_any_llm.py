@@ -119,3 +119,54 @@ def test_the_endpoint_pane_names_no_vendor():
     # them could not pass this by having nothing left to check.
     assert 'value="openai_chat"' in pane
     assert 'value="anthropic_messages"' in pane
+
+
+def _vendor_names():
+    """The forbidden names, from `check_channel_agnostic.py`: one fact, one definition."""
+    repo_root = pathlib.Path(__file__).resolve().parent.parent
+    script = repo_root / "scripts" / "check_channel_agnostic.py"
+    spec = importlib.util.spec_from_file_location("check_channel_agnostic", script)
+    ratchet = importlib.util.module_from_spec(spec)
+    sys.modules["check_channel_agnostic"] = ratchet
+    spec.loader.exec_module(ratchet)
+    return ratchet.VENDORS
+
+
+def test_the_whole_connect_surface_names_no_vendor(app_html):
+    """Not just the endpoint pane -- the picker above it too.
+
+    The pane-scoped test started at `connect-endpoint`, so it could not see the
+    two `<option>` labels, which read two company names until the founder ruled
+    on it (2026-09-03: reword neutrally). The options are now named by the
+    CREDENTIAL SHAPE the user hands over.
+    """
+    card = app_html[app_html.index('id="connect-service"'):]
+    card = card[: card.index("btn-deposit")]
+    visible = re.sub(r'value="[^"]*"', "", card).lower()
+    named = sorted({v for v in _vendor_names() if v in visible})
+    assert not named, f"the connect surface shows vendor names: {named}"
+
+    # The wire ids must survive the rewording -- a picker that renamed the
+    # VALUES would break every existing binding while passing the check above.
+    assert 'value="claude"' in card
+    assert 'value="codex"' in card
+    assert 'value="__endpoint__"' in card
+
+
+def test_the_serving_status_lines_name_no_vendor(app_html):
+    """`servingSentence` is rendered back to the user after a deposit, so the
+    label table is user-visible copy and falls under the same rule."""
+    labels = re.search(r"const SERVICE_LABELS=\{.*?\};", app_html, re.S)
+    assert labels is not None, "the label table is gone"
+    # The KEYS are the wire ids -- the same machine contract `value="..."` is,
+    # and exempt for the same reason. Only the values are read by a user.
+    values = re.findall(r':"([^"]+)"', labels.group(0))
+    assert values, "the label table has no labels"
+    named = sorted({v for v in _vendor_names() if v in " ".join(values).lower()})
+    assert not named, f"the serving status lines name vendors: {named}"
+
+    # Each label has to read as a noun phrase in BOTH positions it appears in:
+    # "...runs its background work on X." and "X connected."
+    for value in values:
+        assert not value.endswith("."), f"{value!r} is a sentence, not a label"
+        assert value[0].islower(), f"{value!r} cannot sit mid-sentence"

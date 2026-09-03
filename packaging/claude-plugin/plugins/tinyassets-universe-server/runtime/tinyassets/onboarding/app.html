@@ -349,12 +349,16 @@
           connector over TLS &mdash; never through chat, never logged. This calls
           <code>write_graph connect_llm</code>. If the deposit backend isn't live yet, you'll see the
           connector's honest response below.</p>
-          <label class="field"><span>Service</span>
+          <label class="field"><span>What you&rsquo;re connecting</span>
             <select id="connect-service">
-              <option value="claude">Claude subscription</option>
-              <option value="codex">OpenAI subscription</option>
+              <option value="claude">A subscription &mdash; you paste an OAuth token</option>
+              <option value="codex">A subscription &mdash; you paste a signed-in CLI&rsquo;s auth.json</option>
               <option value="__endpoint__">Any other LLM &mdash; your own endpoint</option>
             </select>
+            <small class="dev-note">Named by the credential you hand over, not by whose
+            it is: the platform keeps no vendor list. Whichever you pick, it is YOUR
+            credential doing the thinking &mdash; it is sealed into the sandbox read-only
+            and the platform never substitutes one of its own.</small>
           </label>
 
           <!-- The subscription path: one credential, because a Max/Pro plan is
@@ -1374,7 +1378,7 @@
     for(const service of candidates){
       const sv=await serveOn(service);
       if(sv&&sv.status==="serving"){
-        appendMessage("system","Your universe now runs its background work on your "+serviceLabel(service)+" subscription.");
+        appendMessage("system","Your universe now runs its background work on "+serviceLabel(service)+".");
         return;
       }
     }
@@ -1574,14 +1578,19 @@
       return (await r.json()).serving||null;
     }catch(_e){ return null; }
   }
-  // The two subscription CLIs have friendly names; anything else IS its name,
-  // because the platform does not keep a vendor list to look one up in.
-  const SERVICE_LABELS={claude:"Claude",codex:"OpenAI"};
+  // The two subscription paths are named by the CREDENTIAL SHAPE the user hands
+  // over, never by whose service it is; anything else IS its name, because the
+  // platform keeps no vendor list to look one up in. Founder 2026-09-03: reword
+  // neutrally. Each reads as a noun phrase so it works both mid-sentence
+  // ("...runs on X.") and at the start of one ("X connected.").
+  const SERVICE_LABELS={claude:"your OAuth subscription",codex:"your CLI subscription"};
   function serviceLabel(service){ return SERVICE_LABELS[service] || service; }
+  function sentenceCase(s){ return s ? s.charAt(0).toUpperCase()+s.slice(1) : s; }
   function servingSentence(service, sv){
-    if(sv&&sv.status==="serving") return serviceLabel(service)+" connected. Your universe thinks and works on it from the next turn.";
+    const label=sentenceCase(serviceLabel(service));
+    if(sv&&sv.status==="serving") return label+" connected. Your universe thinks and works on it from the next turn.";
     const why=(sv&&(sv.detail||sv.reason))?(": "+(sv.detail||sv.reason)):"";
-    return serviceLabel(service)+" credential saved, but your universe is not running on it yet"+why+".";
+    return label+" credential saved, but your universe is not running on it yet"+why+".";
   }
 
   // ---- One-tap OpenAI link (device authorization, brokered by the daemon) ----

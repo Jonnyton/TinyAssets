@@ -127,13 +127,14 @@ def test_the_bound_engine_is_tried_first_and_the_heal_runs_once_per_page():
     assert all(p["url"] == "/mcp/app/serving/bind" for p in out["posts"])
     assert out["attempted"] is True
     [(role, text)] = out["notes"]
-    assert role == "system" and "OpenAI" in text
+    assert role == "system" and "your CLI subscription" in text
+    assert "OpenAI" not in text and "Claude" not in text
 
 
 def test_a_held_answer_falls_back_to_the_next_connected_engine():
     out = _run("held_then_fallback")
     assert [p["body"] for p in out["posts"]] == [{"service": "codex"}, {"service": "claude"}]
-    assert len(out["notes"]) == 1 and "Claude" in out["notes"][0][1]
+    assert len(out["notes"]) == 1 and "your OAuth subscription" in out["notes"][0][1]
 
 
 def test_a_universe_that_is_serving_is_left_alone():
