@@ -316,6 +316,28 @@ def founder_home(tmp_path, monkeypatch, _signed_in_operator):
 
 
 @pytest.fixture
+def nobody():
+    """Nobody bound, for a test that asserts a refusal.
+
+    The autouse operator signs every test in, which is right: production has no
+    anonymous principal, so a test running as nobody is testing a state that
+    cannot happen. The exception is a test whose SUBJECT is the refusal -- it
+    has to be able to reach the unauthenticated path, and "just do not log in"
+    stopped meaning that the moment the default became signed-in.
+    """
+    from tinyassets.auth import middleware as _mw
+
+    token = _mw._current_identity.set(None)
+    bearer = _mw._current_bearer_present.set(False)
+    yield
+    for var, tok in ((_mw._current_identity, token), (_mw._current_bearer_present, bearer)):
+        try:
+            var.reset(tok)
+        except ValueError:
+            pass
+
+
+@pytest.fixture
 def signed_in():
     """Run a block as a named subject: ``signed_in("workos|abc")``."""
     from tinyassets.auth import middleware as _mw

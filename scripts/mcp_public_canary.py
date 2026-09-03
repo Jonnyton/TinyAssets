@@ -592,6 +592,49 @@ def probe(
         _die(exc.code, exc.msg)
 
 
+def _pulse_only(url: str, timeout: float, *, verbose: bool = False) -> int:
+    """Liveness from the public release facts. No session, no bearer, no tools.
+
+    Exit 0 when the daemon answers `/mcp/pulse` with a git sha. Anything else
+    is a dead or wedged process. Deliberately narrow: the container needs to
+    know it is serving, and proving the tool surface is a different question
+    asked by a different, authenticated probe.
+    """
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    endpoint = url.rstrip("/") + "/pulse"
+    request = urllib.request.Request(
+        endpoint, headers={"User-Agent": "tinyassets-healthcheck/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read(65536).decode("utf-8", "replace")
+            status = response.status
+    except urllib.error.HTTPError as exc:
+        print(f"[canary] pulse {endpoint} HTTP {exc.code}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001 - any transport failure is dead
+        print(f"[canary] pulse {endpoint} unreachable: {exc}", file=sys.stderr)
+        return 1
+    if status != 200:
+        print(f"[canary] pulse {endpoint} HTTP {status}", file=sys.stderr)
+        return 1
+    try:
+        payload = _json.loads(body)
+    except ValueError:
+        print(f"[canary] pulse {endpoint} returned non-JSON", file=sys.stderr)
+        return 1
+    sha = str(payload.get("git_sha") or "").strip()
+    if not sha:
+        print(f"[canary] pulse {endpoint} carries no git_sha", file=sys.stderr)
+        return 1
+    if verbose:
+        print(f"[canary] pulse OK {endpoint} git_sha={sha}")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="Probe a public MCP endpoint.")
     ap.add_argument("--url", default=DEFAULT_URL, help=f"MCP endpoint URL (default {DEFAULT_URL})")
@@ -601,6 +644,16 @@ def main(argv: list[str]) -> int:
                     help="print success line to stdout")
     ap.add_argument("--assert-name",
                     help="require an exact MCP serverInfo.name value")
+    ap.add_argument(
+        "--pulse-only", action="store_true",
+        help=(
+            "probe GET <url>/pulse and nothing else. The one unauthenticated "
+            "read the daemon serves (git sha, image tag, deploy time, uptime), "
+            "so a container can check its own liveness with no credential. It "
+            "proves the process is up and serving; it does NOT prove the tool "
+            "surface, which is what the authenticated probes are for."
+        ),
+    )
     ap.add_argument("--assert-handles", action="store_true",
                     help="also assert tools/list advertises exactly the "
                          "canonical handle set incl. converse (PR-178 drift "
@@ -614,6 +667,8 @@ def main(argv: list[str]) -> int:
 
     # Which contract does THIS daemon keep? Asked once, then honoured for every
     # step, so one run never mixes the two.
+    if args.pulse_only:
+        return _pulse_only(args.url, args.timeout, verbose=args.verbose)
     bearer = canary_bearer_for(args.url, "canary", args.timeout)
 
     probe(args.url, args.timeout, expected_name=args.assert_name, bearer=bearer)

@@ -221,7 +221,7 @@ class TestUniverseAclEnforcement:
     or ``admin`` grant. An admin grant does NOT make a universe private.
     """
 
-    def test_anonymous_cannot_write_public_universe(self, universe_base):
+    def test_anonymous_cannot_write_public_universe(self, universe_base, nobody):
         # Dev/no-auth caller (anonymous). Reads are open on a public universe,
         # but a write must be denied — an authenticated grant is required.
         _make_universe(universe_base, "public")

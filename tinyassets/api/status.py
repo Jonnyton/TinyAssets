@@ -997,6 +997,8 @@ def _platform_has_work() -> bool:
     recent activity is not. Reading it per-universe was possible only for a
     caller who could inspect a universe, which the canary principal cannot.
     """
+    from tinyassets.api.universe import _read_json
+
     base = _base_path()
     if not base.is_dir():
         return False
@@ -1035,7 +1037,6 @@ def _platform_worker_liveness() -> dict[str, Any]:
         return {"present": False}
 
     worst: dict[str, Any] | None = None
-    universes = 0
     for child in sorted(base.iterdir()):
         if not child.is_dir() or child.name.startswith("."):
             continue
@@ -1046,7 +1047,6 @@ def _platform_worker_liveness() -> dict[str, Any]:
             continue
         if not summary.get("present"):
             continue
-        universes += 1
         if worst is None or float(summary.get("beat_age_s") or 0.0) > float(
             worst.get("beat_age_s") or 0.0
         ):
@@ -1054,14 +1054,20 @@ def _platform_worker_liveness() -> dict[str, Any]:
 
     if worst is None:
         return {"present": False}
-    out = {
-        key: value for key, value in worst.items()
-        # `workers` is a per-universe list and would name universes on a
-        # platform surface a canary reads without universe access.
-        if key not in ("workers",)
+    # AN ALLOWLIST, not a denylist. Stripping only `workers` left worker_id,
+    # runtime_instance_id, worker_count, runtime_instance_count, spawn and
+    # crash counters and -- when the queue descriptor carries it -- a
+    # universe_id, on a surface whose whole purpose is to name no universe.
+    # Adding `universes_with_workers` made it worse: an explicit tenant count
+    # (Codex design review 2026-09-03). These five are what a liveness probe
+    # actually reads, and nothing else goes out.
+    return {
+        "present": True,
+        "alive": worst.get("alive"),
+        "beat_age_s": worst.get("beat_age_s"),
+        "phase": worst.get("phase"),
+        "consec_crashes": worst.get("consec_crashes"),
     }
-    out["universes_with_workers"] = universes
-    return out
 
 
 def _resolve_entry_universe(universe_id: str) -> tuple[str, bool]:

@@ -114,7 +114,7 @@ def test_bind_founder_identity_uses_verified_principal(monkeypatch):
         middleware._current_identity.reset(token)
 
 
-def test_bind_founder_identity_refuses_without_actor(monkeypatch):
+def test_bind_founder_identity_refuses_without_actor(monkeypatch, nobody):
     # No actor bound to the engine surface means nobody to act as, and there
     # is no anonymous principal to stand in (founder, 2026-09-02).
     from tinyassets import engine_mcp_server as s

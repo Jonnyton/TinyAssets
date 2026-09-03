@@ -290,19 +290,33 @@ jobs:
           SH
 
       - name: Sync the canary bearer into /etc/tinyassets/env
-        # The daemon serves no anonymous read: its own healthcheck, the
-        # post-deploy canary below and every probe workflow present this
-        # bearer. Synced from the GitHub secret on every deploy so the two
-        # never drift; a missing secret is refused HERE, before anything
-        # is mutated, instead of surfacing as an unhealthy container and a
-        # rollback (docs/host-actions.md: mint the canary bearer).
+        # OPTIONAL, deliberately. An earlier version refused to deploy while
+        # this secret was unset -- and only a person can write a repository
+        # secret, so a deploy needed a human. It never did before, and the
+        # founder said so (2026-09-03).
+        #
+        # What actually needs a credential is narrower than I had it:
+        #   * the container's own healthcheck does NOT -- it reads
+        #     `/mcp/pulse`, the one unauthenticated route (git sha, image tag,
+        #     deploy time, uptime; no universe data, no principal);
+        #   * the DEEP probes do -- `--assert-handles` forms an MCP session,
+        #     and the wiki canary performs a persisted write/read round trip.
+        #
+        # Those keep a principal. The right one is a short-lived GitHub OIDC
+        # token bound to this repository and workflow, not a standing shared
+        # secret a human mints and rotates (Codex design review 2026-09-03:
+        # "public pulse plus short-lived, claim-bound OIDC"). Until that lands
+        # the shared bearer still works if present; without it the deep probes
+        # skip LOUDLY and the deploy proceeds, because a missing observability
+        # credential is not a reason to leave production on an old image.
         env:
           TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         run: |
           set -euo pipefail
           if [ "${#TINYASSETS_WIKI_CANARY_TOKEN}" -lt 32 ]; then
-            echo "::error::TINYASSETS_WIKI_CANARY_TOKEN secret is unset or shorter than 32 bytes; the probes cannot run and the container healthcheck would fail. See docs/host-actions.md (mint the canary bearer) and re-run."
-            exit 1
+            echo "::warning::TINYASSETS_WIKI_CANARY_TOKEN is unset or under 32 bytes. The deploy continues and the container healthcheck is unaffected (it reads /mcp/pulse), but the probes that form an MCP session or write to the wiki will SKIP. Tracked by openspec/changes/oidc-bound-probe-principals."
+            echo "canary bearer absent — deep probes will skip"
+            exit 0
           fi
           scp -i ~/.ssh/do_deploy -o BatchMode=yes deploy/install-tinyassets-env.sh \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"
