@@ -47,19 +47,26 @@ HTML file so the look is identical.
 
 ## The mark
 
-A circular badge: Mount Baker from the south, a wolf howling on the snowfield,
-a pale moon and a spiral galaxy overhead. The mountain is traced from a
-photograph, not drawn from memory — its flat summit plateau is the detail most
-stylisations get wrong. The whole scene lives as the `EMBLEM` layer list in
-`../../tinyassets/desktop/icon_gen.py` and nowhere else.
+A circular badge: Mount Baker from Everett, a wolf howling toward an ember moon,
+and a river galaxy overhead. The mountain is traced from a photograph, not drawn
+from memory — its flat summit plateau and the Everett-facing asymmetry are the
+details most stylisations get wrong. The whole scene lives as three `draw_mark`
+renders (full, compact, micro) in `../../tinyassets/desktop/icon_gen.py` and
+nowhere else.
 
-- `mark.svg` — the circular badge, for use anywhere.
-- `mark-tile.svg` — the same scene squared off with rounded corners, for app icons.
+**Three optical versions:**
+- `mark.svg` (full) — the complete Wolf Moon Seal for large brand and store artwork.
+- `mark-compact.svg` (compact) — optically widened for app icons and header use.
+- `mark-tile.svg` (compact on tile) — the compact version squared off with rounded corners.
+
+Favicons and small-icon scales (16–32 px) use the `micro` path, further reduced to moon,
+Baker, and the howling wolf. All three scale from one source and share one palette.
+
 - `python render_marks.py` (from the repo root: `python WebSite/brand/render_marks.py`)
-  exports every raster: site icons, `assets/`, desktop, tray, Android, Play.
+  exports every raster: SVGs, site icons, `assets/`, desktop, tray, Android, Play.
 - `python render_og.py` renders the site's Open Graph card with the real fonts.
 
-Never hand-edit an exported PNG or ICO, and never redraw the mark by eye.
+Never hand-edit an exported PNG or ICO or SVG, and never redraw the mark by eye.
 
 ## Common tasks
 
@@ -81,6 +88,7 @@ must follow. Label nodes in mono.
 - `../design-system/src/styles/tokens.css` — canonical tokens.
 - `../design-system/src/components/` — Button, StatusPill, RitualLabel, Tick,
   Term, Ladder, each with a `.prompt.md` describing correct use.
-- `mark.svg`, `mark-tile.svg`, `render_marks.py`, `render_og.py` — the mark.
+- `mark.svg` (full), `mark-compact.svg` (compact), `mark-tile.svg` (compact+tile),
+  `render_marks.py`, `render_og.py` — the mark and exporters.
 - `../site-react/` — the live site, the best reference for how the language is
   actually used.
