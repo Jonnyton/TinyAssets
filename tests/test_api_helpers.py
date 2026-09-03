@@ -145,6 +145,38 @@ class TestDefaultUniverse:
         assert _default_universe() == "U-Mine"
         assert (tmp_path / _default_universe()).is_dir()
 
+    def test_an_exact_pointer_wins_over_a_case_variant(
+        self, tmp_path, monkeypatch,
+    ):
+        """Codex verdict on head 8ef30734: the fold preferred the wrong one.
+
+        With both `U-Mine/` and `u-mine/` on a case-sensitive filesystem, the
+        scan took the first case-folded hit in sorted order, so the exact
+        pointer `u-mine` opened `U-Mine`. Folding exists to find a directory
+        restored under a different case, never to override the name the caller
+        actually gave.
+        """
+        import os
+
+        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+        monkeypatch.delenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", raising=False)
+        (tmp_path / "U-Mine").mkdir()
+        try:
+            (tmp_path / "u-mine").mkdir()
+        except OSError:
+            # Case-insensitive filesystem: the two names ARE one directory, so
+            # there is nothing to prefer and the sorted-order bug cannot bite.
+            pytest.skip("filesystem is case-insensitive")
+        _own_universe(tmp_path, "u-mine")
+        _own_universe(tmp_path, "U-Mine")
+
+        (tmp_path / ".active_universe").write_text("u-mine", encoding="utf-8")
+        assert _default_universe() == "u-mine"
+
+        (tmp_path / ".active_universe").write_text("U-Mine", encoding="utf-8")
+        assert _default_universe() == "U-Mine"
+        assert os.path.isdir(tmp_path / _default_universe())
+
     def test_a_configured_default_still_answers_an_empty_data_root(
         self, tmp_path, monkeypatch,
     ):

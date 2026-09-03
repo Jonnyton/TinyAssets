@@ -86,15 +86,23 @@ def _owned_universe_dir_name(base, name: str) -> str:
         return ""
     if not base.is_dir():
         return ""
+    # AN EXACT MATCH WINS. Scanning sorted children and taking the first
+    # case-folded hit meant that with both `U-Mine/` and `u-mine/` present on a
+    # case-sensitive filesystem, the exact pointer `u-mine` opened `U-Mine`
+    # (Codex verdict on head 8ef30734). Case-folding exists to find a directory
+    # that was restored under a different case, never to prefer one over the
+    # name the caller actually gave.
     folded = candidate.casefold()
+    fallback = ""
     for child in sorted(base.iterdir()):
         if not child.is_dir() or child.name.startswith("."):
             continue
-        if child.name != candidate and child.name.casefold() != folded:
-            continue
-        if owned_universe_id(base, child.name):
-            return child.name
-    return ""
+        if child.name == candidate:
+            return child.name if owned_universe_id(base, child.name) else ""
+        if not fallback and child.name.casefold() == folded:
+            if owned_universe_id(base, child.name):
+                fallback = child.name
+    return fallback
 
 
 def _default_universe() -> str:
