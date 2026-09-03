@@ -92,12 +92,16 @@ What is ready, stated precisely — the gap here is wider than "just enrol":
   and App-Privacy copy in `docs/ops/app-store-launch.md`.
 - `ios-build.yml` compiles green on `macos-15` runners, including after the Capacitor 8
   upgrade — but it builds **unsigned** (`CODE_SIGNING_ALLOWED=NO`), which is a
-  compile-check, not a shippable artifact. **There is no signed-archive or TestFlight
-  upload workflow in this repo yet**, and `app-store-launch.md` still has screenshots
-  outstanding. So enrolment unblocks the iOS side; it does not complete it, and the
-  archive/upload workflow has to be written before a build can reach App Store Connect.
-- **A Mac is still not needed** — CI has `macos-15` runners, and the signing workflow,
-  once written, would run there too.
+  compile-check, not a shippable artifact.
+- **`ios-release.yml` is the shippable path**, and it now exists: signed archive →
+  `.ipa` export → `xcrun altool` upload to App Store Connect, with the team id derived
+  from the provisioning profile so no extra secret is needed. **It has never run
+  green**, because there is no Apple account to sign against — it fails closed naming
+  whichever of the six secrets is missing. Treat it as written-but-unproven until the
+  first real run.
+- Still outstanding beyond enrolment: **screenshots** (§6 of `app-store-launch.md`).
+- **A Mac is still not needed** — CI has `macos-15` runners, and `ios-release.yml`
+  runs there.
 
 The enrollment is $99/year with a one-to-two day identity check, and it needs the
 founder: an agent must not create accounts or execute payments. It is the long pole on

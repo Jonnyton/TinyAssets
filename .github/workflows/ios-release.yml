@@ -1,0 +1,327 @@
+name: iOS release IPA
+
+# Builds a SIGNED .ipa and uploads it to App Store Connect (TestFlight), which is
+# the iOS counterpart of android-release.yml. ios-build.yml stays the unsigned
+# compile-check; this is the only path that produces an artifact a user can
+# install.
+#
+# STATUS: this workflow has never run green, because the Apple Developer Program
+# account does not exist yet (docs/ops/app-store-launch.md §0). It is written so
+# that the moment enrolment completes and the six secrets below are set, there is
+# no pipeline left to build — only a dispatch. Every step that depends on a
+# credential fails LOUDLY with the name of the missing secret rather than
+# skipping, so a half-configured account cannot look like a successful release.
+#
+# Signing: certificate and provisioning profile arrive as base64 repo secrets and
+# are imported into a TEMPORARY keychain that is deleted in an always() step.
+# Nothing is committed, and the App Store Connect key is written to the location
+# `xcrun altool` expects and removed on the way out.
+
+on:
+  workflow_dispatch:
+    inputs:
+      marketing_version:
+        description: "Marketing version shown on the App Store (e.g. 1.0). The build number is always unique and derived from the run."
+        required: false
+        default: "1.0"
+  push:
+    tags: ["mobile-v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build-release-ipa:
+    runs-on: macos-15
+    permissions:
+      contents: read
+    env:
+      BUNDLE_ID: io.tinyassets.app
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      # Fail before spending five minutes on a build we cannot sign. Checking the
+      # whole set at once also means the founder gets one list of what is missing
+      # rather than discovering them one failed run at a time.
+      - name: Require the signing secrets
+        env:
+          CERT_B64: ${{ secrets.APPLE_DISTRIBUTION_CERT_P12_B64 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_DISTRIBUTION_CERT_PASSWORD }}
+          PROFILE_B64: ${{ secrets.APPLE_PROVISIONING_PROFILE_B64 }}
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ISSUER_ID }}
+          ASC_KEY_B64: ${{ secrets.APP_STORE_CONNECT_API_KEY_B64 }}
+        run: |
+          set -euo pipefail
+          set +x
+          missing=""
+          [ -n "${CERT_B64:-}" ]       || missing="$missing APPLE_DISTRIBUTION_CERT_P12_B64"
+          [ -n "${CERT_PASSWORD:-}" ]  || missing="$missing APPLE_DISTRIBUTION_CERT_PASSWORD"
+          [ -n "${PROFILE_B64:-}" ]    || missing="$missing APPLE_PROVISIONING_PROFILE_B64"
+          [ -n "${ASC_KEY_ID:-}" ]     || missing="$missing APP_STORE_CONNECT_API_KEY_ID"
+          [ -n "${ASC_ISSUER_ID:-}" ]  || missing="$missing APP_STORE_CONNECT_API_KEY_ISSUER_ID"
+          [ -n "${ASC_KEY_B64:-}" ]    || missing="$missing APP_STORE_CONNECT_API_KEY_B64"
+          if [ -n "$missing" ]; then
+            echo "::error::missing signing secrets:$missing — see docs/ops/app-store-launch.md §3. Enrolment in the Apple Developer Program comes first."
+            exit 1
+          fi
+          echo "all six signing secrets present"
+
+      - name: Install JS deps (lockfile-pinned)
+        working-directory: mobile
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Add + sync iOS platform
+        working-directory: mobile
+        run: |
+          npx --no-install cap add ios
+          npx --no-install cap sync ios
+
+      - name: Register the tinyassets:// URL scheme (in-app OAuth return)
+        working-directory: mobile
+        run: |
+          python3 scripts/add_ios_scheme.py
+          grep -q "<string>tinyassets</string>" ios/App/App/Info.plist
+
+      # `cap add ios` writes Capacitor's own placeholder icon. android-release.yml
+      # installs the real launcher icon and this workflow did not, so without this
+      # step a correctly signed TinyAssets build reaches TestFlight showing
+      # Capacitor's blue placeholder. Fails closed: an asset set that did not
+      # actually change is a silent regression to the placeholder.
+      # Two separate ways this ships a wrong-looking app, both silent:
+      #   1. `cap add ios` writes Capacitor's blue placeholder icon and nothing
+      #      replaced it, so a correctly signed build reaches TestFlight wearing it.
+      #   2. Apple reads the App Store icon out of the asset catalog INSIDE the
+      #      uploaded build, not from separately uploaded listing metadata. So the
+      #      catalog has to be generated from the SQUARE source: resources/icon.png
+      #      is the rounded badge, and Apple masks it again, leaving dark wedges in
+      #      the corners. Staging a square PNG anywhere the build does not read
+      #      would have changed nothing (Codex, 2026-09-03).
+      # `cap add ios` writes Capacitor's placeholder icon, and Apple reads the App
+      # Store icon out of this catalog inside the uploaded build — not from
+      # separately uploaded listing metadata — so it must come from the SQUARE
+      # source. The shared script carries the full reasoning, including why it does
+      # not use capacitor-assets. ios-build.yml runs the same script on every PR,
+      # so this path is exercised on a real macOS runner before a release needs it.
+      - name: Write the app icon catalog from the square iOS source
+        working-directory: mobile
+        run: bash scripts/write_app_icon_catalog.sh
+
+      - name: Import signing assets into a temporary keychain
+        id: signing
+        env:
+          CERT_B64: ${{ secrets.APPLE_DISTRIBUTION_CERT_P12_B64 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_DISTRIBUTION_CERT_PASSWORD }}
+          PROFILE_B64: ${{ secrets.APPLE_PROVISIONING_PROFILE_B64 }}
+        run: |
+          set -euo pipefail
+          set +x
+          # Deterministic paths, so teardown can delete them without depending on
+          # this step having reached its end. The decoded .p12 and profile are also
+          # removed by an EXIT trap: a wrong .p12 password aborts `security import`
+          # midway, and previously left both the decoded certificate and the
+          # keychain on the runner with $GITHUB_OUTPUT still empty.
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          cert="$RUNNER_TEMP/distribution.p12"
+          profile="$RUNNER_TEMP/profile.mobileprovision"
+          plist="$RUNNER_TEMP/profile.plist"
+          trap 'rm -f "$cert" "$profile" "$plist"' EXIT
+          keychain_password="$(uuidgen)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          # Put our keychain at the front of the user search list, keeping the
+          # existing entries, so codesign can find the identity. Read into an array
+          # rather than splitting a command substitution: a keychain path with a
+          # space would otherwise become two entries and silently drop the login
+          # keychain. Written for bash 3.2 (what /usr/bin/bash is on a macOS
+          # runner): no mapfile, and `${a[@]+...}` because 3.2 treats an empty
+          # array as unbound under `set -u`.
+          existing=()
+          while IFS= read -r line; do
+            line="$(printf '%s\n' "$line" | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//')"
+            if [ -n "$line" ]; then
+              existing+=("$line")
+            fi
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$keychain" ${existing[@]+"${existing[@]}"}
+
+          printf '%s' "$CERT_B64" | base64 -d > "$cert"
+          security import "$cert" -k "$keychain" -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security -f pkcs12
+          rm -f "$cert"
+          # Without this, codesign blocks on a GUI prompt no one can answer.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$keychain_password" "$keychain" > /dev/null
+
+          identity="$(security find-identity -v -p codesigning "$keychain" | awk '/"/ {print $2; exit}')"
+          [ -n "$identity" ] || { echo "::error::no codesigning identity in the imported certificate"; exit 1; }
+          echo "imported codesigning identity $identity"
+
+          printf '%s' "$PROFILE_B64" | base64 -d > "$profile"
+          profiles_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$profiles_dir"
+          # Xcode locates a profile by its UUID, not its filename.
+          security cms -D -i "$profile" > "$plist"
+          uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$plist")"
+          name="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$plist")"
+          # Derive the team from the profile so the founder needs no seventh secret.
+          team="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$plist")"
+          if [ -z "$uuid" ] || [ -z "$team" ]; then
+            echo "::error::could not read UUID/team from the provisioning profile"
+            exit 1
+          fi
+          # Record the UUID before installing it, so teardown can remove the
+          # profile even if a later line in this step fails.
+          printf '%s' "$uuid" > "$RUNNER_TEMP/installed-profile-uuid"
+          cp "$profile" "$profiles_dir/$uuid.mobileprovision"
+          rm -f "$profile" "$plist"
+
+          echo "keychain=$keychain" >> "$GITHUB_OUTPUT"
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+          echo "profile_uuid=$uuid" >> "$GITHUB_OUTPUT"
+          echo "profile_name=$name" >> "$GITHUB_OUTPUT"
+          echo "team=$team" >> "$GITHUB_OUTPUT"
+          echo "profile '$name' installed for team $team"
+
+      - name: Archive (Release, manual signing)
+        working-directory: mobile/ios/App
+        env:
+          IDENTITY: ${{ steps.signing.outputs.identity }}
+          PROFILE_UUID: ${{ steps.signing.outputs.profile_uuid }}
+          TEAM: ${{ steps.signing.outputs.team }}
+          KEYCHAIN: ${{ steps.signing.outputs.keychain }}
+          # Capacitor's template ships MARKETING_VERSION=1.0 / CURRENT_PROJECT_VERSION=1
+          # and nothing here overrode them, so every upload carried build 1.0 (1).
+          # App Store Connect requires the build string to be unique per upload, so
+          # the SECOND dispatch — including a rerun of a failed one — was guaranteed
+          # to be rejected after a full archive. run_number is monotonic per workflow
+          # and run_attempt distinguishes reruns.
+          BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}
+          MARKETING_VERSION: ${{ inputs.marketing_version || '1.0' }}
+        run: |
+          set -euo pipefail
+          echo "archiving $MARKETING_VERSION ($BUILD_NUMBER)"
+          # Capacitor 8 uses Swift Package Manager, so there is no .xcworkspace
+          # unless a CocoaPods integration reappears (same shape as ios-build.yml).
+          target=(-project App.xcodeproj)
+          if [ -d App.xcworkspace ]; then target=(-workspace App.xcworkspace); fi
+          xcodebuild \
+            "${target[@]}" \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            MARKETING_VERSION="$MARKETING_VERSION" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="$IDENTITY" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_UUID" \
+            DEVELOPMENT_TEAM="$TEAM" \
+            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN" \
+            archive | tail -40
+          [ -d "$RUNNER_TEMP/App.xcarchive" ] || { echo "::error::no .xcarchive produced"; exit 1; }
+
+      - name: Export the .ipa
+        id: export
+        env:
+          TEAM: ${{ steps.signing.outputs.team }}
+          PROFILE_NAME: ${{ steps.signing.outputs.profile_name }}
+        run: |
+          set -euo pipefail
+          opts="$RUNNER_TEMP/ExportOptions.plist"
+          # Written by plistlib, not an interpolated heredoc. The profile name is
+          # external data, and an ordinary name containing "&" ("TinyAssets R&D App
+          # Store") produced invalid XML that xcodebuild rejects. Values arrive via
+          # the environment so nothing is pasted into a template. plistlib is also
+          # what makes this generator testable off a Mac.
+          python3 - "$opts" <<'PY'
+          import os, plistlib, sys
+          opts = {
+              "method": "app-store-connect",
+              "teamID": os.environ["TEAM"],
+              "signingStyle": "manual",
+              "uploadSymbols": True,
+              "provisioningProfiles": {
+                  os.environ["BUNDLE_ID"]: os.environ["PROFILE_NAME"],
+              },
+          }
+          with open(sys.argv[1], "wb") as fh:
+              plistlib.dump(opts, fh)
+          print("wrote", sys.argv[1])
+          PY
+          plutil -lint "$opts"
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -exportOptionsPlist "$opts" \
+            -exportPath "$RUNNER_TEMP/export" | tail -20
+          ipa="$(find "$RUNNER_TEMP/export" -type f -name '*.ipa' -print -quit)"
+          [ -n "$ipa" ] || { echo "::error::export produced no .ipa"; exit 1; }
+          echo "ipa=$ipa" >> "$GITHUB_OUTPUT"
+          ls -la "$ipa"
+
+      - name: Upload to App Store Connect (TestFlight)
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ISSUER_ID }}
+          ASC_KEY_B64: ${{ secrets.APP_STORE_CONNECT_API_KEY_B64 }}
+          IPA: ${{ steps.export.outputs.ipa }}
+        run: |
+          set -euo pipefail
+          set +x
+          # altool reads the key from this fixed location, by key id.
+          keydir="$HOME/.appstoreconnect/private_keys"
+          mkdir -p "$keydir"
+          printf '%s' "$ASC_KEY_B64" | base64 -d > "$keydir/AuthKey_${ASC_KEY_ID}.p8"
+          xcrun altool --upload-app -f "$IPA" -t ios \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+          echo "uploaded — the build appears in TestFlight after Apple finishes processing"
+
+      - name: Upload the .ipa as a workflow artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tinyassets-release-ipa
+          path: ${{ steps.export.outputs.ipa }}
+          if-no-files-found: error
+
+      # always(): a failed archive must not leave a signing identity or the App
+      # Store key sitting on the runner.
+      # Deliberately does NOT read steps.signing.outputs: those are written only if
+      # the import step ran to completion, so a failure partway through (a wrong
+      # .p12 password is the likely one) left the keychain and the decoded
+      # certificate behind while this step deleted nothing. Every path below is
+      # fixed and known before the import step starts.
+      - name: Remove the temporary keychain and API key
+        if: always()
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+        run: |
+          set -euo pipefail
+          set +x
+          # Only our own key file, not the whole directory — a shared or
+          # self-hosted runner may have others.
+          if [ -n "${ASC_KEY_ID:-}" ]; then
+            rm -f "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          fi
+          rm -f "$RUNNER_TEMP/distribution.p12" "$RUNNER_TEMP/profile.mobileprovision" \
+                "$RUNNER_TEMP/profile.plist"
+          marker="$RUNNER_TEMP/installed-profile-uuid"
+          if [ -f "$marker" ]; then
+            uuid="$(cat "$marker")"
+            rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/$uuid.mobileprovision"
+            rm -f "$marker"
+          fi
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          if [ -f "$keychain" ]; then
+            security delete-keychain "$keychain" || rm -f "$keychain"
+          fi
+          echo "signing material removed"

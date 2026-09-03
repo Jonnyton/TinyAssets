@@ -670,6 +670,67 @@ class TestIconGen:
         assert colors is not None
         assert len(colors) > 1
 
+    def test_radius_override_leaves_every_existing_render_untouched(self):
+        """The `radius` parameter must be inert unless it is passed.
+
+        It exists only so the App Store can have a square icon. Every other
+        surface -- Android launcher, favicon, apple-touch-icon, desktop .ico/.icns,
+        tray -- renders through this same call, so a default that shifted by even
+        one pixel would silently re-render the whole brand. Pinned across the sizes
+        the brand pipeline actually emits.
+        """
+        from PIL import ImageChops
+
+        from tinyassets.desktop.icon_gen import draw_mark
+
+        for size, tile in [(16, True), (32, True), (48, True), (180, True),
+                           (192, True), (512, True), (1024, True), (512, False)]:
+            plain = draw_mark(size, tile=tile)
+            explicit_default = draw_mark(size, tile=tile, radius=None)
+            assert plain.size == explicit_default.size
+            assert plain.mode == explicit_default.mode
+            assert ImageChops.difference(plain, explicit_default).getbbox() is None, (
+                f"radius=None changed the {size}px tile={tile} render"
+            )
+
+    def test_radius_zero_gives_apple_its_full_bleed_square(self):
+        """`radius=0` must reach the corners; the default must not.
+
+        Apple applies its own corner mask, so a pre-rounded icon renders
+        double-masked with dark wedges. Corner alpha is the discriminator: opaque
+        for the square, transparent for the badge.
+        """
+        from tinyassets.desktop.icon_gen import draw_mark
+
+        square = draw_mark(256, tile=True, radius=0)
+        rounded = draw_mark(256, tile=True)
+        for corner in [(0, 0), (255, 0), (0, 255), (255, 255)]:
+            assert square.getpixel(corner)[3] == 255, f"{corner} not full-bleed"
+            assert rounded.getpixel(corner)[3] == 0, f"{corner} should be rounded away"
+
+    def test_negative_radius_is_refused(self):
+        from tinyassets.desktop.icon_gen import draw_mark
+
+        with pytest.raises(ValueError):
+            draw_mark(64, tile=True, radius=-1)
+
+    def test_radius_without_tile_is_refused(self):
+        """`draw_mark(1024, radius=0)` must not quietly return the disc.
+
+        `tile` defaults to False, so that call reads as "give me the square app
+        icon" and would otherwise produce the circular, transparent-cornered badge
+        — reintroducing the exact double-masking defect the parameter exists to
+        fix. Silently ignoring the argument is the trap.
+        """
+        from tinyassets.desktop.icon_gen import draw_mark
+
+        with pytest.raises(ValueError, match="tile=True"):
+            draw_mark(1024, radius=0)
+        with pytest.raises(ValueError):
+            draw_mark(64, tile=False, radius=13)
+        # The plain disc still works when no radius is asked for.
+        assert draw_mark(64, tile=False).size == (64, 64)
+
     def test_generate_icon_creates_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             out = Path(tmpdir) / "test.ico"
