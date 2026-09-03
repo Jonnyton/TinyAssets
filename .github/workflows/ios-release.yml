@@ -139,7 +139,21 @@ jobs:
           security create-keychain -p "$keychain_password" "$keychain"
           security set-keychain-settings -lut 3600 "$keychain"
           security unlock-keychain -p "$keychain_password" "$keychain"
-          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          # Put our keychain at the front of the user search list, keeping the
+          # existing entries, so codesign can find the identity. Read into an array
+          # rather than splitting a command substitution: a keychain path with a
+          # space would otherwise become two entries and silently drop the login
+          # keychain. Written for bash 3.2 (what /usr/bin/bash is on a macOS
+          # runner): no mapfile, and `${a[@]+...}` because 3.2 treats an empty
+          # array as unbound under `set -u`.
+          existing=()
+          while IFS= read -r line; do
+            line="$(printf '%s\n' "$line" | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//')"
+            if [ -n "$line" ]; then
+              existing+=("$line")
+            fi
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$keychain" ${existing[@]+"${existing[@]}"}
 
           printf '%s' "$CERT_B64" | base64 -d > "$cert"
           security import "$cert" -k "$keychain" -P "$CERT_PASSWORD" \
@@ -162,7 +176,10 @@ jobs:
           name="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$plist")"
           # Derive the team from the profile so the founder needs no seventh secret.
           team="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$plist")"
-          [ -n "$uuid" ] && [ -n "$team" ] || { echo "::error::could not read UUID/team from the provisioning profile"; exit 1; }
+          if [ -z "$uuid" ] || [ -z "$team" ]; then
+            echo "::error::could not read UUID/team from the provisioning profile"
+            exit 1
+          fi
           # Record the UUID before installing it, so teardown can remove the
           # profile even if a later line in this step fails.
           printf '%s' "$uuid" > "$RUNNER_TEMP/installed-profile-uuid"
