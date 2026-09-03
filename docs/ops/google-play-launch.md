@@ -38,6 +38,43 @@ change needs a new AAB.
 
 ---
 
+## 1a. Target API level — Play rejects anything below 36 for a NEW app
+
+**Caught 2026-09-03, before an upload burned a cycle.** Google's requirement
+(`developer.android.com/google/play/requirements/target-sdk`) changed on
+**2026-08-31**: a *new* app must target **Android 16 (API 36)** or higher. App
+updates must too. Existing apps need 35 just to stay visible to new users on
+current devices.
+
+We were on Capacitor 6, whose template pins `compileSdkVersion = 34` and
+`targetSdkVersion = 34` in the generated `android/variables.gradle`. That is two
+levels short, and the Console refuses the bundle at upload — it is not a warning.
+
+**The fix is the Capacitor major, not a one-line override.** Capacitor 8 defaults
+to `compileSdk = 36`, `targetSdkVersion = 36`, `minSdkVersion = 24` (read straight
+out of `@capacitor/android@8.5.1`'s `capacitor/build.gradle`). Overriding 34 → 36
+under Capacitor 6's AGP is unsupported and would have to be re-applied on every
+`cap add android`, because `mobile/android/` is generated and gitignored.
+
+So `mobile/package.json` now pins the Capacitor 8 line, and the three mobile
+workflows moved to **node 22** because `@capacitor/cli@8` declares
+`engines.node >= 22.0.0`.
+
+Two consequences worth knowing:
+
+- **`minSdk` rises 22 → 24.** Android 5.0/5.1 devices drop off. That is forced by
+  the template and is not worth fighting for a new app.
+- **The custom `LocalCallbackPlugin` survives.** It only uses `Plugin`,
+  `PluginCall`, `PluginMethod`, `@CapacitorPlugin` and `BridgeActivity`, all stable
+  across the 6 → 8 range, and `add_app_scheme.py` still patches the same manifest
+  and `MainActivity` paths.
+
+**Do not "fix" a future rejection by lowering the target.** The number only ever
+goes up; re-check the page above before each release, because the August cutover
+repeats annually.
+
+---
+
 ## 2. Generate the upload keystore (once, keep it secret)
 
 **Done 2026-09-01** on the founder's machine, outside the repo:

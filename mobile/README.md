@@ -26,7 +26,7 @@ commands below.
 
 ## Prerequisites (on your build machine)
 
-- **Node.js 18+** and npm
+- **Node.js 22+** and npm (`@capacitor/cli@8` declares `engines.node >= 22`)
 - **Android Studio** (bundles the Android SDK + platform tools) — https://developer.android.com/studio
 - **JDK 17** (Android Studio bundles one; or install Temurin 17)
 - Set `ANDROID_HOME` / accept SDK licenses (`sdkmanager --licenses`)

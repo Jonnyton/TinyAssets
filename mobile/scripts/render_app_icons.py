@@ -15,7 +15,7 @@ Two stages, both idempotent:
    ``icon.png``, every splash size from ``splash.png`` (cover-fit + centre-crop, so
    what is painted in ``splash.png`` is what ships) — the exact files
    ``add_app_icons.py`` copies into the generated project after ``npx cap add
-   android``. Sizes mirror the Capacitor 6 Android template; the installer refuses
+   android``. Sizes mirror the Capacitor Android template; the installer refuses
    any mismatch, so a template change shows up as a red build, not a blank icon.
 
 The committed PNGs are canonical; re-render only to change the art. Rendered
