@@ -1,10 +1,15 @@
 # Google Play listing assets
 
-Staging for the Play Console listing (see ../google-play-launch.md).
+Staging for the Play Console listing (see `../google-play-launch.md`). All rendered
+2026-09-02 from the TinyAssets mark (`assets/icon.png`, exported by
+`WebSite/brand/render_marks.py`) and the live app.
 
-- `icon-512.png` — 512×512 app icon (from mobile capacitor assets).
-- `feature-graphic-1024x500.png` — required feature graphic.
-- `screenshots/` — ≥2 phone screenshots captured from the live app (§10 of the runbook).
+- `icon-512.png` — 512×512 listing icon (no alpha).
+- `feature-graphic-1024x500.png` — the required feature graphic (logo + wordmark + tagline).
+- `screenshots/01-universe-conversation.png`, `02-connect-subscription.png` — 1080×1920
+  (9:16) phone captures of the live web app at phone width: a real universe
+  conversation and the Connect view. Re-capture per §10 of the runbook when the
+  app's look changes.
 
-Icon + splash source live in `mobile/` (regenerate with `npm run assets`). Feature
-graphic + screenshots are produced during launch prep.
+The app's own launcher icon + splash come from `mobile/resources/` (see its README);
+this folder is only what the store listing uploads.

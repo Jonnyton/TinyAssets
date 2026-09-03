@@ -43,14 +43,14 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: mobile/package-lock.json
 
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
 
       - name: Install JS deps (lockfile-pinned)
         working-directory: mobile
@@ -69,6 +69,10 @@ jobs:
           grep -n 'android:scheme="tinyassets"' android/app/src/main/AndroidManifest.xml
           grep -n 'LocalCallbackService' android/app/src/main/AndroidManifest.xml
           grep -n 'FOREGROUND_SERVICE_DATA_SYNC' android/app/src/main/AndroidManifest.xml
+
+      - name: Install the launcher icon + splash (pre-rendered, no image toolchain in CI)
+        working-directory: mobile
+        run: python3 scripts/add_app_icons.py
 
       - name: Restore the stable debug signing key (main only)
         # Android's debug signing config reads ~/.android/debug.keystore

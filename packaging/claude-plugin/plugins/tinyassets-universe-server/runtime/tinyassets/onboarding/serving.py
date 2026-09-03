@@ -46,6 +46,13 @@ _PLATFORM_DEFINITION = {
     "components": {"identity": {"kind": "soul", "config": {}}},
 }
 _BINDING_PAYLOAD = {"schema_version": 1, "name": "Your universe", "role": "writer"}
+#: Friendly ALIASES for the two subscription CLIs, not an allowlist. Anything
+#: else is passed straight through as a compute-connection id, because
+#: `bind_serving_provider` already resolves one and `_open_serving_context`
+#: already refuses a grant the caller does not own. Gating here as well only
+#: refused legitimate users: a universe could not be pointed at any LLM its
+#: owner had registered (founder, 2026-09-03: "we shouldnt have a chatgpt
+#: spacific path").
 _SERVICE_TO_PROVIDER = {"codex": "codex", "claude": "claude-code"}
 
 #: One gesture at a time per universe. `_platform_binding` is check-then-create
@@ -187,9 +194,12 @@ def ensure_founder_serving(
     an authority refusal, so a deposit's success is reported honestly alongside
     the serving outcome.
     """
-    provider = _SERVICE_TO_PROVIDER.get((service or "").strip().lower())
-    if provider is None:
-        return {"status": "held", "reason": "unsupported_service"}
+    asked = (service or "").strip()
+    if not asked:
+        return {"status": "held", "reason": "no_service_named"}
+    # An alias resolves to its CLI provider; anything else is a compute
+    # connection the owner registered, and the binding layer authorizes it.
+    provider = _SERVICE_TO_PROVIDER.get(asked.lower(), asked)
     base = Path(base_path)
     from tinyassets.principals import named_principal
 
@@ -198,15 +208,24 @@ def ensure_founder_serving(
     if not owner or not uid:
         return {"status": "held", "reason": "authentication_required"}
     with _gesture_lock(uid):
+        # `_ensure_founder_serving_locked` classifies and RETURNS; it does not
+        # raise. The provider_not_yours / unknown_provider handlers that used to
+        # sit here could never fire, because its own broad catches ran first.
         return _ensure_founder_serving_locked(
-            base, universe_dir=universe_dir, owner=owner, uid=uid, provider=provider,
+            base, universe_dir=universe_dir, owner=owner, uid=uid,
+            provider=provider,
         )
 
 
 def _ensure_founder_serving_locked(
     base: Path, *, universe_dir: str | Path, owner: str, uid: str, provider: str,
 ) -> dict[str, Any]:
-    from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
+    from tinyassets.provider_serving_binding import (
+        ServingProviderNotOwned,
+        UnknownServingProvider,
+        bind_serving_provider,
+        set_serving,
+    )
 
     try:
         _require_current_admin(base, universe_id=uid, owner=owner)
@@ -243,6 +262,19 @@ def _ensure_founder_serving_locked(
             "provider": provider,
             "agent_binding_id": final["agent_binding_id"],
             "revision": int(final["revision"]),
+        }
+    except ServingProviderNotOwned as exc:
+        # Classified BEFORE the broad catches below: they used to swallow both of
+        # these into provider_authority_denied / binding_invalid, which made the
+        # documented provider_not_yours + unknown_provider contract dead code.
+        return {
+            "status": "held", "reason": "provider_not_yours",
+            "detail": str(exc), "provider": provider,
+        }
+    except UnknownServingProvider as exc:
+        return {
+            "status": "held", "reason": "unknown_provider",
+            "detail": str(exc), "provider": provider,
         }
     except PermissionError as exc:
         return {"status": "held", "reason": "provider_authority_denied", "detail": str(exc)}

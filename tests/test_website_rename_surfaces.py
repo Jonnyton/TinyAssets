@@ -11,8 +11,6 @@ PUBLIC_SITE_PATHS = [
     ROOT / "WebSite" / "site-react" / "components",
     ROOT / "WebSite" / "site-react" / "lib",
     ROOT / "WebSite" / "site-react" / "public",
-    ROOT / "WebSite" / "site" / "src",
-    ROOT / "WebSite" / "site" / "static",
 ]
 
 TEXT_SUFFIXES = {

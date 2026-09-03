@@ -12,83 +12,27 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
-## Decided for you, reversible: no anonymous principal (2026-09-02)
+## Decide: what should be publicly discoverable, now that the site shows it?
 
-Your rule: *"anonymous should not be a possibility anywhere in the codebase."*
-Change `no-anonymous-principal` (PR 1 of 3 in flight). Six choices the rule did
-not make, taken so the build could proceed; say the word and any flips:
+The rewritten `/commons` page lists what the endpoint reports as publicly
+discoverable. Driving it live on 2026-09-02 showed seven of twelve rows are not
+universes anyone published: `_backup_subject_migration_20260829T055340Z`,
+`_removed_legacy_20260829`, `_removed_universes_20260828`,
+`_removed_universes_20260829`, plus the `scratch`, `daemon_wikis` and
+`cloud-automation-inputs` working buckets. All are `visibility=public` because
+maintenance created them that way, not because anyone chose to publish.
 
-1. The probes (canary, deploy gate) run as a named `canary` service principal
-   admitted only for an exact allowlist (initialize, tools/list, get_status,
-   read_graph target=status, the wiki probe page). Not a capability set.
-2. Dev mode names its operator through `UNIVERSE_SERVER_DEV_USER` and refuses
-   to start without it. No fixed `local-operator` default.
-3. The public website reads `GET /mcp/pulse` (git sha, image tag, deploy time,
-   uptime) instead of making anonymous MCP calls; the playground shows the
-   401 challenge as step one of a real connection.
-4. Legacy rows are quarantined, not fatal: OAuth sessions whose user is
-   `anonymous` are deleted; run rows with an anonymous actor are logged and
-   never re-dispatched; a hook minted before owners were recorded refuses to
-   deliver (uniform 404, logged) until its owner re-creates it.
-5. `/mcp/pulse` carries exactly those four fields and nothing that names a
-   universe or a user.
-6. "Public" now means visible to any signed-in user (the remix model needs
-   that); there is no unauthenticated reader anywhere.
-7. The website's commons / graph / host / loop pages keep their `Refresh MCP`
-   control, and it now reports the reason plainly ("public universe
-   discovery needs a signed-in connector") and shows the checked-in
-   snapshot. Removing those controls, or giving the site a signed-in read,
-   is a separate site change; the vitals widgets read `/mcp/pulse`.
-8. The stdio server (the Claude plugin, `--transport stdio`) binds the local
-   operator as its principal: `UNIVERSE_SERVER_DEV_USER` when set, else the
-   OS account the process runs as. It never ran as anybody before; it runs
-   as you now.
-9. The activity probe (`last_activity_canary.py`) no longer inspects a
-   universe (it read yours, as nobody). `get_status` gained a platform-wide
-   `daemon.last_activity_at` from the run ledger, and the probe reads that.
+Nothing sensitive leaks — the public projection is id, phase, word count and a
+coarse timestamp — but the bucket names disclose when removals and an identity
+migration happened, and the page reads like an accident. The site does **not**
+filter them, deliberately: hiding rows while claiming to show "what is public"
+is exactly the dishonesty the public-read boundary exists to prevent.
 
-### ~~Mint the canary bearer~~ -- WITHDRAWN 2026-09-03, it was never yours
-
-This asked you to run `gh secret set TINYASSETS_WIKI_CANARY_TOKEN` before PR 1
-could merge, because the deploy refused while the secret was unset.
-
-That gate was mine and it should not have existed. You said so: *"i dont
-understand why you cant deploy, i have never been needed for that."* You never
-were. What the deploy actually needs is nothing:
-
-- the container's healthcheck reads `/mcp/pulse`, the one unauthenticated route,
-  so it needs no credential to know it is serving;
-- the deep probes -- the ones that form an MCP session or write to the wiki --
-  do need a principal, and the right one is a short-lived GitHub OIDC token
-  bound to this repository and workflow, filed as
-  `openspec/changes/oidc-bound-probe-principals`;
-- until that lands the shared bearer is OPTIONAL: present it works, absent the
-  deep probes skip loudly and the deploy proceeds.
-
-Nothing here blocks a merge. If you ever DO want the interim bearer, the command
-is unchanged, but it buys only the deep probes and nothing else:
-
-```
-gh secret set TINYASSETS_WIKI_CANARY_TOKEN --body "$(python -c 'import secrets; print(secrets.token_hex(32))')"
-```
-
-## Decided for you, reversible: full channel access (2026-09-02)
-
-Your words: *"a more agnostic term it should have asked for should have been
-full channel access."* Change `full-channel-access` (design reviewed, build
-waits on #2769). Five choices:
-
-1. "Full" includes git clone/push to any repository the key reaches on the
-   channel's git host and checking a repository out and running its build in
-   your universe's sandbox. A full grant that still asked per repository
-   would be the third ask again.
-2. All-or-exact. No `owner/*` half-form.
-3. The agent's ask defaults to full; the manual "Add a key yourself" form is
-   unchanged.
-4. No downgrade verb: to retract a full grant, remove the key and deposit it
-   again with exact endpoints.
-5. "Full" is bounded to the one to four hosts the agent declared for the
-   channel, never every host the credential could reach.
+Your call, because the fix writes to live universe records. Suggested shape is
+in `docs/concerns/2026-09-02-migration-records-are-publicly-discoverable.md`:
+create maintenance holding records private, flip the seven existing ones (do
+not delete — they are migration backups), and decide whether an unpublished
+universe should default to `public` at all.
 
 ## Decide: should a deposit serve the universe by itself?
 
@@ -295,6 +239,189 @@ any Claude-served universe runs a multi-step job. If the answer is no, delete th
 row; if yes, the concern above is the prerequisite.
 
 ## Credentials and accounts
+
+### Google Play: `WORKOS_API_KEY` reaches the daemon — VERIFIED 2026-09-02, nothing for you
+
+Account deletion removes the user's WorkOS record through the management API, and that
+upstream deletion is also what ends sessions on other devices (their refresh handles are
+opaque to the daemon). The key is not in the repo or in `deploy/`, so I checked the host:
+`/etc/tinyassets/env` carries exactly one `WORKOS_API_KEY=` line, and
+`docker exec tinyassets-daemon printenv WORKOS_API_KEY` returns an `sk_`-prefixed value of
+the expected length. So a real deletion will remove the sign-in identity, which is what
+`/legal` and `/account` promise.
+
+If that ever stops being true, deletion still removes every byte of the user's data and
+reports `identity: not_configured`, tells the user, and writes a receipt under
+`.account-deletions/` — check it with
+`python -c "from tinyassets.account_deletion import pending_deletions; print(pending_deletions('/data'))"`.
+Delete this paragraph on the next host-actions pass.
+
+### Apple App Store: enroll in the Apple Developer Program — nothing iOS can start without it
+
+**Checked 2026-09-02, not assumed.** Gmail holds exactly one Apple message, an Apple
+Account email verification from 2026-08-24; there is no Developer Program enrollment
+confirmation, no App Store Connect welcome, and no $99 receipt. `developer.apple.com/account`
+asks for a sign-in I cannot complete (I must not enter a password), so the browser cannot
+confirm it either. On that evidence: **not enrolled**.
+
+Everything on the iOS side is already staged — the Capacitor iOS platform, the
+`tinyassets://` URL-scheme patch, the unsigned compile-check in `ios-build.yml`, and the
+listing/App-Privacy copy in `docs/ops/app-store-launch.md`. None of it can produce an
+installable app without an account.
+
+1. **Enroll**: https://developer.apple.com/programs/enroll/ — $99/year, and identity
+   verification usually takes a day or two, sometimes longer. **Start this first**, because
+   the waiting is the long pole and it runs in parallel with everything else.
+2. Then the signing assets: a Distribution certificate, an App Store provisioning profile,
+   and an **App Store Connect API key** for CI upload (§3 of the runbook). You do NOT need a
+   Mac — CI builds on `macos-15` runners once those secrets exist.
+3. Then I create the App Store Connect record, fill the listing and App Privacy, and push a
+   build to TestFlight.
+
+### Google Play: start the 12-tester closed test — this is the 14-day clock
+
+**This is the long pole for Play, and only you can start it.** A personal developer
+account cannot apply for production access until it has run a **closed test with at
+least 12 testers opted in continuously for 14 days**. The 14 days are wall-clock:
+nothing an agent does shortens them, and the clock does not start until the testers are
+actually in. Every other Play item finishes in hours; this one finishes in a fortnight,
+so starting it late is what sets the public launch date.
+
+Alongside the Apple enrolment above, this is one of **two clocks worth starting today**.
+They run in parallel and neither depends on the other.
+
+What it needs from you:
+
+1. **Twelve people with Google accounts** who will opt in and stay opted in. They do not
+   have to use the app daily — they have to remain on the tester list for the full 14
+   days. Removing someone mid-window can reset progress, so over-recruit rather than
+   land on exactly twelve.
+2. Play Console → **Test and release → Testing → Closed testing** → create a track and
+   add them, by email list or Google Group. A Google Group is easier to change later.
+3. Tell me when they are in, and I will take the release itself — the build is already
+   signed and the internal-testing track is live, so promoting a bundle to the closed
+   track is not new work.
+
+After the 14 days: apply for production access, which Google reviews separately, and
+only then can the app be promoted to Production and be publicly downloadable.
+
+Do not confuse this with the internal-testing track already running — internal testing
+does not count toward the requirement, no matter how long it runs.
+
+### Google Play: a reviewer test account — and AuthKit has no password to give it
+
+Play Console -> App content -> **Sign in details** (formerly "App access"). Our app is
+behind WorkOS AuthKit, so the honest answer to "Is any part of your app restricted?" is
+**Yes** — the form's own Yes branch lists "Google Account sign in, and / or SSO", which is
+exactly what we use. Google then warns, in the dialog itself:
+
+> "If we can't review your app, you may be prevented from releasing updates, or your app
+> may be removed from Google Play. Reviewers are unable to create accounts, **use their own
+> existing accounts**, or use free trials to access your app. They are also unable to
+> contact you for more information."
+
+**The fork in the earlier draft of this file is now closed.** I checked the live AuthKit
+sign-in page (`https://unassuming-environment-16.authkit.app/`, the issuer the served app
+config actually names) on 2026-09-02. It offers exactly two things: an email box whose
+button reads **"Continue with SSO"**, and **"Continue with Google"**. There is no
+email-and-password option. So password sign-in is **not enabled** in our WorkOS
+environment, and no credential we could hand Google today would work.
+
+That leaves one clean action and one poor one:
+
+- **Enable Email + Password authentication in the WorkOS dashboard** (Authentication ->
+  sign-in methods), then create a single review account such as `play-review@tinyassets.io`
+  and sign into the app once so its universe exists. This is the one I recommend: it
+  produces a reusable credential with no second factor, which is what Google's own guidance
+  asks for ("provide reusable sign in details that don't expire").
+- **Hand over a dedicated Google account.** Works in principle, but a fresh Google account
+  signing in from a reviewer's machine invites exactly the 2-step-verification and
+  new-device challenges Google's guidance tells us to avoid. Prefer the first option.
+
+Why this is yours and not mine: I must not create accounts, and I must not type a password
+into any field. Both halves of this are the parts I am barred from.
+
+**The exact form, so it is a two-minute job when you have the credential.** "Add details"
+opens a dialog with:
+
+| Field | Required | What to put |
+|---|---|---|
+| Name | yes | `Reviewer account` |
+| Username, email address, or phone number | no* | the review account's email |
+| Password | no* | the review account's password |
+| Any other information required to access your app | no | see the paragraph below |
+| "…provide full access to all the features and content within this app" | checkbox | tick it |
+
+\* Marked optional by the form, but leaving them empty is what gets an app rejected —
+the reviewer has no other way in.
+
+For the free-text box, the one thing a reviewer will otherwise trip on is that **the app
+needs an AI provider connected before the chat does anything**. Either connect one on the
+review account beforehand, or say so there and point at the "Skip for now" control.
+
+**What it actually gates (corrected 2026-09-02):** Target audience and content refuses to
+start until Sign in details is complete — verified by opening it and reading the block:
+"You must complete the Sign in details section before starting the Target audience and
+content questionnaire." Data safety is answered and saved as a draft but cannot be
+submitted until Target audience is done. So this gates **two** remaining rows, not three.
+Content rating was *not* gated and is now complete (IARC, submitted 2026-09-02, Everyone /
+PEGI 3 / USK 0 / ClassInd L).
+
+**This does not block a real install.** Play's internal testing track explicitly works
+"before you've finished setting up your app" — the App content checklist gates *production*
+access, not internal testing. The shortest path to the app being installable from Play by a
+real person is the upload keystore below, not this section.
+
+### Google Play: add the four upload-keystore secrets (one command)
+
+The Play developer account exists (identity verified 2026-08-24) and the upload keystore was
+generated 2026-09-01 into `~/.tinyassets/android/` on your machine. The release workflow
+signs with secrets an agent is not allowed to set (`gh secret set` is denied to it). Run, in
+a Git Bash at the repo root:
+
+```bash
+D="$HOME/.tinyassets/android"
+# `tr -d` is load-bearing: upload-keystore.env has Windows CRLF endings, so a
+# plain `. "$D/upload-keystore.env"` puts a trailing carriage return on every
+# value. A CR inside the secret makes the signing step fail with
+# "Keystore was tampered with, or password was incorrect", which sends you
+# hunting a corrupt keystore instead of a line ending. Verified 2026-09-03.
+set -a; . <(tr -d '\r' < "$D/upload-keystore.env"); set +a
+tr -d '\r\n' < "$D/tinyassets-upload.jks.b64" | gh secret set ANDROID_UPLOAD_KEYSTORE_B64
+printf '%s' "$ANDROID_UPLOAD_KEYSTORE_PASSWORD" | gh secret set ANDROID_UPLOAD_KEYSTORE_PASSWORD
+printf '%s' "$ANDROID_UPLOAD_KEY_ALIAS"        | gh secret set ANDROID_UPLOAD_KEY_ALIAS
+printf '%s' "$ANDROID_UPLOAD_KEY_PASSWORD"     | gh secret set ANDROID_UPLOAD_KEY_PASSWORD
+```
+
+To confirm the secrets took, re-run the release workflow: the signing step prints
+`upload certificate fingerprint verified` before it signs, and fails closed if the
+restored keystore does not carry certificate
+`D0:BC:F2:...:B2:11`. I have already verified that the keystore on disk carries
+exactly that certificate, so a mismatch after this points at the secret, not the key.
+
+**The alternative that needs no secrets at all.** I can build and sign the bundle
+locally in a container (JDK 21, node 22, Android SDK 36) and upload the `.aab` to
+the Console by hand — no GitHub secrets involved. That path is already working.
+The secrets are still worth setting, because they are what makes *every future
+release* one command instead of a manual build.
+
+Then back the keystore up somewhere that is not this laptop.
+
+What remains after the secrets, and who does it (`docs/ops/google-play-launch.md` §11):
+
+| Step | State |
+|---|---|
+| Play Console: app created, declarations accepted | **done** 2026-09-02 |
+| Store listing, graphics, privacy URL, Ads/Government/Financial/Health | **done** |
+| Content rating (IARC) | **done** 2026-09-02 — Everyone / PEGI 3 |
+| Data safety | answered, **saved as a draft**; cannot submit until Target audience is done |
+| Internal-testing tester list | **done** — "Founder devices" attached to the track |
+| Build the signed AAB | **done** 2026-09-03 — built and signed in the container (`mobile/container/`), no secret needed |
+| Internal-testing release: upload the AAB, roll out | **done** 2026-09-03 11:10 — release `1 (1.0)`, track Active, 3.1 MB |
+| Verify the loop on a real phone (install from the internal-test link, sign in, chat) | **you — this is the live one.** Opt-in on the founder's Google account: https://play.google.com/apps/internaltest/4701716760893982267 |
+| Sign in details → Target audience → Data safety submit | blocked on the reviewer account above |
+| Closed test: 12 testers for 14 days, then apply for production access | **you** |
+| Promote to Production → submit for review → **Roll out** | you (final click) |
 
 ### Mint the PAT that unblocks the deploy chain
 

@@ -280,6 +280,14 @@ def has_git_scope(connection: Any, kind: Any, repo: Any) -> bool:
 
     Exact binding: ``git_read:owner/name`` does not grant ``owner/name2``, and a
     revoked connection grants nothing.
+
+    On a ``full`` connection (full-channel-access D3.2) the owner granted the
+    channel rather than a repository list, so any repository the key itself can
+    reach is in scope. The stored grammar is unchanged either way: no ``*/*``
+    scope is ever written, so none can reach ``require_git_scope`` or the git
+    transport. The repository still has to PARSE, the kind still has to be a
+    real git kind, the connection still has to be live and still has to be one
+    that may carry git scopes at all.
     """
     if connection is None or getattr(connection, "revoked_at", None) is not None:
         return False
@@ -292,7 +300,22 @@ def has_git_scope(connection: Any, kind: Any, repo: Any) -> bool:
         return False
     if not connection_allows_git_scopes(connection):
         return False
+    if connection_access_mode(connection) == "full":
+        return True
     return (normalized_kind, normalized_repo) in connection_git_scopes(connection)
+
+
+def connection_access_mode(connection: Any) -> str:
+    """``"full"`` or ``"exact"`` for any connection-shaped object.
+
+    Anything unrecognised reads as ``exact``: an object that cannot say it is
+    full is not full.
+    """
+    value = getattr(connection, "access_mode", None)
+    if value is None and isinstance(connection, dict):
+        value = connection.get("access_mode")
+    text = ("" if value is None else str(value)).strip().lower()
+    return "full" if text == "full" else "exact"
 
 
 def require_connection_token(connection_id: Any) -> str:

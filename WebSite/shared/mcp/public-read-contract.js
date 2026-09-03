@@ -70,14 +70,14 @@ export function pageInventoryCall(changedSince = PAGE_INVENTORY_SINCE) {
  * @param {string} value
  * @returns {string}
  */
-export function assertAnonymousSnapshotUrl(value) {
+export function assertSnapshotEndpoint(value) {
   let parsed;
   try {
     parsed = new URL(value);
   } catch {
     if (containsUrlUserinfo(value)) {
       throw new Error(
-        "Public snapshots must run anonymously; MCP URL credentials are forbidden",
+        "Public snapshot credentials belong in an Authorization header; MCP URL credentials are forbidden",
       );
     }
     throw new Error("Public snapshots require a valid HTTPS MCP URL");
@@ -87,7 +87,7 @@ export function assertAnonymousSnapshotUrl(value) {
   }
   if (parsed.username || parsed.password) {
     throw new Error(
-      "Public snapshots must run anonymously; MCP URL credentials are forbidden",
+      "Public snapshot credentials belong in an Authorization header; MCP URL credentials are forbidden",
     );
   }
   if (parsed.search || parsed.hash) {
@@ -119,10 +119,10 @@ export function assertPublicBrowserEndpoint(value) {
     if (resolved.origin !== base.origin) {
       throw new Error("Public MCP browser endpoint must remain same-origin");
     }
-    assertAnonymousSnapshotUrl(resolved.href);
+    assertSnapshotEndpoint(resolved.href);
     return endpoint;
   }
-  const parsed = new URL(assertAnonymousSnapshotUrl(endpoint));
+  const parsed = new URL(assertSnapshotEndpoint(endpoint));
   if (parsed.protocol !== "https:") {
     throw new Error("Public MCP browser endpoint must use HTTPS");
   }

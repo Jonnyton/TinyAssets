@@ -23,6 +23,7 @@ import time
 import traceback
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -75,6 +76,27 @@ class OutboundEndpoint:
         }
 
 
+#: A connection is granted one of two ways (full-channel-access D2).
+#: ``exact``: the declared endpoints, verbs and repositories, and nothing else.
+#: ``full``: anything the key itself can do on the channel's declared hosts.
+#: The mode is the authority; nothing is ever STORED as a wildcard, so no
+#: ``*/*`` reaches the git transport or a consent row.
+ACCESS_EXACT = "exact"
+ACCESS_FULL = "full"
+ACCESS_MODES = (ACCESS_EXACT, ACCESS_FULL)
+
+
+def normalize_access_mode(value: Any) -> str:
+    """``exact`` or ``full``; anything else raises. Empty means ``exact`` so a
+    row written before the column existed reads as least privilege."""
+    text = ("" if value is None else str(value)).strip().lower()
+    if not text:
+        return ACCESS_EXACT
+    if text not in ACCESS_MODES:
+        raise ValueError(f"access_mode must be one of {ACCESS_MODES}, got {value!r}")
+    return text
+
+
 @dataclass(frozen=True, repr=False)
 class ConnectionResource:
     """Credential-BEARING connection record — for trusted server-internal use.
@@ -105,6 +127,10 @@ class ConnectionResource:
     auth_scheme: str = ""
     #: The per-connection egress allowlist (design.md D3). Empty ⇒ no call.
     allowed_endpoints: tuple[OutboundEndpoint, ...] = ()
+    #: ``exact`` | ``full`` (full-channel-access D2). Read by the egress
+    #: allowlist, the git-scope check and the workspace consents; never by the
+    #: SSRF safety checks, which run for both modes.
+    access_mode: str = ACCESS_EXACT
 
     def __repr__(self) -> str:
         return (
@@ -119,7 +145,8 @@ class ConnectionResource:
             f"revoked_at={self.revoked_at!r}, "
             f"connection_type={self.connection_type!r}, "
             f"auth_scheme={self.auth_scheme!r}, "
-            f"allowed_endpoints={self.allowed_endpoints!r})"
+            f"allowed_endpoints={self.allowed_endpoints!r}, "
+            f"access_mode={self.access_mode!r})"
         )
 
     def to_view(self) -> ConnectionView:
@@ -139,6 +166,7 @@ class ConnectionResource:
             allowed_endpoints=self.allowed_endpoints,
             destination=self.destination,
             revoked_at=self.revoked_at,
+            access_mode=self.access_mode,
         )
 
 
@@ -162,6 +190,10 @@ class ConnectionView:
     allowed_endpoints: tuple[OutboundEndpoint, ...]
     destination: str
     revoked_at: float | None
+    #: ``exact`` | ``full`` (full-channel-access D2). Rendered to the owner as
+    #: the ONE sentence that says what a full grant means; never as a wildcard
+    #: endpoint row, because none is stored.
+    access_mode: str = ACCESS_EXACT
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -175,6 +207,7 @@ class ConnectionView:
             "allowed_endpoints": [ep.as_dict() for ep in self.allowed_endpoints],
             "destination": self.destination,
             "revoked_at": self.revoked_at,
+            "access_mode": self.access_mode,
         }
 
 
@@ -456,8 +489,12 @@ def _describe_child_exit(exitcode: int | None) -> str:
     return f" (exitcode {exitcode})"
 
 
-def _verb_within_scopes(verb: object, scopes: Iterable[str]) -> bool:
-    """Whether an HTTP verb is one this connection's scopes carry.
+def _verb_within_scopes(
+    verb: object,
+    scopes: Iterable[str],
+    access_mode: str = ACCESS_EXACT,
+) -> bool:
+    """Whether an HTTP verb is one this connection may dispatch.
 
     Authorization here is a membership test against the ``scopes`` tuple, and
     that tuple now also holds git scopes (``git_read:owner/name``), which are a
@@ -465,11 +502,21 @@ def _verb_within_scopes(verb: object, scopes: Iterable[str]) -> bool:
     against one repository, not that an arbitrary HTTP request may be dispatched.
     Without this check a caller could pass ``verb="git_read:owner/name"``, match
     by membership, and reach the credentialed dispatcher through the HTTP path.
+
+    ON A FULL CHANNEL the verb list is not the grant. Upgrading a GET-only
+    connection moves the mode and touches no scope row -- nothing is stored as
+    a wildcard, by design -- so testing membership left the owner's POST
+    refused on a channel they had granted in full, and the follow-up ask came
+    back ``already_held``: a stranded connection (Codex code review round 3,
+    P0). A full channel carries every verb the transport will send, and
+    nothing outside that set.
     """
     if not isinstance(verb, str) or not verb:
         return False
     if is_git_scope(verb):
         return False
+    if normalize_access_mode(access_mode) == ACCESS_FULL:
+        return verb in _SSRF_ALLOWED_METHODS
     return verb in scopes
 
 
@@ -628,10 +675,15 @@ class ScopedConnectionProxy:
     provider: str
     destination: str
     scopes: tuple[str, ...]
-    _channel: _ProxyChannel = field(repr=False, compare=False)
+    #: The mode read when the proxy opened. Defence in depth only -- the broker
+    #: re-reads the row and is the authority -- so a stale `exact` here refuses
+    #: a since-upgraded channel until the caller opens a new proxy, which is
+    #: the safe direction to be wrong in.
+    access_mode: str = ACCESS_EXACT
+    _channel: _ProxyChannel = field(repr=False, compare=False, default=None)  # type: ignore[assignment]
 
     def request(self, verb: str, request: object) -> Any:
-        if not _verb_within_scopes(verb, self.scopes):
+        if not _verb_within_scopes(verb, self.scopes, self.access_mode):
             raise PermissionError(
                 f"verb {verb!r} is outside the granted connection scope"
             )
@@ -663,7 +715,7 @@ class CredentialBlindBroker:
         resource = self._ledger._active_resource_for_grant(grant_id)
         if resource is None:
             raise GrantResolutionError("absent or revoked outbound connection grant")
-        if not _verb_within_scopes(verb, resource.scopes):
+        if not _verb_within_scopes(verb, resource.scopes, resource.access_mode):
             raise PermissionError(
                 f"verb {verb!r} is outside the granted connection scope"
             )
@@ -695,6 +747,7 @@ class CredentialBlindBroker:
                 connection_type=resource.connection_type,
                 auth_scheme=resource.auth_scheme,
                 allowed_endpoints=resource.allowed_endpoints,
+                access_mode=resource.access_mode,
                 verb=verb,
                 request=request,
             )
@@ -1660,17 +1713,32 @@ def _enforce_endpoint_allowlist(
     canonical: _CanonicalOutboundUrl,
     method: str,
     endpoints: tuple[OutboundEndpoint, ...],
+    access_mode: str = ACCESS_EXACT,
 ) -> None:
     """Refuse any host/method/path/query not on the connection allowlist (design.md D3).
 
     This is the real egress boundary: an EMPTY allowlist permits nothing, and a
     URL whose host, method, path, OR query does not match a declared endpoint is
     refused before any socket is opened.
+
+    On a ``full`` connection (full-channel-access D3.1) the owner has said the
+    universe may do anything the key itself can do on this channel, so once the
+    HOST matches one the agent declared, any path, any query and any of the five
+    verbs are admitted. What "full" does NOT touch: the caller has already
+    refused a non-HTTPS scheme, userinfo, a port other than 443, dot segments,
+    encoded separators, double encoding and a verb outside the five; and the DNS
+    resolution plus the globally-routable-address check still run after this,
+    immediately before the socket. Full is bounded to the 1-4 hosts the channel
+    declared, never to every host the credential might reach.
     """
     if not endpoints:
         raise SsrfValidationError("connection has no permitted endpoints")
     host = canonical.hostname.strip().lower()
     verb = (method or "").strip().upper()
+    if normalize_access_mode(access_mode) == ACCESS_FULL:
+        if any(endpoint.host == host for endpoint in endpoints):
+            return
+        raise SsrfValidationError("outbound host is not on the connection allowlist")
     raw_path, _, raw_query = canonical.path_qs.partition("?")
     if len(raw_query) > _SSRF_MAX_QUERY_LEN:
         raise SsrfValidationError("outbound url query is too long")
@@ -2347,6 +2415,7 @@ class _SsrfHardenedHttpDriver:
         body: Any = None,
         header_name: str = "",
         allowed_endpoints: tuple[OutboundEndpoint, ...] | None = None,
+        access_mode: str = ACCESS_EXACT,
     ) -> dict[str, Any]:
         if not isinstance(bundle, ConnectionSecretBundle):
             raise SsrfValidationError("a typed connection secret bundle is required")
@@ -2361,7 +2430,9 @@ class _SsrfHardenedHttpDriver:
         # tests); every production call through _TrustedNetworkDriver passes a
         # non-empty allowlist, and an empty one refuses.
         if allowed_endpoints is not None:
-            _enforce_endpoint_allowlist(canonical, verb, allowed_endpoints)
+            _enforce_endpoint_allowlist(
+                canonical, verb, allowed_endpoints, access_mode
+            )
         request_headers = _validated_request_headers(headers)
         # oauth1a signs over the method + the exact request URL, so pass the
         # reconstructed URL (identical to the one _execute_pinned_https_request
@@ -2516,10 +2587,12 @@ class _TrustedNetworkDriver:
         connection_type = str(kwargs.pop("connection_type", "") or "").strip().lower()
         auth_scheme = str(kwargs.pop("auth_scheme", "") or "")
         allowed_endpoints = kwargs.pop("allowed_endpoints", ()) or ()
+        access_mode = kwargs.pop("access_mode", ACCESS_EXACT)
         if connection_type == "http":
             return self._dispatch_http(
                 auth_scheme=auth_scheme,
                 allowed_endpoints=tuple(allowed_endpoints),
+                access_mode=access_mode,
                 credential=kwargs.get("credential", ""),
                 verb=str(kwargs.get("verb", "")),
                 request=kwargs.get("request"),
@@ -2542,6 +2615,7 @@ class _TrustedNetworkDriver:
         credential: str,
         verb: str,
         request: object,
+        access_mode: str = ACCESS_EXACT,
     ) -> Any:
         if not self._allow_http:
             # Fail closed until a deployment enables the general http path.
@@ -2561,6 +2635,7 @@ class _TrustedNetworkDriver:
             body=request.get("body"),
             header_name=str(request.get("header_name", "") or ""),
             allowed_endpoints=allowed_endpoints,
+            access_mode=access_mode,
         )
 
 
@@ -2621,7 +2696,15 @@ CREATE TABLE IF NOT EXISTS outbound_connections (
     revoked_at      REAL,
     connection_type TEXT NOT NULL DEFAULT '',
     auth_scheme     TEXT NOT NULL DEFAULT '',
-    allowed_endpoints_json TEXT NOT NULL DEFAULT '[]'
+    allowed_endpoints_json TEXT NOT NULL DEFAULT '[]',
+    access_mode     TEXT NOT NULL DEFAULT 'exact',
+    -- Minted fresh on every deposit. The connection id and the credential_ref
+    -- are both deterministic per (universe, destination), so without this a
+    -- key removed and REPLACED under the same destination with an identical
+    -- policy matched every compare-and-swap predicate, and a stale full answer
+    -- applied the owner's decision to a key they never granted it for (Codex
+    -- code review round 3, P0).
+    incarnation     TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS outbound_connection_grants (
@@ -2686,6 +2769,9 @@ def _resource_from_row(row: sqlite3.Row) -> ConnectionResource:
         connection_type=(row["connection_type"] if "connection_type" in columns else "") or "",
         auth_scheme=(row["auth_scheme"] if "auth_scheme" in columns else "") or "",
         allowed_endpoints=_parse_allowed_endpoints(endpoints_raw),
+        access_mode=normalize_access_mode(
+            row["access_mode"] if "access_mode" in columns else ""
+        ),
     )
 
 
@@ -2755,6 +2841,10 @@ class ConnectionLedger:
                 ("connection_type", "TEXT NOT NULL DEFAULT ''"),
                 ("auth_scheme", "TEXT NOT NULL DEFAULT ''"),
                 ("allowed_endpoints_json", "TEXT NOT NULL DEFAULT '[]'"),
+                # full-channel-access D2. Every existing row is `exact`: a
+                # migration must never widen an existing grant.
+                ("access_mode", "TEXT NOT NULL DEFAULT 'exact'"),
+                ("incarnation", "TEXT NOT NULL DEFAULT ''"),
             ):
                 if column not in connection_columns:
                     connection.execute(
@@ -2809,8 +2899,10 @@ class ConnectionLedger:
         connection_type: str = "",
         auth_scheme: str = "",
         allowed_endpoints: Any = (),
+        access_mode: str = ACCESS_EXACT,
     ) -> ConnectionView:
         endpoints = _parse_allowed_endpoints(allowed_endpoints)
+        normalized_access = normalize_access_mode(access_mode)
         normalized_type = (connection_type or "").strip().lower()
         normalized_scheme = (auth_scheme or "").strip().lower()
         if normalized_type not in _KNOWN_CONNECTION_TYPES:
@@ -2851,6 +2943,7 @@ class ConnectionLedger:
             connection_type=normalized_type,
             auth_scheme=normalized_scheme,
             allowed_endpoints=endpoints,
+            access_mode=normalized_access,
         )
         with self._connect() as connection:
             connection.execute(
@@ -2858,8 +2951,9 @@ class ConnectionLedger:
                 INSERT INTO outbound_connections (
                     connection_id, owner_user_id, connection_class, scopes_json,
                     provider, destination, credential_ref, revoked_at,
-                    connection_type, auth_scheme, allowed_endpoints_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+                    connection_type, auth_scheme, allowed_endpoints_json,
+                    access_mode, incarnation
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
                 """,
                 (
                     resource.connection_id,
@@ -2872,6 +2966,8 @@ class ConnectionLedger:
                     resource.connection_type,
                     resource.auth_scheme,
                     json.dumps([ep.as_dict() for ep in resource.allowed_endpoints]),
+                    resource.access_mode,
+                    uuid.uuid4().hex,
                 ),
             )
         # Return the REDACTED view — no caller (not even the creator) gets
@@ -2909,6 +3005,7 @@ class ConnectionLedger:
         endpoints: Any,
         scopes: tuple[str, ...],
         expected_endpoints_json: str,
+        expected_scopes_json: str,
     ) -> bool:
         """ADD endpoints to an existing http connection. Never remove or replace.
 
@@ -2923,9 +3020,13 @@ class ConnectionLedger:
           superset; this re-checks nothing about intent but writes the union, so
           an endpoint another graph depends on cannot vanish here. Narrowing and
           removal stay unsupported (they are a different, destructive intent).
-        * **CAS-guarded.** The UPDATE matches on the exact endpoint JSON the
-          caller read, so a concurrent deposit that changed the policy in between
-          makes this a no-op instead of clobbering it.
+        * **CAS-guarded on BOTH columns it writes, always.** The UPDATE matches
+          on the exact endpoint JSON AND the exact scopes JSON the caller read
+          (both from one :meth:`policy_json` snapshot). Guarding endpoints alone
+          let two scope-only widenings race: the first wrote scope B without
+          touching the endpoints, so the second's CAS still matched and
+          replaced B with A; an optional scopes guard let a caller skip it
+          (Codex rounds 1-2 on the 2026-09-02 rail change).
 
         Returns True when the row was updated.
         """
@@ -2942,15 +3043,115 @@ class ConnectionLedger:
                 UPDATE outbound_connections
                 SET allowed_endpoints_json = ?, scopes_json = ?
                 WHERE connection_id = ? AND allowed_endpoints_json = ?
+                  AND scopes_json = ?
                 """,
                 (
                     json.dumps([ep.as_dict() for ep in parsed]),
                     json.dumps(list(new_scopes)),
                     connection_id,
                     expected_endpoints_json,
+                    expected_scopes_json,
                 ),
             )
             return cursor.rowcount > 0
+
+    def set_access_mode(
+        self,
+        *,
+        connection_id: str,
+        access_mode: str,
+        expected_mode: str,
+        expected_endpoints_json: str,
+        expected_scopes_json: str,
+        expected_incarnation: str | None = None,
+    ) -> bool:
+        """Move a connection between ``exact`` and ``full`` under CAS.
+
+        Returns True when the row moved. False means the connection is not
+        what the caller previewed any more, and the caller re-previews rather
+        than applying a decision to a grant it never saw.
+
+        The comparison is the WHOLE POLICY, not just the mode. Comparing the
+        mode alone let a concurrent exact extension ride in: device A previews
+        full on a connection declaring one host, device B adds a second host
+        (mode still exact), and A's swap then makes BOTH hosts full although
+        the owner only ever saw one (Codex code review round 1). It also closes
+        the remove-and-redeposit ABA, because a replacement row cannot carry
+        the same endpoint and scope text by accident.
+
+        ``expected_incarnation`` closes the case where it CAN. The connection
+        id and the credential reference are both deterministic per
+        (universe, destination), so a key removed and a different one deposited
+        with an identical policy matched every other predicate, and the owner's
+        yes landed on a key they never saw (Codex code review round 3, P0).
+        Passing ``None`` keeps the older comparison, for a caller that has no
+        snapshot to offer.
+        """
+        wanted = normalize_access_mode(access_mode)
+        expected = normalize_access_mode(expected_mode)
+        sql = """
+                UPDATE outbound_connections
+                   SET access_mode = ?
+                 WHERE connection_id = ?
+                   AND access_mode = ?
+                   AND allowed_endpoints_json = ?
+                   AND scopes_json = ?
+        """
+        params: list[Any] = [
+            wanted,
+            connection_id,
+            expected,
+            expected_endpoints_json,
+            expected_scopes_json,
+        ]
+        if expected_incarnation is not None:
+            sql += "           AND incarnation = ?\n"
+            params.append(expected_incarnation)
+        with self._connect() as connection:
+            cursor = connection.execute(sql, tuple(params))
+            return cursor.rowcount > 0
+
+    def access_mode(self, connection_id: str) -> str | None:
+        """The stored mode, or ``None`` when there is no such connection."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT access_mode FROM outbound_connections WHERE connection_id = ?",
+                (connection_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return normalize_access_mode(row["access_mode"])
+
+    def policy_json(self, connection_id: str) -> tuple[str, str] | None:
+        """The stored ``(allowed_endpoints_json, scopes_json)`` exactly as
+        written, for a CAS-guarded extension to compare against. Reserialising
+        the parsed policy happens to round-trip today; comparing the raw text
+        cannot silently stop doing so."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT allowed_endpoints_json, scopes_json FROM outbound_connections "
+                "WHERE connection_id = ?",
+                (connection_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return str(row["allowed_endpoints_json"]), str(row["scopes_json"])
+
+    def incarnation(self, connection_id: str) -> str | None:
+        """Which DEPOSIT this connection is, or ``None`` when there is none.
+
+        The id and the credential reference are both derived from
+        (universe, destination), so neither changes when a key is removed and a
+        different one deposited in its place. This does.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT incarnation FROM outbound_connections WHERE connection_id = ?",
+                (connection_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return str(row["incarnation"])
 
     def _get_connection_resource(
         self, connection_id: str

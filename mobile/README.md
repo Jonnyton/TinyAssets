@@ -26,16 +26,27 @@ commands below.
 
 ## Prerequisites (on your build machine)
 
-- **Node.js 18+** and npm
+- **Node.js 22+** and npm (`@capacitor/cli@8` declares `engines.node >= 22`)
 - **Android Studio** (bundles the Android SDK + platform tools) — https://developer.android.com/studio
-- **JDK 17** (Android Studio bundles one; or install Temurin 17)
+- **JDK 21** (Android Studio bundles one; or install Temurin 21). Capacitor 8
+  compiles its Java at source/target 21 — JDK 17 fails with
+  `error: invalid source release: 21`.
 - Set `ANDROID_HOME` / accept SDK licenses (`sdkmanager --licenses`)
 
 ## First-time setup
 
+> **Upgrading an existing checkout?** Delete `mobile/android` first. It is
+> gitignored generated output, and `cap sync` *preserves* `android/variables.gradle`
+> — so a project generated under Capacitor 6 silently keeps `minSdkVersion = 22`
+> and compile/target 34 even after the dependency bump, which Play now rejects.
+> `cap add android` refuses outright rather than overwrite, so nothing is lost by
+> removing it. CI is unaffected: it always starts from a clean checkout.
+
+
 ```bash
 cd mobile
 npm install
+rm -rf android               # REQUIRED if you generated it before Capacitor 8
 npx cap add android          # generates the android/ native project
 npx cap sync android         # copies www/ + config into the native project
 ```

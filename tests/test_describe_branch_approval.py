@@ -1,4 +1,9 @@
-"""Tests for BUG-031: describe/validate/get_branch surface unapproved source_code nodes."""
+"""describe/validate/get_branch: `runnable` reports what the compiler enforces.
+
+`unapproved_source_code_nodes` is provenance (who approved which code) and is
+still listed; it never decides `runnable`. What does: structural validation
+errors and `source_code_problems`, the compiler's own pattern/size/syntax
+check, through the one definition in graph_compiler.source_code_problems."""
 import json
 from unittest.mock import patch  # noqa: E402
 
@@ -150,8 +155,9 @@ class TestDescribeBranchApproval:
         assert result["runnable"] is True
         assert result["unapproved_source_code_nodes"] == []
 
-    def test_unapproved_source_code_node_not_runnable(self):
-        """Branch with an unapproved source_code node is NOT runnable; warning surfaces."""
+    def test_unapproved_source_code_node_is_still_runnable(self):
+        """An unapproved code node is listed as provenance and RUNS: approval
+        never gates execution (the OS sandbox is the boundary)."""
         node = _make_node(
             node_id="sc1",
             display_name="Custom Runner",
@@ -161,30 +167,85 @@ class TestDescribeBranchApproval:
         branch = _make_branch_dict(node_defs=[node])
         result = _call_describe(branch)
 
-        assert result["runnable"] is False
+        assert result["runnable"] is True
+        assert result["source_code_problems"] == []
         assert len(result["unapproved_source_code_nodes"]) == 1
         unapp = result["unapproved_source_code_nodes"][0]
         assert unapp["node_id"] == "sc1"
         assert unapp["display_name"] == "Custom Runner"
-        assert "APPROVAL REQUIRED" in result["summary"]
-        assert "approve_source_code" not in result["summary"]
-        assert "internal operator surface" in result["summary"]
-        assert "before this branch can run" in result["summary"]
-        assert "once validated" not in result["summary"]
+        assert "APPROVAL REQUIRED" not in result["summary"]
+        assert "approve" not in result["summary"].lower()
+
+    def test_code_node_the_compiler_refuses_is_not_runnable(self):
+        """What DOES stop a run: a code node with a syntax error, named."""
+        node = _make_node(
+            node_id="sc1",
+            display_name="Broken Runner",
+            source_code="def run(state: return state",
+            approved=True,
+        )
+        branch = _make_branch_dict(node_defs=[node])
+        result = _call_describe(branch)
+
+        assert result["valid"] is True
+        assert result["runnable"] is False
+        [problem] = result["source_code_problems"]
+        assert problem["node_id"] == "sc1"
+        assert problem["display_name"] == "Broken Runner"
+        assert any("does not parse" in p for p in problem["problems"])
+        assert "CODE NODE 'sc1' (Broken Runner) will not compile" in result["summary"]
+
+    def test_no_served_text_tells_the_agent_to_stop_on_approval(self):
+        """Codex round 1: two prompts still said "if a source-code node isn't
+        approved, stop". The agent plans from these; they must match the
+        receipt."""
+        import pathlib
+
+        import tinyassets.api.branches as branches
+        import tinyassets.api.prompts as prompts
+
+        for mod in (branches, prompts):
+            text = pathlib.Path(mod.__file__).read_text(encoding="utf-8")
+            assert "isn't approved" not in text, mod.__name__
+            assert "must be approved before it can run" not in text, mod.__name__
+        assert "approval never gates a run" in pathlib.Path(prompts.__file__).read_text(encoding="utf-8")
+
+    def test_a_syntax_refusal_keeps_its_cause(self):
+        from tinyassets.graph_compiler import CompilerError, _validate_source_code
+
+        class _Node:
+            node_id = "n"
+            source_code = "def run(state) return state"
+
+        try:
+            _validate_source_code(_Node())
+        except CompilerError as exc:
+            assert isinstance(exc.__cause__, SyntaxError)
+        else:
+            raise AssertionError("did not refuse")
+
+    def test_disallowed_pattern_is_not_runnable(self):
+        from tinyassets.graph_compiler import _DANGEROUS_PATTERNS
+
+        node = _make_node(
+            node_id="sc1",
+            source_code=f"def run(state):\n    {_DANGEROUS_PATTERNS[0]}\n    return state",
+        )
+        result = _call_describe(_make_branch_dict(node_defs=[node]))
+        assert result["runnable"] is False
+        assert "disallowed pattern" in result["source_code_problems"][0]["problems"][0]
 
     def test_unapproved_node_still_valid_structurally(self):
-        """valid reflects structural errors only; approval is separate via runnable."""
+        """valid reflects structural errors only; runnable reflects the compiler."""
         node = _make_node(source_code="code", approved=False)
         branch = _make_branch_dict(node_defs=[node])
         result = _call_describe(branch)
 
-        # No structural errors — valid should be True
         assert result["valid"] is True
-        # But not runnable due to approval gate
-        assert result["runnable"] is False
+        assert result["runnable"] is True
 
     def test_multiple_unapproved_nodes_all_listed(self):
-        """All unapproved source_code nodes appear in the list."""
+        """All unapproved source_code nodes appear in the provenance list."""
         nodes = [
             _make_node(node_id="n1", display_name="Node A", source_code="code", approved=False),
             _make_node(node_id="n2", display_name="Node B", source_code="code", approved=True),
@@ -193,7 +254,7 @@ class TestDescribeBranchApproval:
         branch = _make_branch_dict(node_defs=nodes)
         result = _call_describe(branch)
 
-        assert result["runnable"] is False
+        assert result["runnable"] is True
         ids = {n["node_id"] for n in result["unapproved_source_code_nodes"]}
         assert ids == {"n1", "n3"}
         assert "n2" not in str(result["unapproved_source_code_nodes"])
@@ -213,8 +274,8 @@ class TestGetBranchApproval:
         assert result["runnable"] is True
         assert result["unapproved_source_code_nodes"] == []
 
-    def test_unapproved_source_code_node_not_runnable(self):
-        """get_branch: unapproved source_code node → runnable False, node listed."""
+    def test_unapproved_source_code_node_is_still_runnable(self):
+        """get_branch: unapproved code node → listed as provenance, runnable True."""
         node = _make_node(
             node_id="sc1",
             display_name="Script Node",
@@ -224,9 +285,25 @@ class TestGetBranchApproval:
         branch = _make_branch_dict(node_defs=[node])
         result = _call_get(branch)
 
-        assert result["runnable"] is False
+        assert result["runnable"] is True
+        assert result["source_code_problems"] == []
         assert len(result["unapproved_source_code_nodes"]) == 1
         assert result["unapproved_source_code_nodes"][0]["node_id"] == "sc1"
+
+    def test_code_node_the_compiler_refuses_is_not_runnable(self):
+        """get_branch: the read the served agent plans from names the real problem."""
+        node = _make_node(
+            node_id="sc1",
+            display_name="Script Node",
+            source_code="def run(state) return state",
+            approved=False,
+        )
+        result = _call_get(_make_branch_dict(node_defs=[node]))
+
+        assert result["runnable"] is False
+        [problem] = result["source_code_problems"]
+        assert problem["node_id"] == "sc1"
+        assert "does not parse" in problem["problems"][0]
 
 
 # ---------------------------------------------------------------------------
@@ -244,8 +321,8 @@ class TestValidateBranchApproval:
         assert result["runnable"] is True
         assert result["unapproved_source_code_nodes"] == []
 
-    def test_unapproved_source_code_node_not_runnable(self):
-        """validate_branch: unapproved source_code node → runnable False, node listed."""
+    def test_unapproved_source_code_node_is_still_runnable(self):
+        """validate_branch: unapproved code node → provenance listed, runnable True."""
         node = _make_node(
             node_id="sc1",
             display_name="Custom Script",
@@ -256,10 +333,23 @@ class TestValidateBranchApproval:
         result = _call_validate(branch)
 
         assert result["valid"] is True
-        assert result["runnable"] is False
+        assert result["runnable"] is True
+        assert result["source_code_problems"] == []
         assert len(result["unapproved_source_code_nodes"]) == 1
         assert result["unapproved_source_code_nodes"][0]["node_id"] == "sc1"
         assert result["unapproved_source_code_nodes"][0]["display_name"] == "Custom Script"
+
+    def test_code_node_the_compiler_refuses_is_not_runnable(self):
+        node = _make_node(
+            node_id="sc1",
+            display_name="Custom Script",
+            source_code="def run(state) return state",
+        )
+        result = _call_validate(_make_branch_dict(node_defs=[node]))
+
+        assert result["valid"] is True
+        assert result["runnable"] is False
+        assert result["source_code_problems"][0]["node_id"] == "sc1"
 
     def test_approved_source_code_node_runnable(self):
         """validate_branch: approved source_code node → runnable True."""
@@ -293,7 +383,7 @@ class TestValidateBranchApproval:
         assert len(result["unapproved_source_code_nodes"]) == 1
 
     def test_multiple_unapproved_nodes_all_listed(self):
-        """validate_branch: multiple unapproved nodes all appear in list."""
+        """validate_branch: multiple unapproved nodes all appear in the list."""
         nodes = [
             _make_node(node_id="n1", source_code="code", approved=False),
             _make_node(node_id="n2", source_code="code", approved=True),
@@ -304,7 +394,7 @@ class TestValidateBranchApproval:
 
         ids = {n["node_id"] for n in result["unapproved_source_code_nodes"]}
         assert ids == {"n1", "n3"}
-        assert result["runnable"] is False
+        assert result["runnable"] is True
 
     def test_state_field_node_id_collision_not_valid_or_runnable(self):
         node = _make_node(node_id="status", display_name="Status")

@@ -169,6 +169,7 @@ def test_route_is_mcp_app_get(monkeypatch):
         "/mcp/app/serving/bind",
         "/mcp/app/billing/status", "/mcp/app/billing/checkout",
         "/mcp/app/billing/cancel", "/mcp/app/billing/webhook",
+        "/mcp/app/account/delete",
     }
     assert "GET" in by_path["/mcp/app"].methods
     assert "GET" in by_path["/mcp/app/billing/status"].methods
@@ -178,7 +179,7 @@ def test_route_is_mcp_app_get(monkeypatch):
         "/mcp/app/openai/begin", "/mcp/app/openai/exchange", "/mcp/app/trace",
         "/mcp/app/serving/bind",
         "/mcp/app/billing/checkout", "/mcp/app/billing/cancel",
-        "/mcp/app/billing/webhook",
+        "/mcp/app/billing/webhook", "/mcp/app/account/delete",
     ):
         assert "POST" in by_path[post_only].methods
         assert "GET" not in by_path[post_only].methods
@@ -521,6 +522,72 @@ def _js_function(html: str, name: str) -> str:
     # syntax error that crashes the node harness - loud, never a silent pass.
 
 
+def test_message_timestamps_use_viewer_timezone_and_preserve_the_instant(
+    tmp_path,
+):
+    """One instant crosses the calendar boundary between two viewers.
+
+    The visible label follows the requested viewer timezone, while the semantic
+    ISO datetime remains the same UTC instant. Missing legacy times stay honest.
+    """
+    import os
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:  # pragma: no cover - environment dependent
+        if os.environ.get("TINYASSETS_SKIP_JS_PROBE_TESTS"):
+            pytest.skip("node absent; skip explicitly requested via env")
+        pytest.fail("node executable not found - timestamp formatting runs in JavaScript")
+
+    html, _csp = onboarding.render_app_html()
+    formatter = _js_function(html, "formatMessageTimestamp")
+    instant = 1798763400  # 2027-01-01T00:30:00.000Z
+    program = formatter + f"""
+const instant={instant};
+console.log(JSON.stringify({{
+  losAngeles:formatMessageTimestamp(instant,"en-US","America/Los_Angeles"),
+  tokyo:formatMessageTimestamp(instant,"en-US","Asia/Tokyo"),
+  fallback:formatMessageTimestamp(instant,"en-US","Mars/Olympus"),
+  beforeDst:formatMessageTimestamp(1772962200,"en-US","America/Los_Angeles"),
+  afterDst:formatMessageTimestamp(1772965800,"en-US","America/Los_Angeles"),
+  legacy:formatMessageTimestamp(null,"en-US","America/Los_Angeles"),
+}}));
+"""
+    script = tmp_path / "message_timestamp_case.js"
+    script.write_text(program, encoding="utf-8")
+    proc = subprocess.run(
+        [node, str(script)], capture_output=True, text=True, encoding="utf-8", timeout=20
+    )
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+
+    assert out["losAngeles"]["iso"] == "2027-01-01T00:30:00.000Z"
+    assert out["tokyo"]["iso"] == out["losAngeles"]["iso"]
+    assert "Dec 31, 2026" in out["losAngeles"]["label"]
+    assert "Jan 1, 2027" in out["tokyo"]["label"]
+    assert out["losAngeles"]["zone"] == "America/Los_Angeles"
+    assert out["tokyo"]["zone"] == "Asia/Tokyo"
+    assert out["fallback"]["iso"] == out["losAngeles"]["iso"]
+    assert out["fallback"]["zone"] == "browser local time"
+    assert "GMT" in out["fallback"]["label"]
+    assert "1:30 AM PST" in out["beforeDst"]["label"]
+    assert "3:30 AM PDT" in out["afterDst"]["label"]
+    assert out["legacy"] is None
+
+    # The renderer exposes known instants semantically and never manufactures a
+    # datetime attribute for an unstamped legacy record.
+    assert 'document.createElement(stamp?"time":"span")' in html
+    assert "when.dateTime=stamp.iso" in html
+    assert "Date and time unavailable" in html
+    assert "appendMessage(who, t.text, null, t.ts)" in html
+    assert '? "universe" : "founder"' in html
+    assert 'role==="system"?"Notice":"You"' in html
+    assert 'className="msg msg--system"' not in html, (
+        "every visible notice must use the same timestamped message renderer"
+    )
+
+
 # The real send/resend/build-check code, run in Node against a DOM shim. A
 # string assertion could not tell "the in-flight record is kept" from "kept,
 # then forgotten one line later" (Codex round 1, P2: that mutation passed the
@@ -554,7 +621,13 @@ const els={
 };
 const $=id=>els[id];
 const messages=[];
-function appendMessage(role,text,extra){ messages.push({role,text}); }
+function appendMessage(role,text,extra){
+  if(role!=="system") messages.push({role,text});
+  const el=new El("div"); el.className="msg msg--"+role; el.textContent=text;
+  if(extra) el.appendChild(extra);
+  if(role==="system") els.thread.appendChild(el);
+  return el;
+}
 function setStatusLine(t){ els["status-line"].textContent=t||""; }
 function autoGrow(el){ el.style.height="auto"; }
 function sessionExpired(){ messages.push({role:"session-expired"}); }
@@ -652,12 +725,12 @@ __APP_FUNCTIONS__
     }
     if(SCENARIO.draft) els["composer-input"].value=SCENARIO.draft;
     const note=new El("div"); const buttons=[new El("button"), new El("button")];
-    await answerRail(req, !!SCENARIO.dismiss, note, buttons);
+    await answerRail(req, SCENARIO.dismiss ? "clear" : "accept", note, buttons);
     out.composer=els["composer-input"].value;
     if(SCENARIO.secondRequest){
       const r2=SCENARIO.secondRequest;
       els["fb_"+r2.request_id]=new El("input"); els["mute_"+r2.request_id]=new El("input");
-      await answerRail(r2, false, new El("div"), [new El("button")]);
+      await answerRail(r2, "accept", new El("div"), [new El("button")]);
     }
     await new Promise(r=>setTimeout(r, 20));
     out.noteBeforeRelease=note.textContent; out.callsBeforeRelease=converseCalls.slice();
@@ -741,7 +814,8 @@ def _run_app(tmp_path, scenario: dict) -> dict:
     funcs = "\n".join(_js_function(html, f) for f in (
         "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
         "offerResend", "sendTurn", "checkForNewBuild", "loadHistory", "restoreInflight",
-        "answerLine", "answerRail", "flushSendQueue", "queueTurn",
+        "frameTitle", "answerLine", "replyLine", "refusedGrantLine", "answerRail",
+        "flushSendQueue", "queueTurn",
         "saveQueue", "readSavedQueue", "stillSaved", "forgetSavedItem", "savedItem",
         "restoreQueue", "claimedElsewhere", "offerSavedLine",
     ))
@@ -835,7 +909,7 @@ def test_an_older_identical_prompt_does_not_count_as_delivery(tmp_path):
         "history": [_turn("founder", "continue", 600), _turn("universe", "ok", 600)],
     })
     assert out["inflight"]["message"] == "continue"
-    assert [m["role"] for m in out["messages"]] == ["you", "universe", "founder"]
+    assert [m["role"] for m in out["messages"]] == ["founder", "universe", "founder"]
 
 
 def test_a_message_delivered_while_away_is_not_restored(tmp_path):
@@ -846,7 +920,7 @@ def test_a_message_delivered_while_away_is_not_restored(tmp_path):
         "history": [_turn("founder", "continue", 60), _turn("universe", "done", 60)],
     })
     assert out["inflight"] is None
-    assert [m["role"] for m in out["messages"]] == ["you", "universe"]
+    assert [m["role"] for m in out["messages"]] == ["founder", "universe"]
 
 
 @pytest.mark.parametrize("scenario, reloads", [
@@ -878,7 +952,7 @@ def test_an_unconfirmed_message_survives_a_reload_and_says_so():
 
     html, _csp = render_app_html()
     assert "ta_inflight_turn" in html
-    assert "rememberInflight(message, display)" in html
+    assert "rememberInflight(message, display, sentAt)" in html
     # Cleared on success, KEPT on failure — a failed send is still the user's.
     assert "forgetInflight();" in html
     assert "the send failed, so the message is still the" in html
@@ -933,14 +1007,14 @@ def test_an_approval_is_relayed_as_the_founders_line(tmp_path):
     assert out["refreshed"] == 1 and out["note"] == "Sent." and out["buttonsEnabled"]
 
 
-def test_feedback_rides_along_and_not_now_is_relayed_too(tmp_path):
+def test_feedback_rides_along_and_clear_is_relayed_too(tmp_path):
     out = _run_app(tmp_path, {
         "kind": "rail", "request": _REQ, "dismiss": True,
         "feedback": "ask again after the PR is open", "payload": {"reply": "ok"},
     })
     assert out["answered"][0]["dismiss"] is True
     assert out["answered"][0]["feedback"] == "ask again after the PR is open"
-    assert out["converseCalls"] == [f'Not now: "{_TITLE}" \u2014 ask again after the PR is open']
+    assert out["converseCalls"] == [f'Cleared: "{_TITLE}" \u2014 ask again after the PR is open']
 
 
 def test_a_relay_during_a_turn_waits_and_goes_out_when_the_turn_ends(tmp_path):
@@ -975,7 +1049,7 @@ def test_dont_ask_again_and_agent_authored_titles_are_framed(tmp_path):
                               "payload": {"reply": "understood"}})
     assert out["answered"][0]["dont_ask_again"] is True
     assert out["converseCalls"] == [
-        "Not now: \"Extend 'github' access now\" (and don\u2019t ask me this again)"
+        "Cleared: \"Extend 'github' access now\" (and don\u2019t ask me this again)"
     ]
 
 
@@ -1325,3 +1399,33 @@ def test_a_credential_link_shows_where_it_goes_and_cannot_reach_back() -> None:
     page, _csp = render_app_html()
     assert 'new URL(f.url).host' in page, "the link does not show its host"
     assert '"noopener noreferrer"' in page
+
+
+def test_the_android_shell_shows_no_checkout_ui():
+    """Play's payments policy: a subscription sold inside a Play-installed app must use
+    Play Billing, so the native shell must never surface the Stripe plan/checkout UI."""
+    from pathlib import Path
+
+    html = (Path(onboarding.__file__).parent / "app.html").read_text(encoding="utf-8")
+    assert "if(!b || !PLAN || NATIVE) return;" in html
+
+
+def test_the_app_itself_links_a_privacy_policy():
+    """Google Play's User Data policy: a privacy policy link must be "within the
+    app itself", not only in the store listing or on a website, and reachable in
+    normal use rather than behind a menu. The app had none — zero occurrences of
+    the word — which would have failed review."""
+    from pathlib import Path
+
+    html = (Path(onboarding.__file__).parent / "app.html").read_text(encoding="utf-8")
+    # On the signed-OUT card, so it is reachable before anyone signs in.
+    signin = html[html.index('id="view-signin"'):html.index('id="view-chat"')]
+    assert "https://tinyassets.io/legal#privacy" in signin
+    # And for someone already signed in, on the Account view.
+    account = html[html.index('id="view-account"'):html.index('id="view-connect"')]
+    assert "https://tinyassets.io/legal#privacy" in account
+    assert "https://tinyassets.io/account" in account
+    # Opened externally: a plain navigation would strand a Capacitor user with no
+    # way back to their universe.
+    assert 'a[data-external]' in html
+    assert "openExternal(a.getAttribute(\"href\"))" in html

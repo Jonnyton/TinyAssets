@@ -781,7 +781,7 @@ def current_identity() -> Identity:
 
 
 @contextmanager
-def identity_context(identity: Identity) -> Iterator[None]:
+def identity_context(identity: Identity | None) -> Iterator[None]:
     """Run a block as *identity* — set the request-local identity contextvar and
     restore the prior value after.
 

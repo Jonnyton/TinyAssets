@@ -195,6 +195,23 @@ def _is_open_provider(name: str) -> bool:
     return name.startswith("api_key_http:")
 
 
+class UnknownServingProvider(ValueError):
+    """The name is neither an alias nor a definition registered in this universe.
+
+    Subclasses ``ValueError`` so every existing ``except ValueError`` handler keeps
+    catching it; callers that want to REPORT the distinction catch this first.
+    ``get_definition`` is universe-scoped, so another universe's definition_id
+    lands here too — missing and foreign stay indistinguishable, which is what
+    keeps this from being an existence oracle.
+    """
+
+
+class ServingProviderNotOwned(PermissionError):
+    """The definition exists in this universe but its grant is absent, revoked, or
+    not the caller's. Only reachable for a definition the caller can already list,
+    so naming it discloses nothing they could not see."""
+
+
 def _open_serving_context(
     base: Path, universe_id: str, owner_user_id: str, definition_id: str
 ) -> tuple[str, str, str, str]:
@@ -209,7 +226,7 @@ def _open_serving_context(
 
     definition = get_definition(universe_id, definition_id)
     if definition is None or definition.access_method != "api_key_http":
-        raise ValueError(
+        raise UnknownServingProvider(
             "provider must be claude-code, codex, or a registered api_key_http "
             "definition_id"
         )
@@ -217,14 +234,14 @@ def _open_serving_context(
     ledger = ConnectionLedger(base / "outbound.db")
     grant = ledger.get_grant(definition.ref)
     if grant is None or getattr(grant, "revoked_at", None) is not None:
-        raise PermissionError("open provider connection grant is absent or revoked")
+        raise ServingProviderNotOwned("open provider connection grant is absent or revoked")
     if grant.owner_user_id != owner_user_id or grant.universe_id != universe_id:
-        raise PermissionError(
+        raise ServingProviderNotOwned(
             "open provider grant is not owned by the caller / bound to this universe"
         )
     resource = ledger._get_connection_resource(grant.connection_id)
     if resource is None:
-        raise PermissionError("open provider connection resource is absent")
+        raise ServingProviderNotOwned("open provider connection resource is absent")
     return provider_name, grant.grant_id, grant.connection_id, resource.credential_ref
 
 

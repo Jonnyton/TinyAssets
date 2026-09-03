@@ -1,46 +1,52 @@
 .footer {
-  border-top: 1px solid var(--border-1);
-  background: var(--bg-2);
-  padding-block: var(--s-8) var(--s-5);
   margin-top: var(--s-16);
+  border-top: 2px solid var(--border-strong);
+  background: var(--bg-2);
+  padding-block: var(--s-12) var(--s-8);
 }
-.naming { padding-bottom: var(--s-5); border-bottom: 1px solid var(--border-1); }
-.brand { display: flex; align-items: flex-start; gap: 12px; }
-.namingText {
-  margin: 0;
-  font-family: var(--font-voice);
-  font-size: 15px;
-  line-height: 1.6;
-  color: var(--fg-2);
-  max-width: 72ch;
-}
-.namingText strong { color: var(--fg-1); font-weight: 600; }
-
 .grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 24px;
-  padding: var(--s-6) 0;
-  border-bottom: 1px solid var(--border-1);
+  grid-template-columns: minmax(0, 2fr) repeat(3, minmax(0, 1fr));
+  gap: var(--s-8);
 }
-@media (max-width: 700px) { .grid { grid-template-columns: repeat(2, 1fr); } }
-.col ul { list-style: none; padding: 0; margin: 12px 0 0; display: flex; flex-direction: column; gap: 8px; }
-.col li a { color: var(--fg-2); text-decoration: none; font-size: 13px; }
-.col li a:hover { color: var(--ember-700); text-decoration: underline; }
-
-.supply { padding: var(--s-5) 0; border-bottom: 1px solid var(--border-1); }
-.supplyLine { margin: 0; font-size: 13px; color: var(--fg-3); max-width: 80ch; }
-.supplyLine em { font-style: italic; color: var(--fg-2); }
-
+@media (max-width: 860px) {
+  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .brand { grid-column: 1 / -1; }
+}
+@media (max-width: 520px) {
+  .grid { grid-template-columns: minmax(0, 1fr); }
+}
+.brand {
+  display: grid;
+  gap: var(--s-3);
+  align-content: start;
+}
+.line {
+  font-size: var(--fs-base);
+  max-width: 40ch;
+  margin: 0;
+}
+.col ul {
+  list-style: none;
+  margin: var(--s-3) 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.col a {
+  color: var(--fg-2);
+  text-decoration: none;
+  font-size: var(--fs-base);
+}
+.col a:hover { color: var(--ember-700); text-decoration: underline; }
 .bottom {
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
-  gap: 12px;
-  margin-top: var(--s-4);
-  font-family: var(--font-mono);
-  font-size: 11px;
+  gap: var(--s-3);
+  margin-top: var(--s-10);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--border-1);
   color: var(--fg-3);
 }
-.contact a { color: var(--fg-2); text-decoration: none; }
-.contact a:hover { color: var(--ember-700); }
+.bottom a { color: inherit; }

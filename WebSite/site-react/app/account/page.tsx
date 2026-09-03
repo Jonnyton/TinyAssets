@@ -1,30 +1,78 @@
 import type { Metadata } from "next";
-import styles from "./page.module.css";
+import { RitualLabel } from "@tiny/design-system";
+import { SITE } from "../../lib/site";
 
 export const metadata: Metadata = {
-  title: "No account needed — Tiny",
+  title: "Account",
   description:
-    "There are no website accounts yet — and connecting Tiny needs none. Identity lives in your chatbot connector and your GitHub handle.",
-  alternates: { canonical: "https://tinyassets.io/account" },
+    "Your account lives in the app. How to sign in, how to delete your account and universe yourself, what is removed, and what is kept.",
+  alternates: { canonical: `${SITE.origin}/account/` },
+  robots: { index: false, follow: false },
 };
 
 export default function AccountPage() {
   return (
-    <div className={styles.page}>
-      <section className="stub">
-        <p className="eyebrow">no account here</p>
-        <h1>Accounts don't exist yet — connecting needs none.</h1>
-        <p className="stub__line">
-          There's no sign-up to do. Tiny connects through your chatbot's
-          connector with one URL, and for code, your GitHub handle is the only
-          identity that matters. When website accounts are real — sign-in,
-          export, deletion — this page will say so, instead of showing controls
-          that do nothing.
-        </p>
-        <a className="stub__cta" href="/start">
-          Connect without an account →
+    <section className="container narrow hero">
+      <RitualLabel>Account</RitualLabel>
+      <h1>Your account lives in the app.</h1>
+      <p className="lead">
+        Sign in to the web app with your email. Your universe, its brain, its connections and its
+        stored files are all bound to that account. There is no separate website account.
+      </p>
+      <div className="actions">
+        <a className="btn btn--primary btn--lg" href={SITE.app}>
+          Open the app
         </a>
-      </section>
-    </div>
+      </div>
+
+      <div className="rule" style={{ marginTop: 48 }}>
+        <span className="eyebrow">Deleting your account</span>
+      </div>
+      <p>
+        You can delete your account yourself, in any of the apps — web, Android or desktop. It takes
+        effect immediately and cannot be undone.
+      </p>
+      <ol>
+        <li>Open the app and sign in.</li>
+        <li>
+          Tap <strong>Account</strong> — top right of the chat, or of the Connect screen.
+        </li>
+        <li>
+          Type <strong>DELETE</strong> to confirm, then tap <strong>Delete my account</strong>.
+        </li>
+      </ol>
+      <p>
+        <strong>Removed right away:</strong> your universe — its memory and everything it learned,
+        your conversation history, files you sent it, automations and drafts you made — any AI
+        credential you deposited, connections you added, your access to any other universe, your
+        sign-in identity, and any paid plan, cancelled immediately so nothing further is charged.
+      </p>
+      <p>
+        <strong>Kept:</strong> audit records, with the actor replaced by an opaque id and their
+        summary, target and payload emptied; commons rows that are not personal data, such as
+        published branch definitions and settlement history, with your name removed from them; a
+        one-way digest of your sign-in id, kept so a still-valid session on another device cannot
+        silently re-create the account you just deleted — it cannot be turned back into your id or
+        your email; the invoices our payment processor holds; and server backups until they age out
+        on our retention schedule. Nothing that could rebuild your universe is retained.
+      </p>
+      <p>
+        <strong>If a step cannot complete</strong> — the payment processor is unreachable, say — the
+        app tells you instead of claiming a deletion that did not happen, we record exactly which
+        step is outstanding, and we finish it by hand. Deletion is also refused, with the reason
+        shown, while another person&apos;s data or live work is inside your universe; write to us and
+        we will sort it out.
+      </p>
+
+      <div className="rule" style={{ marginTop: 48 }}>
+        <span className="eyebrow">Can&apos;t sign in?</span>
+      </div>
+      <p>
+        Write to <a href={`mailto:${SITE.contact.legal}`}>{SITE.contact.legal}</a> from the address
+        you signed in with, subject &ldquo;Delete my account&rdquo;. We confirm it is you, run the
+        same deletion within 30 days, and reply when it is done. The same address handles
+        data-export requests.
+      </p>
+    </section>
   );
 }

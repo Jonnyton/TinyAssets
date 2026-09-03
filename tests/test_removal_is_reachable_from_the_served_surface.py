@@ -316,21 +316,35 @@ def test_a_standing_yes_cannot_swallow_a_removal(base):
 
 def test_a_standing_yes_cannot_swallow_a_grant_widening_either(base):
     """The same rule, on the type that had the bug first. One rule, not a
-    special case for removal."""
+    special case for removal.
+
+    The rail checks an extension against the held key when it is raised, so
+    re-asking the IDENTICAL widening after the yes is ``already_held``: the
+    first yes landed it, there is nothing left for a standing yes to swallow.
+    The ask that has to open a real tab is the NEXT widening."""
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
     _seed_connection("u-1")
 
-    widen = {"type": "extend_http", "destination": "github",
-             "endpoints": [{"host": "api.github.com",
-                            "path_template": "/repos/o/r/contents/t.json",
-                            "methods": ["PUT"]}]}
-    ask = _ask("u-1", kind="API", title="one more endpoint", fields=[], action=widen)
+    def widen(name):
+        return {"type": "extend_http", "destination": "github",
+                "endpoints": [{"host": "api.github.com",
+                               "path_template": "/repos/o/r/contents/" + name,
+                               "methods": ["PUT"]}]}
+
+    ask = _ask("u-1", kind="API", title="one more endpoint", fields=[],
+               action=widen("t.json"))
+    assert ask.get("request_id"), ask
     _answer("u-1", request_id=ask["request_id"], values={}, dont_ask_again=True)
 
-    again = _ask("u-1", kind="API", title="one more endpoint", fields=[], action=widen)
-    assert again.get("status") != "settled"
-    assert again.get("request_id")
+    same = _ask("u-1", kind="API", title="one more endpoint", fields=[],
+                action=widen("t.json"))
+    assert same.get("status") == "already_held", same
+
+    again = _ask("u-1", kind="API", title="one more endpoint", fields=[],
+                 action=widen("u.json"))
+    assert again.get("status") != "settled", again
+    assert again.get("request_id"), again
 
 
 def test_a_plain_question_can_still_be_settled_for_good(base):

@@ -1,7 +1,7 @@
 {
   "name": "@tiny/design-system",
   "version": "0.1.0",
-  "description": "Tiny — React design system. The AI-facing component library (Field Notes design language) consumed by claude.ai/design and shipped to the product UI.",
+  "description": "TinyAssets — React design system. The AI-facing component library (ink-editorial design language) consumed by claude.ai/design and shipped to the product UI.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",

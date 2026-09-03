@@ -60,7 +60,7 @@ const EXACT_HOSTS = [
 // TODO(pin-authkit): replace with the exact prod tenant host once confirmed.
 const AUTHKIT_SUFFIX = 'authkit.app';
 
-const BACKGROUND_COLOR = '#0b0b0f';
+const BACKGROUND_COLOR = '#14140f';
 
 // A URL is navigable IN-WINDOW iff: https, default port, and the host is an exact
 // allow-listed host or an *.authkit.app / authkit.app tenant.

@@ -1,12 +1,40 @@
-# App icon + splash source
+# App icon + splash
 
-Drop your artwork here, then run `npx @capacitor/assets generate --android`:
+- `icon.png` — 1024×1024 source (the TinyAssets badge on the ink ground,
+  `#14140f`). Every launcher icon and adaptive foreground is rendered from this.
+- `splash.png` — 2732×2732 source (the badge centred on `#14140f`, matching the
+  loading page and the site ground). Every splash size is a cover-fit centre-crop of this, so editing
+  it changes what ships.
+- `android/` — the **pre-rendered density set** the app actually ships: legacy
+  launcher icons (48–192 px, square + round), adaptive-icon foregrounds
+  (108–432 px, mark at 66% so no launcher mask clips it) and the splash at every
+  `drawable-{port,land}-*dpi` size. Mirrors the Capacitor Android template's
+  paths so `scripts/add_app_icons.py` can copy by path after `npx cap add android`;
+  the installer also checks the manifest still points at `@mipmap/ic_launcher`.
 
-- `icon.png` — 1024×1024 PNG, square, no transparency needed (used for the
-  launcher icon + adaptive icon foreground).
-- `splash.png` — 2732×2732 PNG (optional; a centered logo on the #0b0b0f
-  background matches the loading page).
+Why pre-rendered instead of `npx @capacitor/assets generate`: CI installs with
+`npm ci --ignore-scripts` (read-only build), and `@capacitor/assets` needs sharp's
+native libvips, which only arrives through an install script. Rendering once here
+keeps CI free of an image toolchain and makes the shipped pixels reviewable.
 
-These are the *source* images; the generator produces the density-specific
-Android resources under `android/app/src/main/res/`. Until you add `icon.png`,
-the app builds with Capacitor's default icon.
+## Regenerate
+
+```bash
+cd mobile
+python scripts/render_app_icons.py                      # density set from icon.png + splash.png
+python scripts/render_app_icons.py --from-logo ../assets/icon.png   # also icon.png, splash.png, icon-512
+python scripts/render_app_icons.py --from-logo ../assets/icon.png \
+    --font <Regular.ttf> --font-bold <Bold.ttf>         # ...and the feature graphic
+# or, for every surface at once: python ../WebSite/brand/render_marks.py
+```
+
+The feature graphic is the only output with type on it, and its font must be an
+explicit file: rendered from whatever the host happens to have installed, the same
+command produces different pixels on different machines. Without `--font` it is
+skipped and the committed one is left alone, so `render_marks.py` (which does not
+pass one) stays runnable. Rendered with Pillow 10.x; the committed PNGs are
+canonical — re-render only to change the art, and review the pixel diff.
+
+`scripts/add_app_icons.py` fails the build if any file in `android/` is missing or
+the wrong size for the template it is copied into, so a Capacitor upgrade that
+changes the template surfaces here rather than as a blank icon on a phone.

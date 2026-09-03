@@ -1,7 +1,7 @@
 /* Base reset, semantic element styles, and the site-wide vocabulary classes
-   (.voice / .ev / .eyebrow / .readout / .stat ...). Ported verbatim from the
-   canonical Field Notes stylesheet. Imports the token :root so a single
-   `@import "styles.css"` gives a design the full look. */
+   (.voice / .ev / .eyebrow / .sheet / .rule / .ledger / .receipt ...).
+   Imports the token :root so a single `@import "styles.css"` gives a design
+   the full ink-editorial look. */
 
 @import "./tokens.css";
 
@@ -19,13 +19,14 @@ html, body {
   text-rendering: optimizeLegibility;
 }
 
-/* ---------- ATMOSPHERE ---------- */
+/* ---------- ATMOSPHERE ----------
+   A very faint warm haze at the top, so the ground is not a flat black
+   rectangle. No texture: grain on a dark ground reads as noise. */
 body {
   background:
-    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.32  0 0 0 0 0.30  0 0 0 0 0.24  0 0 0 0.045 0'/></filter><rect width='180' height='180' filter='url(%23n)'/></svg>"),
+    radial-gradient(120% 70% at 50% -10%, rgba(224, 112, 63, 0.07), transparent 60%),
     var(--bg-0);
-  background-size: 180px 180px, auto;
-  background-attachment: scroll, scroll;
+  background-attachment: fixed;
 }
 
 h1, h2, h3 {
@@ -36,11 +37,12 @@ h1, h2, h3 {
   margin: 0 0 var(--s-4);
   color: var(--fg-1);
   text-wrap: balance;
+  font-variation-settings: "opsz" 96, "SOFT" 30;
 }
 
-h1 { font-size: var(--fs-5xl); font-variation-settings: "opsz" 72; }
-h2 { font-size: var(--fs-3xl); }
-h3 { font-size: var(--fs-2xl); letter-spacing: -0.01em; }
+h1 { font-size: clamp(40px, 6.2vw, var(--fs-5xl)); font-variation-settings: "opsz" 144, "SOFT" 30; }
+h2 { font-size: clamp(28px, 3.6vw, var(--fs-3xl)); line-height: var(--lh-snug); }
+h3 { font-size: var(--fs-2xl); line-height: var(--lh-snug); letter-spacing: -0.01em; }
 
 h4, h5, h6 {
   font-family: var(--font-sans);
@@ -68,30 +70,32 @@ p {
 }
 
 a {
-  color: var(--ember-700);
-  text-decoration: none;
+  color: var(--ember-600);
+  text-decoration: underline;
+  text-decoration-color: rgba(224, 112, 63, 0.4);
   text-underline-offset: 3px;
   text-decoration-thickness: 1px;
-  transition: color var(--dur-fast) var(--ease-standard);
+  transition: color var(--dur-fast) var(--ease-standard),
+    text-decoration-color var(--dur-fast) var(--ease-standard);
 }
-a:hover { color: var(--ember-900); text-decoration: underline; }
+a:hover { color: var(--ember-500); text-decoration-color: currentColor; }
 
 code, pre, kbd, samp {
   font-family: var(--font-mono);
-  font-size: 0.92em;
+  font-size: 0.9em;
 }
 code {
-  background: var(--paper-200);
+  background: var(--bg-2);
   border: 1px solid var(--border-1);
   padding: 1px 6px;
   border-radius: var(--radius-xs);
-  color: var(--ink-text-700);
+  color: var(--fg-2);
 }
 pre {
-  background: var(--bg-inset);
-  border: 1px solid var(--border-1);
+  background: var(--bg-1);
+  border: 1px solid var(--border-2);
   padding: var(--s-4);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   overflow-x: auto;
   line-height: var(--lh-normal);
 }
@@ -99,24 +103,51 @@ pre code { background: none; border: none; padding: 0; color: var(--fg-1); }
 
 hr {
   border: 0;
-  border-top: 1px solid var(--border-1);
+  border-top: 1px solid var(--border-2);
   margin: var(--s-8) 0;
 }
 
-::selection { background: rgba(233, 69, 96, 0.16); color: var(--fg-1); }
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: var(--fs-base);
+}
+th, td {
+  text-align: left;
+  vertical-align: top;
+  padding: var(--s-3) var(--s-3) var(--s-3) 0;
+  border-bottom: 1px solid var(--border-1);
+}
+th {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: var(--ls-caps);
+  color: var(--fg-3);
+  border-bottom: 1px solid var(--border-strong);
+}
+
+::selection { background: rgba(224, 112, 63, 0.3); color: var(--fg-1); }
+
+:focus-visible {
+  outline: 2px solid var(--ember-600);
+  outline-offset: 2px;
+}
 
 /* ---------- SITE-WIDE VOCABULARY ---------- */
 
-/* Tiny's first-person voice — used wherever he narrates. */
+/* The universe's first-person voice — used wherever it narrates. */
 .voice {
   font-family: var(--font-voice);
-  font-size: clamp(17px, 1.9vw, 20px);
-  line-height: 1.62;
+  font-size: clamp(18px, 1.9vw, 21px);
+  line-height: 1.55;
   color: var(--fg-1);
   text-wrap: pretty;
-  max-width: 62ch;
+  max-width: 60ch;
+  font-variation-settings: "opsz" 20, "SOFT" 30;
 }
-.voice em { font-style: italic; color: var(--ember-700); }
+.voice em { font-style: italic; color: var(--ember-600); }
 
 /* Evidence — live values, ids, timestamps. Always mono. */
 .ev {
@@ -128,7 +159,7 @@ hr {
   font-feature-settings: "tnum";
 }
 
-/* Field-note section label. */
+/* Section kicker. */
 .eyebrow,
 .ritual-label {
   font-family: var(--font-mono);
@@ -139,7 +170,7 @@ hr {
   font-weight: 500;
 }
 
-/* Liveness dot — green ONLY when genuinely live; amber when asleep. */
+/* Liveness dot — green ONLY when genuinely live; amber when idle. */
 .dot {
   display: inline-block;
   width: 7px; height: 7px;
@@ -148,59 +179,128 @@ hr {
   flex: none;
 }
 .dot.live { background: var(--signal-live); box-shadow: 0 0 0 3px var(--live-100); }
-.dot.idle { background: var(--signal-idle); box-shadow: 0 0 0 3px rgba(176, 138, 46, 0.15); }
+.dot.idle { background: var(--signal-idle); box-shadow: 0 0 0 3px rgba(201, 162, 39, 0.18); }
 .dot.error { background: var(--signal-error); box-shadow: 0 0 0 3px var(--ember-100); }
 
-/* Legacy display pull. */
+/* Display pull — a big serif line with one emphasised word. */
 .display-pull {
   font-family: var(--font-display);
   font-weight: 400;
-  font-size: var(--fs-6xl);
-  line-height: 0.95;
-  letter-spacing: -0.035em;
+  font-size: clamp(44px, 7.5vw, var(--fs-6xl));
+  line-height: 0.98;
+  letter-spacing: -0.025em;
   text-wrap: balance;
+  font-variation-settings: "opsz" 144, "SOFT" 40;
 }
 .display-pull em {
   font-style: italic;
   color: var(--ember-600);
 }
 
-[data-theme="light"] {
-  --bg-0: var(--ground-0);
-  --bg-1: var(--paper-50);
-  --bg-2: var(--paper-100);
-  --bg-3: var(--paper-200);
+/* ---------- THE MOTIF: sheets, rules, ledgers, receipts ---------- */
+
+/* A raised surface on the ground. On ink, depth is a lighter panel. */
+.sheet {
+  background: var(--bg-1);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-card);
+  padding: var(--s-6);
 }
 
-/* ---------- READOUT SURFACE ---------- */
+/* A horizontal rule with a label set into it, like a section head in a ledger. */
+.rule {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  margin: var(--s-8) 0 var(--s-4);
+  color: var(--fg-3);
+}
+.rule::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--border-strong);
+}
+
+/* A ruled table: hairlines between rows, a strong rule under the head. */
+.ledger { width: 100%; border-collapse: collapse; }
+.ledger th {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: var(--ls-caps);
+  color: var(--fg-3);
+  text-align: left;
+  padding: 0 var(--s-3) var(--s-2) 0;
+  border-bottom: 1px solid var(--border-strong);
+}
+.ledger td {
+  padding: var(--s-3) var(--s-3) var(--s-3) 0;
+  border-bottom: 1px solid var(--border-1);
+  vertical-align: top;
+  color: var(--fg-2);
+}
+.ledger td:first-child { color: var(--fg-1); }
+.ledger tr:last-child td { border-bottom: 1px solid var(--border-strong); }
+
+/* A run receipt: a narrow ruled strip of mono lines, the way a real run
+   reports itself. Rows are `dt`/`dd` pairs. */
+.receipt {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  background: var(--bg-1);
+  border-top: 2px solid var(--border-strong);
+  border-bottom: 1px solid var(--border-strong);
+  padding: var(--s-3) var(--s-4);
+  margin: 0;
+  color: var(--fg-2);
+  font-feature-settings: "tnum";
+}
+.receipt > div {
+  display: grid;
+  grid-template-columns: minmax(96px, 12ch) 1fr;
+  gap: var(--s-3);
+  padding: var(--s-2) 0;
+  border-bottom: 1px dashed var(--border-1);
+}
+.receipt > div:last-child { border-bottom: 0; }
+.receipt dt {
+  color: var(--fg-3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: var(--fs-xs);
+  padding-top: 2px;
+}
+.receipt dd { margin: 0; color: var(--fg-1); overflow-wrap: anywhere; }
+.receipt dd.ok { color: var(--signal-live); }
+.receipt dd.err { color: var(--signal-error); }
+.receipt .total { font-weight: 600; color: var(--fg-1); }
+
+/* ---------- PAPER PANEL (the inversion: a printed sheet on the ink) ------- */
 .readout {
   background-color: var(--panel);
-  background-image:
-    linear-gradient(var(--panel-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--panel-line) 1px, transparent 1px);
-  background-size: 28px 28px;
   color: var(--on-panel);
   border-radius: var(--radius-sm);
   padding: var(--s-6);
-  border: 1px solid #2c2a1d;
+  border: 1px solid var(--panel-line);
 }
 .readout h1, .readout h2, .readout h3 { color: var(--on-panel); }
 .readout p { color: var(--on-panel-soft); }
 .readout .eyebrow, .readout .ritual-label { color: var(--on-panel-soft); }
 .readout .ev { color: var(--on-panel-soft); }
-.readout a { color: var(--ember-300); }
-.readout a:hover { color: #ffd7df; }
-.readout .voice em { color: var(--live-bright); }
-.readout .dot.live { background: var(--live-bright); box-shadow: 0 0 0 3px rgba(70, 180, 131, 0.22); }
+.readout a { color: var(--ember-900); text-decoration-color: rgba(164, 75, 33, 0.45); }
+.readout a:hover { color: var(--on-panel); }
+.readout .voice em { color: var(--ember-900); }
+.readout .dot.live { background: var(--live-bright); box-shadow: 0 0 0 3px rgba(47, 107, 58, 0.18); }
 
-/* A single live reading. */
+/* A single reading. */
 .stat { display: grid; gap: 4px; }
 .stat__num {
   font-family: var(--font-mono);
   font-weight: 500;
   font-size: var(--fs-3xl);
   line-height: 1.05;
-  color: var(--on-panel);
+  color: var(--fg-1);
   font-feature-settings: "tnum";
   letter-spacing: -0.01em;
 }
@@ -209,8 +309,10 @@ hr {
   font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: var(--ls-caps);
-  color: var(--on-panel-soft);
+  color: var(--fg-3);
 }
+.readout .stat__num { color: var(--on-panel); }
+.readout .stat__label { color: var(--on-panel-soft); }
 .readout-cell {
   background: var(--panel-raised);
   border-radius: var(--radius-xs);

@@ -6,27 +6,36 @@ import "./globals.css";
 import type { Metadata } from "next";
 import TopNav from "../components/TopNav";
 import Footer from "../components/Footer";
-import TinyBot from "../components/TinyBot";
+import { SITE } from "../lib/site";
+
+const TITLE = "TinyAssets — your own AI universe";
+const DESCRIPTION =
+  "A cloud agent of your own. It runs on the Claude or ChatGPT subscription you already pay for, connects to any platform, builds any automation from a few primitives, learns you as it goes, and keeps working after you close the tab.";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://tinyassets.io"),
-  title: "TinyAssets — meet Tiny, the engine that turns chat into finished work",
-  description:
-    "TinyAssets is the open-source platform you connect to your chatbot over MCP. Tiny is the acting intelligence inside it: name a goal and he runs real multi-step work, with evidence-gated outcomes and workflows users can author, publish, copy, and remix.",
+  metadataBase: new URL(SITE.origin),
+  title: { default: TITLE, template: "%s — TinyAssets" },
+  description: DESCRIPTION,
+  manifest: "/site.webmanifest",
+  icons: {
+    icon: [
+      { url: "/favicon.ico", sizes: "16x16 32x32 48x48" },
+      { url: "/icon.svg", type: "image/svg+xml" },
+    ],
+    apple: "/apple-touch-icon.png",
+  },
   openGraph: {
     siteName: "TinyAssets",
     type: "website",
-    title: "TinyAssets — meet Tiny, the engine that turns chat into finished work",
-    description:
-      "Connect your chatbot to one URL. Name a goal. Tiny runs the real, multi-step work — and shows you live, verifiable evidence instead of marketing claims.",
+    title: TITLE,
+    description: DESCRIPTION,
     images: ["/og-image.png"],
-    url: "https://tinyassets.io/",
+    url: SITE.origin + "/",
   },
   twitter: {
     card: "summary_large_image",
-    title: "TinyAssets — the engine that shows its work",
-    description:
-      "Provenance-labelled public discovery and dated snapshots: live signals say exactly what they measure.",
+    title: TITLE,
+    description: DESCRIPTION,
     images: ["/og-image.png"],
   },
 };
@@ -36,22 +45,29 @@ const jsonLd = {
   "@graph": [
     {
       "@type": "Organization",
-      "@id": "https://tinyassets.io/#org",
+      "@id": `${SITE.origin}/#org`,
       name: "TinyAssets",
-      alternateName: "Tiny",
-      url: "https://tinyassets.io/",
-      logo: "https://tinyassets.io/logo-mark.png",
-      sameAs: ["https://github.com/Jonnyton/TinyAssets"],
+      url: `${SITE.origin}/`,
+      logo: `${SITE.origin}/logo-mark.png`,
+      sameAs: [SITE.repo],
     },
     {
       "@type": "WebSite",
-      "@id": "https://tinyassets.io/#site",
-      url: "https://tinyassets.io/",
+      "@id": `${SITE.origin}/#site`,
+      url: `${SITE.origin}/`,
       name: "TinyAssets",
-      alternateName: "Tiny",
-      description:
-        "TinyAssets is the open-source platform behind Tiny, the personified intelligence users meet through MCP.",
-      publisher: { "@id": "https://tinyassets.io/#org" },
+      description: DESCRIPTION,
+      publisher: { "@id": `${SITE.origin}/#org` },
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": `${SITE.origin}/#app`,
+      name: "TinyAssets",
+      applicationCategory: "ProductivityApplication",
+      operatingSystem: "Web, Android, Windows, macOS, Linux",
+      url: SITE.app,
+      offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+      license: `${SITE.repo}/blob/main/LICENSE`,
     },
   ],
 };
@@ -64,10 +80,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
         />
+        <a className="skip" href="#main">
+          Skip to content
+        </a>
         <TopNav />
-        <main>{children}</main>
+        <main id="main">{children}</main>
         <Footer />
-        <TinyBot />
       </body>
     </html>
   );

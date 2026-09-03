@@ -2,25 +2,10 @@ import type { Metadata } from "next";
 import { Moved } from "../_components/Moved";
 
 export const metadata: Metadata = {
-  title: "Meet Tiny — Tiny",
-  description:
-    "The notebook is now the front page — meet Tiny, the small living engine, reading from inside himself.",
-  alternates: { canonical: "https://tinyassets.io/" },
+  title: "Moved",
+  robots: { index: false, follow: true },
 };
 
-export default function NotebookPage() {
-  return (
-    <Moved
-      to="/"
-      eyebrow="this page moved"
-      line={
-        <>
-          The notebook is now the front page — <em>meet Tiny</em>, the small
-          living engine. Published entries carry source labels; discovery says what it omits.
-        </>
-      }
-      cta="Go to the front page →"
-      sub="/notebook → / · taking you there in a moment"
-    />
-  );
+export default function Page() {
+  return <Moved to="/build/" name="Build" line="The notebook became the build page." />;
 }

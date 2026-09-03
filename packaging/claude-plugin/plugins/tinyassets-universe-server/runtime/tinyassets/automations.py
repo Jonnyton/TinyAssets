@@ -66,7 +66,7 @@ MIN_INTERVAL_SECONDS = 300
 #: Per-universe ceiling on live automations. Counts every non-retired row:
 #: pausing does not free a slot, deleting one does. A paused row still holds an
 #: owner's intent and can be resumed without passing registration again.
-MAX_ACTIVE_PER_UNIVERSE = 20
+MAX_ACTIVE_PER_UNIVERSE = 200
 
 TRIGGER_INTERVAL = "interval"
 TRIGGER_CRON = "cron"

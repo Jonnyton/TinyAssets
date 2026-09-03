@@ -1319,12 +1319,14 @@ def test_invoke_none_answers_not_available():
 
 
 def test_rpc_calls_are_capped_per_run():
-    """The 33rd call fails the node; the first 32 are answered."""
+    """The call after MAX_RPC_CALLS fails the node; every call up to it is
+    answered. The cap is read from node_sandbox, not pinned (2026-09-02)."""
     seen: list[str] = []
-    sandbox = NodeSandbox(timeout=30.0)
+    sandbox = NodeSandbox(timeout=60.0)
+    cap = node_sandbox.MAX_RPC_CALLS
     source = (
         "def run(state):\n"
-        "    for i in range(40):\n"
+        f"    for i in range({cap + 8}):\n"
         "        invoke_mcp_action('ping', i=i)\n"
         "    return {'done': True}\n"
     )
@@ -1336,12 +1338,12 @@ def test_rpc_calls_are_capped_per_run():
         input_keys=[],
         output_keys=["done"],
         invoke=lambda action, kwargs: seen.append(action) or "pong",
-        timeout=30.0,
+        timeout=60.0,
     )
 
     assert result.success is False
     assert "too many rpc calls" in result.error
-    assert len(seen) == 32, f"cap should let exactly 32 through, saw {len(seen)}"
+    assert len(seen) == cap, f"cap should let exactly {cap} through, saw {len(seen)}"
 
 
 def test_rpc_reply_is_capped_at_one_mib():

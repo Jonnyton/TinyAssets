@@ -1,96 +1,57 @@
 # Website preview loop — read this first
 
-`WebSite/site-react/` is the current React/Next production source for
-`tinyassets.io`. `WebSite/site/` is the retained Svelte rollback source. Make
-production edits and build React first, then mirror the intended user-visible
-behavior into Svelte and verify rollback parity.
+`WebSite/site-react/` is the only site source for `tinyassets.io` (Next.js 14,
+static export). The Svelte rollback tree was retired on 2026-09-02; there is
+one tree to edit, preview, test and build.
 
 ## The preview commands
 
 | Purpose | Command | URL |
 |---|---|---|
-| Preview the production React source with hot reload | `cd WebSite/site-react; npm run dev` | `http://localhost:3000/` |
-| Preview the production-exact React static export | `cd WebSite/site-react; npm run preview` | `http://localhost:4322/` |
-| Preview the retained Svelte rollback with hot reload | Double-click `WebSite/preview.bat` | `http://localhost:5173/` |
-| Stop the Svelte background preview | Double-click `WebSite/preview-stop.bat` | — |
+| Hot-reload preview | `cd WebSite/site-react; npm run dev` | `http://localhost:3000/` |
+| Production-exact static export | `cd WebSite/site-react; npm run preview` | `http://localhost:4322/` |
 
-Run `npm install` or `npm ci` in the applicable site directory before the first
-preview. See `WebSite/site-react/PREVIEW.md` for the hosted React preview
-options and live-data caveats.
+Run `npm ci` in `WebSite/design-system` (then `npm run build` there) and in
+`WebSite/site-react` before the first preview. The site consumes the built
+design system from `../design-system/dist`.
+
+`npm run dev` still proxies same-origin `/mcp` for authenticated application
+work, but public site code supplies no bearer and makes no MCP request. Both
+preview modes show the checked-in snapshot and an explicit signed-in-connector
+requirement for live readings.
 
 ## Edit order
 
-1. Edit `WebSite/site-react/**`.
-2. Review the React hot-reload preview at `http://localhost:3000/`.
-3. Build the React static export and, when production-exact rendering matters,
-   review `http://localhost:4322/`.
-4. Apply the corresponding user-visible change to `WebSite/site/**`.
-5. Review the Svelte rollback preview at `http://localhost:5173/`.
-6. Build and test both trees before requesting deployment.
-
-React is the production candidate. Svelte parity keeps rollback viable; it does
-not make Svelte a second production owner.
+1. Edit `WebSite/site-react/**` (tokens and shared vocabulary live in
+   `WebSite/design-system/`; rebuild it after a token change).
+2. Review the hot-reload preview at `http://localhost:3000/`.
+3. `npm test` (authenticated-read boundary, preview trust boundary, public boundary).
+4. `npm run build`, then `python scripts/sweep.py` for the rendered check
+   (every route and alias, phone and desktop, zero console errors).
+5. Open a pull request. Merging does not deploy.
 
 ## Hot reload
 
-Both development servers push saved changes to their own connected browser
-tabs. React uses the Next development server on port 3000. Svelte uses Vite on
-the fixed port 5173. Every tab connected to the same development server sees
-the update.
-
-If a tab needs a manual refresh, treat that as a preview failure worth
-investigating. Syntax and compilation failures should be fixed before relying
-on the preview.
-
-`preview.bat` is hidden, persistent, and idempotent. Running it again opens the
-Svelte preview without starting a second server. It exists for rollback parity;
-it is not the production preview.
-
-## Build checks
-
-Production React:
-
-```powershell
-cd WebSite/site-react
-npm ci
-npm run build
-```
-
-Retained Svelte rollback:
-
-```powershell
-cd WebSite/site
-npm ci
-npm run check
-npm run build
-```
-
-Do not use a successful Svelte build to claim the production site is ready.
-The React build and rendered React preview are the production evidence.
+The Next development server pushes saved changes to every connected tab. If a
+tab needs a manual refresh, treat that as a preview failure worth
+investigating; fix syntax and compilation failures before relying on the
+preview.
 
 ## Shipping
 
-Publish the reviewed website branch through the normal pull-request path.
-Merging the branch does not deploy the website.
-
 After review and merge, a host manually runs
-`.github/workflows/deploy-site-react.yml` with `confirm: deploy`. The
-dispatch-only `.github/workflows/deploy-site.yml` is reserved for a deliberate
-Svelte rollback.
-
-Follow `WebSite/DEPLOY.md` for the deployment and verification sequence. A
-community-watch signal or user-workflow activity is never a deployment
-fallback; platform uptime evidence is separate and explicitly labeled.
+`.github/workflows/deploy-site-react.yml` with `confirm: deploy`. Follow
+`WebSite/DEPLOY.md` for the deployment and verification sequence.
 
 ## Files involved
 
 | File | Role |
 |---|---|
-| `WebSite/site-react/` | Current production React/Next source |
-| `WebSite/site-react/PREVIEW.md` | React local and hosted preview details |
-| `WebSite/site/` | Retained Svelte rollback source |
-| `WebSite/preview.bat` | Svelte rollback preview launcher |
-| `WebSite/preview-stop.bat` | Stops the Svelte preview server |
-| `.github/workflows/deploy-site-react.yml` | Manual current-production deployment |
-| `.github/workflows/deploy-site.yml` | Dispatch-only Svelte rollback |
-| `WebSite/DEPLOY.md` | Deployment and rollback playbook |
+| `WebSite/site-react/` | The site source (Next.js static export) |
+| `WebSite/site-react/PREVIEW.md` | Local and hosted preview details |
+| `WebSite/site-react/scripts/` | Node test suites, the snapshot baker, the Playwright sweep, the preview validators |
+| `WebSite/design-system/` | Tokens, base styles, components (`@tiny/design-system`) |
+| `WebSite/brand/` | The mark and its exporters |
+| `WebSite/shared/mcp/public-read-contract.js` | Snapshot baker's public projection contract |
+| `.github/workflows/deploy-site-react.yml` | Manual production deployment |
+| `WebSite/DEPLOY.md` | Deployment and verification playbook |

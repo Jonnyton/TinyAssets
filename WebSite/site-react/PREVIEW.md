@@ -1,55 +1,52 @@
-# Previewing & approving the React site
+# Previewing & approving the site
 
-This is the current production source for `tinyassets.io`. These preview paths
-do not change the live site; a host publishes the approved React build by
-manually running `deploy-site-react.yml` with `confirm: deploy`. See
-`docs/runbooks/2026-06-24-site-react-cutover.md`.
+This is the production source for `tinyassets.io`. These preview paths do not
+change the live site; a host publishes the approved build by manually running
+`deploy-site-react.yml` with `confirm: deploy`. See `../DEPLOY.md`.
 
-## 1. Local hot-reload (fastest, like the old `vite dev`)
+## 1. Local hot-reload
 
 ```bash
-cd WebSite/site-react
-npm install        # first time
+cd WebSite/design-system && npm ci && npm run build   # first time, and after token edits
+cd ../site-react
+npm ci             # first time
 npm run dev        # → http://localhost:3000
 ```
 
-Live data (vital signs, goals, graph) works: dev proxies `/mcp` →
-`https://tinyassets.io/mcp` server-side (no CORS), the same role the old Svelte
-`/mcp-live` proxy played.
+The dev server proxies `/mcp` → `https://tinyassets.io/mcp` server-side (no
+CORS), but public site code supplies no bearer and does not use that route.
+The commons list shows its labelled checked-in snapshot; live readings require
+a signed-in connector.
 
-## 2. Production-shaped local static preview
+## 2. Production-shaped static preview
 
 ```bash
-cd WebSite/site-react
 npm run preview    # next build + serves the real static export at http://localhost:4322
 ```
 
-This builds the same static-export source locally; the deploy workflow artifact
-is the authoritative production build. Live `/mcp` data does not load here
-because localhost has no same-origin endpoint. Use #1 for live data. Hosted PR
-previews intentionally block `/mcp` and render checked-in public evidence only.
+No `/mcp` exists on localhost. The protected surfaces render the same labelled
+snapshot and signed-in state as the production-shaped public site.
 
-## 3a. Optional manually maintained GitHub Pages snapshot
+## 3. Tests and the rendered sweep
 
-**https://jonnyton.github.io/tiny-site-react-preview/** is a manually maintained
-snapshot in the separate public repo `Jonnyton/tiny-site-react-preview`, not the
-live `tinyassets.io`. It may be stale; verify its published commit before using
-it for review. Notes:
-- It's a project-pages subpath build (`PAGES_BASE_PATH=/tiny-site-react-preview`),
-  so all links are prefixed; nav + in-content links work.
-- Live `/mcp` data may not load (cross-origin from github.io); widgets degrade to
-  "reading…/asleep" — use `npm run dev` for live data.
-- It's a **manual snapshot**, not auto-updating. To refresh after changes:
-  ```bash
-  cd WebSite/site-react
-  MSYS_NO_PATHCONV=1 PAGES_BASE_PATH=/tiny-site-react-preview \
-    NEXT_PUBLIC_MCP_PATH=https://tinyassets.io/mcp npm run build
-  # re-apply the raw-link prefix fixup + rm out/CNAME, then push out/ to the
-  # preview repo's gh-pages branch. For automated PR review, use the isolated
-  # Cloudflare Worker version flow below.
-  ```
+```bash
+npm test                                  # node --test scripts/*.test.mjs
+npm run build && python scripts/sweep.py  # every route + alias, phone + desktop
+node scripts/snapshot-public.mjs          # refresh lib/mcp-snapshot.json from the live endpoint
+```
 
-## 3b. Isolated hosted PR preview (after activation)
+`scripts/` holds:
+
+- `canonical-mcp-contract.test.mjs`, `public-boundary.test.mjs`: the connector
+  contract and the boundary the pages must keep (no public browser MCP request,
+  snapshot provenance retained, no operator status in a browser).
+- `preview-worker-security.test.mjs`, `validate-preview-*.mjs` (+ tests): the
+  hosted-preview trust boundary used by `preview-worker.yml`,
+  `preview-worker-deploy.yml` and `preview-security.yml`.
+- `snapshot-public.mjs`: the snapshot baker (public universe list only).
+- `sweep.py`: the Playwright sweep (Python `playwright`).
+
+## 4. Isolated hosted PR preview (after activation)
 
 After the bootstrap is on `main` and the dedicated preview account/environment
 is provisioned, each eligible same-repository pull request can get an isolated
@@ -130,45 +127,23 @@ must create or harden that environment record and accept Access proof before
 adding either credential.
 
 `workflow_run` uses the workflow definition already present on the default
-branch. The trusted workflow therefore must land through this narrow bootstrap
-before it can publish previews for a later pull request. Fork pull requests may
-build and test without secrets, but they never enter credentialed publication.
-Same-repository pull requests are rechecked immediately before credential use
-to confirm their current head still matches the validated build.
+branch. Fork pull requests may build and test without secrets, but they never
+enter credentialed publication. Same-repository pull requests are rechecked
+immediately before credential use to confirm their current head still matches
+the validated build.
 
 Each successfully published eligible build uses a never-reused alias and a
 provider-generated immutable version URL, so a stale upload cannot change the
-bytes behind earlier review evidence.
-PR close/merge and one-day GitHub artifact expiry do **not** delete Cloudflare
-versions or their version URLs. Cloudflare ages out only alias mappings after
-the 1,000 most recently deployed aliases; underlying version URLs remain
-Access-controlled retained evidence. Before enabling the GitHub credential,
-prove unauthenticated denial and authorized-reviewer loading separately on the
-fixed Worker's base `workers.dev` hostname, one inert host-created bootstrap
-alias hostname, and its provider-generated version hostname. For incident
-response, remove the GitHub environment secret and disable Preview URLs or
-delete the dedicated Worker/account. If policy later requires shorter
-retention, build it as an ordinary user-owned/remixable maintenance workflow
-rather than a privileged TinyAssets loop.
+bytes behind earlier review evidence. PR close/merge and one-day GitHub
+artifact expiry do **not** delete Cloudflare versions or their version URLs.
+For incident response, remove the GitHub environment secret and disable
+Preview URLs or delete the dedicated Worker/account.
 
-## The hosted approval loop (after activation)
+## The approval loop
 
 1. A change lands on a branch / PR (made by you or by an agent).
-2. When the hosted flow is activated, the trusted
-   `preview-worker-deploy.yml` posts an isolated preview URL and exact head SHA
-   only after that unprivileged preview build succeeds and the trusted
-   provenance, sanitization, upload, and current-head checks complete, provided
-   the separately proven Access/environment controls remain active. Other
-   repository checks remain independent merge gates. Until then, use local
-   preview; the GitHub Pages snapshot is a manual fallback and may be stale.
-3. You review the isolated URL as untrusted input; request tweaks or approve.
-4. Mirror the intended user-visible behavior into the retained Svelte rollback
-   tree and verify its focused build.
-5. On approval, merge to `main`. **Merging does not auto-publish.**
-6. The host manually runs `deploy-site-react.yml` with `confirm: deploy`, then
-   completes the public canary and rendered-browser checks in
-   `WebSite/DEPLOY.md`.
-
-React is always edited and built first for production changes. Svelte parity is
-rollback readiness; `deploy-site.yml` remains dispatch-only and is not an
-alternate production pipeline.
+2. Reviewers use the local preview, the sweep screenshots, and (once activated)
+   the isolated hosted preview URL, treated as untrusted input.
+3. On approval, merge to `main`. **Merging does not auto-publish.**
+4. The host manually runs `deploy-site-react.yml` with `confirm: deploy`, then
+   completes the public canary and rendered-browser checks in `../DEPLOY.md`.

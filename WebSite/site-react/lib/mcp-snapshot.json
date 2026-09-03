@@ -1,53 +1,90 @@
 {
-  "fetched_at": "2026-04-30T02:40:04.938Z",
-  "source": "tinyassets.io/mcp",
-  "stats": {
-    "wiki_promoted": 0,
-    "wiki_drafts": 0,
-    "goals": 1,
-    "universes": 0,
-    "edges": 0
-  },
-  "goals": [
+  "fetched_at": "2026-09-02T18:09:28.796Z",
+  "source": "tinyassets.io/mcp · read_graph target=graphs · public projection only",
+  "universes": [
     {
-      "id": "dd187997039b",
-      "name": "Connect public web sources to TinyAssets universes",
-      "summary": "Let a chatbot fetch a public source URL, store the snapshot in a TinyAssets universe through MCP, preserve attribution/provenance, and route proposed changes through branch/gate review before promotion. Echoes of the Cosmos Reddit/RSS is the first live example.",
-      "tags": [
-        "public-source",
-        "mcp",
-        "universe",
-        "echoes",
-        "reddit",
-        "community",
-        "canon-gate"
-      ],
-      "author": "anonymous",
+      "id": "u-01kxm1vszd8hwp7em418asq8h9",
       "visibility": "public",
-      "publication_provenance": [
-        "branches/echoes-reddit-source-intake.yaml",
-        "docs/portfolio/echoes-of-the-cosmos/README.md"
-      ]
+      "phase": "dormant-no-premise",
+      "word_count": 0,
+      "last_activity_at": "2026-09-01T03:19:03.584332+00:00"
+    },
+    {
+      "id": "u-tiny",
+      "visibility": "public",
+      "phase": "dormant-no-premise",
+      "word_count": 0,
+      "last_activity_at": "2026-08-19T04:28:54.080703+00:00"
+    },
+    {
+      "id": "_backup_subject_migration_20260829T055340Z",
+      "visibility": "public",
+      "phase": "idle-no-premise",
+      "word_count": 0,
+      "last_activity_at": null
+    },
+    {
+      "id": "_removed_legacy_20260829",
+      "visibility": "public",
+      "phase": "idle-no-premise",
+      "word_count": 0,
+      "last_activity_at": null
+    },
+    {
+      "id": "_removed_universes_20260828",
+      "visibility": "public",
+      "phase": "idle-no-premise",
+      "word_count": 0,
+      "last_activity_at": null
+    },
+    {
+      "id": "_removed_universes_20260829",
+      "visibility": "public",
+      "phase": "idle-no-premise",
+      "word_count": 0,
+      "last_activity_at": null
+    },
+    {
+      "id": "cloud-automation-inputs",
+      "visibility": "public",
+      "phase": "idle-no-premise",
+      "word_count": 0,
+      "last_activity_at": null
+    },
+    {
+      "id": "daemon_wikis",
+      "visibility": "public",
+      "phase": "idle-no-premise",
+      "word_count": 0,
+      "last_activity_at": null
+    },
+    {
+      "id": "paper-notes",
+      "visibility": "public",
+      "phase": "starved",
+      "word_count": 0,
+      "last_activity_at": null
+    },
+    {
+      "id": "scratch",
+      "visibility": "public",
+      "phase": "idle-no-premise",
+      "word_count": 0,
+      "last_activity_at": null
+    },
+    {
+      "id": "u-01ky3zh1arr8qth8jee7zx63pq",
+      "visibility": "public",
+      "phase": "starved",
+      "word_count": 0,
+      "last_activity_at": null
+    },
+    {
+      "id": "u-01m160scp4azzpa6yy3ayxa5yh",
+      "visibility": "public",
+      "phase": "idle-no-premise",
+      "word_count": 0,
+      "last_activity_at": null
     }
-  ],
-  "universes": [],
-  "wiki": {
-    "bugs": [],
-    "concepts": [],
-    "notes": [],
-    "plans": [],
-    "drafts": []
-  },
-  "edges": [],
-  "tags": {
-    "goal:dd187997039b": [
-      "public-source",
-      "mcp",
-      "universe",
-      "echoes",
-      "reddit",
-      "community",
-      "canon-gate"
-    ]
-  }
+  ]
 }

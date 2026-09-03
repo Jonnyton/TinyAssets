@@ -45,7 +45,6 @@ from tinyassets.graph_compiler import (
     EmptyResponseError,
     NodeEnqueueContext,
     NodeTimeoutError,
-    UnapprovedNodeError,
     compile_branch,
     seed_initial_state,
 )
@@ -3006,7 +3005,7 @@ def _invoke_graph(
             # the child is where a nested prompt's provider call happens.
             on_node_status=on_node_status,
         )
-    except (UnapprovedNodeError, CompilerError) as exc:
+    except CompilerError as exc:
         update_run_status(
             base_path, run_id,
             status=RUN_STATUS_FAILED,
@@ -4614,7 +4613,7 @@ def _invoke_graph_resume(
             effect_chain=effect_chain,
             execution_context=resume_context,
         )
-    except (UnapprovedNodeError, CompilerError) as exc:
+    except CompilerError as exc:
         update_run_status(
             base_path, run_id,
             status=RUN_STATUS_FAILED,

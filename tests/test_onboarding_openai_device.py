@@ -388,7 +388,7 @@ def test_flow_registry_expires_and_caps_per_user(monkeypatch):
     od._reset_pending_for_tests()
     handles = [
         od.register_flow(user_id="u", universe_id="u-home", device_auth_id=f"d{i}", user_code="c")
-        for i in range(5)
+        for i in range(od._MAX_PENDING_PER_USER + 2)
     ]
     alive = [h for h in handles if h in od._pending]
     assert len(alive) == od._MAX_PENDING_PER_USER and alive == handles[-od._MAX_PENDING_PER_USER :]

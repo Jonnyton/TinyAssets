@@ -259,6 +259,8 @@ def _signed_in_operator(request):
     """
     from tinyassets.auth import middleware as _mw
 
+    local_operator_process = _mw._local_operator_process
+    _mw._local_operator_process = False
     operator = Identity(
         user_id=f"test-operator::{request.node.nodeid}",
         username="test-operator",
@@ -276,6 +278,7 @@ def _signed_in_operator(request):
             # different task) leaves the token unresettable here; clearing is
             # the equivalent end state.
             _mw._current_identity.set(None)
+        _mw._local_operator_process = local_operator_process
 
 
 @pytest.fixture

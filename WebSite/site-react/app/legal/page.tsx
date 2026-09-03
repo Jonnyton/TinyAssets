@@ -69,16 +69,29 @@ export default function LegalPage() {
               . Public domain. Use without permission.
             </li>
             <li>
-              <strong>This site</strong>: same MIT for site code, CC0 for site content where original; fonts retain their respective licenses (Newsreader, Inter, IBM Plex Mono — served via Google Fonts, all SIL Open Font License).
+              <strong>This site</strong>: same MIT for site code, CC0 for site content where original; fonts retain their respective licenses (Fraunces, Source Sans 3, IBM Plex Mono, served via Google Fonts, all SIL Open Font License).
             </li>
           </ul>
 
           <h2 id="privacy">Privacy</h2>
+          <p id="app-data">
+            <strong>What the apps collect (web, Android, desktop).</strong> All three apps are the same client of the hosted service and handle data the same way. We collect: (1) a <strong>sign-in identity</strong> — your email address and a user id, issued by WorkOS AuthKit — to authenticate you and bind your universe to you; (2) the <strong>AI provider credential</strong> you choose to deposit (a subscription token or API key), so your universe can run on the compute you gave it; (3) the <strong>messages and files</strong> you send your universe, to provide the service; (4) if you buy a paid plan, the <strong>billing records</strong> our payment processor (Stripe) creates — we never see your card number. Nothing is sold, used for ads, or used to train models, and the apps run no analytics or advertising trackers.
+          </p>
+          <p id="app-data-recipients">
+            <strong>Who receives it.</strong> WorkOS processes sign-in. The AI provider you connect (Anthropic, OpenAI, OpenRouter, or the API you added yourself) receives the messages your universe sends it — that is what running on your own compute means, and that provider&apos;s terms govern that traffic. Stripe processes payments. Our hosting provider stores the service&apos;s data in its data centre. No one else.
+          </p>
+          <p id="app-data-protection">
+            <strong>How it is protected — honestly.</strong> Everything is encrypted in transit (TLS). A credential you deposit through the app&apos;s form or its one-tap OpenAI link goes straight to your universe&apos;s vault and never through a chat model. If you instead deposit one through a third-party chatbot connector (Claude, ChatGPT), it necessarily passes through that chatbot&apos;s context on the way — the app path avoids that. At rest, the vault is a file readable only by the service, which must present the credential to your provider on your behalf; it is not yet encrypted under a separate key. Server backups, where configured, are taken nightly and age out on the configured retention schedule; pruning is best effort, so we do not promise a hard maximum age.
+          </p>
+          <p id="app-data-retention">
+            <strong>Retention and deletion.</strong> We keep your data for as long as your account exists, and deletion is immediate — there is no grace window. Delete your account yourself inside any app (<strong>Account → Delete my account</strong>) or follow <a href="/account">tinyassets.io/account</a>: your universe (memory, history, deposited credentials, connections), every record keyed to it and your sign-in identity are removed at once, and a paid plan is cancelled immediately. What we keep is listed in full on <a href="/account">/account</a>: audit records with the actor replaced by an opaque id and their content emptied, published commons and settlement rows, the invoices Stripe holds, and server backups until they age out on our retention schedule. If a step cannot complete — the payment processor is unreachable, say — the app tells you so and we finish it by hand rather than reporting a deletion that did not happen. Deletion or export by email — CCPA / GDPR Articles 17 and 20 — is handled within 30 days:{" "}
+            <a href={`mailto:${legal.contact.legal}`}>{legal.contact.legal}</a>.
+          </p>
           <p>
-            <strong>Concept-layer public; instance-layer private; never training data.</strong> The <em>shape</em> of your workflow (which nodes, what edges, what state schema) is public — that&apos;s the commons. The <em>contents</em> you process (your documents, your prompts, your fills) stay on your machine or in owner-only storage. We do not train models on your data and never will.
+            <strong>Concept-layer public; instance-layer private; never training data.</strong> The <em>shape</em> of your workflow (which nodes, what edges, what state schema) is public — that&apos;s the commons. The <em>contents</em> you process (your documents, your prompts, your fills) stay on your machine or in owner-only storage. <strong>We</strong> do not train models on your data and never will. What the AI provider you connect does with the messages your universe sends it is governed by <em>your</em> agreement with that provider, not by us — check their terms, since it is your account they run on.
           </p>
           <p>Per-piece visibility is judged by your chatbot per request, not by us. <strong>The chatbot proposes; you confirm. No cached consent.</strong></p>
-          <p>You may export or delete your data at any time. The <code>/account</code> page (Phase 2) provides a 30-day grace-window deletion flow per CCPA / GDPR Article 17.</p>
+          <p>You may export or delete your data at any time — the in-app path and the email path are described under <a href="#app-data-retention">Retention and deletion</a> above and on <a href="/account">/account</a>.</p>
           <p><strong>Cookies / analytics:</strong> we plan to use Plausible (privacy-friendly, no PII, no third-party trackers). No advertising cookies, no cross-site tracking pixels.</p>
           <p>
             <strong>Minimum age.</strong> TinyAssets is not directed at children. You must be at least <strong>18 years old</strong> to use the service or hold a wallet connection. Wallet features are not live today; the age self-declaration described here pre-positions the obligation for if and when wallet-connect opens. You self-declare your age at wallet-connect; misrepresentation is grounds for termination. We do not knowingly collect data from minors; if you believe we have, contact{" "}

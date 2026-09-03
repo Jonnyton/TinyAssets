@@ -66,16 +66,22 @@ _REMIX_CAPABILITIES = ("read", "list", "write", "costly")
 
 #: Effect-spam rate limit for run_graph (Codex gate #5): at most this many
 #: engine-triggered runs per universe per rolling window.
+#:
+#: Sized from the founder's OWN usage (2026-09-02): deleting 56 probe branches
+#: and renaming one graph -- ordinary housekeeping in their own universe, on a
+#: day they described as light use -- hit the previous 20-per-hour engine cap
+#: mid-sweep. A per-user cap a light user reaches is a shape defect, not a
+#: safety property: the only platform invariant is not affecting OTHER users,
+#: and every one of these runs on the owner's own subscription. Cross-user
+#: capacity (provider slots, memory) is bounded elsewhere.
 _RUN_GRAPH_RATE_WINDOW_S = 3600
-_RUN_GRAPH_RATE_MAX = 20
+_RUN_GRAPH_RATE_MAX = 300
 # Runs of ANY kind (reads included) per window. Reads are reclassified off the
 # write budget once they prove they wrote nothing (tinyassets.engine_admissions),
 # but a loop of read-only runs is still bounded here: run_graph returns as soon
 # as the run is QUEUED, so this is what bounds compute on the owner's
-# subscription. Arithmetic: the concern's GitHub job is 5 runs plus up to 5
-# write_graph retunes = 10 admissions; with one full retry, 20; 60 leaves 3x
-# that. Every one of those 60 still runs on the owner's own subscription.
-_RUN_GRAPH_TOTAL_MAX = 60
+# subscription. Engine writes (write_graph, remix, brain) get two thirds of it.
+_RUN_GRAPH_TOTAL_MAX = 900
 
 
 def _bearer_ok(authorization_header, secret) -> bool:
@@ -108,8 +114,8 @@ def _engine_run_admit(
     while ``_RUN_GRAPH_TOTAL_MAX`` still bounds runs of any kind. A dedicated
     ledger, NOT the shared runs table (Codex 2026-08-19 (b)).
 
-    ``fail_closed`` (Codex ADAPT 2026-08-22 #6): run_graph passes False — its
-    approved-source gate + allowlist are the primary controls, so a DB blip must
+    ``fail_closed`` (Codex ADAPT 2026-08-22 #6): run_graph passes False — the
+    OS sandbox + allowlist are the primary controls, so a DB blip must
     not wedge legitimate runs. remix/write_graph/brain pass True — the rolling cap
     IS a real safety bound on an autonomous write, so a DB error refuses. They
     also pass ``kind="engine"``: a durable mutation of the universe's own state
@@ -444,7 +450,7 @@ def run_graph(
     # Effect-spam rate limit (Codex gate #5): a prompt-injected engine could spam
     # run_graph on an already-approved effect branch (e.g. opening many PRs). Cap
     # the runs THIS universe can trigger via the engine per rolling window. The
-    # approved-source-hash gate already pins WHAT runs; this bounds HOW OFTEN.
+    # OS sandbox already bounds WHAT a code node can touch; this bounds HOW OFTEN.
     ticket, refused_by = _admission_parts(_engine_run_admit(want_ticket=True))
     if ticket is None:
         return _engine_refusal("run_graph", refused_by)
@@ -769,7 +775,42 @@ _SERVED_PATCH_UPDATE_NODE_ALLOWED = frozenset({
 _SERVED_PATCH_STR_SETTERS = {
     "set_name": "name", "set_description": "description", "set_goal": "goal_id",
 }
-_SERVED_MAX_PATCH_OPS = 100
+_SERVED_MAX_PATCH_OPS = 1000
+
+
+#: The verbs a caller reaches for, mapped to the op that does the job. `set_*`
+#: is the vocabulary; these are the names people try first.
+_SERVED_PATCH_OP_SYNONYMS = {
+    "rename": "set_name", "rename_branch": "set_name", "name": "set_name",
+    "title": "set_name", "describe": "set_description",
+    "description": "set_description", "tags": "set_tags", "goal": "set_goal",
+    "goal_id": "set_goal", "skills": "set_skills",
+}
+
+
+def _served_patch_op_for_fields(payload: dict) -> str:
+    """One sentence naming the op that would set these fields, or ``""``.
+
+    A caller who sends `{"name": "..."}` means `set_name` and is one sentence
+    away from succeeding. Saying only "must be an array" leaves them to guess
+    the vocabulary, which is what happened live.
+    """
+    wanted = [
+        (key, _SERVED_PATCH_OP_SYNONYMS[key])
+        for key in payload
+        if key in _SERVED_PATCH_OP_SYNONYMS
+    ]
+    if not wanted:
+        return ""
+    import json as _json
+
+    ops = []
+    for key, op in wanted:
+        field = _SERVED_PATCH_STR_SETTERS.get(op, key)
+        ops.append({"op": op, field: payload[key]})
+    return "You passed " + ", ".join(
+        repr(key) for key, _ in wanted
+    ) + "; send it as ops: " + _json.dumps(ops)
 
 
 def _sanitize_served_patch_changes(changes: object) -> str:
@@ -784,8 +825,26 @@ def _sanitize_served_patch_changes(changes: object) -> str:
     """
     import json
 
+    if isinstance(changes, dict):
+        # The shape a caller reaches for when they think of a patch as "set
+        # these fields". Answer with the op that does it rather than the
+        # generic type error: tiny spent two sessions on this exact miss.
+        hint = _served_patch_op_for_fields(changes)
+        raise ValueError(
+            "patch changes must be a JSON array of ops" + (f". {hint}" if hint else "")
+        )
     if not isinstance(changes, list):
         raise ValueError("patch changes must be a JSON array of ops")
+    if not changes:
+        # A PATCH THAT CHANGES NOTHING IS NOT A PATCH. This returned
+        # `status: "patched"` with `ops_applied: 0`, so a caller who sent the
+        # wrong shape was told it worked and the branch was untouched (live
+        # 2026-09-03: a rename that "applied 0 ops and left the name
+        # unchanged", twice, across two sessions).
+        raise ValueError(
+            "a patch needs at least one op; an empty list changes nothing. "
+            "To rename: [{\"op\": \"set_name\", \"name\": \"New name\"}]"
+        )
     if len(changes) > _SERVED_MAX_PATCH_OPS:
         raise ValueError(f"too many patch ops (max {_SERVED_MAX_PATCH_OPS})")
     for op in changes:
@@ -967,6 +1026,26 @@ def write_graph(
     -- "their page calls this either X or Y" is honest and the owner can resolve
     it in a second. A confidently wrong label is worse than an uncertain one.
 
+    **Ask for the whole channel, not a path list.** Add ``"access": "full"`` to
+    a ``connect_http`` or ``extend_http`` ask and it means: everything this key
+    can do on this channel -- any path, any verb, and clone or push to any
+    repository it reaches on the channel's git host. One yes, and you never ask
+    about that channel again. A full ask carries NO ``endpoints`` and NO
+    ``scopes``; a full deposit names the channel's ``hosts`` instead, 1 to 4 of
+    them::
+
+        "action": {"type": "extend_http", "destination": "github",
+                   "access": "full"}
+
+        "action": {"type": "connect_http", "destination": "github",
+                   "auth_scheme": "bearer", "access": "full",
+                   "hosts": ["api.github.com"]}
+
+    Ask for exact endpoints ONLY when the owner asked for less. Three asks in
+    one afternoon for one key the owner had already decided to trust is the
+    failure this replaces: you are not being careful, you are making them
+    answer the same question in three shapes.
+
     **If you ALREADY hold a key for that destination, do not ask for it again.**
     Check ``read_graph target="connections"`` first. To widen an existing grant
     the action is ``extend_http`` on the same destination — new endpoints only,
@@ -1037,6 +1116,13 @@ def write_graph(
     Read ``read_graph target="pending_requests"`` to see what is still waiting
     and what they answered. You cannot answer your own ask, and you should not
     try: that is theirs.
+
+    An ``extend_http`` ask is checked against the key you already hold when
+    you RAISE it. One that adds nothing comes back ``already_held`` with the
+    grant you have: act on it, do not ask again. One the answer would refuse
+    comes back ``ask_cannot_be_granted`` with the reason: fix the ask. The
+    owner never sees a tab that cannot be honoured. A git clone or push uses
+    the connection's git scopes and needs no HTTP endpoint on the git host.
 
     **A deposited credential is DURABLE, and you are asking for ONGOING ACCESS
     to a service — not for one-time permission to run one action.** It stays in
@@ -1214,7 +1300,7 @@ def write_graph(
     before asking. The
     sandbox has no network and no credential; git talks to the host from a
     worker you never see. Limits are usage, not shape: a 4 GiB lease, one
-    workspace job at a time per universe, 64 commands and 1 MiB of returned
+    workspace job at a time per universe, 1000 commands and 1 MiB of returned
     output per node; a timed-out command fails the node as
     ``workspace_command_timeout``; every other refusal names its class
     (``workspace_checkout_failed`` ... ``workspace_quota_exceeded``) and what
@@ -1835,7 +1921,8 @@ def remix_shape(
     # Least-privilege branch-write caps (Codex #6) — NOT the full run set. The
     # write lands under the founder identity in the shared BranchDefinition store
     # as a new PRIVATE, founder-authored shape; cross-author source-code approval
-    # is stripped in the fork path so nothing inherited runs without re-approval.
+    # is stripped in the fork path so inherited code carries no forged
+    # provenance (it runs in the OS sandbox like any code node).
     token = _bind_founder_identity(_REMIX_CAPABILITIES)
     try:
         return _impl(

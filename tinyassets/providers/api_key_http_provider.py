@@ -62,6 +62,30 @@ def _single_host(view: Any) -> str:
     )
 
 
+def _declared_path(view: Any) -> str:
+    """The connection's single concrete request path, or "" if it declares none.
+
+    The user's own endpoint URL is what they granted, so it is what we must call.
+    Before this, the grant carried the user's path (``/custom/chat``) while the
+    encoder called the protocol's canonical one (``/v1/chat/completions``), and
+    the broker refused the mismatch — every endpoint whose path was not the
+    canonical one was registerable but could never serve.
+
+    A template (one containing a ``{`` placeholder) is not a concrete path, and a
+    connection declaring several is ambiguous; both fall back to the protocol
+    path rather than guessing.
+    """
+    paths = {
+        str(getattr(ep, "path_template", "") or "")
+        for ep in getattr(view, "allowed_endpoints", ()) or ()
+        if str(getattr(ep, "path_template", "") or "")
+    }
+    if len(paths) != 1:
+        return ""
+    path = next(iter(paths))
+    return "" if "{" in path else path
+
+
 def _coerce_status(value: Any) -> int | None:
     # A well-formed proxy envelope carries an INT status. Reject floats/bools/
     # non-digit strings (Codex review): int(200.9) == 200 would let a malformed
@@ -154,13 +178,17 @@ class ApiKeyHttpProvider(BaseProvider):
             raise ProviderUnavailableError("compute connection resource is absent")
         host = _single_host(view)
 
-        path, body = self._encode(
+        protocol_path, body = self._encode(
             prompt=prompt,
             system=system,
             model=self.model,
             temperature=getattr(config, "temperature", None),
             max_tokens=getattr(config, "max_tokens", None),
         )
+        # The path the user granted wins over the protocol's canonical one: the
+        # broker allowlists what they registered, so calling anything else is a
+        # guaranteed refusal. The encoder still owns the BODY shape.
+        path = _declared_path(view) or protocol_path
         # Protocol-static, credential-FREE headers (e.g. anthropic-version, required
         # by the Anthropic Messages API or it 400s). The api key is NOT here — the
         # broker applies it from the connection's auth_scheme (x-api-key for Claude).
