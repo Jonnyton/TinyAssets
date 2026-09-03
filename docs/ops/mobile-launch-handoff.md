@@ -94,10 +94,11 @@ Apple Account **Sign-In & Security** page and showed two-factor authentication w
 trusted phone number. Account creation is complete. Apple Developer Program enrollment,
 payment, and identity confirmation are not complete. The account holder confirmed the
 account result, closed the completed support chat, accepted the Apple Developer Agreement,
-and declined optional developer-news email. The preserved enrollment flow is now at
-**Confirm your personal information**. It requires legal name, phone number, and physical
-address, and warns that the name cannot be changed after **Continue**; that identity step
-and membership payment remain account-holder actions.
+and declined optional developer-news email. The account holder then completed **Confirm
+your personal information**, and Apple advanced to **Secure Checkout**. The preserved
+checkout requires the Apple Account password before it will show the exact price, renewal
+terms, and payment method. Credential entry and final membership purchase remain account-
+holder actions; no charge has been submitted.
 
 What is ready, stated precisely — the gap here is wider than "just enrol":
 
