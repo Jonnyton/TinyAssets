@@ -40,8 +40,13 @@ if [ "$actual" != "$EXPECTED_SHA256" ]; then
 fi
 echo "upload certificate fingerprint verified"
 
-AAB="$(find /work/mobile/android/app/build/outputs/bundle/release -name '*.aab' | head -1)"
-[ -n "$AAB" ] || { echo "no .aab found — run build.sh first"; exit 1; }
+# `|| true` matters: under `set -e -o pipefail` a failing find would abort the
+# script at this assignment, so the friendly message below would never print.
+AAB="$(find /work/mobile/android/app/build/outputs/bundle/release -name '*.aab' 2>/dev/null | head -1 || true)"
+if [ -z "$AAB" ]; then
+  echo "no .aab under mobile/android/app/build/outputs/bundle/release — run build.sh first"
+  exit 1
+fi
 echo "bundle: $AAB"
 
 jarsigner -sigalg SHA256withRSA -digestalg SHA-256 \
