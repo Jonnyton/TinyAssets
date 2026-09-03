@@ -240,20 +240,6 @@ row; if yes, the concern above is the prerequisite.
 
 ## Credentials and accounts
 
-### Google Play: verify the contact phone number — DONE 2026-09-02, and it was never yours
-
-*The mobile rows that follow are the founder-only slice of a larger picture;
-`docs/ops/mobile-launch-handoff.md` is where both platforms actually stand.*
-
-Kept only so it does not get re-filed as a blocker. This row used to read "BLOCKS
-EVERYTHING ELSE" on the reasoning that `Create app` was padlocked behind an unverified
-contact phone. That was wrong in the part that mattered: **verifying it took one click in
-the Console and sent no SMS code at all**, so it never needed the founder. The app was
-created 2026-09-02 and a signed bundle reached internal testing 2026-09-03.
-
-The lesson, which is the reason these three lines survive: *try the step before handing it
-over.* A verification that Google might send a code for is not the same as one it does.
-
 ### Google Play: `WORKOS_API_KEY` reaches the daemon — VERIFIED 2026-09-02, nothing for you
 
 Account deletion removes the user's WorkOS record through the management API, and that
