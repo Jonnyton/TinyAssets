@@ -62,12 +62,25 @@ workflows moved to **node 22** because `@capacitor/cli@8` declares
 
 Two consequences worth knowing:
 
-- **`minSdk` rises 22 → 24.** Android 5.0/5.1 devices drop off. That is forced by
-  the template and is not worth fighting for a new app.
-- **The custom `LocalCallbackPlugin` survives.** It only uses `Plugin`,
-  `PluginCall`, `PluginMethod`, `@CapacitorPlugin` and `BridgeActivity`, all stable
-  across the 6 → 8 range, and `add_app_scheme.py` still patches the same manifest
-  and `MainActivity` paths.
+- **`minSdk` rises 22 → 24.** That drops **API 22 (Android 5.1)** and **API 23
+  (Android 6.0)** — two levels, not one; API 21 was already unsupported. Forced by
+  the template and not worth fighting for an app with no users yet.
+- **The custom `LocalCallbackPlugin` survives.** Its full Capacitor surface is
+  `Plugin`, `PluginCall`, `PluginMethod`, `@CapacitorPlugin`, `JSObject`,
+  `getActivity()`, `getContext()`, `notifyListeners()`, the `handleOnDestroy`
+  lifecycle hook, and `BridgeActivity` for the registration splice. All are
+  retained in 8, and `add_app_scheme.py` still patches the same manifest and
+  `MainActivity` paths.
+- **The foreground service is already Android 14+ clean.** `add_app_scheme.py`
+  writes the non-exported service with `android:foregroundServiceType="dataSync"`
+  plus both required permissions, and the service promotes itself with the matching
+  type. There is no `PendingIntent`; every service and activity launch is explicit.
+
+**Upgrading a checkout that predates this change: delete `mobile/android` first.**
+`cap sync` preserves `android/variables.gradle`, so a project generated under
+Capacitor 6 keeps `minSdkVersion = 22` and compile/target 34 even after the
+dependency bump — a locally built bundle would still be rejected while looking
+correct. CI is immune because it always starts clean.
 
 **Do not "fix" a future rejection by lowering the target.** The number only ever
 goes up; re-check the page above before each release, because the August cutover
