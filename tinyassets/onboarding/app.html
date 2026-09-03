@@ -350,11 +350,50 @@
           <code>write_graph connect_llm</code>. If the deposit backend isn't live yet, you'll see the
           connector's honest response below.</p>
           <label class="field"><span>Service</span>
-            <select id="connect-service"><option value="claude">Claude</option><option value="codex">OpenAI</option></select>
+            <select id="connect-service">
+              <option value="claude">Claude subscription</option>
+              <option value="codex">OpenAI subscription</option>
+              <option value="__endpoint__">Any other LLM &mdash; your own endpoint</option>
+            </select>
           </label>
-          <label class="field"><span>Subscription credential</span>
-            <textarea id="connect-material" rows="3" placeholder="OAuth token / credential material"></textarea>
-          </label>
+
+          <!-- The subscription path: one credential, because a Max/Pro plan is
+               a different gesture from an API key. -->
+          <div id="connect-subscription">
+            <label class="field"><span>Subscription credential</span>
+              <textarea id="connect-material" rows="3" placeholder="OAuth token / credential material"></textarea>
+            </label>
+          </div>
+
+          <!-- Any endpoint. The platform has no list of vendors: it needs a
+               URL, a wire protocol and a model name, which is exactly what
+               connect_compute takes. -->
+          <div id="connect-endpoint" hidden>
+            <label class="field"><span>Name it</span>
+              <input id="endpoint-name" type="text" placeholder="my-llm" autocomplete="off">
+            </label>
+            <label class="field"><span>Endpoint URL</span>
+              <input id="endpoint-url" type="url" placeholder="https://api.example.com/v1/chat/completions" autocomplete="off">
+            </label>
+            <label class="field"><span>Wire protocol</span>
+              <select id="endpoint-protocol">
+                <option value="openai_chat">Chat completions &mdash; messages[] in, choices[] out (most APIs)</option>
+                <option value="anthropic_messages">Messages &mdash; system sent separately, content blocks out</option>
+              </select>
+              <small class="dev-note">Two request shapes, not two companies: nearly every
+              hosted API, gateway and local server speaks the first one, and your
+              provider's own docs will show you which it is. If yours speaks neither, the
+              endpoint is refused rather than half-working &mdash; tell us the shape and
+              we add the encoder.</small>
+            </label>
+            <label class="field"><span>Model</span>
+              <input id="endpoint-model" type="text" placeholder="the model id your provider documents" autocomplete="off">
+            </label>
+            <label class="field"><span>API key</span>
+              <textarea id="endpoint-key" rows="2" placeholder="Your API key for that endpoint"></textarea>
+            </label>
+          </div>
+
           <button id="btn-deposit" class="btn btn--primary">Deposit securely</button>
           <pre id="connect-result" class="result" hidden></pre>
         </details>
@@ -1534,7 +1573,10 @@
       return (await r.json()).serving||null;
     }catch(_e){ return null; }
   }
-  function serviceLabel(service){ return service==="codex" ? "OpenAI" : "Claude"; }
+  // The two subscription CLIs have friendly names; anything else IS its name,
+  // because the platform does not keep a vendor list to look one up in.
+  const SERVICE_LABELS={claude:"Claude",codex:"OpenAI"};
+  function serviceLabel(service){ return SERVICE_LABELS[service] || service; }
   function servingSentence(service, sv){
     if(sv&&sv.status==="serving") return serviceLabel(service)+" connected. Your universe thinks and works on it from the next turn.";
     const why=(sv&&(sv.detail||sv.reason))?(": "+(sv.detail||sv.reason)):"";
@@ -1905,10 +1947,84 @@
         $("signin-notice").textContent=note;
       }catch(_e){ st.textContent="Couldn't reach the server. Try again in a moment."; btn.disabled=false; }
     }
+    // Which half of the form applies. An endpoint needs a URL, a protocol and
+    // a model; a subscription needs one credential.
+    function syncConnectMode(){
+      const endpoint=$("connect-service").value==="__endpoint__";
+      $("connect-endpoint").hidden=!endpoint;
+      $("connect-subscription").hidden=endpoint;
+    }
+    $("connect-service").addEventListener("change",syncConnectMode);
+    syncConnectMode();
+
+    // Deposit an API key against ONE endpoint, register the compute descriptor
+    // on top of that grant, then point the universe at it. Every call here
+    // already existed; nothing about this path names a vendor.
+    async function depositEndpoint(out){
+      const name=$("endpoint-name").value.trim();
+      const url=$("endpoint-url").value.trim();
+      const protocol=$("endpoint-protocol").value;
+      const model=$("endpoint-model").value.trim();
+      const keyEl=$("endpoint-key"), key=keyEl.value.trim();
+      if(!name||!url||!model||!key){
+        out.textContent="Name, endpoint URL, model and API key are all needed.";
+        return null;
+      }
+      let parsed;
+      try{ parsed=new URL(url); }
+      catch(_e){ out.textContent="That endpoint URL is not a URL."; return null; }
+      if(parsed.protocol!=="https:"){
+        out.textContent="The endpoint must be https, so your key is never sent in the clear.";
+        return null;
+      }
+      keyEl.value="";   // clear the secret from the DOM BEFORE any await
+      out.textContent="Depositing securely...";
+      const deposit=await MCP.connectHTTP(name,key,[{
+        host:parsed.host,
+        path_template:parsed.pathname||"/",
+        methods:["POST"],
+      }],"bearer");
+      if(!deposit||!deposit.grant_id){
+        out.textContent=JSON.stringify(deposit,null,2);
+        return null;
+      }
+      out.textContent="Key stored. Registering the model...";
+      const compute=await MCP.connectCompute({
+        access_method:"api_key_http",
+        protocol,
+        model,
+        ref:deposit.grant_id,
+      });
+      const ref=compute&&(compute.connection_id||compute.definition_id||compute.id);
+      if(!ref){
+        out.textContent=JSON.stringify(compute,null,2);
+        return null;
+      }
+      return ref;
+    }
+
     $("btn-deposit").addEventListener("click",async()=>{
       const service=$("connect-service").value, out=$("connect-result");
       const materialEl=$("connect-material"), material=materialEl.value.trim(), btn=$("btn-deposit");
       out.hidden=false;
+
+      if(service==="__endpoint__"){
+        btn.disabled=true;
+        try{
+          const ref=await depositEndpoint(out);
+          if(ref){
+            out.textContent="Registered. Pointing your universe at it...";
+            const sv=await serveOn(ref);
+            out.textContent=servingSentence($("endpoint-name").value.trim()||ref, sv);
+            if(sv&&sv.status==="serving") onEngineConnected();
+          }
+        }catch(err){
+          if(err.authRequired){ btn.disabled=false; return enterSignedOut(); }
+          out.textContent="Connect failed: "+err.message;
+        }finally{ btn.disabled=false; }
+        return;
+      }
+
       if(!material){ out.textContent="Enter your subscription credential first."; return; }
       materialEl.value="";  // clear the secret from the DOM BEFORE any await, on every path
       btn.disabled=true; out.textContent="Depositing securely...";
