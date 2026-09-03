@@ -278,6 +278,36 @@ installable app without an account.
 3. Then I create the App Store Connect record, fill the listing and App Privacy, and push a
    build to TestFlight.
 
+### Google Play: start the 12-tester closed test — this is the 14-day clock
+
+**This is the long pole for Play, and only you can start it.** A personal developer
+account cannot apply for production access until it has run a **closed test with at
+least 12 testers opted in continuously for 14 days**. The 14 days are wall-clock:
+nothing an agent does shortens them, and the clock does not start until the testers are
+actually in. Every other Play item finishes in hours; this one finishes in a fortnight,
+so starting it late is what sets the public launch date.
+
+Alongside the Apple enrolment above, this is one of **two clocks worth starting today**.
+They run in parallel and neither depends on the other.
+
+What it needs from you:
+
+1. **Twelve people with Google accounts** who will opt in and stay opted in. They do not
+   have to use the app daily — they have to remain on the tester list for the full 14
+   days. Removing someone mid-window can reset progress, so over-recruit rather than
+   land on exactly twelve.
+2. Play Console → **Test and release → Testing → Closed testing** → create a track and
+   add them, by email list or Google Group. A Google Group is easier to change later.
+3. Tell me when they are in, and I will take the release itself — the build is already
+   signed and the internal-testing track is live, so promoting a bundle to the closed
+   track is not new work.
+
+After the 14 days: apply for production access, which Google reviews separately, and
+only then can the app be promoted to Production and be publicly downloadable.
+
+Do not confuse this with the internal-testing track already running — internal testing
+does not count toward the requirement, no matter how long it runs.
+
 ### Google Play: a reviewer test account — and AuthKit has no password to give it
 
 Play Console -> App content -> **Sign in details** (formerly "App access"). Our app is
