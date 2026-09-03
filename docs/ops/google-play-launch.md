@@ -38,6 +38,56 @@ change needs a new AAB.
 
 ---
 
+## 1a. Target API level — Play rejects anything below 36 for a NEW app
+
+**Caught 2026-09-03, before an upload burned a cycle.** Google's requirement
+(`developer.android.com/google/play/requirements/target-sdk`) changed on
+**2026-08-31**: a *new* app must target **Android 16 (API 36)** or higher. App
+updates must too. Existing apps need 35 just to stay visible to new users on
+current devices.
+
+We were on Capacitor 6, whose template pins `compileSdkVersion = 34` and
+`targetSdkVersion = 34` in the generated `android/variables.gradle`. That is two
+levels short, and the Console refuses the bundle at upload — it is not a warning.
+
+**The fix is the Capacitor major, not a one-line override.** Capacitor 8 defaults
+to `compileSdk = 36`, `targetSdkVersion = 36`, `minSdkVersion = 24` (read straight
+out of `@capacitor/android@8.5.1`'s `capacitor/build.gradle`). Overriding 34 → 36
+under Capacitor 6's AGP is unsupported and would have to be re-applied on every
+`cap add android`, because `mobile/android/` is generated and gitignored.
+
+So `mobile/package.json` now pins the Capacitor 8 line, and the three mobile
+workflows moved to **node 22** because `@capacitor/cli@8` declares
+`engines.node >= 22.0.0`.
+
+Two consequences worth knowing:
+
+- **`minSdk` rises 22 → 24.** That drops **API 22 (Android 5.1)** and **API 23
+  (Android 6.0)** — two levels, not one; API 21 was already unsupported. Forced by
+  the template and not worth fighting for an app with no users yet.
+- **The custom `LocalCallbackPlugin` survives.** Its full Capacitor surface is
+  `Plugin`, `PluginCall`, `PluginMethod`, `@CapacitorPlugin`, `JSObject`,
+  `getActivity()`, `getContext()`, `notifyListeners()`, the `handleOnDestroy`
+  lifecycle hook, and `BridgeActivity` for the registration splice. All are
+  retained in 8, and `add_app_scheme.py` still patches the same manifest and
+  `MainActivity` paths.
+- **The foreground service is already Android 14+ clean.** `add_app_scheme.py`
+  writes the non-exported service with `android:foregroundServiceType="dataSync"`
+  plus both required permissions, and the service promotes itself with the matching
+  type. There is no `PendingIntent`; every service and activity launch is explicit.
+
+**Upgrading a checkout that predates this change: delete `mobile/android` first.**
+`cap sync` preserves `android/variables.gradle`, so a project generated under
+Capacitor 6 keeps `minSdkVersion = 22` and compile/target 34 even after the
+dependency bump — a locally built bundle would still be rejected while looking
+correct. CI is immune because it always starts clean.
+
+**Do not "fix" a future rejection by lowering the target.** The number only ever
+goes up; re-check the page above before each release, because the August cutover
+repeats annually.
+
+---
+
 ## 2. Generate the upload keystore (once, keep it secret)
 
 **Done 2026-09-01** on the founder's machine, outside the repo:
