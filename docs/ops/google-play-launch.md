@@ -1,14 +1,21 @@
 # Google Play launch — drive-everything runbook
 
-Everything needed to publish the TinyAssets Android app to Google Play, staged so
-the founder's own actions are: (1) add the four upload-keystore secrets (one command,
-§3), (2) say "yes" in chat before the agent creates the app and its forms in the Play
-Console on the founder's Google account, (3) try the internal-test build on a phone,
-and (4) click **Roll out** after review. All content below is copy-paste ready.
+Everything needed to publish the TinyAssets Android app to Google Play. As of
+2026-09-03 the app is created, the listing and declarations are filled, and a signed
+bundle is live on the internal testing track, so the founder's remaining actions are:
+(1) try the internal-test build on a phone, (2) enable password sign-in in WorkOS and
+create a Play reviewer account — the one thing genuinely blocking the App content
+rows, (3) run the closed test Play requires before production access, and (4) click
+**Roll out** after review. The four upload-keystore secrets are **optional**: see §0.
+All content below is copy-paste ready.
 
 Package name (permanent once published): **`io.tinyassets.app`**
 (`mobile/capacitor.config.json`). App is the Capacitor shell over
 `https://tinyassets.io/mcp/app` — see `desktop-app/README.md` + `mobile/README.md`.
+
+> **Picking this up cold? Read [`mobile-launch-handoff.md`](mobile-launch-handoff.md)
+> first.** This file is the procedure; that one is where both platforms actually
+> stand, what is genuinely blocked on whom, and the traps already paid for.
 
 ---
 
@@ -17,11 +24,11 @@ Package name (permanent once published): **`io.tinyassets.app`**
 | Step | Action | Where |
 |---|---|---|
 | Account | ~~Create a Google Play Developer account.~~ **Done** — developer `8089695267825659874`, identity verified 2026-08-24 (Play Console mail). | https://play.google.com/console/developers/8089695267825659874 |
-| **Phone** | **BLOCKS EVERYTHING.** Contact phone `+12067997835` is on file but NOT verified, so `Create app` is greyed out with "Complete account verifications to create new apps" (observed 2026-09-02). Google sends a code by SMS or call; only you can read it. Developer account → Contact details → **Verify**. | Play Console |
+| Phone | ~~Verify the contact phone `+12067997835`.~~ **Done 2026-09-02 — and it was never a founder action.** It took one click in the Console and sent no SMS code, despite the padlock text implying otherwise. Try such a step before handing it over. | — |
 | Payment | ~~Authorize the $25 fee.~~ **Done** with the account. | — |
-| Signing key | The keystore is generated (§2, 2026-09-01). **Add its 4 values as repo secrets** — one command, §3. An agent cannot: `gh secret set` is denied to it. | your machine → GitHub secrets |
-| Console forms | Creating the app, its declarations (incl. US export laws), listing, Data safety, content rating and the internal-testing release are **form submissions on your Google account**: the agent drives them in the browser only after an explicit "yes" in chat. Nothing exists in the Console until then. | Play Console (agent, gated on your yes) |
-| Device check | Install the internal-test build from its opt-in link, sign in, chat once. | your phone |
+| Signing key | The keystore is generated (§2, 2026-09-01). Adding its 4 values as repo secrets is **optional, not blocking** — `mobile/container/` builds and signs the bundle with no secret at all, and that is how the shipped build was made. Worth doing anyway: it turns each future release into one `gh workflow run`. One command, §3; an agent cannot run it (`gh secret set` is denied to it). | your machine → GitHub secrets |
+| Console forms | Creating the app, its declarations (incl. US export laws), listing, Data safety, content rating and the internal-testing release are **form submissions on your Google account**: the agent drives them in the browser only after an explicit "yes" in chat. Those named here are **done** (2026-09-02/03); what is left needs the reviewer account below. | Play Console (agent, gated on your yes) |
+| **Device check** | **The live one.** Install the internal-test build, sign in, chat once: <https://play.google.com/apps/internaltest/4701716760893982267> | your phone |
 | Publish | Promote to Production → submit for review → click **Roll out**. | Play Console |
 
 Everything else below I build/stage.
@@ -30,8 +37,10 @@ Everything else below I build/stage.
 
 ## 1. What ships
 
-A signed **`.aab`** (Android App Bundle — Play's required format) produced by CI
-(`.github/workflows/android-release.yml`), signed with your **upload key**; Google
+A signed **`.aab`** (Android App Bundle — Play's required format) produced either by
+CI (`.github/workflows/android-release.yml`) or locally by `mobile/container/`, which
+mirrors the same steps and needs no repo secrets — that is how the shipped bundle was
+built. Signed with your **upload key**; Google
 holds the real app-signing key via **Play App Signing** (recommended default). The
 web app updates ship instantly (no store resubmit) — only a native-shell/config
 change needs a new AAB.
@@ -338,60 +347,87 @@ Screenshots come from the live app so they're honest:
 
 ## 11. Submit (after §1–§10)
 
-1. Play Console → **Create app** — name `TinyAssets`, App, Free, declarations.
-2. Fill the listing (§4), Data safety incl. the account-deletion URL (§6), Content
-   rating (§7), Target audience (§8), privacy URL (§4/§5), graphics (§9).
-3. **Internal testing** release first (reaches testers in minutes): create a
-   release → upload the CI-built `app-release.aab` → add your email as a tester →
-   roll out → verify the full loop on a device.
-4. Promote to **Production** → submit for review (hours–days) → **Roll out**.
-5. Enroll in **Play App Signing** when prompted (recommended default).
+Steps 1–3 are **done** (2026-09-02/03) and are kept here as the shape of a release,
+not as work outstanding:
+
+1. ~~Play Console → **Create app**~~ — done: name `TinyAssets`, App, Free, declarations
+   accepted, Play App Signing enrolled.
+2. ~~Fill the listing (§4), Data safety incl. the account-deletion URL (§6), Content
+   rating (§7), privacy URL (§4/§5), graphics (§9).~~ — done, except **Target audience
+   (§8)**, which Play refuses to open until Sign in details has a reviewer account.
+3. ~~**Internal testing** release~~ — done 2026-09-03 11:10: bundle built by
+   `mobile/container/`, uploaded, rolled out. Opt-in link in the status checklist below.
+
+Outstanding:
+
+4. Verify the full loop on a device from the internal-test link.
+5. Reviewer account → Sign in details → Target audience (§8) → submit Data safety.
+6. **Closed test**, 12 testers for 14 days, then apply for production access.
+7. Promote to **Production** → submit for review (hours–days) → **Roll out**.
 
 ---
 
-## Status checklist (I keep this current — last swept 2026-09-02)
+## Status checklist (I keep this current — last swept 2026-09-03)
 
-Play Console's own counter reads **8 of 11** on "Provide app information and create your
-store listing".
+> **The app is on Google Play.** Internal testing track, release `1 (1.0)`,
+> published 2026-09-03 11:10, "Available to internal testers", 3.1 MB install.
+> **Opt-in link: https://play.google.com/apps/internaltest/4701716760893982267**
+> (that number is the *track* id, not the app id — verified by loading the page,
+> which renders "You're invited to test io.tinyassets.app (unreviewed)"). Open it
+> on the phone signed in as the founder's Google account, tap **Accept invite**,
+> then install from Play.
+> Testers see the temporary name `io.tinyassets.app (unreviewed)` until the
+> listing review completes; that is expected, not a defect.
+
+Play Console's App content counter reads **8 of 11**. That counter gates
+*production*, not internal testing — which is why the app is installable now.
 
 Done:
 
-- [x] Package id decided (`io.tinyassets.app`)
-- [x] Release AAB CI workflow (`android-release.yml`)
-- [x] Listing content written (§4) and **entered in the Console**
-- [x] Privacy policy section (§5) — on the **production** `/legal` (React site) as of this
-      change; #2507 had only put it on the retired Svelte site
-- [x] In-app privacy policy link — Play's User Data policy requires the link *inside* the
-      app, not only on the listing. Added to the sign-in card and Account view (#2778).
-- [x] Account deletion (§5): in-app Account → Delete my account + `/account` web page
-      (2026-09-02); no checkout UI in the Android shell (§8)
-- [x] Founder: Play Console account + $25 (§0) — verified 2026-08-24
-- [x] Contact phone number verified (§0) — **this was never a founder action.** It took a
-      single click in the Console and sent no SMS code. Try the step before handing it over.
-- [x] Upload keystore generated (§2, 2026-09-01) + certificate pinned in the workflow
-- [x] Launcher icon + splash (`mobile/resources/`, installed by `scripts/add_app_icons.py`)
-- [x] Listing graphics: icon-512, feature graphic, 2 phone screenshots (§9, §10 — 2026-09-01)
-- [x] Play Console: **app created** (2026-09-02), store listing filled
-- [x] App content — privacy policy, Ads, Government apps, Financial features, Health,
-      app category + contact details
-- [x] **Content rating** — IARC questionnaire submitted 2026-09-02 (§7); Everyone / PEGI 3 /
-      USK 0 / ClassInd L
-- [x] Data safety answers written and **saved as a draft** (§6)
+- [x] Package id `io.tinyassets.app`, keystore generated + certificate pinned
+- [x] Store listing, graphics, privacy policy URL, in-app privacy link (#2778)
+- [x] Account deletion in-app and at `tinyassets.io/account`
+- [x] Ads / Government / Financial / Health declarations, category, contact details
+- [x] **Content rating** — IARC submitted 2026-09-02, Everyone / PEGI 3 / USK 0 / ClassInd L
+- [x] Data safety answered and **saved as a draft**
+- [x] Contact phone verified — one click, no SMS code. It was never a founder action.
+- [x] **targetSdk 36** via Capacitor 8 (§1a) — Play rejects anything less for a new app
+- [x] Internal-testing tester list "Founder devices"
+- [x] **Signed AAB built and uploaded** — see "How to build one" below
 
-Open, with what each is actually waiting on:
+Open, with what each actually waits on:
 
-- [ ] Founder: the four upload-keystore secrets (§3). `gh secret set` is refused by this
-      harness's classifier, and the 1Password CLI (`op`) is not installed on the founder's
-      Windows host, so `scripts/load_secrets.sh` cannot supply them here either.
-- [ ] AAB built + uploaded (§11) — waiting on the line above. **This, not the reviewer
-      account, is the shortest path to a real install:** Play's internal testing track works
-      "before you've finished setting up your app", so it does not wait on the App content
-      rows below.
-- [ ] Founder: enable Email + Password sign-in in WorkOS and create a review account, then
-      fill **Sign in details**. AuthKit currently offers only "Continue with SSO" and
-      "Continue with Google" — verified on the live sign-in page 2026-09-02 — so there is no
-      password we could give Google today. See `docs/host-actions.md`.
-- [ ] Target audience and content — refuses to start until Sign in details is complete.
-- [ ] Data safety **submit** — the draft cannot be submitted until Target audience is done.
-- [ ] Closed testing: 12 testers for 14 days, which Play requires before production access.
-- [ ] Production roll out (§11)
+- [ ] **You: open the opt-in link, accept, install, and try the loop** — sign in,
+      connect a provider, send a message. This is the first real-user test and it is
+      the only thing that can find what a compile cannot.
+- [ ] Founder: enable Email + Password sign-in in WorkOS and create a review account.
+      AuthKit currently offers only "Continue with SSO" and "Continue with Google"
+      (verified on the live page 2026-09-02), so there is no credential to give Google.
+      See `docs/host-actions.md`.
+- [ ] Sign in details → Target audience → Data safety submit — the chain that unlocks
+      the last three App content rows, all gated on the account above.
+- [ ] Founder: the four `ANDROID_UPLOAD_*` secrets. Not on the critical path any more —
+      the container build below needs none of them — but they turn every future release
+      into one `gh workflow run` instead of a manual build.
+- [ ] Closed testing: 12 testers for 14 days, then apply for production access.
+- [ ] Production roll out (§11) — your final click.
+
+### How to build a signed AAB with no GitHub secrets
+
+The release workflow is the nice path, but it is not the only one, and it was never
+the blocker it looked like. A container that mirrors the workflow's own steps
+produces the same artifact in about five minutes:
+
+- **Toolchain**: Ubuntu 24.04, **JDK 21** (Capacitor 8 compiles at source/target 21),
+  **node 22**, Android **platform 36** + **build-tools 36.0.0**.
+- **Build**: `npm ci` → `rm -rf android` → `cap add android` → `cap sync android` →
+  `add_app_scheme.py` → `add_app_icons.py` → `gradlew bundleRelease`.
+- **Sign**: the workflow's own jarsigner step, including the fail-closed certificate
+  pin, with passwords passed via `-storepass:env` so they never reach argv. Strip
+  CRLF from `upload-keystore.env` first — see `docs/host-actions.md` for why.
+- **Upload**: the Console's file input accepts the `.aab` directly.
+
+The `rm -rf android` is load-bearing: `cap add android` refuses to overwrite an
+existing platform, and `cap sync` *preserves* a stale `variables.gradle`, so a tree
+generated under Capacitor 6 keeps minSdk 22 / SDK 34 and would build a bundle Play
+rejects while looking perfectly healthy.

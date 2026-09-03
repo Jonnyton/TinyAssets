@@ -8,6 +8,11 @@ Apple Developer account + payment + signing assets + the final submit.
 Bundle id: **`io.tinyassets.app`** (matches `mobile/capacitor.config.json`
 `appId`; permanent once published).
 
+> **Picking this up cold? Read [`mobile-launch-handoff.md`](mobile-launch-handoff.md)
+> first.** This file is the procedure; that one is where both platforms actually
+> stand. The short version for iOS: nothing here can ship until the founder enrols
+> in the Apple Developer Program, and that is the long pole.
+
 ---
 
 ## 0. Founder-only actions (I cannot do these)
@@ -42,11 +47,18 @@ the founder provides the signing secrets (§3) — same pattern as the Android r
 ```bash
 cd mobile
 npm ci
-npm run add:ios          # cap add ios (generates ios/, runs pod install)
+npm run add:ios          # cap add ios (generates ios/; writes Package.swift, NOT a Podfile)
 npm run sync:ios         # cap sync ios
 python3 scripts/add_ios_scheme.py   # registers the tinyassets:// URL scheme
 npm run open:ios         # opens Xcode → Product > Archive → Distribute App > App Store Connect
 ```
+
+**Capacitor 8 uses Swift Package Manager, not CocoaPods.** When every plugin ships a
+`Package.swift` — ours all do — `cap sync ios` writes `Package.swift` and never runs
+`pod install`, so there is **no `App.xcworkspace`**. Open and build `App.xcodeproj`.
+CI does the same: `ios-build.yml` passes `-project App.xcodeproj`, falling back to a
+workspace only if a CocoaPods integration ever reappears. If you follow an old
+Capacitor guide that says to open the workspace, it will not exist and that is correct.
 
 In Xcode: select the App target → Signing & Capabilities → your Team →
 "Automatically manage signing." Archive → Distribute → App Store Connect → Upload.
