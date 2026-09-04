@@ -188,6 +188,13 @@ def test_ios_workflows_verify_export_compliance_key() -> None:
     assert expected in RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
 
+def test_ios_workflows_select_the_app_store_required_sdk() -> None:
+    for workflow in (BUILD_WORKFLOW, RELEASE_WORKFLOW):
+        text = workflow.read_text(encoding="utf-8")
+        assert "/Applications/Xcode_26.3.app/Contents/Developer" in text
+        assert '[[ "$sdk_version" == 26.* ]]' in text
+
+
 def test_app_store_screenshot_manifest_is_an_honest_ios_capture_contract() -> None:
     manifest = json.loads(SCREENSHOT_MANIFEST.read_text(encoding="utf-8"))
     assert manifest["platform"] == "iOS"

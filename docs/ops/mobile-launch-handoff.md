@@ -13,8 +13,8 @@ Runbooks stay where they are — `docs/ops/google-play-launch.md` and
 
 **Google Play: installable today, but only by invited testers.** Public availability
 is at minimum 14 days away and needs 12 real people. **Apple: the App Store record,
-metadata, unpublished privacy draft, signing certificate, and provisioning profile
-are staged; API upload access, screenshots, device proof, and review remain.**
+metadata, unpublished privacy draft, signing/profile/API credentials, and a verified
+signed IPA are staged; the Xcode 26 upload fix, screenshots, device proof, and review remain.**
 
 ---
 
@@ -96,9 +96,11 @@ The founder accepted App Store Connect Terms of Service V100 (last updated 04 Ju
 manual release are saved; the four-type privacy draft is configured but unpublished,
 with legal-policy URLs blank. An empty `Internal` TestFlight group exists with automatic
 distribution off, 0 testers, and 0 builds. An Apple Distribution certificate/private
-key and matching App Store provisioning profile now exist; the encrypted P12/password
-are protected GitHub environment secrets. App Store Connect API access has not been
-requested and no upload key exists. The exact remaining values and confirmation boundaries are in
+key, matching App Store profile, and Developer-role CI upload key now exist; all six
+required values are protected GitHub environment secrets. Signed IPA 1.0.0 (1) is
+verified. Apple's upload rejected build 2 only because the runner defaulted to Xcode
+16.4/iOS 18.5 while iOS SDK 26 is mandatory; the local Xcode 26.3 fix awaits required
+Claude review. The exact remaining values and confirmation boundaries are in
 `docs/ops/app-store-submission-packet.md`.
 
 What is ready, stated precisely — the gap here is wider than "just enrol":
@@ -152,12 +154,11 @@ Local evidence, Windows checkout, 2026-09-03:
 - PR #2798 exact-head `build-ios` on GitHub's `macos-15` runner — passed 2026-09-03
   after the App ID registration update.
 
-Membership, the explicit App ID, the App Store Connect record, the distribution
-certificate/private key, and the matching App Store provisioning profile are active.
-The P12/password are protected environment secrets; the profile download/secret and
-App Store Connect API access/key remain. Until the profile secret exists, the release
-workflow cannot produce an installable IPA; without API access it cannot upload one to
-TestFlight.
+Membership, the explicit App ID, the App Store Connect record, signing/profile/API
+credentials, and all six protected secrets are active. The release workflow produced
+and verified a signed IPA. TestFlight upload is blocked only by Apple's new iOS 26 SDK
+floor and the repository's required cross-family review; the focused local fix selects
+Xcode 26.3 and fails closed if the SDK is not 26.x.
 
 ---
 

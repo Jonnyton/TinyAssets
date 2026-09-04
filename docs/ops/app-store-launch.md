@@ -9,12 +9,21 @@ declarations, device testing, and the final submit.
 Bundle id: **`io.tinyassets.app`** (matches `mobile/capacitor.config.json`
 `appId`; permanent once published).
 
+Founder directive 2026-09-03: complete all ordinary Apple-required App Store setup,
+attestations, credentials, builds, truthful metadata/privacy answers, TestFlight work,
+review submission, and release without repeated approval. Stop only for a new monetary
+charge, irreversible destructive action, non-required material choice, or a personal/legal
+fact that cannot be established from verified evidence. Computer-use actions that require
+action-time confirmation under product policy remain subject to that policy.
+
 > **Picking this up cold? Read [`mobile-launch-handoff.md`](mobile-launch-handoff.md)
 > first.** This file is the procedure; that one is where both platforms actually
 > stand. The short version for iOS: Apple Developer Program membership activated
 > on 2026-09-03; the explicit App ID and App Store Connect record were created and
 > verified that day. Product metadata and the unpublished privacy draft are saved,
-> and an empty internal TestFlight group exists. Signing credentials are the next gate.
+> and an empty internal TestFlight group exists. Signing, provisioning, API access, and
+> all six protected CI secrets are complete. A signed IPA is proven; TestFlight upload
+> is blocked on the reviewed Xcode 26 workflow correction recorded in `docs/concerns/`.
 > The copy-ready form answers, asset manifest, smoke checklist, and exact portal
 > sequence live in [`app-store-submission-packet.md`](app-store-submission-packet.md).
 
@@ -28,7 +37,7 @@ Bundle id: **`io.tinyassets.app`** (matches `mobile/capacitor.config.json`
 | Payment | **Complete 2026-09-03:** annual membership purchase confirmed. | Apple Online Store |
 | App ID | **Complete 2026-09-03:** `TinyAssets iOS` / `io.tinyassets.app` registered and visible in the signed-in Identifiers list. | developer.apple.com |
 | App record | **Complete 2026-09-03:** App Store Connect Terms V100 accepted; TinyAssets record created for `io.tinyassets.app`; Apple ID `6808434444`. | App Store Connect |
-| Signing assets | **Partial 2026-09-03:** Apple Distribution certificate/private-key pair and active `TinyAssets App Store 2026` profile exist. P12 and password are protected environment secrets. Profile download and App Store Connect API access/key remain. | developer.apple.com / App Store Connect |
+| Signing assets | **Complete 2026-09-03:** verified Distribution certificate/private key, active matching profile, Developer-role CI upload API key, and all six protected environment secrets. | developer.apple.com / App Store Connect |
 | Identity/tax/banking | Complete Apple's identity + (for paid apps) tax/banking. This app is free → tax/banking optional. | App Store Connect |
 | Submit | Click **Submit for Review** after the build + metadata are in. | App Store Connect |
 
@@ -80,9 +89,8 @@ In Xcode: select the App target → Signing & Capabilities → your Team →
 The protected GitHub environment **`app-store`** was created on 2026-09-03. It
 requires the founder's approval and allows deployments only from `main`. Both
 release jobs use that environment, so neither a signing identity nor an upload
-credential is exposed to an unapproved run. The P12 and password secrets were added
-on 2026-09-03; the profile and three API-key values remain. Store all six values as
-`app-store` environment secrets; each step references
+credential is exposed to an unapproved run. All six values were added as protected
+`app-store` environment secrets on 2026-09-03; each step references
 only the subset it uses:
 
 | Secret | Value |
@@ -104,6 +112,13 @@ only a 14-day IPA artifact with a SHA-256 checksum and source/version manifest.
 Turn it on only when the app record exists and a TestFlight upload is intended;
 that job validates before upload. Uploading creates a build in App Store Connect
 but does not select it for an App Store version or submit it for review.
+
+Live evidence 2026-09-03: run `33824784381` completed the protected Xcode archive,
+App Store export, and artifact upload for signed IPA 1.0.0 (1). Run `33824990349`
+completed the same signed build for build 2, then Apple's pre-upload validation rejected
+the runner-default Xcode 16.4/iOS 18.5 SDK because iOS 26 is now mandatory. The local
+workflow fix selects the installed Xcode 26.3 and fails closed on any non-26 SDK; see
+`docs/concerns/2026-09-03-ios-app-store-upload-requires-xcode-26.md`.
 
 ---
 
@@ -231,7 +246,8 @@ and [unavailability procedure](https://developer.apple.com/help/app-store-connec
 - [x] Empty `Internal` TestFlight group created with automatic distribution off
 - [ ] Founder/counsel: approve final privacy policy; then land/deploy and verify the iOS wording
 - [x] Protected `app-store` environment: founder approval + `main` only (§3)
-- [ ] Signing setup: certificate/P12/password complete; profile download and API access/key remain (§3)
+- [x] Signing setup and all six protected CI values complete (§3)
+- [x] Signed IPA 1.0.0 (1) built and checksum/profile verified
 - [ ] Screenshots captured (§6)
 - [ ] Build uploaded → TestFlight verified → submitted/manual release (§7)
 - [ ] Founder: decide current-shell submission vs native differentiator before App Review

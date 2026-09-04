@@ -1,9 +1,10 @@
 # TinyAssets App Store submission packet
 
 Prepared 2026-09-03 from the shipping app, Apple Developer's current form
-documentation, and the live Apple Developer account. This is copy-ready staging,
-not authorization to publish declarations, upload a build, submit for review, or
-release the app.
+documentation, and the live Apple Developer account. Standing founder authorization
+dated 2026-09-03 covers ordinary required Apple setup through submission and release,
+subject to action-time confirmations required by product policy and the explicit
+exceptions in `docs/host-actions.md`.
 
 ## Account and immutable identifiers
 
@@ -28,9 +29,8 @@ release the app.
 | TestFlight | Empty internal group `Internal`; automatic distribution off; 0 testers and 0 builds |
 
 The explicit App ID, App Store Connect record, Apple Distribution certificate/private
-key, and App Store provisioning profile are complete. The next persistent access
-mutation is requesting App Store Connect API access and creating its upload key.
-Do not request or create that API access without explicit action-time approval.
+key, App Store provisioning profile, Developer-role CI upload key, and all six protected
+CI secrets are complete.
 
 ## Product-page metadata
 
@@ -263,32 +263,35 @@ one, so the server must remain compatible with the last released shell.
    Apple Distribution certificate/private-key pair was created and verified, then
    backed up as an encrypted P12. The active `TinyAssets App Store 2026` App Store
    profile binds `io.tinyassets.app` to that certificate. Both expire 2027-09-03.
-5. **Partially complete 2026-09-03:** the P12 and its password are protected
-   `app-store` environment secrets. Download and store the profile, request App Store
-   Connect API access, create a minimum-role upload key, and add the remaining four
-   values. API access/key creation requires separate explicit action-time approval.
-6. Dispatch **iOS signed release** from `main` with version `1.0.0` and
-   `upload_to_testflight=false`. Approve the protected environment, download the
-   IPA manifest/checksum, and complete the device smoke pass.
-7. Only after explicit upload approval, re-dispatch the same source/version with
-   upload enabled. TestFlight upload does not submit App Review.
-8. Complete App Privacy publication, age rating, export answer, screenshots,
-   review notes, availability, and DSA status only with the founder's truthful
-   approvals. Keep release mode manual.
-9. Stop before **Submit for Review**. After review approval, stop again before
-   **Release This Version**.
+5. **Complete 2026-09-03:** all six protected `app-store` environment secrets exist.
+   The App Store Connect API request and internal-use attestation were approved; the
+   `TinyAssets CI Upload` team key uses Apple's Developer role, the least role documented
+   for build upload. Its one-time `.p8` and the profile are locally recoverable and verified.
+6. **Partially complete 2026-09-03:** protected run `33824784381` built signed IPA
+   1.0.0 (1); its checksum, bundle/version/build, embedded profile CMS signature,
+   distribution entitlement, and certificate match were verified. Physical-device
+   smoke remains.
+7. **Blocked before upload 2026-09-03:** run `33824990349` built signed build 2,
+   but Apple rejected the runner-default Xcode 16.4/iOS 18.5 SDK and now requires iOS
+   SDK 26. The local workflow fix selects Xcode 26.3; it awaits required Claude review.
+   TestFlight upload itself does not submit App Review.
+8. Complete App Privacy, age rating, export, screenshots, review notes, availability,
+   and DSA status from verified evidence. Interrupt only where a personal/legal fact
+   cannot be established truthfully. Keep release mode manual until publication.
+9. Obtain the action-time confirmations product policy requires immediately before
+   **Submit for Review** and **Release This Version**.
 
 ## External gates that remain
 
-- Provisioning-profile download plus explicit action-time approval to request App Store
-  Connect API access and create its minimum-role upload key.
-- A signed build plus actual iPhone or iOS Simulator for authentic screenshots;
+- Opposite-provider review, land, and rerun of the Xcode 26 workflow correction.
+- An actual iPhone or iOS Simulator for authentic screenshots and device smoke;
   a physical iPhone is required for microphone-release proof if voice ships.
 - Founder approval of live privacy, age-rating, content-rights, export,
   availability, and DSA/trader declarations.
 - Final founder/counsel approval of the privacy policy, followed by PR #2798 land,
   deploy, and a live check that the iOS disclosure is present.
-- Explicit approval for TestFlight upload, App Review submission, and publication.
+- Action-time confirmation where product policy requires it for App Review submission
+  or other representational external actions, notwithstanding the standing directive.
 
 Official references checked 2026-09-03: [add a new app](https://developer.apple.com/help/app-store-connect/create-an-app-record/add-a-new-app/),
 [app information](https://developer.apple.com/help/app-store-connect/reference/app-information/app-information/),

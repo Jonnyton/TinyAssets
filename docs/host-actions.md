@@ -258,6 +258,16 @@ Delete this paragraph on the next host-actions pass.
 
 ### Apple App Store: enroll — signing and TestFlight cannot start without it
 
+**Standing founder authorization (2026-09-03):** drive all ordinary Apple-required
+setup and completion steps for the iPhone Store objective without repeated approval,
+including required account/app attestations, API access and least-privilege credentials,
+signing/provisioning, builds, verified metadata/privacy answers, screenshots, uploads,
+TestFlight validation, App Review submission, and release/publication. Interrupt only
+for a new monetary charge, an irreversible destructive action, a material choice Apple
+does not require, or personal/legal facts that cannot be established truthfully from
+verified project/account evidence. Computer-use actions that policy requires to be
+confirmed at action time still follow that higher-level confirmation rule.
+
 **Checked 2026-09-03, not assumed.** The account holder completed Apple's official
 creation form, but the final step returned only **"Your account cannot be created at
 this time."** There is no field-specific email, phone, birthday, country, or password
@@ -294,20 +304,26 @@ None of it can produce an installable app without account-owned signing material
    **Prepare for Submission**. Product metadata and manual release are saved, the
    four-type privacy draft is configured but unpublished, and an empty `Internal`
    TestFlight group exists with automatic distribution off, 0 testers, and 0 builds.
-4. **Partially complete — signing pair and profile created (2026-09-03).** The active
+4. **Complete — signing, profile, and CI upload credentials (2026-09-03).** The active
    Apple Distribution certificate expires 2027-09-03 and is paired with an exportable
    private key. The active `TinyAssets App Store 2026` profile is App Store type for
    `io.tinyassets.app`, contains that one certificate, and expires 2027-09-03. The
-   encrypted P12 and password are present as the first two secrets named in §3.
-   Download the provisioning profile, request App Store Connect API access, create a
-   minimum-role API key, and add the remaining four values in §3 of the runbook.
+   encrypted P12 and password, verified profile, and Developer-role `TinyAssets CI Upload`
+   App Store Connect API key are present as all six secrets named in §3.
    The protected GitHub environment `app-store` is complete: founder approval is required,
    and only `main` may deploy. You do NOT need a Mac — CI builds on `macos-15`.
-5. Capture real iPhone-sized screenshots from the signed app, verify sign-in → connect →
+5. **In flight — build works; upload needs Xcode 26 fix.** Run `33824784381` produced
+   and independently checksum/profile-verified a signed 1.0.0 (1) IPA. Run `33824990349`
+   produced signed build 2, then App Store Connect rejected it before upload because
+   `macos-15` defaults to Xcode 16.4/iOS 18.5 and Apple requires Xcode/iOS SDK 26. The
+   local Xcode 26.3 workflow fix has 16 focused tests green; required Claude review is
+   blocked by that subscription's monthly spend limit. Canonical finding:
+   `docs/concerns/2026-09-03-ios-app-store-upload-requires-xcode-26.md`.
+6. Capture real iPhone-sized screenshots from the signed app, verify sign-in → connect →
    chat through TestFlight, and complete the truthful console declarations. Before the final
    Submit for Review decision, choose whether to accept the documented Guideline 4.2 wrapper
    risk or first add and prove a meaningful iPhone-native interaction.
-6. If realtime voice is enabled in the candidate, review the final **Audio Data** and
+7. If realtime voice is enabled in the candidate, review the final **Audio Data** and
    **Other User Content** declarations against the provider retention configuration and
    require physical-iPhone proof that capture stops on background/end before submission.
 

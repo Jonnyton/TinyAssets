@@ -43,6 +43,22 @@ jobs:
           cache: npm
           cache-dependency-path: mobile/package-lock.json
 
+      - name: Select App Store-required Xcode 26
+        run: |
+          set -euo pipefail
+          developer_dir="/Applications/Xcode_26.3.app/Contents/Developer"
+          test -d "$developer_dir" || {
+            echo "::error::required Xcode 26.3 is not installed on the macos-15 runner"
+            exit 1
+          }
+          sudo xcode-select -s "$developer_dir"
+          sdk_version="$(xcrun --sdk iphoneos --show-sdk-version)"
+          [[ "$sdk_version" == 26.* ]] || {
+            echo "::error::App Store uploads require the iOS 26 SDK; selected $sdk_version"
+            exit 1
+          }
+          xcodebuild -version
+
       - name: Install JS deps (lockfile-pinned)
         working-directory: mobile
         run: npm ci --ignore-scripts --no-audit --no-fund
