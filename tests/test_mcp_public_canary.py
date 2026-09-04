@@ -34,6 +34,7 @@ def _scripted_post(
         '.well-known/oauth-protected-resource" error="invalid_token" '
         'error_description="Sign in required"'
     ),
+    converse_is_error=True,
     canary_converse_status=403,
     anonymous_initialize_status=401,
     server_name="tinyassets",
@@ -99,7 +100,7 @@ def _scripted_post(
                         "id": 3,
                         "result": {
                             "content": [{"type": "text", "text": "Sign in required"}],
-                            "isError": True,
+                            "isError": converse_is_error,
                             "_meta": {
                                 "mcp/www_authenticate": [converse_challenge],
                             },
@@ -318,6 +319,20 @@ def test_converse_auth_gate_rejects_transport_only_challenge(monkeypatch):
 
     assert exc.value.code == 6
     assert "expected hosted linking result HTTP 200" in exc.value.msg
+
+
+def test_converse_auth_gate_rejects_anonymous_dispatch_result(monkeypatch):
+    monkeypatch.setattr(
+        canary,
+        "_post",
+        _scripted_post(_CANONICAL_PLUS_STATUS, converse_is_error=False),
+    )
+
+    with pytest.raises(canary.CanaryError) as exc:
+        canary.assert_converse_auth_gate("https://example/mcp", 5.0)
+
+    assert exc.value.code == 6
+    assert "unexpected converse linking result" in exc.value.msg
 
 
 def test_converse_auth_gate_rejects_protected_resource_metadata_drift(
