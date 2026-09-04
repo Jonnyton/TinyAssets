@@ -17,6 +17,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 from tinyassets.auth.middleware import auth_middleware, set_provider
 from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
+from tinyassets.providers import call as _provider_call
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -67,8 +68,6 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 # Force mock provider responses in all tests to avoid real API calls
-from tinyassets.providers import call as _provider_call
-
 _provider_call.set_force_mock(True)
 
 
@@ -241,6 +240,17 @@ def _reset_runtime():
     runtime.reset()
     yield
     runtime.reset()
+
+
+@pytest.fixture(autouse=True)
+def _stop_workspace_sweepers_between_tests():
+    """No test may leave a process-global periodic worker for the next test."""
+    import sys
+
+    yield
+    runs = sys.modules.get("tinyassets.runs")
+    if runs is not None:
+        assert runs._stop_all_workspace_sweepers(timeout_s=2)
 
 
 @pytest.fixture(autouse=True)

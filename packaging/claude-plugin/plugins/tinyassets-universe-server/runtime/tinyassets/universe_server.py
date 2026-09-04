@@ -1376,6 +1376,17 @@ def stop_scheduler_for_serving() -> None:
         logger.exception("scheduler shutdown failed")
 
 
+def stop_workspace_sweepers_for_serving() -> None:
+    """Join workspace sweepers when this serving lifespan ends."""
+    from tinyassets.runs import _stop_all_workspace_sweepers
+
+    try:
+        if not _stop_all_workspace_sweepers():
+            logger.warning("workspace sweeper shutdown exceeded its timeout")
+    except Exception:  # noqa: BLE001 - shutdown fault must not mask teardown
+        logger.exception("workspace sweeper shutdown failed")
+
+
 _WEBHOOK_OP_ACTIONS = {
     "mint": "mint_webhook",
     "revoke": "revoke_webhook",
@@ -3559,6 +3570,7 @@ def create_streamable_http_app() -> Starlette:
                 yield
         finally:
             stop_scheduler_for_serving()
+            stop_workspace_sweepers_for_serving()
             writer_barrier.release()
 
     # OAuth discovery (RFC 9728 / 8414) — mounted FIRST so the well-known paths
@@ -3768,6 +3780,7 @@ def main(
     finally:
         if assigned_consumer is not None:
             assigned_consumer.stop()
+        stop_workspace_sweepers_for_serving()
         writer_barrier.release()
 
 

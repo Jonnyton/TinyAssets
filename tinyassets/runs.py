@@ -231,6 +231,7 @@ _WORKSPACE_RECONCILE_LOCK = threading.Lock()
 #: well (Codex, code round 1).
 _WORKSPACE_RECONCILED: set[tuple[int, str]] = set()
 _WORKSPACE_RECONCILING: set[tuple[int, str]] = set()
+_WORKSPACE_STOP_REQUESTED: set[tuple[int, str]] = set()
 
 
 @dataclass(frozen=True)
@@ -245,8 +246,14 @@ _WORKSPACE_SWEEPERS: dict[tuple[int, str], _WorkspaceSweeperHandle] = {}
 
 
 def _reset_workspace_reconciliation_after_fork() -> None:
+    global _WORKSPACE_RECONCILE_LOCK
+
+    # The child inherits the mutex state but not the thread that may have held
+    # it at fork time. Give the single surviving thread a fresh lock.
+    _WORKSPACE_RECONCILE_LOCK = threading.Lock()
     _WORKSPACE_RECONCILED.clear()
     _WORKSPACE_RECONCILING.clear()
+    _WORKSPACE_STOP_REQUESTED.clear()
     # A fork retains Python objects but not the parent's other threads. Never
     # mistake those dead handles for sweepers owned by the child.
     _WORKSPACE_SWEEPERS.clear()
@@ -490,27 +497,38 @@ def _workspace_sweep_kick_body(base_path: str | Path) -> None:
 
 
 def _workspace_sweeper_loop(
+    key: tuple[int, str],
     base_path: str | Path,
     interval_s: float,
     stop_event: threading.Event,
     sweep_once: Callable[..., int],
 ) -> None:
     claimant = f"sweeper:{os.getpid()}"
-    while not stop_event.wait(interval_s):
-        try:
-            # The worker owns the callable it started with. Looking it up from
-            # module globals on every tick lets a later test monkeypatch (or a
-            # hot reload) redirect an already-running production worker.
-            sweep_once(base_path, claimant=claimant)
-        except Exception:  # noqa: BLE001 - the loop must outlive one bad pass
-            logger.exception("workspace sweep failed")
+    try:
+        while not stop_event.wait(interval_s):
+            try:
+                # The worker owns the callable it started with. Looking it up from
+                # module globals on every tick lets a later test monkeypatch (or a
+                # hot reload) redirect an already-running production worker.
+                sweep_once(base_path, claimant=claimant)
+            except Exception:  # noqa: BLE001 - the loop must outlive one bad pass
+                logger.exception("workspace sweep failed")
+    finally:
+        # A worker may request its own stop from inside ``sweep_once``. It
+        # cannot join itself, so retirement belongs to the loop finalizer.
+        current_thread = threading.current_thread()
+        with _WORKSPACE_RECONCILE_LOCK:
+            handle = _WORKSPACE_SWEEPERS.get(key)
+            if handle is not None and handle.thread is current_thread:
+                _WORKSPACE_SWEEPERS.pop(key, None)
+                _WORKSPACE_RECONCILED.discard(key)
 
 
 def _start_workspace_sweeper(
     base_path: str | Path,
     interval_s: float,
     sweep_once: Callable[..., int] = _workspace_sweep_once,
-) -> _WorkspaceSweeperHandle:
+) -> _WorkspaceSweeperHandle | None:
     """Start and register one stoppable sweeper for ``base_path``.
 
     ``sweep_once`` is deliberately captured when this function is defined.
@@ -521,23 +539,25 @@ def _start_workspace_sweeper(
     stop_event = threading.Event()
     thread = threading.Thread(
         target=_workspace_sweeper_loop,
-        args=(base_path, interval_s, stop_event, sweep_once),
+        args=(key, base_path, interval_s, stop_event, sweep_once),
         name="workspace-sweeper",
         daemon=True,
     )
     handle = _WorkspaceSweeperHandle(stop_event=stop_event, thread=thread)
     with _WORKSPACE_RECONCILE_LOCK:
+        # A stop that arrived during startup owns this transition. Because the
+        # check and thread publication share the same lock, stop cannot report
+        # success and then have this reconciliation publish a worker.
+        if key in _WORKSPACE_STOP_REQUESTED:
+            return None
         current = _WORKSPACE_SWEEPERS.get(key)
         if current is not None and current.thread.is_alive():
             return current
-        _WORKSPACE_SWEEPERS[key] = handle
-    try:
+        # Start while holding the lifecycle lock, then publish. A concurrent
+        # stop therefore sees either no handle or an already-started thread;
+        # it can never attempt to join a published-but-unstarted Thread.
         thread.start()
-    except BaseException:
-        with _WORKSPACE_RECONCILE_LOCK:
-            if _WORKSPACE_SWEEPERS.get(key) is handle:
-                _WORKSPACE_SWEEPERS.pop(key, None)
-        raise
+        _WORKSPACE_SWEEPERS[key] = handle
     return handle
 
 
@@ -554,10 +574,11 @@ def _stop_workspace_sweeper(
     key = (os.getpid(), str(Path(base_path).resolve()))
     with _WORKSPACE_RECONCILE_LOCK:
         handle = _WORKSPACE_SWEEPERS.get(key)
-    if handle is None:
-        with _WORKSPACE_RECONCILE_LOCK:
+        if handle is None:
+            if key in _WORKSPACE_RECONCILING:
+                _WORKSPACE_STOP_REQUESTED.add(key)
             _WORKSPACE_RECONCILED.discard(key)
-        return True
+            return True
     handle.stop_event.set()
     if handle.thread is threading.current_thread():
         return False
@@ -567,7 +588,7 @@ def _stop_workspace_sweeper(
         with _WORKSPACE_RECONCILE_LOCK:
             if _WORKSPACE_SWEEPERS.get(key) is handle:
                 _WORKSPACE_SWEEPERS.pop(key, None)
-                _WORKSPACE_RECONCILED.discard(key)
+            _WORKSPACE_RECONCILED.discard(key)
     return stopped
 
 
@@ -649,12 +670,15 @@ def ensure_workspace_reconciled(
         # A failed attempt is not a completed one: the next caller retries.
         with _WORKSPACE_RECONCILE_LOCK:
             _WORKSPACE_RECONCILING.discard(key)
+            _WORKSPACE_STOP_REQUESTED.discard(key)
         raise
     with _WORKSPACE_RECONCILE_LOCK:
         _WORKSPACE_RECONCILING.discard(key)
+        stop_requested = key in _WORKSPACE_STOP_REQUESTED
+        _WORKSPACE_STOP_REQUESTED.discard(key)
         # A concurrent stop after registration deliberately wins: the next
         # caller reruns the startup barrier and starts a fresh worker.
-        if not start_sweeper or key in _WORKSPACE_SWEEPERS:
+        if not stop_requested and (not start_sweeper or key in _WORKSPACE_SWEEPERS):
             _WORKSPACE_RECONCILED.add(key)
     return True
 
