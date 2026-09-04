@@ -5,6 +5,9 @@
 `https://tinyassets.io/mcp`.
 **Re-verified:** 2026-09-03 after production deploy run `33834837787`, serving
 `b4662ab64513b15460f1e222f75cbfedea728bf3`.
+**Reconciled again:** 2026-09-04 from a fresh Codex delegated task against
+production deploy run `33913895044`, serving
+`b1ec544cbcbc5368d1394658d57275542db56fe4`.
 **Severity:** P1 — production refuses anonymous access, but expired local and
 bundled connector sessions do not yet recover into a successful authenticated
 tool call.
@@ -53,6 +56,30 @@ ChatGPT's installed developer-mode connector detail still reports
 live endpoint's OAuth-only catalog. Removing and re-adding the connector may
 refresh that cached registration, but the UI-test rule forbids removing a
 user-owned connector without explicit approval.
+
+## 2026-09-04 current-task reconciliation
+
+The latest successful production deploy run `33913895044` passed the public
+MCP handle canary, whose first assertion requires an unsigned `initialize` to
+receive HTTP 401 with the canonical Bearer challenge. Rollback was skipped and
+the protected release receipt reported
+`b1ec544cbcbc5368d1394658d57275542db56fe4`; that revision contains the
+no-anonymous merge `3fc83fc1`.
+
+The same fresh Codex task then made only read-only status attempts through the
+three installed connection aliases. The direct `workflow-live` client failed
+before MCP startup because its OAuth refresh returned `invalid_refresh_token`.
+Both bundled status tools (`TinyAssets` and `Workflow`) returned `UNAUTHORIZED`
+with `TRIGGER_REAUTHENTICATION` and
+`run_with_credentials_failed_token_refresh_not_supported`. None returned a
+status body, principal fingerprint, universe identifier, or anonymous
+fallback. No connector was removed or re-added, no login flow was automated,
+and no universe state was mutated.
+
+This is a secure failure, not identity-convergence evidence. A human OAuth
+reauthentication across the direct and bundled credential planes is now the
+single smallest boundary before one fresh task can compare their read-only
+status results.
 
 ## Remaining acceptance
 
