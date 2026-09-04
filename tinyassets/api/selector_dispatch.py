@@ -616,7 +616,7 @@ def dispatch_selector(
     from tinyassets.branch_versions import get_branch_version
     from tinyassets.branches import BranchDefinition
     from tinyassets.daemon_server import get_branch_definition
-    from tinyassets.runs import _execute_branch_core
+    from tinyassets.runs import MissingRequiredInputs, _execute_branch_core
 
     try:
         bv = get_branch_version(base_path, bvid)
@@ -747,6 +747,13 @@ def dispatch_selector(
             provider_call=provider_call,
             branch_version_id=bvid,
         )
+    except MissingRequiredInputs as exc:
+        return {
+            "ok": False,
+            "error_kind": exc.failure_class,
+            **exc.to_dict(),
+            "branch_version_id": bvid,
+        }
     except Exception as exc:
         logger.exception(
             "selector dispatch failed for goal=%s bvid=%s",

@@ -64,6 +64,37 @@ def test_shared_executor_uses_immutable_version_and_authz_inputs(
     assert captured["worker_id"] == "consumer-a"
 
 
+def test_shared_executor_preserves_missing_input_diagnostic(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from tinyassets.runs import MissingRequiredInputs
+
+    (tmp_path / "universe-a").mkdir()
+    monkeypatch.setattr("tinyassets.runs.get_run_by_branch_task_id", lambda *_a, **_k: None)
+
+    def refuse(*_args, **_kwargs):
+        raise MissingRequiredInputs(
+            ["context"],
+            {"context": {"type": "dict", "example": {}}},
+        )
+
+    monkeypatch.setattr("tinyassets.runs.execute_branch_version", refuse)
+    success, error, detail = execute_claimed_branch_task(
+        tmp_path,
+        _task(),
+        ClaimedBranchExecutorIdentity(daemon_id="daemon-a"),
+        object(),
+    )
+
+    assert success is False
+    assert error == "missing_required_inputs"
+    assert detail["missing_input_keys"] == ["context"]
+    assert detail["input_guidance"] == {
+        "context": {"type": "dict", "example": {}},
+    }
+    assert "run_id" not in detail
+
+
 def test_shared_executor_reconciles_exact_terminal_run(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / "universe-a").mkdir()
     task = _task()

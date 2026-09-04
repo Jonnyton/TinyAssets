@@ -2826,6 +2826,16 @@ class MissingRequiredInputs(ValueError):
         )
         super().__init__(f"Required workflow inputs are missing: {joined}.")
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "error": str(self),
+            "failure_class": self.failure_class,
+            "missing_input_keys": self.missing_input_keys,
+            "input_guidance": self.input_guidance,
+            "suggested_action": self.suggested_action,
+            "actionable_by": self.actionable_by,
+        }
+
 
 def _input_example(field_type: str) -> Any:
     normalized = (field_type or "any").strip().lower()
@@ -2870,12 +2880,14 @@ def preflight_required_inputs(
     branch: BranchDefinition,
     inputs: dict[str, Any],
 ) -> None:
-    """Refuse unresolved declared inputs using a forward must-analysis.
+    """Refuse inputs missing on any possible graph-superstep execution.
 
-    Caller inputs and schema defaults exist on every path. A node output is
-    definitely available to a later consumer only when it is present on every
-    reachable predecessor route. Direct START routes keep loop-carried values
-    from being mistaken for first-entry inputs.
+    LangGraph ordinary fan-out executes every child in one superstep and merges
+    their outputs at the barrier. Conditional fan-out chooses one target. We
+    therefore explore bounded active-node frontiers rather than treating every
+    incoming edge as an alternative path; that preserves parallel fan-in while
+    still refusing a key absent on one conditional route. Availability is
+    monotonic across supersteps, so each key needs only a boolean state.
     """
     node_ids = {ref.id for ref in branch.graph_nodes}
     if not node_ids:
@@ -2887,81 +2899,100 @@ def preflight_required_inputs(
         for ref in branch.graph_nodes
     }
 
-    adjacency: dict[str, set[str]] = {node_id: set() for node_id in node_ids}
-    predecessors: dict[str, set[str]] = {node_id: set() for node_id in node_ids}
+    ordinary_children: dict[str, set[str]] = {
+        node_id: set() for node_id in node_ids
+    }
+    conditional_options: dict[str, list[tuple[str, ...]]] = {
+        node_id: [] for node_id in node_ids
+    }
     start_targets = {branch.entry_point} if branch.entry_point in node_ids else set()
 
-    def add_route(source: str, target: str) -> None:
+    def add_ordinary_route(source: str, target: str) -> None:
         if target not in node_ids:
             return
         if source == "START":
             start_targets.add(target)
         elif source in node_ids:
-            adjacency[source].add(target)
-            predecessors[target].add(source)
+            ordinary_children[source].add(target)
 
     for edge in branch.edges:
-        add_route(edge.from_node, edge.to_node)
+        add_ordinary_route(edge.from_node, edge.to_node)
     for conditional in branch.conditional_edges:
-        for target in conditional.conditions.values():
-            add_route(conditional.from_node, target)
-
-    reachable: set[str] = set()
-    pending = list(start_targets)
-    while pending:
-        node_id = pending.pop()
-        if node_id in reachable:
+        if conditional.from_node not in node_ids:
             continue
-        reachable.add(node_id)
-        pending.extend(adjacency.get(node_id, ()))
+        options = tuple(sorted({
+            target
+            for target in conditional.conditions.values()
+            if target in node_ids
+        }))
+        if options:
+            conditional_options[conditional.from_node].append(options)
 
     initial = set(seed_initial_state(inputs, branch.state_schema).keys())
-    declared_keys = set(initial)
     produced: dict[str, set[str]] = {}
     required: dict[str, set[str]] = {}
-    for node_id in reachable:
+    for node_id in node_ids:
         node = defs_by_graph_id.get(node_id)
         produced[node_id] = set(node.output_keys if node is not None else ())
         required[node_id] = set(node.input_keys if node is not None else ())
-        declared_keys.update(produced[node_id])
-        declared_keys.update(required[node_id])
 
-    available_in = {
-        node_id: (set(initial) if node_id in start_targets else set(declared_keys))
-        for node_id in reachable
+    max_frontiers = 4096
+
+    def next_frontiers(active: frozenset[str]) -> set[frozenset[str]] | None:
+        base = {
+            child
+            for node_id in active
+            for child in ordinary_children[node_id]
+        }
+        frontiers: set[frozenset[str]] = {frozenset(base)}
+        for node_id in sorted(active):
+            for options in conditional_options[node_id]:
+                expanded: set[frozenset[str]] = set()
+                for frontier in frontiers:
+                    for option in options:
+                        expanded.add(frontier | {option})
+                        if len(expanded) > max_frontiers:
+                            return None
+                frontiers = expanded
+        return frontiers
+
+    def can_reach_consumer_without(key: str) -> bool:
+        work: list[tuple[frozenset[str], bool]] = [
+            (frozenset(start_targets), key in initial)
+        ]
+        seen: set[tuple[frozenset[str], bool]] = set()
+        while work:
+            active, available = work.pop()
+            state = (active, available)
+            if state in seen:
+                continue
+            seen.add(state)
+            if len(seen) > max_frontiers:
+                return True
+            if not available and any(key in required[node_id] for node_id in active):
+                return True
+            available_after = available or any(
+                key in produced[node_id] for node_id in active
+            )
+            following = next_frontiers(active)
+            if following is None:
+                return True
+            work.extend(
+                (frontier, available_after)
+                for frontier in following
+                if frontier
+            )
+        return False
+
+    candidate_keys = {
+        key
+        for node_required in required.values()
+        for key in node_required
+        if key not in initial
     }
-    available_out = {
-        node_id: available_in[node_id] | produced[node_id]
-        for node_id in reachable
+    missing = {
+        key for key in candidate_keys if can_reach_consumer_without(key)
     }
-
-    changed = True
-    while changed:
-        changed = False
-        for node_id in sorted(reachable):
-            route_sets = [
-                available_out[pred]
-                for pred in predecessors[node_id]
-                if pred in reachable
-            ]
-            if node_id in start_targets:
-                route_sets.append(initial)
-            if route_sets:
-                common = set(route_sets[0])
-                for route_set in route_sets[1:]:
-                    common.intersection_update(route_set)
-            else:
-                common = set(initial)
-            new_in = initial | common
-            new_out = new_in | produced[node_id]
-            if new_in != available_in[node_id] or new_out != available_out[node_id]:
-                available_in[node_id] = new_in
-                available_out[node_id] = new_out
-                changed = True
-
-    missing: set[str] = set()
-    for node_id in reachable:
-        missing.update(required[node_id] - available_in[node_id])
     if missing:
         raise MissingRequiredInputs(
             sorted(missing),

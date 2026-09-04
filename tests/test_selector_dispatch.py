@@ -181,6 +181,36 @@ def test_dispatch_short_circuits_on_empty_candidates(base_path):
         )
 
 
+def test_dispatch_preserves_missing_input_diagnostic(base_path, monkeypatch):
+    from tinyassets.api.selector_dispatch import dispatch_selector
+    from tinyassets.runs import MissingRequiredInputs
+
+    _make_goal(base_path, "g1")
+
+    def refuse(*_args, **_kwargs):
+        raise MissingRequiredInputs(
+            ["context"],
+            {"context": {"type": "dict", "example": {}}},
+        )
+
+    monkeypatch.setattr("tinyassets.runs._execute_branch_core", refuse)
+    result = dispatch_selector(
+        base_path,
+        goal_id="g1",
+        candidate_branches=[{"branch_def_id": "candidate"}],
+        actor="viewer-1",
+        provider_call=lambda *_a, **_k: "unused",
+    )
+
+    assert result["ok"] is False
+    assert result["error_kind"] == "missing_required_inputs"
+    assert result["missing_input_keys"] == ["context"]
+    assert result["input_guidance"] == {
+        "context": {"type": "dict", "example": {}},
+    }
+    assert "run_id" not in result
+
+
 # ---------------------------------------------------------------------------
 # _parse_ranked_entries — output shape validation
 # ---------------------------------------------------------------------------

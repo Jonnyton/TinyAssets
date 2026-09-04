@@ -53,14 +53,7 @@ ENV_CAPABILITIES_VAR = "UNIVERSE_SERVER_CAPABILITIES"
 
 
 def _missing_required_inputs_response(exc: Any) -> str:
-    return json.dumps({
-        "error": str(exc),
-        "failure_class": exc.failure_class,
-        "missing_input_keys": exc.missing_input_keys,
-        "input_guidance": exc.input_guidance,
-        "suggested_action": exc.suggested_action,
-        "actionable_by": exc.actionable_by,
-    })
+    return json.dumps(exc.to_dict())
 
 
 def _bind_run_provider_call(

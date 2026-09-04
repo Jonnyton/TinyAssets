@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 
 import pytest
 
@@ -16,6 +17,7 @@ from tinyassets.branches import (
 from tinyassets.runs import (
     MissingRequiredInputs,
     execute_branch_async,
+    execute_branch_version_async,
     preflight_required_inputs,
 )
 
@@ -115,6 +117,26 @@ def test_guaranteed_predecessor_output_satisfies_consumer() -> None:
     preflight_required_inputs(branch, {})
 
 
+def test_plain_parallel_fan_in_merges_one_arms_output_before_consumer() -> None:
+    branch = _branch(
+        [
+            _node("fan_out"),
+            _node("producer", outputs=("context",)),
+            _node("sibling"),
+            _node("consume", inputs=("context",)),
+        ],
+        [
+            EdgeDefinition("fan_out", "producer"),
+            EdgeDefinition("fan_out", "sibling"),
+            EdgeDefinition("producer", "consume"),
+            EdgeDefinition("sibling", "consume"),
+            EdgeDefinition("consume", "END"),
+        ],
+    )
+    assert branch.validate() == []
+    preflight_required_inputs(branch, {})
+
+
 def test_conditional_join_requires_key_missing_on_one_route() -> None:
     branch = _branch(
         [
@@ -196,6 +218,37 @@ def test_async_refusal_creates_no_run_and_never_calls_provider(tmp_path) -> None
 
     assert calls == 0
     assert not (tmp_path / ".runs.db").exists()
+
+
+def test_immutable_version_refusal_creates_no_run_row(tmp_path) -> None:
+    from tinyassets.branch_versions import publish_branch_version
+
+    branch = _branch(
+        [_node("entry", inputs=("context",))],
+        [EdgeDefinition("entry", "END")],
+    )
+    version = publish_branch_version(
+        tmp_path,
+        branch.to_dict(),
+        publisher="maintainer-fixture",
+    )
+
+    with pytest.raises(MissingRequiredInputs):
+        execute_branch_version_async(
+            tmp_path,
+            branch_version_id=version.branch_version_id,
+            inputs={},
+            actor="user:test",
+        )
+
+    with sqlite3.connect(tmp_path / ".runs.db") as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert "runs" not in tables
 
 
 def test_live_and_version_handlers_share_public_error_shape(monkeypatch, tmp_path) -> None:

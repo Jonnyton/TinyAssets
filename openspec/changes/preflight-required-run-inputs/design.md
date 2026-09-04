@@ -34,26 +34,27 @@ new diagnostic cannot disclose a private Branch contract.
 
 ## Decisions
 
-### 1. Use a forward must-analysis over the frozen Branch snapshot
+### 1. Use bounded superstep-frontier analysis over the frozen Branch snapshot
 
-The analyzer builds predecessor sets from ordinary and conditional edges, adds the
-declared entry edge from `START`, and considers only nodes reachable from the
-entry. Initial availability is caller input keys plus state fields carrying a
-non-`None` canonical or legacy default. For each reachable graph node, the keys
-definitely available on entry are the initial keys union the intersection of the
-keys emitted along every reachable predecessor route. The node's declared
-`output_keys` are then available on exit. A descending fixed-point handles joins
-and legal loops without treating a loop-carried output as available on its first
-iteration.
+The analyzer models LangGraph's execution barrier: ordinary fan-out activates all
+children in the next superstep and merges all sibling outputs, while a conditional
+edge activates exactly one declared target. It explores possible active-node
+frontiers independently for each required key and tracks whether that key has been
+produced by a completed earlier superstep. Caller inputs and non-`None` canonical
+or legacy defaults start available. A consumer reached while its key is unavailable
+makes the submission unresolved. Repeated frontier/availability states terminate
+legal loops, and direct `START` activation prevents a later loop output from being
+mistaken for a first-entry value.
 
-A node input absent from its definite-entry set is unresolved. This deliberately
-rejects keys needed only on one possible conditional route unless that route has a
-guaranteed producer. Executing a router to guess a route would violate the
-side-effect-free boundary.
+Exploration is capped at 4,096 distinct states/frontiers per key. Crossing the cap
+fails conservatively as unresolved rather than letting user-authored topology turn
+preflight into an admission-layer denial of service.
 
 Alternatives considered: accepting any ancestor producer creates false negatives
-at conditional joins; checking only the entry node misses later consumers;
-compiling/invoking speculatively can call user code or providers.
+at conditional joins; intersecting predecessor outputs incorrectly rejects a valid
+parallel diamond where one sibling produces state merged at the barrier; checking
+only the entry node misses later consumers; compiling/invoking speculatively can
+call user code or providers.
 
 ### 2. Raise a typed pre-admission exception from shared execution code
 
