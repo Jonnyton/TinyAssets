@@ -235,7 +235,10 @@ def test_app_store_metadata_packet_meets_apple_field_constraints() -> None:
     assert "no additional user is selected" in packet
     assert "| App Store Connect record | Created and verified 2026-09-03" in packet
     assert "Apple ID `6808434444`" in packet
-    assert "| TestFlight | Empty internal group `Internal`; automatic distribution off" in packet
+    assert (
+        "| TestFlight | Internal group `Internal`; automatic distribution off; "
+        "Build 3 attached; 0 testers and no invitations sent |" in packet
+    )
     assert "all four saved draft entries use App Functionality only" in packet
     assert "App Functionality; Account Management" not in packet
     assert "it is not published and its legal-policy URLs" in packet

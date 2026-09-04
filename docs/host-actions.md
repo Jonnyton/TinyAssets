@@ -302,8 +302,9 @@ None of it can produce an installable app without account-owned signing material
    Terms of Service V100 (last updated 04 June 2018) was accepted by the founder.
    The founder then confirmed record creation. Apple ID `6808434444`; iOS 1.0 is
    **Prepare for Submission**. Product metadata and manual release are saved, the
-   four-type privacy draft is configured but unpublished, and an empty `Internal`
-   TestFlight group exists with automatic distribution off, 0 testers, and 0 builds.
+   four-type privacy draft is configured but unpublished. Build 3 is attached to
+   the `Internal` TestFlight group and its en-US **What to Test** text is saved;
+   the group has automatic distribution off, 0 testers, and no invitations sent.
 4. **Complete — signing, profile, and CI upload credentials (2026-09-03).** The active
    Apple Distribution certificate expires 2027-09-03 and is paired with an exportable
    private key. The active `TinyAssets App Store 2026` profile is App Store type for
@@ -312,18 +313,27 @@ None of it can produce an installable app without account-owned signing material
    App Store Connect API key are present as all six secrets named in §3.
    The protected GitHub environment `app-store` is complete: founder approval is required,
    and only `main` may deploy. You do NOT need a Mac — CI builds on `macos-15`.
-5. **In flight — build works; upload needs Xcode 26 fix.** Run `33824784381` produced
-   and independently checksum/profile-verified a signed 1.0.0 (1) IPA. Run `33824990349`
-   produced signed build 2, then App Store Connect rejected it before upload because
-   `macos-15` defaults to Xcode 16.4/iOS 18.5 and Apple requires Xcode/iOS SDK 26. The
-   local Xcode 26.3 workflow fix has 16 focused tests green and exact revision
-   `6ccb3d24` received a Claude Opus **AGREE** review. Canonical finding:
-   `docs/concerns/2026-09-03-ios-app-store-upload-requires-xcode-26.md`.
-6. Capture real iPhone-sized screenshots from the signed app, verify sign-in → connect →
+5. **Complete — Xcode 26 build accepted and processed by TestFlight (2026-09-03).**
+   Exact fix revision `6ccb3d24` received a Claude Opus **AGREE** review and landed in
+   PR #2798 as `76d795a1`. Every exact-head PR check passed, including `build-ios` and
+   `required-tests`. Protected run `33827279907` produced signed build 1.0.0 (3);
+   Apple reported no upload errors; App Store Connect matched its delivery UUID and
+   now shows Build 3 as **Ready to Submit** under Version 1.0.0. Receipt:
+   `docs/audits/2026-09-03-ios-testflight-upload-receipt.md`.
+6. **Founder reauthentication required — three TestFlight/App Store fields.** The
+   signed-in web session expired. The Developer-role API key successfully attached
+   Build 3 to the empty Internal group and saved its en-US **What to Test** text,
+   but Apple returned 403 for the app-level beta description, changing Build 3
+   `autoNotifyEnabled` from true to false, and selecting Build 3 for App Store
+   Version 1.0. Reauthenticate in App Store Connect, save the staged beta description,
+   disable automatic tester notification before adding any tester, and select Build 3.
+   Release mode is already manual. Receipt:
+   `docs/audits/2026-09-03-ios-testflight-preparation-receipt.md`.
+7. Capture real iPhone-sized screenshots from the signed app, verify sign-in → connect →
    chat through TestFlight, and complete the truthful console declarations. Before the final
    Submit for Review decision, choose whether to accept the documented Guideline 4.2 wrapper
    risk or first add and prove a meaningful iPhone-native interaction.
-7. If realtime voice is enabled in the candidate, review the final **Audio Data** and
+8. If realtime voice is enabled in the candidate, review the final **Audio Data** and
    **Other User Content** declarations against the provider retention configuration and
    require physical-iPhone proof that capture stops on background/end before submission.
 
