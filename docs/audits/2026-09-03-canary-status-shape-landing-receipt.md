@@ -61,3 +61,30 @@ The reviewer confirmed:
 The receipt-only commit changes no runtime or test behavior. The PR body binds
 that final documentation head to this artifact without requiring a
 self-referential commit hash.
+
+## Production recovery
+
+PR #2814 merged as `efa0ed9e39925ba3705a14be5b9836a6b74bb81d` after every
+required exact-head check passed, including the 14m21s required suite and all
+three platform signature jobs. Its first image run was superseded by the next
+main push. GitHub's compare API reported replacement revision
+`b4662ab64513b15460f1e222f75cbfedea728bf3` one commit ahead of the merge.
+
+Build run `33834441413` published that containing image. Deploy run
+`33834837787` then:
+
+- installed digest
+  `sha256:45b354fce5da8210f5587536e8f279243235c1a6a835d61394a2b9decbb7f710`;
+- reported the container healthy and the candidate image clean;
+- passed `scripts/mcp_public_canary.py --url https://tinyassets.io/mcp --assert-handles`
+  with the canary service-principal bearer;
+- skipped rollback; and
+- published `release-state.json` with
+  `git_sha=b4662ab64513b15460f1e222f75cbfedea728bf3`.
+
+The local `deployed_sha.py --assert-contains` invocation failed closed before
+network access because this checkout does not hold the canary secret. The same
+live release receipt was observed in the authenticated deployment job, and the
+GitHub ancestry comparison proves its revision contains the auth merge. This is
+receipt evidence subject to the existing limitation in
+`docs/concerns/2026-08-26-deployed-sha-proves-receipt-only.md`.

@@ -26,7 +26,7 @@ Every canonical public `read_graph` Goal mode SHALL expose only Goals whose visi
 - **AND** exact lookup grants no private-Goal read authority
 
 #### Scenario: every Goal-derived read has no alternate oracle
-- **WHEN** an anonymous, non-owner, or owner actor invokes any read-effect action with a caller-supplied non-public `goal_id`
+- **WHEN** an unauthenticated request, authenticated non-owner, or authenticated owner invokes any read-effect action with a caller-supplied non-public `goal_id`
 - **THEN** the action returns the same non-disclosing missing-result shape as an absent Goal
 - **AND** no Goal name, ID, protocol, branch-derived result, count, rank, or field is returned
 
@@ -174,12 +174,10 @@ The system SHALL use a user-buildable selector Branch, rather than a fixed platf
 Before dispatching any recognized `goals` action, the surface SHALL call
 `require_action_scope("goals", canonical_action)`. Unknown actions SHALL return
 the available-action error before authorization or handler dispatch. When
-neither `is_auth_required()` nor `resolve_always_writes()` is true (dev/no-auth
-mode), the gate SHALL perform no scope enforcement. In resolve-always mode,
-including the optional and WorkOS providers, anonymous read-effect actions
-SHALL pass, while write actions SHALL require an authenticated identity holding
-the fine-grained OAuth scope or coarse effect grant. In legacy full-auth mode every recognized action
-SHALL require an authenticated identity and the exact named scope. After a
+all providers require a valid bearer before dispatch. The action gate SHALL
+then apply the configured fine-grained OAuth scope or coarse effect grant;
+dev mode resolves its required named local identity rather than bypassing
+identity. After a
 successful write result, the surface SHALL attempt to append a
 `goals.<action>` contribution entry. If that append raises, the surface SHALL
 log a warning and return the original successful Goal result rather than
@@ -191,9 +189,8 @@ rolling back or failing the mutation.
 
 #### Scenario: recognized action follows the configured auth mode
 - **WHEN** a recognized Goal action reaches `require_action_scope`
-- **THEN** dev/no-auth mode performs no scope enforcement
-- **AND** resolve-always mode, including the optional and WorkOS providers, admits anonymous reads but requires an authenticated fine-grained scope or coarse effect grant for writes
-- **AND** legacy full-auth mode requires authentication and the exact named scope for reads and writes
+- **THEN** the transport has already bound a named identity
+- **AND** the configured mode requires the applicable fine-grained scope or coarse effect grant
 - **AND** an authorization rejection returns a structured error with `auth_scope_required: true`
 
 #### Scenario: successful write attempts contribution attribution

@@ -108,7 +108,7 @@ the canary bearer and keep its `image_tag` corroboration.
 
 ## MODIFIED Requirements
 
-### Requirement: Auth provider is selected by configuration, defaulting to no-auth
+### Requirement: Auth provider is selected by configuration and always names a principal
 
 The auth provider SHALL be selected by `UNIVERSE_SERVER_AUTH`: unset or false
 selects the dev provider, `true`/`oauth` the full OAuth provider,
@@ -196,7 +196,7 @@ SHALL confer identity, authorship or write authority.
 - **WHEN** a permission check runs with no identity bound
 - **THEN** it raises `PermissionError` and no action is authorized
 
-### Requirement: Access is controlled on two orthogonal axes, visibility and ownership
+### Requirement: Access is controlled on two orthogonal axes — visibility and ownership
 
 Universe access SHALL be decided on visibility (public, private, rule-scoped)
 and on the ownership ACL, for authenticated callers. A public universe SHALL

@@ -4,89 +4,35 @@
 
 ## Purpose
 
-WorkOS OAuth 2.1 resource-server auth with anonymous-read/authenticated-write posture, pre-dispatch 401 write challenges, founder home auto-birth, and two-axis authorization (universe visibility plus ownership ACL).
+WorkOS OAuth 2.1 resource-server auth with named principals on every request,
+pre-dispatch OAuth challenges, founder home auto-birth, and two-axis
+authorization (universe visibility plus ownership ACL).
 ## Requirements
-### Requirement: Auth provider is selected by configuration, defaulting to no-auth
+### Requirement: Auth provider is selected by configuration and always names a principal
 
-The server SHALL select its auth provider at startup from the `UNIVERSE_SERVER_AUTH`
-environment variable: `workos` selects the WorkOS AuthKit provider (the server acting
-as an OAuth 2.1 Resource Server that validates AuthKit-issued bearer JWTs);
-`true`/`1`/`yes`/`oauth` selects the legacy self-hosted OAuth provider; `optional`/`resolve`
-selects the optional OAuth provider; any other value (including unset) selects the dev
-no-auth provider. The provider factory lives in `tinyassets/auth/provider.py`.
+The auth provider SHALL be selected by `UNIVERSE_SERVER_AUTH`: unset or false
+selects the dev provider, `true`/`oauth` the full OAuth provider,
+`optional`/`resolve` the optional OAuth provider, `workos` the WorkOS
+provider. In every mode a request without a valid bearer SHALL be challenged;
+the modes differ only in how a bearer is validated and whether named action
+scopes are enforced on writes. The dev provider SHALL require
+`UNIVERSE_SERVER_DEV_USER` and resolve every bearer to that named identity.
 
-#### Scenario: WorkOS mode selects the Resource Server provider
-- **WHEN** `UNIVERSE_SERVER_AUTH=workos` and the provider factory runs
-- **THEN** the WorkOS AuthKit provider is created as an OAuth Resource Server
-- **AND** it validates AuthKit bearer JWTs rather than running its own authorization flow
-
-#### Scenario: unset config yields the dev no-auth provider
-- **WHEN** `UNIVERSE_SERVER_AUTH` is unset or an unrecognized value
-- **THEN** the dev (no-auth) provider is created
-- **AND** local and test flows run without authentication
-
-### Requirement: Anonymous read, authenticated write (resolve-always posture)
-
-In the WorkOS and optional providers the server SHALL keep anonymous reads open while
-requiring an authenticated principal for every write, costly, or admin effect. These
-providers report `is_auth_required()` false (anonymous callers are never rejected outright)
-and `resolve_always_writes()` true, and the base class derives `writes_require_identity()`
-from those flags so both the pre-dispatch write challenge and the tool-layer scope gate engage.
-As-built limitation: the dev provider leaves writes open for local/test flows; the resolve-always
-posture applies only to the OAuth-backed providers.
-
-#### Scenario: anonymous read is allowed
-- **WHEN** an anonymous caller invokes a read-effect action on a public universe
-- **THEN** the request succeeds without authentication
-
-#### Scenario: anonymous write is refused
-- **WHEN** an anonymous caller attempts a write/costly/admin effect under a resolve-always provider
-- **THEN** the action is refused because no authenticated identity is present
+#### Scenario: dev mode without a named user
+- **WHEN** the server starts with `UNIVERSE_SERVER_AUTH` unset and `UNIVERSE_SERVER_DEV_USER` unset
+- **THEN** startup fails naming `UNIVERSE_SERVER_DEV_USER`
 
 ### Requirement: Bearer JWT validation is fail-closed, RS256-pinned, and audience-bound
 
-When resolving a WorkOS bearer token the server SHALL pin the accepted signature algorithm to
-RS256 (defending against algorithm-substitution), bind validation to the AuthKit issuer, require
-the `exp` and `sub` claims, and reject any token whose subject is missing or `anonymous`. Audience
-binding to the registered MCP resource indicator (`WORKOS_MCP_RESOURCE`) SHALL be required by
-default; construction fails closed when it is absent. Token resolution logic lives in
-`tinyassets/auth/workos_provider.py`. As-built limitation: audience validation may be disabled
-only by explicitly setting `WORKOS_ALLOW_NO_AUDIENCE` truthy, which is intended for local/dev use
-and logs a warning; production must leave it unset.
+The WorkOS provider SHALL validate bearer JWTs with a pinned RS256 key set,
+SHALL require `exp` and `sub`, SHALL reject any token whose subject is
+missing, and SHALL bind the audience. A token that fails validation SHALL
+resolve to nothing, and the transport SHALL answer 401 `invalid_token`; no
+identity is bound for it.
 
-#### Scenario: a same-issuer token without required claims is rejected
-- **WHEN** a bearer token is signed by the issuer but lacks a valid `sub` or `exp`
-- **THEN** token resolution returns no identity and the caller is treated as anonymous
-
-#### Scenario: audience binding is required in production configuration
-- **WHEN** the WorkOS provider is constructed without `WORKOS_MCP_RESOURCE` and without the dev opt-out
-- **THEN** construction fails closed rather than accepting any same-issuer token
-
-### Requirement: Anonymous writes on pure-write handles draw a pre-dispatch 401 challenge
-
-Before dispatch, the auth middleware SHALL classify each anonymous `POST` `tools/call` against a
-registry of pure-write MCP handles and, when the call targets a registered pure-write handle under
-a write-gating provider, answer an RFC 9728 `401` with a `WWW-Authenticate` header pointing at the
-Protected Resource Metadata so the client launches OAuth. Exactly four handles opt into this registry —
-`write_graph`, `run_graph`, `write_page`, and `converse` — because mixed read/write dispatch tools must
-not be challenged (that would break anonymous public reads). A present-but-invalid bearer token SHALL
-answer `401` with `error="invalid_token"`. Anonymous request bodies SHALL be buffered only up to a
-1 MiB cap, above which the request answers `413` without reading the remainder. The middleware lives in
-`tinyassets/auth/middleware.py`.
-
-#### Scenario: anonymous call to a pure-write handle is challenged
-- **WHEN** an anonymous `tools/call` targets `write_graph` under a resolve-always provider
-- **THEN** the server answers `401` with a `WWW-Authenticate` challenge before dispatch
-- **AND** the client can start the OAuth flow from the advertised resource metadata
-
-#### Scenario: oversized anonymous body is rejected
-- **WHEN** an anonymous request body exceeds the 1 MiB cap
-- **THEN** the server answers `413` without buffering the rest of the body
-
-#### Scenario: missing-token challenge is gated on require-auth
-- **WHEN** a bearer token is absent on the MCP endpoint and `WORKOS_REQUIRE_AUTH` is truthy
-- **THEN** the server answers a missing-credentials `401` so the connector launches OAuth
-- **AND** when `WORKOS_REQUIRE_AUTH` is not truthy the connector may connect anonymously and still read
+#### Scenario: expired token
+- **WHEN** a request carries an expired bearer
+- **THEN** token resolution returns nothing and the response is HTTP 401 with `error="invalid_token"`
 
 ### Requirement: Protected Resource Metadata advertises the AuthKit issuer and OIDC scopes only
 
@@ -105,28 +51,34 @@ The metadata is produced in `tinyassets/auth/wellknown.py`.
 
 ### Requirement: Founder home auto-births exactly once on first authenticated contact
 
-The server SHALL, on the first authenticated `converse` call with no `graph_id` (the founder's opening
-relay, and the only handle that performs first-contact birth), ensure the founder has a home universe.
-It SHALL check the create scope BEFORE reserving any home id, so a founder lacking create scope leaves
-no phantom binding and the conversation entry returns a creation failure with
+The server SHALL, on the first authenticated `converse` call with no `graph_id`
+(the founder's opening relay, and the only handle that performs first-contact
+birth), ensure the founder has a home universe. It SHALL check the create scope
+BEFORE reserving any home id, so a founder lacking create scope leaves no
+phantom binding and the conversation entry returns a creation failure with
 `auth_scope_required=true`. Reservation SHALL be atomic (an `INSERT ... ON
-CONFLICT DO NOTHING` on the founder key) so concurrent first-contact calls across worker threads yield
-exactly one home id, and materialization SHALL be serialized so a reserved id is created once, with
-success defined as the universe's `soul.md` being present. After successful materialization and
-binding, the resolver SHALL return the bound home id to the originating `converse` entry path.
-Whether that conversation can select and invoke universe intelligence is a subsequent
-authority/execution decision outside this birth contract; successful birth SHALL NOT guarantee
-provider execution or a first-person reply. Anonymous sessions SHALL never trigger birth. Both `get_status` and the
-`read_graph target=status` alias SHALL pass through as pure reads without first-contact birth. This
-logic lives in `tinyassets/api/first_contact.py` with the atomic claim in
+CONFLICT DO NOTHING` on the founder key) so concurrent first-contact calls
+across worker threads yield exactly one home id, and materialization SHALL be
+serialized so a reserved id is created once, with success defined as the
+universe's `soul.md` being present. After successful materialization and
+binding, the resolver SHALL return the bound home id to the originating
+`converse` entry path. Whether that conversation can select and invoke universe
+intelligence is a subsequent authority/execution decision outside this birth
+contract; successful birth SHALL NOT guarantee provider execution or a
+first-person reply. An unauthenticated request SHALL be challenged before it
+can trigger birth. Both `get_status` and the `read_graph target=status` alias
+SHALL pass through as pure reads without first-contact birth. This logic lives
+in `tinyassets/api/first_contact.py` with the atomic claim in
 `tinyassets/daemon_server.py`.
 
 Per the 2026-07-22 host directive
-(`docs/design-notes/2026-07-22-first-contact-birth-moves-to-converse.md`), birth moved off
-`get_status` and its `allow_first_contact_birth` parameter was deleted, because a mutating *opening*
-call proved refusable in production: the assistant declined to call `get_status` on the grounds that
-its own tool description advertised a side effect. The 2026-07-15 commitment this replaces — a founder
-never needs to know an incantation — is upheld, since the opening message is itself the relay.
+(`docs/design-notes/2026-07-22-first-contact-birth-moves-to-converse.md`), birth
+moved off `get_status` and its `allow_first_contact_birth` parameter was
+deleted, because a mutating *opening* call proved refusable in production: the
+assistant declined to call `get_status` on the grounds that its own tool
+description advertised a side effect. The 2026-07-15 commitment this replaces
+-- a founder never needs to know an incantation -- is upheld, since the opening
+message is itself the relay.
 
 #### Scenario: first authenticated converse births one home
 - **WHEN** an authenticated founder with create scope and no bound home issues their opening `converse` with no `graph_id`
@@ -139,9 +91,9 @@ never needs to know an incantation — is upheld, since the opening message is i
 - **THEN** no home binding is created
 - **AND** the result reports that the home could not be created or loaded with `auth_scope_required=true`
 
-#### Scenario: anonymous first contact never births
-- **WHEN** an anonymous session calls `converse` or `get_status`
-- **THEN** no home universe is created
+#### Scenario: unauthenticated first contact never births
+- **WHEN** an unauthenticated request targets `converse` or `get_status`
+- **THEN** the transport returns an authentication challenge and no home universe is created
 
 #### Scenario: get_status never births
 - **WHEN** an authenticated founder with create scope and no bound home calls `get_status`
@@ -150,99 +102,58 @@ never needs to know an incantation — is upheld, since the opening message is i
 
 ### Requirement: The permission actor is the authenticated subject with no environment fallback
 
-The permission actor SHALL be exactly the authenticated request subject, resolving to `anonymous` when
-unauthenticated, with no environment-variable fallback. No universe-server environment variable SHALL
-ever confer write authority over a universe. The actor resolver lives in `tinyassets/api/permissions.py`.
+The permission actor SHALL be exactly the authenticated request subject. With
+no identity bound, actor resolution SHALL raise `PermissionError`; it SHALL
+NOT resolve to any stand-in, and no universe-server environment variable
+SHALL confer identity, authorship or write authority.
 
-#### Scenario: unauthenticated request resolves to anonymous
-- **WHEN** a request carries no authenticated identity
-- **THEN** the permission actor is `anonymous`
-- **AND** no environment variable can substitute a privileged actor
+#### Scenario: unauthenticated request
+- **WHEN** a permission check runs with no identity bound
+- **THEN** it raises `PermissionError` and no action is authorized
 
 ### Requirement: Access is controlled on two orthogonal axes — visibility and ownership
 
-Universe access SHALL be decided on two independent axes: visibility (`public_read`, where a universe
-with no recorded rule is publicly readable by default, private only when explicitly set, and failing
-closed on any real rules-read error) and ownership (a `universe_acl` grant set of `read`/`write`/`admin`).
-Anonymous callers SHALL be able to read public universes only; reads of a private universe and all writes
-SHALL require the appropriate grant (`write` or `admin` for writes). An admin grant SHALL NOT make a
-universe private — visibility and ownership are not conflated. Privileged dispatch actions SHALL
-additionally pass a per-action scope gate that accepts either the fine-grained action scope or the coarse
-effect grant. This model lives in `tinyassets/api/permissions.py` and the scope gate in
-`tinyassets/auth/middleware.py`.
+Universe access SHALL be decided on visibility (public, private, rule-scoped)
+and on the ownership ACL, for authenticated callers. A public universe SHALL
+be readable by any authenticated caller; a private universe by its ACL rows
+only; all writes by an actor holding write or admin on that universe. There
+is no unauthenticated reader.
 
-#### Scenario: anonymous reads public but not private
-- **WHEN** an anonymous caller reads a universe with no visibility rule
-- **THEN** the read is allowed
-- **AND** the same caller reading a `public_read=False` universe is denied
+#### Scenario: signed-in reader of a public universe
+- **WHEN** an authenticated caller with no ACL row reads a public universe
+- **THEN** the read succeeds
 
-#### Scenario: write requires a write or admin grant
-- **WHEN** an authenticated actor without a `write`/`admin` grant attempts a universe write
-- **THEN** the write is denied even though the actor is authenticated
-
-#### Scenario: rules-read error fails closed
-- **WHEN** the visibility rule for a universe cannot be read due to a real error
-- **THEN** the universe is treated as not publicly readable
+#### Scenario: signed-in reader of a private universe
+- **WHEN** an authenticated caller with no ACL row reads a private universe
+- **THEN** the response is the uniform not-found envelope
 
 ### Requirement: Status identity evidence varies across three response shapes
-The system SHALL expose distinct identity evidence on the audited early-first-contact, dispatcher-config-error, and full `get_status` paths without claiming those are the only possible error or authorization envelopes. An authenticated account that omits `universe_id` and has no complete bound home SHALL receive the early first-contact shape containing `first_contact.event = "no_universe_yet"`, `first_contact.note`, `about`, `next_step_for_user`, and `schema_version = 1`; this shape SHALL omit `session_boundary`. A dispatcher-config load failure after universe resolution and access approval SHALL return `error = "config_load_failed"`, `detail`, `universe_id`, and `universe_exists`; this shape SHALL also omit `session_boundary`. A full status response SHALL include `session_boundary` with `prior_session_context_available`, `account_user`, `last_session_ts`, and `note`.
 
-#### Scenario: Untargeted no-home status returns before session identity assembly
-- **WHEN** an authenticated account with no complete bound home universe calls `get_status` without an explicit `universe_id`
-- **THEN** the response is the early first-contact shape with `schema_version = 1`
-- **AND** `session_boundary` is absent
+`get_status` SHALL report `request_identity.bearer_present` and a
+`principal_fingerprint` derived from the authenticated subject only. There is
+no anonymous fingerprint prefix and no environment-actor fallback shape; the
+three shapes are: founder of the universe, authenticated non-founder, and
+the `canary` service principal.
 
-#### Scenario: Configuration failure returns before session identity assembly
-- **WHEN** a resolved universe's dispatcher configuration raises during load
-- **THEN** the response contains `config_load_failed`, its detail, the universe id, and whether the universe directory exists
-- **AND** `session_boundary` is absent
-
-#### Scenario: Full status attributes the current account
-- **WHEN** status reaches the full response and request authentication supplies a non-anonymous subject
-- **THEN** `session_boundary.account_user` equals that authenticated subject
-
-#### Scenario: Authless full status uses the legacy environment actor
-- **WHEN** status reaches the full response without a non-anonymous request subject
-- **THEN** `session_boundary.account_user` equals `UNIVERSE_SERVER_USER`, defaulting to `anonymous`
-
-#### Scenario: Prior-session evidence is a best-effort activity-tail match
-- **WHEN** one of the newest 20 activity-log lines contains the raw `account_user` string anywhere and begins with a bracketed timestamp
-- **THEN** the newest such substring match makes `prior_session_context_available` true and supplies that timestamp as `last_session_ts`
-- **AND** this is best-effort substring evidence rather than verified actor attribution, so a name contained inside another value can match and an empty account string matches every line
-- **AND** no match or any handled scan error yields false with `last_session_ts` set to null
+#### Scenario: canary reads status
+- **WHEN** the canary bearer calls `get_status`
+- **THEN** `request_identity.principal_fingerprint` is the canary's and `release_state` is present
 
 ### Requirement: Scoped wiki canary bearer grants no general identity
 
-The server SHALL recognize `TINYASSETS_WIKI_CANARY_TOKEN` only as request-local
-authority for one exact, non-batch `write_page` call targeting
-`drafts/notes/uptime-probe.md`; it SHALL keep the caller anonymous for every
-generic authentication, OAuth-scope, founder, and permission check. The feature
-SHALL be entirely disabled when the configured value is absent or contains
-fewer than 32 UTF-8 bytes, and token comparison SHALL use a constant-time
-primitive without logging bearer material.
+The canary bearer SHALL resolve to the `canary` service identity whose only
+admitted requests are the allowlist above; it SHALL NOT hold write, costly or
+admin on any universe. Its confinement is the allowlist enforced before
+dispatch, not anonymity and not a capability set.
 
-#### Scenario: Exact reserved call receives narrow authority
-- **WHEN** a bearer equal to a valid configured canary token accompanies the
-  exact reserved `write_page` request shape
-- **THEN** the request dispatches with only the dedicated canary-write authority
-- **AND** the current identity remains anonymous
-
-#### Scenario: Adjacent page and other action fail closed
-- **WHEN** the same bearer targets any other filename, adds a routing argument,
-  appears in a batch, or calls another authenticated action
-- **THEN** the bearer grants no authority or identity and the existing
-  invalid-token or anonymous-write rejection applies
-
-#### Scenario: Missing or short configuration disables the feature
-- **WHEN** `TINYASSETS_WIKI_CANARY_TOKEN` is unset, empty, or shorter than 32
-  UTF-8 bytes
-- **THEN** no presented bearer can activate canary authority
-- **AND** the anonymous-write gate remains intact
+#### Scenario: canary attempts a write
+- **WHEN** the canary bearer calls `write_graph`
+- **THEN** the request is refused before dispatch and nothing is written
 
 ### Requirement: Voice-session signaling requires the authenticated founder identity
 The `GET /mcp/app/voice/status` capability check and `POST /mcp/app/voice/session` broker SHALL require a resolved authenticated subject, SHALL derive the founder home universe from that subject instead of a caller-selected universe id, and SHALL fail closed before connection lookup or network activity when identity or ownership cannot be proven.
 
-#### Scenario: Anonymous caller requests a voice session
+#### Scenario: Unauthenticated caller requests a voice session
 - **WHEN** a request reaches the voice-session broker without a resolved authenticated subject
 - **THEN** the server returns an authentication challenge or denial
 - **AND** it performs no connection lookup and no network request
@@ -262,3 +173,91 @@ The `GET /mcp/app/voice/status` capability check and `POST /mcp/app/voice/sessio
 - **WHEN** an authenticated subject without a materialized founder home requests a voice session
 - **THEN** the broker returns an actionable not-ready failure
 - **AND** it does not auto-create a universe or access any credential
+
+### Requirement: Every request carries a named principal or is challenged
+
+The auth middleware SHALL resolve a bearer token to an `Identity` or to
+nothing; it SHALL NOT construct a stand-in identity for a missing or invalid
+token in any auth mode. `current_identity()` SHALL raise `PermissionError`
+when no identity is bound. On every path outside the exempt table the ASGI
+middleware SHALL answer HTTP 401 with a `WWW-Authenticate: Bearer` challenge
+carrying the resource-metadata URL when no valid bearer is present, including
+for JSON-RPC `initialize`, `tools/list` and every `tools/call`. No
+environment variable SHALL supply an actor or a git author. The dev provider
+SHALL resolve a named local identity from `UNIVERSE_SERVER_DEV_USER` and the
+server SHALL refuse to start in dev mode without it.
+
+#### Scenario: missing bearer on the MCP endpoint
+- **WHEN** a client POSTs `initialize` to `/mcp` with no `Authorization` header
+- **THEN** the response is HTTP 401 with `WWW-Authenticate: Bearer resource_metadata="..."`
+- **AND** no handler runs and no identity is bound
+
+#### Scenario: invalid bearer in dev mode
+- **WHEN** the provider is the dev provider and a request carries a bearer it cannot resolve
+- **THEN** the response is HTTP 401 with `error="invalid_token"`, not a downgrade to any identity
+
+#### Scenario: code that reads identity outside a request
+- **WHEN** `current_identity()` is called with nothing bound
+- **THEN** it raises `PermissionError("Authentication required")`
+
+### Requirement: Exempt paths bind their own named principal
+
+Exactly these paths SHALL be served without the MCP bearer, each binding a
+named principal or reading no state: the OAuth discovery routes
+(`/.well-known/*` and `/mcp/.well-known/*`); the app shell `/mcp/app` and
+its PKCE exchange, refresh and logout route `/mcp/app/token` (the signed-in
+user, or the flow itself); the connect-deposit routes `/mcp/connect/*` (the
+depositing user's session, matched by the existing traversal-safe
+predicate); inbound hook routes `/mcp/hooks/<id>` (exactly one path segment,
+the existing predicate; the hook's owner is stamped on the emitted event);
+`/mcp/app/billing/webhook` (Stripe-signed; the handler binds the customer
+from the event). No other path
+SHALL be exempt, and no exemption SHALL be a wildcard prefix.
+
+#### Scenario: inbound hook runs as its owner
+- **WHEN** a valid hook secret arrives on `/mcp/hooks/<id>`
+- **THEN** the emitted event carries the hook owner's principal and the run binds to it without a further lookup
+
+#### Scenario: a hook with no recorded owner
+- **WHEN** a valid secret arrives for a hook stored before owners were recorded
+- **THEN** the hook refuses to emit, naming the hook, and nothing runs
+
+#### Scenario: pulse without a principal
+- **WHEN** `GET /mcp/pulse` is called with no bearer
+- **THEN** it receives the OAuth 401 challenge and no release data
+
+### Requirement: Runs and events carry an explicit actor
+
+`create_run` SHALL require `actor`; the `runs.actor` column SHALL have no
+default; a dispatch SHALL never treat a missing actor as a principal.
+Scheduled runs, automation runs and Source-event runs SHALL each carry the
+owner principal stored with the schedule, automation or hook.
+
+#### Scenario: legacy anonymous run rows
+- **WHEN** the migration finds a run row whose actor is `anonymous`
+- **THEN** it fails loud listing the rows, and no such row is ever re-dispatched
+
+### Requirement: Operational probes are the canary service principal
+
+The bearer configured as `TINYASSETS_WIKI_CANARY_TOKEN` SHALL resolve to the
+identity `canary`. The canary SHALL hold no capability set; instead the auth
+middleware SHALL admit a request under it only when every item of its
+JSON-RPC body (single or batch) is one of: `initialize`,
+`notifications/initialized`, `tools/list`, `tools/call get_status` with no
+arguments, `tools/call read_graph` with `target=status`, or the wiki canary's
+exact `write_page` / `read_page` shapes. Exact `GET /mcp/pulse` is also
+admitted under the canary bearer. Any other item SHALL be refused before
+dispatch. Every probe script in `scripts/` that calls the MCP endpoint
+SHALL send the bearer; without the variable set the script SHALL exit 2
+naming it. `scripts/mcp_public_canary.py` SHALL assert that an
+unauthenticated `initialize` answers the 401 challenge, then use the bearer
+for `--assert-handles`. `scripts/deployed_sha.py` SHALL read `/mcp/pulse` with
+the canary bearer and keep its `image_tag` corroboration.
+
+#### Scenario: canary without its token
+- **WHEN** `mcp_public_canary.py --assert-handles` runs with the variable unset
+- **THEN** it exits 2 and names `TINYASSETS_WIKI_CANARY_TOKEN`
+
+#### Scenario: canary attempts anything else
+- **WHEN** the canary bearer calls `write_graph`, `run_graph`, `converse`, or `read_graph` with any target but `status`
+- **THEN** the request is refused before dispatch and nothing is read or written

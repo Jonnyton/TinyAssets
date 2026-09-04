@@ -77,5 +77,7 @@ and lands as small, independently tested commits.
     callers and the cutover fallback;
   - delete remaining anonymous sinks/defaults and make
     `grep anonymous tinyassets/` empty;
-  - sync specs/archive only after the bearer canary, deployed-sha gate, and
-    rendered connector acceptance are green on the deployed commit.
+  - keep main specs synced to the shipped server contract; because that sync
+    landed before acceptance, archive with `--skip-specs` only after the bearer
+    canary, deployed-sha gate, and rendered connector acceptance are green on
+    the deployed commit.
