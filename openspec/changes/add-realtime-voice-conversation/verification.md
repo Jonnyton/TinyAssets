@@ -73,9 +73,11 @@ or device proof.
 The corrected authority/security diff was dispatched read-only to the Claude peer on 2026-09-03
 with the required structured-disagreement contract. The initial process exited 1 after 17 seconds
 with no output. After the provider-neutral redesign, a fresh bounded review was dispatched; it
-also exited 1 with no output, after 10 seconds. Both failures are recorded in
-`docs/reviews/2026-09-03-realtime-voice-authority-correction-review.md`; neither is approval and no
-retry loop was started. Opposite-provider review remains a landing gate.
+also exited 1 with no output, after 10 seconds. After Jonathan clarified that Claude Opus remained
+available, one bounded Opus review ran for 409 seconds against pinned head `58e4010f` but returned
+no structured findings, reviewed-head line, or valid final verdict and instead referred to
+unrelated review files. The raw receipts and assessment are recorded under `docs/reviews/`; none
+is approval. Opposite-provider review remains a landing gate and no further retry was started.
 
 ## Rollout and rollback
 

@@ -30,5 +30,14 @@ contract and hard no-subagent/no-full-suite constraints; Claude again exited 1, 
 seconds, with no stdout or stderr. The raw failure receipt is preserved in
 `docs/reviews/2026-09-03-realtime-voice-provider-neutral-claude.md`.
 
-The correction remains gated on a fresh opposite-provider review before landing or rollout. Local
-tests and self-review are supporting evidence only. No further identical retry was started.
+On Jonathan's clarification that only the default Fable allocation was exhausted, one additional
+bounded read-only review was dispatched explicitly to Claude Opus against pinned head
+`58e4010f107fab284810294702bb25659d71d29c`. The process exited successfully after 409 seconds but
+returned no structured findings, no reviewed-head line, and no valid final verdict; instead it
+referred to unrelated review files from other worktrees. The complete receipt and assessment are
+preserved in `docs/reviews/2026-09-03-realtime-voice-opus-review.md`. This is not approval and
+contains no actionable finding.
+
+The correction remains gated on a valid opposite-provider review before landing or rollout. Local
+tests and self-review are supporting evidence only. The user authorized one bounded Opus dispatch;
+no retry was started.

@@ -148,8 +148,6 @@ def _drive(
 
     async def run():
         request = Request(scope, receive)
-        if identity is None:
-            return await route.endpoint(request)
         with identity_context(identity):
             return await route.endpoint(request)
 
@@ -175,8 +173,6 @@ def _drive_status(*, identity=None) -> tuple[int, dict, dict]:
     )
 
     async def run():
-        if identity is None:
-            return await route.endpoint(request)
         with identity_context(identity):
             return await route.endpoint(request)
 
