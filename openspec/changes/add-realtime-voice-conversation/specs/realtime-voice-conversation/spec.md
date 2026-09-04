@@ -72,6 +72,11 @@ The voice client SHALL treat media-session state as disposable, SHALL perform a 
 - **THEN** the app reloads canonical text history and resumes in listening state
 - **AND** it does not replay prior audio or automatically speak the prior reply
 
+#### Scenario: An older connection attempt finishes after its replacement
+- **WHEN** a superseded signaling attempt resumes after a newer attempt has installed its transport
+- **THEN** the older attempt disposes only its own peer connection, data channel, audio element, and microphone stream
+- **AND** it does not close, replace, or fail the newer transport
+
 #### Scenario: Delivery remains ambiguous
 - **WHEN** the client cannot determine whether a founder turn reached `converse`
 - **THEN** it presents an explicit retry action

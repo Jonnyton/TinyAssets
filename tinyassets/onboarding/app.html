@@ -1303,49 +1303,55 @@
       catch(error){ if(generation===this.epoch) this.fail(error); }
     },
     async _connect(generation,isReconnect){
-      if(!navigator.mediaDevices||typeof navigator.mediaDevices.getUserMedia!=="function")
-        throw new Error("voice_unsupported");
-      if(!isReconnect) this._render();
-      let stream;
-      try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true},video:false});}
-      catch(_error){ throw new Error("voice_permission_denied"); }
-      if(generation!==this.epoch){ stream.getTracks().forEach(track=>track.stop()); return; }
-      this.stream=stream;
-      if(!isReconnect) this._event("permission_granted"); else this._render();
-      if(typeof RTCPeerConnection!=="function") throw new Error("voice_unsupported");
-      const pc=new RTCPeerConnection(); this.pc=pc;
-      const audio=document.createElement("audio"); audio.autoplay=true; audio.muted=true; this.audio=audio;
-      pc.addEventListener("track",event=>{ if(event.streams&&event.streams[0]) audio.srcObject=event.streams[0]; });
-      stream.getTracks().forEach(track=>pc.addTrack(track,stream));
-      const dc=pc.createDataChannel("tinyassets-voice"); this.dc=dc;
-      dc.addEventListener("message",event=>this.handleServerEvent(event.data));
-      pc.addEventListener("connectionstatechange",()=>{
-        if(generation!==this.epoch) return;
-        if(["failed","disconnected"].includes(pc.connectionState)) this.reconnect(generation);
-      });
-      const opened=new Promise((resolve,reject)=>{
-        const timer=setTimeout(()=>reject(new Error("voice_channel_timeout")),10000);
-        dc.addEventListener("open",()=>{clearTimeout(timer);resolve();},{once:true});
-        dc.addEventListener("error",()=>{clearTimeout(timer);reject(new Error("voice_channel_failed"));},{once:true});
-      });
-      const offer=await pc.createOffer(); await pc.setLocalDescription(offer);
-      if(pc.iceGatheringState!=="complete"){
-        await new Promise((resolve,reject)=>{
-          const changed=()=>{if(pc.iceGatheringState==="complete"){clearTimeout(timer);pc.removeEventListener("icegatheringstatechange",changed);resolve();}};
-          const timer=setTimeout(()=>{pc.removeEventListener("icegatheringstatechange",changed);reject(new Error("voice_ice_timeout"));},5000);
-          pc.addEventListener("icegatheringstatechange",changed);
+      let stream=null,pc=null,audio=null,dc=null,channelTimer=null;
+      try{
+        if(!navigator.mediaDevices||typeof navigator.mediaDevices.getUserMedia!=="function")
+          throw new Error("voice_unsupported");
+        if(!isReconnect) this._render();
+        try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true},video:false});}
+        catch(_error){ throw new Error("voice_permission_denied"); }
+        if(generation!==this.epoch){ this._disposeTransport(null,null,null,stream); return; }
+        this.stream=stream;
+        if(!isReconnect) this._event("permission_granted"); else this._render();
+        if(typeof RTCPeerConnection!=="function") throw new Error("voice_unsupported");
+        pc=new RTCPeerConnection(); this.pc=pc;
+        audio=document.createElement("audio"); audio.autoplay=true; audio.muted=true; this.audio=audio;
+        pc.addEventListener("track",event=>{ if(event.streams&&event.streams[0]) audio.srcObject=event.streams[0]; });
+        stream.getTracks().forEach(track=>pc.addTrack(track,stream));
+        dc=pc.createDataChannel("tinyassets-voice"); this.dc=dc;
+        dc.addEventListener("message",event=>this.handleServerEvent(event.data));
+        pc.addEventListener("connectionstatechange",()=>{
+          if(generation!==this.epoch) return;
+          if(["failed","disconnected"].includes(pc.connectionState)) this.reconnect(generation);
         });
+        const opened=new Promise((resolve,reject)=>{
+          channelTimer=setTimeout(()=>reject(new Error("voice_channel_timeout")),10000);
+          dc.addEventListener("open",()=>{clearTimeout(channelTimer);channelTimer=null;resolve();},{once:true});
+          dc.addEventListener("error",()=>{clearTimeout(channelTimer);channelTimer=null;reject(new Error("voice_channel_failed"));},{once:true});
+        });
+        const offer=await pc.createOffer(); await pc.setLocalDescription(offer);
+        if(pc.iceGatheringState!=="complete"){
+          await new Promise((resolve,reject)=>{
+            const changed=()=>{if(pc.iceGatheringState==="complete"){clearTimeout(timer);pc.removeEventListener("icegatheringstatechange",changed);resolve();}};
+            const timer=setTimeout(()=>{pc.removeEventListener("icegatheringstatechange",changed);reject(new Error("voice_ice_timeout"));},5000);
+            pc.addEventListener("icegatheringstatechange",changed);
+          });
+        }
+        const localSdp=pc.localDescription&&pc.localDescription.sdp;
+        if(!localSdp) throw new Error("voice_session_offer_invalid");
+        const session=await this._session(localSdp);
+        if(generation!==this.epoch){ clearTimeout(channelTimer);this._disposeTransport(pc,dc,audio,stream); return; }
+        await pc.setRemoteDescription({type:"answer",sdp:session.answer_sdp});
+        await opened;
+        if(generation!==this.epoch){ clearTimeout(channelTimer);this._disposeTransport(pc,dc,audio,stream); return; }
+        this.reconnecting=false; this.reconnectAttempts=0;
+        this.state=isReconnect?voiceNextState("reconnecting","connected"):voiceNextState("connecting","connected");
+        this._render(); this._armSessionLimit(session.max_session_seconds);
+      }catch(error){
+        clearTimeout(channelTimer);
+        this._disposeTransport(pc,dc,audio,stream);
+        throw error;
       }
-      const localSdp=pc.localDescription&&pc.localDescription.sdp;
-      if(!localSdp) throw new Error("voice_session_offer_invalid");
-      const session=await this._session(localSdp);
-      if(generation!==this.epoch) return this._teardownTransport();
-      await pc.setRemoteDescription({type:"answer",sdp:session.answer_sdp});
-      await opened;
-      if(generation!==this.epoch) return this._teardownTransport();
-      this.reconnecting=false; this.reconnectAttempts=0;
-      this.state=isReconnect?voiceNextState("reconnecting","connected"):voiceNextState("connecting","connected");
-      this._render(); this._armSessionLimit(session.max_session_seconds);
     },
     _armSessionLimit(seconds){
       clearTimeout(this.stopTimer); clearTimeout(this.warnTimer);
@@ -1422,16 +1428,21 @@
       while(this.reconnectAttempts<3&&generation===this.epoch){
         this.reconnectAttempts++;
         await sleep(400*Math.pow(2,this.reconnectAttempts-1));
-        try{await this._connect(generation,true);return;}catch(_e){this._teardownTransport();}
+        try{await this._connect(generation,true);return;}catch(_e){}
       }
       if(generation===this.epoch) this.fail(new Error("voice_reconnect_exhausted"));
     },
+    _disposeTransport(pc,dc,audio,stream){
+      if(dc){try{dc.close();}catch(_e){}}
+      if(pc){try{pc.close();}catch(_e){}}
+      if(audio){try{audio.pause();audio.srcObject=null;}catch(_e){}}
+      if(stream){try{stream.getTracks().forEach(track=>track.stop());}catch(_e){}}
+    },
     _teardownTransport(){
       clearTimeout(this.stopTimer);clearTimeout(this.warnTimer);this.stopTimer=null;this.warnTimer=null;
-      if(this.dc){try{this.dc.close();}catch(_e){}this.dc=null;}
-      if(this.pc){try{this.pc.close();}catch(_e){}this.pc=null;}
-      if(this.audio){try{this.audio.pause();this.audio.srcObject=null;}catch(_e){}this.audio=null;}
-      if(this.stream){try{this.stream.getTracks().forEach(track=>track.stop());}catch(_e){}this.stream=null;}
+      const pc=this.pc,dc=this.dc,audio=this.audio,stream=this.stream;
+      this.pc=null;this.dc=null;this.audio=null;this.stream=null;
+      this._disposeTransport(pc,dc,audio,stream);
     },
     stop(announce=true,detail){
       this.epoch++;this.reconnecting=false;this.reconnectAttempts=0;

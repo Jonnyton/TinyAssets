@@ -646,6 +646,7 @@ const $=id=>els[id]; let status=""; function setStatusLine(v){status=v||"";}
 const document={createElement:()=>new El()};
 let mediaRequests=0;
 const navigator={mediaDevices:{getUserMedia:async()=>{mediaRequests++;return {getTracks:()=>[]};}}};
+let RTCPeerConnection;
 let traces=[]; function trace(...args){traces.push(args);}
 let turns=[];
 let capabilityDoc={available:false,state:"locked",reason:"voice_compatible_resource_required"};
@@ -719,6 +720,7 @@ function authHeaders(){return {Authorization:"Bearer app"};} async function slee
   await staleFailure;
   out.staleFailure={state:Voice.state,sameChannel:Voice.dc===liveChannel};
   voiceTurnImpl=async()=>"Exact universe reply.";
+  const realConnect=Voice._connect,realTeardown=Voice._teardownTransport;
   let attempts=0; Voice.epoch=11; Voice.reconnecting=false; Voice.reconnectAttempts=0;
   Voice._teardownTransport=()=>{};
   Voice._connect=async()=>{
@@ -726,6 +728,7 @@ function authHeaders(){return {Authorization:"Bearer app"};} async function slee
     Voice.reconnecting=false;Voice.state="listening";
   };
   await Voice.reconnect(11); out.reconnect={attempts,state:Voice.state};
+  Voice._connect=realConnect;Voice._teardownTransport=realTeardown;
   Voice.canonicalResponsePending=false; Voice.audio={muted:true};
   Voice.handleServerEvent({type:"audio_started"});
   out.untrusted={state:Voice.state,status};
@@ -738,6 +741,40 @@ function authHeaders(){return {Authorization:"Bearer app"};} async function slee
   Voice.audio={muted:false}; Voice.handleServerEvent({type:"speech_started"});
   Voice.handleServerEvent({type:"output_transcript",transcript:"Altered answer"});
   out.interruptedMismatch={state:Voice.state,status};
+  const raceStreams=[],racePcs=[],sessionResolvers=[];
+  navigator.mediaDevices.getUserMedia=async()=>{
+    const track={stopped:false,stop(){this.stopped=true;}};
+    const stream={track,getTracks:()=>[track]}; raceStreams.push(stream); return stream;
+  };
+  RTCPeerConnection=class{
+    constructor(){this.closed=false;this.iceGatheringState="complete";racePcs.push(this);}
+    addEventListener(){} addTrack(){}
+    createDataChannel(){
+      const dc={readyState:"open",closed:false,send(){},close(){this.closed=true;},
+        addEventListener(name,callback){if(name==="open")queueMicrotask(callback);}};
+      this.dataChannel=dc;return dc;
+    }
+    async createOffer(){return {type:"offer",sdp:"v=0\\r\\n"};}
+    async setLocalDescription(offer){this.localDescription=offer;}
+    async setRemoteDescription(){if(this.closed)throw new Error("closed peer");}
+    close(){this.closed=true;}
+  };
+  Voice._session=()=>new Promise(resolve=>sessionResolvers.push(resolve));
+  Voice.epoch=30;Voice.state="requesting_permission";
+  const firstConnect=Voice._connect(30,false);
+  while(sessionResolvers.length<1)await Promise.resolve();
+  Voice.epoch=31;Voice.state="requesting_permission";
+  const secondConnect=Voice._connect(31,false);
+  while(sessionResolvers.length<2)await Promise.resolve();
+  const livePc=Voice.pc,liveDc=Voice.dc,liveStream=Voice.stream;
+  sessionResolvers[0]({answer_sdp:"v=0\\r\\n",max_session_seconds:1800});
+  await firstConnect;
+  out.connectRace={currentPc:Voice.pc===livePc,currentDc:Voice.dc===liveDc,
+    currentStream:Voice.stream===liveStream,oldPcClosed:racePcs[0].closed,
+    oldDcClosed:racePcs[0].dataChannel.closed,oldTrackStopped:raceStreams[0].track.stopped,
+    livePcClosed:livePc.closed,liveTrackStopped:liveStream.track.stopped};
+  sessionResolvers[1]({answer_sdp:"v=0\\r\\n",max_session_seconds:1800});
+  await secondConnect;out.connectRace.finalState=Voice.state;
   console.log(JSON.stringify(out));
 })().catch(e=>{console.error(e&&e.stack||e);process.exit(1);});
 """
@@ -851,6 +888,17 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
     assert out["mismatch"]["traces"][0][0] == "voice_output_mismatch"
     assert out["interruptedMismatch"]["state"] == "error"
     assert "did not match" in out["interruptedMismatch"]["status"]
+    assert out["connectRace"] == {
+        "currentPc": True,
+        "currentDc": True,
+        "currentStream": True,
+        "oldPcClosed": True,
+        "oldDcClosed": True,
+        "oldTrackStopped": True,
+        "livePcClosed": False,
+        "liveTrackStopped": False,
+        "finalState": "listening",
+    }
 
 
 def test_message_timestamps_use_viewer_timezone_and_preserve_the_instant(

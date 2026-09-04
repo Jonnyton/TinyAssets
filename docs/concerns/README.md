@@ -25,6 +25,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
+| **P2** | [Realtime voice has no post-fix exact-head approval](2026-09-03-realtime-voice-final-review-gap.md) — the third Opus round ended `ADAPT`; its sole stated blocker is repaired, but the saved receipt omitted referenced non-blocking findings and the three-round cap forbids another approval pass | 2026-09-03 |
 | **P2** | [Run submission accepts missing required branch inputs](2026-09-03-run-submission-accepts-missing-required-inputs.md) — unresolved required inputs are detected only after admission; submission needs an authority-preserving preflight refusal with exact missing-input guidance and no run row | 2026-09-03 |
 | **P0** | [iOS App Store upload requires Xcode 26](2026-09-03-ios-app-store-upload-requires-xcode-26.md) — signing and export pass, but App Store Connect rejects the `macos-15` default Xcode 16.4/iOS 18.5 SDK; exact revision `6ccb3d24` has an Opus AGREE review and awaits remote gates plus upload retry | 2026-09-03 |
 | **P1** | [The no-anonymous cutover is one of three and still leaves a public read](2026-09-03-no-anonymous-cutover-is-one-of-three.md) — the existing owned branch is an unmerged PR-1 source change; `/mcp/pulse`, residual anonymous fallbacks, a red targeted test, and no exact-head receipt remain | 2026-09-03 |

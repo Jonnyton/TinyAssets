@@ -88,8 +88,14 @@ and regression-tested. Opus round two against `050f168a` confirmed both repairs 
 the client cap ignoring configured duration, disclosure acceptance surviving service rebinding,
 and interruption over-suppressing mismatch enforcement. All four were repaired and covered by
 the 146-test focused run above. The round-two receipt is preserved at
-`docs/reviews/2026-09-03-realtime-voice-opus-review-round2.md`. A third and final exact-head Opus
-review remains the landing gate.
+`docs/reviews/2026-09-03-realtime-voice-opus-review-round2.md`. The third and final Opus round
+reviewed `20cc50e0` and returned `ADAPT` with one stated blocker: a superseded `_connect` attempt
+could globally tear down the replacement transport. That defect is repaired with attempt-local
+disposal and a deterministic two-attempt race regression. The saved review omitted the content of
+several non-blocking findings it referenced, and the three-round cap forbids another review. The
+exact-head approval gate therefore remains unresolved in
+`docs/concerns/2026-09-03-realtime-voice-final-review-gap.md`; the PR stays draft and dark pending
+a founder decision.
 
 ## Rollout and rollback
 
