@@ -37,6 +37,8 @@ debug UI, transient error, notification, or microphone indicator.
 - A fresh **Add for Review** preflight was then run. It returned **Unable to Add for
   Review** and did not create a submission. Neither screenshot appeared in the new
   blocker list.
+- The separate **App Review** page was opened immediately afterward and still showed
+  only “Items you submit to App Review will appear here,” with no submission item.
 
 The remaining global blockers shown by Apple are Content Rights, Privacy Policy URL,
 and Admin-published privacy practices. The remaining page-level blockers are reviewer
