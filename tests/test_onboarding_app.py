@@ -929,14 +929,23 @@ let connectCalls=[]; function showConnect(asGate,guidance){connectCalls.push({as
     connectCalls:connectCalls.slice()
   };
   window.speechSynthesis.autoEnd=false;
-  const stalledResult=[{transcript:"Speech watchdog"}];stalledResult.isFinal=true;
-  recognition.onresult({resultIndex:0,results:[stalledResult]});
+  const stoppedResult=[{transcript:"Stop during speech"}];stoppedResult.isFinal=true;
+  recognition.onresult({resultIndex:0,results:[stoppedResult]});
   await Promise.resolve();await Promise.resolve();await Promise.resolve();
-  const speechWatchdog=timers.slice().reverse().find(timer=>timer.ms>=15000&&timer.ms<=120000);
+  const stoppedTurn=Voice.browserTurn,cancelsBeforeSpeechStop=speechCancels.length;
+  Voice.stop(false);await stoppedTurn;
+  out.browserSpeechTeardown={state:Voice.state,aborted:recognition.aborted,
+    speechCancels:speechCancels.length-cancelsBeforeSpeechStop};
+  await Voice.requestStart();await Promise.resolve();
+  const watchdogRecognition=recognitionInstances[recognitionInstances.length-1];
+  const stalledResult=[{transcript:"Speech watchdog"}];stalledResult.isFinal=true;
+  watchdogRecognition.onresult({resultIndex:0,results:[stalledResult]});
+  await Promise.resolve();await Promise.resolve();await Promise.resolve();
+  const speechWatchdog=timers.slice().reverse().find(timer=>timer.ms>=30000&&timer.ms<=1800000);
   const stalledTurn=Voice.browserTurn;speechWatchdog.fn();await stalledTurn;
   out.browserSpeechWatchdog={state:Voice.state,turns:turns.slice(),spoken:spoken.slice(),status};
   const cancelsBeforeStop=speechCancels.length;Voice.stop(false);
-  out.browserFallbackStop={aborted:recognition.aborted,
+  out.browserFallbackStop={aborted:watchdogRecognition.aborted,
     speechCancelsOnStop:speechCancels.length-cancelsBeforeStop,
     state:Voice.state};
   console.log(JSON.stringify(out));
@@ -1180,9 +1189,18 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
     }
     assert out["browserSpeechWatchdog"] == {
         "state": "error",
-        "turns": ["Hello, same universe", "Speech watchdog"],
-        "spoken": ["Exact universe reply.", "Exact universe reply."],
+        "turns": ["Hello, same universe", "Stop during speech", "Speech watchdog"],
+        "spoken": [
+            "Exact universe reply.",
+            "Exact universe reply.",
+            "Exact universe reply.",
+        ],
         "status": "Your browser or device speech service stopped. Typed chat still works.",
+    }
+    assert out["browserSpeechTeardown"] == {
+        "state": "idle",
+        "aborted": 1,
+        "speechCancels": 1,
     }
     assert out["browserFallbackStop"] == {
         "aborted": 1,

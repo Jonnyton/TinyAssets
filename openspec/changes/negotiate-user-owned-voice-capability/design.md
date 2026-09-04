@@ -86,10 +86,11 @@ final text utterance, `sendVoiceTurn` submits it once through the same
 authenticated `MCP.converse` path used by typed chat, and synthesis receives the
 exact returned reply after that text is rendered in history. Stop, page hide,
 sign-out, errors, and navigation abort recognition and cancel queued speech.
-Synthesis has a bounded local completion watchdog so a browser that emits
-neither completion nor error cannot leave Voice stuck. A failed capability
-status read does not activate this mode because it cannot distinguish a missing
-bridge from an unpowered universe.
+Synthesis has a progress-aware local completion watchdog, bounded by the
+existing session limit, so a browser that emits neither progress, completion,
+nor error cannot leave Voice stuck or falsely time out a long, active reply. A
+failed capability status read does not activate this mode because it cannot
+distinguish a missing bridge from an unpowered universe.
 
 This mode is turn-based, not full-duplex realtime: it does not promise semantic
 VAD, barge-in, or bridge-quality interruption. Speech recognition is not
