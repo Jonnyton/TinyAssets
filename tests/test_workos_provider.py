@@ -432,8 +432,10 @@ def test_middleware_anonymous_without_token(keypair, monkeypatch) -> None:
     monkeypatch.delenv("UNIVERSE_SERVER_USER", raising=False)
     mw.set_provider(_provider(keypair))
     try:
-        mw.auth_middleware(None)
-        assert mw.current_identity().user_id == "anonymous"
+        assert mw.auth_middleware(None) is None
+        assert mw.current_identity_or_none() is None
+        with pytest.raises(PermissionError):
+            mw.current_identity()
     finally:
         mw.set_provider(None)
 
@@ -479,13 +481,13 @@ def test_workos_anonymous_cannot_write_wiki(workos_active) -> None:
         require_action_scope("wiki", "write")
 
 
-def test_workos_anonymous_can_read(workos_active) -> None:
+def test_workos_nobody_cannot_read(workos_active) -> None:
     from tinyassets.auth.middleware import auth_middleware, require_action_scope
 
     auth_middleware(None)
-    # A read-effect action must NOT raise for anonymous (public read).
-    ident = require_action_scope("wiki", "read")
-    assert ident.user_id == "anonymous"
+    # A read used to be open to nobody. There is no anonymous reader now.
+    with pytest.raises(PermissionError, match="Authentication required"):
+        require_action_scope("wiki", "read")
 
 
 def test_workos_authenticated_founder_can_create(workos_active) -> None:
@@ -552,12 +554,12 @@ def test_workos_anonymous_cannot_write_goals(workos_active) -> None:
             require_action_scope("goals", action)
 
 
-def test_workos_anonymous_can_read_goals(workos_active) -> None:
+def test_workos_nobody_cannot_list_goals(workos_active) -> None:
     from tinyassets.auth.middleware import auth_middleware, require_action_scope
 
     auth_middleware(None)
-    ident = require_action_scope("goals", "list")
-    assert ident.user_id == "anonymous"
+    with pytest.raises(PermissionError, match="Authentication required"):
+        require_action_scope("goals", "list")
 
 
 def test_workos_founder_with_write_can_propose_goal(workos_active) -> None:
@@ -604,11 +606,11 @@ def test_invalid_bearer_token_is_rejected_not_anonymous(workos_active) -> None:
     assert mw._current_identity.get() is None
 
 
-def test_missing_token_stays_anonymous(workos_active) -> None:
+def test_missing_token_binds_nobody(workos_active) -> None:
     from tinyassets.auth import middleware as mw
 
     mw.auth_middleware(None)
-    assert mw.current_identity().user_id == "anonymous"
+    assert mw.current_identity_or_none() is None
 
 
 def test_invalid_bearer_token_gets_401_challenge(workos_active) -> None:

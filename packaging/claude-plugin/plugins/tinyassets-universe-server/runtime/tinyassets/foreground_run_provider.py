@@ -113,10 +113,10 @@ class _ForegroundRunProviderSession:
 
     def _validate_founder_home(self) -> None:
         from tinyassets.daemon_server import get_founder_home
+        from tinyassets.principals import has_named_principal
 
         if (
-            not self._principal_id
-            or self._principal_id == "anonymous"
+            not has_named_principal(self._principal_id)
             or not self._universe_id
             or get_founder_home(self._base_path, self._principal_id) != self._universe_id
         ):

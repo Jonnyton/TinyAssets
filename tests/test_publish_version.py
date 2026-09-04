@@ -181,7 +181,9 @@ class TestPublishBranchVersion:
         d = _make_branch_dict()
         v = publish_branch_version(tmp_path, d)
         assert "name" not in v.snapshot
-        assert v.snapshot["author"] == "anonymous"
+        # An unowned legacy definition stays unowned; publishing must never
+        # synthesize a shared authority-bearing identity.
+        assert v.snapshot["author"] == ""
         assert v.snapshot["visibility"] == "public"
         assert "stats" not in v.snapshot
 

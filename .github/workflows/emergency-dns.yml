@@ -72,6 +72,7 @@ jobs:
       - name: Run emergency DNS script
         shell: bash
         env:
+          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
           ACTION: ${{ inputs.action }}
           APPLY: ${{ inputs.apply }}
           CANARY_URL: ${{ inputs.canary_url }}

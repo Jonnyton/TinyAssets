@@ -54,10 +54,10 @@ def data_dir(tmp_path: Path, monkeypatch) -> Path:
 @pytest.fixture(autouse=True)
 def _reset_auth():
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
     yield
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
 
 
 def _login(sub: str = "founder-1", caps: list[str] | None = None) -> None:
@@ -268,15 +268,16 @@ def test_first_connect_existing_founder_loads_learned_home_voice(
     assert "You are Aetheria." in captured["system"]
 
 
-def test_first_connect_anonymous_cannot_birth_or_reach_universe(data_dir):
+def test_first_connect_without_a_principal_cannot_birth_or_reach_universe(data_dir):
     from tinyassets.daemon_server import get_founder_home
     from tinyassets.universe_server import converse
 
+    auth_middleware(None)
     out = json.loads(converse(message="Hello"))
 
     assert out.get("auth_required") is True
     assert "reply" not in out
-    assert get_founder_home(data_dir, "anonymous") == ""
+    assert get_founder_home(data_dir, "unbound") == ""
     assert _serial_dirs(data_dir) == []
 
 
@@ -529,16 +530,16 @@ def test_bound_incomplete_dir_repairs_on_conversation_entry(data_dir):
     assert len(_serial_dirs(data_dir)) == 1
 
 
-def test_anonymous_first_contact_births_no_home(data_dir):
+def test_nobody_bound_first_contact_births_no_home(data_dir):
     from tinyassets.api.status import get_status
     from tinyassets.daemon_server import get_founder_home
 
-    # anonymous (DevAuthProvider from the autouse reset) — must NOT birth a
-    # founder home or a generated universe. (get_status may still materialize
-    # the legacy `default-universe` fallback dir — that's pre-existing behavior,
-    # unrelated to first-contact, which never fires for anonymous.)
-    out = json.loads(get_status())
-    assert "first_contact" not in out
+    auth_middleware(None)   # the suite signs in by default; this test means nobody
+    # Nobody bound (the autouse reset): status refuses outright, so it can
+    # neither birth a founder home nor a generated universe. There is no
+    # anonymous principal to birth one for (founder, 2026-09-02).
+    with pytest.raises(PermissionError, match="Authentication required"):
+        get_status()
     assert get_founder_home(data_dir, "anonymous") == ""
     assert _serial_dirs(data_dir) == []
 
@@ -609,12 +610,13 @@ def test_read_graph_status_stays_pure_no_birth(data_dir):
     assert get_founder_home(data_dir, "founder-1") == ""
 
 
-def test_no_card_for_anonymous_or_explicit_id(data_dir):
+def test_no_card_for_nobody_or_explicit_id(data_dir):
     from tinyassets.api.status import get_status
 
-    # anonymous: legacy default resolution, no card
-    out = json.loads(get_status())
-    assert "first_contact" not in out
+    auth_middleware(None)   # the suite signs in by default; this test means nobody
+    # nobody bound: refused, so no card and nothing resolved
+    with pytest.raises(PermissionError):
+        get_status()
     # explicit universe_id: normal read of that universe, no auto-birth, no card
     _login("founder-1")
     out = json.loads(get_status(universe_id="default-universe"))
@@ -750,6 +752,9 @@ def test_write_graph_target_universe_creates_and_binds(data_dir, monkeypatch):
 def test_write_graph_unknown_target_lists_universe(data_dir):
     from tinyassets.universe_server import write_graph
 
+    # Signed in: the auth check runs before target dispatch, so an unknown
+    # target only reports itself to a caller who has an identity.
+    _login("founder-1")
     out = json.loads(write_graph(target="nope"))
     assert out["error"] == "unknown_target"
     assert "universe" in out["allowed_targets"]

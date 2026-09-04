@@ -526,7 +526,14 @@ def test_concurrent_phone_branch_create_has_one_definition_winner(
         for _index in range(4)
     ]
 
+    # A pool worker starts with an EMPTY context, so the bound caller is not
+    # there and every create refuses before the idempotency race is exercised.
+    from tinyassets.auth import middleware as _mw
+
+    _caller = _mw.current_identity_or_none()
+
     def create(spec: dict[str, object]) -> dict[str, object]:
+        _mw._current_identity.set(_caller)
         return json.loads(
             server.write_graph(
                 target="branch",

@@ -283,7 +283,11 @@ def test_compile_failure_records_actionable_run_error(tmp_path, monkeypatch):
     ]
     branch.state_schema = [{"name": "source_manifest", "type": "str"}]
 
-    outcome = execute_branch_async(tmp_path, branch=branch, inputs={})
+    # A run records who asked for it. There is no default principal any more,
+    # so the caller names one (founder, 2026-09-02).
+    outcome = execute_branch_async(
+        tmp_path, branch=branch, inputs={}, actor="universe:u-test",
+    )
     try:
         wait_for(outcome.run_id, timeout=10.0)
         run = get_run(tmp_path, outcome.run_id)

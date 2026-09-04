@@ -28,6 +28,7 @@ def _seed_run(base_path: Path) -> str:
         run_name="test",
         thread_id="thread-msg",
         inputs={},
+        actor="universe:u-test",
     )
     return run_id
 
@@ -567,6 +568,7 @@ class TestReceiveMessagesSpec:
             run_name="run-b",
             thread_id="thread-b",
             inputs={},
+            actor="universe:u-test",
         )
         # Post a message from run_a to node-X.
         post_teammate_message(
@@ -589,7 +591,12 @@ class TestSendMessageSpecCompileTimeValidation:
     """Compile-time validation: recipient_node_id not in branch raises error."""
 
     def test_unknown_recipient_raises_at_compile_time(self, tmp_path):
-        from tinyassets.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
+        from tinyassets.branches import (
+            BranchDefinition,
+            EdgeDefinition,
+            GraphNodeRef,
+            NodeDefinition,
+        )
         from tinyassets.graph_compiler import validate_message_recipients
 
         nd = NodeDefinition(node_id="n1", display_name="N1", prompt_template="do X")

@@ -11,9 +11,8 @@ Canary flow
 2. POST ``notifications/initialized`` (MCP protocol requires this
    before tool calls, even if the server is lenient).
 3. POST ``tools/list`` → confirm the returned tools array is non-empty.
-4. POST ``tools/call`` for the strongest advertised read-only probe:
-   canonical ``read_graph`` with ``target=status``. The ``universe`` fallback
-   remains only for explicitly supplied older development endpoints.
+4. POST ``tools/call`` for canonical ``read_graph`` with ``target=status``.
+   Advertising the forbidden legacy ``universe`` tool is drift (exit 5).
 
 Exit codes (task #6 spec)
 -------------------------
@@ -52,8 +51,17 @@ from _canary_common import (  # noqa: E402
     _extract_structured_tool_payload,
     _extract_tool_text,
     _init_payload,
+    canary_bearer,
+    canary_bearer_for,
 )
 from _canary_common import _post as _post_raw  # noqa: E402
+
+#: "Not specified" -- distinct from an explicit ``None``, which means "this
+#: daemon is pre-cutover, send no bearer". Omitting the argument reads the
+#: configured token WITHOUT a network call, so a direct caller (and every unit
+#: test that drives a helper) behaves as it always did.
+_FROM_ENV: Any = object()
+
 
 DEFAULT_URL = "https://tinyassets.io/mcp"
 DEFAULT_TIMEOUT = 20.0
@@ -92,13 +100,16 @@ def _tool_names(tools: list[Any]) -> set[str]:
 def _select_probe(tools: list[Any]) -> tuple[str, dict[str, Any], str]:
     names = _tool_names(tools)
     if "universe" in names:
-        return "universe", {"action": "inspect"}, "universe inspect"
+        raise ToolCanaryError(
+            5,
+            "tools/list advertised forbidden legacy tool 'universe'",
+        )
     if "read_graph" in names:
         return "read_graph", {"target": "status"}, "read_graph status"
     raise ToolCanaryError(
         5,
         "tools/list did not advertise a supported read-only probe "
-        f"(wanted 'universe' or 'read_graph'; saw {sorted(names)!r})",
+        f"(wanted 'read_graph'; saw {sorted(names)!r})",
     )
 
 
@@ -135,14 +146,6 @@ def _parse_tool_json_result(resp: dict[str, Any] | None, label: str) -> dict[str
 
 
 def _validate_probe_obj(obj: dict[str, Any], label: str) -> None:
-    if label == "universe inspect":
-        uid = obj.get("universe_id")
-        if not uid:
-            raise ToolCanaryError(
-                5, f"universe inspect missing universe_id: {obj!r}",
-            )
-        return
-
     if label == "read_graph status":
         if "schema_version" not in obj:
             raise ToolCanaryError(
@@ -159,6 +162,7 @@ def run_canary(
     *,
     post_fn=None,
     verbose: bool = False,
+    bearer_token: Any = _FROM_ENV,
 ) -> dict[str, Any]:
     """Run the four-step canary. Returns the inspect-result dict on success.
 
@@ -166,10 +170,15 @@ def run_canary(
     scripted responses without network I/O. Signature matches ``_post``.
     Raises ``ToolCanaryError`` on any failure.
     """
+    if bearer_token is _FROM_ENV:
+        bearer_token = canary_bearer()
     post = post_fn or _post
 
     # Step 1 — initialize (handshake).
-    resp, sid = post(url, None, _INIT_PAYLOAD, timeout, step_code=2)
+    resp, sid = post(
+        url, None, _INIT_PAYLOAD, timeout, step_code=2,
+        bearer_token=bearer_token,
+    )
     if resp is None or "result" not in resp:
         raise ToolCanaryError(
             2, f"initialize returned no result: {resp!r}",
@@ -188,13 +197,19 @@ def run_canary(
         )
     # notifications/initialized has no id and no response body; we still POST
     # it for protocol conformance. HTTP-layer errors map to step_code=3.
-    post(url, sid, _INITIALIZED_NOTIF, timeout, step_code=3)
+    post(
+        url, sid, _INITIALIZED_NOTIF, timeout, step_code=3,
+        bearer_token=bearer_token,
+    )
     if verbose:
         print("[tool-canary] session established OK")
 
     # Step 3 — tools/list and assert non-empty.
     list_payload = {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
-    resp, _ = post(url, sid, list_payload, timeout, step_code=4)
+    resp, _ = post(
+        url, sid, list_payload, timeout, step_code=4,
+        bearer_token=bearer_token,
+    )
     if resp is None or "result" not in resp:
         raise ToolCanaryError(
             4, f"tools/list returned no result: {resp!r}",
@@ -216,7 +231,10 @@ def run_canary(
         "method": "tools/call",
         "params": {"name": tool_name, "arguments": tool_args},
     }
-    resp, _ = post(url, sid, call_payload, timeout, step_code=5)
+    resp, _ = post(
+        url, sid, call_payload, timeout, step_code=5,
+        bearer_token=bearer_token,
+    )
     inspect_obj = _parse_tool_json_result(resp, label)
     _validate_probe_obj(inspect_obj, label)
     if verbose:
@@ -245,9 +263,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--verbose", action="store_true",
                     help="Print per-step OK lines to stdout.")
     args = ap.parse_args(argv)
+    # Which contract does THIS daemon keep? Asked once, after the URL is
+    # known, so one run never mixes the pre- and post-cutover shapes.
+    bearer = canary_bearer_for(args.url, "tool-canary", args.timeout)
 
     try:
-        inspect = run_canary(args.url, args.timeout, verbose=args.verbose)
+        inspect = run_canary(
+            args.url,
+            args.timeout,
+            verbose=args.verbose,
+            bearer_token=bearer,
+        )
     except ToolCanaryError as exc:
         print(f"[tool-canary] FAIL (exit {exc.code}): {exc.msg}", file=sys.stderr)
         return exc.code

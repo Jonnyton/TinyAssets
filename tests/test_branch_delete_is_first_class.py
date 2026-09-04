@@ -251,7 +251,12 @@ def test_an_ACTIVE_webhook_bound_to_the_branch_is_named(universe_surface, tmp_pa
 
     us, _actor = universe_surface
     bid = _create(us, "hooked")
-    token = webhook_hooks.mint(tmp_path, universe_id="u-1", branch_def_id=bid)
+    token = webhook_hooks.mint(
+        tmp_path,
+        universe_id="u-1",
+        branch_def_id=bid,
+        owner_principal_id="owner-test",
+    )
 
     out = _delete(us, bid)
     assert out.get("error") == "branch_has_dependents", out

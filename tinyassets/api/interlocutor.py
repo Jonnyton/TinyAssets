@@ -10,7 +10,7 @@ Contract source of truth:
 the delta requirement *"Interlocutor identity binds to a tier before the universe
 answers"*:
 
-  * ``T0`` — no TinyAssets OAuth to the universe (anonymous). Identical to the
+  * ``T0`` — no TinyAssets OAuth to the universe. Identical to the
     "unauthenticated reader" principal of the ``universe-visibility`` capability;
     they denote the same caller.
   * ``T1`` — a durable host/OAuth subject that is not the universe's founder.
@@ -63,7 +63,7 @@ from dataclasses import dataclass
 
 from tinyassets.api import visibility
 
-#: No TinyAssets OAuth to the universe — the anonymous reader.
+#: No TinyAssets OAuth to the universe — an unbound visitor.
 T0 = "T0"
 #: A durable host/OAuth subject that is not this universe's founder.
 T1 = "T1"
@@ -106,7 +106,7 @@ class Interlocutor:
         return self.tier == T2
 
     @property
-    def is_anonymous(self) -> bool:
+    def is_public_visitor(self) -> bool:
         return self.tier == T0
 
 
@@ -179,9 +179,11 @@ def resolve_interlocutor_tier(universe_id: str) -> Interlocutor:
     from tinyassets.api import permissions
 
     uid = (universe_id or "").strip()
-    actor = permissions.current_request_actor_id()
-    if not actor or actor == "anonymous":
-        return Interlocutor(tier=T0, actor_id="anonymous", universe_id=uid)
+    from tinyassets.principals import named_principal
+
+    actor = named_principal(permissions.current_request_actor_id())
+    if not actor:
+        return Interlocutor(tier=T0, actor_id="", universe_id=uid)
     # Founder authority is the ADMIN grant on THIS universe, not merely write.
     #
     # This used to accept write, and with exactly one founder the two were the same

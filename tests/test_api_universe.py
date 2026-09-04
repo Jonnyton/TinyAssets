@@ -62,10 +62,10 @@ class _StaticAuthProvider(AuthProvider):
 @pytest.fixture(autouse=True)
 def _reset_auth_provider():
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
     yield
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
 
 
 def _auth_grant(base, universe_ids, sub: str = "host-test") -> None:

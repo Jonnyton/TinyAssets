@@ -75,10 +75,10 @@ class _FakeProvider(AuthProvider):
 @pytest.fixture(autouse=True)
 def _reset_auth_context():
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
     yield
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
 
 
 # ── provider policy ─────────────────────────────────────────────────────────
@@ -118,9 +118,9 @@ def test_rejection_is_actionable_for_anonymous():
     assert payload["status"] == "rejected"
     assert payload["auth_required"] is True
     assert payload["tool"] == "write_graph"
-    # Actionable: says reads stay open and how to get write access.
+    # Actionable: says how to get access. Nothing "stays open" any more.
     assert "OAuth" in payload["error"]
-    assert "reads stay open" in payload["error"].lower()
+    assert "unsigned access" in payload["error"].lower()
 
 
 def test_resolved_identity_passes_gate():
@@ -129,10 +129,14 @@ def test_resolved_identity_passes_gate():
     assert write_gate_rejection("write_graph") is None
 
 
-def test_non_gating_provider_passes_anonymous():
+def test_no_provider_mode_lets_nobody_write():
+    # The gate used to defer to the provider's mode; a non-gating provider let
+    # nobody through. There is no mode in which nobody may write.
     set_provider(_FakeProvider(gates_writes=False, identity=_SUBJECT))
     auth_middleware(None)
-    assert write_gate_rejection("write_graph") is None
+    envelope = write_gate_rejection("write_graph")
+    assert envelope is not None
+    assert json.loads(envelope)["auth_required"] is True
 
 
 # ── universe_server handle wiring ───────────────────────────────────────────
@@ -163,11 +167,15 @@ def test_universe_write_graph_passes_resolved_identity():
     assert "auth_required" not in payload  # reached unknown-target handling
 
 
-def test_universe_write_graph_open_in_dev_mode():
+def test_universe_write_graph_in_dev_mode_still_needs_somebody():
     from tinyassets import universe_server
 
-    set_provider(DevAuthProvider())
+    # Dev mode does not gate on scopes, but a write still needs a principal.
+    set_provider(DevAuthProvider(user_id="operator"))
     auth_middleware(None)
+    assert _payload(universe_server.write_graph(target="__gate_probe__"))["auth_required"] is True
+
+    auth_middleware("any-bearer")   # the named local operator
     payload = _payload(universe_server.write_graph(target="__gate_probe__"))
     assert "auth_required" not in payload
 
@@ -296,11 +304,11 @@ def test_deprecated_fat_tools_open_for_resolved_identity():
     assert _run(middleware.on_call_tool(_Ctx(), _call_next)) == "reached-tool"
 
 
-def test_deprecated_fat_tools_open_in_dev_mode():
+def test_deprecated_fat_tools_in_dev_mode_still_need_somebody():
     from tinyassets import universe_server
 
-    set_provider(DevAuthProvider())
-    auth_middleware(None)
+    set_provider(DevAuthProvider(user_id="operator"))
+    auth_middleware("any-bearer")
 
     middleware = universe_server._DeprecatedToolVisibility()
 

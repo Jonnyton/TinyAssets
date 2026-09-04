@@ -438,6 +438,7 @@ def test_last_activity_ignores_admission_refused_run(
         universe_base, branch=branch, inputs={},
         provider_call=lambda *a, **kw: "[ok]",
         _enqueue_universe_id="u1",
+        actor="universe:u-test",
     )
     assert outcome.status == RUN_STATUS_FAILED
     assert "Provider authority admission failed" in outcome.error

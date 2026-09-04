@@ -31,7 +31,21 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
+
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+
+from _canary_common import canary_bearer, canary_bearer_for  # noqa: E402
+
+#: "Not specified" -- distinct from an explicit ``None``, which means "this
+#: daemon is pre-cutover, send no bearer". Omitting the argument reads the
+#: configured token WITHOUT a network call, so a direct caller (and every unit
+#: test that drives a helper) behaves as it always did.
+_FROM_ENV: Any = object()
+
 
 DEFAULT_URL = "https://tinyassets.io/mcp"
 DEFAULT_TIMEOUT = 20.0
@@ -61,7 +75,11 @@ def _post(
     sid: str | None,
     payload: dict[str, Any],
     timeout: float,
+    *,
+    bearer_token: Any = _FROM_ENV,
 ) -> tuple[dict | None, str | None]:
+    if bearer_token is _FROM_ENV:
+        bearer_token = canary_bearer()
     headers: dict[str, str] = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
@@ -69,6 +87,9 @@ def _post(
     }
     if sid:
         headers["mcp-session-id"] = sid
+    if bearer_token:
+        # Absent against a pre-cutover daemon, which refuses this bearer.
+        headers["Authorization"] = f"Bearer {bearer_token}"
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),
@@ -133,21 +154,30 @@ def check_llm_binding(
     *,
     require_sandbox: bool = False,
     post_fn=None,  # injection seam for tests
+    bearer_token: Any = _FROM_ENV,
 ) -> dict[str, Any]:
     """Run the full binding verification. Returns the final status dict.
 
     Raises VerifyError with an appropriate exit code on any failure.
     """
+    if bearer_token is _FROM_ENV:
+        bearer_token = canary_bearer()
     _post_fn = post_fn or _post
 
     # Step 1: initialize
-    resp, sid = _post_fn(url, None, _INIT_PAYLOAD, timeout)
+    resp, sid = _post_fn(
+        url, None, _INIT_PAYLOAD, timeout, bearer_token=bearer_token,
+    )
     if not resp or "result" not in resp:
         raise VerifyError(1, f"MCP initialize failed: {resp!r}")
-    _post_fn(url, sid, _INITIALIZED_NOTIF, timeout)
+    _post_fn(
+        url, sid, _INITIALIZED_NOTIF, timeout, bearer_token=bearer_token,
+    )
 
     # Step 2: get_status — check llm_endpoint_bound
-    status_result = _call_tool_with(url, sid, "get_status", {}, timeout, _post_fn)
+    status_result = _call_tool_with(
+        url, sid, "get_status", {}, timeout, _post_fn, bearer_token,
+    )
     status = _parse_status(status_result)
 
     llm_bound = _llm_endpoint_bound(status)
@@ -185,6 +215,7 @@ def _call_tool_with(
     args: dict[str, Any],
     timeout: float,
     post_fn,
+    bearer_token: str,
 ) -> dict[str, Any]:
     payload = {
         "jsonrpc": "2.0",
@@ -192,7 +223,9 @@ def _call_tool_with(
         "method": "tools/call",
         "params": {"name": tool, "arguments": args},
     }
-    resp, _ = post_fn(url, sid, payload, timeout)
+    resp, _ = post_fn(
+        url, sid, payload, timeout, bearer_token=bearer_token,
+    )
     if resp is None or "result" not in resp:
         raise VerifyError(1, f"tools/call {tool!r} got no result: {resp!r}")
     if resp["result"].get("isError"):
@@ -235,6 +268,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Seconds to sleep between retry attempts (default 5).",
     )
     args = ap.parse_args(argv)
+    # Which contract does THIS daemon keep? Asked once, after the URL is
+    # known, so one run never mixes the pre- and post-cutover shapes.
+    bearer = canary_bearer_for(args.url, "verify-llm", args.timeout)
 
     attempts = max(1, args.retries)
     retry_delay = max(0.0, args.retry_delay)
@@ -245,6 +281,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.url,
                 args.timeout,
                 require_sandbox=args.require_sandbox,
+                bearer_token=bearer,
             )
             llm_bound = _llm_endpoint_bound(status)
             print(f"[verify-llm] PASS — llm_endpoint_bound={llm_bound!r}")

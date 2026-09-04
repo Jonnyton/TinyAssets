@@ -16,10 +16,21 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
+
 from tinyassets.universe_server import (
     get_status,
     mcp,
 )
+
+
+@pytest.fixture(autouse=True)
+def _home(founder_home):
+    """These tests read "the status of my universe", so the operator has one.
+
+    An authenticated founder with no bound home gets the first-contact card
+    instead -- a different, correct surface (no-anonymous-principal)."""
+    return founder_home
 
 
 def _list_tools():
@@ -625,21 +636,29 @@ def test_get_status_session_boundary_does_not_use_environment_actor(
 
 
 def test_get_status_request_identity_ignores_environment_actor(monkeypatch) -> None:
-    """The status identity is request-local and never falls back to host env."""
+    """The status identity is request-local and never falls back to host env.
+
+    It used to fingerprint an "anonymous" subject when no bearer was present;
+    there is no such subject now, so the fingerprint is the BOUND principal's
+    and the environment actor still appears nowhere."""
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "my_user")
     payload = json.loads(get_status())
-    assert payload["request_identity"]["bearer_present"] is False
-    assert payload["request_identity"]["principal_fingerprint"].startswith(
-        "v1:anonymous:"
-    )
+    fingerprint = payload["request_identity"]["principal_fingerprint"]
+    assert fingerprint.startswith("v1:")
+    assert "anonymous" not in fingerprint
     assert "my_user" not in json.dumps(payload, sort_keys=True)
 
 
-def test_get_status_recent_conversation_denied_anonymous(tmp_path, monkeypatch) -> None:
-    """The peek is FOUNDER-only. An anonymous reader must not receive it even
-    with the opt-in set and recorded turns present — the shared conversation
-    thread must never leak through a status read."""
-    from tinyassets.auth.middleware import auth_middleware
+def test_get_status_recent_conversation_denied_to_a_non_founder(
+    tmp_path, monkeypatch,
+) -> None:
+    """The peek is FOUNDER-only. A reader who is not this universe's founder
+    must not receive it even with the opt-in set and recorded turns present --
+    the shared conversation thread must never leak through a status read.
+
+    It used to be an ANONYMOUS reader; with no anonymous principal the same
+    boundary is asserted against a signed-in stranger, which is the caller
+    that can actually reach the surface now."""
     from tinyassets.conversation_store import record_exchange
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
@@ -648,7 +667,15 @@ def test_get_status_recent_conversation_denied_anonymous(tmp_path, monkeypatch) 
     udir.mkdir(parents=True, exist_ok=True)
     record_exchange(udir, "principal:someone", "secret question", "secret answer")
 
-    auth_middleware(None)  # anonymous request
+    # A signed-in STRANGER: not this universe's founder. (The suite's autouse
+    # operator already is one; naming it here is what makes the boundary the
+    # subject of the test rather than an accident of the fixture.)
+    from tinyassets.auth import middleware as _mw
+    from tinyassets.auth.provider import Identity as _Identity
+
+    _mw._current_identity.set(_Identity(
+        user_id="stranger", username="stranger", capabilities=["read", "list"],
+    ))
     payload = json.loads(get_status(universe_id=uid, include_conversation=True))
     assert "recent_conversation" not in payload, (
         "conversation peek must be withheld from an anonymous reader"

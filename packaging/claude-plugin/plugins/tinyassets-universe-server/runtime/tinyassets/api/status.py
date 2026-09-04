@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -55,7 +56,10 @@ def _policy_hash(payload: dict[str, Any]) -> str:
 
 def _request_identity_evidence() -> tuple[dict[str, object], dict[str, str]]:
     """Return token-free, self-only identity evidence for this request."""
-    from tinyassets.auth.middleware import current_bearer_present, current_identity
+    from tinyassets.auth.middleware import (
+        current_bearer_present,
+        current_identity_or_none,
+    )
 
     bearer_present = current_bearer_present()
     unavailable_identity = {
@@ -93,10 +97,15 @@ def _request_identity_evidence() -> tuple[dict[str, object], dict[str, str]]:
             "reason": "version_invalid",
         }
 
-    subject = current_identity().user_id.strip() or "anonymous"
+    identity = current_identity_or_none()
+    if identity is None:
+        return unavailable_identity, {"status": "unavailable", "reason": "no_identity"}
+    subject = (identity.user_id or "").strip()
+    if not subject:
+        return unavailable_identity, {"status": "unavailable", "reason": "no_identity"}
     message = f"tinyassets:request-identity:{version}\0{subject}".encode()
     digest = hmac.new(key, message, hashlib.sha256).hexdigest()
-    prefix = f"{version}:anonymous:" if subject == "anonymous" else f"{version}:"
+    prefix = f"{version}:"
     return (
         {
             "bearer_present": bearer_present,
@@ -977,6 +986,90 @@ def _compute_supervisor_liveness_uncached(
     return out
 
 
+_LOGGER = logging.getLogger("universe_server.status")
+
+
+def _platform_has_work() -> bool:
+    """Whether ANY universe on this daemon has active work targets.
+
+    The activity canary needs it to tell healthy idleness from a stall: a live
+    worker with nothing queued is fine, a live worker with work queued and no
+    recent activity is not. Reading it per-universe was possible only for a
+    caller who could inspect a universe, which the canary principal cannot.
+    """
+    from tinyassets.api.universe import _read_json
+
+    base = _base_path()
+    if not base.is_dir():
+        return False
+    for child in sorted(base.iterdir()):
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        try:
+            targets = _read_json(child / "work_targets.json")
+        except Exception:  # noqa: BLE001 - observability never breaks a read
+            continue
+        if isinstance(targets, list) and any(
+            isinstance(item, dict) and item.get("lifecycle") == "active"
+            for item in targets
+        ):
+            return True
+    return False
+
+
+def _platform_worker_liveness() -> dict[str, Any]:
+    """The worst worker on this daemon, across every universe.
+
+    ``last_activity_at`` alone cannot tell a wedged worker from a quiet one --
+    it goes stale for both -- so the activity canary reads this beside it. One
+    wedged worker is a wedged platform, so the summary is the worker with the
+    OLDEST heartbeat, not an average and not the healthiest.
+
+    ``{"present": False}`` when no universe has a worker heartbeat at all,
+    which is the same shape the per-universe view uses for "nothing to say".
+    Never raises: an unreadable universe contributes nothing rather than
+    breaking the surface the probes ride on.
+    """
+    from tinyassets.api.universe import _worker_liveness
+
+    base = _base_path()
+    if not base.is_dir():
+        return {"present": False}
+
+    worst: dict[str, Any] | None = None
+    for child in sorted(base.iterdir()):
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        try:
+            summary = _worker_liveness(child)
+        except Exception:  # noqa: BLE001 - observability never breaks a read
+            _LOGGER.exception("worker liveness unreadable for %s", child.name)
+            continue
+        if not summary.get("present"):
+            continue
+        if worst is None or float(summary.get("beat_age_s") or 0.0) > float(
+            worst.get("beat_age_s") or 0.0
+        ):
+            worst = summary
+
+    if worst is None:
+        return {"present": False}
+    # AN ALLOWLIST, not a denylist. Stripping only `workers` left worker_id,
+    # runtime_instance_id, worker_count, runtime_instance_count, spawn and
+    # crash counters and -- when the queue descriptor carries it -- a
+    # universe_id, on a surface whose whole purpose is to name no universe.
+    # Adding `universes_with_workers` made it worse: an explicit tenant count
+    # (Codex design review 2026-09-03). These five are what a liveness probe
+    # actually reads, and nothing else goes out.
+    return {
+        "present": True,
+        "alive": worst.get("alive"),
+        "beat_age_s": worst.get("beat_age_s"),
+        "phase": worst.get("phase"),
+        "consec_crashes": worst.get("consec_crashes"),
+    }
+
+
 def _resolve_entry_universe(universe_id: str) -> tuple[str, bool]:
     """Resolve a status scope. Returns ``(uid, founder_has_no_home)``.
 
@@ -984,7 +1077,7 @@ def _resolve_entry_universe(universe_id: str) -> tuple[str, bool]:
     missing home; status only reports that no complete home is bound.
 
     - An explicit ``universe_id`` always wins.
-    - An anonymous / dev caller uses the legacy default resolution
+    - A local/dev caller uses the legacy default resolution
       (``.active_universe`` / first dir).
     - An authenticated founder with a bound, living home returns it.
     """
@@ -1007,6 +1100,47 @@ def _resolve_entry_universe(universe_id: str) -> tuple[str, bool]:
     # No home, a stale binding, or a partial dir: status observes but never
     # repairs it. The authenticated conversation entry path does that.
     return "", True
+
+
+def _platform_last_activity_at() -> str | None:
+    """Latest run progress across the platform's run ledger, ISO-8601 UTC, or
+    ``None`` when no run was ever recorded (or the ledger cannot be read).
+
+    Read from the ROOT ``.runs.db`` only. It carries no universe id and no
+    user: it answers "did anything run recently" and nothing else, which is
+    all the activity probe ever needed from the universe inspect it used to
+    read as nobody."""
+    import sqlite3
+    from datetime import datetime, timezone
+
+    from tinyassets.runs import runs_db_path
+
+    db = runs_db_path(_base_path())
+    if not db.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5.0)
+        try:
+            row = conn.execute(
+                "SELECT MAX(COALESCE(finished_at, started_at)) FROM runs"
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    raw = row[0] if row else None
+    if raw is None:
+        return None
+    try:
+        stamp = datetime.fromtimestamp(float(raw), tz=timezone.utc)
+    except (TypeError, ValueError, OverflowError, OSError):
+        try:
+            stamp = datetime.fromisoformat(str(raw))
+        except ValueError:
+            return None
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp.isoformat()
 
 
 def get_status(universe_id: str = "", include_conversation: bool = False) -> str:
@@ -1049,6 +1183,15 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
             "identity_evidence": identity_evidence,
             "request_identity": request_identity,
             "schema_version": _STATUS_SCHEMA_VERSION,
+            # Present on every status shape the probes can meet, universe or
+            # not: the activity probe reads these instead of inspecting a
+            # universe. Both, because `last_activity_at` goes stale for a quiet
+            # platform as well as a wedged one.
+            "daemon": {
+                "last_activity_at": _platform_last_activity_at(),
+                "worker_liveness": _platform_worker_liveness(),
+                "has_work": _platform_has_work(),
+            },
         })
     udir = _universe_dir(uid)
     universe_exists = udir.is_dir()
@@ -1361,7 +1504,7 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
     except Exception:  # noqa: BLE001
         pass
 
-    if account_user and account_user != "anonymous":
+    if account_user:
         activity_tail = [
             line.replace(account_user, "[request-principal]")
             for line in activity_tail
@@ -1507,6 +1650,14 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
         "auto_ship_health": auto_ship_health,
         "open_brain": open_brain,
         "release_state": release_state,
+        # Platform-wide, names no universe: the uptime probes read these
+        # instead of inspecting a universe, which the canary principal may not
+        # do (service-principal boundary D4).
+        "daemon": {
+            "last_activity_at": _platform_last_activity_at(),
+            "worker_liveness": _platform_worker_liveness(),
+            "has_work": _platform_has_work(),
+        },
         "universe_id": uid,
         "universe_exists": universe_exists,
     }

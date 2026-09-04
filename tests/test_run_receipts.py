@@ -271,6 +271,7 @@ def test_list_run_receipts_filters_by_run_and_type(tmp_path: Path) -> None:
         branch_def_id="branch-2",
         thread_id="thread-2",
         inputs={},
+        actor="universe:u-test",
     )
     record_run_receipt(
         tmp_path,

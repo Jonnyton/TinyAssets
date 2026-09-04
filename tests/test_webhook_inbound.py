@@ -27,8 +27,14 @@ def _inbound_on(monkeypatch):
 def _spy_enqueue():
     calls = []
 
-    def _enqueue(base, *, universe_id, branch_def_id, inputs):
-        calls.append({"universe_id": universe_id, "branch_def_id": branch_def_id, "inputs": inputs})
+    def _enqueue(base, *, universe_id, branch_def_id, inputs, principal_id=""):
+        # principal_id: the hook's recorded OWNER, carried from the hook row to
+        # the run. The delivery thread has no request identity and there is no
+        # anonymous one to fall back to (no-anonymous-principal D2).
+        calls.append({
+            "universe_id": universe_id, "branch_def_id": branch_def_id,
+            "inputs": inputs, "principal_id": principal_id,
+        })
         return "run-x"
 
     return _enqueue, calls
@@ -36,7 +42,9 @@ def _spy_enqueue():
 
 def test_dark_flag_makes_the_path_refuse_without_dispatch(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "0")
-    token = webhook_hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-1")
+    token = webhook_hooks.mint(
+        tmp_path, universe_id="u-a", branch_def_id="b-1", owner_principal_id="owner-a",
+    )
     enqueue, calls = _spy_enqueue()
     status, payload = wh.handle_hook(
         token=token, body=b"{}", headers={}, base_path=tmp_path, enqueue=enqueue,
@@ -60,7 +68,9 @@ def test_unknown_revoked_and_malformed_all_answer_uniform_404(tmp_path):
             token=tok, body=b"{}", headers={}, base_path=tmp_path, enqueue=enqueue,
         )
         assert status == 404 and payload == {"error": "not_found"}
-    token = webhook_hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-1")
+    token = webhook_hooks.mint(
+        tmp_path, universe_id="u-a", branch_def_id="b-1", owner_principal_id="owner-a",
+    )
     webhook_hooks.revoke(tmp_path, token=token)
     status, payload = wh.handle_hook(
         token=token, body=b"{}", headers={}, base_path=tmp_path, enqueue=enqueue,
@@ -69,13 +79,16 @@ def test_unknown_revoked_and_malformed_all_answer_uniform_404(tmp_path):
 
 
 def test_a_valid_plain_token_reaches_dispatch_as_its_universe(tmp_path):
-    token = webhook_hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-1")
+    token = webhook_hooks.mint(
+        tmp_path, universe_id="u-a", branch_def_id="b-1", owner_principal_id="owner-a",
+    )
     enqueue, calls = _spy_enqueue()
     status, payload = wh.handle_hook(
         token=token, body=b'{"e":1}', headers={"X-GitHub-Event": "push"},
         base_path=tmp_path, enqueue=enqueue,
     )
     assert status == 202
+    assert calls[0]["principal_id"] == "owner-a"   # the run acts for the hook's owner
     assert calls[0]["universe_id"] == "u-a" and calls[0]["branch_def_id"] == "b-1"
     assert calls[0]["inputs"]["webhook"]["payload"] == {"e": 1}
     # exact signed bytes preserved so a branch can verify a signature
@@ -84,7 +97,9 @@ def test_a_valid_plain_token_reaches_dispatch_as_its_universe(tmp_path):
 
 
 def test_the_request_cannot_redirect_identity(tmp_path):
-    token = webhook_hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-1")
+    token = webhook_hooks.mint(
+        tmp_path, universe_id="u-a", branch_def_id="b-1", owner_principal_id="owner-a",
+    )
     enqueue, calls = _spy_enqueue()
     wh.handle_hook(
         token=token,
@@ -96,7 +111,9 @@ def test_the_request_cannot_redirect_identity(tmp_path):
 
 
 def test_only_allowlisted_headers_are_forwarded(tmp_path):
-    token = webhook_hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-1")
+    token = webhook_hooks.mint(
+        tmp_path, universe_id="u-a", branch_def_id="b-1", owner_principal_id="owner-a",
+    )
     enqueue, calls = _spy_enqueue()
     wh.handle_hook(
         token=token, body=b"{}", base_path=tmp_path, enqueue=enqueue,
@@ -112,7 +129,9 @@ def test_rate_limit_refuses_a_storm_then_recovers(tmp_path, monkeypatch):
     # Isolate the RATE gate from the in-flight reservation cap (spied runs never terminate,
     # so reservations would otherwise accumulate); the reservation cap has its own test.
     monkeypatch.setattr(wh, "_MAX_INFLIGHT_PER_UNIVERSE", 100_000)
-    token = webhook_hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-1")
+    token = webhook_hooks.mint(
+        tmp_path, universe_id="u-a", branch_def_id="b-1", owner_principal_id="owner-a",
+    )
     enqueue, _ = _spy_enqueue()
     now = 1000.0
     admitted = 0
@@ -133,7 +152,9 @@ def test_rate_limit_refuses_a_storm_then_recovers(tmp_path, monkeypatch):
 
 
 def test_a_replay_is_deduped_without_consuming_rate_budget(tmp_path):
-    token = webhook_hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-1")
+    token = webhook_hooks.mint(
+        tmp_path, universe_id="u-a", branch_def_id="b-1", owner_principal_id="owner-a",
+    )
     enqueue, calls = _spy_enqueue()
     now = 5000.0
     body = b'{"same":1}'
@@ -155,7 +176,9 @@ def test_the_delivery_key_is_server_side_not_a_caller_header():
 
 
 def test_a_non_json_body_is_passed_as_text(tmp_path):
-    token = webhook_hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-1")
+    token = webhook_hooks.mint(
+        tmp_path, universe_id="u-a", branch_def_id="b-1", owner_principal_id="owner-a",
+    )
     enqueue, calls = _spy_enqueue()
     wh.handle_hook(
         token=token, body=b"not json at all", headers={}, base_path=tmp_path, enqueue=enqueue,
@@ -164,7 +187,9 @@ def test_a_non_json_body_is_passed_as_text(tmp_path):
 
 
 def test_a_dispatch_failure_answers_uniform_404_without_leaking(tmp_path):
-    token = webhook_hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-1")
+    token = webhook_hooks.mint(
+        tmp_path, universe_id="u-a", branch_def_id="b-1", owner_principal_id="owner-a",
+    )
 
     def _boom(base, *, universe_id, branch_def_id, inputs):
         raise RuntimeError("internal branch resolution detail")
@@ -204,7 +229,15 @@ def test_the_route_is_absent_when_disabled(monkeypatch):
     monkeypatch.setenv("TINYASSETS_INBOUND_ENABLED", "0")
     client = TestClient(create_streamable_http_app())
     resp = client.post("/mcp/hooks/abc123", content=b"{}")
-    assert resp.status_code == 404          # route not mounted at all
+    # The route is not mounted, and with inbound off the path is no longer
+    # exempt from the bearer challenge either — so an unauthenticated POST is
+    # answered by the transport before routing. Both are refusals; the point
+    # is that nothing dispatches.
+    assert resp.status_code == 401
+    resp_authenticated = client.post(
+        "/mcp/hooks/abc123", content=b"{}", headers={"Authorization": "Bearer any"},
+    )
+    assert resp_authenticated.status_code == 404   # route not mounted at all
 
 
 def test_the_route_rejects_an_oversized_content_length_before_reading(monkeypatch):

@@ -56,7 +56,14 @@ def test_policy_hash_handles_empty_dict():
 
 @pytest.fixture
 def status_env(tmp_path, monkeypatch):
-    """Isolated data dir + universe so get_status touches no host files."""
+    """Isolated data dir + universe so get_status touches no host files.
+
+    The tests below name that universe explicitly. They used to rely on the
+    legacy default resolution, which only an unauthenticated caller reached --
+    and there is no unauthenticated caller (founder, 2026-09-02). An
+    authenticated caller with no bound home gets the first-contact card, which
+    is a different (and correct) surface.
+    """
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "test-universe")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "test-host")
@@ -69,7 +76,7 @@ def status_env(tmp_path, monkeypatch):
 
 
 def test_get_status_returns_str_json(status_env):
-    raw = get_status()
+    raw = get_status("test-universe")
     assert isinstance(raw, str)
     parsed = json.loads(raw)
     assert isinstance(parsed, dict)
@@ -77,7 +84,7 @@ def test_get_status_returns_str_json(status_env):
 
 def test_get_status_returns_versioned_contract_keys(status_env):
     """schema_version=2 contract — all top-level keys present."""
-    parsed = json.loads(get_status())
+    parsed = json.loads(get_status("test-universe"))
     expected_keys = {
         "schema_version",
         "active_host",
@@ -107,7 +114,7 @@ def test_get_status_returns_versioned_contract_keys(status_env):
 
 
 def test_get_status_active_host_shape(status_env):
-    parsed = json.loads(get_status())
+    parsed = json.loads(get_status("test-universe"))
     host = parsed["active_host"]
     assert set(host.keys()) >= {"host_id", "served_llm_type", "llm_endpoint_bound"}
     assert host["host_id"] == "test-host"
@@ -115,14 +122,14 @@ def test_get_status_active_host_shape(status_env):
 
 def test_get_status_evidence_includes_policy_hash(status_env):
     """Round-trip: the `evidence.policy_hash` field is a sha256 hex string."""
-    parsed = json.loads(get_status())
+    parsed = json.loads(get_status("test-universe"))
     h = parsed["evidence"]["policy_hash"]
     assert isinstance(h, str)
     assert len(h) == 64
 
 
 def test_get_status_release_state_reports_missing_receipt(status_env):
-    parsed = json.loads(get_status())
+    parsed = json.loads(get_status("test-universe"))
     release_state = parsed["release_state"]
 
     assert release_state["receipt_available"] is False
@@ -154,7 +161,7 @@ def test_get_status_release_state_reads_deploy_receipt(status_env):
         encoding="utf-8",
     )
 
-    parsed = json.loads(get_status())
+    parsed = json.loads(get_status("test-universe"))
     release_state = parsed["release_state"]
 
     assert release_state["receipt_available"] is True
@@ -188,7 +195,7 @@ def test_get_status_includes_read_only_open_brain_surface(status_env, tmp_path):
         language_type="policy",
     )
 
-    parsed = json.loads(get_status())
+    parsed = json.loads(get_status("test-universe"))
 
     assert parsed["open_brain"]["read_only"] is True
     assert parsed["open_brain"]["daemon_count"] == 1
@@ -218,7 +225,7 @@ def test_get_status_nonexistent_universe_marks_universe_exists_false(status_env)
 
 
 def test_get_status_session_boundary_uses_token_safe_fingerprint(status_env):
-    parsed = json.loads(get_status())
+    parsed = json.loads(get_status("test-universe"))
     sb = parsed["session_boundary"]
     assert "account_user" not in sb
     assert sb["principal_fingerprint"] == parsed["request_identity"][
@@ -239,5 +246,5 @@ def test_get_status_caveats_warn_when_no_provider_bound(status_env, monkeypatch)
     # Also stub which() so codex/claude CLI presence on the dev machine
     # doesn't flip endpoint_hint away from "unset".
     monkeypatch.setattr(shutil, "which", lambda _name: None)
-    parsed = json.loads(get_status())
+    parsed = json.loads(get_status("test-universe"))
     assert any("No default LLM provider detected" in c for c in parsed["caveats"])

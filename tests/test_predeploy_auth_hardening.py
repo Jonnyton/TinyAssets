@@ -47,7 +47,7 @@ class _ResolveAlwaysAnon(AuthProvider):
 def _reset_provider():
     yield
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
 
 
 def _use_resolve_always_anon() -> None:

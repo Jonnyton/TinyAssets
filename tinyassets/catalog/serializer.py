@@ -178,7 +178,7 @@ def branch_from_yaml_payload(
         branch_def_id=payload.get("id") or "",
         name=payload.get("name", ""),
         description=payload.get("description", ""),
-        author=payload.get("author", "anonymous"),
+        author=payload.get("author", ""),
         domain_id=payload.get("domain_id", "workflow"),
         goal_id=payload.get("goal_id", ""),
         tags=list(payload.get("tags", []) or []),
@@ -234,7 +234,9 @@ def node_to_yaml_payload(node: NodeDefinition) -> dict[str, Any]:
         payload["evaluation_criteria"] = list(node.evaluation_criteria)
     payload["approved"] = node.approved
     payload["enabled"] = node.enabled
-    if node.author and node.author != "anonymous":
+    from tinyassets.principals import has_named_principal
+
+    if has_named_principal(node.author):
         payload["author"] = node.author
     if node.registered_at:
         payload["registered_at"] = node.registered_at
@@ -275,7 +277,7 @@ def node_from_yaml_payload(payload: dict[str, Any]) -> NodeDefinition:
         evaluation_criteria=list(
             payload.get("evaluation_criteria", []) or []
         ),
-        author=payload.get("author", "anonymous"),
+        author=payload.get("author", ""),
         registered_at=payload.get("registered_at", ""),
         enabled=bool(payload.get("enabled", True)),
         approved=bool(payload.get("approved", False)),
@@ -295,7 +297,7 @@ def goal_to_yaml_payload(goal: dict[str, Any]) -> dict[str, Any]:
         "id": goal.get("goal_id", ""),
         "name": goal.get("name", ""),
         "description": goal.get("description", ""),
-        "author": goal.get("author", "anonymous"),
+        "author": goal.get("author", ""),
         "tags": list(goal.get("tags", []) or []),
         "visibility": goal.get("visibility", "public"),
         "created_at": goal.get("created_at", 0.0),
@@ -319,7 +321,7 @@ def goal_from_yaml_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "goal_id": payload.get("id", ""),
         "name": payload.get("name", ""),
         "description": payload.get("description", ""),
-        "author": payload.get("author", "anonymous"),
+        "author": payload.get("author", ""),
         "tags": list(payload.get("tags", []) or []),
         "visibility": payload.get("visibility", "public"),
         "created_at": payload.get("created_at", 0.0),

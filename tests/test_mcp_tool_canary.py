@@ -18,6 +18,21 @@ if str(_SCRIPTS) not in sys.path:
 
 import mcp_tool_canary as tc  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def _canary_token(monkeypatch):
+    import _canary_common
+
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "t" * 40)
+    # This daemon keeps the no-anonymous contract. Stated here rather than
+    # discovered over the network: the probe asks GET <url>/pulse, and a test
+    # that leaves that to a stub would consume a scripted response meant for
+    # `initialize`.
+    monkeypatch.setattr(
+        tc, "canary_bearer_for",
+        lambda url, prog, timeout=10.0: _canary_common.require_canary_bearer(prog),
+    )
+
 # ---- helpers --------------------------------------------------------------
 
 
@@ -42,7 +57,7 @@ def _tools_list_resp(
 ) -> tuple[dict, str]:
     if tools is None:
         tools = [
-            {"name": "universe", "description": "..."},
+            {"name": "read_graph", "description": "..."},
             {"name": "get_status", "description": "..."},
         ]
     return (
@@ -60,6 +75,7 @@ def _universe_inspect_resp(
 ) -> tuple[dict, str]:
     if raw_text is None:
         raw_text = json.dumps({
+            "schema_version": 1,
             "universe_id": universe_id,
             "daemon": {"phase": "idle"},
         })
@@ -68,6 +84,7 @@ def _universe_inspect_resp(
         "isError": is_error,
     }
     if structured_content is not None:
+        structured_content.setdefault("schema_version", 1)
         result["structuredContent"] = structured_content
     return (
         {"jsonrpc": "2.0", "id": 3, "result": result},
@@ -111,10 +128,13 @@ class ScriptedPost:
         self._responses = list(responses)
         self.calls: list[dict] = []
 
-    def __call__(self, url, sid, payload, timeout, *, step_code):
+    def __call__(
+        self, url, sid, payload, timeout, *, step_code, bearer_token=None,
+    ):
         self.calls.append({
             "url": url, "sid": sid, "method": payload.get("method"),
             "step_code": step_code, "payload": payload,
+            "bearer_token": bearer_token,
         })
         if not self._responses:
             raise AssertionError(
@@ -325,7 +345,7 @@ def test_exit_5_when_universe_inspect_iserror():
     assert "isError" in ei.value.msg
 
 
-def test_exit_5_when_universe_inspect_missing_universe_id():
+def test_exit_5_when_read_graph_status_missing_schema_version():
     scripted = ScriptedPost([
         _init_resp(), _initialized_notif_resp(), _tools_list_resp(),
         _universe_inspect_resp(raw_text=json.dumps({"daemon": {"phase": "idle"}})),
@@ -333,7 +353,43 @@ def test_exit_5_when_universe_inspect_missing_universe_id():
     with pytest.raises(tc.ToolCanaryError) as ei:
         tc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
     assert ei.value.code == 5
-    assert "universe_id" in ei.value.msg
+    assert "schema_version" in ei.value.msg
+
+
+def test_exit_5_when_legacy_universe_is_advertised_and_never_called():
+    scripted = ScriptedPost([
+        _init_resp(),
+        _initialized_notif_resp(),
+        _tools_list_resp(tools=[
+            {"name": "read_graph"},
+            {"name": "universe"},
+        ]),
+    ])
+    with pytest.raises(tc.ToolCanaryError) as exc:
+        tc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
+    assert exc.value.code == 5
+    assert "universe" in exc.value.msg
+    assert len(scripted.calls) == 3
+
+
+def test_every_post_carries_canary_bearer():
+    scripted = ScriptedPost([
+        _init_resp(), _initialized_notif_resp(), _tools_list_resp(),
+        _universe_inspect_resp(),
+    ])
+    tc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
+    assert all(call["bearer_token"] == "t" * 40 for call in scripted.calls)
+
+
+def test_missing_token_exits_before_post(monkeypatch, capsys):
+    calls = []
+    monkeypatch.delenv("TINYASSETS_WIKI_CANARY_TOKEN", raising=False)
+    monkeypatch.setattr(tc, "_post", lambda *a, **k: calls.append((a, k)))
+    with pytest.raises(SystemExit) as exc:
+        tc.main([])
+    assert exc.value.code == 2
+    assert not calls
+    assert "TINYASSETS_WIKI_CANARY_TOKEN" in capsys.readouterr().err
 
 
 def test_exit_5_when_universe_inspect_text_not_json():

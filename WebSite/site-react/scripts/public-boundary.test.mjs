@@ -1,10 +1,8 @@
-// public-boundary.test.mjs — the public-read boundary the site must keep.
+// public-boundary.test.mjs — the authenticated-read boundary the site must keep.
 //
-// A public browser reads ONLY the public projection (read_graph target=graphs)
-// through the shared contract. It never downloads operator status, never asks
-// for goals or runs, never defaults a missing visibility to public, and never
-// labels a checked-in snapshot as a live read. These are the durable rules the
-// old per-page tests encoded; the pages changed, the rules did not.
+// A public browser makes no MCP request. It never downloads operator status,
+// asks for goals or runs, defaults a missing visibility to public, or labels a
+// checked-in snapshot as a live read.
 
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
@@ -36,13 +34,12 @@ const shapes = source("components/PublicShapes.tsx");
 const reach = source("components/Reachability.tsx");
 const pages = readTree(siteRoot);
 
-test("the live client exposes only the two proven-safe public readers", () => {
+test("the live client exposes only two fail-closed browser readers", () => {
   const exported = [...live.matchAll(/^export (?:async )?function (\w+)/gm)].map((m) => m[1]);
   assert.deepEqual(exported.sort(), ["fetchPublicUniverses", "fetchVitals"]);
-  assert.doesNotMatch(live, /export\s+async\s+function\s+callTool\b/);
-  assert.match(live, /publicGraphCall\(\s*["']graphs["']/);
-  assert.match(live, /requirePublicUniverseCollection\(/);
-  assert.match(live, /Public MCP read is unavailable/);
+  assert.match(live, /PUBLIC_READ_NEEDS_SIGN_IN/);
+  assert.match(live, /authRequired:\s*true/);
+  assert.doesNotMatch(live, /\bfetch\s*\(|publicGraphCall\(|requirePublicUniverseCollection\(/);
 });
 
 test("the live client never requests private-capable targets or operator status", () => {
@@ -53,28 +50,15 @@ test("the live client never requests private-capable targets or operator status"
   assert.doesNotMatch(live, /read_graph runs?\b/i);
 });
 
-test("vitals derive activity from public universe timestamps, never from runs", () => {
+test("vitals report authorization without deriving activity", () => {
   assert.doesNotMatch(live, /lastSignalSource\?:\s*["']run["']|lastSignalSource\s*=\s*["']run["']/);
   assert.doesNotMatch(live, /\bactiveRun\b/);
-  assert.match(live, /lastSignalSource: "universe-activity"/);
-  assert.match(live, /last_activity_at/);
+  assert.match(live, /activityVisible:\s*false/);
+  assert.doesNotMatch(live, /last_activity_at/);
 });
 
-test("every browser request to the public endpoint is anonymous", () => {
-  // Carried forward from the deleted public-playground-boundary test: the
-  // initialize POST, the notifications/initialized POST, and every tool call
-  // must send `credentials: "omit"`, so a signed-in visitor's cookies never
-  // ride along to a public read.
-  const fetches = (live.match(/\bfetch\(\s*MCP_PATH\b/g) ?? []).length;
-  const anonymous = (live.match(/credentials:\s*"omit"/g) ?? []).length;
-  assert.ok(fetches >= 2, `expected the RPC and notification POSTs, found ${fetches}`);
-  assert.equal(
-    anonymous,
-    fetches,
-    `every fetch to the endpoint must set credentials: "omit" (${fetches} fetches, ${anonymous} anonymous)`,
-  );
-  // A cookie-bearing mode must never appear.
-  assert.doesNotMatch(live, /credentials:\s*"(?:include|same-origin)"/);
+test("the public browser opens no MCP session", () => {
+  assert.doesNotMatch(live, /\bfetch\s*\(|\binitialize\b|notifications\/initialized|tools\/call/);
 });
 
 test("the checked-in snapshot fails closed on visibility, like a live read", () => {
@@ -113,9 +97,9 @@ test("the checked-in snapshot fails closed on visibility, like a live read", () 
   assert.equal(discoverableRows([good, { ...good, id: "u-2", visibility: "private" }]).length, 1);
   assert.deepEqual(discoverableRows("not an array"), []);
 
-  // Both render paths go through it.
+  // The checked-in render path goes through it. Live reads belong to a
+  // signed-in connector, not this public browser component.
   assert.match(shapes, /const bakedRows: Row\[\] = discoverableRows\(baked\.universes\)/);
-  assert.match(shapes, /const rows: Row\[\] = discoverableRows\(live\)/);
 
   // And the checked-in snapshot itself carries only discoverable records.
   const snapshot = JSON.parse(readFileSync(resolve(siteRoot, "lib/mcp-snapshot.json"), "utf8"));
@@ -130,33 +114,31 @@ test("public pages never surface untrusted error detail", () => {
   }
 });
 
-test("the public list labels live, snapshot and failed reads distinctly", () => {
-  assert.match(shapes, /\bfetchPublicUniverses\b/);
+test("the public list labels its snapshot and sign-in boundary", () => {
+  assert.doesNotMatch(shapes, /\bfetchPublicUniverses\b/);
   assert.match(shapes, /mcp-snapshot\.json/);
-  assert.match(shapes, /live read from tinyassets\.io\/mcp/);
   assert.match(shapes, /checked-in snapshot from/);
-  assert.match(shapes, /live read failed/);
+  assert.match(shapes, /PUBLIC_READ_NEEDS_SIGN_IN/);
   assert.match(shapes, /No public universes/);
   assert.doesNotMatch(shapes, /visibility\s*\?\?\s*["']public["']/);
   assert.doesNotMatch(shapes, /visibility\s*!==\s*["']private["']/);
-  // The snapshot path is a labelled fallback, never relabelled as live.
-  assert.match(shapes, /kind:\s*"snapshot",\s*rows:\s*bakedRows/);
+  assert.doesNotMatch(shapes, /Refresh MCP|live read from/);
 });
 
-test("the reachability strip keeps reachable and busy as separate readings", () => {
+test("the reachability strip reports the sign-in boundary", () => {
   assert.match(reach, /\bfetchVitals\b/);
-  assert.match(reach, /unreachable from your browser/);
-  assert.match(reach, /This is itself a true reading/);
-  assert.match(reach, /Reachable does not mean busy/);
+  assert.match(reach, /sign-in required/);
+  assert.match(reach, /connector supplies a bearer/);
   assert.doesNotMatch(reach, /get_status/);
   assert.doesNotMatch(reach, /\bactive run\b|\ba run is moving\b/i);
 });
 
-test("site-wide refresh controls are named Refresh MCP", () => {
+test("public pages do not offer an unauthenticated MCP refresh", () => {
   const labels = [...pages.flatMap((f) => [...f.body.matchAll(/["'`]Refresh [A-Za-z]+["'`]/g)].map((m) => m[0]))];
-  assert.ok(labels.length >= 2, "expected refresh controls on the commons and fine-print pages");
   for (const label of labels) {
-    assert.match(label, /Refresh (?:MCP|GitHub)/, `unexpected refresh label ${label}`);
+    assert.notEqual(label, '"Refresh MCP"');
+    assert.notEqual(label, "'Refresh MCP'");
+    assert.notEqual(label, "`Refresh MCP`");
   }
 });
 

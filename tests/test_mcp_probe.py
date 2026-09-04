@@ -26,6 +26,37 @@ if str(_SCRIPTS) not in sys.path:
 
 import mcp_probe  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def _canary_token(monkeypatch):
+    import _canary_common
+
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "t" * 40)
+    # This daemon keeps the no-anonymous contract. Stated here rather than
+    # discovered over the network: the probe asks GET <url>/pulse, and a test
+    # that leaves that to a stub would consume a scripted response meant for
+    # `initialize`.
+    monkeypatch.setattr(
+        mcp_probe, "canary_bearer_for",
+        lambda url, prog, timeout=10.0: _canary_common.require_canary_bearer(prog),
+    )
+
+
+def test_missing_token_exits_before_network(monkeypatch, capsys):
+    calls = []
+    monkeypatch.delenv("TINYASSETS_WIKI_CANARY_TOKEN", raising=False)
+    monkeypatch.setattr(
+        mcp_probe.urllib.request,
+        "urlopen",
+        lambda *a, **k: calls.append((a, k)),
+    )
+    monkeypatch.setattr(sys, "argv", ["mcp_probe", "status"])
+    with pytest.raises(SystemExit) as exc:
+        mcp_probe.main()
+    assert exc.value.code == 2
+    assert not calls
+    assert "TINYASSETS_WIKI_CANARY_TOKEN" in capsys.readouterr().err
+
 # ---------------------------------------------------------------------------
 # Helpers to build fake urllib responses
 # ---------------------------------------------------------------------------
@@ -151,6 +182,26 @@ class TestSessionId:
             mcp_probe._mcp_call("http://fake", "sess-xyz", {"method": "tools/list"})
 
         assert calls[0] == "sess-xyz"
+
+    def test_the_bearer_is_sent_when_given_and_omitted_when_not(self):
+        """The transport sends exactly what it is handed. An omitted bearer
+        means "send none" -- it must NOT reach for the environment, or the
+        deliberately anonymous probes authenticate themselves and the
+        assertion they exist to make becomes unfalsifiable (Codex round 2)."""
+        calls = []
+
+        def capturing_urlopen(req, timeout=None):
+            calls.append(req.headers.get("Authorization"))
+            return _fake_resp(_INIT_RESP, "sess-xyz")
+
+        with patch("mcp_probe.urllib.request.urlopen", side_effect=capturing_urlopen):
+            mcp_probe._mcp_call(
+                "http://fake", None, {"method": "initialize"},
+                bearer_token="t" * 40,
+            )
+            mcp_probe._mcp_call("http://fake", None, {"method": "initialize"})
+
+        assert calls == ["Bearer " + "t" * 40, None]
 
 
 # ---------------------------------------------------------------------------

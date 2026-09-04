@@ -333,7 +333,13 @@ def _run_branch(
 
     def capture_execute(*args: Any, provider_call=None, **kwargs: Any):
         captured["provider_call"] = provider_call
-        return execute_branch_async(*args, provider_call=provider_call, **kwargs)
+        # A FORWARDING wrapper: `kwargs` already carries the caller's actor,
+        # and naming one here passed it twice.
+        return execute_branch_async(
+            *args,
+            provider_call=provider_call,
+            **kwargs,
+        )
 
     monkeypatch.setattr(api_runs, "_ensure_runs_recovery", lambda: None)
     monkeypatch.setattr(api_runs, "_base_path", lambda: tmp_path)

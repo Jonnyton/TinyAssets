@@ -64,7 +64,9 @@ def _action_grant_effector_consent(kwargs: dict[str, Any]) -> str:
     """
     sink = (kwargs.get("sink") or "").strip()
     destination = (kwargs.get("destination") or "").strip()
-    granted_by = (kwargs.get("granted_by") or "").strip() or _current_actor()
+    from tinyassets.principals import named_principal
+
+    granted_by = named_principal(kwargs.get("granted_by")) or _current_actor()
     if not sink:
         return json.dumps({
             "error": "grant_effector_consent requires 'sink'",

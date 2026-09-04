@@ -1398,7 +1398,15 @@ def _try_execute_claimed_branch_task(
                     },
                 )
         else:
-            actor = os.environ.get("UNIVERSE_SERVER_USER", "anonymous") or "anonymous"
+            # Same rule on the legacy path: the universe is the actor. An
+            # environment variable must never name a principal.
+            if not physical_universe_id:
+                return (
+                    False,
+                    "missing_admission_actor",
+                    {"branch_task_id": str(claimed_task.branch_task_id)},
+                )
+            actor = f"universe:{physical_universe_id}"
         executor_worker_id = str(
             getattr(claimed_task, "executor_worker_id", "") or "",
         )
@@ -2145,7 +2153,12 @@ class DaemonController:
             except ImportError:
                 provider_call = None
 
-            actor = os.environ.get("UNIVERSE_SERVER_USER", "anonymous") or "anonymous"
+            # The universe runs its OWN soul loop, so the run is recorded as
+            # that universe -- never as an ambient environment value, which
+            # would forge attribution to whatever the host happened to export
+            # (Codex code review round 2, P0). There is no anonymous actor to
+            # fall back to.
+            actor = f"universe:{universe_id}"
             outcome = execute_branch(
                 base_path,
                 branch=branch,

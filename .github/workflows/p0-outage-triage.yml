@@ -437,6 +437,8 @@ jobs:
         run: sleep 30
 
       - name: Re-probe canonical URL
+        env:
+          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         id: reprobe
         run: |
           set +e

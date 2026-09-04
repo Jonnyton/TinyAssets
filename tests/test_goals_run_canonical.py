@@ -203,6 +203,7 @@ def _seed_runnable_branch(
         rid = create_run(
             base, branch_def_id=branch_def_id,
             thread_id=branch_def_id, inputs={},
+            actor="universe:u-test",
         )
         update_run_status(
             base, rid, status=RUN_STATUS_COMPLETED, finished_at=now,
@@ -343,6 +344,7 @@ def test_auto_on_refreshes_canonical_and_dispatches(us_env):
     )
     rid = create_run(
         base, branch_def_id="new", thread_id="new", inputs={},
+        actor="universe:u-test",
     )
     update_run_status(
         base, rid, status=RUN_STATUS_COMPLETED, finished_at=time.time(),
@@ -397,6 +399,7 @@ def test_auto_on_insufficient_runs_keeps_stored(us_env):
     )
     rid = create_run(
         base, branch_def_id="new", thread_id="new", inputs={},
+        actor="universe:u-test",
     )
     update_run_status(
         base, rid, status=RUN_STATUS_COMPLETED, finished_at=time.time(),
@@ -445,6 +448,7 @@ def test_auto_on_in_flight_defers_refresh(us_env):
     )
     rid_j = create_run(
         base, branch_def_id="new", thread_id="new", inputs={},
+        actor="universe:u-test",
     )
     update_run_status(
         base, rid_j, status=RUN_STATUS_COMPLETED, finished_at=time.time(),
@@ -457,6 +461,7 @@ def test_auto_on_in_flight_defers_refresh(us_env):
     rid_in_flight = create_run(
         base, branch_def_id="old", thread_id="old",
         inputs={}, branch_version_id=old_bvid,
+        actor="universe:u-test",
     )
     update_run_status(base, rid_in_flight, status=RUN_STATUS_RUNNING)
 

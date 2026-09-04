@@ -22,6 +22,29 @@ if str(_SCRIPTS) not in sys.path:
 import wiki_canary as wc  # noqa: E402
 from mcp_tool_canary import ToolCanaryError  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def _canary_boundary(monkeypatch):
+    import _canary_common
+
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "t" * 40)
+    # This daemon keeps the no-anonymous contract. Stated here rather than
+    # discovered over the network, and it still honours a deleted token, so
+    # the missing-token tests below exercise the real refusal.
+    monkeypatch.setattr(
+        wc, "canary_bearer_for",
+        lambda url, prog, timeout=10.0: _canary_common.require_canary_bearer(prog),
+    )
+    monkeypatch.setattr(
+        wc,
+        "_status_post",
+        lambda url, payload, timeout, accepted_http_statuses=frozenset(): (
+            401,
+            {"www-authenticate": "Bearer realm=\"tinyassets\""},
+            b'{"error":"authentication_required"}',
+        ),
+    )
+
 # ---- scripted post helper --------------------------------------------------
 
 
@@ -181,7 +204,7 @@ def _happy_scripted() -> ScriptedPost:
     return ScriptedPost([
         _init_resp(),
         _notif_resp(),
-        _write_oauth_challenge_error(),
+        _wiki_write_accepted_resp(),
         _wiki_read_ok_resp(),
     ])
 
@@ -210,14 +233,11 @@ def test_credentialed_canary_writes_then_reads_reserved_page():
         "https://fake/mcp",
         5.0,
         post_fn=scripted,
-        service_token=token,
+        bearer_token=token,
     )
 
     assert len(scripted.calls) == 4
-    assert scripted.calls[0]["bearer_token"] is None
-    assert scripted.calls[1]["bearer_token"] is None
-    assert scripted.calls[2]["bearer_token"] == token
-    assert scripted.calls[3]["bearer_token"] is None
+    assert all(call["bearer_token"] == token for call in scripted.calls)
     assert (
         scripted.calls[2]["payload"]["params"]["arguments"]
         == {
@@ -248,7 +268,7 @@ def test_credentialed_canary_rejects_non_reserved_write_response_path():
             "https://fake/mcp",
             5.0,
             post_fn=scripted,
-            service_token=token,
+            bearer_token=token,
         )
 
     assert ei.value.code == 6
@@ -274,25 +294,11 @@ def test_credentialed_canary_rejects_non_reserved_read_response_path():
             "https://fake/mcp",
             5.0,
             post_fn=scripted,
-            service_token="service-token-" + "x" * 32,
+            bearer_token="service-token-" + "x" * 32,
         )
 
     assert ei.value.code == 7
     assert "reserved path" in ei.value.msg
-
-
-def test_credentialed_canary_cannot_use_probe_specific_filename():
-    with pytest.raises(ToolCanaryError) as ei:
-        wc.run_canary(
-            "https://fake/mcp",
-            5.0,
-            post_fn=ScriptedPost([_init_resp(), _notif_resp()]),
-            service_token="service-token-" + "x" * 32,
-            canary_filename="uptime-probe-bisect",
-        )
-
-    assert ei.value.code == 6
-    assert "reserved filename" in ei.value.msg
 
 
 def test_run_probe_uses_environment_token_when_present(monkeypatch):
@@ -308,15 +314,23 @@ def test_run_probe_uses_environment_token_when_present(monkeypatch):
     assert scripted.calls[2]["bearer_token"] == token
 
 
-def test_run_probe_missing_environment_token_keeps_gate_read_fallback(monkeypatch):
+def test_run_probe_with_no_bearer_probes_the_pre_cutover_way(monkeypatch):
+    """The token requirement lives in ``main()``, where the daemon kind is
+    known: a pre-cutover daemon refuses this bearer, so demanding it there
+    would make every probe red for the whole cutover window and after any
+    rollback (Codex review, 2026-09-02, finding E). ``run_probe`` sends what
+    it is handed."""
     scripted = _happy_scripted()
     monkeypatch.delenv("TINYASSETS_WIKI_CANARY_TOKEN", raising=False)
 
-    with patch("wiki_canary._append_log"):
-        rc = wc.run_probe("https://fake/mcp", 5.0, post_fn=scripted)
+    wc.run_probe("https://fake/mcp", 5.0, post_fn=scripted, bearer_token=None)
 
-    assert rc == 0
-    assert all(call["bearer_token"] is None for call in scripted.calls)
+    assert scripted.calls, "the anonymous path still probes"
+    assert all(
+        call.get("bearer_token") in (None, "")
+        for call in scripted.calls
+        if isinstance(call, dict)
+    )
 
 
 def test_credentialed_run_probe_writes_fresh_content_each_time(monkeypatch):
@@ -383,25 +397,8 @@ def test_exit_6_when_old_json_rejection_envelope_is_dispatched():
     with pytest.raises(ToolCanaryError) as ei:
         wc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
     assert ei.value.code == 6
-    assert "pre-dispatch" in ei.value.msg
+    assert "reserved path" in ei.value.msg
     assert len(scripted.calls) == 3
-
-
-def test_run_canary_can_scope_filename_for_bisect_replay():
-    scripted = _happy_scripted()
-    wc.run_canary(
-        "https://fake/mcp",
-        5.0,
-        post_fn=scripted,
-        canary_filename="uptime-probe-bisect-run1",
-    )
-
-    write_args = scripted.calls[2]["payload"]["params"]["arguments"]
-    read_args = scripted.calls[3]["payload"]["params"]["arguments"]
-    # Gate probe is scoped; read always targets the shared persisted draft
-    # (scoped drafts are never persisted post-gate).
-    assert write_args["filename"] == "uptime-probe-bisect-run1"
-    assert read_args["page"] == wc._CANARY_FILENAME
 
 
 def test_gate_probe_uses_canonical_write_page_and_read_page():
@@ -416,17 +413,15 @@ def test_gate_probe_uses_canonical_write_page_and_read_page():
     assert "old_text" not in write_args and "kind" not in write_args
 
 
-def test_probe_id_sanitizes_to_scoped_filename():
-    assert wc._filename_for_probe_id("bisect run: 42") == "uptime-probe-bisect-run-42"
-
-
-def test_happy_path_run_probe_returns_zero(tmp_path):
+def test_happy_path_run_probe_returns_zero(tmp_path, monkeypatch):
+    monkeypatch.setattr(wc, "_fresh_canary_content", lambda: wc._CANARY_CONTENT)
     with patch("wiki_canary._append_log"):
         rc = wc.run_probe("https://fake/mcp", 5.0, post_fn=_happy_scripted())
     assert rc == 0
 
 
-def test_happy_path_log_line_contains_green(tmp_path):
+def test_happy_path_log_line_contains_green(tmp_path, monkeypatch):
+    monkeypatch.setattr(wc, "_fresh_canary_content", lambda: wc._CANARY_CONTENT)
     logged: list[str] = []
     with patch("wiki_canary._append_log", side_effect=logged.append):
         wc.run_probe("https://fake/mcp", 5.0, post_fn=_happy_scripted())
@@ -435,7 +430,8 @@ def test_happy_path_log_line_contains_green(tmp_path):
     assert "surface=wiki_gate" in logged[0]
 
 
-def test_happy_path_log_line_not_red(tmp_path):
+def test_happy_path_log_line_not_red(tmp_path, monkeypatch):
+    monkeypatch.setattr(wc, "_fresh_canary_content", lambda: wc._CANARY_CONTENT)
     logged: list[str] = []
     with patch("wiki_canary._append_log", side_effect=logged.append):
         wc.run_probe("https://fake/mcp", 5.0, post_fn=_happy_scripted())
@@ -472,44 +468,6 @@ def test_exit_2_on_no_session_id():
 
 
 # ---- write-gate probe failures (exit 6) ------------------------------------
-
-
-def test_exit_6_when_anonymous_write_is_accepted_gate_regression():
-    """An anonymous write_page that persists is a #1441 gate regression."""
-    scripted = ScriptedPost([
-        _init_resp(), _notif_resp(),
-        _wiki_write_accepted_resp(),
-    ])
-    with pytest.raises(ToolCanaryError) as ei:
-        wc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
-    assert ei.value.code == 6
-    assert "dispatched JSON" in ei.value.msg
-    assert len(scripted.calls) == 3
-
-
-def test_exit_6_when_401_lacks_oauth_challenge():
-    scripted = ScriptedPost([
-        _init_resp(), _notif_resp(),
-        _write_oauth_challenge_error(challenge=" "),
-    ])
-    with pytest.raises(ToolCanaryError) as ei:
-        wc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
-    assert ei.value.code == 6
-    assert "WWW-Authenticate" in ei.value.msg
-
-
-def test_gha_failure_output_includes_missing_challenge_cause(capsys):
-    scripted = ScriptedPost([
-        _init_resp(), _notif_resp(),
-        _write_oauth_challenge_error(challenge=None),
-    ])
-    with patch("wiki_canary._append_log"):
-        rc = wc.run_probe("https://fake/mcp", 5.0, fmt="gha", post_fn=scripted)
-
-    captured = capsys.readouterr().out
-    assert rc == 6
-    assert "status=6" in captured
-    assert "msg=write_page HTTP 401 lacks a non-empty WWW-Authenticate challenge" in captured
 
 
 def test_exit_6_on_wiki_write_non_401_http_error():
@@ -602,7 +560,7 @@ def test_exit_6_on_wiki_write_iserror():
     with pytest.raises(ToolCanaryError) as ei:
         wc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
     assert ei.value.code == 6
-    assert "dispatched JSON" in ei.value.msg
+    assert "isError=true" in ei.value.msg
 
 
 def test_exit_6_on_wiki_write_unexpected_status():
@@ -617,7 +575,7 @@ def test_exit_6_on_wiki_write_unexpected_status():
     with pytest.raises(ToolCanaryError) as ei:
         wc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
     assert ei.value.code == 6
-    assert "dispatched JSON" in ei.value.msg
+    assert "reserved path" in ei.value.msg
 
 
 def test_exit_6_on_wiki_write_no_result():
@@ -660,7 +618,7 @@ def test_exit_6_on_wiki_write_non_json_text():
 
 def test_exit_7_on_wiki_read_network_error():
     scripted = ScriptedPost([
-        _init_resp(), _notif_resp(), _write_oauth_challenge_error(),
+        _init_resp(), _notif_resp(), _wiki_write_accepted_resp(),
         ToolCanaryError(7, "HTTP 503 on wiki read"),
     ])
     with pytest.raises(ToolCanaryError) as ei:
@@ -670,7 +628,7 @@ def test_exit_7_on_wiki_read_network_error():
 
 def test_exit_7_on_wiki_read_iserror():
     scripted = ScriptedPost([
-        _init_resp(), _notif_resp(), _write_oauth_challenge_error(),
+        _init_resp(), _notif_resp(), _wiki_write_accepted_resp(),
         ({"jsonrpc": "2.0", "id": 3, "result": {
             "content": [{"type": "text", "text": "not found"}],
             "isError": True,
@@ -684,7 +642,7 @@ def test_exit_7_on_wiki_read_iserror():
 
 def test_exit_7_on_wiki_read_roundtrip_mismatch():
     scripted = ScriptedPost([
-        _init_resp(), _notif_resp(), _write_oauth_challenge_error(),
+        _init_resp(), _notif_resp(), _wiki_write_accepted_resp(),
         ({"jsonrpc": "2.0", "id": 3, "result": {
             "content": [{"type": "text", "text": "wrong content entirely"}],
             "isError": False,
@@ -698,7 +656,7 @@ def test_exit_7_on_wiki_read_roundtrip_mismatch():
 
 def test_exit_7_on_wiki_read_no_result():
     scripted = ScriptedPost([
-        _init_resp(), _notif_resp(), _write_oauth_challenge_error(),
+        _init_resp(), _notif_resp(), _wiki_write_accepted_resp(),
         ({"jsonrpc": "2.0", "id": 3}, "sess-wiki"),
     ])
     with pytest.raises(ToolCanaryError) as ei:
@@ -708,7 +666,7 @@ def test_exit_7_on_wiki_read_no_result():
 
 def test_exit_7_on_wiki_read_no_text_content():
     scripted = ScriptedPost([
-        _init_resp(), _notif_resp(), _write_oauth_challenge_error(),
+        _init_resp(), _notif_resp(), _wiki_write_accepted_resp(),
         ({"jsonrpc": "2.0", "id": 3, "result": {
             "content": [], "isError": False,
         }}, "sess-wiki"),
@@ -738,7 +696,7 @@ def test_red_log_line_contains_surface_wiki_gate_on_exit_6():
 def test_red_log_line_contains_surface_wiki_gate_on_exit_7():
     logged: list[str] = []
     scripted = ScriptedPost([
-        _init_resp(), _notif_resp(), _write_oauth_challenge_error(),
+        _init_resp(), _notif_resp(), _wiki_write_accepted_resp(),
         ToolCanaryError(7, "roundtrip mismatch"),
     ])
     with patch("wiki_canary._append_log", side_effect=logged.append):
@@ -770,16 +728,17 @@ def test_exit_99_on_unexpected_exception():
     ([_init_resp(), _notif_resp(), ToolCanaryError(6, "write fail")], 6),
     # exit 7: wiki read roundtrip mismatch
     ([
-        _init_resp(), _notif_resp(), _write_oauth_challenge_error(),
+        _init_resp(), _notif_resp(), _wiki_write_accepted_resp(),
         ({"jsonrpc": "2.0", "id": 3, "result": {
             "content": [{"type": "text", "text": "wrong"}],
             "isError": False,
         }}, "sess-wiki"),
     ], 7),
     # exit 0: all pass
-    ([_init_resp(), _notif_resp(), _write_oauth_challenge_error(), _wiki_read_ok_resp()], 0),
+    ([_init_resp(), _notif_resp(), _wiki_write_accepted_resp(), _wiki_read_ok_resp()], 0),
 ])
 def test_main_propagates_exit_codes(monkeypatch, responses, expected_rc):
+    monkeypatch.setattr(wc, "_fresh_canary_content", lambda: wc._CANARY_CONTENT)
     scripted = ScriptedPost(responses)
     # Patch _post inside wiki_canary (the name it was imported under) so
     # run_probe → run_canary picks up the scripted responses without recursion.
@@ -787,3 +746,35 @@ def test_main_propagates_exit_codes(monkeypatch, responses, expected_rc):
     with patch("wiki_canary._append_log"):
         rc = wc.main(["--url", "https://fake/mcp"])
     assert rc == expected_rc
+
+
+def test_anonymous_initialize_200_is_exit_6(monkeypatch):
+    monkeypatch.setattr(
+        wc,
+        "_status_post",
+        lambda *a, **k: (200, {}, b"{}"),
+    )
+    with pytest.raises(ToolCanaryError) as exc:
+        wc.run_canary(
+            "https://fake/mcp", 5.0, post_fn=_credentialed_happy_scripted(),
+        )
+    assert exc.value.code == 6
+    assert "admitted an anonymous initialize" in exc.value.msg
+
+
+def test_every_authenticated_post_carries_canary_bearer():
+    scripted = _credentialed_happy_scripted()
+    wc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
+    assert all(call["bearer_token"] == "t" * 40 for call in scripted.calls)
+
+
+def test_main_missing_token_exits_before_any_post(monkeypatch, capsys):
+    calls = []
+    monkeypatch.delenv("TINYASSETS_WIKI_CANARY_TOKEN", raising=False)
+    monkeypatch.setattr(wc, "_post", lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setattr(wc, "_status_post", lambda *a, **k: calls.append((a, k)))
+    with pytest.raises(SystemExit) as exc:
+        wc.main([])
+    assert exc.value.code == 2
+    assert not calls
+    assert "TINYASSETS_WIKI_CANARY_TOKEN" in capsys.readouterr().err

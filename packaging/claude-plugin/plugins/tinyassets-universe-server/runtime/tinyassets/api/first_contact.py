@@ -38,9 +38,10 @@ def principal_is_deleted(base: Path, founder: str) -> bool:
 
     from tinyassets.account_deletion import principal_digest
     from tinyassets.daemon_server import _connect, initialize_author_server
+    from tinyassets.principals import named_principal
 
-    subject = (founder or "").strip()
-    if not subject or subject == "anonymous":
+    subject = named_principal(founder)
+    if not subject:
         return False
     try:
         initialize_author_server(base)

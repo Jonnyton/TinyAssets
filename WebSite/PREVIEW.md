@@ -8,24 +8,24 @@ one tree to edit, preview, test and build.
 
 | Purpose | Command | URL |
 |---|---|---|
-| Hot-reload preview with live `/mcp` data | `cd WebSite/site-react; npm run dev` | `http://localhost:3000/` |
+| Hot-reload preview | `cd WebSite/site-react; npm run dev` | `http://localhost:3000/` |
 | Production-exact static export | `cd WebSite/site-react; npm run preview` | `http://localhost:4322/` |
 
 Run `npm ci` in `WebSite/design-system` (then `npm run build` there) and in
 `WebSite/site-react` before the first preview. The site consumes the built
 design system from `../design-system/dist`.
 
-`npm run dev` proxies same-origin `/mcp` to `https://tinyassets.io/mcp`, so the
-commons list and the fine-print reachability strip show live data locally. The
-static preview on 4322 has no `/mcp`; those surfaces show the checked-in
-snapshot and a labelled failed read, which is also a correct rendering.
+`npm run dev` still proxies same-origin `/mcp` for authenticated application
+work, but public site code supplies no bearer and makes no MCP request. Both
+preview modes show the checked-in snapshot and an explicit signed-in-connector
+requirement for live readings.
 
 ## Edit order
 
 1. Edit `WebSite/site-react/**` (tokens and shared vocabulary live in
    `WebSite/design-system/`; rebuild it after a token change).
 2. Review the hot-reload preview at `http://localhost:3000/`.
-3. `npm test` (public-read contract, preview trust boundary, public boundary).
+3. `npm test` (authenticated-read boundary, preview trust boundary, public boundary).
 4. `npm run build`, then `python scripts/sweep.py` for the rendered check
    (every route and alias, phone and desktop, zero console errors).
 5. Open a pull request. Merging does not deploy.
@@ -52,6 +52,6 @@ After review and merge, a host manually runs
 | `WebSite/site-react/scripts/` | Node test suites, the snapshot baker, the Playwright sweep, the preview validators |
 | `WebSite/design-system/` | Tokens, base styles, components (`@tiny/design-system`) |
 | `WebSite/brand/` | The mark and its exporters |
-| `WebSite/shared/mcp/public-read-contract.js` | The browser's public read contract |
+| `WebSite/shared/mcp/public-read-contract.js` | Snapshot baker's public projection contract |
 | `.github/workflows/deploy-site-react.yml` | Manual production deployment |
 | `WebSite/DEPLOY.md` | Deployment and verification playbook |
