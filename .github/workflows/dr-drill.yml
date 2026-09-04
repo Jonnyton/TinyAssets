@@ -718,7 +718,6 @@ jobs:
       - name: Probe drill Droplet directly
         id: drillprobe
         env:
-          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
           DRILL_IP: ${{ steps.drillip.outputs.ip }}
         run: |
           # compose.yml binds daemon on 127.0.0.1:8001 (loopback only).

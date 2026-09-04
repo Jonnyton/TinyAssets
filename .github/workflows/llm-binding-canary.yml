@@ -48,8 +48,6 @@ jobs:
           python-version: '3.11'
 
       - name: Probe LLM binding
-        env:
-          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         id: probe
         continue-on-error: true
         run: |
