@@ -399,11 +399,11 @@ differs from the draft. Record the discrepancy and fix/retest first.
 
 ---
 
-## 8b. Advertising ID declaration — staged answer: No
+## 8b. Advertising ID declaration — saved answer: No
 
-The live App content overview shows this as a separate unstarted declaration. For the
-current candidate, answer **No** only after rebuilding the exact upload artifact and
-passing merged-manifest verification:
+The live App content overview previously showed this as a separate unstarted
+declaration. For any candidate, answer **No** only after rebuilding the exact upload
+artifact and passing merged-manifest verification:
 
 - `mobile/package.json` contains no ads, analytics, Firebase, or Play advertising SDK.
 - `mobile/scripts/verify_android_release.py` permits only Internet, foreground-service,
@@ -425,8 +425,10 @@ active baseline and the candidate is therefore:
 
 > **Does your app use advertising ID? No.**
 
-This is a staged policy answer, not a saved declaration. The founder must confirm the
-exact candidate evidence and save it in Play Console.
+With explicit approval, this answer was saved in Play Console on 2026-09-03. Play
+confirmed **Change saved** and the App content overview moved Advertising ID from
+**Need attention** to **Actioned**. It remains an unsent Publishing overview change;
+nothing was submitted for review or published.
 
 ---
 
@@ -495,11 +497,11 @@ Outstanding:
 > listing review completes; that is expected, not a defect.
 
 Play Console's dashboard counter reads **8 of 11**, but the authoritative App content
-overview shows **five declarations need attention**: Sign in details, Target audience,
-Data safety, Advertising ID, and Foreground service permissions. Read-only inspection
-on 2026-09-03 confirmed the Data safety draft is complete through Preview, while the
-other four declarations are unstarted. That work gates *production*, not the existing
-internal test. Full evidence is in
+overview now shows **four declarations need attention**: Sign in details, Target
+audience, Data safety, and Foreground service permissions. Inspection on 2026-09-03
+confirmed the Data safety draft is complete through Preview; Advertising ID is saved
+as **No** under Actioned; the other three declarations are unstarted. That work gates
+*production*, not the existing internal test. Full evidence is in
 `docs/audits/2026-09-03-google-play-console-readonly-reconciliation.md`.
 
 Done:
@@ -511,6 +513,8 @@ Done:
 - [x] **Content rating** — IARC submitted 2026-09-02, Everyone / PEGI 3 / USK 0 / ClassInd L
 - [x] Data safety answered and **saved as a draft**; read-only Console Preview matches
       the staged types and shows Audio files `0/3`
+- [x] Advertising ID saved as **No** after shipped-artifact, candidate merged-manifest,
+      and dependency verification; present under Actioned, not sent for review
 - [x] Contact phone verified — one click, no SMS code. It was never a founder action.
 - [x] **targetSdk 36** via Capacitor 8 (§1a) — Play rejects anything less for a new app
 - [x] Internal-testing tester list "Founder devices"
@@ -530,9 +534,6 @@ Open, with what each actually waits on:
       See `docs/host-actions.md`.
 - [ ] Sign in details → Target audience → Data safety submit — the chain that unlocks
       the last three App content rows, all gated on the account above.
-- [ ] Advertising ID declaration: answer **No** only after confirming the exact
-      candidate still passes the merged-manifest permission gate (no `AD_ID`) and no
-      dependency introduces an advertising-ID SDK.
 - [ ] Foreground-service declaration (§8a): confirm the Console row, record the
       user-initiated OAuth callback video, select **Data sync → Network processing →
       Other**, founder reviews the staged facts, then submit.

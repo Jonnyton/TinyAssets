@@ -26,6 +26,9 @@ cannot start without the founder.
   Ads / Government / Financial / Health declarations are all filled.
 - **Content rating** submitted 2026-09-02 — Everyone / PEGI 3 / USK 0 / ClassInd L.
 - **Data safety** answered and saved as a draft (it cannot be *submitted* yet; see below).
+- **Advertising ID** saved as **No** after the shipped artifact, current merged
+  manifest, and locked dependencies all verified that no advertising ID is used. It
+  is Actioned in Play but has not been sent for review.
 - **A signed bundle is live on the internal testing track**: release `1 (1.0)`,
   published 2026-09-03 11:10, 3.1 MB.
   Opt-in link: <https://play.google.com/apps/internaltest/4701716760893982267>

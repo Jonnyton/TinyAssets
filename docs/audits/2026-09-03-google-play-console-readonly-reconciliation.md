@@ -1,11 +1,13 @@
 # Google Play Console read-only reconciliation
 
 **Date:** 2026-09-03
-**Environment:** authenticated Google Play Console in Chrome; read-only navigation
-only. No form control was changed, no draft was saved, and nothing was uploaded,
-submitted, invited, rolled out, or published.
-**Candidate branch/head:** `codex/android-store-release` at `d4cdcfc1` before this
-evidence-only update.
+**Environment:** authenticated Google Play Console in Chrome. The initial inventory
+was read-only. Subsequent explicitly authorized corrections saved the safe listing
+asset pair and the evidence-backed Advertising ID answer described below. Nothing was
+sent for review, submitted, invited, rolled out, or published.
+**Candidate evidence:** `codex/android-store-release`; Android code head
+`d7bb24d1c28a64ed5c50b2ad7608916227899dd2`, verified by release run
+`33823719041`. Later commits in this audit lane are documentation-only.
 
 ## Live app record
 
@@ -18,7 +20,7 @@ evidence-only update.
 - Production access remains disabled until a qualifying closed test has at least 12
   continuously opted-in testers for at least 14 days.
 
-## App content: five declarations need attention
+## App content: four declarations need attention
 
 The App content overview—not the coarser dashboard counter—is authoritative for the
 remaining declarations:
@@ -28,7 +30,7 @@ remaining declarations:
 | Sign in details | Unstarted; neither Yes nor No selected | **Yes**, after a reusable reviewer account and full, non-personal review-safe access exist. |
 | Target audience and content | Unstarted | Founder confirms the staged 18+ answers after Sign in details is complete. |
 | Data safety | Saved draft; not submitted | Reconcile against the exact shipped data flows and founder/legal approval, then submit only after Target audience permits it. |
-| Advertising ID | Unstarted; neither Yes nor No selected | **No**. The exact merged candidate manifest must continue to contain no `com.google.android.gms.permission.AD_ID`, and no dependency may introduce an advertising-ID SDK. |
+| Advertising ID | **Actioned** 2026-09-03; saved **No**, not sent for review | Re-open if the exact uploaded artifact or any native/JavaScript SDK dependency changes. |
 | Foreground service permissions | Unstarted | Console detects `FOREGROUND_SERVICE_DATA_SYNC`; use **Data sync → Network processing → Other** for the user-initiated local OAuth callback listener, then supply observed behavior and a redacted phone video. |
 
 ## Data safety draft observed in Console
@@ -90,8 +92,13 @@ Re-verification on 2026-09-03, Windows host:
 
 Exact truthful declaration for these artifacts: **Does your app use advertising ID?
 No.** Re-open this decision if the uploaded artifact or any native/JavaScript SDK
-dependency changes. Saving the Console answer remains a policy-declaration boundary;
-this evidence does not itself submit it.
+dependency changes.
+
+With explicit user authorization, **No** was selected and saved on 2026-09-03. Play
+displayed **Change saved. Send for review in Publishing overview.** The form then
+showed No selected with Save and Discard disabled. Returning to App content reduced
+**Need attention** from five to four; **Actioned** showed seven declarations and listed
+Advertising ID with last-edited date Sep 3, 2026. The change was not sent for review.
 
 ## Listing asset discrepancy — resolved 2026-09-03
 

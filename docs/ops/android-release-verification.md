@@ -105,11 +105,13 @@ as the workflow artifact.
   the blocking prerequisite.
 - Target audience and Data safety: complete only from verified product behavior and
   SDK/data-flow evidence. The saved draft is not a submitted declaration.
-- Advertising ID: the live Console declaration is unstarted. Stage **No** only for an
-  exact candidate whose merged manifest passes this repository's permission allowlist.
+- Advertising ID: the live Console declaration was saved as **No** on 2026-09-03 after
+  shipped-artifact and exact-candidate verification. Keep that answer only for a
+  candidate whose merged manifest passes this repository's permission allowlist.
   `com.google.android.gms.permission.AD_ID` is not allowed, and `mobile/package.json`
   contains no ads/analytics/Firebase dependency. Any SDK that merges the permission
-  must fail the release verifier and force the answer to be reconsidered.
+  must fail the release verifier and force the saved answer to be reconsidered. The
+  current change is actioned but has not been sent for review.
 - Foreground service: because the bundle declares a `dataSync` foreground service
   and targets Android 14+, Google requires a Play Console declaration with a
   description, interruption/defer impact, and demonstration video. Use this staged

@@ -475,7 +475,7 @@ What remains after the secrets, and who does it (`docs/ops/google-play-launch.md
 | Internal-testing release: upload the AAB, roll out | **done** 2026-09-03 11:10 — release `1 (1.0)`, track Active, 3.1 MB |
 | Verify the loop on a real phone (install from the internal-test link, sign in, chat) | **you — this is the live one.** Opt-in on the founder's Google account: https://play.google.com/apps/internaltest/4701716760893982267 |
 | Sign in details → Target audience → Data safety submit | blocked on the reviewer account above |
-| Advertising ID declaration | **you** — answer No only after the exact bundle passes the merged-manifest verifier; no `AD_ID` permission or advertising SDK is present in the current candidate |
+| Advertising ID declaration | **done 2026-09-03** — saved No after shipped-artifact, exact-candidate merged-manifest, and dependency verification; actioned but not sent for review |
 | Foreground-service declaration + behavior video | **you** — exact gate below |
 | Replace the unsafe uploaded conversation screenshot with staged `01-sign-in.png` | **done 2026-09-03** — live draft saved and both retained filenames verified; not sent for review |
 | Closed test: 12 testers for 14 days, then apply for production access | **you** |
