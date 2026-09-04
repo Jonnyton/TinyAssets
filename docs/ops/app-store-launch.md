@@ -267,6 +267,7 @@ and [unavailability procedure](https://developer.apple.com/help/app-store-connec
 - [x] Build 3 attached to the empty `Internal` TestFlight group; en-US **What to Test** saved; 0 testers
 - [x] Founder reauth: beta description saved and Build 3 selected for Version 1.0
 - [x] Free price schedule confirmed for all 175 displayed countries or regions
+- [x] Factual App Review Notes saved; no credentials or personal contact entered
 - [x] Live age-rating questionnaire saved at 18+ (Korea 19+)
 - [x] Untested Apple Silicon Mac and Apple Vision Pro availability disabled
 - [ ] Content Rights: founder/counsel attest necessary regional third-party-content rights

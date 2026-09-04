@@ -22,6 +22,9 @@
 - The authenticated web session selected Build 3 for App Store Version 1.0 and
   saved the relationship. The version remains `PREPARE_FOR_SUBMISSION` with
   manual release selected; **Add for Review** was not used.
+- The authenticated web session saved factual App Review Notes identifying the
+  Capacitor shell's pinned URL, absent purchase/advertising/voice surfaces, and
+  critical review paths. No credential or personal contact detail was entered.
 - The authenticated web session set the app's base country or region to United
   States (USD) and confirmed a free (`$0.00`) price in all 175 displayed
   countries or regions. App availability was not configured.

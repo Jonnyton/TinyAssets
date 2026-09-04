@@ -78,10 +78,11 @@ the iOS wording but does not resolve the legal-review gate.
 >
 > Get started in seconds — sign in and say hello to your universe.
 
-Review notes should say that this is a Capacitor shell pinned to
-`https://tinyassets.io/mcp/app`, not a general-purpose web browser. There is no
-purchase or upgrade UI in the native shell. Sign-in, provider connection, chat,
-text-file attachment, account deletion, and the privacy link are the critical
+The factual App Review Notes are saved: this is a Capacitor shell pinned to
+`https://tinyassets.io/mcp/app`, not a general-purpose web browser; the native
+shell has no purchase, subscription, upgrade, advertising, unrestricted-browsing,
+or voice UI; and sign-in, provider connection, conversation, text-file
+attachment, Account/Privacy navigation, and account deletion are the critical
 review paths. Private reviewer-account details belong only in App Store Connect,
 never in this repository.
 
@@ -297,8 +298,9 @@ one, so the server must remain compatible with the last released shell.
    and `docs/audits/2026-09-03-ios-testflight-preparation-receipt.md`.
 8. **Partially complete 2026-09-03:** an authenticated App Store Connect session
    saved the beta app description and marketing URL, selected Build 3 for Version
-   1.0, confirmed the free price schedule, saved the 18+ age rating, and disabled
-   untested Apple Silicon Mac and Apple Vision Pro distribution. Complete App
+   1.0, confirmed the free price schedule, saved factual App Review Notes, saved
+   the 18+ age rating, and disabled untested Apple Silicon Mac and Apple Vision
+   Pro distribution. Complete App
    Privacy, screenshots, review contact/sign-in details, storefront availability,
    and DSA status from verified evidence. Content Rights remains intentionally
    unset because Apple's truthful third-party-content answer includes a regional

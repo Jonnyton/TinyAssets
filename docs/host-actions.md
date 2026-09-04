@@ -335,7 +335,9 @@ None of it can produce an installable app without account-owned signing material
    questionnaire is saved at 18+ (19+ in Korea; earlier operating systems show
    17+ with Apple's regional exceptions). Untested Apple Silicon Mac and Apple
    Vision Pro availability are disabled and saved. Storefront availability is
-   still unset.
+   still unset. Factual App Review Notes describing the pinned Capacitor shell,
+   absent commerce/advertising/voice UI, and critical review paths are also saved;
+   no reviewer credential or personal contact detail was entered.
 8. Capture real iPhone-sized screenshots from the signed app and verify sign-in →
    connect → chat through TestFlight. This Windows host cannot supply that proof:
    Apple's simulator inventory failed because `xcrun` is unavailable. Unlock the
