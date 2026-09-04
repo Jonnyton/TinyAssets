@@ -25,7 +25,8 @@ the candidate became healthy; the authenticated public MCP canary with the
 canonical handle assertion passed; rollback was skipped; and the release
 receipt published `git_sha=b4662ab64513b15460f1e222f75cbfedea728bf3`.
 That revision contains the no-anonymous merge
-`efa0ed9e39925ba3705a14be5b9836a6b74bb81d`.
+`3fc83fc15fc3e7d06310848f5b931ed0cf645c76` (#2800) and the status-shape
+recovery merge `efa0ed9e39925ba3705a14be5b9836a6b74bb81d` (#2814).
 
 An unauthenticated client is challenged before tool dispatch. Canonical tools
 advertise OAuth-only security, cached hosted calls receive the bounded runtime

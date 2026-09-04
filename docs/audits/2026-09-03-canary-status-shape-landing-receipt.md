@@ -85,6 +85,6 @@ Build run `33834441413` published that containing image. Deploy run
 The local `deployed_sha.py --assert-contains` invocation failed closed before
 network access because this checkout does not hold the canary secret. The same
 live release receipt was observed in the authenticated deployment job, and the
-GitHub ancestry comparison proves its revision contains the auth merge. This is
+GitHub ancestry comparison proves its revision contains the status-shape merge. This is
 receipt evidence subject to the existing limitation in
 `docs/concerns/2026-08-26-deployed-sha-proves-receipt-only.md`.
