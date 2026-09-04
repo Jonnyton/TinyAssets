@@ -586,9 +586,14 @@ def _stop_workspace_sweeper(
     stopped = not handle.thread.is_alive()
     if stopped:
         with _WORKSPACE_RECONCILE_LOCK:
-            if _WORKSPACE_SWEEPERS.get(key) is handle:
+            current = _WORKSPACE_SWEEPERS.get(key)
+            if current is handle:
                 _WORKSPACE_SWEEPERS.pop(key, None)
-            _WORKSPACE_RECONCILED.discard(key)
+                _WORKSPACE_RECONCILED.discard(key)
+            elif current is None:
+                _WORKSPACE_RECONCILED.discard(key)
+            # A self-retiring old worker may already have been replaced while
+            # this caller joined it. Never clear the replacement's marker.
     return stopped
 
 

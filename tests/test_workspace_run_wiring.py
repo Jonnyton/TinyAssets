@@ -283,6 +283,7 @@ def test_a_periodic_sweeper_owns_its_dependency_and_stops_promptly(
         base, interval_s=0.01, sweep_once=owned_sweep,
     ) is True
     handle = runs._WORKSPACE_SWEEPERS[(os.getpid(), str(base.resolve()))]
+    assert handle.thread.ident is not None, "an unstarted worker was published"
     assert entered_sweep.wait(2), "the worker did not reach its owned callable"
     monkeypatch.setattr(
         runs,
@@ -378,6 +379,49 @@ def test_a_sweeper_that_stops_itself_retires_its_handle(
     assert not handle.thread.is_alive()
     assert key not in runs._WORKSPACE_SWEEPERS
     assert key not in runs._WORKSPACE_RECONCILED
+
+
+def test_a_stale_stopper_cannot_clear_a_replacement_worker(tmp_path):
+    base = tmp_path / "data"
+    key = (os.getpid(), str(base.resolve()))
+    replacement_stop = threading.Event()
+    replacement = threading.Thread(
+        target=lambda: replacement_stop.wait(2), daemon=True,
+    )
+    replacement.start()
+    replacement_handle = runs._WorkspaceSweeperHandle(
+        stop_event=replacement_stop,
+        thread=replacement,
+    )
+
+    class _OldThread:
+        def join(self, timeout=None):
+            del timeout
+            with runs._WORKSPACE_RECONCILE_LOCK:
+                runs._WORKSPACE_SWEEPERS[key] = replacement_handle
+                runs._WORKSPACE_RECONCILED.add(key)
+
+        def is_alive(self):
+            return False
+
+    old_handle = runs._WorkspaceSweeperHandle(
+        stop_event=threading.Event(),
+        thread=_OldThread(),
+    )
+    with runs._WORKSPACE_RECONCILE_LOCK:
+        runs._WORKSPACE_SWEEPERS[key] = old_handle
+        runs._WORKSPACE_RECONCILED.add(key)
+
+    try:
+        assert runs._stop_workspace_sweeper(base, timeout_s=2) is True
+        assert runs._WORKSPACE_SWEEPERS[key] is replacement_handle
+        assert key in runs._WORKSPACE_RECONCILED
+    finally:
+        replacement_stop.set()
+        replacement.join(2)
+        with runs._WORKSPACE_RECONCILE_LOCK:
+            runs._WORKSPACE_SWEEPERS.pop(key, None)
+            runs._WORKSPACE_RECONCILED.discard(key)
 
 
 def test_the_fork_reset_replaces_an_inherited_locked_mutex():
