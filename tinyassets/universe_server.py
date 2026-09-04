@@ -2073,7 +2073,7 @@ def _record_served_failure(universe_id: str, exc: BaseException) -> None:
     hosts or paths, so it is scrubbed and kept server-side. What the owner is
     told is that the details exist -- and now they do.
     """
-    from tinyassets.workspace_git import scrub_text
+    from tinyassets.providers.diagnostics import redacted_failure_detail
 
     try:
         attempts = getattr(exc, "attempts", None) or []
@@ -2084,7 +2084,7 @@ def _record_served_failure(universe_id: str, exc: BaseException) -> None:
                     getattr(a, "status", ""),
                     getattr(a, "skip_class", ""),
                     getattr(a, "failure_class", "") or "",
-                    scrub_text(str(getattr(a, "detail", "") or ""))[:200],
+                    redacted_failure_detail(str(getattr(a, "detail", "") or "")),
                 ) if str(part)
             )
             for a in attempts
@@ -2095,7 +2095,7 @@ def _record_served_failure(universe_id: str, exc: BaseException) -> None:
             getattr(exc, "failure_class", None),
             getattr(exc, "retry_after", None),
             len(attempts),
-            rendered or scrub_text(str(exc))[:300],
+            rendered or redacted_failure_detail(str(exc), limit=300),
             getattr(exc, "chain_state", None),
         )
     except Exception:  # noqa: BLE001 - diagnostics must never break a failure path

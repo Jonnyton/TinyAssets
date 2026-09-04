@@ -20,6 +20,18 @@ from typing import Any, Literal
 # "failed"  = tried and got an exception.
 AttemptStatus = Literal["skipped", "failed"]
 
+
+def redacted_failure_detail(detail: str, *, limit: int = 200) -> str:
+    """Scrub before clipping, retaining the terminal cause within the budget."""
+    from tinyassets.workspace_git import scrub_text
+
+    scrubbed = scrub_text(detail)
+    if len(scrubbed) <= limit:
+        return scrubbed
+    head = limit // 2
+    tail = limit - head - 5
+    return scrubbed[:head] + " ... " + scrubbed[-tail:]
+
 # Operators use this enum to decide the recovery action. Each class maps
 # to a distinct fix:
 #   not_in_registry     - daemon config / provider registration

@@ -49,6 +49,7 @@ from tinyassets.providers.diagnostics import (
     classify_unavailable,
     dominant_failure_class,
     dominant_retry_after_s,
+    redacted_failure_detail,
 )
 from tinyassets.providers.quota import (
     COOLDOWN_OTHER,
@@ -1087,7 +1088,7 @@ class ProviderRouter:
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed",
                     skip_class=classify_unavailable(exc),
-                    detail=str(exc)[:200],
+                    detail=redacted_failure_detail(str(exc)),
                     failure_class=exc.failure_class,
                     retry_after_s=getattr(exc, "retry_after", None),
                     side_effect_state=_side_effect_from(exc),
@@ -1104,7 +1105,7 @@ class ProviderRouter:
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed",
                     skip_class="timed_out",
-                    detail=str(exc)[:200],
+                    detail=redacted_failure_detail(str(exc)),
                     failure_class=exc.failure_class,
                     side_effect_state=_side_effect_from(exc),
                 ))
@@ -1118,7 +1119,7 @@ class ProviderRouter:
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed",
                     skip_class="provider_error",
-                    detail=str(exc)[:200],
+                    detail=redacted_failure_detail(str(exc)),
                     failure_class=exc.failure_class,
                     side_effect_state=_side_effect_from(exc),
                 ))
@@ -1132,7 +1133,7 @@ class ProviderRouter:
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed",
                     skip_class=classify_unavailable(exc),
-                    detail=str(exc)[:200],
+                    detail=redacted_failure_detail(str(exc)),
                 ))
                 continue
             except ProviderTimeoutError as exc:
@@ -1144,7 +1145,7 @@ class ProviderRouter:
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed",
                     skip_class="timed_out",
-                    detail=str(exc)[:200],
+                    detail=redacted_failure_detail(str(exc)),
                 ))
                 continue
             except ProviderError as exc:
@@ -1156,7 +1157,7 @@ class ProviderRouter:
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed",
                     skip_class="provider_error",
-                    detail=str(exc)[:200],
+                    detail=redacted_failure_detail(str(exc)),
                 ))
                 continue
             except _ProviderBusy:
@@ -1172,7 +1173,7 @@ class ProviderRouter:
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed",
                     skip_class="unknown",
-                    detail=f"{type(exc).__name__}: {str(exc)[:160]}",
+                    detail=f"{type(exc).__name__}: {redacted_failure_detail(str(exc), limit=160)}",
                 ))
                 continue
 
