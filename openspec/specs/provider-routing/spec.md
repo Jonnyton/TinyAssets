@@ -265,24 +265,27 @@ for the remainder of the process. It returns that same mutable dictionary,
 does not refresh it, and does not copy it.
 
 For an ordinary `CodexProvider.complete` call,
-`bwrap_available` truthy SHALL select `--full-auto`, while falsey SHALL select
+`bwrap_available` truthy SHALL select `--sandbox workspace-write`, while falsey SHALL select
 `--dangerously-bypass-approvals-and-sandbox`; both modes also include
 `--skip-git-repo-check` and `--ephemeral`. A call with
-`sandbox_workspace=True` SHALL refuse before probing or selecting either mode.
+`sandbox_workspace=True` SHALL require a universe directory, a directly
+executable CLI, available Bubblewrap, and an auth home inside that universe;
+otherwise it SHALL refuse before starting a subprocess. Accepted served calls
+use `--sandbox workspace-write` inside the outer OS sandbox.
 This probe is a CLI-readiness heuristic, not an OS backend or proof that the
 subsequent workload is confined. In particular, an unavailable ordinary call
 bypasses Codex approvals and sandboxing rather than failing closed.
 
-#### Scenario: Successful version and functional probes select full-auto
+#### Scenario: Successful version and functional probes select workspace-write
 
 - **WHEN** `bwrap` is found and its version and minimal launch subprocesses both exit zero
 - **THEN** the first cached result is `{"bwrap_available": true, "reason": null}`
-- **AND** an ordinary Codex call includes `--full-auto` and omits `--dangerously-bypass-approvals-and-sandbox`
+- **AND** an ordinary Codex call includes `--sandbox workspace-write` and omits `--dangerously-bypass-approvals-and-sandbox`
 
 #### Scenario: An unavailable probe selects the dangerous bypass
 
 - **WHEN** the cached probe is false because of win32, a missing executable, a nonzero version or launch result, or a probe exception
-- **THEN** an ordinary Codex call includes `--dangerously-bypass-approvals-and-sandbox` and omits `--full-auto`
+- **THEN** an ordinary Codex call includes `--dangerously-bypass-approvals-and-sandbox` and omits `--sandbox workspace-write`
 - **AND** the result carries a reason for the unavailable classification
 
 #### Scenario: Repeated status reads retain the first mutable result
@@ -291,10 +294,10 @@ bypasses Codex approvals and sandboxing rather than failing closed.
 - **THEN** the underlying probe is invoked once
 - **AND** every read returns the same cached dictionary, including the mutation
 
-#### Scenario: Founder-facing sandbox configuration refuses before mode selection
+#### Scenario: Founder-facing sandbox configuration fails closed when confinement is unavailable
 
-- **WHEN** a Codex call has `sandbox_workspace=True`
-- **THEN** it raises `ProviderError` before consulting Bubblewrap readiness
+- **WHEN** a Codex call has `sandbox_workspace=True` without a universe directory or available Bubblewrap
+- **THEN** it raises `ProviderError` rather than selecting the dangerous bypass
 - **AND** no Codex subprocess is started
 
 ### Requirement: Recognized provider CLI sandbox failures are loud only after earlier quick-exit classification

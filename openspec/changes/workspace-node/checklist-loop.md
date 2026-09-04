@@ -77,3 +77,44 @@ the real-router regression was first demonstrated red against the old router.
 Rollback for this diagnostic-only round: deploy the last healthy immutable
 image through the normal fail-safe release workflow if startup or connector
 health regresses. No storage migration or private-state rollback is involved.
+
+## Diagnostic round deployed, 2026-09-04 23:32 UTC
+
+PR #2959 merged as `97da0eadc3d3ca0bf6edee81394aaf922582978a`.
+Image build `33929636420` and deploy `33929823161` passed, including the
+authenticated public canary and protected deployed-SHA assertion. Retried the
+unchanged exact prompt in the existing app at 23:34 UTC; it still rendered an
+unknown turn failure. No checklist row is newly accepted.
+
+Stopped blind retries after the third failed attempt and obtained independent
+Claude diagnosis. Subsequent read-only metadata narrowed one confirmed defect:
+live catalogue HTTP 200 declares `max`, which deployed Codex CLI 0.135.0 cannot
+deserialize. The next generic compatibility round is isolated on
+`codex/provider-catalogue-compat`; no workflow, provider binding, credential, or
+user state is altered. See the checklist-turn concern for evidence and limits.
+
+## Compatibility round verification, 2026-09-04 23:56 UTC
+
+CLI pin 0.153.4 and explicit workspace-write launch replace the removed flag;
+the platform keepalive job receives the same flag repair. The shape reviewer
+required a real launch check, feature-default comparison, and preserving
+scrubbed JSON error messages. Implemented all three; remote-plugin loading is
+now explicitly disabled with account apps and shell tools. No private workflow
+definitions, connection state, credentials, or model selections were changed.
+
+Windows Python 3.14 baseline: 173 passed, 3 skipped. Changed focused selection
+(`tests/test_codex_cli_compat.py`, providers, served_router, stream_watchdog,
+dockerfile_shape, provider_sandbox): 189 passed, 3 skipped. Ruff and actionlint
+passed; plugin import probe and mirror build passed. `python
+scripts/codex_cli_smoke.py npm.cmd exec --yes --package=@openai/codex@0.153.4
+-- codex` passed with an empty home, allowlisted environment, real required-MCP
+startup, disabled account/plugin/shell features, and a fake loopback HTTP 401.
+Docker image construction runs the same credential-free check on Linux.
+
+`python scripts/linux_oracle.py -- -q tests/test_codex_cli_compat.py
+tests/test_provider_served_router.py` could not start: local Docker Desktop's
+Linux engine remains unavailable. Linux CI and Docker build must pass before
+landing. Independent implementation review is running; no deployment claimed.
+
+Rollback: normal fail-safe deploy of prior immutable image if startup or public
+connector health regresses. No migration or user-state rollback is needed.

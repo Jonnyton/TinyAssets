@@ -860,11 +860,12 @@ os.execvpe(command[0], command, env)
     assert response.output_tokens == 2
     captured = json.loads(bwrap_log.read_text(encoding="utf-8"))
     inner = captured[captured.index("--") + 1 :]
-    assert "--full-auto" in inner
+    assert ("--sandbox", "workspace-write") in zip(inner, inner[1:])
+    assert "--full-auto" not in inner
     assert "--json" in inner
     assert "--ignore-user-config" in inner
     assert "--ignore-rules" in inner
-    assert "shell_tool" in inner
+    assert ("--disable", "shell_tool") in zip(inner, inner[1:])
     assert "unified_exec" in inner
     # The `apps` feature must be OFF: otherwise the subscription account's
     # installed ChatGPT connectors (including TinyAssets' own /mcp) reach the
@@ -872,6 +873,8 @@ os.execvpe(command[0], command, env)
     # them, returning "This app connection requires reauthentication..." instead
     # of answering (confused-deputy loop, live-diagnosed 2026-08-22).
     assert ("--disable", "apps") in list(zip(inner, inner[1:]))
+    assert ("--disable", "plugins") in zip(inner, inner[1:])
+    assert ("--disable", "remote_plugin") in zip(inner, inner[1:])
     # Engine MCP off (this config) -> no MCP server, but /workspace is forced
     # untrusted so no project .codex/config.toml (or its mcp_servers) loads, and
     # the turn is WebFetch-only. (When engine MCP is on + a route exists,
