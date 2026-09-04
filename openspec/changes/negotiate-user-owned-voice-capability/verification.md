@@ -17,10 +17,14 @@
   successfully after the container became healthy. The local shell did not
   contain the canary bearer, so no unauthenticated local rerun is represented as
   equivalent evidence.
+- Individual production gate check:
+  `python scripts/droplet.py ssh -- 'for k in TINYASSETS_REALTIME_VOICE_ENABLED TINYASSETS_ALLOW_REALTIME_VOICE_API; ... docker exec tinyassets-daemon printenv "$k" ...; done'`.
+  Result: both `TINYASSETS_REALTIME_VOICE_ENABLED` and
+  `TINYASSETS_ALLOW_REALTIME_VOICE_API` are unset in the running container, so
+  each independently retains its default-off behavior.
 - Dark-state source check: `Invoke-WebRequest https://tinyassets.io/mcp/app`
   returned HTTP 200 and the served configuration contained
-  `"voice": {"enabled": false, ...}`. No Voice flag was set or changed during
-  this delivery; both Voice-specific flags retain their default-off policy.
+  `"voice": {"enabled": false, ...}`.
 - Rendered check: a host-visible browser loaded the signed-in founder app. The
   single Voice control was present beside the composer, disabled, and the
   rendered status read `Voice is not enabled on this TinyAssets host.` No Voice
