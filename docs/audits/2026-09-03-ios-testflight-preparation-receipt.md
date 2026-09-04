@@ -1,9 +1,9 @@
 # iOS TestFlight preparation receipt
 
-**Verified:** 2026-09-03, App Store Connect API and signed-in App Store Connect  
-**App version:** 1.0.0  
-**Build:** 3  
-**Upload delivery UUID:** `59f9e3ee-57b3-41c9-871b-91cb357b536f`
+- **Verified:** 2026-09-03, App Store Connect API and signed-in App Store Connect
+- **App version:** 1.0.0
+- **Build:** 3
+- **Upload delivery UUID:** `59f9e3ee-57b3-41c9-871b-91cb357b536f`
 
 ## Completed safely
 

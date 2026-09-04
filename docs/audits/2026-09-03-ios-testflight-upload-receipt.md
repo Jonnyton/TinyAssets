@@ -1,11 +1,11 @@
 # iOS TestFlight upload receipt
 
-**Verified:** 2026-09-03, GitHub Actions and signed-in App Store Connect  
-**Reviewed fix:** `6ccb3d243e0034b8b15049bd55424fde542614c7`  
-**Landed revision:** `76d795a1a3794fc3f3112121a063ca21b3175ce0` (PR #2798)  
-**Release run:** `33827279907`  
-**App version/build:** 1.0.0 (3)  
-**Delivery UUID:** `59f9e3ee-57b3-41c9-871b-91cb357b536f`
+- **Verified:** 2026-09-03, GitHub Actions and signed-in App Store Connect
+- **Reviewed fix:** `6ccb3d243e0034b8b15049bd55424fde542614c7`
+- **Landed revision:** `76d795a1a3794fc3f3112121a063ca21b3175ce0` (PR #2798)
+- **Release run:** `33827279907`
+- **App version/build:** 1.0.0 (3)
+- **Delivery UUID:** `59f9e3ee-57b3-41c9-871b-91cb357b536f`
 
 ## Evidence
 
