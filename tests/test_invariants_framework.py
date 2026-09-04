@@ -279,7 +279,7 @@ def test_cli_list_includes_every_invariant():
     result = _run_cli("--list")
 
     assert result.returncode == 0, result.stderr
-    for name in ("mirror-parity", "mojibake", "tab-single", "context-budget",
+    for name in ("brand-parity", "mirror-parity", "mojibake", "tab-single", "context-budget",
                  "cross-provider-drift", "skills-valid"):
         assert name in result.stdout
 
@@ -303,8 +303,9 @@ def test_cli_pre_commit_runs_only_pre_commit_scope():
     """--pre-commit should only invoke invariants with pre_commit_scope=True."""
     result = _run_cli("--pre-commit")
 
-    # Output must include mirror-parity + mojibake, must NOT include
+    # Output must include brand-parity + mirror-parity + mojibake, must NOT include
     # tab-single (poll-only) or concerns-staleness (on-demand).
+    assert "brand-parity" in result.stdout
     assert "mirror-parity" in result.stdout
     assert "mojibake" in result.stdout
     assert "tab-single" not in result.stdout

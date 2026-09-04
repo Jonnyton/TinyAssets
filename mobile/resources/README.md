@@ -5,6 +5,10 @@
 - `splash.png` — 2732×2732 source (the badge centred on `#14140f`, matching the
   loading page and the site ground). Every splash size is a cover-fit centre-crop of this, so editing
   it changes what ships.
+- iOS uses those two sources directly: `scripts/add_ios_assets.py` replaces the
+  generated Xcode asset catalog's 1024×1024 icon and all three 2732×2732 splash
+  entries. It fails on missing files, wrong dimensions, or catalog drift so a
+  release cannot silently ship Capacitor's placeholder artwork.
 - `android/` — the **pre-rendered density set** the app actually ships: legacy
   launcher icons (48–192 px, square + round), adaptive-icon foregrounds
   (108–432 px, mark at 66% so no launcher mask clips it) and the splash at every
@@ -30,10 +34,11 @@ python scripts/render_app_icons.py --from-logo ../assets/icon.png \
 
 The feature graphic is the only output with type on it, and its font must be an
 explicit file: rendered from whatever the host happens to have installed, the same
-command produces different pixels on different machines. Without `--font` it is
-skipped and the committed one is left alone, so `render_marks.py` (which does not
-pass one) stays runnable. Rendered with Pillow 10.x; the committed PNGs are
-canonical — re-render only to change the art, and review the pixel diff.
+command produces different pixels on different machines. Without `--font`, the
+renderer preserves the reviewed wordmark and deterministically replaces its logo
+panel, so a mark change still reaches the Play listing. Rendered with Pillow 10.x;
+the committed PNGs are generated outputs — change the canonical geometry, re-run,
+and review the pixel diff.
 
 `scripts/add_app_icons.py` fails the build if any file in `android/` is missing or
 the wrong size for the template it is copied into, so a Capacitor upgrade that

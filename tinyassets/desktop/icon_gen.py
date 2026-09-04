@@ -1,19 +1,21 @@
 """The TinyAssets mark, and the one place its geometry lives.
 
-The mark is a circular badge: **Mount Baker seen from the south**, a **wolf
-howling** on the snowfield, a pale **moon**, and a spiral **galaxy** overhead.
+The mark is a circular badge: **Mount Baker seen from Everett**, a **wolf
+howling** toward an ember moon, and a **galaxy** overhead.
 The mountain's profile is traced from a photograph rather than drawn from
 memory, so it carries Baker's signature: a flat summit plateau instead of a
 peak, the jagged Lincoln and Colfax group at about half that height on the
 west (left, from the south), and a long south-east flank.
 
-Every rendering comes from the ``EMBLEM`` layer list below: the Windows tray
+Every rendering comes from the layer lists below: the Windows tray
 ``.ico`` (``generate_icon``), the brand exports under ``WebSite/brand/`` and
 ``assets/``, the desktop and Android app icons, and the SVG the site inlines
 (``WebSite/brand/render_marks.py`` imports ``draw_mark`` and ``mark_svg``).
 One description, two renderers -- ``mark_svg`` emits it as SVG and
 ``draw_mark`` rasterises the same list with Pillow -- so a change here reaches
-every surface and nothing can drift.
+every surface and nothing can drift.  There are three optical drawings rather
+than one illustration blindly shrunk everywhere: ``full`` for large brand and
+store artwork, ``compact`` for app/header icons, and ``micro`` for 16--32 px.
 
 A layer is a dict:
 
@@ -47,16 +49,12 @@ SKY = (0x1B, 0x1B, 0x24)      # the night sky: lifted off the ground so the
 CREAM = (0xF2, 0xEF, 0xE6)    # --fg-1: snow, stars, the badge rim
 ACCENT = (0xE0, 0x70, 0x3F)   # --ember-600: the moon
 DUST = (0xC9, 0xB6, 0xFF)     # the cool cast of the galaxy disc
-ROCK = (0x33, 0x33, 0x3D)     # the Black Buttes: bare rock, not snow
-SHADE = (0xD2, 0xCC, 0xBE)    # the foreground snowfield, in the mountain's shadow
 
 INK_HEX = "#14140f"
 SKY_HEX = "#1b1b24"
 CREAM_HEX = "#f2efe6"
 ACCENT_HEX = "#e0703f"
 DUST_HEX = "#c9b6ff"
-ROCK_HEX = "#33333d"
-SHADE_HEX = "#d2ccbe"
 
 # ---- geometry, in a 64 x 64 box -------------------------------------------
 VIEWBOX = 64.0
@@ -65,12 +63,12 @@ DISC_R = 31.0
 RIM_R = 30.4
 RIM_W = 1.2
 TILE_RADIUS = 13.0            # rounded corner when the badge is an app tile
-MOON_CX, MOON_CY, MOON_R = 47.0, 14.5, 4.2
+MOON_CX, MOON_CY, MOON_R = 48.0, 14.5, 5.1
 
 _SUPERSAMPLE = 4
 
-# The wolf, drawn around a 30 x 32 box, then placed on the snowfield.
-_WOLF_AT = (29.0, 47.6, 0.38)
+# The wolf, drawn around a 30 x 26 box, then placed on the snowfield.
+_WOLF_AT = (22.0, 39.8, 0.58)
 
 # ---- Mount Baker from the south -------------------------------------------
 # Traced from photographs taken from Everett and Seattle, both of which look at
@@ -104,102 +102,191 @@ _SNOW = (
     "L48.5 23.2 L50 26.3 L51.5 25.2 L53 26.4 L55 28.9 L57 30.7 L59 33.0 "
     "L61 34.9 L63 37.1 L65 41.9 L67 43.5 L70 43.5 L70 64 Z"
 )
-# The foreground snowfield: a shadowed rise the wolf stands on, so the lit
-# range reads as mountains behind it instead of one white mass.
-_FOREGROUND = "M-4 64 L-4 49.6 Q10 46.4 26 48.8 Q42 51.2 56 48 L68 45.4 L68 64 Z"
+# The selected Wolf Moon Seal uses a lower, darker ridge.  It gives the wolf a
+# clean snow-coloured field behind its silhouette instead of merging the animal
+# into a mid-tone foreground at icon sizes.
+_INK_RIDGE = "M-4 64 L-4 56 Q9 52.5 22 54 Q35 56.2 47 53.6 Q57 51.4 68 50 L68 64 Z"
+
+# Optical reductions keep Baker's Everett-facing asymmetry: the serrated Black
+# Buttes remain at left, the broad summit shelf stays off-centre, and the right
+# flank is longer.  They intentionally omit the full drawing's smaller cuts.
+_COMPACT_MOUNTAIN = (
+    "M-5 64 L-5 45 L3 39 L7 42 L11 36 L15 41 L19 35 L23 38 "
+    "L31 28 L36 22 L40 20.5 L45 20.8 L49 22.5 L53 27 L57 29 "
+    "L61 34 L69 40 L69 64 Z"
+)
+_MICRO_MOUNTAIN = (
+    "M-5 64 L-5 47 L7 39 L13 43 L25 31 L34 23 L40 21.5 "
+    "L46 22 L51 27 L56 30 L61 36 L69 41 L69 64 Z"
+)
 
 # ---- the galaxy -----------------------------------------------------------
-# An inclined spiral -- disc, two arms, bright core -- so it reads as a galaxy
-# rather than as cloud or a scatter of stars.
-_GALAXY_AT = (17.0, 12.5, 0.85)
-_GALAXY_DISC = "M-10 0 Q-10 -4.6 0 -4.6 Q10 -4.6 10 0 Q10 4.6 0 4.6 Q-10 4.6 -10 0 Z"
-_GALAXY_ARMS = [
-    "M-8.8 -1.3 Q-4.8 -3.7 0 -3.3 Q5.4 -2.9 8.4 0.3",
-    "M8.8 1.3 Q4.8 3.7 0 3.3 Q-5.4 2.9 -8.4 -0.3",
+# Direction A's galaxy is a diagonal river rather than a second circular
+# object competing with the moon.  Three strokes and a deliberately sparse
+# particle set remain graphic at 64 px while feeling expansive in large art.
+_GALAXY_SWEEPS = [
+    ("M-4 30 C12 23 22 12 58 5", 1.8, DUST, 0.66),
+    ("M-3 26 C15 19 28 9 61 4", 0.55, CREAM, 0.62),
+    ("M3 33 C18 26 31 18 52 15", 0.65, DUST, 0.58),
+]
+_GALAXY_PARTICLES = [
+    (4, 27, 0.7), (8, 24, 0.38), (12, 23, 0.55), (15, 19.5, 0.4),
+    (19, 18, 0.72), (23, 14.5, 0.42), (27, 14, 0.62), (31, 10.5, 0.42),
+    (35, 10, 0.72), (40, 7.5, 0.4), (44, 7.1, 0.55), (53, 5.5, 0.52),
 ]
 
-# The wolf, drawn in its own 29 x 26 box and then placed on the snowfield.
-# Circles are native layers rather than arc paths: a canid silhouette is mostly
-# rounded masses (haunch, chest, skull) and drawing them as arcs was what made
-# earlier attempts read as a giraffe.
-_WOLF: list[dict] = [
-    {"kind": "circle", "cx": 6.4, "cy": 15.8, "r": 3.9},          # haunch
-    {"kind": "path", "d": "M4.4 13.8 L16.0 12.4 L17.2 18.4 L5.2 19.6 Z"},
-    {"kind": "circle", "cx": 15.2, "cy": 15.4, "r": 4.0},         # chest
-    {"kind": "path", "d": "M5.0 16.8 L7.4 16.8 L7.2 24.6 L4.9 24.6 Z"},
-    {"kind": "path", "d": "M8.6 17.4 L10.7 17.4 L10.6 24.6 L8.5 24.6 Z"},
-    {"kind": "path", "d": "M13.8 16.6 L16.1 16.6 L15.9 24.6 L13.7 24.6 Z"},
-    {"kind": "path", "d": "M16.8 16.2 L18.8 16.2 L18.7 24.6 L16.7 24.6 Z"},
-    {"kind": "path", "d": "M4.6 14.0 C2.0 13.4 0.6 14.8 0.4 17.8 "
-                          "C0.3 20.0 1.0 21.8 2.4 23.0 C2.4 20.4 2.9 18.5 3.9 17.4 "
-                          "C4.6 16.6 5.4 16.2 6.4 16.1 Z"},          # tail
-    {"kind": "path", "d": "M13.4 12.8 L17.0 15.8 L20.9 10.8 L17.6 8.4 Z"},  # neck
-    {"kind": "path", "d": "M22.99 8.30 Q23.75 9.35 22.60 10.83 Q21.45 12.30 19.30 12.16 "
-                          "Q17.15 12.02 16.01 10.85 Q14.87 9.68 16.02 8.20 "
-                          "Q17.17 6.73 19.32 6.87 Q21.47 7.01 22.99 8.30 Z"},  # skull
-    {"kind": "path", "d": "M20.6 7.9 L25.3 5.0 L26.1 6.4 L21.5 9.7 Z"},       # muzzle
-    {"kind": "circle", "cx": 25.5, "cy": 5.7, "r": 0.8},                      # nose
-    {"kind": "path", "d": "M18.9 8.5 L20.9 7.1 L18.3 4.5 Z"},                 # ears
-    {"kind": "path", "d": "M20.2 9.9 L22.1 8.5 L19.6 5.9 Z"},
+# The approved concept's wolf, reduced to a deterministic 29 x 26 silhouette.
+# The full path keeps the bushy tail and natural paw/leg rhythm; the compact
+# path removes the smallest notches but keeps the unmistakable open-mouthed
+# howl.  Both are derived from the selected Direction A pose, not a stock mark.
+_WOLF_FULL_PATH = (
+    "M27.42 0.20 L26.90 0.06 L24.65 2.33 L22.85 2.86 L21.39 4.31 "
+    "L19.38 5.10 L19.41 5.49 L20.39 6.02 L18.56 7.76 L18.90 7.79 "
+    "L16.77 9.36 L14.76 10.09 L9.34 10.95 L6.82 12.19 L5.57 13.50 "
+    "L3.62 17.23 L1.86 19.39 L2.43 19.25 L0 21.91 L2.07 21.97 "
+    "L1.92 22.19 L3.77 21.24 L3.80 21.52 L5.17 19.89 L5.23 20.20 "
+    "L6.09 18.38 L6.18 20.09 L4.81 22.02 L4.44 25.52 L4.87 25.97 "
+    "L6.82 25.97 L6.76 25.27 L5.87 24.74 L6.12 23.20 L10.07 19.16 "
+    "L8.82 22.55 L10.35 25.69 L12.51 25.78 L12.26 25.02 L10.95 24.38 "
+    "L10.53 22.81 L12.90 18.94 L12.81 16.89 L15.49 17.01 L15.03 17.34 "
+    "L16.74 16.98 L16.52 17.34 L17.77 16.84 L19.23 25.50 L19.90 25.89 "
+    "L21.61 25.86 L21.61 25.16 L20.51 24.60 L20.18 23.37 L20.94 17.26 "
+    "L21.33 23.20 L22.09 25.36 L22.73 25.75 L24.56 25.69 L24.41 24.99 "
+    "L23.37 24.60 L22.94 23.73 L23.01 19.11 L23.67 15.72 L24.74 14.34 "
+    "L24.86 14.71 L25.80 12.08 L26.11 12.64 L26.90 8.88 L27.17 9.11 "
+    "L26.84 7.34 L27.17 5.88 L28.97 3.33 L28.82 2.52 L27.33 3.22 "
+    "L27.90 1.54 Z"
+)
+_WOLF_GLYPH = (
+    "M27.42 0.20 L19.38 5.10 L20.39 6.02 L16.77 9.36 L6.82 12.19 "
+    "L0 21.91 L3.80 21.52 L6.09 18.38 L4.44 25.52 L6.82 25.97 "
+    "L6.12 23.20 L10.07 19.16 L8.82 22.55 L10.35 25.69 L12.51 25.78 "
+    "L10.53 22.81 L12.90 18.94 L12.81 16.89 L17.77 16.84 L19.23 25.50 "
+    "L21.61 25.86 L20.18 23.37 L20.94 17.26 L22.09 25.36 L24.56 25.69 "
+    "L22.94 23.73 L23.67 15.72 L26.11 12.64 L27.17 5.88 L28.82 2.52 "
+    "L27.33 3.22 Z"
+)
+_WOLF_HEAD = (
+    "M3 28 C4 22 7 18 11 15 L14 8 L17 11 L21 5 L23 8 "
+    "L28 4 L29 6 L24 11 C21 14 20 17 20 21 L24 28 Z"
+)
+
+_FULL_MOUNTAIN_CUTS = [
+    "M1 43 L7 38 L10 41 L6 46 Z",
+    "M15 40 L19 32 L22 34 L20 41 L17 44 Z",
+    "M30 37 L37 24 L40 23 L36 34 L33 40 Z",
+    "M40 36 L45 26 L48 27 L44 36 L42 39 Z",
+    "M50 40 L54 31 L58 35 L55 41 Z",
 ]
 
-_STARS = [
-    (9, 14, 0.80, 1.0), (16, 8, 0.50, 1.0), (5, 24, 0.45, 1.0),
-    (55, 26, 0.70, 1.0), (59, 18, 0.45, 1.0), (26, 6, 0.45, 1.0),
-    (49, 20, 0.40, 1.0), (12, 21, 0.35, 1.0), (30, 11, 0.45, 1.0),
-    (36, 6, 0.40, 1.0), (54, 9, 0.5, 1.0), (24, 18, 0.35, 1.0),
-    (42, 12, 0.35, 1.0), (7, 33, 0.40, 1.0), (58, 33, 0.40, 1.0),
-    (21, 26, 0.3, 1.0), (33, 19, 0.3, 1.0),
-]
+
+def _spark(cx: float, cy: float, radius: float) -> str:
+    """A four-point star that holds a crisp silhouette in SVG and Pillow."""
+    waist = radius * 0.22
+    return (
+        f"M{cx:g} {cy - radius:g} L{cx + waist:g} {cy - waist:g} "
+        f"L{cx + radius:g} {cy:g} L{cx + waist:g} {cy + waist:g} "
+        f"L{cx:g} {cy + radius:g} L{cx - waist:g} {cy + waist:g} "
+        f"L{cx - radius:g} {cy:g} L{cx - waist:g} {cy - waist:g} Z"
+    )
 
 
-def _emblem() -> list[dict]:
-    """The badge, back to front."""
-    layers: list[dict] = [{"kind": "sky", "fill": SKY}]
-
-    # the galaxy: faint disc, two arms, a warm core
-    layers.append({"kind": "path", "clip": True, "fill": DUST, "opacity": 0.13,
-                   "d": _GALAXY_DISC, "transform": _GALAXY_AT})
-    for arm in _GALAXY_ARMS:
-        layers.append({"kind": "stroke", "clip": True, "stroke": CREAM, "width": 0.7,
-                       "opacity": 0.30, "d": arm, "transform": _GALAXY_AT})
-    layers.append({"kind": "circle", "clip": True, "cx": _GALAXY_AT[0], "cy": _GALAXY_AT[1],
-                   "r": 2.4, "fill": ACCENT, "opacity": 0.26})
-    layers.append({"kind": "circle", "clip": True, "cx": _GALAXY_AT[0], "cy": _GALAXY_AT[1],
-                   "r": 1.2, "fill": CREAM, "opacity": 0.75})
-
-    for cx, cy, r, opacity in _STARS:
-        layers.append({"kind": "circle", "clip": True, "cx": cx, "cy": cy,
-                       "r": r, "fill": CREAM, "opacity": opacity})
-
-    # the moon: pale, with two faint maria so it cannot read as a sun
-    layers += [
+def _moon_layers(*, compact: bool = False) -> list[dict]:
+    """The ember wolf moon, with only marks that survive the chosen scale."""
+    layers: list[dict] = [
         {"kind": "circle", "clip": True, "cx": MOON_CX, "cy": MOON_CY,
-         "r": MOON_R + 2.2, "fill": CREAM, "opacity": 0.10},
+         "r": MOON_R + (0.9 if compact else 1.15), "fill": CREAM},
         {"kind": "circle", "clip": True, "cx": MOON_CX, "cy": MOON_CY,
-         "r": MOON_R, "fill": CREAM},
-        {"kind": "circle", "clip": True, "cx": MOON_CX - 1.3, "cy": MOON_CY - 1.1,
-         "r": 1.15, "fill": SKY, "opacity": 0.13},
-        {"kind": "circle", "clip": True, "cx": MOON_CX + 1.2, "cy": MOON_CY + 1.4,
-         "r": 0.8, "fill": SKY, "opacity": 0.11},
-        # the mountain
-        {"kind": "path", "clip": True, "d": _SNOW, "fill": CREAM},
-        # crevasses, drawn as the site's ruled lines
-        {"kind": "stroke", "clip": True, "stroke": SKY, "width": 0.45, "opacity": 0.22,
-         "d": "M38 25.5 Q43 25 48 26.6"},
-        {"kind": "stroke", "clip": True, "stroke": SKY, "width": 0.45, "opacity": 0.22,
-         "d": "M34 30 Q42 29 50 31.6"},
-        # the shadowed foreground the wolf stands on
-        {"kind": "path", "clip": True, "d": _FOREGROUND, "fill": SHADE},
+         "r": MOON_R, "fill": ACCENT},
     ]
+    if not compact:
+        layers += [
+            {"kind": "circle", "clip": True, "cx": MOON_CX - 1.6,
+             "cy": MOON_CY - 1.2, "r": 1.15, "fill": SKY, "opacity": 0.20},
+            {"kind": "circle", "clip": True, "cx": MOON_CX + 1.3,
+             "cy": MOON_CY + 1.4, "r": 0.85, "fill": SKY, "opacity": 0.17},
+        ]
+    return layers
 
-    for part in _WOLF:
-        layers.append({**part, "clip": True, "fill": INK, "transform": _WOLF_AT})
+
+def _full_emblem() -> list[dict]:
+    """The selected Wolf Moon Seal for large website and store artwork."""
+    layers: list[dict] = [{"kind": "sky", "fill": SKY}]
+    for path, width, colour, opacity in _GALAXY_SWEEPS:
+        layers.append({"kind": "stroke", "clip": True, "stroke": colour,
+                       "width": width, "opacity": opacity, "d": path})
+    for index, (cx, cy, radius) in enumerate(_GALAXY_PARTICLES):
+        layers.append({"kind": "circle", "clip": True, "cx": cx, "cy": cy,
+                       "r": radius, "fill": CREAM if index % 3 == 0 else DUST})
+    for cx, cy, radius in ((10, 11, 1.25), (27, 6.5, 0.9), (36, 15, 0.8)):
+        layers.append({"kind": "path", "clip": True, "d": _spark(cx, cy, radius),
+                       "fill": CREAM})
+
+    layers += _moon_layers()
+    layers.append({"kind": "path", "clip": True, "d": _SNOW, "fill": CREAM})
+    for cut in _FULL_MOUNTAIN_CUTS:
+        layers.append({"kind": "path", "clip": True, "d": cut, "fill": SKY})
+    layers.append({"kind": "path", "clip": True, "d": _INK_RIDGE, "fill": SKY})
+    layers.append({"kind": "path", "clip": True, "d": _WOLF_FULL_PATH,
+                   "fill": INK, "transform": _WOLF_AT})
     layers.append({"kind": "rim"})
     return layers
 
 
-EMBLEM = _emblem()
+def _compact_emblem() -> list[dict]:
+    """The app/header drawing: fewer layers, larger subjects, wider gaps."""
+    layers: list[dict] = [
+        {"kind": "sky", "fill": SKY},
+        {"kind": "stroke", "clip": True, "stroke": DUST, "width": 1.7,
+         "opacity": 0.72, "d": "M-3 27 C14 19 26 9 43 6"},
+        {"kind": "path", "clip": True, "d": _spark(13, 13, 1.1), "fill": CREAM},
+        {"kind": "circle", "clip": True, "cx": 25, "cy": 9, "r": 0.65,
+         "fill": CREAM},
+    ]
+    layers += _moon_layers(compact=True)
+    layers += [
+        {"kind": "path", "clip": True, "d": _COMPACT_MOUNTAIN, "fill": CREAM},
+        {"kind": "path", "clip": True,
+         "d": "M30 37 L37 24 L41 23 L36 38 Z", "fill": SKY},
+        {"kind": "path", "clip": True,
+         "d": "M46 39 L51 29 L55 32 L51 41 Z", "fill": SKY},
+        {"kind": "path", "clip": True, "d": _INK_RIDGE, "fill": SKY},
+        {"kind": "path", "clip": True, "d": _WOLF_GLYPH, "fill": INK,
+         "transform": (21.0, 37.5, 0.66)},
+        {"kind": "rim"},
+    ]
+    return layers
+
+
+def _micro_emblem() -> list[dict]:
+    """The 16--32 px favicon drawing: three bold subjects, no miniatures."""
+    return [
+        {"kind": "sky", "fill": SKY},
+        {"kind": "circle", "clip": True, "cx": 49, "cy": 14, "r": 6.2,
+         "fill": ACCENT},
+        {"kind": "path", "clip": True, "d": _MICRO_MOUNTAIN, "fill": CREAM},
+        {"kind": "path", "clip": True, "d": _WOLF_HEAD, "fill": INK,
+         "transform": (25.0, 33.0, 0.78)},
+        {"kind": "rim"},
+    ]
+
+
+EMBLEM_FULL = _full_emblem()
+EMBLEM_COMPACT = _compact_emblem()
+EMBLEM_MICRO = _micro_emblem()
+# Backwards-compatible public name for callers that only need the large mark.
+EMBLEM = EMBLEM_FULL
+
+
+def _layers(detail: str) -> list[dict]:
+    try:
+        return {
+            "full": EMBLEM_FULL,
+            "compact": EMBLEM_COMPACT,
+            "micro": EMBLEM_MICRO,
+        }[detail]
+    except KeyError:
+        raise ValueError("detail must be 'full', 'compact', or 'micro'") from None
 
 # --------------------------------------------------------------------------
 # path handling: one flattener, shared by both renderers
@@ -308,17 +395,28 @@ def _clip_mask(px: int, tile: bool) -> Image.Image:
     return mask
 
 
-def draw_mark(size: int = 64, tile: bool = False) -> Image.Image:
-    """Render the badge at ``size`` px. ``tile`` squares it off for an app icon."""
+def draw_mark(
+    size: int = 64,
+    tile: bool = False,
+    detail: str | None = None,
+) -> Image.Image:
+    """Render an optically chosen badge at ``size`` px.
+
+    Bare marks default to the full seal.  Tiles default to the compact icon;
+    callers generating a multi-resolution favicon can request ``micro`` for
+    the smallest frames.
+    """
     if size < 8:
         raise ValueError("mark size must be at least 8 px")
+    if detail is None:
+        detail = "compact" if tile else "full"
     size = int(size)
     px = size * _SUPERSAMPLE
     k = px / VIEWBOX
     clip = _clip_mask(px, tile)
     img = Image.new("RGBA", (px, px), (0, 0, 0, 0))
 
-    for layer in EMBLEM:
+    for layer in _layers(detail):
         kind = layer["kind"]
         if kind == "rim":
             rim = Image.new("RGBA", (px, px), (0, 0, 0, 0))
@@ -382,8 +480,10 @@ def _hex(rgb: tuple[int, int, int]) -> str:
     return "#%02x%02x%02x" % rgb
 
 
-def mark_svg(tile: bool = False) -> str:
-    """The same badge as SVG (viewBox 0 0 64 64)."""
+def mark_svg(tile: bool = False, detail: str | None = None) -> str:
+    """The same optical badge as SVG (viewBox 0 0 64 64)."""
+    if detail is None:
+        detail = "compact" if tile else "full"
     clip_shape = (
         f'<rect width="{VIEWBOX:g}" height="{VIEWBOX:g}" rx="{TILE_RADIUS:g}"/>'
         if tile
@@ -395,7 +495,7 @@ def mark_svg(tile: bool = False) -> str:
         'aria-label="TinyAssets: Mount Baker under a wolf moon">',
         f'<defs><clipPath id="ta-badge">{clip_shape}</clipPath></defs>',
     ]
-    for layer in EMBLEM:
+    for layer in _layers(detail):
         kind = layer["kind"]
         if kind == "rim":
             if not tile:
@@ -452,8 +552,9 @@ def mark_svg(tile: bool = False) -> str:
 
 
 def create_icon_image(size: int = 64) -> Image.Image:
-    """The app-icon tile: the badge squared off with rounded corners."""
-    return draw_mark(size, tile=True)
+    """The app tile, using the micro drawing at favicon dimensions."""
+    detail = "micro" if size <= 32 else "compact"
+    return draw_mark(size, tile=True, detail=detail)
 
 
 def generate_icon(output_path: str | Path | None = None) -> Path:
