@@ -173,7 +173,7 @@ canonical conversation text and does not persist raw audio; the client sends raw
 microphone audio directly to OpenAI for live speech. Re-approve the entire label
 after that production review.
 
-## Age-rating draft
+## Age rating — saved 2026-09-03
 
 The app is not Made for Kids, has no parental controls or age-assurance feature,
 and the legal minimum age is 18. The WebView is pinned to TinyAssets; therefore
@@ -192,11 +192,15 @@ never contain mature material:
   realistic violence; guns/other weapons.
 - None: graphic sexual content/nudity; prolonged graphic or sadistic realistic
   violence; contests; loot boxes; simulated gambling; gambling.
-- Age Categories and Override: override to **18+** to align the storefront with
-  the product's 18+ legal minimum, after founder confirmation.
+- Age Categories and Override: **18+**, aligning the storefront with the
+  product's documented 18+ legal minimum.
 
-This is a draft declaration, not a completed rating. The founder must compare it
-with the exact live questionnaire and approve before saving.
+The exact live questionnaire was completed and saved from verified product
+behavior. Apple displayed **18+** in 173 countries or regions and Brazil,
+**19+** in Korea, and **17+** for operating systems earlier than version 26
+(with Apple's displayed regional exceptions). The live questionnaire represented
+Health/Wellness Topics as a boolean; it was answered **Yes**. All other answers
+match the conservative content profile above.
 
 ## Export compliance
 
@@ -293,21 +297,28 @@ one, so the server must remain compatible with the last released shell.
    and `docs/audits/2026-09-03-ios-testflight-preparation-receipt.md`.
 8. **Partially complete 2026-09-03:** an authenticated App Store Connect session
    saved the beta app description and marketing URL, selected Build 3 for Version
-   1.0, and confirmed the free price schedule. Complete App Privacy, age rating,
-   screenshots, review contact/sign-in details, availability,
-   and DSA status from verified evidence. Interrupt only where a personal/legal fact
-   cannot be established truthfully. Keep release mode manual until publication.
+   1.0, confirmed the free price schedule, saved the 18+ age rating, and disabled
+   untested Apple Silicon Mac and Apple Vision Pro distribution. Complete App
+   Privacy, screenshots, review contact/sign-in details, storefront availability,
+   and DSA status from verified evidence. Content Rights remains intentionally
+   unset because Apple's truthful third-party-content answer includes a regional
+   rights attestation. Interrupt only where a personal/legal fact cannot be
+   established truthfully. Keep release mode manual until publication.
 9. Obtain the action-time confirmations product policy requires immediately before
    **Submit for Review** and **Release This Version**.
 
 ## External gates that remain
 
 - An actual iPhone or iOS Simulator for authentic screenshots and device smoke;
-  a physical iPhone is required for microphone-release proof if voice ships.
-- Founder approval of live privacy, age-rating, content-rights, availability,
-  DSA/trader, Mac, and Vision Pro distribution declarations or choices.
-- Account-holder-controlled feedback/reviewer contact details and a dedicated
-  disposable App Review sign-in account, entered only in App Store Connect.
+  this Windows host has no `xcrun`, and a physical iPhone is required for
+  microphone-release proof if voice ships.
+- Founder/counsel confirmation of Content Rights (Apple's truthful
+  third-party-content answer also attests necessary rights), plus live privacy,
+  storefront availability, and DSA/trader declarations.
+- Account-holder-controlled feedback/reviewer contact details and the existing
+  least-privilege App Review sign-in identity, entered only in App Store Connect.
+  The secure local password vault was locked during this pass, so credentials
+  were not extracted or copied into repository files.
 - Automatic tester notification cannot be changed on the current internal-only
   UI. Build 3 has no external group or tester, so the API's residual `true` value
   is inert; revisit the checkbox only if an external-testing group is created.

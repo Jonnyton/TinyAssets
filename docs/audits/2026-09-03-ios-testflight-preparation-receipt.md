@@ -25,6 +25,14 @@
 - The authenticated web session set the app's base country or region to United
   States (USD) and confirmed a free (`$0.00`) price in all 175 displayed
   countries or regions. App availability was not configured.
+- The authenticated web session completed and saved Apple's live age-rating
+  questionnaire. The storefront rating is **18+** in 173 countries or regions
+  and Brazil, **19+** in Korea, and **17+** on operating systems earlier than
+  version 26 (with Apple's displayed regional exceptions). The higher-rating
+  override aligns the listing with TinyAssets' documented legal minimum age.
+- Apple Silicon Mac and Apple Vision Pro availability were both disabled and
+  saved because those compatibility paths have not been tested. Public App Store
+  distribution remains selected; storefront availability remains unset.
 
 ## Automatic-notification finding
 
@@ -48,11 +56,19 @@ merely to probe this setting.
 ## Remaining boundaries
 
 The product listing still has no authentic iPhone screenshots or App Review
-contact/sign-in details. App Privacy remains an unpublished four-type draft with
-blank policy URLs. Age rating, content-rights, availability, DSA/trader status,
-Accessibility Nutrition Labels, and Mac/Vision distribution choices were left
-unchanged because they require device evidence or personal/legal/product-owner
-judgment.
+contact/sign-in details. This Windows host cannot run Apple's simulator tooling:
+the Xcode simulator inventory failed with `spawn xcrun ENOENT`. App Privacy
+remains an unpublished four-type draft with blank policy URLs. Storefront
+availability, DSA/trader status, and voluntary Accessibility Nutrition Labels
+remain unset.
+
+Content Rights remains a legal-attestation boundary. The app can access
+third-party content, so Apple's "No" answer is not truthful; the "Yes" answer
+also attests that the account holder has the necessary rights in every region,
+which verified product behavior cannot establish. The modal was cancelled
+without saving. The least-privilege reviewer identity could not be populated
+because the secure local password vault was locked, and account-holder review
+contact details remain personal facts that must not be guessed.
 
 No external TestFlight review, App Review submission, tester invitation, legal
 declaration, privacy publication, or public release occurred.

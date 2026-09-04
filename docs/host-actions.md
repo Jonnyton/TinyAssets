@@ -331,11 +331,24 @@ None of it can produce an installable app without account-owned signing material
    checkbox belongs to external testing. With no external group or tester, the API's
    residual `autoNotifyEnabled=true` has no recipient and is inert. Receipt:
    `docs/audits/2026-09-03-ios-testflight-preparation-receipt.md`.
-7. Capture real iPhone-sized screenshots from the signed app, verify sign-in → connect →
-   chat through TestFlight, and complete the truthful console declarations. Before the final
+7. **Complete — age rating and tested-platform scope (2026-09-03).** The live
+   questionnaire is saved at 18+ (19+ in Korea; earlier operating systems show
+   17+ with Apple's regional exceptions). Untested Apple Silicon Mac and Apple
+   Vision Pro availability are disabled and saved. Storefront availability is
+   still unset.
+8. Capture real iPhone-sized screenshots from the signed app and verify sign-in →
+   connect → chat through TestFlight. This Windows host cannot supply that proof:
+   Apple's simulator inventory failed because `xcrun` is unavailable. Unlock the
+   secure local password vault to enter the existing least-privilege reviewer
+   identity directly in App Store Connect, and supply the account-holder review
+   contact details. Do not copy either into the repository.
+9. Counsel/founder must complete Content Rights: TinyAssets accesses third-party
+   content, while Apple's truthful **Yes** answer also attests necessary rights in
+   every region. That legal fact was not inferred; the modal was cancelled.
+10. Complete the remaining truthful console declarations. Before the final
    Submit for Review decision, choose whether to accept the documented Guideline 4.2 wrapper
    risk or first add and prove a meaningful iPhone-native interaction.
-8. If realtime voice is enabled in the candidate, review the final **Audio Data** and
+11. If realtime voice is enabled in the candidate, review the final **Audio Data** and
    **Other User Content** declarations against the provider retention configuration and
    require physical-iPhone proof that capture stops on background/end before submission.
 

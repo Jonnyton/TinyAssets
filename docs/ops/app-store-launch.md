@@ -267,12 +267,16 @@ and [unavailability procedure](https://developer.apple.com/help/app-store-connec
 - [x] Build 3 attached to the empty `Internal` TestFlight group; en-US **What to Test** saved; 0 testers
 - [x] Founder reauth: beta description saved and Build 3 selected for Version 1.0
 - [x] Free price schedule confirmed for all 175 displayed countries or regions
+- [x] Live age-rating questionnaire saved at 18+ (Korea 19+)
+- [x] Untested Apple Silicon Mac and Apple Vision Pro availability disabled
+- [ ] Content Rights: founder/counsel attest necessary regional third-party-content rights
+- [ ] App Review credentials/contact: unlock secure vault and enter only in App Store Connect
 - [ ] External-testing-only auto-notify control: revisit only if an external group is created; currently no recipients
 - [ ] Founder/counsel: approve final privacy policy; then land/deploy and verify the iOS wording
 - [x] Protected `app-store` environment: founder approval + `main` only (§3)
 - [x] Signing setup and all six protected CI values complete (§3)
 - [x] Signed IPA 1.0.0 (1) built and checksum/profile verified
 - [x] Signed build 1.0.0 (3) uploaded, processed, and **Ready to Submit** in TestFlight
-- [ ] Screenshots captured (§6)
+- [ ] Screenshots captured (§6; requires a Mac/iOS Simulator or physical iPhone — this Windows host has no `xcrun`)
 - [ ] TestFlight device flow verified → submitted/manual release (§7)
 - [ ] Founder: decide current-shell submission vs native differentiator before App Review
