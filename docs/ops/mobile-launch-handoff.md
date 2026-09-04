@@ -13,8 +13,8 @@ Runbooks stay where they are — `docs/ops/google-play-launch.md` and
 
 **Google Play: installable today, but only by invited testers.** Public availability
 is at minimum 14 days away and needs 12 real people. **Apple: the App Store record,
-metadata, and unpublished privacy draft are staged; signing assets, screenshots,
-device proof, and review still require founder-owned state.**
+metadata, unpublished privacy draft, signing certificate, and provisioning profile
+are staged; API upload access, screenshots, device proof, and review remain.**
 
 ---
 
@@ -86,8 +86,8 @@ release into one `gh workflow run` — but nothing waits on it.
 **Apple Developer Program membership is active.** Checked 2026-09-03, not inferred from
 the purchase receipt: the signed-in portal exposes App Store Connect and Certificates,
 IDs & Profiles, and shows a Team ID plus a 2027 renewal date. The Apple Developer Program
-License Agreement and Apple Developer Agreement both show accepted on 2026-09-03. No
-signing assets or App Store Connect API credentials have been created. The explicit App ID
+License Agreement and Apple Developer Agreement both show accepted on 2026-09-03. The
+explicit App ID
 `io.tinyassets.app` was registered and verified on 2026-09-03 in the signed-in Apple
 Developer browser: the Identifiers list showed `TinyAssets iOS` and the exact bundle ID.
 The founder accepted App Store Connect Terms of Service V100 (last updated 04 June
@@ -95,8 +95,10 @@ The founder accepted App Store Connect Terms of Service V100 (last updated 04 Ju
 `6808434444`), with iOS 1.0 in **Prepare for Submission**. Product metadata and
 manual release are saved; the four-type privacy draft is configured but unpublished,
 with legal-policy URLs blank. An empty `Internal` TestFlight group exists with automatic
-distribution off, 0 testers, and 0 builds. The exact remaining values and confirmation
-boundaries are in
+distribution off, 0 testers, and 0 builds. An Apple Distribution certificate/private
+key and matching App Store provisioning profile now exist; the encrypted P12/password
+are protected GitHub environment secrets. App Store Connect API access has not been
+requested and no upload key exists. The exact remaining values and confirmation boundaries are in
 `docs/ops/app-store-submission-packet.md`.
 
 What is ready, stated precisely — the gap here is wider than "just enrol":
@@ -150,11 +152,12 @@ Local evidence, Windows checkout, 2026-09-03:
 - PR #2798 exact-head `build-ios` on GitHub's `macos-15` runner — passed 2026-09-03
   after the App ID registration update.
 
-Membership, the explicit App ID, and the App Store Connect record are active. No
-signing certificate, provisioning profile, or API key has been created. The Apple
-Distribution flow is staged at the CSR upload step; that private-key boundary needs
-separate action-time approval. Until those credentials exist, the release workflow
-cannot produce an installable IPA or upload a build to TestFlight.
+Membership, the explicit App ID, the App Store Connect record, the distribution
+certificate/private key, and the matching App Store provisioning profile are active.
+The P12/password are protected environment secrets; the profile download/secret and
+App Store Connect API access/key remain. Until the profile secret exists, the release
+workflow cannot produce an installable IPA; without API access it cannot upload one to
+TestFlight.
 
 ---
 

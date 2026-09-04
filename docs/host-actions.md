@@ -285,7 +285,7 @@ None of it can produce an installable app without account-owned signing material
    holder completed personal information and Secure Checkout. The signed-in developer portal
    now shows program resources, a Team ID, and a 2027 renewal date. The Apple Developer
    Program License Agreement and Apple Developer Agreement both show accepted on 2026-09-03.
-   No signing assets or App Store Connect API credentials have been created.
+   At that checkpoint no signing assets or App Store Connect API credentials existed.
 3. **Complete — explicit App ID and App Store Connect record created (2026-09-03).** Verified in the
    signed-in Apple Developer browser at `/account/resources/identifiers/list`: the
    Identifiers table shows `TinyAssets iOS` / `io.tinyassets.app`. App Store Connect
@@ -294,12 +294,15 @@ None of it can produce an installable app without account-owned signing material
    **Prepare for Submission**. Product metadata and manual release are saved, the
    four-type privacy draft is configured but unpublished, and an empty `Internal`
    TestFlight group exists with automatic distribution off, 0 testers, and 0 builds.
-4. Create the Apple Distribution certificate + matching App Store Connect provisioning
-   profile and an **App Store Connect API key**; add the six values in §3 of the runbook.
+4. **Partially complete — signing pair and profile created (2026-09-03).** The active
+   Apple Distribution certificate expires 2027-09-03 and is paired with an exportable
+   private key. The active `TinyAssets App Store 2026` profile is App Store type for
+   `io.tinyassets.app`, contains that one certificate, and expires 2027-09-03. The
+   encrypted P12 and password are present as the first two secrets named in §3.
+   Download the provisioning profile, request App Store Connect API access, create a
+   minimum-role API key, and add the remaining four values in §3 of the runbook.
    The protected GitHub environment `app-store` is complete: founder approval is required,
-   only `main` may deploy, and no secrets are present yet. You do NOT need a Mac — CI builds
-   on `macos-15`. The live Apple Distribution flow is waiting at **Upload a Certificate
-   Signing Request**; no CSR was uploaded and no credential was created.
+   and only `main` may deploy. You do NOT need a Mac — CI builds on `macos-15`.
 5. Capture real iPhone-sized screenshots from the signed app, verify sign-in → connect →
    chat through TestFlight, and complete the truthful console declarations. Before the final
    Submit for Review decision, choose whether to accept the documented Guideline 4.2 wrapper

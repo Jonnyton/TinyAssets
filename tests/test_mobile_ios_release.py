@@ -232,6 +232,9 @@ def test_app_store_metadata_packet_meets_apple_field_constraints() -> None:
     assert "all four saved draft entries use App Functionality only" in packet
     assert "App Functionality; Account Management" not in packet
     assert "it is not published and its legal-policy URLs" in packet
+    assert "2048-bit\n   Apple Distribution certificate/private-key pair" in packet
+    assert "`TinyAssets App Store 2026` App Store\n   profile binds `io.tinyassets.app`" in packet
+    assert "App Store Connect API access has not been" not in packet
 
     description_match = re.search(
         r"\*\*Description:\*\*\s*(.*?)\s*Review notes should say",

@@ -27,10 +27,10 @@ release the app.
 | Price | Free; no in-app purchases in this build |
 | TestFlight | Empty internal group `Internal`; automatic distribution off; 0 testers and 0 builds |
 
-The explicit App ID and App Store Connect record are complete. The next persistent
-portal mutation is creating signing credentials. Do not create a certificate,
-private key, provisioning profile, or App Store Connect API key without explicit
-action-time approval.
+The explicit App ID, App Store Connect record, Apple Distribution certificate/private
+key, and App Store provisioning profile are complete. The next persistent access
+mutation is requesting App Store Connect API access and creating its upload key.
+Do not request or create that API access without explicit action-time approval.
 
 ## Product-page metadata
 
@@ -259,13 +259,14 @@ one, so the server must remain compatible with the last released shell.
    remain blank. An empty `Internal` TestFlight group exists with automatic
    distribution off. No tester or build was added. Stop at any new agreement,
    DSA trader-status choice, privacy publication, or other legal declaration.
-4. On a Mac/Xcode, create or select an Apple Distribution certificate and an App
-   Store Connect provisioning profile for the exact bundle ID. Creating these
-   persistent credentials requires explicit action-time approval.
-5. Export the `.p12` and profile securely, create an App Store Connect API key
-   with the minimum role needed for upload, and store the six values only as
-   protected `app-store` environment secrets. API-key creation requires explicit
-   action-time approval.
+4. **Complete 2026-09-03:** the founder approved credential creation. A 2048-bit
+   Apple Distribution certificate/private-key pair was created and verified, then
+   backed up as an encrypted P12. The active `TinyAssets App Store 2026` App Store
+   profile binds `io.tinyassets.app` to that certificate. Both expire 2027-09-03.
+5. **Partially complete 2026-09-03:** the P12 and its password are protected
+   `app-store` environment secrets. Download and store the profile, request App Store
+   Connect API access, create a minimum-role upload key, and add the remaining four
+   values. API access/key creation requires separate explicit action-time approval.
 6. Dispatch **iOS signed release** from `main` with version `1.0.0` and
    `upload_to_testflight=false`. Approve the protected environment, download the
    IPA manifest/checksum, and complete the device smoke pass.
@@ -279,8 +280,8 @@ one, so the server must remain compatible with the last released shell.
 
 ## External gates that remain
 
-- A CSR/private key and explicit action-time approval to create the Apple
-  Distribution certificate, provisioning profile, and App Store Connect API key.
+- Provisioning-profile download plus explicit action-time approval to request App Store
+  Connect API access and create its minimum-role upload key.
 - A signed build plus actual iPhone or iOS Simulator for authentic screenshots;
   a physical iPhone is required for microphone-release proof if voice ships.
 - Founder approval of live privacy, age-rating, content-rights, export,

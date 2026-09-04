@@ -28,7 +28,7 @@ Bundle id: **`io.tinyassets.app`** (matches `mobile/capacitor.config.json`
 | Payment | **Complete 2026-09-03:** annual membership purchase confirmed. | Apple Online Store |
 | App ID | **Complete 2026-09-03:** `TinyAssets iOS` / `io.tinyassets.app` registered and visible in the signed-in Identifiers list. | developer.apple.com |
 | App record | **Complete 2026-09-03:** App Store Connect Terms V100 accepted; TinyAssets record created for `io.tinyassets.app`; Apple ID `6808434444`. | App Store Connect |
-| Signing assets | Create an Apple Distribution certificate + App Store Connect provisioning profile for `io.tinyassets.app`, and an **App Store Connect API key** for CI upload. Provide them as Actions secrets (§3). | developer.apple.com / App Store Connect |
+| Signing assets | **Partial 2026-09-03:** Apple Distribution certificate/private-key pair and active `TinyAssets App Store 2026` profile exist. P12 and password are protected environment secrets. Profile download and App Store Connect API access/key remain. | developer.apple.com / App Store Connect |
 | Identity/tax/banking | Complete Apple's identity + (for paid apps) tax/banking. This app is free → tax/banking optional. | App Store Connect |
 | Submit | Click **Submit for Review** after the build + metadata are in. | App Store Connect |
 
@@ -80,8 +80,9 @@ In Xcode: select the App target → Signing & Capabilities → your Team →
 The protected GitHub environment **`app-store`** was created on 2026-09-03. It
 requires the founder's approval and allows deployments only from `main`. Both
 release jobs use that environment, so neither a signing identity nor an upload
-credential is exposed to an unapproved run. No signing secrets are present yet.
-Store all six values as `app-store` environment secrets; each step references
+credential is exposed to an unapproved run. The P12 and password secrets were added
+on 2026-09-03; the profile and three API-key values remain. Store all six values as
+`app-store` environment secrets; each step references
 only the subset it uses:
 
 | Secret | Value |
@@ -230,7 +231,7 @@ and [unavailability procedure](https://developer.apple.com/help/app-store-connec
 - [x] Empty `Internal` TestFlight group created with automatic distribution off
 - [ ] Founder/counsel: approve final privacy policy; then land/deploy and verify the iOS wording
 - [x] Protected `app-store` environment: founder approval + `main` only (§3)
-- [ ] Founder: signing assets / API key stored in `app-store` (§3)
+- [ ] Signing setup: certificate/P12/password complete; profile download and API access/key remain (§3)
 - [ ] Screenshots captured (§6)
 - [ ] Build uploaded → TestFlight verified → submitted/manual release (§7)
 - [ ] Founder: decide current-shell submission vs native differentiator before App Review
