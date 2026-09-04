@@ -5,7 +5,8 @@ What it asserts:
 * anonymous ``initialize`` gets the canonical Bearer challenge;
 * every MCP read runs as the scoped canary service principal;
 * authenticated initialize, tools/list, and get_status remain healthy; and
-* converse is refused both without credentials (401) and for the canary (403).
+* a cached anonymous converse call gets the hosted OAuth linking result without
+  dispatch, while the canary service principal is refused (403).
 
 Intended for continuous uptime monitoring per the 24/7 forever rule.
 Tray wires this on a timer; on nonzero exit, tray surfaces an alert.
@@ -285,10 +286,10 @@ def assert_canonical_handles(
 def assert_converse_auth_gate(
     url: str, timeout: float, *, bearer: Any = _FROM_ENV,
 ) -> None:
-    """Prove ``converse`` is refused anonymously and for the canary."""
+    """Prove ``converse`` links anonymous clients and refuses the canary."""
     if bearer is _FROM_ENV:
         bearer = canary_bearer()
-    status, response_headers, body = _post(
+    status, _, body = _post(
         url,
         {
             "jsonrpc": "2.0",
@@ -300,28 +301,46 @@ def assert_converse_auth_gate(
             },
         },
         timeout,
-        accepted_http_statuses=frozenset({401}),
+        accepted_http_statuses=frozenset({200}),
     )
-    if status != 401:
+    if status != 200:
         raise CanaryError(
             6,
-            f"converse auth gate expected HTTP 401 from {url}, got {status}",
+            f"converse auth gate expected hosted linking result HTTP 200 "
+            f"from {url}, got {status}",
         )
     resource_url = url.rstrip("/")
     metadata_url = f"{resource_url}/.well-known/oauth-protected-resource"
     expected_metadata = f'resource_metadata="{metadata_url}"'
-    challenge = response_headers.get("www-authenticate", "")
-    if not challenge.startswith("Bearer ") or expected_metadata not in challenge:
-        raise CanaryError(
-            6,
-            f"converse auth gate resource metadata drift on {url}",
-        )
     try:
         payload = json.loads(body)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise CanaryError(6, f"non-JSON converse auth challenge from {url}") from exc
-    if payload != {"error": "authentication_required"}:
-        raise CanaryError(6, f"unexpected converse auth challenge from {url}")
+    result = payload.get("result") if isinstance(payload, dict) else None
+    meta = result.get("_meta") if isinstance(result, dict) else None
+    challenges = (
+        meta.get("mcp/www_authenticate") if isinstance(meta, dict) else None
+    )
+    if (
+        not isinstance(payload, dict)
+        or payload.get("id") != 3
+        or not isinstance(result, dict)
+        or result.get("isError") is not True
+        or not isinstance(challenges, list)
+        or len(challenges) != 1
+        or not isinstance(challenges[0], str)
+    ):
+        raise CanaryError(6, f"unexpected converse linking result from {url}")
+    challenge = challenges[0]
+    if (
+        not challenge.startswith("Bearer ")
+        or expected_metadata not in challenge
+        or 'error="invalid_token"' not in challenge
+    ):
+        raise CanaryError(
+            6,
+            f"converse auth gate resource metadata drift on {url}",
+        )
     metadata = _get_json(metadata_url, timeout)
     authorization_servers = metadata.get("authorization_servers")
     if (
