@@ -213,13 +213,16 @@ def test_community_change_context_tool_delegates_to_api_universe(monkeypatch) ->
 
     monkeypatch.setattr(us, "_universe_impl", fake_universe_impl)
 
-    result = us.community_change_context(filter_text="pr:107", limit=2)
+    result = us.community_change_context(
+        filter_text="pr:107", limit=2, repo="other/project"
+    )
 
     assert result == "ok"
     assert seen == {
         "action": "community_change_context",
         "filter_text": "pr:107",
         "limit": 2,
+        "repo": "other/project",
     }
 
 
@@ -323,7 +326,6 @@ def test_every_universe_action_dispatches(action: str, monkeypatch) -> None:
 
 def test_community_change_context_overview(monkeypatch) -> None:
     """Queue view exposes PRs, change requests, and PLAN without retired loop runs."""
-    monkeypatch.setattr(univ_mod, "_github_repo", lambda: "owner/repo")
     monkeypatch.setattr(
         univ_mod,
         "_change_loop_plan_context",
@@ -365,7 +367,10 @@ def test_community_change_context_overview(monkeypatch) -> None:
 
     monkeypatch.setattr(univ_mod, "_github_read", fake_github_read)
 
-    data = json.loads(univ_mod._action_community_change_context(limit=5))
+    data = json.loads(univ_mod._action_community_change_context(
+        limit=5,
+        repo="owner/repo",
+    ))
 
     assert data["repo"] == "owner/repo"
     assert data["selector"] == "queue"
@@ -379,9 +384,33 @@ def test_community_change_context_overview(monkeypatch) -> None:
     assert data["errors"] == []
 
 
+def test_community_change_context_never_invents_a_repository(monkeypatch) -> None:
+    """No caller input and no deployment default produce an honest refusal."""
+    monkeypatch.delenv("TINYASSETS_GITHUB_REPO", raising=False)
+
+    data = json.loads(univ_mod._action_community_change_context())
+
+    assert data["error"] == "no repository named"
+    assert "repo=\"owner/name\"" in data["detail"]
+
+
+def test_community_change_context_refuses_malformed_repo_before_read(monkeypatch) -> None:
+    """Arbitrary JSON cannot crash or alter the authenticated GitHub path."""
+    monkeypatch.setenv("TINYASSETS_GITHUB_REPO", "fallback/repository")
+
+    def should_not_read(*_args, **_kwargs):
+        raise AssertionError("invalid repo reached the GitHub reader")
+
+    monkeypatch.setattr(univ_mod, "_github_read", should_not_read)
+
+    for invalid in (123, ["owner", "repo"], "owner/repo/extra", "../repo"):
+        data = json.loads(univ_mod._action_community_change_context(repo=invalid))
+        assert data["error"] == "invalid repository"
+
+
 def test_community_change_context_pr_detail(monkeypatch) -> None:
     """PR selector returns reviewable code context, not just metadata."""
-    monkeypatch.setattr(univ_mod, "_github_repo", lambda: "owner/repo")
+    monkeypatch.setattr(univ_mod, "_github_repo", lambda _repo="": "owner/repo")
     monkeypatch.setattr(univ_mod, "_change_loop_plan_context", lambda: {})
 
     def fake_github_read(path: str, *, params=None):
@@ -437,7 +466,7 @@ def test_community_change_context_pr_detail(monkeypatch) -> None:
 
 def test_community_change_context_issue_detail(monkeypatch) -> None:
     """Issue selector returns the request thread the loop should satisfy."""
-    monkeypatch.setattr(univ_mod, "_github_repo", lambda: "owner/repo")
+    monkeypatch.setattr(univ_mod, "_github_repo", lambda _repo="": "owner/repo")
     monkeypatch.setattr(univ_mod, "_change_loop_plan_context", lambda: {})
 
     def fake_github_read(path: str, *, params=None):

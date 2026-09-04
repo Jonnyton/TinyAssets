@@ -2532,6 +2532,7 @@ _mcp_universe = _register_structured_tool(
 def community_change_context(
     filter_text: str = "",
     limit: int = 10,
+    repo: str = "",
 ) -> str:
     """Review PR metadata, changed files, reviews, and project plan context.
 
@@ -2546,11 +2547,14 @@ def community_change_context(
             "pr:NUMBER" for PR metadata, changed files, comments, and
             reviews; or "issue:NUMBER" for the request thread.
         limit: Max PRs/issues/files/comments to return, capped server-side.
+        repo: Repository to inspect as ``owner/name``. When omitted, the
+            deployment may supply a default; the platform never chooses one.
     """
     return _universe_impl(
         action="community_change_context",
         filter_text=filter_text,
         limit=limit,
+        repo=repo,
     )
 
 
