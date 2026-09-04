@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-03  
 **Author family:** Claude  
-**Review family:** Codex  
+**Review families:** Codex (three capped broad rounds), Claude (exact-head landing delta)  
 **Verdict:** APPROVE for the exact PR head named by the `Drain-Review-Head`
 line in pull request #2800.
 
@@ -55,3 +55,29 @@ retired marker; and does not overclaim the still-open local-session lifecycle.
 
 No `DISAGREE_EVIDENCE` or `DISAGREE_CONCERN` remains from the three completed
 rounds.
+
+## Exact-head landing delta
+
+The required CI surface subsequently exposed five branch-specific failures:
+four stale assertions for the intentionally changed contract and one real
+personal-canonical bypass in which the retired persisted marker could be
+supplied as both actor and scope. The implementation delta through
+`4b9b365295b9067d8a056c18e37950baeae8ba46`:
+
+- normalizes both resolved and supplied personal-canonical identities through
+  the named-principal boundary;
+- rejects the retired marker at gate-event and effector-consent storage
+  boundaries, and normalizes legacy escrow/outcome attribution inputs;
+- updates only the stale assertions for authenticated healthchecks, explicit
+  FastMCP registration, unowned author snapshots, and unsigned-access wording;
+- rebuilds the shipped Claude plugin mirror from the canonical runtime.
+
+Focused verification after that delta passed 185 tests. A read-only Claude
+review in safe mode independently inspected the exact delta, ran its focused
+surface (110 passed, 60 environment-gated skips), confirmed mirror parity, and
+returned `AGREE` / `VERDICT: APPROVE`. Its only earlier observation—the legacy
+payload route for the retired marker—was folded before this final verdict.
+
+The later receipt-only commit changes no runtime or test behavior. The PR body
+binds that final documentation head to this artifact so the merge gate can
+verify the immutable landing record without a self-referential commit hash.
