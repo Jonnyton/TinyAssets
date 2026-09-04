@@ -196,7 +196,6 @@ class _ForegroundRunProviderSession:
         from tinyassets.provider_assignment import provider_assignment_admission
         from tinyassets.provider_serving_binding import (
             _current_serving_authority,
-            _is_open_provider,
             resolve_serving_agent_binding,
         )
         from tinyassets.storage.provider_work_authority import (
@@ -244,10 +243,6 @@ class _ForegroundRunProviderSession:
                             universe_id=self._universe_id,
                             agent=agent,
                         )
-                        if _is_open_provider(assignment.provider):
-                            raise PermissionError(
-                                "foreground run LLM authority requires a subscription provider"
-                            )
                         declared = set().union(
                             *(
                                 _declared_policy_providers(node.get("llm_policy"))
