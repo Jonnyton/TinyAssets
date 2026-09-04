@@ -1294,7 +1294,13 @@ def test_execute_branch_version_threads_identity_and_queue_lineage(
 ) -> None:
     from tinyassets import runs
 
-    branch = SimpleNamespace(branch_def_id="ordinary-user-branch")
+    # The version executor now performs Branch preflight before persistence;
+    # keep this identity-threading fixture structurally valid while leaving it
+    # graphless so the test remains scoped to queue lineage.
+    branch = SimpleNamespace(
+        branch_def_id="ordinary-user-branch",
+        graph_nodes=[],
+    )
     prepared: dict = {}
     invoked: dict = {}
     expected = runs.RunOutcome(
