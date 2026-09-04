@@ -805,38 +805,54 @@ class ProviderRouter:
         for provider_name in chain:
             provider = self._providers.get(provider_name)
             if (
-                served_authority is not None
-                and provider_name == served_authority.provider
-                and provider_name.startswith("api_key_http:")
-            ):
-                # Do NOT trust the mutable registry for an OPEN served provider (Codex
-                # serve-open-compute re-review #4): a substituted same-name registry
-                # object could advertise the content-addressed name while backing a
-                # different endpoint/grant/credential. Resolve the executor FRESH from
-                # the integrity-checked ProviderDefinition (get_definition verifies the
-                # id content-addresses its fields), so the dispatched instance is
-                # authenticated by construction, not by a name comparison.
+                (
+                    served_authority is not None
+                    and provider_name == served_authority.provider
+                )
+                or (
+                    invocation_carrier is not None
+                    and provider_name == invocation_carrier.provider
+                )
+            ) and provider_name.startswith("api_key_http:"):
+                # Do NOT trust the mutable registry for an authorized OPEN provider.
+                # A substituted same-name object could receive the prompt without
+                # using the definition's current grant or credential-blind proxy.
+                # Served and foreground-run authority therefore share the same
+                # fresh, content-addressed definition -> executor resolution.
                 try:
                     from tinyassets.providers.definition import get_definition
                     from tinyassets.providers.provider_resolver import (
                         provider_for_definition,
                     )
 
-                    _uid = (
-                        universe_dir.name
-                        if universe_dir is not None
-                        else served_authority.universe_id
-                    )
+                    if universe_dir is not None:
+                        _uid = universe_dir.name
+                    elif served_authority is not None:
+                        _uid = served_authority.universe_id
+                    else:
+                        raise PermissionError(
+                            "open provider invocation requires a universe context"
+                        )
                     _def_id = provider_name.split("api_key_http:", 1)[-1]
                     _definition = get_definition(_uid, _def_id)
                     if _definition is None:
                         raise PermissionError(
-                            "open served provider definition is absent"
+                            "open provider definition is absent"
                         )
                     provider = provider_for_definition(_definition)
-                except PermissionError:
-                    raise
-                except Exception as exc:  # noqa: BLE001 - fail closed, secret-free
+                except Exception as exc:
+                    if invocation_carrier is not None:
+                        settle_carrier(
+                            ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
+                            input_tokens=0,
+                            output_tokens=0,
+                            cost_microunits=0,
+                        )
+                        raise ProviderAuthorityHeldError(
+                            _CONNECT_PROVIDER_MESSAGE
+                        ) from exc
+                    if isinstance(exc, PermissionError):
+                        raise
                     raise PermissionError(
                         "open served provider could not be authenticated"
                     ) from exc

@@ -36,10 +36,13 @@ The ACTIVE serving assignment is authoritative for both subscription-backed
 and registered open providers. A subscription provider receives only a sealed,
 run-scoped credential snapshot. An open provider receives no subscription
 snapshot; its existing connection-grant custody is revalidated and the router
-continues to use the credential-blind outbound proxy. Both kinds use the same
-run receipt, claim, one-use invocation carrier, budget reservation, exact
-provider fence, and settlement path. Open registration alone is never enough:
-the provider must be the current serving assignment for this owner and universe.
+fresh-resolves the content-addressed provider definition instead of trusting a
+same-name object in its mutable registry, then uses the credential-blind
+outbound proxy. A fresh-resolution refusal settles the armed reservation as
+cancelled before launch. Both kinds use the same run receipt, claim, one-use
+invocation carrier, budget reservation, exact provider fence, and settlement
+path. Open registration alone is never enough: the provider must be the current
+serving assignment for this owner and universe.
 
 ## N provider calls
 Mint N distinct pid-bound one-use carriers — one per actual provider ATTEMPT, not one per run and

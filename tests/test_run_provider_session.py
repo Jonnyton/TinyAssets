@@ -46,6 +46,23 @@ class _CountingProvider(BaseProvider):
         )
 
 
+class _OpenProxy:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def request(self, verb: str, wire: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append((verb, wire))
+        return {
+            "status": 200,
+            "body": json.dumps(
+                {
+                    "choices": [{"message": {"content": "foreground-open-ok"}}],
+                    "usage": {"prompt_tokens": 9, "completion_tokens": 4},
+                }
+            ),
+        }
+
+
 def _branch(
     *,
     node_count: int,
@@ -259,6 +276,7 @@ def _run_branch(
     authority_case: str = "active",
     mock_provider: bool = False,
     open_provider: bool = False,
+    open_router_resolution_refusal: bool = False,
 ) -> tuple[dict[str, Any], _CountingProvider, dict[str, Any]]:
     from tinyassets.api import runs as api_runs
     from tinyassets.daemon_server import save_branch_definition, set_founder_home
@@ -354,6 +372,16 @@ def _run_branch(
         operation=None,
         **_kwargs,
     ):
+        if open_router_resolution_refusal and getattr(
+            universe_context, "provider_invocation", None
+        ) is not None:
+            def refuse_resolution(_definition):
+                raise ValueError("synthetic resolver refusal")
+
+            monkeypatch.setattr(
+                "tinyassets.providers.provider_resolver.provider_for_definition",
+                refuse_resolution,
+            )
         return provider_router.call_sync(
             role,
             prompt,
@@ -469,7 +497,20 @@ def test_foreground_run_launches_selected_open_provider_and_settles_once(
     monkeypatch,
     authenticate_request,
 ) -> None:
-    response, provider, _captured = _run_branch(
+    from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
+
+    proxy = _OpenProxy()
+    snapshot_calls: list[object] = []
+    monkeypatch.setattr(
+        ApiKeyHttpProvider,
+        "_resolve_proxy",
+        lambda _self, **_kwargs: proxy,
+    )
+    monkeypatch.setattr(
+        "tinyassets.credential_vault.snapshot_llm_subscription_credential",
+        lambda **kwargs: snapshot_calls.append(kwargs),
+    )
+    response, substituted_provider, _captured = _run_branch(
         tmp_path,
         monkeypatch,
         authenticate_request,
@@ -478,12 +519,47 @@ def test_foreground_run_launches_selected_open_provider_and_settles_once(
     )
 
     assert response["terminal_status"] == "completed", response["terminal_error"]
-    assert len(provider.calls) == 1
+    assert substituted_provider.calls == []
+    assert snapshot_calls == []
+    assert len(proxy.calls) == 1
+    verb, wire = proxy.calls[0]
+    assert verb == "POST"
+    assert wire["url"] == "https://api.example.com/v1/chat/completions"
+    assert "authorization" not in {
+        key.lower() for key in wire.get("headers", {})
+    }
     with sqlite3.connect(authority_db_path(tmp_path)) as conn:
         reservation = conn.execute(
             "SELECT state FROM provider_invocation_reservations"
         ).fetchone()
-    assert reservation == ("succeeded",)
+    assert reservation == ("indeterminate",)
+
+
+def test_foreground_open_provider_settles_fresh_resolution_refusal_before_launch(
+    tmp_path: Path,
+    monkeypatch,
+    authenticate_request,
+) -> None:
+    response, substituted_provider, captured = _run_branch(
+        tmp_path,
+        monkeypatch,
+        authenticate_request,
+        _branch(node_count=1),
+        open_provider=True,
+        open_router_resolution_refusal=True,
+    )
+
+    assert response["terminal_status"] == "failed"
+    assert "Connect your provider before running this universe" in response[
+        "terminal_error"
+    ]
+    assert substituted_provider.calls == []
+    assert captured["effects"] == []
+    with sqlite3.connect(authority_db_path(tmp_path)) as conn:
+        reservation = conn.execute(
+            "SELECT state FROM provider_invocation_reservations"
+        ).fetchone()
+    assert reservation == ("cancelled_before_launch",)
 
 
 def test_foreground_run_mints_one_carrier_per_node_and_refuses_n_plus_one(
