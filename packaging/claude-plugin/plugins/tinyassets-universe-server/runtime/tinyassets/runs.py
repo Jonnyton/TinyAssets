@@ -243,6 +243,10 @@ class _WorkspaceSweeperHandle:
 
 
 _WORKSPACE_SWEEPERS: dict[tuple[int, str], _WorkspaceSweeperHandle] = {}
+# Capture the deadline clock for the same reason periodic workers capture their
+# sweep callable: another module mutating the shared ``time`` object must not
+# redirect an already-owned lifecycle operation.
+_WORKSPACE_SWEEPER_MONOTONIC = time.monotonic
 
 
 def _reset_workspace_reconciliation_after_fork() -> None:
@@ -600,6 +604,13 @@ def _stop_workspace_sweeper(
 def _stop_all_workspace_sweepers(*, timeout_s: float = 5.0) -> bool:
     """Stop every owned sweeper within one shared timeout budget."""
     with _WORKSPACE_RECONCILE_LOCK:
+        reconciling_keys = {
+            key for key in _WORKSPACE_RECONCILING if key[0] == os.getpid()
+        }
+        # Application teardown uses this all-worker path. Arm the same startup
+        # veto as the single-worker stop before taking the handle snapshot, so
+        # an in-flight reconciliation cannot publish a worker after cleanup.
+        _WORKSPACE_STOP_REQUESTED.update(reconciling_keys)
         handles = [
             (key, handle)
             for key, handle in _WORKSPACE_SWEEPERS.items()
@@ -609,17 +620,20 @@ def _stop_all_workspace_sweepers(*, timeout_s: float = 5.0) -> bool:
         return True
     for _key, handle in handles:
         handle.stop_event.set()
-    deadline = time.monotonic() + max(0.0, timeout_s)
+    deadline = _WORKSPACE_SWEEPER_MONOTONIC() + max(0.0, timeout_s)
     for _key, handle in handles:
         if handle.thread is not threading.current_thread():
-            handle.thread.join(timeout=max(0.0, deadline - time.monotonic()))
+            handle.thread.join(
+                timeout=max(0.0, deadline - _WORKSPACE_SWEEPER_MONOTONIC())
+            )
     stopped = all(not handle.thread.is_alive() for _key, handle in handles)
     with _WORKSPACE_RECONCILE_LOCK:
         for key, handle in handles:
             if not handle.thread.is_alive() and _WORKSPACE_SWEEPERS.get(key) is handle:
                 _WORKSPACE_SWEEPERS.pop(key, None)
                 _WORKSPACE_RECONCILED.discard(key)
-    return stopped
+        late_handle = any(key in _WORKSPACE_SWEEPERS for key in reconciling_keys)
+    return stopped and not late_handle
 
 
 atexit.register(_stop_all_workspace_sweepers)

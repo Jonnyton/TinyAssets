@@ -349,6 +349,41 @@ def test_stop_during_reconciliation_cannot_publish_a_late_worker(
     assert key not in runs._WORKSPACE_STOP_REQUESTED
 
 
+def test_stop_all_during_reconciliation_cannot_publish_a_late_worker(
+    tmp_path, monkeypatch
+):
+    base = tmp_path / "data"
+    startup_entered = threading.Event()
+    allow_startup = threading.Event()
+    results: list[bool] = []
+
+    def blocked_startup(*_args, **_kwargs):
+        startup_entered.set()
+        assert allow_startup.wait(2)
+        return 0
+
+    monkeypatch.setattr(workspace_pool, "startup_sweep", blocked_startup)
+    monkeypatch.setattr(runs, "_reconcile_push_intents", lambda *a, **k: 0)
+    reconciler = threading.Thread(
+        target=lambda: results.append(
+            runs.ensure_workspace_reconciled(base, interval_s=60)
+        )
+    )
+    reconciler.start()
+    assert startup_entered.wait(2)
+    assert runs._stop_all_workspace_sweepers(timeout_s=2) is True
+    key = (os.getpid(), str(base.resolve()))
+    assert key in runs._WORKSPACE_STOP_REQUESTED
+    allow_startup.set()
+    reconciler.join(2)
+
+    assert not reconciler.is_alive()
+    assert results == [True]
+    assert key not in runs._WORKSPACE_SWEEPERS
+    assert key not in runs._WORKSPACE_RECONCILED
+    assert key not in runs._WORKSPACE_STOP_REQUESTED
+
+
 def test_a_sweeper_that_stops_itself_retires_its_handle(
     tmp_path, monkeypatch
 ):
@@ -424,18 +459,41 @@ def test_a_stale_stopper_cannot_clear_a_replacement_worker(tmp_path):
             runs._WORKSPACE_RECONCILED.discard(key)
 
 
-def test_stopping_no_sweepers_does_not_read_the_process_clock():
+def test_stopping_no_sweepers_does_not_read_the_lifecycle_clock(monkeypatch):
     assert not any(key[0] == os.getpid() for key in runs._WORKSPACE_SWEEPERS)
-    original_monotonic = runs.time.monotonic
 
     def unexpected_clock_read():
-        raise AssertionError("an empty stop must not read process-global time")
+        raise AssertionError("an empty stop must not read the lifecycle clock")
 
-    runs.time.monotonic = unexpected_clock_read
-    try:
+    with monkeypatch.context() as patch:
+        patch.setattr(runs, "_WORKSPACE_SWEEPER_MONOTONIC", unexpected_clock_read)
         assert runs._stop_all_workspace_sweepers(timeout_s=2) is True
+
+
+def test_stopping_live_sweepers_ignores_a_process_global_clock_patch(monkeypatch):
+    base = Path("clock-isolation")
+    key = (os.getpid(), str(base.resolve()))
+    stop_event = threading.Event()
+    thread = threading.Thread(target=stop_event.wait, daemon=True)
+    thread.start()
+    handle = runs._WorkspaceSweeperHandle(stop_event=stop_event, thread=thread)
+    with runs._WORKSPACE_RECONCILE_LOCK:
+        runs._WORKSPACE_SWEEPERS[key] = handle
+
+    def unexpected_clock_read():
+        raise AssertionError("sweeper stop followed a process-global clock patch")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(runs.time, "monotonic", unexpected_clock_read)
+            assert runs._stop_all_workspace_sweepers(timeout_s=2) is True
+        assert not thread.is_alive()
+        assert key not in runs._WORKSPACE_SWEEPERS
     finally:
-        runs.time.monotonic = original_monotonic
+        stop_event.set()
+        thread.join(2)
+        with runs._WORKSPACE_RECONCILE_LOCK:
+            runs._WORKSPACE_SWEEPERS.pop(key, None)
 
 
 def test_the_fork_reset_replaces_an_inherited_locked_mutex():
