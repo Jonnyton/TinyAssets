@@ -1216,8 +1216,8 @@
       const btn=$("btn-voice"), active=!(["unavailable","checking","locked","idle","error"].includes(this.state));
       const locked=this.state==="locked";
       if(locked){btn.disabled=false;btn.title=VOICE_LABELS.locked;}
-      else if(this.state==="idle"||this.state==="error"){btn.disabled=false;btn.title="Start a voice conversation";}
-      else{btn.disabled=true;btn.title=VOICE_LABELS[this.state]||"Voice unavailable";}
+      else if(this.state==="unavailable"||this.state==="checking"){btn.disabled=true;btn.title=VOICE_LABELS[this.state]||"Voice unavailable";}
+      else{btn.disabled=false;btn.title=active?"Stop voice conversation":"Start a voice conversation";}
       btn.setAttribute("aria-pressed",active?"true":"false");
       btn.setAttribute("aria-label",locked?"Voice requires a compatible resource":(active?"Stop voice conversation":"Start voice conversation"));
       btn.textContent=locked?"Voice · Connect":(active?"Stop":"Voice");

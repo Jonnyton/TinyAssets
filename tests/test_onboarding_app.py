@@ -677,6 +677,9 @@ function authHeaders(){return {Authorization:"Bearer app"};} async function slee
   await Voice.handleToolCall({type:"tool_call",
     call_id:"c1",name:"converse",arguments:'{"message":" duplicate "}'});
   Voice.handleServerEvent({type:"audio_started"});
+  out.activeButton={disabled:els["btn-voice"].disabled,
+    label:els["btn-voice"].textContent,
+    ariaPressed:els["btn-voice"].attrs["aria-pressed"]};
   Voice.handleServerEvent({type:"speech_started"});
   Voice.handleServerEvent({type:"output_transcript",transcript:"Exact"});
   out.afterBargeIn=Voice.state; out.mutedAfterBargeIn=Voice.audio.muted;
@@ -769,6 +772,11 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
     assert "user-owned voice connection" in out["locked"]["status"]
     assert out["initial"] == "idle"
     assert out["disclosureShown"] is True
+    assert out["activeButton"] == {
+        "disabled": False,
+        "label": "Stop",
+        "ariaPressed": "true",
+    }
     assert out["afterBargeIn"] == "listening" and out["mutedAfterBargeIn"] is True
     assert out["bargeInInterrupted"] is True
     assert out["turns"] == ["hello"]

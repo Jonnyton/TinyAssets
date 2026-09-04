@@ -339,12 +339,17 @@ async def create_voice_session(
         or "\x00" in offer_sdp
     ):
         raise RealtimeVoiceError("voice_session_offer_invalid", 400)
-    universe = Path(universe_dir).resolve()
-    binding = load_voice_binding(universe)
-    if not _binding_authorized(universe, owner_user_id, binding):
-        raise RealtimeVoiceError("voice_compatible_resource_required", 409)
-
     from starlette.concurrency import run_in_threadpool
+
+    universe = Path(universe_dir).resolve()
+
+    def resolve_binding() -> VoiceBinding:
+        binding = load_voice_binding(universe)
+        if not _binding_authorized(universe, owner_user_id, binding):
+            raise RealtimeVoiceError("voice_compatible_resource_required", 409)
+        return binding
+
+    binding = await run_in_threadpool(resolve_binding)
 
     def request_session() -> Any:
         proxy = None

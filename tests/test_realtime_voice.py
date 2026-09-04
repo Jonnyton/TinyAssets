@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -332,6 +333,46 @@ def test_session_uses_generic_scoped_proxy_and_returns_only_answer_fields(
         "max_session_seconds": 1800,
     }
     assert "must-not-cross-boundary" not in json.dumps(result)
+
+
+def test_session_offloads_binding_and_ledger_preflight(monkeypatch, tmp_path):
+    _enable(monkeypatch)
+    universe = _seed_binding(tmp_path)
+    caller_thread = threading.get_ident()
+    worker_threads: list[int] = []
+    original_load = rv.load_voice_binding
+    original_authorized = rv._binding_authorized
+
+    def load(path):
+        worker_threads.append(threading.get_ident())
+        return original_load(path)
+
+    def authorized(path, owner_id, binding):
+        worker_threads.append(threading.get_ident())
+        return original_authorized(path, owner_id, binding)
+
+    monkeypatch.setattr(rv, "load_voice_binding", load)
+    monkeypatch.setattr(rv, "_binding_authorized", authorized)
+    proxy = _FakeProxy(
+        {
+            "status": 200,
+            "body": {
+                "protocol": rv.VOICE_PROTOCOL,
+                "answer_sdp": _ANSWER_SDP,
+                "max_session_seconds": 300,
+            },
+        }
+    )
+    asyncio.run(
+        rv.create_voice_session(
+            universe,
+            "user_owner",
+            _OFFER_SDP,
+            proxy_factory=_proxy_factory(proxy),
+        )
+    )
+    assert len(worker_threads) == 2
+    assert all(thread_id != caller_thread for thread_id in worker_threads)
 
 
 def test_session_refuses_invalid_offer_before_opening_proxy(monkeypatch, tmp_path):
