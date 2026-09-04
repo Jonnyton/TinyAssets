@@ -5,9 +5,7 @@
 ## Purpose
 
 Bound how often an engine-triggered run can fire an already-approved effect (Codex gate #5) without charging the write budget for runs that provably wrote nothing.
-
 ## Requirements
-
 ### Requirement: Engine run admissions are charged as writes and settled by what fired
 The engine SHALL admit every engine-triggered run and every scheduled
 automation run through one per-universe rolling ledger
@@ -169,7 +167,6 @@ a read. All other clauses of this requirement are unchanged.
 - **WHEN** a run checks out a repository, reads and runs it, and writes nothing externally
 - **THEN** its admission settles as `read` and one `workspace` job is charged
 
-
 ### Requirement: Workspace jobs are admitted and settled through their own ledger kind with the maximum charge reserved before the wire
 
 The engine SHALL admit every `workspace` operation (`checkout`, `push`, `discard`, provisioning) as kind `workspace` in the per-universe rolling ledger, bounded by jobs per hour (default 10) and bytes per hour (default 20 GiB), both tier-raisable, SHALL reserve the operation's maximum byte charge in the admission transaction before any network activity — the lease bound for a checkout, the bounded bundle size for a push, the cache cap for provisioning — SHALL reconcile the reservation downward to measured bytes afterwards, keeping the maximum for an unknown or interrupted transfer, and SHALL name the exhausted bound in a refusal.
@@ -201,3 +198,24 @@ choose how much of its universe's hour it spends.
 #### Scenario: a large checkout is not an HTTP budget event
 - **WHEN** a run checks out a 3 GiB repository
 - **THEN** the run's HTTP byte budget is unchanged and the workspace ledger records the bytes
+
+### Requirement: Unresolved required inputs are refused before run admission
+The engine SHALL preflight the exact authorized Branch target before creating or
+admitting a run, and SHALL refuse a submission when any statically mandatory node
+input is not supplied, defaulted, or guaranteed by an earlier completed superstep.
+
+#### Scenario: Invalid initial state creates no activity
+- **WHEN** a caller submits a valid authorized Branch target with one or more unresolved required inputs
+- **THEN** the engine returns `failure_class=missing_required_inputs` without a run id and creates no run row, queue item, admission or billing record, provider call, or effect
+
+#### Scenario: Supplied and defaulted inputs admit normally
+- **WHEN** every required initial input is present in `inputs_json` or has a declared schema default
+- **THEN** the existing run admission and execution path proceeds unchanged
+
+#### Scenario: Declared optional input remains optional
+- **WHEN** a node allowlists an input but does not mandatorily dereference it, or code reads it through an optional default
+- **THEN** absence of that key does not block run admission
+
+#### Scenario: Authorization precedes contract disclosure
+- **WHEN** a caller is not authorized to run or read a private Branch target
+- **THEN** the existing authority-safe not-found or refusal result is returned without disclosing missing keys or schema guidance

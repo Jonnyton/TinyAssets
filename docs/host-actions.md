@@ -777,3 +777,19 @@ the only one that was never a code problem.
 **How to verify after changing it:** re-run branch `8ab6516d50c5`. Expect
 `external_write_results.deliver_post.authenticated_external_call.response.status`
 to be 201, and `x-access-level` to read `read-write`.
+
+---
+
+### Refresh the disposable webhook checklist destination
+
+**The smallest ask:** replace the expired `webhook.site` token/path used by the
+owner-controlled checklist workflow, or approve another non-destructive exact
+destination, then ask the bound universe to rerun that delivery proof. Keep the
+destination secret out of the repository and out of copied evidence.
+
+**Why it is a host action:** the platform reached the configured far side on
+2026-09-04, but that service returned HTTP `404` because the saved destination no
+longer exists. TinyAssets cannot renew a third-party destination or alter the
+owner's private workflow/connection without owner authority. This row is complete
+when the rendered app reports one fresh successful delivery to the renewed exact
+destination.
