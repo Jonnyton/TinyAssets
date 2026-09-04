@@ -23,5 +23,5 @@
 
 - [x] 5.1 Record the founder-approved one-control/current-provider capability rule in `PLAN.md`, update the Voice handoff, and delete the resolved no-binding concern when the product path is complete.
 - [x] 5.2 Build the runtime mirror, run focused and required gates plus an exact-head opposite-provider implementation review, then land and deploy with both Voice-specific gates still off.
-- [ ] 5.3 Prove disabled/unpowered/incompatible states through the rendered app and run the authenticated public canary; record ready-state proof as a founder-only host action if no eligible already-authorized provider exists.
+- [x] 5.3 Prove disabled/unpowered/incompatible states through the rendered app and run the authenticated public canary; record ready-state proof as a founder-only host action if no eligible already-authorized provider exists.
 - [ ] 5.4 After the authenticated app derives an eligible already-authorized current provider and Jonathan explicitly authorizes the bounded proof, stop for his rendered ready-state and live microphone acceptance; never ask him to name a derivable binding or enable Voice merely to complete this change.
