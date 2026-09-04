@@ -21,7 +21,7 @@ confidence it has not earned.
 | Diff scope declared | `pr-scope-guard.yml` | required check |
 | Exact-head review receipt on gate-defining **and authority-critical** files | `scripts/drain_review_gate.py` | `pr-scope-guard.yml`, `auto-enroll-merge.yml` |
 | Public MCP surface + canonical handles | `scripts/mcp_public_canary.py --assert-handles` | `deploy-prod.yml`, and by hand after DNS/tunnel/connector edits |
-| **Merged is not deployed** (Hard Rule 14) | `scripts/deployed_sha.py --assert-contains <sha>` | post-deploy, by hand or from a deploy job — **never** a merge-required check |
+| **Merged is not deployed** (Hard Rule 14) | `scripts/deployed_sha.py --assert-contains <sha>` against bearer-protected `/mcp/pulse` | automatically in `deploy-prod.yml` after receipt publication; by hand only with `TINYASSETS_WIKI_CANARY_TOKEN` — **never** a merge-required check |
 
 ### Two shapes worth copying
 
@@ -29,6 +29,9 @@ confidence it has not earned.
 shipped, **2 could not determine**. Collapsing 2 into 0 would make a network
 blip read as "yes, it shipped" — the exact failure Hard Rule 14 exists to
 prevent. Any gate that talks to an external service needs this third state.
+The verifier requires the constrained `canary` service-principal bearer and
+exits 2 before network access when it is absent; release state is never exposed
+anonymously to make the gate pass.
 
 **A gate that cannot fail is decoration.** Every gate above was mutation-tested:
 break the thing it guards, confirm it goes red, restore, confirm green. Two

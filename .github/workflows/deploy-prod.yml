@@ -9,7 +9,8 @@ name: Deploy prod
 # Flow: resolve image + verify ancestry -> SSH -> run deploy/deploy_fail_safe.sh
 # (record current -> pull -> prove-load -> swap+restart -> health+tunnel check ->
 # roll back to the recorded image if unhealthy) -> public --assert-handles canary
-# (roll back if the public surface is red) -> publish release-state.
+# (roll back if the public surface is red) -> publish release-state -> prove the
+# protected receipt contains the target revision.
 #
 # The deploy step NEVER leaves prod at zero: the script's worst case restores the
 # previous healthy image, backed by compose `restart: unless-stopped` + systemd
@@ -290,24 +291,14 @@ jobs:
           SH
 
       - name: Sync the canary bearer into /etc/tinyassets/env
-        # OPTIONAL, deliberately. An earlier version refused to deploy while
-        # this secret was unset -- and only a person can write a repository
-        # secret, so a deploy needed a human. It never did before, and the
-        # founder said so (2026-09-03).
+        # REQUIRED. No anonymous platform read exists: `/mcp/pulse`, the
+        # container healthcheck, the public handle canary, and the post-receipt
+        # deploy assertion all run as the constrained `canary` principal.
         #
-        # What actually needs a credential is narrower than I had it:
-        #   * the container's own healthcheck does NOT -- it reads
-        #     `/mcp/pulse`, the one unauthenticated route (git sha, image tag,
-        #     deploy time, uptime; no universe data, no principal);
-        #   * the DEEP probes do -- `--assert-handles` forms an MCP session,
-        #     and the wiki canary performs a persisted write/read round trip.
-        #
-        # Those keep a principal. The right one is a short-lived GitHub OIDC
-        # token bound to this repository and workflow, not a standing shared
-        # secret a human mints and rotates (Codex design review 2026-09-03:
-        # "public pulse plus short-lived, claim-bound OIDC"). Until that lands,
-        # the shared bearer is required because both the container healthcheck
-        # and the deep probes cross the authenticated boundary.
+        # A future short-lived GitHub OIDC principal can replace this standing
+        # secret once `oidc-bound-probe-principals` lands. Until then, this
+        # shared bearer is fail-closed and must remain present on both the host
+        # and the GitHub Actions runner.
         env:
           TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         run: |
@@ -404,6 +395,17 @@ jobs:
              sudo install -m 0644 -o root -g root /tmp/release-state.json \"\${vol}/release-state.json\""
           echo "published release-state git_sha=${GIT_SHA}"
 
+      - name: Verify protected receipt contains target revision
+        id: deployed_sha
+        env:
+          GIT_SHA: ${{ steps.tag.outputs.revision }}
+          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
+        run: |
+          set -euo pipefail
+          python scripts/deployed_sha.py \
+            --url https://tinyassets.io/mcp \
+            --assert-contains "${GIT_SHA}"
+
       - name: Open deploy-failed issue
         if: ${{ failure() }}
         env:
@@ -425,4 +427,5 @@ jobs:
             echo "- deploy rc: \`${{ steps.deploy.outputs.rc }}\` result: \`${{ steps.deploy.outputs.result }}\`"
             echo "- deployed image: \`${{ steps.deploy.outputs.deployed_image }}\`"
             echo "- public canary: \`${{ steps.canary.outcome }}\`"
+            echo "- protected receipt assertion: \`${{ steps.deployed_sha.outcome }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
