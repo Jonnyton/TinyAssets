@@ -124,6 +124,12 @@ The `/fine-print` reachability strip SHALL derive server reachability from a suc
 - **WHEN** a visitor reads the desktop surface on `/start` or the fine print
 - **THEN** the site says builds are unsigned and come from the repository and links the desktop source, and does not present an installer download
 
+#### Scenario: A mobile-store reviewer reads privacy and account-deletion copy
+
+- **WHEN** a reviewer opens `/legal#app-data` or `/account`
+- **THEN** the policy names iOS alongside web, Android, and desktop as a client of the same hosted service
+- **AND** the account page says the same in-app deletion path is available from iOS
+
 ### Requirement: The Mark Has One Source And Appears On Every Surface
 
 The brand mark (a circular badge: Mount Baker seen from the south, a wolf howling on the snowfield, a pale moon and a spiral galaxy in the night sky) SHALL be defined once as the `EMBLEM` layer list in `tinyassets/desktop/icon_gen.py` -- with the mountain profile traced from a photograph of the real skyline rather than drawn by eye -- and exported by `WebSite/brand/render_marks.py` to the site icons (`favicon.ico`, `icon.svg`, `apple-touch-icon.png`, `icon-192.png`, `icon-512.png`, `logo-mark.png`, `tinyassets-mark.png`), the repository brand assets under `assets/`, the desktop app build resources, the Windows tray icon, the Android launcher and splash density set, and the Play listing graphics; `WebSite/brand/render_og.py` SHALL render the OG card with the site's fonts. The site's inline React mark (`components/TinyAssetsMark.tsx`) SHALL be **generated** by the same exporter from the same constants rather than hand-maintained, so a geometry change cannot leave the web mark behind. The served web app SHALL carry the same mark as its favicon and brand glyph.
