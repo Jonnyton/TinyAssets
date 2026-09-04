@@ -122,4 +122,9 @@ blocker.
   findings are applied: an explicit `CFG.voice.enabled=false` browser arm,
   non-contradictory transport-unavailable copy in both runtime mirrors, and the
   explicit founder decision boundary in `docs/host-actions.md`. A clean
-  exact-head verdict is required before deployment.
+  exact-head review of implementation commit `eee23c43` returned `APPROVE`
+  after confirming all three resolutions and the unchanged authority,
+  credential, SSRF, cross-user, transport-gate, and session-time revalidation
+  boundaries. Its non-blocking catalog note was also applied by documenting
+  `TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED` in the canonical environment
+  reference.
