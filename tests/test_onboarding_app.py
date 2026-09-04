@@ -152,6 +152,53 @@ def test_response_sets_security_headers(monkeypatch):
     assert resp.headers["Cache-Control"] == "no-store"
 
 
+def test_voice_csp_and_disclosure_are_dark_until_all_flags(monkeypatch):
+    _render(monkeypatch)
+    monkeypatch.setenv("TINYASSETS_REALTIME_VOICE_ENABLED", "1")
+    html, csp = onboarding.render_app_html()
+    assert "https://api.openai.com" not in csp
+    assert '"enabled": false' in html
+
+    monkeypatch.setenv("TINYASSETS_ALLOW_REALTIME_VOICE_API", "1")
+    html, csp = onboarding.render_app_html()
+    assert "authkit.app https:;" not in csp
+    assert '"enabled": false' in html
+
+    monkeypatch.setenv("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED", "1")
+    html, csp = onboarding.render_app_html()
+    assert "authkit.app https:;" not in csp
+    assert "connect-src 'self' https://inventive-van-62-staging.authkit.app;" in csp
+    assert '"enabled": true' in html
+    assert "microphone audio goes directly to that service" in html
+    assert "TinyAssets never substitutes a shared" in html
+    assert "that you bound to this universe" in html
+    assert "not store the raw audio" in html
+    assert "Voice needs a compatible connection" in html
+    assert "subscription, credential, or local" in html
+
+
+def test_voice_client_keeps_converse_as_the_only_writer():
+    html, _csp = onboarding.render_app_html()
+    assert 'event.name!=="converse"' in html
+    assert "const payload=await MCP.converse(message);" in html
+    assert 'this._send({type:"tool_result",call_id:callId,output:reply});' in html
+    assert 'this._send({type:"speak",call_id:callId,source:"tool_result",verbatim:true});' in html
+    assert "body:JSON.stringify({offer_sdp:offerSdp})" in html
+    assert "sdp:session.answer_sdp" in html
+    assert 'pc.iceGatheringState!=="complete"' in html
+    assert "this._session(localSdp)" in html
+    assert 'Authorization:"Bearer "+secret.value' not in html
+    assert "if(!this.canonicalResponsePending)" in html
+    assert "if(this.audio) this.audio.muted=true" in html
+    assert 'if(key)localStorage.setItem(key,"accepted")' in html
+    # Browser persistence is only the versioned disclosure receipt. Audio,
+    # SDP, and bridge transcripts are never written.
+    assert "voiceDisclosureKey(this.capability)" in html
+    assert "/^[a-f0-9]{64}$/" in html
+    assert "localStorage.setItem(secret" not in html
+    assert "localStorage.setItem(event.transcript" not in html
+
+
 # --------------------------------------------------------------------------- #
 # route
 # --------------------------------------------------------------------------- #
@@ -166,6 +213,7 @@ def test_route_is_mcp_app_get(monkeypatch):
         "/mcp/app", "/mcp/app/token", "/mcp/app/me",
         "/mcp/app/openai/device/start", "/mcp/app/openai/device/poll",
         "/mcp/app/openai/begin", "/mcp/app/openai/exchange", "/mcp/app/trace",
+        "/mcp/app/voice/status", "/mcp/app/voice/session",
         "/mcp/app/serving/bind",
         "/mcp/app/billing/status", "/mcp/app/billing/checkout",
         "/mcp/app/billing/cancel", "/mcp/app/billing/webhook",
@@ -174,9 +222,11 @@ def test_route_is_mcp_app_get(monkeypatch):
     assert "GET" in by_path["/mcp/app"].methods
     assert "GET" in by_path["/mcp/app/billing/status"].methods
     assert "GET" in by_path["/mcp/app/me"].methods
+    assert "GET" in by_path["/mcp/app/voice/status"].methods
     for post_only in (
         "/mcp/app/token", "/mcp/app/openai/device/start", "/mcp/app/openai/device/poll",
         "/mcp/app/openai/begin", "/mcp/app/openai/exchange", "/mcp/app/trace",
+        "/mcp/app/voice/session",
         "/mcp/app/serving/bind",
         "/mcp/app/billing/checkout", "/mcp/app/billing/cancel",
         "/mcp/app/billing/webhook", "/mcp/app/account/delete",
@@ -520,6 +570,335 @@ def _js_function(html: str, name: str) -> str:
     # No regex-literal or nested-template lexing (Codex round 2, P2): the
     # functions extracted today contain neither, and a mis-cut span is a
     # syntax error that crashes the node harness - loud, never a silent pass.
+
+
+def _run_voice_states(tmp_path, events: list[str]) -> list[str]:
+    """Run the shipped transition table, rather than copying it into Python."""
+    import json
+    import os
+    import re
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:  # pragma: no cover - environment dependent
+        if os.environ.get("TINYASSETS_SKIP_JS_PROBE_TESTS"):
+            pytest.skip("node absent; skip explicitly requested via env")
+        pytest.fail("node executable not found - voice transitions are JavaScript")
+    html, _csp = onboarding.render_app_html()
+    table = re.search(r"const VOICE_TRANSITIONS=\{.*?\n  \};", html, re.DOTALL)
+    assert table, "app.html has no voice transition table"
+    program = "\n".join(
+        (
+            table.group(0),
+            _js_function(html, "voiceNextState"),
+            f"const events={json.dumps(events)};",
+            'let state="idle"; const seen=[state];',
+            "for(const event of events){state=voiceNextState(state,event);seen.push(state);}",
+            "console.log(JSON.stringify(seen));",
+        )
+    )
+    script = tmp_path / "voice_states.js"
+    script.write_text(program, encoding="utf-8")
+    proc = subprocess.run(
+        [node, str(script)], capture_output=True, text=True, encoding="utf-8", timeout=30
+    )
+    assert proc.returncode == 0, f"voice state harness crashed:\n{proc.stderr}"
+    return json.loads(proc.stdout)
+
+
+def _run_voice_adapter(tmp_path) -> dict:
+    """Drive the shipped Voice object with fake media/Realtime boundaries."""
+    import json
+    import os
+    import re
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:  # pragma: no cover - environment dependent
+        if os.environ.get("TINYASSETS_SKIP_JS_PROBE_TESTS"):
+            pytest.skip("node absent; skip explicitly requested via env")
+        pytest.fail("node executable not found - voice adapter is JavaScript")
+    html, _csp = onboarding.render_app_html()
+    table = re.search(r"const VOICE_(?:LABELS|TRANSITIONS)=\{.*?\n  \};", html, re.DOTALL)
+    assert table
+    # LABELS precedes TRANSITIONS; collect both independently.
+    labels = re.search(r"const VOICE_LABELS=\{.*?\n  \};", html, re.DOTALL)
+    transitions = re.search(r"const VOICE_TRANSITIONS=\{.*?\n  \};", html, re.DOTALL)
+    voice = re.search(r"const Voice=\{.*?\n  \};", html, re.DOTALL)
+    assert labels and transitions and voice
+    functions = "\n".join(
+        _js_function(html, name)
+        for name in ("voiceNextState", "voiceNormalize", "voiceDisclosureKey", "voiceFriendlyError")
+    )
+    shim = r"""
+const CFG={voice:{enabled:true,disclosure_version:1,max_session_seconds:1800}};
+const store={}; const localStorage={getItem:k=>store[k]||null,setItem:(k,v)=>store[k]=String(v)};
+const timers=[]; function setTimeout(fn,ms){const timer={fn,ms};timers.push(timer);return timer;}
+function clearTimeout(){}
+class El{constructor(){this.hidden=true;this.disabled=false;this.textContent="";this.attrs={};}
+setAttribute(k,v){this.attrs[k]=v;} focus(){this.focused=true;} pause(){this.paused=true;}}
+const els={"btn-voice":new El(),"voice-disclosure":new El(),"btn-voice-accept":new El(),
+  "voice-unlock":new El(),"btn-voice-unlock-close":new El(),
+  "voice-service-name":new El(),"voice-privacy-link":new El()};
+const $=id=>els[id]; let status=""; function setStatusLine(v){status=v||"";}
+const document={createElement:()=>new El()};
+let mediaRequests=0;
+const navigator={mediaDevices:{getUserMedia:async()=>{mediaRequests++;return {getTracks:()=>[]};}}};
+let RTCPeerConnection;
+let traces=[]; function trace(...args){traces.push(args);}
+let turns=[];
+let capabilityDoc={available:false,state:"locked",reason:"voice_compatible_resource_required"};
+let fetched=[];
+async function fetch(url){
+  fetched.push(url);return {ok:true,status:200,json:async()=>capabilityDoc};
+}
+let voiceTurnImpl=async()=>"Exact universe reply.";
+async function sendVoiceTurn(message){turns.push(message);return await voiceTurnImpl(message);}
+async function ensureFreshToken(){} async function refreshAccessToken(){return false;}
+function authHeaders(){return {Authorization:"Bearer app"};} async function sleep(){}
+"""
+    scenario = r"""
+(async()=>{
+  const out={}; Voice.init(); await Voice.refreshCapability();
+  await Voice.requestStart();
+  out.locked={state:Voice.state,label:els["btn-voice"].textContent,
+    disclosureShown:!els["voice-disclosure"].hidden,
+    unlockShown:!els["voice-unlock"].hidden,mediaRequests,fetched:fetched.slice(),status};
+  Voice.closeUnlock();
+  capabilityDoc={available:true,state:"ready",resource:"user_bound_voice_connection",
+    disclosure_id:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    service_name:"My bridge",privacy_url:"https://bridge.example/privacy"};
+  await Voice.refreshCapability(); out.initial=Voice.state;
+  await Voice.requestStart(); out.disclosureShown=!els["voice-disclosure"].hidden;
+  Voice.start=()=>{out.disclosureStarted=true;}; Voice.acceptDisclosure();
+  out.acceptedFirst=Voice._accepted();
+  Voice.capability=Object.assign({},capabilityDoc,
+    {disclosure_id:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"});
+  out.acceptedAfterRebind=Voice._accepted(); Voice.capability=capabilityDoc;
+  const sent=[];
+  Voice.dc={readyState:"open",send:v=>sent.push(JSON.parse(v)),
+    close:()=>{out.dcClosed=true;}};
+  Voice.audio={muted:true};
+  await Voice.handleToolCall({type:"tool_call",
+    call_id:"c1",name:"converse",arguments:'{"message":" hello "}'});
+  await Voice.handleToolCall({type:"tool_call",
+    call_id:"c1",name:"converse",arguments:'{"message":" duplicate "}'});
+  Voice.handleServerEvent({type:"audio_started"});
+  out.activeButton={disabled:els["btn-voice"].disabled,
+    label:els["btn-voice"].textContent,
+    ariaPressed:els["btn-voice"].attrs["aria-pressed"]};
+  Voice.handleServerEvent({type:"speech_started"});
+  Voice.handleServerEvent({type:"output_transcript",transcript:"Exact"});
+  out.afterBargeIn=Voice.state; out.mutedAfterBargeIn=Voice.audio.muted;
+  out.bargeInInterrupted=Voice.canonicalResponseInterrupted;
+  out.turns=turns.slice(); out.toolEvents=sent.slice();
+  let stopped=0,pcClosed=0,audioPaused=0;
+  Voice.stream={getTracks:()=>[{stop:()=>stopped++}]}; Voice.pc={close:()=>pcClosed++};
+  Voice.audio={pause:()=>audioPaused++,srcObject:{}}; Voice.stop(false);
+  out.teardown={stopped,pcClosed,audioPaused,state:Voice.state};
+  Voice._armSessionLimit(9999);
+  out.sessionLimitDelays=timers.slice(-2).map(timer=>timer.ms);
+  let resolveStale;
+  voiceTurnImpl=()=>new Promise(resolve=>{resolveStale=resolve;});
+  Voice.epoch=20; Voice.state="listening";
+  const oldChannel={readyState:"open",send:()=>{},close:()=>{}};
+  const freshSent=[]; Voice.dc=oldChannel; Voice.audio={muted:true};
+  const staleSuccess=Voice.handleToolCall({type:"tool_call",call_id:"c2",name:"converse",
+    arguments:'{"message":" late success "}'});
+  Voice.dc={readyState:"open",send:v=>freshSent.push(JSON.parse(v)),close:()=>{}};
+  Voice.state="listening"; resolveStale("Late universe reply."); await staleSuccess;
+  out.staleSuccess={state:Voice.state,pending:Voice.canonicalResponsePending,
+    expectedReply:Voice.expectedReply,freshSent};
+  let rejectStale;
+  voiceTurnImpl=()=>new Promise((_resolve,reject)=>{rejectStale=reject;});
+  const staleFailure=Voice.handleToolCall({type:"tool_call",call_id:"c3",name:"converse",
+    arguments:'{"message":" late failure "}'});
+  const liveChannel={readyState:"open",send:()=>{},close:()=>{}};
+  Voice.dc=liveChannel; Voice.state="listening"; rejectStale(new Error("offline"));
+  await staleFailure;
+  out.staleFailure={state:Voice.state,sameChannel:Voice.dc===liveChannel};
+  voiceTurnImpl=async()=>"Exact universe reply.";
+  const realConnect=Voice._connect,realTeardown=Voice._teardownTransport;
+  let attempts=0; Voice.epoch=11; Voice.reconnecting=false; Voice.reconnectAttempts=0;
+  Voice._teardownTransport=()=>{};
+  Voice._connect=async()=>{
+    attempts++;if(attempts<3)throw new Error("offline");
+    Voice.reconnecting=false;Voice.state="listening";
+  };
+  await Voice.reconnect(11); out.reconnect={attempts,state:Voice.state};
+  Voice._connect=realConnect;Voice._teardownTransport=realTeardown;
+  Voice.canonicalResponsePending=false; Voice.audio={muted:true};
+  Voice.handleServerEvent({type:"audio_started"});
+  out.untrusted={state:Voice.state,status};
+  Voice.state="speaking"; Voice.canonicalResponsePending=true;
+  Voice.expectedReply="Exact universe reply."; Voice.audio={muted:false};
+  Voice.handleServerEvent({type:"output_transcript",transcript:"Different"});
+  out.mismatch={state:Voice.state,status,traces};
+  Voice.state="speaking"; Voice.canonicalResponsePending=true;
+  Voice.canonicalResponseInterrupted=false; Voice.expectedReply="Exact universe reply.";
+  Voice.audio={muted:false}; Voice.handleServerEvent({type:"speech_started"});
+  Voice.handleServerEvent({type:"output_transcript",transcript:"Altered answer"});
+  out.interruptedMismatch={state:Voice.state,status};
+  const raceStreams=[],racePcs=[],sessionResolvers=[];
+  navigator.mediaDevices.getUserMedia=async()=>{
+    const track={stopped:false,stop(){this.stopped=true;}};
+    const stream={track,getTracks:()=>[track]}; raceStreams.push(stream); return stream;
+  };
+  RTCPeerConnection=class{
+    constructor(){this.closed=false;this.iceGatheringState="complete";racePcs.push(this);}
+    addEventListener(){} addTrack(){}
+    createDataChannel(){
+      const dc={readyState:"open",closed:false,send(){},close(){this.closed=true;},
+        addEventListener(name,callback){if(name==="open")queueMicrotask(callback);}};
+      this.dataChannel=dc;return dc;
+    }
+    async createOffer(){return {type:"offer",sdp:"v=0\\r\\n"};}
+    async setLocalDescription(offer){this.localDescription=offer;}
+    async setRemoteDescription(){if(this.closed)throw new Error("closed peer");}
+    close(){this.closed=true;}
+  };
+  Voice._session=()=>new Promise(resolve=>sessionResolvers.push(resolve));
+  Voice.epoch=30;Voice.state="requesting_permission";
+  const firstConnect=Voice._connect(30,false);
+  while(sessionResolvers.length<1)await Promise.resolve();
+  Voice.epoch=31;Voice.state="requesting_permission";
+  const secondConnect=Voice._connect(31,false);
+  while(sessionResolvers.length<2)await Promise.resolve();
+  const livePc=Voice.pc,liveDc=Voice.dc,liveStream=Voice.stream;
+  sessionResolvers[0]({answer_sdp:"v=0\\r\\n",max_session_seconds:1800});
+  await firstConnect;
+  out.connectRace={currentPc:Voice.pc===livePc,currentDc:Voice.dc===liveDc,
+    currentStream:Voice.stream===liveStream,oldPcClosed:racePcs[0].closed,
+    oldDcClosed:racePcs[0].dataChannel.closed,oldTrackStopped:raceStreams[0].track.stopped,
+    livePcClosed:livePc.closed,liveTrackStopped:liveStream.track.stopped};
+  sessionResolvers[1]({answer_sdp:"v=0\\r\\n",max_session_seconds:1800});
+  await secondConnect;out.connectRace.finalState=Voice.state;
+  console.log(JSON.stringify(out));
+})().catch(e=>{console.error(e&&e.stack||e);process.exit(1);});
+"""
+    script = tmp_path / "voice_adapter.js"
+    script.write_text(
+        "\n".join(
+            (shim, labels.group(0), transitions.group(0), functions, voice.group(0), scenario)
+        ),
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [node, str(script)], capture_output=True, text=True, encoding="utf-8", timeout=30
+    )
+    assert proc.returncode == 0, f"voice adapter harness crashed:\n{proc.stderr}"
+    return json.loads(proc.stdout)
+
+
+def test_voice_state_machine_covers_turn_barge_in_and_reconnect(tmp_path):
+    assert _run_voice_states(
+        tmp_path,
+        [
+            "start",
+            "permission_granted",
+            "connected",
+            "speech_stopped",
+            "reply_ready",
+            "speech_started",  # barge-in while speaking
+            "disconnect",
+            "connected",
+            "stop",
+        ],
+    ) == [
+        "idle",
+        "requesting_permission",
+        "connecting",
+        "listening",
+        "thinking",
+        "speaking",
+        "listening",
+        "reconnecting",
+        "listening",
+        "idle",
+    ]
+
+
+def test_voice_state_machine_permission_failure_is_recoverable(tmp_path):
+    assert _run_voice_states(
+        tmp_path, ["start", "permission_denied", "retry", "permission_granted", "connected"]
+    ) == [
+        "idle",
+        "requesting_permission",
+        "error",
+        "requesting_permission",
+        "connecting",
+        "listening",
+    ]
+
+
+def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_path):
+    out = _run_voice_adapter(tmp_path)
+    assert out["locked"]["state"] == "locked"
+    assert out["locked"]["label"] == "Voice · Connect"
+    assert out["locked"]["disclosureShown"] is False
+    assert out["locked"]["unlockShown"] is True
+    assert out["locked"]["mediaRequests"] == 0
+    assert set(out["locked"]["fetched"]) == {"/mcp/app/voice/status"}
+    assert "user-owned voice connection" in out["locked"]["status"]
+    assert out["initial"] == "idle"
+    assert out["disclosureShown"] is True
+    assert out["disclosureStarted"] is True
+    assert out["acceptedFirst"] is True
+    assert out["acceptedAfterRebind"] is False
+    assert out["activeButton"] == {
+        "disabled": False,
+        "label": "Stop",
+        "ariaPressed": "true",
+    }
+    assert out["afterBargeIn"] == "listening" and out["mutedAfterBargeIn"] is True
+    assert out["bargeInInterrupted"] is True
+    assert out["turns"] == ["hello"]
+    assert out["toolEvents"][0] == {
+        "type": "tool_result",
+        "call_id": "c1",
+        "output": "Exact universe reply.",
+    }
+    assert out["toolEvents"][1] == {
+        "type": "speak",
+        "call_id": "c1",
+        "source": "tool_result",
+        "verbatim": True,
+    }
+    assert out["teardown"] == {
+        "stopped": 1,
+        "pcClosed": 1,
+        "audioPaused": 1,
+        "state": "idle",
+    }
+    assert out["sessionLimitDelays"] == [1_500_000, 1_800_000]
+    assert out["staleSuccess"] == {
+        "state": "listening",
+        "pending": False,
+        "expectedReply": "",
+        "freshSent": [],
+    }
+    assert out["staleFailure"] == {"state": "listening", "sameChannel": True}
+    assert out["reconnect"] == {"attempts": 3, "state": "listening"}
+    assert out["untrusted"]["state"] == "error"
+    assert "unverified reply" in out["untrusted"]["status"]
+    assert out["mismatch"]["state"] == "error"
+    assert "did not match" in out["mismatch"]["status"]
+    assert out["mismatch"]["traces"][0][0] == "voice_output_mismatch"
+    assert out["interruptedMismatch"]["state"] == "error"
+    assert "did not match" in out["interruptedMismatch"]["status"]
+    assert out["connectRace"] == {
+        "currentPc": True,
+        "currentDc": True,
+        "currentStream": True,
+        "oldPcClosed": True,
+        "oldDcClosed": True,
+        "oldTrackStopped": True,
+        "livePcClosed": False,
+        "liveTrackStopped": False,
+        "finalState": "listening",
+    }
 
 
 def test_message_timestamps_use_viewer_timezone_and_preserve_the_instant(
