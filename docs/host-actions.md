@@ -222,6 +222,24 @@ Recovered 2026-08-27 from PR #2463, which carried it on the retired board and ha
 
 ---
 
+### First-class Voice — choose an existing user-owned bridge for physical-device proof
+
+**Do not send a credential in chat and do not buy a platform key.** The shipped dark runtime accepts
+only an exact `tinyassets.voice.v1` bridge backed by a generic HTTP connection and grant already
+owned by the signed-in founder and their home universe. Host credentials, maintainer accounts,
+another user's connection, and platform-paid usage cannot unlock it.
+
+The user-facing binding action is not built yet; it is tracked in
+`docs/concerns/2026-09-03-realtime-voice-has-no-user-binding-surface.md`. After that lands, the
+smallest founder action is to select an already-connected compatible bridge in the app (or say
+that none exists) and authorize one bounded non-production physical-device proof. The proof order,
+stop conditions, and evidence packet are in `docs/ops/realtime-voice-mobile-handoff.md`. Enabling
+or releasing Voice still requires an explicit founder decision. Both Voice-specific production
+gates remain off meanwhile; generic outbound HTTP is already enabled for unrelated effectors and
+cannot unlock Voice on its own.
+
+---
+
 ### Decide whether Claude may serve turns in production (`TINYASSETS_ALLOW_CLAUDE_SERVING`)
 
 **The whole ask: yes or no.** The flag is an operator opt-in that gates *creating* a
