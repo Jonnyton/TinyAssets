@@ -3,7 +3,8 @@
 **Date:** 2026-09-03  
 **Author family:** Codex  
 **Review family:** Claude  
-**Implementation head:** `3423a4be`  
+**Runtime implementation head:** `3423a4be`  
+**Exact reviewed head:** `387e723f5ee6e1f7c7659fe1d613105191f70ae1`  
 **Verdict:** APPROVE for the exact implementation head above and the receipt-only
 PR head named by the `Drain-Review-Head` line in pull request #2814.
 
@@ -23,9 +24,15 @@ repair a home, grant a capability, or expose universe or user data.
 
 ## Independent review
 
-A read-only Claude reviewer inspected the exact implementation head, confirmed
+A read-only Claude reviewer inspected the runtime implementation head, confirmed
 the packaged runtime mirror is byte-identical, traced the authenticated-only
 no-home branch, and reran the first-contact test file. The reviewer returned
+`AGREE` / `APPROVE` with no findings.
+
+A coordinated test-only delta then added exact Streamable HTTP coverage using
+the configured canary bearer. The same reviewer inspected the exact resulting
+head, confirmed the test cannot pass against the pre-fix server and introduces
+no authentication bypass, reran that transport test file, and returned
 `AGREE` / `APPROVE` with no findings.
 
 The reviewer confirmed:
@@ -44,6 +51,8 @@ The reviewer confirmed:
 - 156 focused first-contact, identity, status, and public-canary tests passed on
   Windows/Python 3.11+.
 - The independent reviewer reran `tests/test_first_contact.py`: 54 passed.
+- The exact-head reviewer reran `tests/test_wiki_canary_transport.py`: 2 passed.
+- The local transport, first-contact, and public-canary slice passed: 89 tests.
 - Ruff and `git diff --check` passed.
 - The Claude plugin runtime import probe passed.
 - Runtime mirror parity passed for all 392 canonical files.
