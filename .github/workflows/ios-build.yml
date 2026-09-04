@@ -12,6 +12,16 @@ name: iOS build
 
 on:
   workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Git ref to compile (use the shipped build SHA for store screenshots)
+        required: false
+        type: string
+      capture_store_screenshots:
+        description: Capture and validate required App Store screenshots
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [main, feat/ios-app]
     paths:
@@ -36,6 +46,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          ref: ${{ inputs.source_ref || github.sha }}
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -98,5 +109,22 @@ jobs:
             -configuration Debug \
             -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/TinyAssetsDerivedData" \
             CODE_SIGNING_ALLOWED=NO \
             build | tail -40
+
+      - name: Capture authentic App Store screenshots
+        if: github.event_name == 'workflow_dispatch' && inputs.capture_store_screenshots
+        run: |
+          mobile/scripts/capture_ios_store_screenshots.sh \
+            "$RUNNER_TEMP/TinyAssetsDerivedData/Build/Products/Debug-iphonesimulator/App.app" \
+            "$RUNNER_TEMP/ios-store-screenshots"
+
+      - name: Upload validated App Store screenshots
+        if: github.event_name == 'workflow_dispatch' && inputs.capture_store_screenshots
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ios-store-screenshots-${{ github.run_id }}
+          path: ${{ runner.temp }}/ios-store-screenshots/*.png
+          if-no-files-found: error
+          retention-days: 7

@@ -8,6 +8,16 @@
     "1242x2688",
     "1284x2778"
   ],
+  "required_displays": {
+    "6.5-inch iPhone": [
+      "1242x2688",
+      "1284x2778"
+    ],
+    "13-inch iPad": [
+      "2048x2732",
+      "2064x2752"
+    ]
+  },
   "format": ["png", "jpg", "jpeg"],
   "alpha_allowed": false,
   "minimum_count": 1,
