@@ -1363,14 +1363,16 @@
       clearInterval(this.authorityTimer);
       this.authorityTimer=setInterval(()=>this._verifyAuthority(generation),5000);
     },
+    _sameAuthority(doc){
+      return !!(doc&&doc.available&&this.capability&&
+        doc.disclosure_id===this.capability.disclosure_id);
+    },
     async _verifyAuthority(generation){
       if(generation!==this.epoch)return;
       try{
         const doc=await this._readCapability(5000);
         if(generation!==this.epoch)return;
-        const same=doc&&doc.available&&this.capability&&
-          doc.disclosure_id===this.capability.disclosure_id;
-        if(same)return;
+        if(this._sameAuthority(doc))return;
         this.capability=doc;
         this.stop(true,voiceFriendlyError(doc&&doc.reason));
       }catch(_error){
@@ -1447,6 +1449,18 @@
       while(this.reconnectAttempts<3&&generation===this.epoch){
         this.reconnectAttempts++;
         await sleep(400*Math.pow(2,this.reconnectAttempts-1));
+        try{
+          const doc=await this._readCapability(5000);
+          if(generation!==this.epoch)return;
+          if(!this._sameAuthority(doc)){
+            this.capability=doc;
+            this.stop(true,voiceFriendlyError(doc&&doc.reason));return;
+          }
+        }catch(_error){
+          if(generation!==this.epoch)return;
+          this.capability=null;
+          this.stop(true,"Voice stopped because provider authority could not be confirmed. Typed chat still works.");return;
+        }
         try{await this._connect(generation,true);return;}catch(_e){}
       }
       if(generation===this.epoch) this.fail(new Error("voice_reconnect_exhausted"));

@@ -750,12 +750,23 @@ let connectCalls=[]; function showConnect(asGate){connectCalls.push(asGate);}
   out.staleFailure={state:Voice.state,sameChannel:Voice.dc===liveChannel};
   voiceTurnImpl=async()=>"Exact universe reply.";
   const realConnect=Voice._connect,realTeardown=Voice._teardownTransport;
-  let attempts=0; Voice.epoch=11; Voice.reconnecting=false; Voice.reconnectAttempts=0;
+  let attempts=0; Voice.epoch=10; Voice.reconnecting=false; Voice.reconnectAttempts=0;
   Voice._teardownTransport=()=>{};
   Voice._connect=async()=>{
     attempts++;if(attempts<3)throw new Error("offline");
     Voice.reconnecting=false;Voice.state="listening";
   };
+  capabilityDoc={available:false,state:"incompatible",reason:"capability_not_declared",
+    remediation:"existing_connection_surface"};
+  const mediaBeforeRevokedReconnect=mediaRequests;
+  await Voice.reconnect(10);
+  out.revokedReconnect={attempts,mediaRequests:mediaRequests-mediaBeforeRevokedReconnect,
+    state:Voice.state,status};
+  capabilityDoc={available:true,state:"ready",resource:"user_bound_voice_connection",
+    remediation:"none",disclosure_id:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    service_name:"My bridge",privacy_url:"https://bridge.example/privacy"};
+  Voice.capability=capabilityDoc;attempts=0;Voice.epoch=11;Voice.reconnecting=false;
+  Voice.reconnectAttempts=0;Voice.state="listening";
   await Voice.reconnect(11); out.reconnect={attempts,state:Voice.state};
   Voice._connect=realConnect;Voice._teardownTransport=realTeardown;
   Voice.canonicalResponsePending=false; Voice.audio={muted:true};
@@ -919,6 +930,10 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
     assert out["authorityRevocation"]["closed"] == 1
     assert out["authorityRevocation"]["state"] == "incompatible"
     assert "not declared" in out["authorityRevocation"]["status"]
+    assert out["revokedReconnect"]["attempts"] == 0
+    assert out["revokedReconnect"]["mediaRequests"] == 0
+    assert out["revokedReconnect"]["state"] == "incompatible"
+    assert "not declared" in out["revokedReconnect"]["status"]
     assert out["sessionLimitDelays"] == [1_500_000, 1_800_000]
     assert out["staleSuccess"] == {
         "state": "listening",
