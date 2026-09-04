@@ -220,6 +220,7 @@ COPY data/world_rules.lp /app/data/world_rules.lp
 # surface. Copied directly (not via the builder stage) because the
 # script is pure stdlib — no compilation needed.
 COPY scripts/mcp_public_canary.py /app/scripts/mcp_public_canary.py
+COPY scripts/_canary_common.py /app/scripts/_canary_common.py
 
 # The workspace jail's acceptance proofs. They assert Linux-only, bwrap-only
 # behaviour that no developer box and no CI runner can answer, so they run

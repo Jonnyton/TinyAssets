@@ -104,6 +104,13 @@ def test_dockerfile_installs_immutable_github_cli_release_asset():
     assert 'apt-get install -y --no-install-recommends gh="${GH_VERSION}"' not in text
 
 
+def test_dockerfile_copies_complete_healthcheck_canary():
+    """The in-container canary must include its shared import dependency."""
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    assert "COPY scripts/mcp_public_canary.py /app/scripts/mcp_public_canary.py" in text
+    assert "COPY scripts/_canary_common.py /app/scripts/_canary_common.py" in text
+
+
 def test_dockerfile_base_images_are_digest_pinned():
     """Both stages must use an immutable python base image digest."""
     from_lines = [
