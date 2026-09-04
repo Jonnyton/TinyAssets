@@ -15,7 +15,9 @@ Runbooks stay where they are — `docs/ops/google-play-launch.md` and
 is at minimum 14 days away and needs 12 real people. **Apple: the App Store record,
 metadata, unpublished privacy draft, signing/profile/API credentials, verified signed
 IPA, and both required screenshots are staged; legal/privacy attestations, one contact
-phone number, device proof, and review remain.**
+disclosure authorization, device proof, and review remain.** The authoritative phone
+number already exists in the founder's local candidate profile; it must not be copied
+into this repository or sent to Apple without explicit action-time authorization.
 
 ---
 

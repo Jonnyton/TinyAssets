@@ -366,9 +366,13 @@ None of it can produce an installable app without account-owned signing material
    `play-review@tinyassets.io` identity and its saved Google Play password were
    recovered directly from Play's `Play Reviewer` record and accepted by Apple's
    fields without entering the secret in this repository. Known contact name/email
-   are Jonathan Farnsworth / `jonathan.m.farnsworth@gmail.com`; only the
-   international-format contact phone remains unknown. Apple will not persist this
-   page until the whole contact block is complete.
+   are Jonathan Farnsworth / `jonathan.m.farnsworth@gmail.com`. The founder's local
+   candidate profile at
+   `C:\Users\Jonathan\Projects\Job Search\.claude\skills\job-application-assistant\01-candidate-profile.md`
+   contains the authoritative phone number; do not duplicate it in this repository.
+   Explicit action-time authorization is still required before transmitting that
+   number to App Store Connect. Apple will not persist this page until the whole
+   contact block is complete.
 10. Counsel/founder must complete Content Rights: TinyAssets accesses third-party
    content, while Apple's truthful **Yes** answer also attests necessary rights in
    every region. That legal fact was not inferred; the modal was cancelled.
@@ -384,9 +388,9 @@ None of it can produce an installable app without account-owned signing material
 The screenshot blockers are gone. The exact unresolved requirements are Content
 Rights, Privacy Policy URL plus Admin-provided privacy practices, reviewer
 username/password, and reviewer first name, last name, email, and `+` country-code
-phone number. The reviewer credentials and known contact fields are prepared; the
-phone is the only unknown contact datum. Version 1.0 remains **Prepare for Submission**
-with manual release.
+phone number. The reviewer credentials and contact values are known; transmitting the
+existing profile phone number to Apple still requires explicit action-time
+authorization. Version 1.0 remains **Prepare for Submission** with manual release.
 
 ### Google Play: start the 12-tester closed test — this is the 14-day clock
 

@@ -46,8 +46,10 @@ username/password and reviewer first name, last name, email, and international-f
 phone number. The dedicated `play-review@tinyassets.io` password was verified in Google
 Play's saved `Play Reviewer` record and accepted by Apple's form during preparation,
 but Apple will not persist the version page until the separate contact block is
-complete. The known contact name/email need not be re-entered by the founder; the only
-unknown contact datum is the international-format phone number.
+complete. The known contact name/email need not be re-entered by the founder. An
+authoritative phone number exists in the founder's local candidate profile; it is not
+duplicated here and must not be transmitted to App Store Connect without explicit
+action-time authorization for that disclosure.
 
 No App Review submission, TestFlight invitation, public release, privacy publication,
 Content Rights attestation, or legal declaration occurred.

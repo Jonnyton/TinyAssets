@@ -358,9 +358,11 @@ one, so the server must remain compatible with the last released shell.
 - Account-holder-controlled reviewer first name, last name, email, and
   international-format phone number. The existing least-privilege App Review
   username/password was recovered from Google Play's dedicated reviewer record and
-  accepted by the App Store Connect fields without copying it into repository files;
-  the values could not be persisted because Apple saves the sign-in and contact
-  fields as one block, and the international-format phone number is still unknown.
+  accepted by the App Store Connect fields without copying it into repository files.
+  The founder's local `01-candidate-profile.md` is the authoritative source for the
+  phone; do not duplicate it here. Apple saves the sign-in and contact fields as one
+  block, and explicit action-time authorization is still required before transmitting
+  that phone number to Apple.
 - Automatic tester notification cannot be changed on the current internal-only
   UI. Build 3 has no external group or tester, so the API's residual `true` value
   is inert; revisit the checkbox only if an external-testing group is created.
