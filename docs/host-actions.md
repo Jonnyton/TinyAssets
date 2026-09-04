@@ -100,8 +100,9 @@ next host-actions pass.
 
 ### Claude subscription spend limit — blocks Claude-family review and browser `ui-test`
 
-*Reverified 2026-09-03: two `peer_agent.py claude` review dispatches exited 1, and a
-minimal direct diagnostic reported that the monthly spend limit was reached.*
+*Reverified 2026-09-03: three `peer_agent.py claude` review dispatches exited 1; the
+latest failed after 19 seconds with no review output. A minimal direct diagnostic on
+the earlier attempts reported that the monthly spend limit was reached.*
 
 Raise or reset the Claude usage limit. Until then, Codex-authored public-surface changes
 cannot obtain the required opposite-family review, and the claude.ai browser route cannot
@@ -297,8 +298,9 @@ None of it can produce an installable app without account-owned signing material
    only `main` may deploy, and no secrets are present yet. You do NOT need a Mac — CI builds
    on `macos-15`.
 5. Capture real iPhone-sized screenshots from the signed app, verify sign-in → connect →
-   chat through TestFlight, complete the truthful console declarations, then make the final
-   Submit for Review decision.
+   chat through TestFlight, and complete the truthful console declarations. Before the final
+   Submit for Review decision, choose whether to accept the documented Guideline 4.2 wrapper
+   risk or first add and prove a meaningful iPhone-native interaction.
 6. If realtime voice is enabled in the candidate, review the final **Audio Data** and
    **Other User Content** declarations against the provider retention configuration and
    require physical-iPhone proof that capture stops on background/end before submission.

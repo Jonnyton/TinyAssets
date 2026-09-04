@@ -18,6 +18,7 @@ release the app.
 | App ID registration | Complete 2026-09-03; verified in the signed-in Apple Developer Identifiers list |
 | App Store Connect record | Not created; a new Terms of Service is awaiting account-holder review |
 | SKU | `tinyassets-ios` |
+| User access | Limited Access; add no users (the Account Holder retains access) |
 | Primary language | English (U.S.) |
 | Version | `1.0.0` |
 | Build | Use the numeric GitHub Actions run number |
@@ -36,13 +37,18 @@ Store Connect API key in the same step.
 - **Subtitle (30 characters maximum):** `Your own AI universe`
 - **Promotional text (170 characters maximum):**
   `A persistent AI universe that runs real, multi-step work on your own LLM — the same universe on web, phone, and your chatbot.`
-- **Keywords (100 characters maximum):**
-  `AI,assistant,agent,automation,workflow,universe,productivity,LLM,OpenAI,Claude`
-- **Support URL:** `https://tinyassets.io`
+- **Keywords (100 bytes maximum; each longer than two characters):**
+  `assistant,agent,automation,workflow,universe,productivity,LLM,chat,projects,research`
+- **Support URL:** `https://tinyassets.io/legal#contact`
 - **Marketing URL:** `https://tinyassets.io`
 - **Privacy Policy URL:** `https://tinyassets.io/legal#app-data`
 - **User Privacy Choices URL:** `https://tinyassets.io/account`
 - **Copyright:** `2026 TinyAssets`
+
+The support and privacy anchors are reachable on the public site as of 2026-09-03.
+Do not enter or publish the privacy URL yet: the deployed page still omits iOS,
+and the legal page explicitly remains Draft v0 pending counsel. PR #2798 stages
+the iOS wording but does not resolve the legal-review gate.
 
 **Description:**
 
@@ -77,6 +83,45 @@ purchase or upgrade UI in the native shell. Sign-in, provider connection, chat,
 text-file attachment, account deletion, and the privacy link are the critical
 review paths. Private reviewer-account details belong only in App Store Connect,
 never in this repository.
+
+## TestFlight copy — staged, not transmitted
+
+- **Beta App Description:**
+  `TinyAssets is a persistent AI universe for real multi-step work. This beta validates the installed iPhone shell, sign-in return, conversation continuity, file attachment, and recovery behavior before App Store submission.`
+- **What to Test:**
+  `Test sign-in and the return to TinyAssets, reconnect after force-quit, send a substantive message, confirm the same conversation on web, attach a small text file, open Account and Privacy, and recover after briefly disabling the network. Voice, purchases, and ads are not included. Report any blank screen, dead sign-in callback, lost conversation, inaccessible control, layout overflow, or recovery failure.`
+- **Feedback Email:** enter an account-holder-controlled support address directly
+  in App Store Connect. Do not commit it here.
+- **Beta App Review Information:** provide a dedicated disposable review account
+  and account-holder contact details directly in App Store Connect. Never place
+  credentials or personal contact details in this repository.
+
+Keep automatic tester notification off until the founder approves invitations.
+Internal testing comes first. External testing may trigger TestFlight App Review
+and is a separate submission boundary.
+
+## Accessibility Nutrition Label plan — voluntary, not published
+
+Apple's label is voluntary as of 2026-09-03 but is expected to become mandatory.
+Do not claim support from web checks alone: Apple requires every common task to
+work with the named feature on the named device. The common-task set for iPhone is
+first launch, sign-in, provider connection, conversation, text-file attachment,
+Account/Privacy navigation, sign-out, and recovery after network interruption.
+
+| Feature | Current basis | Evidence required before claiming support |
+|---|---|---|
+| VoiceOver | The shared client uses semantic controls and ARIA status regions. | Complete every common task on the signed iPhone build with VoiceOver. |
+| Voice Control | Primary actions are ordinary labeled controls. | Complete every common task using Voice Control without touch. |
+| Larger Text | The layout is responsive, but iOS Dynamic Type behavior is unproven in the WebView. | Test the largest accessibility text sizes with no clipped or unreachable controls. |
+| Dark Interface | The app has a dark interface. | Verify every common-task screen, system prompt, and external-auth transition. |
+| Differentiate Without Color Alone | Primary states use words or icons in addition to color. | Verify errors, connection status, disabled controls, and focus states on device. |
+| Sufficient Contrast | Automated site sweeps are clean, but they do not prove the signed app flow. | Run contrast checks across every common-task state on device. |
+| Reduced Motion | No support claim is staged. | Audit all animation and add/verify reduced-motion behavior before claiming. |
+| Captions / Audio Descriptions | The voice-dark build contains no prerecorded audiovisual content. | Mark not applicable unless audiovisual content ships; re-evaluate if it does. |
+
+Leave all accessibility responses unclaimed until the signed-device matrix is
+complete. Publishing the label is a separate founder approval and cannot be
+undone for a published device response.
 
 ## App Privacy draft — first release with realtime voice dark
 
@@ -204,7 +249,8 @@ one, so the server must remain compatible with the last released shell.
    before the Apps page. The account holder must review and accept it. Then go to
    Apps → **+** → New App → iOS; name `TinyAssets`; primary
    language English (U.S.); select the registered bundle ID; SKU
-   `tinyassets-ios`; do not grant extra user access. Stop for confirmation
+   `tinyassets-ios`; choose Limited Access and add no users. The Account Holder
+   retains access. Stop for confirmation
    immediately before Create.
 3. Enter product-page metadata and stage the privacy/age/export drafts. Stop at
    any new agreement, DSA trader-status choice, privacy publication, or other
@@ -236,10 +282,16 @@ one, so the server must remain compatible with the last released shell.
   a physical iPhone is required for microphone-release proof if voice ships.
 - Founder approval of live privacy, age-rating, content-rights, export,
   availability, and DSA/trader declarations.
+- Final founder/counsel approval of the privacy policy, followed by PR #2798 land,
+  deploy, and a live check that the iOS disclosure is present.
 - Explicit approval for TestFlight upload, App Review submission, and publication.
 
-Official references checked 2026-09-03: [app information](https://developer.apple.com/help/app-store-connect/reference/app-information/app-information/),
+Official references checked 2026-09-03: [add a new app](https://developer.apple.com/help/app-store-connect/create-an-app-record/add-a-new-app/),
+[app information](https://developer.apple.com/help/app-store-connect/reference/app-information/app-information/),
+[platform version information](https://developer.apple.com/help/app-store-connect/reference/app-information/platform-version-information/),
 [app privacy](https://developer.apple.com/help/app-store-connect/manage-app-information/manage-app-privacy/),
 [age ratings](https://developer.apple.com/help/app-store-connect/reference/app-information/age-ratings-values-and-definitions/),
 [screenshots](https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications/),
-and [export compliance](https://developer.apple.com/help/app-store-connect/manage-app-information/overview-of-export-compliance/).
+[export compliance](https://developer.apple.com/help/app-store-connect/manage-app-information/overview-of-export-compliance/),
+[TestFlight test information](https://developer.apple.com/help/app-store-connect/test-a-beta-version/provide-test-information/),
+and [Accessibility Nutrition Labels](https://developer.apple.com/help/app-store-connect/manage-app-accessibility/overview-of-accessibility-nutrition-labels/).

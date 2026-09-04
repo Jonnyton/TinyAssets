@@ -99,8 +99,9 @@ What is ready, stated precisely — the gap here is wider than "just enrol":
 
 - The Capacitor iOS platform, the `tinyassets://` URL-scheme patch, and the listing
   and App-Privacy copy in `docs/ops/app-store-launch.md`. The complete Apple-specific
-  metadata, privacy/age/export drafts, screenshot manifest, smoke checklist, and portal
-  sequence are in `docs/ops/app-store-submission-packet.md`.
+  metadata, privacy/age/export drafts, screenshot manifest, TestFlight copy,
+  accessibility device matrix, smoke checklist, and portal sequence are in
+  `docs/ops/app-store-submission-packet.md`.
 - The generated `Info.plist` now includes the exact microphone purpose string for
   the incoming realtime-voice slice. Voice remains dark: a physical-iPhone run must
   prove background/stop release, and App Privacy must be re-evaluated against the
@@ -116,6 +117,14 @@ What is ready, stated precisely — the gap here is wider than "just enrol":
   1080×1920 Play captures are not valid Apple screenshot dimensions and must not be
   dressed up as native iPhone captures.
 - **A Mac is still not needed** — both iOS workflows run on `macos-15` CI runners.
+- **App Review risk remains:** the installed shell loads the remotely served client.
+  Apple's current Guideline 4.2 may treat that as a repackaged website even though the
+  product has real utility and native OAuth return. The evidence and pre-submission
+  decision are recorded in
+  `docs/concerns/2026-09-03-ios-web-wrapper-app-review-risk.md`.
+- **Privacy publication is not ready:** the public policy URL is reachable, but it
+  still says Draft v0 pending counsel and its deployed copy omits iOS. PR #2798
+  stages the iOS wording only; the final legal approval and post-deploy proof remain.
 
 Local evidence, Windows checkout, 2026-09-03:
 
@@ -132,12 +141,16 @@ Local evidence, Windows checkout, 2026-09-03:
 - `npm audit --audit-level=high` — passed after removing unused
   `@capacitor/assets`; three moderate `uuid` findings remain and are recorded in
   `docs/concerns/2026-09-03-capacitor-cli-uuid-advisory.md`.
+- `python -m pytest -q tests/test_mobile_ios_release.py` — 15 passed after adding
+  automated App Store metadata byte-limit, keyword, URL, and least-access guards.
+- PR #2798 exact-head `build-ios` on GitHub's `macos-15` runner — passed 2026-09-03
+  after the App ID registration update.
 
-The enrollment is $99/year with a one-to-two day identity check, and it needs the
-founder: an agent must not create accounts or execute payments. It is the long pole on
-the Apple side in exactly the way the 14-day closed test is on the Play side, so it is
-worth starting before anything else. Until it exists and supplies signing assets,
-the release workflow cannot produce an installable IPA or reach TestFlight.
+Membership is active and the explicit App ID exists. The next account gate is the new
+App Store Connect Terms of Service, which remains untouched for the account holder to
+review. The app record does not exist, and no signing certificate, provisioning profile,
+or API key has been created. Until those separately approved steps are complete, the
+release workflow cannot produce an installable IPA or reach TestFlight.
 
 ---
 

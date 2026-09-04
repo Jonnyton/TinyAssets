@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -16,6 +17,7 @@ RELEASE_WORKFLOW = REPO / ".github" / "workflows" / "ios-release.yml"
 SCREENSHOT_MANIFEST = (
     REPO / "docs" / "ops" / "app-store-assets" / "screenshot-manifest.json"
 )
+SUBMISSION_PACKET = REPO / "docs" / "ops" / "app-store-submission-packet.md"
 
 
 def _load_asset_installer():
@@ -201,6 +203,41 @@ def test_app_store_screenshot_manifest_is_an_honest_ios_capture_contract() -> No
     rules = " ".join(manifest["capture_rules"])
     assert "actual iOS app" in rules
     assert "Do not resize or frame Android screenshots" in rules
+
+
+def test_app_store_metadata_packet_meets_apple_field_constraints() -> None:
+    packet = SUBMISSION_PACKET.read_text(encoding="utf-8")
+
+    def field(label: str) -> str:
+        match = re.search(rf"\*\*{re.escape(label)}[^\n]*\*\*\s*`([^`]*)`", packet)
+        assert match, f"missing copy-ready {label} field"
+        return match.group(1)
+
+    assert len(field("Name").encode("utf-8")) <= 30
+    assert len(field("Subtitle").encode("utf-8")) <= 30
+    assert len(field("Promotional text").encode("utf-8")) <= 170
+    keywords = field("Keywords").split(",")
+    assert sum(len(keyword.encode("utf-8")) for keyword in keywords) + len(keywords) - 1 <= 100
+    assert all(len(keyword) > 2 for keyword in keywords)
+    assert not {"openai", "claude"} & {keyword.casefold() for keyword in keywords}
+
+    assert field("Support URL") == "https://tinyassets.io/legal#contact"
+    assert field("Privacy Policy URL") == "https://tinyassets.io/legal#app-data"
+    assert field("User Privacy Choices URL") == "https://tinyassets.io/account"
+    assert "| User access | Limited Access; add no users" in packet
+
+    description_match = re.search(
+        r"\*\*Description:\*\*\s*(.*?)\s*Review notes should say",
+        packet,
+        flags=re.DOTALL,
+    )
+    assert description_match
+    description = "\n".join(
+        line.removeprefix("> ")
+        for line in description_match.group(1).splitlines()
+        if line != ">"
+    ).strip()
+    assert 0 < len(description) <= 4_000
 
 
 def test_ios_release_is_manual_and_upload_is_opt_in() -> None:

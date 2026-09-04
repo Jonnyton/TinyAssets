@@ -118,10 +118,10 @@ Reuse the Play content in `google-play-launch.md` §4 verbatim where it fits:
 - **Subtitle (≤30 chars):** `Your own AI universe`
 - **Promotional text (≤170):** `A persistent AI universe that runs real, multi-step work on your own LLM — the same universe on web, phone, and your chatbot.`
 - **Description:** the full description from `google-play-launch.md` §4.
-- **Keywords (≤100 chars):** `AI,assistant,agent,automation,workflow,universe,productivity,LLM,OpenAI,Claude`
-- **Support URL:** https://tinyassets.io
+- **Keywords (≤100 bytes; each longer than two characters):** `assistant,agent,automation,workflow,universe,productivity,LLM,chat,projects,research`
+- **Support URL:** https://tinyassets.io/legal#contact
 - **Marketing URL:** https://tinyassets.io
-- **Privacy Policy URL:** https://tinyassets.io/legal (the app-data section added for Play covers iOS too)
+- **Privacy Policy URL:** https://tinyassets.io/legal#app-data (the app-data section added for Play covers iOS too)
 - **Category:** Productivity
 
 ---
@@ -220,11 +220,14 @@ and [unavailability procedure](https://developer.apple.com/help/app-store-connec
 - [x] Manual signed IPA + opt-in TestFlight workflow (`ios-release.yml`)
 - [x] Listing content + App Privacy answers (§4, §5)
 - [x] Apple-specific metadata, age-rating/export drafts, screenshot manifest, and device checklist
+- [x] TestFlight copy and voluntary Accessibility Nutrition Label device matrix staged
 - [x] Founder: Apple Developer Program enrollment + $99 (§0)
 - [x] Apple: membership activated; portal shows Team ID and renewal date (2026-09-03)
 - [x] Apple: explicit App ID `io.tinyassets.app` registered and verified (2026-09-03)
 - [ ] Founder: review the new App Store Connect Terms of Service; then create the app record (§0)
+- [ ] Founder/counsel: approve final privacy policy; then land/deploy and verify the iOS wording
 - [x] Protected `app-store` environment: founder approval + `main` only (§3)
 - [ ] Founder: signing assets / API key stored in `app-store` (§3)
 - [ ] Screenshots captured (§6)
 - [ ] Build uploaded → TestFlight verified → submitted/manual release (§7)
+- [ ] Founder: decide current-shell submission vs native differentiator before App Review
