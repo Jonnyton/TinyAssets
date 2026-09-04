@@ -26,25 +26,36 @@ signed IPA are staged; the Xcode 26 upload fix, screenshots, device proof, and r
   graphics, privacy policy URL, in-app privacy link, account deletion, and the
   Ads / Government / Financial / Health declarations are all filled.
 - **Content rating** submitted 2026-09-02 — Everyone / PEGI 3 / USK 0 / ClassInd L.
-- **Data safety** answered and saved as a draft (it cannot be *submitted* yet; see below).
+- **Data safety** corrected to list password + OAuth account creation, saved, and
+  Actioned; it has not been sent for review.
+- **Advertising ID** saved as **No** after the shipped artifact, current merged
+  manifest, and locked dependencies all verified that no advertising ID is used. It
+  is Actioned in Play but has not been sent for review.
+- WorkOS production now supports Email + Password with its recommended strong policy.
+  The founder/admin remains `jonathan.m.farnsworth@gmail.com`. The dedicated reviewer
+  identity is `play-review@tinyassets.io` (`user_01M1N3BFV6N1V1C9PP1NEWCCHP`), routed
+  through the TinyAssets `info@tinyassets.io` mailbox to the founder's controlled Gmail.
+  WorkOS shows it Verified + Active, with no organization or connected accounts and two
+  successful password sign-ins. Both sign-ins reached the same isolated empty universe.
+  Play **Sign in details** is saved and Actioned with that account; the mistaken Simkal
+  plus-alias reviewer was deleted after the replacement was proven.
 - **A signed bundle is live on the internal testing track**: release `1 (1.0)`,
   published 2026-09-03 11:10, 3.1 MB.
   Opt-in link: <https://play.google.com/apps/internaltest/4701716760893982267>
-- App content checklist reads **8 of 11**.
+- App content now shows **10 actioned declarations** and **1 needing attention**.
 
 ### The wall, stated precisely
 
-Google Play has three gates stacked in a fixed order, and none of them can be skipped:
+Google Play had three gates stacked in a fixed order. All three are now complete:
 
-1. **Sign in details** needs working reviewer credentials. Our app is behind WorkOS
-   AuthKit, and the live sign-in page offers only *"Continue with SSO"* and
-   *"Continue with Google"* — there is **no email-and-password option**, so there is
-   no credential we could hand Google today. Play's own dialog says reviewers "are
-   unable to create accounts, use their own existing accounts, or use free trials."
-2. **Target audience and content** refuses to open until (1) is complete. Verified by
-   opening it: *"You must complete the Sign in details section before starting the
-   Target audience and content questionnaire."*
-3. **Data safety** cannot be submitted until (2) is done.
+1. **Sign in details — done 2026-09-03.** The durable TinyAssets alias, isolated WorkOS
+   user, two clean password sign-ins, and saved Play instruction set are all verified.
+   The optional Google/partner-device feedback switch was left off. Nothing was sent
+   for review.
+2. **Target audience and content — done 2026-09-03.** Saved as **18 and over** and
+   Actioned; not sent for review.
+3. **Data safety — done 2026-09-03.** The verified data-flow answers are Actioned,
+   including both password and OAuth account creation; not sent for review.
 
 Separately, and independent of those three: a personal developer account must run a
 **closed test with at least 12 testers, opted in continuously for 14 days**, before it
@@ -57,8 +68,10 @@ agent does shortens it.
 
 ### What the next session should actually do
 
-- Nothing on Play is agent-unblockable right now. Both remaining Play items are in
-  `docs/host-actions.md` and need the founder.
+- The only App content declaration needing attention is **Foreground service
+  permissions**. Play requires a public demonstration-video link; no verified redacted
+  phone recording exists yet. The exact shot list is in `docs/host-actions.md`. Do not
+  submit or send anything for review before that evidence exists.
 - **Do not** re-derive the `gh secret set` situation. It is denied by the harness
   classifier (tested four times, including piping from a file so no value entered
   argv). Do not route around it with `gh api` — that bypasses the intent of the

@@ -368,15 +368,46 @@ They run in parallel and neither depends on the other.
 
 What it needs from you:
 
-1. **Twelve people with Google accounts** who will opt in and stay opted in. They do not
-   have to use the app daily — they have to remain on the tester list for the full 14
-   days. Removing someone mid-window can reset progress, so over-recruit rather than
-   land on exactly twelve.
-2. Play Console → **Test and release → Testing → Closed testing** → create a track and
-   add them, by email list or Google Group. A Google Group is easier to change later.
-3. Tell me when they are in, and I will take the release itself — the build is already
-   signed and the internal-testing track is live, so promoting a bundle to the closed
-   track is not new work.
+1. Recruit **15–18 people with Google accounts** so ordinary drop-off cannot take the
+   continuously opted-in count below 12. Ask for a clear yes before adding an address;
+   do not place personal email addresses in this repository.
+2. Play Console → **Test and release → Testing → Closed testing** → create one track.
+   Prefer a dedicated Google Group because membership can be maintained without
+   rewriting the release; an email list is acceptable if that is simpler.
+3. Promote the already phone-verified bundle (or a strictly newer version code), copy
+   the opt-in link, and send the invitation below. The 14-day clock begins only after
+   at least 12 people have actually opted in, not when invitations are sent.
+4. Keep a private tracker with invitee, consent, opt-in confirmed, install confirmed,
+   Android/device, three task results, feedback, and opt-out date. Check the Play
+   tester count daily and recruit replacements early. Never remove a tester during the
+   window unless they ask to leave.
+
+Suggested invitation (send only after the closed-track link exists):
+
+> TinyAssets is running a private 14-day Google Play test. Please open **[opt-in
+> link]** while signed into the Google account you gave me, tap **Become a tester**,
+> install from Play, and stay opted in through **[end date and timezone]**. During the
+> test, please try: (1) launch/sign-in, (2) open Connect and return without exposing a
+> credential, and (3) send one ordinary test message if your account is configured.
+> Report crashes, stuck screens, sign-in trouble, or confusing copy at **[private
+> feedback route]**. Do not enter confidential or regulated information. You may leave
+> at any time; tell me so I can replace the test slot.
+
+Engagement plan — Google can reject a production-access application for insufficient
+testing even when the count/duration minimum was met:
+
+| When | Operator check | Tester request |
+|---|---|---|
+| Day 0 | Confirm ≥12 actual opt-ins in Play; save the start timestamp and expected end timestamp. | Opt in and install from Play. |
+| Days 1–3 | Triage install/sign-in failures; replace drop-offs before the count falls below 12. | Complete launch/sign-in and one navigation task. |
+| Days 4–10 | Review feedback plus Play crashes/ANRs; ship fixes only with a higher version code and re-smoke. | Exercise Connect return/cancel and an ordinary message where configured. |
+| Days 11–13 | Confirm ≥12 remain opted in and all launch-blocking defects have dispositions. | Recheck the latest build and submit final feedback. |
+| After 14 complete days | Capture the Console eligibility state before applying for production access. | No action unless asked to verify a fix. |
+
+This does not require daily use from every person, but it does require a real,
+representative test rather than twelve idle list entries. Google's current rule and
+engagement guidance are at
+<https://support.google.com/googleplay/android-developer/answer/14151465>.
 
 After the 14 days: apply for production access, which Google reviews separately, and
 only then can the app be promoted to Production and be publicly downloadable.
@@ -384,7 +415,7 @@ only then can the app be promoted to Production and be publicly downloadable.
 Do not confuse this with the internal-testing track already running — internal testing
 does not count toward the requirement, no matter how long it runs.
 
-### Google Play: a reviewer test account — and AuthKit has no password to give it
+### Google Play: reusable reviewer account — DONE 2026-09-03
 
 Play Console -> App content -> **Sign in details** (formerly "App access"). Our app is
 behind WorkOS AuthKit, so the honest answer to "Is any part of your app restricted?" is
@@ -396,52 +427,49 @@ exactly what we use. Google then warns, in the dialog itself:
 > existing accounts**, or use free trials to access your app. They are also unable to
 > contact you for more information."
 
-**The fork in the earlier draft of this file is now closed.** I checked the live AuthKit
-sign-in page (`https://unassuming-environment-16.authkit.app/`, the issuer the served app
-config actually names) on 2026-09-02. It offers exactly two things: an email box whose
-button reads **"Continue with SSO"**, and **"Continue with Google"**. There is no
-email-and-password option. So password sign-in is **not enabled** in our WorkOS
-environment, and no credential we could hand Google today would work.
+**Live identity reconciliation, 2026-09-03:** the WorkOS dashboard admin and sole
+TinyAssets team member remains Jonathan Farnsworth, `jonathan.m.farnsworth@gmail.com`,
+with the Admin role. Google Play Console is also signed in with that address.
 
-That leaves one clean action and one poor one:
+Email + Password is **enabled** in the production WorkOS environment with the
+recommended strong policy (10-character minimum, complexity score 3, breached-password
+rejection). GoDaddy Email & Office now has the dedicated alias
+`play-review@tinyassets.io` on the TinyAssets-controlled `info@tinyassets.io` mailbox;
+that mailbox forwards to the founder's primary Gmail and keeps its own copy.
 
-- **Enable Email + Password authentication in the WorkOS dashboard** (Authentication ->
-  sign-in methods), then create a single review account such as `play-review@tinyassets.io`
-  and sign into the app once so its universe exists. This is the one I recommend: it
-  produces a reusable credential with no second factor, which is what Google's own guidance
-  asks for ("provide reusable sign in details that don't expire").
-- **Hand over a dedicated Google account.** Works in principle, but a fresh Google account
-  signing in from a reviewer's machine invites exactly the 2-step-verification and
-  new-device challenges Google's guidance tells us to avoid. Prefer the first option.
+The dedicated AuthKit user **Play Reviewer** is `play-review@tinyassets.io`, WorkOS id
+`user_01M1N3BFV6N1V1C9PP1NEWCCHP`. WorkOS shows Verified + Active, Email + Password,
+no organization membership, no connected accounts, and sign-in count **2**. The two
+password authentications reached the same isolated empty reviewer universe. After the
+one-time address verification, the repeat sign-in required no MFA or email challenge;
+the intervening Cloudflare human check was browser abuse protection, not an account
+second factor. Both sessions were signed out after proof.
 
-Why this is yours and not mine: I must not create accounts, and I must not type a password
-into any field. Both halves of this are the parts I am barred from.
+Play Console now shows **Sign in details** under Actioned, last edited 2026-09-03, with
+the `Play Reviewer` credentials and observed instructions: sign in with Email + Password,
+then choose **Skip for now** on the Connect screen to enter the empty reviewer universe.
+No organization, integrations, connected accounts, or founder data are attached. The
+optional Google/trusted-partner device feedback switch is off. The credential was saved
+as a draft only; it was not sent for review. The actual password exists only in Play's
+credential field and is intentionally absent from this repository.
 
-**The exact form, so it is a two-minute job when you have the credential.** "Add details"
-opens a dialog with:
+The mistaken `simkalholdingsllc+tinyassets-play-review@gmail.com` WorkOS user was
+permanently deleted only after the correct alias, delivery path, two sign-ins, and Play
+save were all proven. It never became the saved Play credential.
 
-| Field | Required | What to put |
-|---|---|---|
-| Name | yes | `Reviewer account` |
-| Username, email address, or phone number | no* | the review account's email |
-| Password | no* | the review account's password |
-| Any other information required to access your app | no | see the paragraph below |
-| "…provide full access to all the features and content within this app" | checkbox | tick it |
+WorkOS documents that AuthKit supports Email + Password and that the hosted UI exposes
+only the methods enabled in the dashboard
+(<https://workos.com/docs/authkit/email-password>,
+<https://workos.com/docs/authkit/hosted-ui>). Keep this reviewer as a dedicated password
+user; do not attach a founder/personal provider credential. Re-check the saved credential
+immediately before every submitted build. Google's reviewer-access requirements are at
+<https://support.google.com/googleplay/android-developer/answer/15748846>.
 
-\* Marked optional by the form, but leaving them empty is what gets an app rejected —
-the reviewer has no other way in.
-
-For the free-text box, the one thing a reviewer will otherwise trip on is that **the app
-needs an AI provider connected before the chat does anything**. Either connect one on the
-review account beforehand, or say so there and point at the "Skip for now" control.
-
-**What it actually gates (corrected 2026-09-02):** Target audience and content refuses to
-start until Sign in details is complete — verified by opening it and reading the block:
-"You must complete the Sign in details section before starting the Target audience and
-content questionnaire." Data safety is answered and saved as a draft but cannot be
-submitted until Target audience is done. So this gates **two** remaining rows, not three.
-Content rating was *not* gated and is now complete (IARC, submitted 2026-09-02, Everyone /
-PEGI 3 / USK 0 / ClassInd L).
+**What it gated:** Sign in details, Target audience (**18 and over**), and Data safety
+are now Actioned and waiting in Publishing overview; nothing was sent for review.
+Data safety was corrected to list both password and OAuth account creation. Content
+rating remains complete (IARC, submitted 2026-09-02, Everyone / PEGI 3 / USK 0 /
+ClassInd L).
 
 **This does not block a real install.** Play's internal testing track explicitly works
 "before you've finished setting up your app" — the App content checklist gates *production*
@@ -490,14 +518,40 @@ What remains after the secrets, and who does it (`docs/ops/google-play-launch.md
 | Play Console: app created, declarations accepted | **done** 2026-09-02 |
 | Store listing, graphics, privacy URL, Ads/Government/Financial/Health | **done** |
 | Content rating (IARC) | **done** 2026-09-02 — Everyone / PEGI 3 |
-| Data safety | answered, **saved as a draft**; cannot submit until Target audience is done |
+| Data safety | **done** 2026-09-03 — Actioned with password + OAuth account creation; not sent for review |
 | Internal-testing tester list | **done** — "Founder devices" attached to the track |
 | Build the signed AAB | **done** 2026-09-03 — built and signed in the container (`mobile/container/`), no secret needed |
 | Internal-testing release: upload the AAB, roll out | **done** 2026-09-03 11:10 — release `1 (1.0)`, track Active, 3.1 MB |
 | Verify the loop on a real phone (install from the internal-test link, sign in, chat) | **you — this is the live one.** Opt-in on the founder's Google account: https://play.google.com/apps/internaltest/4701716760893982267 |
-| Sign in details → Target audience → Data safety submit | blocked on the reviewer account above |
+| Sign in details | **done** 2026-09-03 — Actioned with the dedicated reviewer; not sent for review |
+| Target audience | **done** 2026-09-03 — 18 and over, Actioned; not sent for review |
+| Advertising ID declaration | **done 2026-09-03** — saved No after shipped-artifact, exact-candidate merged-manifest, and dependency verification; actioned but not sent for review |
+| Foreground-service declaration + behavior video | **you** — exact gate below |
+| Replace the unsafe uploaded conversation screenshot with staged `01-sign-in.png` | **done 2026-09-03** — live draft saved and both retained filenames verified; not sent for review |
 | Closed test: 12 testers for 14 days, then apply for production access | **you** |
 | Promote to Production → submit for review → **Roll out** | you (final click) |
+
+### Google Play: review and submit the foreground-service declaration
+
+The Android bundle declares a `dataSync` foreground service because **Connect
+OpenAI** starts a short-lived local callback listener while subscription OAuth is
+open in the external browser. For apps targeting Android 14+, Play requires a
+foreground-service declaration with the use case, interruption/defer impact, and a
+demonstration video. This is a Console attestation, so the final truth check and
+submission are yours.
+
+After installing the next candidate from Play:
+
+1. Record one short phone video: tap **Connect OpenAI**, show the persistent
+   notification while the browser is open, return to TinyAssets, then show the
+   notification disappearing. Redact all account identifiers and secrets.
+2. In Play Console, open **App content → Foreground service permissions** and use
+   the staged wording and video shot list in
+   `docs/ops/android-release-verification.md`.
+3. Submit only if the recording confirms that exact behavior. If the notification
+   remains, the callback cannot be interrupted as described, or the function has
+   changed, stop and return the discrepancy to an agent instead of attesting to the
+   draft.
 
 ### Mint the PAT that unblocks the deploy chain
 

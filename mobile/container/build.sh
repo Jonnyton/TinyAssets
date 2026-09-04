@@ -39,15 +39,23 @@ grep -n 'android:scheme="tinyassets"' android/app/src/main/AndroidManifest.xml
 echo "=== launcher icon + splash ==="
 python3 scripts/add_app_icons.py
 
+echo "=== release identity, version, manifest + artwork gate ==="
+python3 scripts/configure_android_release.py
+python3 scripts/verify_android_release.py --artwork-only
+python3 scripts/verify_android_release.py
+
 echo "=== declared SDK levels ==="
 cat android/variables.gradle
 
 echo "=== version code / name ==="
 grep -nE "versionCode|versionName" android/app/build.gradle
 
-echo "=== gradle bundleRelease ==="
+echo "=== gradle lintRelease + bundleRelease ==="
 cd android
-./gradlew bundleRelease --no-daemon --stacktrace
+./gradlew lintRelease bundleRelease --no-daemon --stacktrace
+cd ..
+python3 scripts/verify_android_release.py --merged
+cd android
 
 echo "=== locate bundle ==="
 # android-release.yml asserts the located path is non-empty before it signs
