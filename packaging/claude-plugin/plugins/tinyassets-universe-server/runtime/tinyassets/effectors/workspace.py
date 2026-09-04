@@ -772,6 +772,7 @@ def _checkout(
     host: str,
     repo: str,
     execute: Any,
+    timeout_seconds: float,
 ) -> dict[str, Any]:
     from tinyassets import workspace_pool
     from tinyassets.workspace_git import populate_workspace_from_bundle
@@ -801,7 +802,7 @@ def _checkout(
             f"startup reconciliation failed: {type(exc).__name__}",
         ) from None
 
-    def _admit() -> Any:
+    def _admit(*, wait_s: float = 0.0) -> Any:
         return workspace_pool.admit(
             db,
             universe_id=universe_id,
@@ -814,6 +815,7 @@ def _checkout(
             max_bytes=_DEFAULT_MAX_CHECKOUT_BYTES,
             pool_root=scratch_pool_root(base_path),
             universe_root=universe_workspace_root(base_path),
+            wait_s=wait_s,
             **_universe_quota_kwargs(storage, base_path),
         )
 
@@ -835,7 +837,7 @@ def _checkout(
             logger.exception("workspace sweep before retry failed")
             raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
         try:
-            lease = _admit()
+            lease = _admit(wait_s=max(0.0, float(timeout_seconds)))
         except Exception as retry_exc:
             raise _Refused(
                 _pool_error_kind(retry_exc),
@@ -1043,6 +1045,7 @@ def _create(
     run_id: str,
     universe_id: str,
     chain: Any,
+    timeout_seconds: float,
 ) -> dict[str, Any]:
     """An EMPTY workspace, born from nothing but the universe's own storage.
 
@@ -1111,7 +1114,7 @@ def _create(
                 "it, and re-opening one is not available in this release",
             )
 
-    def _admit() -> Any:
+    def _admit(*, wait_s: float = 0.0) -> Any:
         return workspace_pool.admit(
             db,
             universe_id=universe_id,
@@ -1125,6 +1128,7 @@ def _create(
             max_bytes=_DEFAULT_MAX_CHECKOUT_BYTES,
             pool_root=scratch_pool_root(base_path),
             universe_root=universe_workspace_root(base_path),
+            wait_s=wait_s,
             **_universe_quota_kwargs(storage, base_path),
         )
 
@@ -1142,7 +1146,7 @@ def _create(
             logger.exception("workspace sweep before retry failed")
             raise _Refused(kind, f"workspace not admitted: {_pool_detail(exc)}") from None
         try:
-            lease = _admit()
+            lease = _admit(wait_s=max(0.0, float(timeout_seconds)))
         except Exception as retry_exc:
             raise _Refused(
                 _pool_error_kind(retry_exc),
@@ -1591,6 +1595,7 @@ def run_workspace_effector(
     prior_effects: dict[str, Any] | None = None,
     chain: Any = None,
     execute: Any = None,
+    timeout_seconds: float = 0.0,
 ) -> dict[str, Any]:
     """Dispatch one ``workspace`` packet. NEVER raises.
 
@@ -1609,6 +1614,7 @@ def run_workspace_effector(
             chain=chain,
             execute=execute,
             prior_effects=prior_effects,
+            timeout_seconds=timeout_seconds,
         )
     except _Refused as refused:
         return {"error": refused.error, "error_kind": refused.kind, **refused.extra}
@@ -1628,6 +1634,7 @@ def _run(
     chain: Any,
     execute: Any,
     prior_effects: dict[str, Any] | None = None,
+    timeout_seconds: float = 0.0,
 ) -> dict[str, Any]:
     matched_key, packet = _find_packet(output_keys=output_keys, run_state=run_state)
     if packet is None:
@@ -1680,6 +1687,7 @@ def _run(
             run_id=run_id,
             universe_id=universe_id,
             chain=chain,
+            timeout_seconds=timeout_seconds,
         )
         evidence["matched_output_key"] = matched_key
         return evidence
@@ -1776,7 +1784,10 @@ def _run(
         "prior_effects": prior_effects,
     }
     if op == "checkout":
-        evidence = _checkout(**{k: v for k, v in common.items() if k != "prior_effects"})
+        evidence = _checkout(
+            **{k: v for k, v in common.items() if k != "prior_effects"},
+            timeout_seconds=timeout_seconds,
+        )
     else:
         evidence = _push(**common)
     evidence["matched_output_key"] = matched_key
