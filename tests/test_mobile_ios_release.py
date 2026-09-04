@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -13,6 +14,10 @@ REPO = Path(__file__).resolve().parents[1]
 MOBILE = REPO / "mobile"
 BUILD_WORKFLOW = REPO / ".github" / "workflows" / "ios-build.yml"
 RELEASE_WORKFLOW = REPO / ".github" / "workflows" / "ios-release.yml"
+SCREENSHOT_MANIFEST = (
+    REPO / "docs" / "ops" / "app-store-assets" / "screenshot-manifest.json"
+)
+SUBMISSION_PACKET = REPO / "docs" / "ops" / "app-store-submission-packet.md"
 
 
 def _load_asset_installer():
@@ -130,6 +135,8 @@ def test_ios_configuration_installer_adds_release_keys_idempotently(
     assert first.count("<string>tinyassets</string>") == 1
     assert first.count("<key>NSMicrophoneUsageDescription</key>") == 1
     assert first.count(f"<string>{installer.MICROPHONE_PURPOSE}</string>") == 1
+    assert first.count("<key>ITSAppUsesNonExemptEncryption</key>") == 1
+    assert "<key>ITSAppUsesNonExemptEncryption</key>\n\t<false/>" in first
 
     assert installer.install_configuration(info_plist) == 0
     assert info_plist.read_text(encoding="utf-8") == first
@@ -152,10 +159,102 @@ def test_ios_configuration_installer_rejects_conflicting_microphone_copy(
     assert "Unexpected copy" in info_plist.read_text(encoding="utf-8")
 
 
+def test_ios_configuration_installer_rejects_non_exempt_encryption_declaration(
+    tmp_path: Path,
+) -> None:
+    installer = _load_configuration_installer()
+    info_plist = tmp_path / "Info.plist"
+    info_plist.write_text(
+        "<plist>\n<dict>\n"
+        "<key>ITSAppUsesNonExemptEncryption</key>\n"
+        "<true/>\n"
+        "</dict>\n</plist>\n",
+        encoding="utf-8",
+    )
+
+    assert installer.install_configuration(info_plist) == 1
+    assert "<true/>" in info_plist.read_text(encoding="utf-8")
+
+
 def test_ios_workflows_verify_microphone_purpose_key() -> None:
     expected = 'grep -q "<key>NSMicrophoneUsageDescription</key>"'
     assert expected in BUILD_WORKFLOW.read_text(encoding="utf-8")
     assert expected in RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+
+def test_ios_workflows_verify_export_compliance_key() -> None:
+    expected = 'grep -q "<key>ITSAppUsesNonExemptEncryption</key>"'
+    assert expected in BUILD_WORKFLOW.read_text(encoding="utf-8")
+    assert expected in RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+
+def test_ios_workflows_select_the_app_store_required_sdk() -> None:
+    for workflow in (BUILD_WORKFLOW, RELEASE_WORKFLOW):
+        text = workflow.read_text(encoding="utf-8")
+        assert "/Applications/Xcode_26.3.app/Contents/Developer" in text
+        assert '[[ "$sdk_version" == 26.* ]]' in text
+
+
+def test_app_store_screenshot_manifest_is_an_honest_ios_capture_contract() -> None:
+    manifest = json.loads(SCREENSHOT_MANIFEST.read_text(encoding="utf-8"))
+    assert manifest["platform"] == "iOS"
+    assert 1 <= manifest["minimum_count"] <= manifest["maximum_count"] <= 10
+    assert manifest["alpha_allowed"] is False
+    assert manifest["preferred_display"] == "6.5-inch iPhone"
+    assert set(manifest["accepted_pixel_sizes"]) == {
+        "1242x2688",
+        "1284x2778",
+    }
+    assert len(manifest["shots"]) == 5
+    assert all(shot["status"] == "blocked_until_ios_capture" for shot in manifest["shots"])
+    rules = " ".join(manifest["capture_rules"])
+    assert "actual iOS app" in rules
+    assert "Do not resize or frame Android screenshots" in rules
+
+
+def test_app_store_metadata_packet_meets_apple_field_constraints() -> None:
+    packet = SUBMISSION_PACKET.read_text(encoding="utf-8")
+
+    def field(label: str) -> str:
+        match = re.search(rf"\*\*{re.escape(label)}[^\n]*\*\*\s*`([^`]*)`", packet)
+        assert match, f"missing copy-ready {label} field"
+        return match.group(1)
+
+    assert len(field("Name").encode("utf-8")) <= 30
+    assert len(field("Subtitle").encode("utf-8")) <= 30
+    assert len(field("Promotional text").encode("utf-8")) <= 170
+    keywords = field("Keywords").split(",")
+    assert sum(len(keyword.encode("utf-8")) for keyword in keywords) + len(keywords) - 1 <= 100
+    assert all(len(keyword) > 2 for keyword in keywords)
+    assert not {"openai", "claude"} & {keyword.casefold() for keyword in keywords}
+
+    assert field("Support URL") == "https://tinyassets.io/legal#contact"
+    assert field("Privacy Policy URL") == "https://tinyassets.io/legal#app-data"
+    assert field("User Privacy Choices URL") == "https://tinyassets.io/account"
+    assert "| User access | Full Access for the existing Account Holder" in packet
+    assert "no additional user is selected" in packet
+    assert "| App Store Connect record | Created and verified 2026-09-03" in packet
+    assert "Apple ID `6808434444`" in packet
+    assert "| TestFlight | Empty internal group `Internal`; automatic distribution off" in packet
+    assert "all four saved draft entries use App Functionality only" in packet
+    assert "App Functionality; Account Management" not in packet
+    assert "it is not published and its legal-policy URLs" in packet
+    assert "2048-bit\n   Apple Distribution certificate/private-key pair" in packet
+    assert "`TinyAssets App Store 2026` App Store\n   profile binds `io.tinyassets.app`" in packet
+    assert "App Store Connect API access has not been" not in packet
+
+    description_match = re.search(
+        r"\*\*Description:\*\*\s*(.*?)\s*Review notes should say",
+        packet,
+        flags=re.DOTALL,
+    )
+    assert description_match
+    description = "\n".join(
+        line.removeprefix("> ")
+        for line in description_match.group(1).splitlines()
+        if line != ">"
+    ).strip()
+    assert 0 < len(description) <= 4_000
 
 
 def test_ios_release_is_manual_and_upload_is_opt_in() -> None:

@@ -12,9 +12,9 @@ Runbooks stay where they are — `docs/ops/google-play-launch.md` and
 ## The one-line status
 
 **Google Play: installable today, but only by invited testers.** Public availability
-is at minimum 14 days away and needs 12 real people. **Apple: the code/build lane is
-ready; account enrollment, signing assets, the app record, screenshots, and review
-still require founder-owned state.**
+is at minimum 14 days away and needs 12 real people. **Apple: the App Store record,
+metadata, unpublished privacy draft, signing/profile/API credentials, and a verified
+signed IPA are staged; the Xcode 26 upload fix, screenshots, device proof, and review remain.**
 
 ---
 
@@ -83,32 +83,39 @@ release into one `gh workflow run` — but nothing waits on it.
 
 ## Apple App Store
 
-**The Apple Account is created and signed in; Developer Program enrollment is next.**
-Checked 2026-09-03, not assumed: the official form accepted every field but returned only
-"Your account cannot be created at this time." No field-specific validation or new Apple
-email appeared, and Apple System Status reported Apple Account services available. That
-does not identify a phone, region, account-state, device-limit, or browser/network cause.
-Apple Support then reported making an unspecified change on its side and asked for one
-new creation attempt. After the account holder retried, the browser reached the signed-in
-Apple Account **Sign-In & Security** page and showed two-factor authentication with a
-trusted phone number. Account creation is complete. Apple Developer Program enrollment,
-payment, and identity confirmation are not complete. The account holder confirmed the
-account result, closed the completed support chat, accepted the Apple Developer Agreement,
-and declined optional developer-news email. The account holder then completed **Confirm
-your personal information** and Secure Checkout. Apple now shows the order-confirmation
-page, so enrollment submission and membership purchase are complete. Membership activation
-is not complete: the signed-in developer portal shows **Pending** and says the purchase may
-take up to 48 hours to process. Do not click **complete your purchase** again or risk a
-duplicate charge. No signing or App Store Connect credentials have been created.
+**Apple Developer Program membership is active.** Checked 2026-09-03, not inferred from
+the purchase receipt: the signed-in portal exposes App Store Connect and Certificates,
+IDs & Profiles, and shows a Team ID plus a 2027 renewal date. The Apple Developer Program
+License Agreement and Apple Developer Agreement both show accepted on 2026-09-03. The
+explicit App ID
+`io.tinyassets.app` was registered and verified on 2026-09-03 in the signed-in Apple
+Developer browser: the Identifiers list showed `TinyAssets iOS` and the exact bundle ID.
+The founder accepted App Store Connect Terms of Service V100 (last updated 04 June
+2018) on 2026-09-03. The TinyAssets App Store Connect record now exists (Apple ID
+`6808434444`), with iOS 1.0 in **Prepare for Submission**. Product metadata and
+manual release are saved; the four-type privacy draft is configured but unpublished,
+with legal-policy URLs blank. An empty `Internal` TestFlight group exists with automatic
+distribution off, 0 testers, and 0 builds. An Apple Distribution certificate/private
+key, matching App Store profile, and Developer-role CI upload key now exist; all six
+required values are protected GitHub environment secrets. Signed IPA 1.0.0 (1) is
+verified. Apple's upload rejected build 2 only because the runner defaulted to Xcode
+16.4/iOS 18.5 while iOS SDK 26 is mandatory; exact reviewed revision `6ccb3d24`
+selects Xcode 26.3 and has a Claude Opus **AGREE** receipt. The exact remaining values and confirmation boundaries are in
+`docs/ops/app-store-submission-packet.md`.
 
 What is ready, stated precisely — the gap here is wider than "just enrol":
 
 - The Capacitor iOS platform, the `tinyassets://` URL-scheme patch, and the listing
-  and App-Privacy copy in `docs/ops/app-store-launch.md`.
+  and App-Privacy copy in `docs/ops/app-store-launch.md`. The complete Apple-specific
+  metadata, privacy/age/export drafts, screenshot manifest, TestFlight copy,
+  accessibility device matrix, smoke checklist, and portal sequence are in
+  `docs/ops/app-store-submission-packet.md`.
 - The generated `Info.plist` now includes the exact microphone purpose string for
   the incoming realtime-voice slice. Voice remains dark: a physical-iPhone run must
   prove background/stop release, and App Privacy must be re-evaluated against the
   provider retention configuration before a voice-enabled build can be submitted.
+- The generated `Info.plist` declares `ITSAppUsesNonExemptEncryption = false`; the
+  current shell uses only exempt OS-provided HTTPS/TLS and no custom cryptography.
 - `ios-build.yml` compiles green on `macos-15` runners, including after the Capacitor 8
   upgrade. `ios-release.yml` now adds the manual, fail-closed signed archive: a verified
   IPA artifact by default and an explicit opt-in App Store Connect/TestFlight upload.
@@ -118,6 +125,14 @@ What is ready, stated precisely — the gap here is wider than "just enrol":
   1080×1920 Play captures are not valid Apple screenshot dimensions and must not be
   dressed up as native iPhone captures.
 - **A Mac is still not needed** — both iOS workflows run on `macos-15` CI runners.
+- **App Review risk remains:** the installed shell loads the remotely served client.
+  Apple's current Guideline 4.2 may treat that as a repackaged website even though the
+  product has real utility and native OAuth return. The evidence and pre-submission
+  decision are recorded in
+  `docs/concerns/2026-09-03-ios-web-wrapper-app-review-risk.md`.
+- **Privacy publication is not ready:** the public policy URL is reachable, but it
+  still says Draft v0 pending counsel and its deployed copy omits iOS. PR #2798
+  stages the iOS wording only; the final legal approval and post-deploy proof remain.
 
 Local evidence, Windows checkout, 2026-09-03:
 
@@ -134,12 +149,16 @@ Local evidence, Windows checkout, 2026-09-03:
 - `npm audit --audit-level=high` — passed after removing unused
   `@capacitor/assets`; three moderate `uuid` findings remain and are recorded in
   `docs/concerns/2026-09-03-capacitor-cli-uuid-advisory.md`.
+- `python -m pytest -q tests/test_mobile_ios_release.py` — 15 passed after adding
+  automated App Store metadata byte-limit, keyword, URL, and least-access guards.
+- PR #2798 exact-head `build-ios` on GitHub's `macos-15` runner — passed 2026-09-03
+  after the App ID registration update.
 
-The enrollment is $99/year with a one-to-two day identity check, and it needs the
-founder: an agent must not create accounts or execute payments. It is the long pole on
-the Apple side in exactly the way the 14-day closed test is on the Play side, so it is
-worth starting before anything else. Until it exists and supplies signing assets,
-the release workflow cannot produce an installable IPA or reach TestFlight.
+Membership, the explicit App ID, the App Store Connect record, signing/profile/API
+credentials, and all six protected secrets are active. The release workflow produced
+and verified a signed IPA. TestFlight upload is blocked only by Apple's new iOS 26 SDK
+floor and the repository's required cross-family review; the focused local fix selects
+Xcode 26.3 and fails closed if the SDK is not 26.x.
 
 ---
 

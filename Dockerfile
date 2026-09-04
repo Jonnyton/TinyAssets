@@ -126,8 +126,11 @@ RUN python -m venv /opt/venv && \
 
 FROM python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0
 
+ARG TARGETARCH
 ARG NODEJS_VERSION=20.20.2-1nodesource1
-ARG GH_VERSION=2.99.0
+ARG GH_VERSION=2.100.0
+ARG GH_DEB_SHA256_AMD64=698c8d88cc19cc92bfe96bad58d10b2a5b274c52433d6dc57799c81f6139d5fc
+ARG GH_DEB_SHA256_ARM64=33ccd2ad7ce639c927e1cb209e36555b0e1fbb89f7a38239c0568040ec758612
 ARG NODESOURCE_REPO_CHECKSUM=b42e0321dabdc24e892115da705cf061167eac12a317f23d329862d0aa0a271d
 
 # Runtime-only deps. No build-essential here.
@@ -141,8 +144,11 @@ ARG NODESOURCE_REPO_CHECKSUM=b42e0321dabdc24e892115da705cf061167eac12a317f23d329
 # `gh pr create` (tinyassets/effectors/github_pr.py). Without gh on the
 # runtime PATH the effector fails with error_kind=gh_not_installed
 # (BUG-110), which blocks every real PR open from the patch-request loop.
-# Installed from cli.github.com before curl is purged below.
-RUN apt-get update && \
+# Installed from GitHub's immutable release asset with a per-architecture
+# checksum. The cli.github.com apt repository retains only its newest version,
+# so an exact apt pin made every upstream release break all future deploys.
+RUN set -e; \
+    apt-get update; \
     apt-get install -y --no-install-recommends \
         bubblewrap \
         ca-certificates \
@@ -150,26 +156,30 @@ RUN apt-get update && \
         gnupg \
         libgomp1 \
         tini \
-        util-linux \
-    && mkdir -p -m 755 /etc/apt/keyrings \
-    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-        -o /tmp/nodesource-repo.gpg.key \
-    && echo "${NODESOURCE_REPO_CHECKSUM}  /tmp/nodesource-repo.gpg.key" | sha256sum -c - \
-    && gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg /tmp/nodesource-repo.gpg.key \
-    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
-        > /etc/apt/sources.list.d/nodesource.list \
-    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
-    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-        > /etc/apt/sources.list.d/github-cli.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends nodejs="${NODEJS_VERSION}" \
-    && apt-get install -y --no-install-recommends gh="${GH_VERSION}" \
-    && apt-get purge -y curl gnupg \
-    && rm -f /tmp/nodesource-repo.gpg.key \
-    && rm -rf /var/lib/apt/lists/* && \
-    groupadd --system --gid 1001 tinyassets && \
+        util-linux; \
+    mkdir -p -m 755 /etc/apt/keyrings; \
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+        -o /tmp/nodesource-repo.gpg.key; \
+    echo "${NODESOURCE_REPO_CHECKSUM}  /tmp/nodesource-repo.gpg.key" | sha256sum -c -; \
+    gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg /tmp/nodesource-repo.gpg.key; \
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+        > /etc/apt/sources.list.d/nodesource.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends nodejs="${NODEJS_VERSION}"; \
+    case "${TARGETARCH}" in \
+      amd64) gh_sha="${GH_DEB_SHA256_AMD64}" ;; \
+      arm64) gh_sha="${GH_DEB_SHA256_ARM64}" ;; \
+      *) echo "unsupported TARGETARCH for pinned GitHub CLI: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl --proto '=https' --tlsv1.2 -fsSL \
+        "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${TARGETARCH}.deb" \
+        -o /tmp/gh.deb; \
+    echo "${gh_sha}  /tmp/gh.deb" | sha256sum -c -; \
+    apt-get install -y --no-install-recommends /tmp/gh.deb; \
+    apt-get purge -y curl gnupg; \
+    rm -f /tmp/nodesource-repo.gpg.key /tmp/gh.deb; \
+    rm -rf /var/lib/apt/lists/*; \
+    groupadd --system --gid 1001 tinyassets; \
     useradd --system --uid 1001 --gid tinyassets --home /app --shell /bin/bash tinyassets
 
 # Copy the codex install tree from builder and install the flock

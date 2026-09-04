@@ -9,10 +9,23 @@ declarations, device testing, and the final submit.
 Bundle id: **`io.tinyassets.app`** (matches `mobile/capacitor.config.json`
 `appId`; permanent once published).
 
+Founder directive 2026-09-03: complete all ordinary Apple-required App Store setup,
+attestations, credentials, builds, truthful metadata/privacy answers, TestFlight work,
+review submission, and release without repeated approval. Stop only for a new monetary
+charge, irreversible destructive action, non-required material choice, or a personal/legal
+fact that cannot be established from verified evidence. Computer-use actions that require
+action-time confirmation under product policy remain subject to that policy.
+
 > **Picking this up cold? Read [`mobile-launch-handoff.md`](mobile-launch-handoff.md)
 > first.** This file is the procedure; that one is where both platforms actually
-> stand. The short version for iOS: nothing here can ship until the founder enrols
-> in the Apple Developer Program, and that is the long pole.
+> stand. The short version for iOS: Apple Developer Program membership activated
+> on 2026-09-03; the explicit App ID and App Store Connect record were created and
+> verified that day. Product metadata and the unpublished privacy draft are saved,
+> and an empty internal TestFlight group exists. Signing, provisioning, API access, and
+> all six protected CI secrets are complete. A signed IPA is proven; TestFlight upload
+> is blocked on the reviewed Xcode 26 workflow correction recorded in `docs/concerns/`.
+> The copy-ready form answers, asset manifest, smoke checklist, and exact portal
+> sequence live in [`app-store-submission-packet.md`](app-store-submission-packet.md).
 
 ---
 
@@ -20,10 +33,11 @@ Bundle id: **`io.tinyassets.app`** (matches `mobile/capacitor.config.json`
 
 | Step | Action | Where |
 |---|---|---|
-| Account | Enroll in the **Apple Developer Program** ($99/year). | https://developer.apple.com/programs/enroll/ |
-| Payment | Authorize the $99/yr fee. | during enrollment |
-| App record | Register the explicit App ID and create the App Store Connect app record for `io.tinyassets.app` before any upload. Accept any current agreement Apple presents. | developer.apple.com / App Store Connect |
-| Signing assets | Create an Apple Distribution certificate + App Store Connect provisioning profile for `io.tinyassets.app`, and an **App Store Connect API key** for CI upload. Provide them as Actions secrets (§3). | developer.apple.com / App Store Connect |
+| Account | **Complete 2026-09-03:** Apple Developer Program membership active. | developer.apple.com/account |
+| Payment | **Complete 2026-09-03:** annual membership purchase confirmed. | Apple Online Store |
+| App ID | **Complete 2026-09-03:** `TinyAssets iOS` / `io.tinyassets.app` registered and visible in the signed-in Identifiers list. | developer.apple.com |
+| App record | **Complete 2026-09-03:** App Store Connect Terms V100 accepted; TinyAssets record created for `io.tinyassets.app`; Apple ID `6808434444`. | App Store Connect |
+| Signing assets | **Complete 2026-09-03:** verified Distribution certificate/private key, active matching profile, Developer-role CI upload API key, and all six protected environment secrets. | developer.apple.com / App Store Connect |
 | Identity/tax/banking | Complete Apple's identity + (for paid apps) tax/banking. This app is free → tax/banking optional. | App Store Connect |
 | Submit | Click **Submit for Review** after the build + metadata are in. | App Store Connect |
 
@@ -75,8 +89,8 @@ In Xcode: select the App target → Signing & Capabilities → your Team →
 The protected GitHub environment **`app-store`** was created on 2026-09-03. It
 requires the founder's approval and allows deployments only from `main`. Both
 release jobs use that environment, so neither a signing identity nor an upload
-credential is exposed to an unapproved run. No signing secrets are present yet.
-Store all six values as `app-store` environment secrets; each step references
+credential is exposed to an unapproved run. All six values were added as protected
+`app-store` environment secrets on 2026-09-03; each step references
 only the subset it uses:
 
 | Secret | Value |
@@ -99,9 +113,20 @@ Turn it on only when the app record exists and a TestFlight upload is intended;
 that job validates before upload. Uploading creates a build in App Store Connect
 but does not select it for an App Store version or submit it for review.
 
+Live evidence 2026-09-03: run `33824784381` completed the protected Xcode archive,
+App Store export, and artifact upload for signed IPA 1.0.0 (1). Run `33824990349`
+completed the same signed build for build 2, then Apple's pre-upload validation rejected
+the runner-default Xcode 16.4/iOS 18.5 SDK because iOS 26 is now mandatory. The local
+workflow fix selects the installed Xcode 26.3 and fails closed on any non-26 SDK; see
+`docs/concerns/2026-09-03-ios-app-store-upload-requires-xcode-26.md`.
+
 ---
 
 ## 4. App Store listing content (copy-paste)
+
+The complete copy-ready metadata, including description, internal SKU, version,
+privacy choices URL, copyright, review notes, age-rating draft, and export answer,
+is in [`app-store-submission-packet.md`](app-store-submission-packet.md).
 
 Reuse the Play content in `google-play-launch.md` §4 verbatim where it fits:
 
@@ -109,10 +134,10 @@ Reuse the Play content in `google-play-launch.md` §4 verbatim where it fits:
 - **Subtitle (≤30 chars):** `Your own AI universe`
 - **Promotional text (≤170):** `A persistent AI universe that runs real, multi-step work on your own LLM — the same universe on web, phone, and your chatbot.`
 - **Description:** the full description from `google-play-launch.md` §4.
-- **Keywords (≤100 chars):** `AI,assistant,agent,automation,workflow,universe,productivity,LLM,OpenAI,Claude`
-- **Support URL:** https://tinyassets.io
+- **Keywords (≤100 bytes; each longer than two characters):** `assistant,agent,automation,workflow,universe,productivity,LLM,chat,projects,research`
+- **Support URL:** https://tinyassets.io/legal#contact
 - **Marketing URL:** https://tinyassets.io
-- **Privacy Policy URL:** https://tinyassets.io/legal (the app-data section added for Play covers iOS too)
+- **Privacy Policy URL:** https://tinyassets.io/legal#app-data (the app-data section added for Play covers iOS too)
 - **Category:** Productivity
 
 ---
@@ -146,7 +171,11 @@ answers shown in App Store Connect before submission.
 
 ## 6. Screenshots (App Store Connect requires per device size)
 
-- iPhone 6.7" (or 6.9") screenshots, captured from the app (sign-in, a universe
+The ordered capture contract and live-verified 6.5-inch pixel sizes are committed at
+[`app-store-assets/screenshot-manifest.json`](app-store-assets/screenshot-manifest.json).
+
+- iPhone 6.5" screenshots at `1242×2688` or `1284×2778`, captured from the app
+  (sign-in, a universe
   conversation, the Connect view). The two committed Play captures under
   `docs/ops/play-assets/screenshots/` are 1080×1920 and **cannot** be uploaded as
   App Store screenshots. Capture fresh iPhone-sized images from the signed app;
@@ -201,15 +230,24 @@ and [unavailability procedure](https://developer.apple.com/help/app-store-connec
 - [x] iOS platform wired into the Capacitor project (`add:ios`/`sync:ios` scripts, `@capacitor/ios` dep)
 - [x] `tinyassets://` URL scheme patch (`scripts/add_ios_scheme.py`)
 - [x] Microphone purpose staged in generated `Info.plist` (voice remains dark)
+- [x] Exempt OS-provided HTTPS/TLS export declaration staged in generated `Info.plist`
 - [ ] Voice: physical-iPhone background/stop proof + privacy re-evaluation
 - [x] CI compile-check (`ios-build.yml`)
 - [x] Native TinyAssets icon/splash install, with template-drift checks
 - [x] Manual signed IPA + opt-in TestFlight workflow (`ios-release.yml`)
 - [x] Listing content + App Privacy answers (§4, §5)
+- [x] Apple-specific metadata, age-rating/export drafts, screenshot manifest, and device checklist
+- [x] TestFlight copy and voluntary Accessibility Nutrition Label device matrix staged
 - [x] Founder: Apple Developer Program enrollment + $99 (§0)
-- [ ] Apple: membership activation (portal shows Pending; allow up to 48 hours)
-- [ ] Founder: App ID + App Store Connect app record + current agreements (§0)
+- [x] Apple: membership activated; portal shows Team ID and renewal date (2026-09-03)
+- [x] Apple: explicit App ID `io.tinyassets.app` registered and verified (2026-09-03)
+- [x] Founder: App Store Connect Terms accepted and app record created (§0)
+- [x] Product metadata saved; manual release selected; privacy draft configured but not published
+- [x] Empty `Internal` TestFlight group created with automatic distribution off
+- [ ] Founder/counsel: approve final privacy policy; then land/deploy and verify the iOS wording
 - [x] Protected `app-store` environment: founder approval + `main` only (§3)
-- [ ] Founder: signing assets / API key stored in `app-store` (§3)
+- [x] Signing setup and all six protected CI values complete (§3)
+- [x] Signed IPA 1.0.0 (1) built and checksum/profile verified
 - [ ] Screenshots captured (§6)
 - [ ] Build uploaded → TestFlight verified → submitted/manual release (§7)
+- [ ] Founder: decide current-shell submission vs native differentiator before App Review
