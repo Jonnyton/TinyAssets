@@ -605,6 +605,8 @@ def _stop_all_workspace_sweepers(*, timeout_s: float = 5.0) -> bool:
             for key, handle in _WORKSPACE_SWEEPERS.items()
             if key[0] == os.getpid()
         ]
+    if not handles:
+        return True
     for _key, handle in handles:
         handle.stop_event.set()
     deadline = time.monotonic() + max(0.0, timeout_s)

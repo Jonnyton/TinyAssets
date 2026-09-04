@@ -424,6 +424,20 @@ def test_a_stale_stopper_cannot_clear_a_replacement_worker(tmp_path):
             runs._WORKSPACE_RECONCILED.discard(key)
 
 
+def test_stopping_no_sweepers_does_not_read_the_process_clock():
+    assert not any(key[0] == os.getpid() for key in runs._WORKSPACE_SWEEPERS)
+    original_monotonic = runs.time.monotonic
+
+    def unexpected_clock_read():
+        raise AssertionError("an empty stop must not read process-global time")
+
+    runs.time.monotonic = unexpected_clock_read
+    try:
+        assert runs._stop_all_workspace_sweepers(timeout_s=2) is True
+    finally:
+        runs.time.monotonic = original_monotonic
+
+
 def test_the_fork_reset_replaces_an_inherited_locked_mutex():
     assert runs._stop_all_workspace_sweepers(timeout_s=2)
     inherited_lock = runs._WORKSPACE_RECONCILE_LOCK
