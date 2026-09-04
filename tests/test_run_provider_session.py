@@ -20,9 +20,9 @@ from tinyassets.storage.provider_work_authority import db_path as authority_db_p
 
 
 class _CountingProvider(BaseProvider):
-    def __init__(self) -> None:
-        self.name = "codex"
-        self.family = "codex"
+    def __init__(self, name: str = "codex") -> None:
+        self.name = name
+        self.family = name
         self.calls: list[ModelConfig] = []
 
     async def complete(
@@ -46,7 +46,12 @@ class _CountingProvider(BaseProvider):
         )
 
 
-def _branch(*, node_count: int, author: str = "acct_alice") -> BranchDefinition:
+def _branch(
+    *,
+    node_count: int,
+    author: str = "acct_alice",
+    provider: str = "codex",
+) -> BranchDefinition:
     nodes = [
         NodeDefinition(
             node_id=f"n{index}",
@@ -54,7 +59,7 @@ def _branch(*, node_count: int, author: str = "acct_alice") -> BranchDefinition:
             prompt_template=f"Write foreground result {index}.",
             output_keys=[f"answer_{index}"],
             model_hint="writer",
-            llm_policy={"preferred": {"provider": "codex"}},
+            llm_policy={"preferred": {"provider": provider}},
         )
         for index in range(1, node_count + 1)
     ]
@@ -147,6 +152,104 @@ def _seed_serving_assignment(
     )
 
 
+def _seed_open_serving_assignment(
+    base_path: Path,
+    monkeypatch,
+    *,
+    owner_user_id: str = "acct_alice",
+    universe_id: str = "universe_alice",
+    select_for_serving: bool = True,
+) -> str:
+    """Select one synthetic owner-bound HTTP provider for foreground runs."""
+    from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
+    from tinyassets.providers.definition import register_definition
+    from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base_path))
+    universe_dir = base_path / universe_id
+    universe_dir.mkdir(exist_ok=True)
+    connection_id = "http_" + "b" * 32
+    grant_id = "http_grant_" + "a" * 32
+    ledger = ConnectionLedger(
+        base_path / "outbound.db",
+        verify_authenticated_principal=lambda: owner_user_id,
+    )
+    ledger.create_connection(
+        connection_id=connection_id,
+        owner_user_id=owner_user_id,
+        connection_class="http",
+        connection_type="http",
+        auth_scheme="bearer",
+        scopes=("http",),
+        provider="http",
+        destination="compute:synthetic",
+        credential_ref="vault://http/compute:synthetic",
+        allowed_endpoints=[{
+            "host": "api.example.com",
+            "path_template": "/v1/chat/completions",
+            "methods": ["POST"],
+        }],
+    )
+    ledger.grant_connection(
+        grant_id=grant_id,
+        connection_id=connection_id,
+        owner_user_id=owner_user_id,
+        universe_id=universe_id,
+        unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
+    )
+    definition = register_definition(
+        universe_id=universe_id,
+        owner_user_id=owner_user_id,
+        access_method="api_key_http",
+        protocol="openai_chat",
+        model="synthetic-model",
+        ref=grant_id,
+    )
+    published = publish_definition(
+        base_path,
+        author_id=owner_user_id,
+        payload={
+            "schema_version": 1,
+            "name": "Foreground open-provider agent",
+            "description": "Synthetic foreground-run authority fixture.",
+            "tags": ["test"],
+            "components": {"identity": {"kind": "soul", "config": {}}},
+        },
+    )
+    agent = create_binding(
+        base_path,
+        universe_id=universe_id,
+        definition_id=published["agent_definition_id"],
+        created_by=owner_user_id,
+        payload={
+            "schema_version": 1,
+            "name": "Foreground open-provider agent",
+            "role": "writer",
+        },
+    )
+    if select_for_serving:
+        connected = bind_serving_provider(
+            base_path=base_path,
+            universe_dir=universe_dir,
+            owner_user_id=owner_user_id,
+            universe_id=universe_id,
+            agent_binding_id=agent["agent_binding_id"],
+            expected_revision=1,
+            provider=definition.id,
+        )
+        set_serving(
+            base_path=base_path,
+            universe_dir=universe_dir,
+            owner_user_id=owner_user_id,
+            universe_id=universe_id,
+            agent_binding_id=agent["agent_binding_id"],
+            expected_revision=connected["agent_binding"]["revision"],
+            enabled=True,
+        )
+    return f"api_key_http:{definition.id}"
+
+
 def _run_branch(
     tmp_path: Path,
     monkeypatch,
@@ -155,6 +258,7 @@ def _run_branch(
     *,
     authority_case: str = "active",
     mock_provider: bool = False,
+    open_provider: bool = False,
 ) -> tuple[dict[str, Any], _CountingProvider, dict[str, Any]]:
     from tinyassets.api import runs as api_runs
     from tinyassets.daemon_server import save_branch_definition, set_founder_home
@@ -170,15 +274,27 @@ def _run_branch(
         ),
         platform_generated=True,
     )
-    save_branch_definition(tmp_path, branch_def=branch.to_dict())
     universe_dir = tmp_path / "universe_alice"
     universe_dir.mkdir(exist_ok=True)
+    selected_provider = "codex"
+    if authority_case != "missing":
+        if open_provider:
+            selected_provider = _seed_open_serving_assignment(
+                tmp_path,
+                monkeypatch,
+                select_for_serving=authority_case != "registered_only",
+            )
+        else:
+            _seed_serving_assignment(tmp_path)
     (universe_dir / "config.yaml").write_text(
-        "preferred_writer: codex\nallowed_providers:\n  - codex\n",
+        f"preferred_writer: {selected_provider}\n"
+        f"allowed_providers:\n  - {selected_provider}\n",
         encoding="utf-8",
     )
-    if authority_case != "missing":
-        _seed_serving_assignment(tmp_path)
+    if open_provider:
+        for node in branch.node_defs:
+            node.llm_policy = {"preferred": {"provider": selected_provider}}
+    save_branch_definition(tmp_path, branch_def=branch.to_dict())
     if authority_case in {"revoked", "stale"}:
         conn = sqlite3.connect(authority_db_path(tmp_path))
         if authority_case == "revoked":
@@ -225,7 +341,7 @@ def _run_branch(
         lambda output: captured["effects"].append((output,)),
     )
 
-    provider = _CountingProvider()
+    provider = _CountingProvider(selected_provider)
     provider_router = ProviderRouter({provider.name: provider})
 
     def governed_provider_call(
@@ -348,6 +464,28 @@ def test_foreground_run_launches_active_serving_provider_and_settles_once(
     assert claim["state"] == "released"
 
 
+def test_foreground_run_launches_selected_open_provider_and_settles_once(
+    tmp_path: Path,
+    monkeypatch,
+    authenticate_request,
+) -> None:
+    response, provider, _captured = _run_branch(
+        tmp_path,
+        monkeypatch,
+        authenticate_request,
+        _branch(node_count=1),
+        open_provider=True,
+    )
+
+    assert response["terminal_status"] == "completed", response["terminal_error"]
+    assert len(provider.calls) == 1
+    with sqlite3.connect(authority_db_path(tmp_path)) as conn:
+        reservation = conn.execute(
+            "SELECT state FROM provider_invocation_reservations"
+        ).fetchone()
+    assert reservation == ("succeeded",)
+
+
 def test_foreground_run_mints_one_carrier_per_node_and_refuses_n_plus_one(
     tmp_path: Path,
     monkeypatch,
@@ -382,7 +520,7 @@ def test_foreground_run_mints_one_carrier_per_node_and_refuses_n_plus_one(
 
 @pytest.mark.parametrize(
     "authority_case",
-    ["missing", "stale", "revoked", "cross_universe"],
+    ["missing", "stale", "revoked", "cross_universe", "registered_only"],
 )
 def test_foreground_run_authority_mismatch_launches_nothing_and_runs_no_effects(
     authority_case: str,
@@ -396,6 +534,7 @@ def test_foreground_run_authority_mismatch_launches_nothing_and_runs_no_effects(
         authenticate_request,
         _branch(node_count=1),
         authority_case=authority_case,
+        open_provider=authority_case == "registered_only",
     )
 
     assert response["terminal_status"] == "failed"

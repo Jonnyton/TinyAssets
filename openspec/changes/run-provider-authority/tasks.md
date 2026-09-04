@@ -18,6 +18,11 @@
 - [x] 1.6 Regression proof: ordinary mock-backed runs complete without provider authority or a run
       receipt, while a refused real provider attempt still fails the run with
       `permission_denied:provider_not_bound`.
+- [x] 1.7 Reproduce the post-deploy failure synthetically and make a user-authorized
+      foreground prompt run reach its exact ACTIVE serving provider once whether
+      that provider is subscription-backed or a registered open HTTP provider;
+      registration without serving selection and every owner/universe/policy
+      mismatch still launch nothing.
 
 ## 2. Evidence
 
@@ -25,5 +30,13 @@
       (its two "must hold without served authority" tests describe the OLD reachability; update them
       to assert the new lane holds for an UNAUTHORIZED context and admits an authorized run).
 - [x] 2.2 Plugin mirror parity.
-- [ ] 2.3 Live proof after deploy: the founder's own branch `8ab6516d50c5` runs, the run reads back
-      `succeeded`, and exactly one authenticated X POST happens.
+- [ ] 2.3 Live proof after deploy: the bound universe agent chooses and runs its
+      own provider-backed prompt workflow through ordinary user authority. Retain
+      only a sanitized receipt proving the selected provider ran exactly as
+      expected and, when the owner has independently approved a safe effect,
+      that the reviewed effect happened exactly once. Patches does not inspect,
+      edit, run, or delete the live branch and retains no private identifiers or
+      content.
+- [ ] 2.4 Fresh opposite-family review agrees that the follow-up preserves exact
+      provider, owner, universe, policy, revocation, one-use carrier, budget, and
+      settlement fences before landing.

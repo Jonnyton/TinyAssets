@@ -1,9 +1,12 @@
 # Design — foreground run provider authority
 
-Cross-family review: Codex, 2026-08-26 (ADAPT before build). This file is that verdict, adopted.
+Cross-family review: Codex, 2026-08-26 (ADAPT before the first build). Ownership
+transferred to Patches on 2026-09-03 after bound-agent live proof still failed.
+The follow-up implementation requires a fresh opposite-family review before
+landing.
 
 ## The primitive
-A founder-initiated run must NOT carry a served request capability. A request capability represents
+A user-authorized run must NOT carry a served request capability. A request capability represents
 one live ingress turn: it is revoked when the MCP request completes while the run executes
 asynchronously, it is bound to a serving-agent binding authorizing only `converse`/`writer`, it
 carries a two-invocation limit incompatible with an N-call graph, and forwarding it would let the
@@ -26,6 +29,16 @@ as launch authority.
 ## Expiry
 Earliest of: run deadline, claim lease, run cancellation/terminalization, serving-binding expiry.
 Rotation, revocation, credential change or assignment-generation change stops all further launches.
+
+## Provider kinds
+The ACTIVE serving assignment is authoritative for both subscription-backed
+and registered open providers. A subscription provider receives only a sealed,
+run-scoped credential snapshot. An open provider receives no subscription
+snapshot; its existing connection-grant custody is revalidated and the router
+continues to use the credential-blind outbound proxy. Both kinds use the same
+run receipt, claim, one-use invocation carrier, budget reservation, exact
+provider fence, and settlement path. Open registration alone is never enough:
+the provider must be the current serving assignment for this owner and universe.
 
 ## N provider calls
 Mint N distinct pid-bound one-use carriers — one per actual provider ATTEMPT, not one per run and
@@ -53,6 +66,8 @@ durable actual-usage settlement is still unfinished (the strict xfail in
 - Reusing one carrier across a run.
 - Letting `llm_policy` widen beyond the ACTIVE serving provider or fall through to another
   enrolled/ambient provider.
+- Rejecting an ACTIVE, owner-authorized registered open provider merely because
+  it is not a subscription provider.
 - Treating provider registration, the X credential or outbound consent as LLM authority.
 - Giving the X credential to the LLM subprocess, or combining compute and effect authority.
 - Special-casing the founder's universe/run ids, posting from the control plane, or rewriting the
