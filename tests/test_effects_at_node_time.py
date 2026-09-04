@@ -32,6 +32,7 @@ from tinyassets.effectors import (
 )
 from tinyassets.effectors import EffectChain as _Chain
 from tinyassets.effectors import WorkspaceMount as _Mount
+from tinyassets.effectors.workspace import EXTERNAL_WRITE_SINK_WORKSPACE
 from tinyassets.graph_compiler import _delta_view, _graph_ancestors, compile_branch
 
 SINK = "authenticated_external_call"
@@ -116,6 +117,33 @@ _OK_GET = {"delivered": True, "verb": "GET",
            "response": {"status": 200, "body": '{"content": "aGVsbG8=", "sha": "s1"}',
                         "headers": {"set-cookie": "secret=1"}}}
 _OK_PUT = {"delivered": True, "verb": "PUT", "response": {"status": 201, "body": "{}"}}
+
+
+def test_workspace_effect_receives_the_nodes_contention_wait_budget(monkeypatch):
+    seen: list[float] = []
+
+    def workspace_adapter(*, timeout_seconds, **_kwargs):
+        seen.append(timeout_seconds)
+        return {"dry_run": True, "op": "create"}
+
+    monkeypatch.setitem(effectors._EFFECTORS, EXTERNAL_WRITE_SINK_WORKSPACE, workspace_adapter)
+    node = NodeDefinition(
+        node_id="workspace",
+        display_name="workspace",
+        output_keys=["workspace_packet"],
+        effects=[EXTERNAL_WRITE_SINK_WORKSPACE],
+        timeout_seconds=37.5,
+    )
+    chain = EffectChain(run_id="r-workspace", base_path=None)
+
+    effectors._fire_node_effects(
+        node,
+        {"workspace_packet": {"sink": EXTERNAL_WRITE_SINK_WORKSPACE, "op": "create"}},
+        chain=chain,
+        schema_defaulted=set(),
+    )
+
+    assert seen == [37.5]
 
 
 def test_effects_fire_in_graph_order_and_a_later_node_sees_the_full_body(monkeypatch):

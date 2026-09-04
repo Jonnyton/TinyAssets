@@ -245,6 +245,7 @@ def _run(
     worker: FakeWorker | None = None,
     dry_run: bool | None = None,
     node_id: str = "n1",
+    timeout_seconds: float = 0.0,
 ) -> dict[str, Any]:
     return run_workspace_effector(
         node_id=node_id,
@@ -255,6 +256,7 @@ def _run(
         dry_run=dry_run,
         chain=chain,
         execute=worker or FakeWorker(),
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -1974,6 +1976,56 @@ def test_a_lock_held_by_another_run_is_workspace_busy_not_a_quota_error(
         execute=FakeWorker(),
     )
     assert second["error_kind"] == "workspace_busy"
+
+
+@pytest.mark.parametrize(
+    "packet",
+    [
+        pytest.param(_packet(), id="checkout"),
+        pytest.param(
+            {"sink": EXTERNAL_WRITE_SINK_WORKSPACE, "op": "create", "storage": "scratch"},
+            id="create",
+        ),
+    ],
+)
+def test_workspace_admission_receives_the_effect_nodes_wait_budget(
+    tmp_path: Path,
+    chain: EffectChain,
+    fs_spy,
+    no_real_git,
+    monkeypatch: pytest.MonkeyPatch,
+    packet: dict[str, Any],
+) -> None:
+    """The pool already implements the bounded wait; the adapter must not
+    silently turn every node's configured budget into the zero-second default."""
+    from tinyassets import workspace_pool
+
+    _root, universe_dir = _setup(tmp_path)
+    real_admit = workspace_pool.admit
+    waits: list[float] = []
+
+    def recording_admit(*args, **kwargs):
+        waits.append(kwargs.get("wait_s"))
+        if len(waits) == 1:
+            raise workspace_pool.WorkspacePoolRefused(
+                "workspace_busy", "synthetic held lock"
+            )
+        return real_admit(*args, **kwargs)
+
+    monkeypatch.setattr(workspace_pool, "admit", recording_admit)
+    from tinyassets import runs
+
+    monkeypatch.setattr(runs, "_workspace_sweep_once", lambda *_args, **_kwargs: 0)
+    result = _run(
+        tmp_path,
+        packet,
+        universe_dir=universe_dir,
+        chain=chain,
+        timeout_seconds=37.5,
+    )
+
+    assert result.get("error_kind") is None, result
+    assert waits == [0.0, 37.5]
 
 
 def test_a_busy_pool_is_swept_once_then_retried_once(

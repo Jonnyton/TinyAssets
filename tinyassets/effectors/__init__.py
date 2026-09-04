@@ -246,7 +246,7 @@ def _wiki_write_back_adapter(
 # wiki write-back. No GitHub/Slack/X/desktop sink lives here by design.
 def _workspace_adapter(
     *, node_id, output_keys, run_state, base_path, run_id, dry_run,
-    allowed_state_keys=None, prior_effects=None,
+    allowed_state_keys=None, prior_effects=None, timeout_seconds=0.0,
 ):
     return run_workspace_effector(
         node_id=node_id,
@@ -257,6 +257,7 @@ def _workspace_adapter(
         dry_run=dry_run,
         allowed_state_keys=allowed_state_keys,
         prior_effects=prior_effects,
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -903,7 +904,7 @@ def _fire_node_effects(
             }
             continue
         try:
-            result = adapter(
+            adapter_kwargs = dict(
                 node_id=node_id,
                 output_keys=output_keys,
                 run_state=run_state,
@@ -913,6 +914,11 @@ def _fire_node_effects(
                 allowed_state_keys=allowed_state_keys,
                 prior_effects=prior_effects,
             )
+            if sink == EXTERNAL_WRITE_SINK_WORKSPACE:
+                adapter_kwargs["timeout_seconds"] = float(
+                    getattr(node, "timeout_seconds", 0.0) or 0.0
+                )
+            result = adapter(**adapter_kwargs)
         except Exception as exc:  # defensive: never raise from an adapter
             result = {
                 "error": f"effector crashed: {exc}",
