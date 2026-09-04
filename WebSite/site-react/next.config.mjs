@@ -1,8 +1,4 @@
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-
 const isDev = process.env.NODE_ENV === "development";
-const projectDir = path.dirname(fileURLToPath(import.meta.url));
 // Optional base path for project-style hosting (e.g. GitHub Pages at
 // /<repo>/). Unset for the real apex deploy. e.g. PAGES_BASE_PATH=/tiny-preview
 const basePath = process.env.PAGES_BASE_PATH || "";
@@ -20,9 +16,6 @@ const nextConfig = {
   distDir,
   trailingSlash: true,
   images: { unoptimized: true },
-  // The site imports the sibling design system and the repository's shared MCP
-  // contract. Turbopack otherwise treats site-react/ as the filesystem root.
-  turbopack: { root: path.resolve(projectDir, "../..") },
   // The design system ships ESM dist; let Next transpile it.
   transpilePackages: ["@tiny/design-system"],
   ...(basePath ? { basePath, assetPrefix: basePath } : {}),
