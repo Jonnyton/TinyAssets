@@ -2,7 +2,7 @@
 
 Date: 2026-09-03
 Owner track: `codex/ios-store-release`
-Source change: `openspec/changes/add-realtime-voice-conversation/`
+Source change: `openspec/changes/archive/2026-09-04-add-realtime-voice-conversation/`
 
 The shared `/mcp/app` client now contains a dark, foreground-only Realtime voice slice. The native
 release track owns the following packaging and store declarations. This branch deliberately does
@@ -16,6 +16,13 @@ and universe and allow `POST` to that exact session endpoint. The browser sends 
 offer to the authenticated same-origin session route; the bridge response returns only `protocol`,
 `answer_sdp`, `expires_at`, and `max_session_seconds`. No remote HTTP URL or temporary bearer is
 exposed to browser JavaScript.
+
+As built on 2026-09-03, the app can create the underlying generic HTTP connection and grant but
+has no authenticated action that writes this non-secret binding file. That missing user-facing
+binding step is tracked in
+`docs/concerns/2026-09-03-realtime-voice-has-no-user-binding-surface.md`. Do not use host
+filesystem access as acceptance evidence: the live proof starts only after the user can select an
+already-connected compatible bridge through a product-owned authority path.
 
 ## iOS
 
