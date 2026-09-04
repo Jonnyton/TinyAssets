@@ -42,6 +42,7 @@ SERVICE_XML = """        <service
 REQUIRED_PERMISSIONS = (
     "android.permission.FOREGROUND_SERVICE",
     "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
+    "android.permission.POST_NOTIFICATIONS",
     "android.permission.RECORD_AUDIO",
 )
 

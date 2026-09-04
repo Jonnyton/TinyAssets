@@ -126,6 +126,7 @@ def verify_manifest(path: Path, release: AndroidRelease, *, merged: bool) -> Non
         "android.permission.INTERNET",
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
+        "android.permission.POST_NOTIFICATIONS",
         "android.permission.RECORD_AUDIO",
         f"{release.app_id}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION",
     }
@@ -215,6 +216,17 @@ def verify_sources(mobile: Path, release: AndroidRelease) -> None:
     plugin = (mobile / "native/android/LocalCallbackPlugin.java").read_text(encoding="utf-8")
     if f"package={release.app_id};end" not in plugin:
         raise ValueError("LocalCallbackPlugin intent package differs from release identity")
+    notification_safeguards = (
+        "Manifest.permission.POST_NOTIFICATIONS",
+        '@Permission(alias = "notifications"',
+        'getPermissionState("notifications") != PermissionState.GRANTED',
+        'requestPermissionForAlias("notifications", call, "notificationPermissionCallback")',
+        "@PermissionCallback",
+        'call.reject("Notification permission is required while browser sign-in is active")',
+    )
+    missing = [item for item in notification_safeguards if item not in plugin]
+    if missing:
+        raise ValueError(f"LocalCallbackPlugin is missing notification safeguards: {missing}")
     voice = (mobile / "native/android/VoiceWebChromeClient.java").read_text(encoding="utf-8")
     safeguards = (
         'TRUSTED_SCHEME = "https"',

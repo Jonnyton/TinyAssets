@@ -69,6 +69,18 @@ def test_android_release_config_matches_every_source_package_identity() -> None:
     assert f"package {release.app_id};" in injector
     assert "registerPlugin(LocalCallbackPlugin.class)" in injector
     assert "new VoiceWebChromeClient(bridge, this)" in injector
+    assert "android.permission.POST_NOTIFICATIONS" in injector
+
+    callback = (MOBILE / "native/android/LocalCallbackPlugin.java").read_text(encoding="utf-8")
+    assert '@Permission(alias = "notifications"' in callback
+    assert (
+        'requestPermissionForAlias("notifications", call, "notificationPermissionCallback")'
+        in callback
+    )
+    assert (
+        'call.reject("Notification permission is required while browser sign-in is active")'
+        in callback
+    )
 
     voice = (MOBILE / "native/android/VoiceWebChromeClient.java").read_text(encoding="utf-8")
     assert 'TRUSTED_SCHEME = "https"' in voice
@@ -157,6 +169,7 @@ def _source_manifest() -> str:
         """  <uses-permission android:name="android.permission.INTERNET"/>\n"""
         """  <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>\n"""
         """  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>\n"""
+        """  <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n"""
         """  <uses-permission android:name="android.permission.RECORD_AUDIO"/>\n"""
         """  <application android:allowBackup="false" android:usesCleartextTraffic="false">\n"""
         """    <activity android:name=".MainActivity" android:exported="true">\n"""
