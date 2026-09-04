@@ -28,10 +28,11 @@ def _scripted_post(
     status_payload=None,
     *,
     structured_status=False,
-    converse_status=401,
+    converse_status=200,
     converse_challenge=(
         'Bearer resource_metadata="https://example/mcp/'
-        '.well-known/oauth-protected-resource"'
+        '.well-known/oauth-protected-resource" error="invalid_token" '
+        'error_description="Sign in required"'
     ),
     canary_converse_status=403,
     anonymous_initialize_status=401,
@@ -88,10 +89,22 @@ def _scripted_post(
                     "name": "converse",
                     "arguments": {"message": "mcp-public-canary auth boundary probe"},
                 }
-                expected = 403 if bearer else 401
+                expected = 403 if bearer else 200
                 assert expected in accepted_http_statuses
                 if bearer:
                     return canary_converse_status, {}, b'{"error":"forbidden"}'
+                if converse_status == 200 and converse_challenge is not None:
+                    return 200, {}, json.dumps({
+                        "jsonrpc": "2.0",
+                        "id": 3,
+                        "result": {
+                            "content": [{"type": "text", "text": "Sign in required"}],
+                            "isError": True,
+                            "_meta": {
+                                "mcp/www_authenticate": [converse_challenge],
+                            },
+                        },
+                    }).encode()
                 if converse_status == 401:
                     return 401, {"www-authenticate": converse_challenge}, (
                         b'{"error":"authentication_required"}'
@@ -279,14 +292,32 @@ def test_converse_auth_gate_rejects_resource_not_found(monkeypatch):
     monkeypatch.setattr(
         canary,
         "_post",
-        _scripted_post(_CANONICAL_PLUS_STATUS, converse_status=200),
+        _scripted_post(
+            _CANONICAL_PLUS_STATUS,
+            converse_status=200,
+            converse_challenge=None,
+        ),
     )
 
     with pytest.raises(canary.CanaryError) as exc:
         canary.assert_converse_auth_gate("https://example/mcp", 5.0)
 
     assert exc.value.code == 6
-    assert "expected HTTP 401" in exc.value.msg
+    assert "unexpected converse linking result" in exc.value.msg
+
+
+def test_converse_auth_gate_rejects_transport_only_challenge(monkeypatch):
+    monkeypatch.setattr(
+        canary,
+        "_post",
+        _scripted_post(_CANONICAL_PLUS_STATUS, converse_status=401),
+    )
+
+    with pytest.raises(canary.CanaryError) as exc:
+        canary.assert_converse_auth_gate("https://example/mcp", 5.0)
+
+    assert exc.value.code == 6
+    assert "expected hosted linking result HTTP 200" in exc.value.msg
 
 
 def test_converse_auth_gate_rejects_protected_resource_metadata_drift(
