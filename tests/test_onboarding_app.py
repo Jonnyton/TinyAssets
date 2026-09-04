@@ -190,10 +190,11 @@ def test_voice_client_keeps_converse_as_the_only_writer():
     assert 'Authorization:"Bearer "+secret.value' not in html
     assert "if(!this.canonicalResponsePending)" in html
     assert "if(this.audio) this.audio.muted=true" in html
-    assert "localStorage.setItem(voiceDisclosureKey(),\"accepted\")" in html
+    assert 'if(key)localStorage.setItem(key,"accepted")' in html
     # Browser persistence is only the versioned disclosure receipt. Audio,
     # SDP, and bridge transcripts are never written.
-    assert "localStorage.setItem(voiceDisclosureKey()" in html
+    assert "voiceDisclosureKey(this.capability)" in html
+    assert "/^[a-f0-9]{64}$/" in html
     assert "localStorage.setItem(secret" not in html
     assert "localStorage.setItem(event.transcript" not in html
 
@@ -634,6 +635,8 @@ def _run_voice_adapter(tmp_path) -> dict:
     shim = r"""
 const CFG={voice:{enabled:true,disclosure_version:1,max_session_seconds:1800}};
 const store={}; const localStorage={getItem:k=>store[k]||null,setItem:(k,v)=>store[k]=String(v)};
+const timers=[]; function setTimeout(fn,ms){const timer={fn,ms};timers.push(timer);return timer;}
+function clearTimeout(){}
 class El{constructor(){this.hidden=true;this.disabled=false;this.textContent="";this.attrs={};}
 setAttribute(k,v){this.attrs[k]=v;} focus(){this.focused=true;} pause(){this.paused=true;}}
 const els={"btn-voice":new El(),"voice-disclosure":new El(),"btn-voice-accept":new El(),
@@ -650,9 +653,8 @@ let fetched=[];
 async function fetch(url){
   fetched.push(url);return {ok:true,status:200,json:async()=>capabilityDoc};
 }
-async function sendVoiceTurn(message){
-  turns.push(message);return "Exact universe reply.";
-}
+let voiceTurnImpl=async()=>"Exact universe reply.";
+async function sendVoiceTurn(message){turns.push(message);return await voiceTurnImpl(message);}
 async function ensureFreshToken(){} async function refreshAccessToken(){return false;}
 function authHeaders(){return {Authorization:"Bearer app"};} async function sleep(){}
 """
@@ -665,9 +667,15 @@ function authHeaders(){return {Authorization:"Bearer app"};} async function slee
     unlockShown:!els["voice-unlock"].hidden,mediaRequests,fetched:fetched.slice(),status};
   Voice.closeUnlock();
   capabilityDoc={available:true,state:"ready",resource:"user_bound_voice_connection",
+    disclosure_id:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     service_name:"My bridge",privacy_url:"https://bridge.example/privacy"};
   await Voice.refreshCapability(); out.initial=Voice.state;
   await Voice.requestStart(); out.disclosureShown=!els["voice-disclosure"].hidden;
+  Voice.start=()=>{out.disclosureStarted=true;}; Voice.acceptDisclosure();
+  out.acceptedFirst=Voice._accepted();
+  Voice.capability=Object.assign({},capabilityDoc,
+    {disclosure_id:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"});
+  out.acceptedAfterRebind=Voice._accepted(); Voice.capability=capabilityDoc;
   const sent=[];
   Voice.dc={readyState:"open",send:v=>sent.push(JSON.parse(v)),
     close:()=>{out.dcClosed=true;}};
@@ -684,11 +692,33 @@ function authHeaders(){return {Authorization:"Bearer app"};} async function slee
   Voice.handleServerEvent({type:"output_transcript",transcript:"Exact"});
   out.afterBargeIn=Voice.state; out.mutedAfterBargeIn=Voice.audio.muted;
   out.bargeInInterrupted=Voice.canonicalResponseInterrupted;
-  out.turns=turns; out.toolEvents=sent;
+  out.turns=turns.slice(); out.toolEvents=sent.slice();
   let stopped=0,pcClosed=0,audioPaused=0;
   Voice.stream={getTracks:()=>[{stop:()=>stopped++}]}; Voice.pc={close:()=>pcClosed++};
   Voice.audio={pause:()=>audioPaused++,srcObject:{}}; Voice.stop(false);
   out.teardown={stopped,pcClosed,audioPaused,state:Voice.state};
+  Voice._armSessionLimit(9999);
+  out.sessionLimitDelays=timers.slice(-2).map(timer=>timer.ms);
+  let resolveStale;
+  voiceTurnImpl=()=>new Promise(resolve=>{resolveStale=resolve;});
+  Voice.epoch=20; Voice.state="listening";
+  const oldChannel={readyState:"open",send:()=>{},close:()=>{}};
+  const freshSent=[]; Voice.dc=oldChannel; Voice.audio={muted:true};
+  const staleSuccess=Voice.handleToolCall({type:"tool_call",call_id:"c2",name:"converse",
+    arguments:'{"message":" late success "}'});
+  Voice.dc={readyState:"open",send:v=>freshSent.push(JSON.parse(v)),close:()=>{}};
+  Voice.state="listening"; resolveStale("Late universe reply."); await staleSuccess;
+  out.staleSuccess={state:Voice.state,pending:Voice.canonicalResponsePending,
+    expectedReply:Voice.expectedReply,freshSent};
+  let rejectStale;
+  voiceTurnImpl=()=>new Promise((_resolve,reject)=>{rejectStale=reject;});
+  const staleFailure=Voice.handleToolCall({type:"tool_call",call_id:"c3",name:"converse",
+    arguments:'{"message":" late failure "}'});
+  const liveChannel={readyState:"open",send:()=>{},close:()=>{}};
+  Voice.dc=liveChannel; Voice.state="listening"; rejectStale(new Error("offline"));
+  await staleFailure;
+  out.staleFailure={state:Voice.state,sameChannel:Voice.dc===liveChannel};
+  voiceTurnImpl=async()=>"Exact universe reply.";
   let attempts=0; Voice.epoch=11; Voice.reconnecting=false; Voice.reconnectAttempts=0;
   Voice._teardownTransport=()=>{};
   Voice._connect=async()=>{
@@ -703,6 +733,11 @@ function authHeaders(){return {Authorization:"Bearer app"};} async function slee
   Voice.expectedReply="Exact universe reply."; Voice.audio={muted:false};
   Voice.handleServerEvent({type:"output_transcript",transcript:"Different"});
   out.mismatch={state:Voice.state,status,traces};
+  Voice.state="speaking"; Voice.canonicalResponsePending=true;
+  Voice.canonicalResponseInterrupted=false; Voice.expectedReply="Exact universe reply.";
+  Voice.audio={muted:false}; Voice.handleServerEvent({type:"speech_started"});
+  Voice.handleServerEvent({type:"output_transcript",transcript:"Altered answer"});
+  out.interruptedMismatch={state:Voice.state,status};
   console.log(JSON.stringify(out));
 })().catch(e=>{console.error(e&&e.stack||e);process.exit(1);});
 """
@@ -772,6 +807,9 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
     assert "user-owned voice connection" in out["locked"]["status"]
     assert out["initial"] == "idle"
     assert out["disclosureShown"] is True
+    assert out["disclosureStarted"] is True
+    assert out["acceptedFirst"] is True
+    assert out["acceptedAfterRebind"] is False
     assert out["activeButton"] == {
         "disabled": False,
         "label": "Stop",
@@ -797,12 +835,22 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
         "audioPaused": 1,
         "state": "idle",
     }
+    assert out["sessionLimitDelays"] == [1_500_000, 1_800_000]
+    assert out["staleSuccess"] == {
+        "state": "listening",
+        "pending": False,
+        "expectedReply": "",
+        "freshSent": [],
+    }
+    assert out["staleFailure"] == {"state": "listening", "sameChannel": True}
     assert out["reconnect"] == {"attempts": 3, "state": "listening"}
     assert out["untrusted"]["state"] == "error"
     assert "unverified reply" in out["untrusted"]["status"]
     assert out["mismatch"]["state"] == "error"
     assert "did not match" in out["mismatch"]["status"]
     assert out["mismatch"]["traces"][0][0] == "voice_output_mismatch"
+    assert out["interruptedMismatch"]["state"] == "error"
+    assert "did not match" in out["interruptedMismatch"]["status"]
 
 
 def test_message_timestamps_use_viewer_timezone_and_preserve_the_instant(

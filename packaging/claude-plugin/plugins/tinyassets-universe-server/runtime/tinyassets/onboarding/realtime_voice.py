@@ -17,6 +17,7 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -228,10 +229,16 @@ def voice_capability(
             "state": "locked",
             "reason": "voice_compatible_resource_required",
         }
+    disclosure_id = sha256(
+        "\0".join(
+            (binding.connection_id, binding.service_name, binding.privacy_url)
+        ).encode("utf-8")
+    ).hexdigest()
     return {
         "available": True,
         "state": "ready",
         "resource": "user_bound_voice_connection",
+        "disclosure_id": disclosure_id,
         "service_name": binding.service_name,
         "privacy_url": binding.privacy_url,
     }

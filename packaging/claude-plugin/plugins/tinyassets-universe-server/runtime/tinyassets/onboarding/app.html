@@ -1175,9 +1175,12 @@
     return row[event]||state;
   }
   function voiceNormalize(text){ return String(text||"").trim().replace(/\s+/g," "); }
-  function voiceDisclosureKey(){
+  function voiceDisclosureKey(capability){
     const version=Number(CFG.voice&&CFG.voice.disclosure_version)||1;
-    return "ta_voice_disclosure_v"+version;
+    const disclosureId=capability&&typeof capability.disclosure_id==="string"
+      ?capability.disclosure_id:"";
+    if(!/^[a-f0-9]{64}$/.test(disclosureId)) return "";
+    return "ta_voice_disclosure_v"+version+"_"+disclosureId;
   }
   function voiceFriendlyError(code){
     const messages={
@@ -1224,7 +1227,7 @@
       setStatusLine(detail||VOICE_LABELS[this.state]||"");
     },
     _event(event,detail){ this.state=voiceNextState(this.state,event); this._render(detail); },
-    _accepted(){ try{return localStorage.getItem(voiceDisclosureKey())==="accepted";}catch(_e){return false;} },
+    _accepted(){ try{const key=voiceDisclosureKey(this.capability);return !!key&&localStorage.getItem(key)==="accepted";}catch(_e){return false;} },
     _showUnlock(){
       this.returnFocus=document.activeElement;
       $("voice-unlock").hidden=false; $("btn-voice-unlock-close").focus();
@@ -1266,7 +1269,7 @@
       this.start();
     },
     acceptDisclosure(){
-      try{localStorage.setItem(voiceDisclosureKey(),"accepted");}catch(_e){}
+      try{const key=voiceDisclosureKey(this.capability);if(key)localStorage.setItem(key,"accepted");}catch(_e){}
       $("voice-disclosure").hidden=true; this.returnFocus=null; this.start();
     },
     cancelDisclosure(){
@@ -1346,7 +1349,8 @@
     },
     _armSessionLimit(seconds){
       clearTimeout(this.stopTimer); clearTimeout(this.warnTimer);
-      const limit=Math.max(60,Math.min(Number(seconds)||1800,3600));
+      const configured=Math.max(1,Number(CFG.voice&&CFG.voice.max_session_seconds)||1800);
+      const limit=Math.max(1,Math.min(Number(seconds)||configured,configured));
       this.warnTimer=setTimeout(()=>this._render("Voice will stop in five minutes."),Math.max(0,limit-300)*1000);
       this.stopTimer=setTimeout(()=>this.stop(true,"Voice stopped at the session limit. Start again when you're ready."),limit*1000);
     },
@@ -1356,15 +1360,20 @@
       if(!callId||this.handledCalls.has(callId)||event.name!=="converse") return;
       let args; try{args=JSON.parse(event.arguments||"{}");}catch(_e){return this.fail(new Error("voice_tool_invalid"));}
       if(!args||typeof args.message!=="string"||!args.message.trim()) return this.fail(new Error("voice_tool_invalid"));
+      const generation=this.epoch, channel=this.dc;
       this.handledCalls.add(callId); this.state="thinking"; this._render();
       try{
         const reply=await sendVoiceTurn(args.message.trim());
+        // The canonical turn may finish after Stop or after reconnect replaced
+        // the transport. Keep its text result, but never speak it into a newer
+        // media session or let it pre-authorize that session's audio.
+        if(generation!==this.epoch||channel!==this.dc) return;
         this.expectedReply=reply; this.canonicalResponsePending=true;
         this.canonicalResponseInterrupted=false;
         if(this.audio) this.audio.muted=false;
         this._send({type:"tool_result",call_id:callId,output:reply});
         this._send({type:"speak",call_id:callId,source:"tool_result",verbatim:true});
-      }catch(error){ this.fail(error); }
+      }catch(error){ if(generation===this.epoch&&channel===this.dc) this.fail(error); }
     },
     handleServerEvent(raw){
       let event; try{event=typeof raw==="string"?JSON.parse(raw):raw;}catch(_e){return;}
@@ -1392,9 +1401,10 @@
         const expected=voiceNormalize(this.expectedReply);
         if(expected&&actual&&expected!==actual){
           trace("voice_output_mismatch","expected_chars="+expected.length+" actual_chars="+actual.length+" state="+this.state);
-          // A barge-in intentionally truncates playback/transcript. It remains
-          // observable but is not a fidelity failure or reason to drop the mic.
-          if(!this.canonicalResponseInterrupted) this.fail(new Error("voice_output_mismatch"));
+          // A barge-in may yield a strict prefix of the canonical reply. The
+          // interruption signal never excuses unrelated or altered output.
+          const expectedPrefix=this.canonicalResponseInterrupted&&expected.startsWith(actual);
+          if(!expectedPrefix) this.fail(new Error("voice_output_mismatch"));
         }
         return;
       }

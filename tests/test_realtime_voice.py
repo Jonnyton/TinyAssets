@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -246,14 +247,35 @@ def test_capability_is_locked_without_user_bound_connection(monkeypatch, tmp_pat
 def test_capability_is_ready_only_for_exact_owner_and_universe(monkeypatch, tmp_path):
     _enable(monkeypatch)
     universe = _seed_binding(tmp_path)
-    assert rv.voice_capability(universe, "user_owner") == {
+    capability = rv.voice_capability(universe, "user_owner")
+    disclosure_id = sha256(
+        "\0".join(
+            (_CONNECTION_ID, "Owner Voice Bridge", "https://bridge.example/privacy")
+        ).encode("utf-8")
+    ).hexdigest()
+    assert capability == {
         "available": True,
         "state": "ready",
         "resource": "user_bound_voice_connection",
+        "disclosure_id": disclosure_id,
         "service_name": "Owner Voice Bridge",
         "privacy_url": "https://bridge.example/privacy",
     }
+    assert len(capability["disclosure_id"]) == 64
+    assert capability["disclosure_id"].isalnum()
     assert rv.voice_capability(universe, "someone-else")["available"] is False
+
+
+def test_capability_disclosure_changes_when_bound_service_changes(monkeypatch, tmp_path):
+    _enable(monkeypatch)
+    universe = _seed_binding(tmp_path)
+    first = rv.voice_capability(universe, "user_owner")["disclosure_id"]
+    binding_path = universe / rv.VOICE_BINDING_FILENAME
+    payload = json.loads(binding_path.read_text(encoding="utf-8"))
+    payload["service_name"] = "Replacement Voice Bridge"
+    binding_path.write_text(json.dumps(payload), encoding="utf-8")
+    second = rv.voice_capability(universe, "user_owner")["disclosure_id"]
+    assert second != first
 
 
 def test_capability_refuses_session_url_outside_connection_policy(monkeypatch, tmp_path):
@@ -574,11 +596,18 @@ def test_status_route_reports_ready_without_returning_connection_secret(
     monkeypatch.setattr(onboarding, "_read_home", lambda _identity: "u-owner-home")
     status, body, _headers = _drive_status(identity=_owner())
     assert status == 200
+    disclosure_id = sha256(
+        "\0".join(
+            (_CONNECTION_ID, "Owner Voice Bridge", "https://bridge.example/privacy")
+        ).encode("utf-8")
+    ).hexdigest()
     assert body == {
         "available": True,
         "state": "ready",
         "resource": "user_bound_voice_connection",
+        "disclosure_id": disclosure_id,
         "service_name": "Owner Voice Bridge",
         "privacy_url": "https://bridge.example/privacy",
     }
+    assert len(body["disclosure_id"]) == 64
     assert "voice-bridge" not in json.dumps(body)

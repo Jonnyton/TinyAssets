@@ -81,9 +81,14 @@ The voice client SHALL treat media-session state as disposable, SHALL perform a 
 The app SHALL confirm capability and then disclose before its first microphone permission request that audio is sent to the bound service named by the user-owned connection, any service use belongs to that resource, TinyAssets never substitutes shared authority, TinyAssets stores the canonical text exchange but not raw audio, and the service's privacy terms apply. The disclosure SHALL link those terms when the binding supplies a validated HTTPS privacy URL.
 
 #### Scenario: First voice start requires current disclosure
-- **WHEN** the browser profile has not accepted the current disclosure version
+- **WHEN** the browser profile has not accepted the current disclosure version for the currently bound service
 - **THEN** the app first confirms a compatible resource and presents the disclosure before requesting microphone permission or a voice session
 - **AND** declining leaves typed conversation available and sends no audio
+
+#### Scenario: Voice resource is rebound
+- **WHEN** a browser profile accepted the disclosure for an earlier voice connection and the universe is rebound to a different connection or service disclosure
+- **THEN** the app requires fresh disclosure acceptance before requesting microphone permission or a voice session
+- **AND** the server exposes only an opaque, non-secret disclosure identifier rather than a connection credential
 
 #### Scenario: Raw audio is excluded from TinyAssets persistence
 - **WHEN** a voice turn completes, is interrupted, or fails

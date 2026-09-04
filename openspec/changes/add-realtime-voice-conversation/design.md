@@ -64,17 +64,17 @@ The broker pins a versioned bridge protocol and server-owned session instruction
 
 The client state machine is:
 
-`unavailable -> idle -> requesting_permission -> connecting -> listening -> thinking -> speaking`, with transitions from active states to `reconnecting`, `error`, or `idle`. A `speech_started` event while speaking moves immediately to `listening`; unplayed audio is discarded. Every state has a visible label and an `aria-live` announcement, while the microphone toggle remains keyboard operable.
+`unavailable -> idle -> requesting_permission -> connecting -> listening -> thinking -> speaking`, with transitions from active states to `reconnecting`, `error`, or `idle`. A `speech_started` event while speaking moves immediately to `listening`; unplayed audio is discarded. A later output transcript is tolerated only when it is a strict canonical-prefix truncation, not merely because the bridge emitted an interruption event. Every state has a visible label and an `aria-live` announcement, while the microphone toggle remains keyboard operable.
 
 ### 5. Text history is durable; audio-session state is disposable
 
 Each accepted tool call invokes `MCP.converse` exactly once. Its founder message and returned universe reply are the canonical durable history and appear in the same thread as typed turns. Raw audio, bridge audio events, partial transcripts, SDP, and peer-connection diagnostics are not persisted in conversation history.
 
-If the media connection drops while `MCP.converse` is in flight, that request is allowed to finish and its result is shown in text; the app does not resubmit it. If delivery outcome is unknown, the user sees an explicit retry action instead of automatic replay. After reconnect, the app reloads canonical text history but does not replay prior audio or automatically read the last reply.
+If the media connection drops while `MCP.converse` is in flight, that request is allowed to finish and its result is shown in text; the app does not resubmit it. Each in-flight result is bound to the voice epoch and data channel that originated it, so a late success cannot speak into or pre-authorize a replacement transport and a late failure cannot tear that transport down. If delivery outcome is unknown, the user sees an explicit retry action instead of automatic replay. After reconnect, the app reloads canonical text history but does not replay prior audio or automatically read the last reply.
 
 ### 6. Disclosure and usage visibility precede capture
 
-Before the first microphone permission request for a browser profile, the app confirms that the universe still has a compatible bound resource, then names the bound service, explains that any service use belongs to that resource's account, states that TinyAssets never substitutes shared credentials and stores only the canonical text exchange, and links the service's privacy terms when the binding supplies a validated HTTPS URL. Acceptance is stored locally as a disclosure version; it is not authority to spend, and capability is checked again on each start.
+Before the first microphone permission request for a browser profile, the app confirms that the universe still has a compatible bound resource, then names the bound service, explains that any service use belongs to that resource's account, states that TinyAssets never substitutes shared credentials and stores only the canonical text exchange, and links the service's privacy terms when the binding supplies a validated HTTPS URL. Acceptance is stored locally against both the disclosure version and an opaque fingerprint of the current connection/service disclosure; rebinding requires fresh acceptance. The receipt is not authority to spend, and capability is checked again on each start.
 
 Service cost and accounting vary by the bridge the owner chose. The UI may later show bridge-reported session usage as an estimate, clearly labeled non-billing-authoritative. No usage event may contain transcript text or raw audio.
 

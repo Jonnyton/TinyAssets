@@ -26,20 +26,29 @@ boundary. A writer-only universe remains Voice-locked and no platform authority 
   client-side credential design. This is the current focused verification command.
 - `python -m pytest -q tests/test_mirror_parity_gate.py` — **15 passed** after rebuilding the
   packaged runtime mirror.
+- `python -m pytest -q tests/test_realtime_voice.py tests/test_onboarding_app.py
+  tests/test_channel_agnostic_ratchet.py tests/test_mirror_parity_gate.py
+  tests/test_brand_parity.py` — **146 passed, 1 skipped** after the Opus round-two repairs.
+  Added coverage binds late success and failure to their originating voice transport, enforces
+  the configured client session cap, re-prompts after a bound-service change, and refuses a
+  non-prefix output mismatch even after a bridge interruption event.
 - `python -m ruff check tinyassets/onboarding/__init__.py tinyassets/onboarding/realtime_voice.py tests/test_onboarding_app.py tests/test_realtime_voice.py` — **all checks passed**.
 - `python packaging/claude-plugin/build_plugin.py` — **391 runtime files staged; import probe passed**.
 - `openspec validate add-realtime-voice-conversation --strict` — **valid**.
 - `python scripts/openspec_flow.py check-change add-realtime-voice-conversation --provider codex`
   — **ALLOWED**, with the pre-existing global WIP count of four reported.
-- `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp` — **exit 0** on
-  2026-09-03. Production was not changed; this confirms the existing public MCP surface remained
-  healthy while the branch stayed dark and local.
+- `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp` — the earlier anonymous
+  success was superseded when current `main` made the public probes authenticated. This host has
+  neither the canary token nor the 1Password CLI needed to load it, so a fresh authenticated
+  canary was not claimed locally. The deploy workflow must supply its protected
+  `TINYASSETS_WIKI_CANARY_TOKEN` and pass `--assert-handles` after landing.
 - `python scripts/check_channel_agnostic.py` — **clean at the 686-reference baseline** after the
   provider-neutral rewrite; the new voice module contributes no provider/channel reference.
-- `python scripts/linux_oracle.py -- -q tests/test_realtime_voice.py` — **not run** because the
-  local Docker Linux engine was unavailable (`dockerDesktopLinuxEngine` pipe missing). CI Linux is
-  required before the branch can be considered verified; the Windows symlink case remains skipped
-  locally for lack of symlink privilege.
+- `python scripts/linux_oracle.py -- -q tests/test_realtime_voice.py tests/test_onboarding_app.py`
+  — attempted again after the round-two repairs but the local Docker Linux engine remained
+  unavailable (`dockerDesktopLinuxEngine` pipe missing). CI Linux is required before the branch
+  can be considered verified; the Windows symlink case remains skipped locally for lack of
+  symlink privilege.
 
 The deterministic browser harness executes the shipped JavaScript transition table and `Voice`
 adapter under Node. It proves that a locked universe shows `Voice · Connect`, opens the capability
@@ -71,13 +80,16 @@ or device proof.
 ## Independent review
 
 The corrected authority/security diff was dispatched read-only to the Claude peer on 2026-09-03
-with the required structured-disagreement contract. The initial process exited 1 after 17 seconds
-with no output. After the provider-neutral redesign, a fresh bounded review was dispatched; it
-also exited 1 with no output, after 10 seconds. After Jonathan clarified that Claude Opus remained
-available, one bounded Opus review ran for 409 seconds against pinned head `58e4010f` but returned
-no structured findings, reviewed-head line, or valid final verdict and instead referred to
-unrelated review files. The raw receipts and assessment are recorded under `docs/reviews/`; none
-is approval. Opposite-provider review remains a landing gate and no further retry was started.
+with the required structured-disagreement contract. Early attempts either exited without output
+or returned an invalid receipt; those assessments are preserved under `docs/reviews/` and are not
+approval. A valid Opus round one against `7a13f08f` returned `ADAPT` with two blockers, both fixed
+and regression-tested. Opus round two against `050f168a` confirmed both repairs and returned
+`ADAPT` with four additional client findings: stale turn completion crossing a transport boundary,
+the client cap ignoring configured duration, disclosure acceptance surviving service rebinding,
+and interruption over-suppressing mismatch enforcement. All four were repaired and covered by
+the 146-test focused run above. The round-two receipt is preserved at
+`docs/reviews/2026-09-03-realtime-voice-opus-review-round2.md`. A third and final exact-head Opus
+review remains the landing gate.
 
 ## Rollout and rollback
 
