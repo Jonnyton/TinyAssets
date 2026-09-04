@@ -1,6 +1,6 @@
 # P1 - Founder-taught canon inherits public visibility
 
-**Filed:** 2026-08-06 | **Verified:** 2026-08-06 | **Re-verified:** 2026-08-25, 2026-08-28 (live) | **Severity:** P1
+**Filed:** 2026-08-06 | **Verified:** 2026-08-06 | **Re-verified:** 2026-08-25, 2026-08-28 (live), 2026-09-03 | **Severity:** P1
 **Status:** Codex **REPRODUCED**.
 
 > Migrated verbatim from `STATUS.md` on 2026-08-25 when the board was retired.
@@ -53,6 +53,15 @@ resolves to anonymous public read"; writes draw a 401 OAuth challenge), so this
 is not a new hole. It is this concern's exact predicted consequence, now
 observed in production: the default visibility decides what anonymous read can
 see, and the default is `public`.
+
+## Re-verification 2026-09-03 — anonymous path closed, publication risk remains
+
+Production revision `b4662ab64513b15460f1e222f75cbfedea728bf3` challenges
+tokenless MCP access before dispatch, including reads. The prior anonymous
+exfiltration path is closed. This concern remains open because newly created
+canon still defaults to `public`, so any authenticated non-owner may read
+content a founder did not explicitly publish. The required fix is now a
+creation-visibility default or narrowing step, not another transport-auth gate.
 
 Not probed, deliberately: no write, no `converse`, no `read_page` search. Read
 access is proven; going further would mutate state or spend the founder's

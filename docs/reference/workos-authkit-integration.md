@@ -85,8 +85,9 @@ All MCP tool calls are POST, so "is this a write?" can't be inferred from the HT
 The middleware only **parses + validates the token → principal**; the **enforcement**
 (does this action's `required_scope` match the principal's grants?) happens in the action
 dispatcher, keyed by the **scope taxonomy** (`required_scope(action)` — built separately:
-reads→open, ordinary writes→write, `create_universe`→costly). Anonymous = no principal =
-reads allowed, writes 401.
+reads→read, ordinary writes→write, `create_universe`→costly). A missing or
+invalid bearer binds no principal, so the transport challenges the request
+before any read or write dispatches. There is no anonymous access mode.
 
 ## Minimal middleware (token-parse only; enforcement in dispatcher)
 ```python

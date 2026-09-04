@@ -114,7 +114,9 @@ validation after that runbook clears.
 
 ## §2 — Canonical surface probes
 
-All three probes run from your local machine. Each takes <30s.
+All three probes run from your local machine. Each takes <30s. Export the
+`TINYASSETS_WIKI_CANARY_TOKEN` service-principal credential first; every probe
+fails closed with exit 2 when it is absent.
 
 ### §2.1 Layer-1 MCP canary
 
@@ -130,24 +132,20 @@ python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp --verbose
 python scripts/wiki_canary.py --url https://tinyassets.io/mcp --verbose
 ```
 
-Reworked 2026-07-14 after the anonymous-write gate (#1441): anonymous
-writes are rejected by design, so the old write-roundtrip is impossible.
-The probe now asserts the gate itself plus the open read path. It has NO
-side effects — nothing is written to the live wiki.
+Reworked 2026-09-03 for the no-anonymous boundary. The probe first asserts that
+a tokenless `initialize` receives the OAuth 401 challenge, then initializes as
+the named `canary` principal and performs the exact reserved write/read
+roundtrip at `drafts/notes/uptime-probe.md`.
 
-**Green:** exit 0, verbose output shows `handshake OK`, `anonymous
-write-gate OK: rejected with auth_required=true`, `wiki read OK —
-persisted canary draft content confirmed`.
+**Green:** exit 0, verbose output shows the authenticated handshake, reserved
+write confirmation, and matching authenticated read.
 
-**Red:** exit 6 (gate probe failed — including an anonymous write being
-ACCEPTED, which is a #1441 gate regression / security red), exit 7 (read
-failed or draft content mismatch), exit 2 (handshake broken).
+**Red:** exit 6 (tokenless initialize was admitted or the scoped write failed),
+exit 7 (read failed or draft content mismatch), exit 2 (credential missing or
+handshake broken).
 
-**Scope:** this probe targets auth-gated deployments (production runs
-`UNIVERSE_SERVER_AUTH=optional`). Against a dev-mode server
-(`UNIVERSE_SERVER_AUTH=false`) anonymous writes are open by design, so
-the gate step reds with exit 6 — that is the probe telling you the
-server is not auth-gated, not a wiki outage.
+**Scope:** production and dev modes both require a named principal. There is no
+anonymous probe or dev-mode write fallback.
 
 ### §2.3 MCP tool-invocation canary (PROBE-004)
 

@@ -16,11 +16,9 @@ spec" or "planned", not "works".
   `https://tinyassets.io/mcp`.
 - `tools/list` must advertise exactly `read_graph`, `write_graph`, `run_graph`,
   `read_page`, `write_page`, `converse`, and `get_status`.
-- Anonymous proof currently covers only `read_graph` and `read_page`.
-  `get_status` remains advertised but is withheld from external proof until
-  its versioned redacted public projection lands. `write_graph`, `run_graph`,
-  `write_page`, and `converse` require OAuth; a no-OAuth host is unsupported
-  for mutation.
+- Every handle requires a valid bearer. A no-OAuth host is unsupported for
+  both reads and mutation; discovery documents remain public only to bootstrap
+  sign-in.
 - Retired route proof requires `/mcp-directory*` to return an ordinary 404
   without redirect, alias, or compatibility behavior.
 - Hosted chatbot proof must use the real chatbot UI with the TinyAssets connector
@@ -43,8 +41,8 @@ spec" or "planned", not "works".
 | Retired route family | retirement proof pending | Required result is ordinary 404 for every `/mcp-directory*` request | No redirect, alias, compatibility, or preservation gate |
 | Official MCP Registry metadata | stale historical registration requires replacement or withdrawal | 2026-05-01 publication evidence is preserved below | Current registration must use exact name `TinyAssets`, `/mcp`, exact seven, and truthful OAuth |
 | OpenAI/Claude submission metadata | rebuild and resubmit required | Current work is tracked by the OpenSpec change | Do not reuse the historical 11-tool/no-auth packet |
-| Anonymous host support | restricted read-only proof; fresh per-host proof required | Use `read_graph` or `read_page`; withhold unredacted `get_status` until public-status hardening lands | Mutation is unsupported without host OAuth proof |
-| Authenticated host support | fresh proof required | Canonical OAuth-required handles are `write_graph`, `run_graph`, `write_page`, `converse` | No auth parity may be inferred from an anonymous read |
+| No-OAuth host support | unsupported | The endpoint challenges before `initialize`, `tools/list`, or tool dispatch | Do not describe any read-only anonymous mode |
+| Authenticated host support | fresh proof required | All seven canonical handles require OAuth | Verify the exact request's principal; app continuity is not bearer evidence |
 | AI-readable web docs and `/connect` | canonical-name/endpoint audit required | Historical 2026-05 deploy proof is retained below | Current copy must send every remote host to `/mcp` |
 
 ## Historical Evidence — 2026-05-02 OpenAI Submission Hardening
@@ -133,12 +131,12 @@ verbatim as evidence and must not be reused as current setup guidance.
 | Claude Connectors Directory | fresh canonical submission required | Accepted/pending/rejected state plus rendered canonical read and OAuth mutation proof |
 | ChatGPT custom MCP / Developer Mode | fresh exact-name registration required | Register `TinyAssets` at canonical `/mcp`; prove safe read plus OAuth mutation in web UI |
 | ChatGPT App Directory | rebuild/resubmit required | Exact-seven manifest, OAuth, current privacy/support answers, and rendered app proof |
-| ChatGPT guest | unsupported | Route to a local/self-hosted anonymous-read-only host |
-| Open WebUI | anonymous-read-only; fresh proof required | `read_graph` or `read_page`; withhold `get_status`; mutation unsupported without OAuth proof |
-| LibreChat | anonymous-read-only; fresh proof required | `read_graph` or `read_page`; withhold `get_status`; mutation unsupported without OAuth proof |
-| Codex CLI/IDE | anonymous-read-only until fresh OAuth proof | Canonical tool list plus safe read; do not infer mutation support |
-| Cursor | anonymous-read-only until fresh OAuth proof | Canonical tool list plus safe read; do not infer mutation support |
-| Other MCP hosts | compatible by spec, not verified | Host-specific canonical tool list and safe read; OAuth proof before mutation claim |
+| ChatGPT guest | unsupported | Sign in through a supported connector client |
+| Open WebUI | unsupported until OAuth proof | No no-login fallback |
+| LibreChat | unsupported until OAuth proof | No no-login fallback |
+| Codex CLI/IDE | OAuth supported; refresh lifecycle partly proven | Canonical tool list plus named-principal status proof after sign-in |
+| Cursor | unsupported until OAuth proof | No no-login fallback |
+| Other MCP hosts | compatible by spec, not verified | Host-specific OAuth and named-principal proof before any support claim |
 
 ## Historical Host Matrix — 2026-05-01/02 Observations
 
@@ -170,12 +168,12 @@ auth modes are intentionally historical and are not current setup guidance.
 
 Use host-specific wording, but keep the invoked canonical action explicit:
 
-- Public status: **not ready for an external proof.** Do not call `get_status`
-  anonymously until the versioned redacted `public-status-v1` projection is
-  implemented and verified.
-- Anonymous graph read: "Use TinyAssets `read_graph` to list available goals."
-- Anonymous page read: "Use TinyAssets `read_page` to find and summarize the
-  relevant public page."
+- Authenticated status: "Use TinyAssets `get_status` to report the request
+  identity and daemon state." Verify `bearer_present=true` and a non-null
+  principal fingerprint.
+- Authenticated graph read: "Use TinyAssets `read_graph` to list available goals."
+- Authenticated page read: "Use TinyAssets `read_page` to find and summarize
+  the relevant public page."
 - OAuth mutation: "Use TinyAssets `write_graph` to create the goal I requested."
   Run this only after the host launches OAuth and the authenticated actor's
   authority is visible.
@@ -193,9 +191,8 @@ Current execution source:
   proof.
 - Rebuild every maintained external registration from canonical `/mcp`
   runtime metadata with exact name `TinyAssets`, exact seven tools, and OAuth.
-- Record fresh supported-chatbot rendered proof with an anonymous safe read and
+- Record fresh supported-chatbot rendered proof with a named-principal read and
   an authorized mutation or explicit `converse`.
-- Re-prove Open WebUI and LibreChat against canonical `/mcp` as
-  anonymous-read-only; mutation remains unsupported until a host-specific OAuth
-  path is proven.
+- Re-prove Open WebUI and LibreChat only after each host completes OAuth; there
+  is no anonymous-read-only acceptance path.
 - Preserve dated historical traces without promoting them to current support.

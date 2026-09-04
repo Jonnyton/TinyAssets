@@ -12,13 +12,10 @@ Each entry records the exact prompt, what it exercises, and the evidence of
 its validation. Use these as reference probes for cutover acceptance, regression
 checks, and new-connector verification.
 
-> **Public-status safety hold (2026-07-24).** Canonical `/mcp` currently
-> returns unredacted operator status. PROBE-002, PROBE-006, and PROBE-008 are
-> retained as historical/internal probe designs but are suspended for public
-> use. Do not run their `get_status`, `activity_log_tail`, or
-> `llm_endpoint_bound` calls through a public or anonymous connector. They may
-> resume only after the `public-status-v1` projection lands, or after an
-> authenticated operator-only replacement is specified and implemented.
+> **Authentication update (2026-09-03).** Canonical `/mcp` has no anonymous
+> read path. Operational probes run as the named, pre-dispatch-allowlisted
+> `canary` service principal; user-facing probes require a signed-in connector.
+> Historical anonymous probe designs below are not current instructions.
 
 ---
 
@@ -144,7 +141,7 @@ Layer-2 binds to host availability — the persona's CDP profile + browser run o
 
 ## PROBE-003 — Wiki write-roundtrip with gate fallback
 
-**Validated:** wiki canary script live since 2026-04-22; logs probes to `.agents/uptime.log`. The Layer-1e step in `.github/workflows/uptime-canary.yml` runs every 5 minutes. **Upgraded 2026-07-25:** a scoped non-OAuth service token restores persisted write/read evidence for exactly `drafts/notes/uptime-probe.md`. If the CI secret is absent, the probe keeps the post-#1441 anonymous gate-plus-read assertion rather than going red for missing credentials.
+**Validated:** wiki canary script live since 2026-04-22; logs probes to `.agents/uptime.log`. The Layer-1e step in `.github/workflows/uptime-canary.yml` runs every 5 minutes. **Upgraded 2026-09-03:** the named `canary` service principal performs the exact reserved write/read roundtrip at `drafts/notes/uptime-probe.md`. If the CI secret is absent, the script exits 2 before network access; there is no anonymous fallback.
 **Source script:** `scripts/wiki_canary.py`
 **Persona:** `wiki-canary` (automated; client name `wiki-canary/1.0`)
 **Connector URL under test:** `https://tinyassets.io/mcp`
@@ -157,25 +154,28 @@ python scripts/wiki_canary.py --url https://tinyassets.io/mcp --verbose
 python scripts/wiki_canary.py --once --format=gha
 ```
 
-Credentialed mode is selected by `TINYASSETS_WIKI_CANARY_TOKEN`. The same value (minimum 32 UTF-8 bytes) must be installed in the production server environment and the GitHub Actions secret. The credential is not OAuth and grants no identity; it can dispatch only the exact reserved `write_page` request.
-
-No-token fallback applies to auth-gated deployments. A dev-mode server leaves anonymous writes open by design, so the fallback gate assertion is red there.
+`TINYASSETS_WIKI_CANARY_TOKEN` must be installed in the production server
+environment and the GitHub Actions secret. It resolves to the named `canary`
+identity and is confined by the pre-dispatch allowlist; it grants no general
+universe capability. Missing credentials are red/unknown, never a fallback.
 
 ### What it exercises
 
 | Layer | What's tested |
 |---|---|
 | System | MCP `initialize` handshake reaches the daemon. |
-| System | With the secret present, scoped `write_page` reports exactly `drafts/notes/uptime-probe.md`; the bearer is attached only to this write. |
-| System | Anonymous `read_page` returns the same fresh per-run content marker just written to the reserved draft. |
-| Security | Without the secret, anonymous `write_page` must return pre-dispatch HTTP 401 with a non-empty `WWW-Authenticate` challenge before the persisted read check. |
-| User-impact | Detects wiki write, storage, read, and scoped-auth regressions while preserving anonymous discovery/remix reads. |
+| System | The canary bearer initializes the MCP session and scoped `write_page` reports exactly `drafts/notes/uptime-probe.md`. |
+| System | The same named principal's `read_page` returns the fresh per-run content marker just written to the reserved draft. |
+| Security | A separate tokenless initialize must return HTTP 401 with a non-empty `WWW-Authenticate` challenge before the authenticated roundtrip. |
+| User-impact | Detects wiki write, storage, read, and scoped-auth regressions without an anonymous data path. |
 
 ### Green criteria
 
 - Exit code 0.
-- Credentialed mode: `write_page` returns `status=drafted|updated` and the exact reserved path, then anonymous `read_page` contains the same fresh per-run marker.
-- Fallback mode: anonymous `write_page` returns HTTP 401 with a non-empty OAuth challenge, then anonymous `read_page` contains the persisted `_CANARY_CONTENT`.
+- Tokenless initialize returns HTTP 401 with a non-empty OAuth challenge.
+- The canary-authenticated `write_page` returns `status=drafted|updated` and the
+  exact reserved path, then the canary-authenticated `read_page` contains the
+  same fresh per-run marker.
 
 ### Red signals
 
@@ -186,12 +186,12 @@ No-token fallback applies to auth-gated deployments. A dev-mode server leaves an
 
 ### Why this probe earns a catalog slot
 
-BUG-028 demonstrated that a slug-normalization bug could silently break wiki writes while the MCP handshake stayed green. The scoped roundtrip now exercises persistence without reopening anonymous writes or minting a general service identity. The fallback still proves the anonymous-write challenge when credential availability is absent.
+BUG-028 demonstrated that a slug-normalization bug could silently break wiki writes while the MCP handshake stayed green. The scoped roundtrip now exercises persistence as the confined `canary` service identity. The separate tokenless initialize proves the OAuth challenge.
 
 ### When to use
 
 - After any change to wiki write/read tool handlers, slug normalization, or wiki storage backend.
-- After any deploy that touches `_wiki_file_bug`, `write_page`/`read_page` routing, scoped canary authorization, or the anonymous-write gate.
+- After any deploy that touches `_wiki_file_bug`, `write_page`/`read_page` routing, scoped canary authorization, or the no-anonymous transport gate.
 - As a continuous P0 canary alongside PROBE-002.
 
 ---

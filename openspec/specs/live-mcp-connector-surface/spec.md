@@ -55,17 +55,23 @@ The advertised `tools/list` surface SHALL be exactly seven handles: `read_graph`
 
 ### Requirement: Legacy Fat Tools Registered But Hidden
 
-The six legacy fat tools (`universe`, `community_change_context`, `extensions`, `goals`, `gates`, `wiki`) SHALL remain registered and dispatchable for one migration release while being hidden from `tools/list` by the `_DeprecatedToolVisibility` middleware. Every call to a hidden legacy tool SHALL be logged as deprecated. In gating auth modes an anonymous caller SHALL NOT be able to invoke a legacy fat tool.
+The server SHALL keep the six legacy fat tools (`universe`, `community_change_context`,
+`extensions`, `goals`, `gates`, `wiki`) registered and
+dispatchable for one migration release while being hidden from `tools/list`
+by the `_DeprecatedToolVisibility` middleware. Every call to a hidden legacy
+tool SHALL be logged as deprecated. Like every handle they require a valid
+bearer: the transport SHALL challenge an unauthenticated call before it can
+reach them.
 
 #### Scenario: Legacy tool is absent from the advertised list but still callable
 
-- **WHEN** a client reads `tools/list` and then calls the legacy `universe` tool by name
+- **WHEN** an authenticated client reads `tools/list` and then calls the legacy `universe` tool by name
 - **THEN** `universe` does not appear in the advertised list, the call still dispatches and returns a result, and a `deprecated-tool-call name=universe` warning is logged
 
-#### Scenario: Anonymous caller is refused a legacy tool in gating auth mode
+#### Scenario: Unauthenticated caller is refused before a legacy tool
 
-- **WHEN** an unauthenticated client calls a deprecated fat tool while the server is in a write-gating auth mode
-- **THEN** the call is rejected with a `ToolError` directing the caller to the canonical handles instead
+- **WHEN** an unauthenticated client calls a deprecated fat tool
+- **THEN** the transport returns an authentication challenge and the legacy tool is not dispatched
 
 ### Requirement: Connector-Safe Handle Names
 
@@ -75,48 +81,6 @@ Every advertised handle name SHALL match `^[a-zA-Z0-9_-]{1,64}$` and MUST NOT co
 
 - **WHEN** the advertised handle set is inspected
 - **THEN** every handle name matches `^[a-zA-Z0-9_-]{1,64}$` with no dots
-
-### Requirement: Read-Open, Write-Challenged Authentication Boundary
-
-Pure-read handles (`read_graph`, `read_page`, and the `read_graph target=status` alias) SHALL remain callable anonymously. Pure-write / costly-effect handles (`write_graph`, `run_graph`, `write_page`, `converse`) SHALL answer an anonymous `tools/call` with an HTTP 401 + `WWW-Authenticate` challenge pre-dispatch so the MCP client launches OAuth, since a tool-JSON rejection would not prompt sign-in. `converse` is the connector's opening call: it requires an authenticated actor with write or admin access to the target universe and relays the actor's turn to the universe's own intelligence. Access and AUTHORITY are separate, and today the authority bar is the binding one: reaching `converse` takes write or admin, but only an `admin` grant binds the founder tier (`T2`), and `authorize_conversation_turn` refuses every non-founder tier — so a `write` collaborator passes the access check and is then refused before any relay. No visitor conversation path exists yet; when one does, `write` binds `T1` and `T1` never receives the founder's own grounding. The bound tier is resolved from authenticated request state on every call; a caller-supplied tier MAY narrow it and SHALL NOT raise it. For an authenticated founder with create scope and no home universe it resolves-or-creates and binds that home as a one-time onboarding side effect before continuing the originating conversation entry. Completion of that provisioning step SHALL NOT by itself assert that downstream provider execution or a first-person reply succeeded. `get_status` and the `read_graph target=status` alias are both pure reads (`readOnlyHint=True`) and never provision. Per the 2026-07-22 host directive (`docs/design-notes/2026-07-22-first-contact-birth-moves-to-converse.md`) birth moved off `get_status`, because a mutating *opening* call proved refusable in production — the assistant declined to call it, citing the side effect its own tool description advertised, which contradicted the shipped instruction to call it first.
-
-#### Scenario: Anonymous write handle triggers an OAuth challenge
-
-- **WHEN** an unauthenticated client calls `write_graph`, `run_graph`, `write_page`, or `converse`
-- **THEN** the server answers HTTP 401 with a `WWW-Authenticate` header pre-dispatch, launching the OAuth sign-in flow
-
-#### Scenario: Anonymous read handle stays open
-
-- **WHEN** an unauthenticated client calls `read_graph` or `read_page`
-- **THEN** the read is served without an auth challenge
-
-#### Scenario: First-contact provisioning via converse
-
-- **WHEN** an authenticated founder with create scope and no home universe issues their opening `converse` with no `graph_id`
-- **THEN** a home universe is created and bound and the originating conversation entry continues with that home as its target
-- **AND** completion of provisioning does not by itself assert that provider execution or a first-person reply succeeded
-- **AND** a later `converse` for the same founder reaches the same home with no further creation
-
-#### Scenario: Founder without create scope does not provision
-
-- **WHEN** an authenticated founder without create scope and no home universe issues their opening `converse` with no `graph_id`
-- **THEN** no universe or home binding is created
-- **AND** the result reports that the home could not be created or loaded with `auth_scope_required=true`
-
-#### Scenario: get_status never provisions
-
-- **WHEN** an authenticated founder with no home universe calls `get_status`
-- **THEN** no universe is created and the call is a pure read (`readOnlyHint=True`)
-
-#### Scenario: The read alias never provisions
-
-- **WHEN** any caller invokes `read_graph(target="status")`
-- **THEN** no universe is created
-
-#### Scenario: Caller without target write access is refused converse
-
-- **WHEN** an anonymous caller or an authenticated caller without write or admin access reaches `converse` for a universe
-- **THEN** the reply is an auth error and no message is relayed to the universe intelligence
 
 ### Requirement: Faithful Structured And Text Result Envelope
 
@@ -286,21 +250,15 @@ responses return before full status assembly and do not include this field.
 - **THEN** that early response does not include `sandbox_status`
 
 ### Requirement: Custom agents route through canonical graph handles
-The public MCP surface SHALL expose custom-agent operations only as targets of `read_graph` and `write_graph`, SHALL keep the advertised tool set at exactly seven canonical handles, and SHALL delegate those targets to the custom-agent API without weakening its public-definition or private-binding authorization rules.
 
-#### Scenario: Anonymous caller browses the public agent commons
-- **WHEN** an anonymous caller uses `read_graph` with target `agents` or `agent`
-- **THEN** the router returns public agent definitions through the custom-agent API
-- **AND** no private universe binding is exposed
+Custom agents SHALL be read through `read_graph` (`agents`, `agent`,
+`agent_bindings`, `agent_binding`) and written through `write_graph`; the
+public agent commons SHALL be browsable by any authenticated caller, and
+private bindings by their universe's ACL only.
 
-#### Scenario: Authorized founder manages a private binding
-- **WHEN** an authenticated universe writer uses `write_graph` target `agent_binding` and later reads target `agent_binding`
-- **THEN** both calls delegate to the custom-agent API with the current request identity
-- **AND** the binding is visible only under the universe authorization contract
-
-#### Scenario: Agent targets do not expand the handle set
-- **WHEN** a client lists tools after custom-agent targets are installed
-- **THEN** the advertised set remains `{read_graph, write_graph, run_graph, read_page, write_page, converse, get_status}` and nothing else
+#### Scenario: signed-in caller browses the public agent commons
+- **WHEN** an authenticated caller uses `read_graph` with target `agents`
+- **THEN** public agent definitions are listed
 
 ### Requirement: An owner can delete their own branch through write_graph
 
@@ -353,9 +311,9 @@ and the refusal.
 
 ### Requirement: Owned conversation UI shows viewer-local message instants
 
-The daemon-served conversation app at `/mcp/app`, including the same renderer
-embedded by the desktop and mobile shells, SHALL show a date and time on every
-founder, universe, and system-notice message. A known message instant SHALL be
+The daemon-served conversation app at `/mcp/app` SHALL show message timestamps.
+The same renderer SHALL show a date and time on every founder, universe, and system-notice
+message across the desktop and mobile shells. A known message instant SHALL be
 formatted by the browser in the viewing user's locale and local timezone with a
 visible timezone abbreviation or offset, while an HTML `time` element retains
 the same instant as a UTC ISO 8601 `datetime` value. Durable history SHALL use
@@ -380,3 +338,83 @@ SHALL NOT receive a fabricated `datetime` value.
 - **WHEN** a durable legacy turn has no usable timestamp
 - **THEN** the app displays `Date and time unavailable`
 - **AND** it does not substitute page-load time or emit a machine-readable instant for that turn
+
+### Requirement: Every handle requires a named principal
+
+`initialize`, `tools/list` and every `tools/call` on the live connector SHALL
+require a valid bearer. A request without one SHALL answer HTTP 401 with a
+`WWW-Authenticate: Bearer` challenge carrying the resource-metadata URL, so an
+MCP client starts OAuth before it lists tools. `converse` SHALL require an
+authenticated actor with write or admin on the target universe. `get_status`
+and `read_graph target=status` remain pure reads for any authenticated caller
+and never provision.
+
+#### Scenario: unauthenticated initialize
+- **WHEN** a client POSTs `initialize` with no bearer
+- **THEN** the response is HTTP 401 with the `WWW-Authenticate` challenge and no session is created
+
+#### Scenario: authenticated read
+- **WHEN** an authenticated caller calls `read_graph target=status`
+- **THEN** the read succeeds and no universe is created
+
+#### Scenario: hosted connector has a cached tool catalog but no bearer
+- **WHEN** it calls any canonical tool without a valid bearer
+- **THEN** no tool handler runs
+- **AND** the MCP error result carries `_meta["mcp/www_authenticate"]` with the routed protected-resource URL, an OAuth error code and an error description
+
+### Requirement: Canonical tools advertise OAuth-only security
+
+Every canonical tool descriptor SHALL advertise `securitySchemes` containing
+only OAuth2 with `openid`, `profile`, `email` and `offline_access`. It SHALL NOT
+advertise `noauth`. The compatibility `_meta.securitySchemes` mirror SHALL carry
+the identical value.
+
+#### Scenario: hosted connector lists tools
+- **WHEN** the authenticated connector lists the canonical tool catalog
+- **THEN** every returned tool carries identical top-level and compatibility OAuth-only security schemes
+
+#### Scenario: a browser opens the endpoint
+- **WHEN** a browser GETs `/mcp` with `Accept: text/html`, or any client HEADs it
+- **THEN** the response is the same 401 challenge, not the discovery page
+- **AND** the discovery documents at `/mcp/.well-known/*` stay public, so a client can still find the authorization server
+
+### Requirement: Release reads use the named canary principal
+
+`GET /mcp/pulse` SHALL require a valid user bearer or the canary bearer and SHALL return exactly
+`git_sha`, `image_tag`, `deployed_at` and `uptime_seconds` from the release
+receipt, with empty strings when no receipt is present. It SHALL name no
+universe, no user and no run. The deploy gate (`scripts/deployed_sha.py`) reads
+it with the canary bearer. Public website clients SHALL NOT call it without a
+signed-in user's bearer.
+
+#### Scenario: the deploy gate reads production's sha
+- **WHEN** `GET /mcp/pulse` is requested with the canary bearer
+- **THEN** the response is HTTP 200 carrying the four release fields and nothing a user authored
+
+#### Scenario: an unsigned browser requests pulse
+- **WHEN** `GET /mcp/pulse` is requested without a bearer
+- **THEN** the response is the OAuth 401 challenge and no release fields are returned
+
+#### Scenario: a deeper path is not exempt
+- **WHEN** `GET /mcp/pulse/extra` is requested with no bearer
+- **THEN** the response is the 401 challenge
+
+### Requirement: Probes are the canary service principal
+
+The bearer `TINYASSETS_WIKI_CANARY_TOKEN` SHALL resolve to the service
+principal `canary`, which holds no capabilities. Before dispatch, every item
+of a single or batch JSON-RPC body under that bearer SHALL be one of:
+`initialize`, `notifications/initialized`, `tools/list`, `tools/call
+get_status` with no arguments, `tools/call read_graph` with exactly
+`{"target": "status"}`, and the reserved wiki canary's exact `write_page` /
+`read_page` shapes. Anything else, and any use of the bearer off `POST /mcp`,
+except exact `GET /mcp/pulse`, SHALL be refused with HTTP 403 before dispatch. The bearer SHALL NOT be
+downgraded to any other identity.
+
+#### Scenario: the canary probes liveness
+- **WHEN** the canary bearer accompanies `tools/call get_status` with no arguments
+- **THEN** the call is dispatched as the `canary` principal
+
+#### Scenario: a leaked canary bearer tries to read a universe
+- **WHEN** the canary bearer accompanies `tools/call read_graph target=graph`
+- **THEN** the response is HTTP 403 and no handler runs

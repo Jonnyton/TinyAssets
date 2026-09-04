@@ -15,20 +15,19 @@ after a successful deploy completion, while the alarm sink SHALL distinguish
 the probe result as literal red, literal green, or unknown. The bundle SHALL
 probe the canonical MCP handshake, a real tool call, daemon last activity,
 sustained revert-loop state, and wiki persistence plus authorization policy.
-When `TINYASSETS_WIKI_CANARY_TOKEN` is present in the probe environment, the
-wiki sub-probe SHALL attach it only to an exact reserved `write_page` call,
-write a fresh per-run marker, require a successful write response for
-`drafts/notes/uptime-probe.md`, and then verify that same marker through
-anonymous `read_page`. When the credential
-is absent or empty, the sub-probe SHALL instead require an anonymous
-`write_page` HTTP 401 with a non-empty `WWW-Authenticate` challenge and verify
-the previously persisted anonymous-readable draft, so missing CI credentials
-alone cannot make the uptime bundle red. A present but rejected credential,
-an accepted write to a non-exact path, a read mismatch, an invalid anonymous
-challenge, or another HTTP/network failure SHALL remain red with the existing
-step-specific diagnostics. The `live-mcp-connector-surface` capability owns the
-underlying pre-dispatch challenge protocol; this requirement owns its uptime
-evidence and workflow diagnostic propagation. The bundle SHALL combine
+The wiki sub-probe SHALL require `TINYASSETS_WIKI_CANARY_TOKEN` before network
+access, assert that a separate tokenless `initialize` receives the OAuth 401
+challenge, then use the named `canary` service principal for the MCP session,
+an exact reserved `write_page` call, and its matching `read_page`. It SHALL
+write a fresh per-run marker, require a successful response for
+`drafts/notes/uptime-probe.md`, and verify the same marker and path through the
+authenticated read. A missing or rejected credential, an accepted write to a
+non-exact path, a read mismatch, an invalid tokenless challenge, or another
+HTTP/network failure SHALL remain red with the existing step-specific
+diagnostics. There is no unsigned fallback. The
+`live-mcp-connector-surface` capability owns the underlying pre-dispatch
+challenge and canary confinement; this requirement owns its uptime evidence
+and workflow diagnostic propagation. The bundle SHALL combine
 executed sub-probes into one red/green result, open a `p0-outage` issue after
 two consecutive red runs, append evidence while red, and comment recovery then
 close the issue only on literal green. An unavailable, empty, or unrecognized
@@ -62,21 +61,20 @@ incident state.
 - **THEN** dependent activity, revert-loop, and wiki probes are skipped where they cannot produce meaningful evidence
 - **AND** the upstream failure keeps the combined result red
 
-#### Scenario: Credentialed wiki write is read back
+#### Scenario: Canary wiki write is read back
 
 - **WHEN** the scoped service token is present and the reserved `write_page`
   call reports `drafts/notes/uptime-probe.md`
-- **THEN** the wiki sub-probe anonymously reads that page and requires the
+- **THEN** the wiki sub-probe reads that page as the same `canary` principal and requires the
   written canary content to match
 - **AND** any rejected write, different path, or read mismatch is red
 
-#### Scenario: Missing credential preserves gate and read evidence
+#### Scenario: Missing credential fails before network access
 
 - **WHEN** the scoped service token is absent or empty in the canary environment
-- **THEN** the wiki sub-probe treats an anonymous `write_page` HTTP 401 with a
-  non-empty `WWW-Authenticate` header as green gate evidence
-- **AND** it verifies the persisted anonymous-readable canary draft without
-  failing solely because the credential is missing
+- **THEN** the wiki sub-probe exits 2 naming
+  `TINYASSETS_WIKI_CANARY_TOKEN` before making a network request
+- **AND** it does not attempt an anonymous read or write
 
 ### Requirement: Durable Acknowledgement-Aware Emergency Paging
 

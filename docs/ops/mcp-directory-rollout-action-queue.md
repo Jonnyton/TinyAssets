@@ -133,11 +133,12 @@ Status: complete for the 2026-05-01 website pass.
 
 These can be picked up by any non-website dev with a narrow worktree.
 
-### No-Chatbot-Login Pack
+### No-Chatbot-Login Pack — retired 2026-09-03
 
-First targets: Open WebUI and LibreChat. Local Docker proofs landed on
-2026-05-01; next targets are LM Studio/Jan, OpenClaw/channel gateway, and
-custom hosts.
+The 2026-05-01 Open WebUI and LibreChat Docker proofs are historical. The live
+endpoint now requires OAuth for every handle, so these hosts are unsupported
+until each has a fresh host-specific OAuth proof. The retained setup-pack paths
+are retirement notices, not runnable no-login instructions.
 
 Setup packs:
 
@@ -148,10 +149,8 @@ Deliverables:
 
 - Host version and transport notes. Open WebUI 0.9.2 recorded.
 - Host version and transport notes. LibreChat v0.8.5 recorded.
-- Minimal config for `https://tinyassets.io/mcp-directory`. Open WebUI and
-  LibreChat recorded.
-- Tool-list proof and one visible read-only user result. Open WebUI and
-  LibreChat recorded.
+- OAuth-capable config for `https://tinyassets.io/mcp`.
+- Tool-list proof and one visible named-principal user result.
 - Proof registry row. Open WebUI and LibreChat recorded.
 
 Repeat for LM Studio/Jan, OpenClaw/channel gateway, and any custom host that

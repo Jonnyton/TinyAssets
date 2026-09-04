@@ -2,7 +2,6 @@
 
 ## Purpose
 Define the public website's route set, its message, the live-versus-snapshot provenance of what it shows, the browser's public read boundary, the operational and plan copy, the brand mark, indexing, and the hosted-preview trust boundary. As built 2026-09-02 (`WebSite/site-react`, Next.js static export on `@tiny/design-system`).
-
 ## Requirements
 ### Requirement: The Public Site Ships As One Static Multi-Route Application
 
@@ -52,68 +51,73 @@ The site SHALL describe plans only in the `Plans` section of `/fine-print` (anch
 
 ### Requirement: Public Views Distinguish Live Reads From The Checked-In Snapshot
 
-The site SHALL carry a checked-in public snapshot (`lib/mcp-snapshot.json`: the public universe list with `fetched_at`) and SHALL label it as a snapshot with its date wherever it is shown. Browser refresh paths SHALL read the public MCP surface, stamp a successful read with its fetch time and source, and on failure SHALL retain the snapshot with its snapshot provenance and a visible failed-read reason. A failed live read MUST NOT relabel snapshot data as live. The snapshot SHALL be refreshed only by `scripts/snapshot-public.mjs`, which reads the same public projection the browser reads and fails closed if completeness cannot be proven.
+The site SHALL carry a checked-in public snapshot (`lib/mcp-snapshot.json`: the
+public universe list with `fetched_at`) and SHALL label it as a snapshot with
+its date wherever it is shown. Public browser code SHALL NOT attempt a live MCP
+read because it has no connector bearer. It SHALL state that live discovery
+needs a signed-in connector and MUST NOT relabel snapshot data as live. The
+snapshot SHALL be refreshed only by an authenticated `scripts/snapshot-public.mjs`
+run, which reads the public projection and fails closed if completeness cannot
+be proven.
 
-#### Scenario: Live commons read succeeds
+#### Scenario: A visitor opens commons
 
-- **WHEN** `/commons` retrieves the public universe list
-- **THEN** it replaces the labelled snapshot rows with the live rows and shows a live read stamp with a relative time
-
-#### Scenario: Live commons read fails
-
-- **WHEN** `/commons` cannot retrieve the public universe list
-- **THEN** it shows the failed-read reason and the snapshot rows labelled with the snapshot's date
-- **AND** it does not present the snapshot as a current live read
+- **WHEN** an unsigned browser renders `/commons`
+- **THEN** it shows snapshot rows labelled with the snapshot date and the signed-in-connector requirement
+- **AND** it makes no MCP request and offers no unauthenticated MCP refresh control
 
 #### Scenario: No public universes exist
 
-- **WHEN** a live read succeeds with an empty list
-- **THEN** the page states that there are no public universes right now and that every universe starts private
+- **WHEN** the checked-in snapshot contains no discoverable universes
+- **THEN** the page states that there are no public universes in this snapshot and that every universe starts private
 
 #### Scenario: A snapshot record is not explicitly discoverable
 
 - **WHEN** the checked-in snapshot holds a record whose `visibility` is missing, `private`, or any value other than `public`/`metadata_only`
-- **THEN** it is dropped before render by the same `sanitizePublicUniverse` allowlist a live read passes through (`lib/discoverable.js`), rather than shown as public
+- **THEN** it is dropped before render by `lib/discoverable.js`, rather than shown as public
 - **AND** one bad record does not blank the list
 
 #### Scenario: The public list is raw rather than curated
 
-- **WHEN** the endpoint reports working or housekeeping universes as publicly discoverable
-- **THEN** `/commons` shows them and says the list is what the endpoint reports rather than a curated gallery
-- **AND** the site does not filter them out, which would make its own "what is public" claim false (open finding: `docs/concerns/2026-09-02-migration-records-are-publicly-discoverable.md`)
+- **WHEN** the snapshot reports working or housekeeping universes as publicly discoverable
+- **THEN** `/commons` shows them and says the list is what the endpoint reported rather than a curated gallery
+- **AND** the site does not filter them out, which would make its own "what is public" claim false
 
 ### Requirement: Browser MCP Reads Use The Public Connector Contract And Only The Public Projection
 
-The browser MCP client (`lib/live.ts`) SHALL use JSON-RPC over HTTP, initialize an MCP session before tool calls, preserve a returned `Mcp-Session-Id`, accept JSON or server-sent-event responses, and retry transient failures up to three total attempts. In local development `npm run dev` SHALL proxy same-origin `/mcp` to `https://tinyassets.io/mcp`; in production the client SHALL use same-origin `/mcp`. Tool calls SHALL prefer object-valued `structuredContent` and MAY parse text content only as a compatibility fallback. The client SHALL expose only `fetchPublicUniverses` (`read_graph target=graphs`, sanitized to public scalars through `WebSite/shared/mcp/public-read-contract.js`) and `fetchVitals`. It MUST NOT call `get_status`, request goals or runs, default a missing visibility to public, or surface untrusted error detail from the endpoint. `scripts/public-boundary.test.mjs` and `scripts/canonical-mcp-contract.test.mjs` enforce this and run in `npm test`, which gates both the preview build and the production deploy.
+The public browser SHALL NOT initialize an MCP session or issue any request to
+`/mcp`. `lib/live.ts` SHALL expose only `fetchPublicUniverses`, which refuses
+with a bounded signed-in-connector message, and `fetchVitals`, which returns an
+explicit `authRequired` state without a network call. Live MCP reads SHALL be
+performed only by an authenticated connector or account surface. The client
+MUST NOT call `get_status`, request goals or runs, embed a bearer, default a
+missing visibility to public, or surface untrusted endpoint detail.
+`scripts/public-boundary.test.mjs` and `scripts/canonical-mcp-contract.test.mjs`
+SHALL enforce this in `npm test`.
 
-#### Scenario: Tool response includes structured content
+#### Scenario: A public browser loads the site
 
-- **WHEN** a browser tool call returns both `structuredContent` and summary text content
-- **THEN** the website uses `structuredContent` as the tool result
+- **WHEN** any public route renders without an authenticated connector context
+- **THEN** no MCP session or tool call is created
+- **AND** no credential is embedded in or recovered by the static JavaScript
 
-#### Scenario: Gateway returns an SSE response
+#### Scenario: Code attempts public universe refresh
 
-- **WHEN** an MCP JSON-RPC request succeeds with `Content-Type: text/event-stream`
-- **THEN** the client parses the first `data:` event as the JSON-RPC response while preserving the MCP session identifier
-
-#### Scenario: Gateway is transiently unavailable
-
-- **WHEN** an MCP request returns HTTP 502, 503, or 504 on an early attempt
-- **THEN** the client retries with bounded incremental delay and ultimately exposes "Public MCP read is unavailable" if all three attempts fail
+- **WHEN** public browser code calls `fetchPublicUniverses`
+- **THEN** it receives the bounded signed-in-connector refusal without a network request
 
 ### Requirement: Reachability And Activity Stay Distinct Operational Truths
 
-The `/fine-print` reachability strip SHALL derive server reachability from a successful public universe read and SHALL derive activity only from public universe timestamps within the current one-hour window. It MUST NOT collapse a reachable endpoint into a claim that work is moving, MUST NOT infer an executing run, and SHALL render a failed read as an unreachable reading rather than an error dressed as data. Site-wide live-data controls SHALL be named `Refresh MCP` (and `Refresh GitHub` where GitHub data is read).
+The `/fine-print` reachability strip SHALL report that live readings require a
+signed-in connector. It MUST NOT describe the protected endpoint as
+unreachable, MUST NOT infer an executing run or public activity from snapshot
+data, and SHALL NOT offer an unsigned `Refresh MCP` control.
 
-#### Scenario: Endpoint is reachable but quiet
+#### Scenario: Public browser opens fine print
 
-- **WHEN** the public read succeeds and no public universe moved within one hour
-- **THEN** the strip reports the endpoint as reachable and activity as quiet, with the last public movement time if any
-
-#### Scenario: Endpoint is unreachable from the browser
-
-- **WHEN** the public read fails after its retries
-- **THEN** the strip reports "unreachable from your browser" with the bounded reason and states that this is itself a true reading
+- **WHEN** the browser has no connector bearer
+- **THEN** the strip reports "sign-in required" for live readings
+- **AND** it makes no reachability request and asserts no activity state
 
 ### Requirement: Start, Surfaces, And Availability Copy Are Truthful
 
