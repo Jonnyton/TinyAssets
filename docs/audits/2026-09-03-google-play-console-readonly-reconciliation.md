@@ -62,14 +62,19 @@ dependency adds it, the verifier fails with `permission drift` before the bundle
 can pass. The Play draft should therefore answer **No** only for an exact bundle that
 passes the merged-manifest verifier.
 
-## Listing asset discrepancy
+## Listing asset discrepancy — resolved 2026-09-03
 
-The default store listing is **Ready to send for review**, but its first uploaded phone
-screenshot is still `01-universe-conversation.png`, 1080×1920, uploaded 2026-09-02.
-That is the unsafe internal/debug conversation image removed from the repository.
-The replacement `docs/ops/play-assets/screenshots/01-sign-in.png` is staged and passes
-the artwork verifier, but it has **not** been uploaded because upload is an explicit
-boundary. The second screenshot remains present.
+With explicit user authorization, the clean
+`docs/ops/play-assets/screenshots/01-sign-in.png` was uploaded, the private
+`01-universe-conversation.png` attachment was removed, and the default-listing draft
+was saved. Play displayed both **Your changes have been saved** and **Draft saved**.
+Re-opening the two attachment-detail panels after the save verified the live pair as:
+
+- `02-connect-subscription.png`, 1080×1920, uploaded 2026-09-02;
+- `01-sign-in.png`, 540×960, uploaded 2026-09-03.
+
+The old file remains visible in Play's account-level asset picker, but is no longer
+attached to the listing. The listing was not sent for review or published.
 
 ## Foreground-service evidence still required
 

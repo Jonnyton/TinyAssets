@@ -28,7 +28,7 @@ Package name (permanent once published): **`io.tinyassets.app`**
 | Phone | ~~Verify the contact phone `+12067997835`.~~ **Done 2026-09-02 — and it was never a founder action.** It took one click in the Console and sent no SMS code, despite the padlock text implying otherwise. Try such a step before handing it over. | — |
 | Payment | ~~Authorize the $25 fee.~~ **Done** with the account. | — |
 | Signing key | The keystore is generated (§2, 2026-09-01). Adding its 4 values as repo secrets is **optional, not blocking** — `mobile/container/` builds and signs the bundle with no secret at all, and that is how the shipped build was made. Worth doing anyway: it turns each future release into one `gh workflow run`. One command, §3; an agent cannot run it (`gh secret set` is denied to it). | your machine → GitHub secrets |
-| Console forms | Creating the app, its declarations (incl. US export laws), listing, Data safety, content rating and the internal-testing release are **form submissions on your Google account**: the agent drives them in the browser only after an explicit "yes" in chat. Those named here are **done** (2026-09-02/03); what is left needs the reviewer account below. | Play Console (agent, gated on your yes) |
+| Console forms | Creating the app, legal/policy declarations (incl. US export laws), Data safety, content rating, tester invitations, release uploads, review submission, and rollout are consequential account actions: the agent drives them only after the required action-time confirmation. Routine store-asset safety correction is different: when a listing accidentally exposes private material, the agent may remove that exact asset, replace it with an already prepared and verified-safe asset, and save the draft without asking again. That standing authority does not extend to unrelated media, sending for review, or publishing. | Play Console (agent; consequence-gated) |
 | **Device check** | **The live one.** Install the internal-test build, sign in, chat once: <https://play.google.com/apps/internaltest/4701716760893982267> | your phone |
 | Publish | Promote to Production → submit for review → click **Roll out**. | Play Console |
 
@@ -439,9 +439,10 @@ Screenshots come from the live app so they're honest:
    visually inspect every file; only then upload it in the listing.
 
 On 2026-09-03, a clean 540×960 signed-out capture replaced the stale conversation
-image that exposed an internal universe id and implementation discussion. The staged
-pair now passes the repository's Play artwork rules. This is asset readiness, not
-evidence that the Console listing has been updated.
+image that exposed an internal universe id and implementation discussion. The pair
+passes the repository's Play artwork rules. The live Console draft was then corrected
+and saved: its two attached phone screenshots are `01-sign-in.png` and
+`02-connect-subscription.png`; the private conversation image is no longer attached.
 
 ---
 
@@ -501,9 +502,9 @@ Done:
 - [x] **targetSdk 36** via Capacitor 8 (§1a) — Play rejects anything less for a new app
 - [x] Internal-testing tester list "Founder devices"
 - [x] **Signed AAB built and uploaded** — see "How to build one" below
-- [x] Unsafe conversation screenshot removed; clean live signed-out capture staged
-      alongside the Connect capture. The live Console still has the unsafe old image;
-      replacement is not uploaded by this change.
+- [x] Unsafe conversation screenshot removed from the live listing; clean
+      `01-sign-in.png` uploaded and saved alongside `02-connect-subscription.png`.
+      Both attached filenames were re-opened and verified after the draft save.
 
 Open, with what each actually waits on:
 
@@ -522,8 +523,6 @@ Open, with what each actually waits on:
 - [ ] Foreground-service declaration (§8a): confirm the Console row, record the
       user-initiated OAuth callback video, select **Data sync → Network processing →
       Other**, founder reviews the staged facts, then submit.
-- [ ] Replace the uploaded `01-universe-conversation.png` with staged
-      `01-sign-in.png`; this remains an explicit Console upload action.
 - [ ] Founder: the four `ANDROID_UPLOAD_*` secrets. Not on the critical path any more —
       the container build below needs none of them — but they turn every future release
       into one `gh workflow run` instead of a manual build.

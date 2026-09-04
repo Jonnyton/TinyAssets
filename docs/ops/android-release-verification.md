@@ -124,7 +124,9 @@ as the workflow artifact.
   in the candidate. The unsafe conversation image was removed and replaced on
   2026-09-03 with an honest 540×960 live signed-out capture. It and the retained
   1080×1920 Connect capture pass the release artwork gate and expose no account,
-  universe, branch, run, or credential identifiers. They remain staged, not uploaded.
+  universe, branch, run, or credential identifiers. The live Play listing draft was
+  saved with exactly those two screenshots on 2026-09-03; the private conversation
+  image is no longer attached to the listing.
 
 Current Google references (re-checked 2026-09-03):
 
