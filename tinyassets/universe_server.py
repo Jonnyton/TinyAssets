@@ -38,6 +38,7 @@ import uvicorn
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import Middleware
+from fastmcp.tools.function_tool import FunctionTool
 from mcp.types import ToolAnnotations
 from pydantic import Field
 from starlette.applications import Starlette
@@ -76,6 +77,28 @@ logger = logging.getLogger("universe_server")
 # ---------------------------------------------------------------------------
 
 _MCP_TEXT_CONTENT_MAX_CHARS = 6000
+_OAUTH_TOOL_SCOPES = ("openid", "profile", "email", "offline_access")
+
+
+def _oauth_security_schemes() -> list[dict[str, object]]:
+    """A fresh OAuth-only tool policy for OpenAI and standard MCP clients."""
+    return [{"type": "oauth2", "scopes": list(_OAUTH_TOOL_SCOPES)}]
+
+
+class _OAuthFunctionTool(FunctionTool):
+    """FunctionTool that emits the current and compatibility OAuth fields."""
+
+    def to_mcp_tool(self, **overrides):  # type: ignore[no-untyped-def]
+        tool = super().to_mcp_tool(**overrides)
+        schemes = _oauth_security_schemes()
+        meta = dict(tool.meta or {})
+        meta["securitySchemes"] = schemes
+        # mcp.types.Tool allows extension fields even though the SDK version
+        # pinned here does not yet declare securitySchemes as a typed member.
+        return tool.model_copy(update={
+            "securitySchemes": schemes,
+            "meta": meta,
+        })
 
 
 def _faithful_text_content(value: object) -> str:
@@ -153,9 +176,7 @@ def _structured_return(raw):
     )
 
 
-def _register_structured_tool(
-    fn, *, title, tags, annotations, name=None, anonymous_write_challenge=False,
-):
+def _register_structured_tool(fn, *, title, tags, annotations, name=None):
     """Register an MCP adapter without changing the direct Python API.
 
     ``name`` pins the advertised wire name explicitly. The canonical
@@ -163,17 +184,8 @@ def _register_structured_tool(
     Anthropic connector API rejects any tool name that does not match
     ``^[a-zA-Z0-9_-]{1,64}$`` (no dots), which rejects the whole connector.
 
-    ``anonymous_write_challenge=True`` marks a PURE-write handle: an anonymous
-    ``tools/call`` on it answers HTTP 401 + ``WWW-Authenticate`` pre-dispatch
-    so MCP clients launch OAuth (tool-JSON rejections never prompt sign-in).
-    Set it only when every call is a write/costly effect — never on mixed
-    read/write dispatch tools, or anonymous public reads break.
+    Every request without a valid bearer is challenged before dispatch.
     """
-    if anonymous_write_challenge:
-        from tinyassets.auth.middleware import register_anonymous_write_challenge_tool
-
-        register_anonymous_write_challenge_tool(name or fn.__name__)
-
     @wraps(fn)
     def _tool(*args, **kwargs):
         from tinyassets.auth.middleware import (
@@ -201,13 +213,20 @@ def _register_structured_tool(
     # (3.2.0 ships no docstring extraction; 3.4.x does). See
     # tinyassets.mcp_schema_utils.
     _tool.__signature__, _tool.__annotations__ = describe_signature(fn)
-    return mcp.tool(
+    tool = _OAuthFunctionTool.from_function(
+        _tool,
         name=name or fn.__name__,
         title=title,
         tags=tags,
         annotations=annotations,
+        # OpenAI hosts historically read this compatibility mirror. The
+        # top-level extension field is added by _DeprecatedToolVisibility when
+        # tools/list crosses the protocol boundary.
+        meta={"securitySchemes": _oauth_security_schemes()},
         output_schema=None,
-    )(_tool)
+    )
+    mcp.add_tool(tool)
+    return tool
 
 
 mcp = FastMCP(
@@ -676,9 +695,10 @@ def _universe_birth_refusal() -> dict | None:
     have one, we do not create. An unowned universe is precisely what this prevents.
     """
     from tinyassets.api.permissions import current_request_actor_id
+    from tinyassets.principals import named_principal
 
-    actor = (current_request_actor_id() or "").strip()
-    if not actor or actor == "anonymous":
+    actor = named_principal(current_request_actor_id())
+    if not actor:
         return {
             "error": "a universe belongs to a person — sign in before creating one.",
             "failure_class": "universe_requires_authenticated_subject",
@@ -1271,7 +1291,6 @@ _mcp_write_graph = _register_structured_tool(
     name="write_graph",
     title="Write Graph",
     tags={"graph", "tinyassets", "write"},
-    anonymous_write_challenge=True,
     annotations=ToolAnnotations(
         title="Write Graph",
         readOnlyHint=False,
@@ -1297,9 +1316,10 @@ def _inbound_event_run_fn(
     the run, so it is released on run completion; releases it if the run cannot be
     created (Codex round-2 #5).
 
-    ``principal_id`` is the owner the run acts for. A SCHEDULE passes it, because the
-    tick thread has no request identity for the provider session to bind to. An EVENT
-    omits it and the request identity is used, exactly as before."""
+    ``principal_id`` is the owner the run acts for. A SCHEDULE passes its stored
+    owner; a Source EVENT passes the hook owner stamped on the event. Neither
+    thread has a request identity, and there is no synthetic one, so an empty
+    principal refuses (authenticated-owner boundary D2)."""
     from tinyassets.storage import data_dir, webhook_hooks
     from tinyassets.webhook_inbound import RESERVATION_INPUT_KEY
 
@@ -1316,6 +1336,13 @@ def _inbound_event_run_fn(
 
     if not actor.startswith("universe:"):
         logger.error("event bus: refusing to fire branch as non-universe actor %r", actor)
+        _release()
+        return
+    if not (principal_id or "").strip():
+        logger.error(
+            "event bus: refusing to fire branch %s for %s with no owner principal",
+            branch_def_id, actor,
+        )
         _release()
         return
     uid = actor[len("universe:"):].strip()
@@ -1479,7 +1506,6 @@ _mcp_run_graph = _register_structured_tool(
     name="run_graph",
     title="Run Graph",
     tags={"graph", "tinyassets", "run"},
-    anonymous_write_challenge=True,
     annotations=ToolAnnotations(
         title="Run Graph",
         readOnlyHint=False,
@@ -1696,7 +1722,7 @@ def write_page(
     # records it in its own canon (universe_intelligence.commit_learning).
     # Resolve the target the way converse/soul.edit do — explicit id, or the
     # authenticated founder's home. Only a write with NO universe target
-    # (anonymous/dev) is a shared COMMONS write, which the relay may still do;
+    # (local/dev) is a shared COMMONS write, which the relay may still do;
     # issue filings (kind=) above always stay on the commons.
     target_universe = "" if scope == "commons" else universe_id.strip()
     if scope != "commons" and not target_universe:
@@ -1766,7 +1792,6 @@ def write_page(
 _mcp_write_page = _register_structured_tool(
     write_page,
     name="write_page",
-    anonymous_write_challenge=True,
     title="Write Page",
     tags={"page", "wiki", "tinyassets", "write"},
     annotations=ToolAnnotations(
@@ -2122,7 +2147,7 @@ def converse(message: str = "", graph_id: str = "") -> str:
         return json.dumps({"error": "message is required."})
     # Fail-closed (worktree posture): only the authenticated founder may talk
     # with their own universe. The relay carries the founder's turn to an agent
-    # that acts on the founder's behalf, so an anonymous / non-owner caller must
+    # that acts on the founder's behalf, so an unbound / non-owner caller must
     # never reach it (M1 scope; public "talk to a stranger's universe" is a
     # later, separately-gated slice).
     if not is_authenticated_request():
@@ -2252,7 +2277,6 @@ def converse(message: str = "", graph_id: str = "") -> str:
 _mcp_converse = _register_structured_tool(
     converse,
     name="converse",
-    anonymous_write_challenge=True,
     title="Talk With Your Universe",
     tags={"universe", "tinyassets", "relay"},
     annotations=ToolAnnotations(
@@ -2396,7 +2420,7 @@ def universe(
     # not a founder/agent MCP surface. Their handlers trust a caller-supplied
     # `daemon_id` and only verify the daemon exists (not that the caller IS it),
     # so exposing them externally lets any authenticated founder poison — or any
-    # anonymous reader leak — an arbitrary daemon's memory (Codex review
+    # public-reader leak — an arbitrary daemon's memory (Codex review
     # 2026-07-03). The autonomous daemon writes/reads its own memory via the
     # direct `daemon_brain` path; block the external MCP surface entirely.
     if action.strip() in _DAEMON_SCOPED_ACTIONS:
@@ -3293,18 +3317,17 @@ class _DeprecatedToolVisibility(Middleware):
                 "canonical handles",
                 name,
             )
-            # Anonymous-write-gate coverage (2026-07-13 founder decision):
-            # the fat tools mix read and write actions behind one `action`
-            # argument, so classifying per action would drift. They are
-            # already hidden from tools/list; in gating auth modes they are
-            # unavailable to anonymous callers outright. Signed-in callers
-            # and dev mode keep them for the migration release.
+            # The fat tools mix read and write actions behind one `action`
+            # argument, so classifying per action would drift. They are hidden
+            # from tools/list, and unavailable without a bound principal --
+            # which over HTTP is every request, since the transport refuses
+            # the rest (no synthetic principal, 2026-09-02).
             if write_gate_rejection(name) is not None:
                 raise ToolError(
                     f"{name} is a deprecated tool and is not available "
                     "without a signed-in connection. Use the advertised "
-                    "canonical handles instead: reads stay open there; writes "
-                    "require connecting this MCP server with OAuth."
+                    "canonical handles instead, with this MCP server "
+                    "connected through OAuth."
                 )
         return await call_next(context)
 
@@ -3610,9 +3633,36 @@ def create_streamable_http_app() -> Starlette:
         if _inbound_enabled()
         else []
     )
+
+    # GET /mcp/pulse: release facts for the authenticated canary principal.
+    # The route carries no universe data, but still sits behind the same bearer
+    # boundary as the rest of /mcp so a release receipt never becomes a public
+    # side channel.
+    import time as _pulse_time
+
+    from starlette.responses import JSONResponse as _PulseJSON
+    from starlette.routing import Route as _PulseRoute
+
+    _pulse_started = _pulse_time.monotonic()
+
+    async def _pulse_endpoint(request):  # type: ignore[no-untyped-def]
+        from tinyassets.api.status import _load_release_state
+
+        try:
+            state = _load_release_state() or {}
+        except Exception:  # noqa: BLE001 - a missing receipt is reported, never raised
+            state = {}
+        return _PulseJSON({
+            "git_sha": str(state.get("git_sha") or ""),
+            "image_tag": str(state.get("image_tag") or ""),
+            "deployed_at": str(state.get("deployed_at") or ""),
+            "uptime_seconds": int(_pulse_time.monotonic() - _pulse_started),
+        })
+
     app = Starlette(
         routes=[
             *starlette_discovery_routes(),
+            _PulseRoute("/mcp/pulse", _pulse_endpoint, methods=["GET"]),
             *_inbound_routes,
             # Onboarding SPA at /mcp/app — same-origin to /mcp, dark-flagged
             # (returns 404 until TINYASSETS_ONBOARDING_APP is set). Mounted
@@ -3759,6 +3809,21 @@ def main(
         assigned_consumer.start()
     try:
         run_visibility_startup_gate()
+        if transport in ("sse", "stdio"):
+            # Neither transport carries a bearer, and neither runs behind the
+            # auth middleware, so the principal is the local operator, bound
+            # once for the process (fail-closed principal boundary). The ContextVar set
+            # here is copied into every task anyio starts under mcp.run().
+            # Without it these two surfaces served every call as nobody --
+            # which, now that current_identity() raises, is a refusal rather
+            # than a silent stand-in, and a refusal is not a working server
+            # (Codex code review round 3, P1).
+            from tinyassets.auth.middleware import bind_local_operator_identity
+
+            bound = bind_local_operator_identity()
+            logger.info(
+                "%s transport: principal is local operator %r", transport, bound.user_id
+            )
         if transport == "sse":
             mcp.run(transport="sse", host=host, port=port)
         elif transport == "stdio":

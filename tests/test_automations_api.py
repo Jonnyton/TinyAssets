@@ -153,8 +153,18 @@ def test_owner_principal_id_is_never_echoed(tmp_path: Path, env) -> None:
 # -- 2. Authentication and universe access ------------------------------------
 
 
-def test_anonymous_create_is_refused_and_stores_nothing(tmp_path: Path, env) -> None:
-    env.actor = "anonymous"
+def test_a_create_with_nobody_behind_it_is_refused_and_stores_nothing(
+    tmp_path: Path, env,
+) -> None:
+    """Nobody is an EMPTY actor, not one named "anonymous".
+
+    That string used to mean "no principal". It is a legacy name now, so
+    setting it here made the caller an authenticated principal who merely
+    lacked a grant, and the refusal came back as `universe_access_denied` --
+    the right outcome for the wrong reason, and one that would keep passing if
+    the authentication gate were removed entirely.
+    """
+    env.actor = ""
 
     result = api.automations(
         action="create",

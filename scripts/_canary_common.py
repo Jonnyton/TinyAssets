@@ -25,10 +25,43 @@ Stdlib only.
 from __future__ import annotations
 
 import json
-import urllib.error
+import os
+import sys
 import urllib.request
 from collections.abc import Callable
 from typing import Any
+
+CANARY_TOKEN_ENV = "TINYASSETS_WIKI_CANARY_TOKEN"
+
+
+def canary_bearer() -> str | None:
+    """Return the stripped canary bearer, or ``None`` when it is unset."""
+    token = os.environ.get(CANARY_TOKEN_ENV, "").strip()
+    return token or None
+
+
+def require_canary_bearer(prog: str) -> str:
+    """Return the canary bearer or terminate before any network access."""
+    token = canary_bearer()
+    if token is None:
+        print(
+            f"[{prog}] {CANARY_TOKEN_ENV} is required: no anonymous reads exist; "
+            "every probe is the canary principal",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    return token
+
+
+def canary_bearer_for(url: str, prog: str, timeout: float = 10.0) -> str:
+    """Return the required service-principal bearer for every canary request.
+
+    ``url`` and ``timeout`` remain in the signature so existing probe call sites
+    do not need a parallel compatibility migration. No network negotiation is
+    performed and there is no unsigned fallback.
+    """
+    del url, timeout
+    return require_canary_bearer(prog)
 
 # MCP `notifications/initialized` is parameter-free and identical across
 # every canary client; consolidating eliminates 4 copies.

@@ -95,7 +95,7 @@ class TestNodeDefinition:
         assert n.timeout_seconds == 300.0
         assert n.retry_policy == {"max_retries": 0, "backoff_seconds": 1.0}
         assert n.evaluation_criteria == []
-        assert n.author == "anonymous"
+        assert n.author == ""
         assert n.enabled is True
         assert n.approved is False
 
@@ -361,7 +361,7 @@ class TestBranchDefinition:
         b = BranchDefinition()
         assert len(b.branch_def_id) == 12
         assert b.name == ""
-        assert b.author == "anonymous"
+        assert b.author == ""
         # Project identity migrated fantasy_author → workflow; the
         # default domain_id follows.
         assert b.domain_id == "workflow"

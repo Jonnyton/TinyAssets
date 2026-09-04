@@ -164,6 +164,7 @@ def test_dispatch_short_circuits_on_empty_candidates(base_path):
     from tinyassets.api.selector_dispatch import dispatch_selector
     result = dispatch_selector(
         base_path, goal_id="g1", candidate_branches=[],
+        actor="viewer-1",
     )
     assert result["ok"] is True
     assert result["ranked_entries"] == []
@@ -801,6 +802,7 @@ def test_dispatch_threads_fallback_diagnostic_to_caller(base_path):
         goal_id="g1",
         candidate_branches=candidates,
         provider_call=stub,
+        actor="viewer-1",
     )
     assert result["ok"] is True, result
     # Substrate fell back to platform default; the rolled-back custom
@@ -932,6 +934,7 @@ def test_dispatch_selector_rejects_inactive_at_dispatch_time(
         goal_id="g-dispatch-guard",
         candidate_branches=candidates,
         provider_call=_selector_stub_provider(candidate_ids=["b1"]),
+        actor="viewer-1",
     )
     assert blocked["ok"] is False, blocked
     assert blocked["error_kind"] == "selector_version_inactive_at_dispatch"

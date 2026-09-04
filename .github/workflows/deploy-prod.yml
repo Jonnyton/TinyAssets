@@ -289,6 +289,40 @@ jobs:
           ls -la "$CLAUDE_DIR" || true
           SH
 
+      - name: Sync the canary bearer into /etc/tinyassets/env
+        # OPTIONAL, deliberately. An earlier version refused to deploy while
+        # this secret was unset -- and only a person can write a repository
+        # secret, so a deploy needed a human. It never did before, and the
+        # founder said so (2026-09-03).
+        #
+        # What actually needs a credential is narrower than I had it:
+        #   * the container's own healthcheck does NOT -- it reads
+        #     `/mcp/pulse`, the one unauthenticated route (git sha, image tag,
+        #     deploy time, uptime; no universe data, no principal);
+        #   * the DEEP probes do -- `--assert-handles` forms an MCP session,
+        #     and the wiki canary performs a persisted write/read round trip.
+        #
+        # Those keep a principal. The right one is a short-lived GitHub OIDC
+        # token bound to this repository and workflow, not a standing shared
+        # secret a human mints and rotates (Codex design review 2026-09-03:
+        # "public pulse plus short-lived, claim-bound OIDC"). Until that lands,
+        # the shared bearer is required because both the container healthcheck
+        # and the deep probes cross the authenticated boundary.
+        env:
+          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "${#TINYASSETS_WIKI_CANARY_TOKEN}" -lt 32 ]; then
+            echo "::error::TINYASSETS_WIKI_CANARY_TOKEN is unset or under 32 bytes. The protected pulse healthcheck and authenticated MCP probes require this service-principal credential."
+            exit 1
+          fi
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes deploy/install-tinyassets-env.sh \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"
+          printf '%s' "${TINYASSETS_WIKI_CANARY_TOKEN}" \
+            | ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_WIKI_CANARY_TOKEN"
+          echo "canary bearer synced"
+
       - name: Run fail-safe deploy on the droplet
         id: deploy
         env:
@@ -320,6 +354,8 @@ jobs:
           fi
 
       - name: Public MCP canary (--assert-handles)
+        env:
+          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         id: canary
         run: |
           set -euo pipefail

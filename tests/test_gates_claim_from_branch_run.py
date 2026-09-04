@@ -127,6 +127,7 @@ def _seed_completed_run(
         branch_def_id=branch_def_id,
         thread_id=branch_def_id,
         inputs={},
+        actor="universe:u-test",
     )
     update_run_status(
         base, run_id,
@@ -170,6 +171,7 @@ def test_run_not_completed_is_rejected(us_env):
     from tinyassets.runs import create_run
     run_id = create_run(
         base, branch_def_id=bid, thread_id=bid, inputs={},
+        actor="universe:u-test",
     )
     result = _call(
         us, "gates", "claim_from_branch_run", run_id=run_id,
@@ -190,6 +192,7 @@ def test_failed_run_is_rejected(us_env):
     )
     run_id = create_run(
         base, branch_def_id=bid, thread_id=bid, inputs={},
+        actor="universe:u-test",
     )
     update_run_status(
         base, run_id,

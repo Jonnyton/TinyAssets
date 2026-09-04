@@ -30,10 +30,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tinyassets.credential_vault import (  # noqa: E402
-    resolve_slack_app_token,
-    resolve_slack_token,
-)
 from tinyassets.effectors.slack_agent_service import (  # noqa: E402
     SlackAgentConfig,
     SlackAgentConfigError,
@@ -43,6 +39,11 @@ from tinyassets.effectors.slack_agent_turn import build_handlers  # noqa: E402
 from tinyassets.effectors.slack_socket_mode import app_id_from_token  # noqa: E402
 from tinyassets.effectors.slack_socket_runner import run_socket_forever  # noqa: E402
 from tinyassets.effectors.slack_transport import build_slack_transport  # noqa: E402
+
+from tinyassets.credential_vault import (  # noqa: E402
+    resolve_slack_app_token,
+    resolve_slack_token,
+)
 
 BOT_TOKEN_ENV = "SLACK_BOT_TOKEN"
 APP_TOKEN_ENV = "SLACK_APP_TOKEN"

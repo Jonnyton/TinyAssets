@@ -39,7 +39,17 @@ def _ext(monkeypatch, tmp_path, *, paid_market: bool = True, user: str = "alice"
     """Call extensions() with env set up for escrow tests."""
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TINYASSETS_PAID_MARKET", "on" if paid_market else "off")
+    # An environment variable no longer names a principal (founder,
+    # 2026-09-02): the actor is the bound identity, so the test signs the
+    # staker in rather than exporting their name.
+    from tinyassets.auth import middleware as _mw
+    from tinyassets.auth.provider import Identity as _Identity
+
     monkeypatch.setenv("UNIVERSE_SERVER_USER", user)
+    _mw._current_identity.set(_Identity(
+        user_id=user, username=user,
+        capabilities=["read", "write", "list", "costly", "submit_request", "admin"],
+    ))
     from tinyassets.universe_server import extensions
     return json.loads(extensions(**kwargs))
 

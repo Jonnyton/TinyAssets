@@ -776,6 +776,10 @@ class SchedulerEvent:
     event_type: str
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     payload: dict[str, Any] = field(default_factory=dict)
+    #: The principal the fired run acts for. Stamped by the emitter from the
+    #: hook's owner (authenticated-owner boundary D2); the event thread has no
+    #: request identity to fall back to, and there is no synthetic one.
+    owner_principal_id: str = ""
 
 
 def emit_event(event: SchedulerEvent) -> None:
@@ -1314,7 +1318,13 @@ class Scheduler:
                 logger.info("scheduler: subscription %s revoked before fire; skipping", sub_id)
                 continue
             try:
-                self._run_fn(sub["branch_def_id"], actor, inputs, run_name)
+                if self._run_fn_takes_principal:
+                    self._run_fn(
+                        sub["branch_def_id"], actor, inputs, run_name,
+                        principal_id=str(event.owner_principal_id or "").strip(),
+                    )
+                else:
+                    self._run_fn(sub["branch_def_id"], actor, inputs, run_name)
                 logger.info(
                     "scheduler: fired subscription %s on event %s",
                     sub_id,

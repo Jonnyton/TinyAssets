@@ -9,6 +9,32 @@ from typing import Any, Callable
 import pytest
 
 
+def _become(user_id: str) -> None:
+    """Sign in as ``user_id``.
+
+    These tests used to set ``UNIVERSE_SERVER_USER``, which named the actor by
+    environment variable -- authority from a string anybody can set. The
+    autouse operator fixture rebinds between tests, so this does not leak.
+    """
+    from tinyassets.auth import middleware as _mw
+    from tinyassets.auth.provider import Identity
+
+    _mw._current_identity.set(
+        Identity(
+            user_id=user_id,
+            username=user_id,
+            display_name=user_id,
+            capabilities=[
+                "tinyassets.universe.read",
+                "tinyassets.universe.write",
+                "tinyassets.universe.admin",
+                "tinyassets.extensions.read",
+                "tinyassets.extensions.write",
+            ],
+        )
+    )
+
+
 @pytest.fixture
 def branch_authority_env(
     tmp_path: Path,
@@ -18,7 +44,7 @@ def branch_authority_env(
     base = tmp_path / "data"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "environment-owner")
+    _become("environment-owner")
 
     from tinyassets.daemon_server import initialize_author_server
 
@@ -112,11 +138,28 @@ def _publish(base: Path, branch: dict[str, Any], publisher: str) -> str:
 def test_caller_identity_string_is_not_an_authenticated_credential(
     branch_authority_env: tuple[Path, Callable[[str | None], None]],
 ) -> None:
-    from tinyassets.auth.middleware import auth_middleware, current_identity
+    """A string a caller hands over is not a credential.
 
-    auth_middleware("alice")
+    This used to read `current_identity().user_id == "anonymous"` -- the same
+    claim, made by asserting that an unauthenticated caller got a PRINCIPAL
+    named "anonymous". There is no such principal now: an unresolvable token
+    binds nobody, and asking who is here refuses.
+    """
+    import pytest
 
-    assert current_identity().user_id == "anonymous"
+    from tinyassets.auth.middleware import (
+        auth_middleware,
+        clear_identity,
+        current_identity,
+        current_identity_or_none,
+    )
+
+    clear_identity()
+    assert auth_middleware("alice") is None, "a bare string resolved to somebody"
+    assert current_identity_or_none() is None
+
+    with pytest.raises(PermissionError, match="Authentication required"):
+        current_identity()
 
 
 def test_anonymous_environment_actor_cannot_create_or_reach_ledger(

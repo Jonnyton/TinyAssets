@@ -38,6 +38,14 @@ _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
+from _canary_common import canary_bearer_for  # noqa: E402
+
+#: "Not specified" -- distinct from an explicit ``None``, which means "this
+#: daemon is pre-cutover, send no bearer". Omitting the argument reads the
+#: configured token WITHOUT a network call, so a direct caller (and every unit
+#: test that drives a helper) behaves as it always did.
+_FROM_ENV: Any = object()
+
 from mcp_public_canary import CanaryError, probe_result  # noqa: E402
 from verify_llm_binding import VerifyError, check_llm_binding  # noqa: E402
 
@@ -74,7 +82,7 @@ class SmokeError(Exception):
 
 
 def _post(
-    url: str, sid: str | None, payload: dict, timeout: float
+    url: str, sid: str | None, payload: dict, timeout: float, *, bearer_token: str
 ) -> tuple[dict | None, str | None]:
     headers: dict[str, str] = {
         "Content-Type": "application/json",
@@ -83,6 +91,9 @@ def _post(
     }
     if sid:
         headers["mcp-session-id"] = sid
+    if bearer_token:
+        # Absent against a pre-cutover daemon, which refuses this bearer.
+        headers["Authorization"] = f"Bearer {bearer_token}"
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),
@@ -112,24 +123,34 @@ def _post(
     return result, new_sid
 
 
-def _initialize(url: str, timeout: float) -> str | None:
-    resp, sid = _post(url, None, _INIT_PAYLOAD, timeout)
+def _initialize(url: str, timeout: float, bearer_token: str) -> str | None:
+    resp, sid = _post(
+        url, None, _INIT_PAYLOAD, timeout, bearer_token=bearer_token,
+    )
     if not resp or "result" not in resp:
         raise SmokeError(1, f"initialize failed on {url}: {resp!r}")
-    _post(url, sid, _INITIALIZED_NOTIF, timeout)
+    _post(url, sid, _INITIALIZED_NOTIF, timeout, bearer_token=bearer_token)
     return sid
 
 
-def _tools_list(url: str, sid: str | None, timeout: float) -> set[str]:
-    resp, _ = _post(url, sid, _TOOLS_LIST_PAYLOAD, timeout)
+def _tools_list(
+    url: str, sid: str | None, timeout: float, bearer_token: str,
+) -> set[str]:
+    resp, _ = _post(
+        url, sid, _TOOLS_LIST_PAYLOAD, timeout, bearer_token=bearer_token,
+    )
     if not resp or "result" not in resp:
         raise SmokeError(1, f"tools/list failed on {url}: {resp!r}")
     tools = resp["result"].get("tools") or []
     return {t["name"] for t in tools}
 
 
-def _get_status(url: str, sid: str | None, timeout: float) -> dict[str, Any]:
-    resp, _ = _post(url, sid, _GET_STATUS_PAYLOAD, timeout)
+def _get_status(
+    url: str, sid: str | None, timeout: float, bearer_token: str,
+) -> dict[str, Any]:
+    resp, _ = _post(
+        url, sid, _GET_STATUS_PAYLOAD, timeout, bearer_token=bearer_token,
+    )
     if not resp or "result" not in resp:
         raise SmokeError(1, f"get_status failed on {url}: {resp!r}")
     content = resp["result"].get("content") or []
@@ -142,26 +163,33 @@ def _get_status(url: str, sid: str | None, timeout: float) -> dict[str, Any]:
     raise SmokeError(1, f"get_status returned no text content on {url}")
 
 
-def probe_url(url: str, timeout: float, label: str) -> tuple[set[str], dict[str, Any]]:
+def probe_url(
+    url: str, timeout: float, label: str, bearer_token: str,
+) -> tuple[set[str], dict[str, Any]]:
     print(f"[smoke] probing {label}: {url}")
     try:
-        probe_result(url, timeout)
+        probe_result(url, timeout, bearer=bearer_token)
     except CanaryError as exc:
         raise SmokeError(exc.code, f"{label} canary failed: {exc.msg}") from exc
-    sid = _initialize(url, timeout)
-    tools = _tools_list(url, sid, timeout)
-    status = _get_status(url, sid, timeout)
+    sid = _initialize(url, timeout, bearer_token)
+    tools = _tools_list(url, sid, timeout, bearer_token)
+    status = _get_status(url, sid, timeout, bearer_token)
     print(f"[smoke] {label}: {len(tools)} tools, get_status OK")
     return tools, status
 
 
-def assert_tunnel_access_blocked(url: str, timeout: float) -> int:
+def assert_tunnel_access_blocked(
+    url: str, timeout: float, bearer_token: str | None,
+) -> int:
     print(f"[smoke] probing tunnel Access gate: {url}")
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
         "User-Agent": "workflow-selfhost-smoke/1.0",
     }
+    if bearer_token:
+        # Absent against a pre-cutover daemon, which refuses this bearer.
+        headers["Authorization"] = f"Bearer {bearer_token}"
     req = urllib.request.Request(
         url,
         data=json.dumps(_INIT_PAYLOAD).encode(),
@@ -223,18 +251,25 @@ def run(
     *,
     internal_parity: bool = False,
     llm_check_fn=None,  # injection seam: (url, timeout) -> dict; raises VerifyError on fail
+    # ``None`` means a PRE-CUTOVER daemon, which refuses this bearer; the
+    # default keeps every existing caller (and test) working unchanged.
+    bearer_token: str | None = None,
 ) -> int:
     try:
-        canonical_tools, canonical_status = probe_url(canonical, timeout, "canonical")
+        canonical_tools, canonical_status = probe_url(
+            canonical, timeout, "canonical", bearer_token,
+        )
         if internal_parity:
-            tunnel_tools, tunnel_status = probe_url(tunnel, timeout, "tunnel")
+            tunnel_tools, tunnel_status = probe_url(
+                tunnel, timeout, "tunnel", bearer_token,
+            )
             assert_parity(canonical_tools, tunnel_tools, canonical_status, tunnel_status)
             print(
                 f"[smoke] PASS — {len(canonical_tools)} tools in parity, "
                 f"get_status structure matches"
             )
         else:
-            assert_tunnel_access_blocked(tunnel, timeout)
+            assert_tunnel_access_blocked(tunnel, timeout, bearer_token)
             print(
                 f"[smoke] PASS — canonical has {len(canonical_tools)} tools; "
                 "direct tunnel is Access-gated"
@@ -246,7 +281,7 @@ def run(
     # LLM-binding gate (HD-3): smoke fails if canonical daemon has no LLM bound.
     _llm_check = llm_check_fn or check_llm_binding
     try:
-        _llm_check(canonical, timeout)
+        _llm_check(canonical, timeout, bearer_token=bearer_token)
         print("[smoke] LLM binding check PASS")
     except VerifyError as exc:
         print(f"[smoke] LLM binding FAIL (exit {exc.code}): {exc.msg}", file=sys.stderr)
@@ -273,11 +308,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = ap.parse_args(argv)
+    # Every parity probe uses the canary service principal.
+    bearer = canary_bearer_for(args.canonical, "selfhost-smoke", args.timeout)
     return run(
         args.canonical,
         args.tunnel,
         args.timeout,
         internal_parity=args.internal_parity,
+        bearer_token=bearer,
     )
 
 

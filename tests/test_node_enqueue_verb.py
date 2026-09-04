@@ -394,6 +394,7 @@ def test_execute_branch_derives_stable_root_origin_with_explicit_precedence(
         _enqueue_universe_id="u",
         _parent_branch_task_id=parent,
         _origin_branch_task_id=origin,
+        actor="universe:u-test",
     )
 
     assert outcome is sentinel

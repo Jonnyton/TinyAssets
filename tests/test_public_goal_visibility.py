@@ -6,6 +6,8 @@ import json
 
 import pytest
 
+from tinyassets.auth.middleware import auth_middleware, set_provider
+from tinyassets.auth.provider import DevAuthProvider
 from tinyassets.branch_tasks import BranchTask, append_task
 from tinyassets.conformance_packs import record_conformance_pack
 from tinyassets.daemon_server import (
@@ -27,12 +29,29 @@ from tinyassets.universe_server import (
 )
 
 
+def _read_as(actor_id: str) -> None:
+    """Bind a NAMED reader. Identity comes from a bound principal, never from
+    an environment variable (no anonymous principal, 2026-09-02)."""
+    set_provider(DevAuthProvider(user_id=actor_id))
+    auth_middleware("bearer")
+
+
+@pytest.fixture(autouse=True)
+def _no_env_identity(monkeypatch):
+    monkeypatch.delenv("UNIVERSE_SERVER_USER", raising=False)
+    set_provider(DevAuthProvider(user_id="dev-tests"))
+    auth_middleware(None)
+    yield
+    set_provider(DevAuthProvider(user_id="dev-tests"))
+    auth_middleware(None)
+
+
 @pytest.fixture
 def goal_catalog(tmp_path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "authenticated-reader")
+    _read_as("authenticated-reader")
     monkeypatch.setenv("GATES_ENABLED", "1")
 
     public = save_goal(
@@ -121,14 +140,14 @@ def test_storage_catalog_reads_allow_only_exact_public_visibility(goal_catalog):
 
 @pytest.mark.parametrize(
     "actor",
-    ["anonymous", "unrelated-reader", "private-author"],
+    ["unrelated-reader", "private-author"],
 )
 def test_canonical_list_and_ranked_search_do_not_leak_non_public_goals(
     goal_catalog,
     monkeypatch,
     actor,
 ):
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", actor)
+    _read_as(actor)
     listed = json.loads(read_graph(target="goals", limit=100))
     private_author = json.loads(
         read_graph(
@@ -157,7 +176,7 @@ def test_canonical_list_and_ranked_search_do_not_leak_non_public_goals(
 
 @pytest.mark.parametrize(
     "actor",
-    ["anonymous", "unrelated-reader", "owner"],
+    ["unrelated-reader", "owner"],
 )
 @pytest.mark.parametrize("visibility_key", ["private", "deleted", "unrecognized"])
 def test_exact_canonical_and_legacy_reads_hide_non_public_goal(
@@ -171,7 +190,7 @@ def test_exact_canonical_and_legacy_reads_hide_non_public_goal(
         if actor == "owner"
         else actor
     )
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", actor_id)
+    _read_as(actor_id)
     hidden_id = goal_catalog[visibility_key]["goal_id"]
     missing_id = "missing-goal-id"
 
@@ -216,7 +235,7 @@ def _call_goal_derived_read(action, goal_id):
 
 @pytest.mark.parametrize(
     "actor",
-    ["anonymous", "unrelated-reader", "owner"],
+    ["unrelated-reader", "owner"],
 )
 @pytest.mark.parametrize("visibility_key", ["private", "deleted", "unrecognized"])
 @pytest.mark.parametrize(
@@ -247,7 +266,7 @@ def test_goal_derived_legacy_reads_have_no_non_public_oracle(
         if actor == "owner"
         else actor
     )
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", actor_id)
+    _read_as(actor_id)
     hidden_id = goal_catalog[visibility_key]["goal_id"]
 
     hidden = json.loads(_call_goal_derived_read(action, hidden_id))
@@ -259,7 +278,7 @@ def test_goal_derived_legacy_reads_have_no_non_public_oracle(
 
 
 @pytest.mark.parametrize("visibility_key", ["private", "deleted", "unrecognized"])
-@pytest.mark.parametrize("actor", ["anonymous", "unrelated-reader", "owner"])
+@pytest.mark.parametrize("actor", ["unrelated-reader", "owner"])
 def test_exact_conformance_pack_read_hides_non_public_goal_record(
     goal_catalog,
     monkeypatch,
@@ -271,7 +290,7 @@ def test_exact_conformance_pack_read_hides_non_public_goal_record(
         if actor == "owner"
         else actor
     )
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", actor_id)
+    _read_as(actor_id)
     hidden_pack_id = goal_catalog["packs"][visibility_key].pack_id
 
     hidden = json.loads(
@@ -638,7 +657,7 @@ def test_exact_branch_public_claim_survives_private_claim_storage_limit(
     assert goal_catalog["private"]["goal_id"] not in json.dumps(result)
 
 
-@pytest.mark.parametrize("actor", ["anonymous", "unrelated-reader", "owner"])
+@pytest.mark.parametrize("actor", ["unrelated-reader", "owner"])
 def test_gate_event_reads_exclude_non_public_goal_records(
     goal_catalog,
     monkeypatch,
@@ -649,7 +668,7 @@ def test_gate_event_reads_exclude_non_public_goal_records(
         if actor == "owner"
         else actor
     )
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", actor_id)
+    _read_as(actor_id)
     public_event = attest_gate_event(
         goal_catalog["base"],
         goal_id=goal_catalog["public"]["goal_id"],
@@ -867,3 +886,39 @@ def test_exact_public_goal_remains_readable(goal_catalog):
 
     assert canonical["goal"]["goal_id"] == public_id
     assert legacy["goal"]["goal_id"] == public_id
+
+
+# --------------------------------------------------------------------------
+# nobody bound: refused before any oracle can exist
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("visibility_key", ["private", "deleted", "unrecognized"])
+def test_a_read_with_nobody_bound_is_refused_before_any_oracle(goal_catalog, visibility_key):
+    """There is no anonymous reader (founder, 2026-09-02). With nobody bound
+    every goal read refuses with the same authentication error whether the
+    goal is hidden or missing, and the hidden name never appears."""
+    auth_middleware(None)
+    hidden_id = goal_catalog[visibility_key]["goal_id"]
+    name = goal_catalog[visibility_key]["name"]
+
+    def _refused(call):
+        try:
+            payload = json.loads(call())
+        except PermissionError as exc:
+            assert "Authentication required" in str(exc)
+            return {"error": "Authentication required"}
+        assert payload.get("error") == "Authentication required", payload
+        assert "goal" not in payload and "goals" not in payload
+        return payload
+
+    for goal_id in (hidden_id, "missing-goal-id"):
+        outs = [
+            _refused(lambda: read_graph(target="goals", limit=100)),
+            _refused(lambda: read_graph(target="goal", goal_id=goal_id)),
+            _refused(lambda: goals(action="get", goal_id=goal_id)),
+            _refused(lambda: _call_goal_derived_read("leaderboard", goal_id)),
+            _refused(lambda: _call_goal_derived_read("get_ladder", goal_id)),
+            _refused(lambda: _call_goal_derived_read("list_branches", goal_id)),
+        ]
+        assert all(name not in json.dumps(o) for o in outs)

@@ -780,7 +780,7 @@ def test_get_status_response_includes_supervisor_liveness(tmp_path, monkeypatch)
     universe = tmp_path / "test-universe"
     universe.mkdir(parents=True, exist_ok=True)
 
-    response = json.loads(get_status())
+    response = json.loads(get_status("test-universe"))
     assert "supervisor_liveness" in response
     assert "queue_state" in response["supervisor_liveness"]
     assert "running_tasks_lease" in response["supervisor_liveness"]
@@ -806,7 +806,7 @@ def test_get_status_supervisor_liveness_reflects_stuck_pending(tmp_path, monkeyp
         queued_at=old,
     ))
 
-    response = json.loads(get_status())
+    response = json.loads(get_status("test-universe"))
     sl = response["supervisor_liveness"]
     assert sl["queue_state"]["pending"] == 1
     assert sl["queue_state"]["stuck_pending_max_age_s"] >= 300

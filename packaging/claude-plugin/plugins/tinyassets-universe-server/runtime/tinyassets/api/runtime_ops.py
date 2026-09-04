@@ -348,7 +348,7 @@ _MESSAGING_ACTIONS: dict[str, Any] = {
 #
 # Ownership of a schedule is DERIVED from the authenticated request, never read
 # from a caller field. ``owner_actor`` used to arrive in kwargs and default to
-# "anonymous", which made registration an unauthenticated self-issued authority
+# a synthetic actor, which made registration a self-issued authority
 # claim: anyone could schedule a branch and name whoever they liked as its owner.
 # The five schedule actions below ignore that kwarg entirely (it survives on the
 # ``extensions()`` signature only for the event-SUBSCRIPTION actions, a separate
@@ -761,7 +761,20 @@ def _action_subscribe_branch(kwargs: dict[str, Any]) -> str:
             "error": f"Unknown event_type '{event_type}'.",
             "valid": sorted(VALID_EVENT_TYPES),
         })
-    owner_actor = (kwargs.get("owner_actor") or "").strip() or "anonymous"
+    # A subscription is an authority row: the run it fires acts for its owner.
+    # Defaulting to the literal string wrote one owned by nobody and later
+    # dispatched with an unowned subscriber (Codex code review round 3). The
+    # caller names an owner, or the request identity does.
+    owner_actor = (kwargs.get("owner_actor") or "").strip()
+    if not owner_actor:
+        from tinyassets.api.permissions import current_request_actor_id
+
+        owner_actor = current_request_actor_id()
+    if not owner_actor:
+        return json.dumps({
+            "error": "authentication_required",
+            "detail": "a subscription needs an owner; there is no fallback one",
+        })
     base = _base_path()
     initialize_runs_db(base)
     try:
@@ -787,7 +800,20 @@ def _action_unsubscribe_branch(kwargs: dict[str, Any]) -> str:
     subscription_id = (kwargs.get("subscription_id") or "").strip()
     if not subscription_id:
         return json.dumps({"error": "subscription_id is required."})
-    owner_actor = (kwargs.get("owner_actor") or "").strip() or "anonymous"
+    # A subscription is an authority row: the run it fires acts for its owner.
+    # Defaulting to the literal string wrote one owned by nobody and later
+    # dispatched with an unowned subscriber (Codex code review round 3). The
+    # caller names an owner, or the request identity does.
+    owner_actor = (kwargs.get("owner_actor") or "").strip()
+    if not owner_actor:
+        from tinyassets.api.permissions import current_request_actor_id
+
+        owner_actor = current_request_actor_id()
+    if not owner_actor:
+        return json.dumps({
+            "error": "authentication_required",
+            "detail": "a subscription needs an owner; there is no fallback one",
+        })
     base = _base_path()
     try:
         removed = unregister_subscription(base, subscription_id, requesting_actor=owner_actor)
@@ -865,4 +891,3 @@ _SCHEDULER_ACTIONS: dict[str, Any] = {
     "unpause_schedule": _action_unpause_schedule,
     "list_scheduler_subscriptions": _action_list_scheduler_subscriptions,
 }
-

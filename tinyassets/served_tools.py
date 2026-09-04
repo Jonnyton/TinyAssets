@@ -73,7 +73,7 @@ from __future__ import annotations
 #:   source_channel — APPROVE an outbound channel for your own universe (the consent
 #:       half of "add a channel via the channel-agnostic node"). Owner-gated
 #:       (source_channel's impl requires an admin ACL row for the bound founder;
-#:       anonymous / read-write collaborators get auth_failed), graph-PINNED
+#:       unbound / read-write collaborators get auth_failed), graph-PINNED
 #:       (universe_id is never caller-supplied), SECRET-FREE (consent is a
 #:       (sink, destination) allow — the token is deposited out of band via the browser
 #:       form / connect_http, which is deliberately NOT here). SINK CONSENT ONLY:

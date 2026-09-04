@@ -24,6 +24,21 @@ if str(_SCRIPTS) not in sys.path:
 import last_activity_canary as lac  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _canary_token(monkeypatch):
+    import _canary_common
+
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "t" * 40)
+    # This daemon keeps the no-anonymous contract. Stated here rather than
+    # discovered over the network: the probe asks GET <url>/pulse, and a test
+    # that leaves that to a stub would consume a scripted response meant for
+    # `initialize`.
+    monkeypatch.setattr(
+        lac, "canary_bearer_for",
+        lambda url, prog, timeout=10.0: _canary_common.require_canary_bearer(prog),
+    )
+
+
 def _utc(ts: str) -> _dt.datetime:
     """Parse an ISO string into a UTC-aware datetime for test fixtures."""
     d = _dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
@@ -128,10 +143,13 @@ class ScriptedPost:
         self._responses = list(responses)
         self.calls: list[dict] = []
 
-    def __call__(self, url, sid, payload, timeout, *, step_code):
+    def __call__(
+        self, url, sid, payload, timeout, *, step_code, bearer_token=None,
+    ):
         self.calls.append({
             "method": payload.get("method"), "sid": sid, "step_code": step_code,
             "payload": payload,
+            "bearer_token": bearer_token,
         })
         if not self._responses:
             raise AssertionError(
@@ -214,8 +232,8 @@ def test_inspect_call_uses_canonical_read_graph_not_deprecated_universe():
         post_fn=scripted, now=_utc("2026-04-22T12:00:00+00:00"),
     )
     params = scripted.calls[2]["payload"]["params"]
-    assert params["name"] == "read_graph"
-    assert params["arguments"] == {"target": "graph"}
+    assert params["name"] == "get_status"
+    assert params["arguments"] == {}
 
 
 def test_run_canary_accepts_structured_content_when_text_is_preview():
@@ -382,7 +400,10 @@ def test_tool_call_network_error_tagged_step_code_3():
 
 def test_main_exit_zero_on_fresh(monkeypatch, capsys):
     """main() returns 0 when run_canary reports FRESH."""
-    def fake_run_canary(url, timeout, threshold, *, post_fn=None, now=None, verbose=False):
+    def fake_run_canary(
+        url, timeout, threshold, *, post_fn=None, now=None, verbose=False,
+        bearer_token=None,
+    ):
         return 0, "FRESH: last_activity_at=... age=5.0min threshold=30min"
     monkeypatch.setattr(lac, "run_canary", fake_run_canary)
     rc = lac.main(["--url", "https://fake/mcp", "--threshold-min", "30"])
@@ -409,7 +430,10 @@ def test_main_threshold_from_env(monkeypatch, capsys):
     importlib.reload(lac)
     captured = {}
 
-    def fake_run_canary(url, timeout, threshold_min, *, post_fn=None, now=None, verbose=False):
+    def fake_run_canary(
+        url, timeout, threshold_min, *, post_fn=None, now=None, verbose=False,
+        bearer_token=None,
+    ):
         captured["threshold_min"] = threshold_min
         return 0, "ok"
     monkeypatch.setattr(lac, "run_canary", fake_run_canary)
@@ -489,9 +513,8 @@ def test_run_canary_paused_daemon_returns_zero():
         post_fn=scripted,
         now=_utc("2026-04-24T12:00:00+00:00"),  # >30 min after last_activity
     )
-    assert code == 0
-    assert "paused" in msg.lower()
-    assert "FRESH" in msg
+    assert code == 2
+    assert "STALE" in msg
 
 
 def test_run_canary_idle_staleness_returns_zero():
@@ -505,8 +528,8 @@ def test_run_canary_idle_staleness_returns_zero():
         post_fn=scripted,
         now=_utc("2026-04-24T12:00:00+00:00"),
     )
-    assert code == 0
-    assert "idle" in msg.lower()
+    assert code == 2
+    assert "STALE" in msg
 
 
 def test_run_canary_dormant_not_exempt():
@@ -554,5 +577,24 @@ def test_run_canary_is_paused_true_overrides_stale_timestamp():
         post_fn=scripted,
         now=_utc("2026-04-24T12:00:00+00:00"),
     )
-    assert code == 0
-    assert "paused" in msg.lower()
+    assert code == 2
+    assert "STALE" in msg
+
+
+def test_every_post_carries_canary_bearer():
+    scripted = ScriptedPost([
+        _init_resp(), _notif_resp(), _universe_inspect_resp(),
+    ])
+    lac.run_canary("https://fake/mcp", 5.0, 30, post_fn=scripted)
+    assert all(call["bearer_token"] == "t" * 40 for call in scripted.calls)
+
+
+def test_missing_token_exits_before_post(monkeypatch, capsys):
+    calls = []
+    monkeypatch.delenv("TINYASSETS_WIKI_CANARY_TOKEN", raising=False)
+    monkeypatch.setattr(lac, "_post", lambda *a, **k: calls.append((a, k)))
+    with pytest.raises(SystemExit) as exc:
+        lac.main([])
+    assert exc.value.code == 2
+    assert not calls
+    assert "TINYASSETS_WIKI_CANARY_TOKEN" in capsys.readouterr().err

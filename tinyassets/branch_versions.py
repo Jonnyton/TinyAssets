@@ -213,7 +213,7 @@ def _canonical_snapshot(branch_dict: dict[str, Any]) -> dict[str, Any]:
     normalized = BranchDefinition.from_dict(branch_dict).to_dict()
     return {
         "branch_def_id": normalized.get("branch_def_id", ""),
-        "author": normalized.get("author", "anonymous"),
+        "author": normalized.get("author", ""),
         "visibility": normalized.get("visibility", "public"),
         "skills": normalized.get("skills", []),
         "entry_point": normalized.get("entry_point", ""),
@@ -235,7 +235,7 @@ def publish_branch_version(
     base_path: str | Path,
     branch_dict: dict[str, Any],
     *,
-    publisher: str = "anonymous",
+    publisher: str = "",
     notes: str = "",
     parent_version_id: str | None = None,
     watch_window_seconds: int | None = None,

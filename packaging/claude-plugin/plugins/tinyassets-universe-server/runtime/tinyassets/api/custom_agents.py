@@ -37,8 +37,9 @@ def _authenticated_actor() -> str | None:
 
     if not permissions.is_authenticated_request():
         return None
-    actor = permissions.current_actor_id()
-    return actor if actor and actor != "anonymous" else None
+    from tinyassets.principals import named_principal
+
+    return named_principal(permissions.current_actor_id()) or None
 
 
 def _binding_universe(raw_universe_id: str) -> str:
@@ -53,11 +54,9 @@ def _binding_access(
     from tinyassets.api import permissions
     from tinyassets.daemon_server import list_universe_acl
 
-    actor = (
-        permissions.current_actor_id() if permissions.is_authenticated_request() else "anonymous"
-    )
+    actor = permissions.current_actor_id() if permissions.is_authenticated_request() else ""
     permission = ""
-    if actor != "anonymous":
+    if actor:
         try:
             permission = next(
                 (

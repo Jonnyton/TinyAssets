@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 from pathlib import Path
 
@@ -14,6 +15,13 @@ _SPEC = importlib.util.spec_from_file_location(
 canary = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(canary)
 
+_TOKEN = "t" * 40
+
+
+@pytest.fixture(autouse=True)
+def _canary_token(monkeypatch):
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _TOKEN)
+
 
 def _scripted_post(
     tool_names,
@@ -25,6 +33,10 @@ def _scripted_post(
         'Bearer resource_metadata="https://example/mcp/'
         '.well-known/oauth-protected-resource"'
     ),
+    canary_converse_status=403,
+    anonymous_initialize_status=401,
+    server_name="tinyassets",
+    calls=None,
 ):
     """Return a fake _post that replays an MCP handshake advertising tool_names."""
     if status_payload is None:
@@ -41,14 +53,24 @@ def _scripted_post(
         timeout,
         session_id=None,
         accepted_http_statuses=frozenset(),
+        bearer=None,
     ):
+        if calls is not None:
+            calls.append({"payload": payload, "bearer": bearer})
         method = payload.get("method")
         if method == "initialize":
+            if bearer is None:
+                return anonymous_initialize_status, {
+                    "www-authenticate": (
+                        'Bearer resource_metadata="https://example/mcp/'
+                        '.well-known/oauth-protected-resource"'
+                    ),
+                }, b'{"error":"authentication_required"}'
             body = json.dumps({
                 "jsonrpc": "2.0", "id": 1,
                 "result": {
                     "protocolVersion": "2024-11-05",
-                    "serverInfo": {"name": "tinyassets", "version": "0.1.0"},
+                    "serverInfo": {"name": server_name, "version": "0.1.0"},
                 },
             }).encode()
             return 200, {"mcp-session-id": "sess-1"}, body
@@ -66,7 +88,10 @@ def _scripted_post(
                     "name": "converse",
                     "arguments": {"message": "mcp-public-canary auth boundary probe"},
                 }
-                assert 401 in accepted_http_statuses
+                expected = 403 if bearer else 401
+                assert expected in accepted_http_statuses
+                if bearer:
+                    return canary_converse_status, {}, b'{"error":"forbidden"}'
                 if converse_status == 401:
                     return 401, {"www-authenticate": converse_challenge}, (
                         b'{"error":"authentication_required"}'
@@ -408,12 +433,15 @@ def test_retry_recovers_from_transient_blip(monkeypatch):
         timeout,
         session_id=None,
         accepted_http_statuses=frozenset(),
+        bearer=None,
     ):
-        if payload.get("method") == "initialize":
+        if payload.get("method") == "initialize" and bearer:
             calls["n"] += 1
             if calls["n"] == 1:
                 raise canary.CanaryError(2, "transient unreachable")
-        return good(url, payload, timeout, session_id, accepted_http_statuses)
+        return good(
+            url, payload, timeout, session_id, accepted_http_statuses, bearer,
+        )
 
     monkeypatch.setattr(canary, "_post", flaky)
     monkeypatch.setattr(
@@ -469,9 +497,9 @@ def _initialize_urlopen(server_name: str):
 
 def test_probe_result_accepts_exact_expected_public_name(monkeypatch):
     monkeypatch.setattr(
-        canary.urllib.request,
-        "urlopen",
-        _initialize_urlopen("TinyAssets"),
+        canary,
+        "_post",
+        _scripted_post(_CANONICAL_PLUS_STATUS, server_name="TinyAssets"),
     )
 
     canary.probe_result(
@@ -483,9 +511,9 @@ def test_probe_result_accepts_exact_expected_public_name(monkeypatch):
 
 def test_probe_result_rejects_case_drift_in_public_name(monkeypatch):
     monkeypatch.setattr(
-        canary.urllib.request,
-        "urlopen",
-        _initialize_urlopen("tinyassets"),
+        canary,
+        "_post",
+        _scripted_post(_CANONICAL_PLUS_STATUS, server_name="tinyassets"),
     )
 
     with pytest.raises(canary.CanaryError) as exc:
@@ -498,3 +526,150 @@ def test_probe_result_rejects_case_drift_in_public_name(monkeypatch):
     assert exc.value.code == 1
     assert "expected 'TinyAssets'" in exc.value.msg
     assert "got 'tinyassets'" in exc.value.msg
+
+
+def test_probe_result_rejects_anonymous_initialize_200(monkeypatch):
+    monkeypatch.setattr(
+        canary,
+        "_post",
+        _scripted_post(
+            _CANONICAL_PLUS_STATUS,
+            anonymous_initialize_status=200,
+        ),
+    )
+    with pytest.raises(canary.CanaryError) as exc:
+        canary.probe_result("https://example/mcp", 5.0)
+    assert exc.value.code == 6
+    assert "admitted an anonymous initialize" in exc.value.msg
+
+
+def test_canary_bearer_converse_200_is_exit_6(monkeypatch):
+    monkeypatch.setattr(
+        canary,
+        "_post",
+        _scripted_post(
+            _CANONICAL_PLUS_STATUS,
+            canary_converse_status=200,
+        ),
+    )
+    monkeypatch.setattr(
+        canary,
+        "_get_json",
+        lambda url, timeout: {
+            "resource": "https://example/mcp",
+            "authorization_servers": list(canary.EXPECTED_AUTHORIZATION_SERVERS),
+        },
+    )
+    with pytest.raises(canary.CanaryError) as exc:
+        canary.assert_converse_auth_gate("https://example/mcp", 5.0)
+    assert exc.value.code == 6
+
+
+def test_main_requires_token_before_network(monkeypatch, capsys):
+    calls = []
+    monkeypatch.delenv("TINYASSETS_WIKI_CANARY_TOKEN", raising=False)
+    monkeypatch.setattr(canary, "_post", lambda *a, **k: calls.append((a, k)))
+    with pytest.raises(SystemExit) as exc:
+        canary.main([])
+    assert exc.value.code == 2
+    assert not calls
+    assert "TINYASSETS_WIKI_CANARY_TOKEN" in capsys.readouterr().err
+
+
+def test_pulse_only_sends_canary_bearer(monkeypatch):
+    import urllib.request
+
+    seen = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self, _limit):
+            return b'{"git_sha":"abc123"}'
+
+    def urlopen(request, timeout):
+        seen.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert canary._pulse_only("https://example/mcp", 5.0) == 0
+    assert seen[0][0].full_url == "https://example/mcp/pulse"
+    assert seen[0][0].get_header("Authorization") == f"Bearer {_TOKEN}"
+
+
+def test_authenticated_handle_posts_all_carry_canary_bearer(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        canary,
+        "_post",
+        _scripted_post(_CANONICAL_PLUS_STATUS, calls=calls),
+    )
+    canary.assert_canonical_handles("https://example/mcp", 5.0)
+    assert calls
+    assert all(call["bearer"] == _TOKEN for call in calls)
+
+
+def test_the_healthcheck_invocation_does_not_authenticate_its_anonymous_probe(monkeypatch):
+    """The exact shape `deploy/compose.yml` runs inside the container.
+
+    Codex found this red: the "anonymous" initialize omitted its bearer
+    argument, the transport defaulted to reading the environment, the request
+    went out authenticated, the daemon answered 200 -- and the canary reported
+    "surface admitted an anonymous initialize", exit 6. Deterministically, on
+    the first deploy, with a rollback as the outcome.
+
+    So this drives the REAL transport and asserts on the header it put on the
+    wire, per call, rather than on a fake whose defaults differ from
+    production's.
+    """
+    import urllib.request
+
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _TOKEN)
+    sent: list[tuple[str, str | None]] = []
+
+    class _Resp:
+        def __init__(self, status, headers, body):
+            self.status = status
+            self.headers = headers
+            self._body = body
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _urlopen(request, timeout=None, context=None):
+        method = json.loads(request.data)["method"]
+        sent.append((method, request.get_header("Authorization")))
+        if request.get_header("Authorization") is None:
+            # The new daemon: no bearer, no session.
+            raise urllib.error.HTTPError(
+                request.full_url, 401,
+                "Unauthorized",
+                {"www-authenticate": 'Bearer resource_metadata="https://x/.well-known/oauth-protected-resource"'},
+                io.BytesIO(b'{"error": "authentication_required"}'),
+            )
+        return _Resp(
+            200,
+            {"mcp-session-id": "s-1"},
+            json.dumps({
+                "jsonrpc": "2.0", "id": 1,
+                "result": {"protocolVersion": "2024-11-05",
+                           "serverInfo": {"name": "TinyAssets", "version": "1"}},
+            }).encode(),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+    canary.probe_result("https://example/mcp", 5.0, bearer=_TOKEN)
+
+    assert [auth for _, auth in sent] == [None, f"Bearer {_TOKEN}"], sent

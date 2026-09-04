@@ -22,7 +22,7 @@ deposited via ``connect_llm``.
 Registration creates a CANDIDATE only (design §1): it does not enroll, select, or make
 the provider routable — the owner selects it for automations via per-node
 ``llm_policy`` and the router bridge. Owner-gated exactly like ``connect_http`` (an
-explicit ``admin`` ACL row; anonymous/non-admin/unknown-universe get the uniform
+explicit ``admin`` ACL row; unbound/non-admin/unknown-universe get the uniform
 ``not_found`` envelope). Never echoes a secret (there is none to echo).
 """
 
@@ -133,8 +133,10 @@ def connect_compute(*, universe_id: str = "", payload: Any = None) -> dict[str, 
     # 1. Server-derived authenticated principal (no env fallback).
     if not permissions.is_authenticated_request():
         return {"error": "authentication_required", "resource": "connection"}
-    actor = permissions.current_actor_id().strip()
-    if not actor or actor == "anonymous":
+    from tinyassets.principals import named_principal
+
+    actor = named_principal(permissions.current_actor_id())
+    if not actor:
         return {"error": "authentication_required", "resource": "connection"}
 
     # 2. Require an explicit admin ACL row for THIS actor on THIS universe.
@@ -210,7 +212,7 @@ def read_compute_providers(*, universe_id: str = "") -> dict[str, Any]:
 
     The read sibling of :func:`connect_compute` — so a user can SEE what they (or a
     remix) registered, from any surface. Owner-gated exactly like registration (an
-    explicit ``admin`` ACL row; anonymous/non-admin/unknown-universe get the uniform
+    explicit ``admin`` ACL row; unbound/non-admin/unknown-universe get the uniform
     ``not_found``). Integrity is enforced by ``list_definitions`` (each row's id must
     content-address its own fields, else it fails closed). No secret is ever returned.
     """
@@ -220,8 +222,10 @@ def read_compute_providers(*, universe_id: str = "") -> dict[str, Any]:
 
     if not permissions.is_authenticated_request():
         return {"error": "authentication_required", "resource": "connection"}
-    actor = permissions.current_actor_id().strip()
-    if not actor or actor == "anonymous":
+    from tinyassets.principals import named_principal
+
+    actor = named_principal(permissions.current_actor_id())
+    if not actor:
         return {"error": "authentication_required", "resource": "connection"}
     uid = _request_universe(universe_id)
     base = _base_path()

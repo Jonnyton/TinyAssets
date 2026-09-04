@@ -467,7 +467,7 @@ def _action_escrow_lock(kwargs: dict[str, Any]) -> str:
     node_id = (kwargs.get("node_id") or "").strip()
     # Lock reserves the caller's OWN funded budget — always the authenticated
     # actor, never a caller-supplied identity (slice1a review CRITICAL 1).
-    claimer = (_current_actor() or "").strip() or "anonymous"
+    claimer = _current_actor().strip()
     currency = (kwargs.get("currency") or "MicroToken").strip()
     raw_amount = kwargs.get("amount", 0)
     try:
@@ -507,7 +507,7 @@ def _action_escrow_release(kwargs: dict[str, Any]) -> str:
     evidence = (kwargs.get("evidence") or "").strip()
     # Only the lock's staker (or host) may release it — pass the authenticated
     # actor so action_escrow_release can authorize ownership (CRITICAL 1).
-    caller_id = (_current_actor() or "").strip() or "anonymous"
+    caller_id = _current_actor().strip()
 
     if not recipient_id:
         return json.dumps({
@@ -545,7 +545,7 @@ def _action_escrow_refund(kwargs: dict[str, Any]) -> str:
     # Only the lock's staker (or host) may refund it — pass the authenticated
     # actor so action_escrow_refund can authorize ownership (CRITICAL round 2).
     # A write-scoped caller cannot cancel another actor's escrow by lock_id.
-    caller_id = (_current_actor() or "").strip() or "anonymous"
+    caller_id = _current_actor().strip()
 
     with _connect(_base_path()) as conn:
         result = action_escrow_refund(
@@ -610,12 +610,14 @@ def _action_escrow_fund(kwargs: dict[str, Any]) -> str:
 
 def _action_escrow_balance(kwargs: dict[str, Any]) -> str:
     """Read-only — a staker's escrow budget (total / reserved / spendable)."""
+    # A balance is read FOR a principal. Falling back to an env var read one
+    # stranger's escrow for another (and, unset, read an unowned bucket).
+    from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.payments.actions import action_escrow_balance
+    from tinyassets.principals import named_principal
     from tinyassets.storage import _connect
 
-    staker_id = (
-        kwargs.get("staker_id") or os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
-    ).strip()
+    staker_id = named_principal(kwargs.get("staker_id")) or _current_actor()
     currency = (kwargs.get("currency") or "MicroToken").strip()
 
     with _connect(_base_path()) as conn:
@@ -815,8 +817,9 @@ def _outcome_run_owner(run: dict[str, Any]) -> str:
     owner = str(run.get("owner_user_id") or "").strip()
     if owner:
         return owner
-    actor = str(run.get("actor") or "").strip()
-    return "" if actor == "anonymous" else actor
+    from tinyassets.principals import named_principal
+
+    return named_principal(run.get("actor"))
 
 
 def _action_record_outcome(kwargs: dict[str, Any]) -> str:
@@ -827,10 +830,11 @@ def _action_record_outcome(kwargs: dict[str, Any]) -> str:
         OUTCOME_TYPES,
         record_user_attested_outcome_evidence,
     )
+    from tinyassets.principals import named_principal
     from tinyassets.runs import get_run
 
     run_id = (kwargs.get("run_id") or "").strip()
-    actor_id = (kwargs.get("actor_id") or "").strip()
+    actor_id = named_principal(kwargs.get("actor_id"))
     outcome_type = (kwargs.get("outcome_type") or "").strip()
     if not run_id:
         return json.dumps({"error": "run_id is required."})
@@ -1019,7 +1023,9 @@ def _action_record_remix(kwargs: dict[str, Any]) -> str:
         credit_share = 0.0
     credit_share = max(0.0, min(1.0, credit_share))
 
-    actor_id = (kwargs.get("actor_id") or "anonymous").strip() or "anonymous"
+    from tinyassets.principals import named_principal
+
+    actor_id = named_principal(kwargs.get("actor_id"))
     owner_user_id = (kwargs.get("owner_user_id") or "").strip()
     daemon_id = (kwargs.get("daemon_id") or "").strip()
     runtime_instance_id = (kwargs.get("runtime_instance_id") or "").strip()
@@ -1567,7 +1573,7 @@ def _action_goal_get(kwargs: dict[str, Any]) -> str:
     # Phase 6.2.2 — viewer-aware. Private Branches owned by other
     # actors are excluded from this Goal's published Branch list.
     actor = _current_actor()
-    scope_actor = "" if actor == "anonymous" else actor
+    scope_actor = actor
     branches = branches_for_goal(
         _base_path(), goal_id=gid, viewer=actor,
     )
@@ -2282,6 +2288,7 @@ def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
         set_canonical_branch,
         set_goal_canonical,
     )
+    from tinyassets.principals import named_principal
 
     gid = (kwargs.get("goal_id") or "").strip()
     if not gid:
@@ -2294,9 +2301,10 @@ def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
     except KeyError:
         return json.dumps({"status": "rejected", "error": f"Goal '{gid}' not found."})
 
-    actor = _current_actor()
-    scope_actor = (kwargs.get("scope") or "").strip()
-    if scope_actor and actor == "anonymous":
+    actor = named_principal(_current_actor())
+    raw_scope_actor = str(kwargs.get("scope") or "").strip()
+    scope_actor = named_principal(raw_scope_actor)
+    if raw_scope_actor and (not actor or not scope_actor):
         return json.dumps({
             "status": "rejected",
             "error": "Authentication is required for a personal canonical.",
@@ -2785,7 +2793,7 @@ def goals(
         })
 
     # Auth scope gate — goals is a write-capable commons surface, so enforce the
-    # named action scope (resolve-always/WorkOS): anonymous callers may read but
+    # named action scope (resolve-always/WorkOS): public projections are separate;
     # not propose/update/bind/set_canonical/define_protocol/set_selector. Covers
     # write_graph(target="goal"), which routes here.
     from tinyassets.auth.middleware import require_action_scope
@@ -3845,11 +3853,12 @@ def _action_gates_release_bonus(kwargs: dict[str, Any]) -> str:
 def _action_attest_gate_event(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.gate_events import attest_gate_event
+    from tinyassets.principals import named_principal
 
     goal_id = (kwargs.get("goal_id") or "").strip()
     event_type = (kwargs.get("event_type") or "").strip()
     event_date = (kwargs.get("event_date") or "").strip()
-    attested_by = (kwargs.get("attested_by") or _current_actor()).strip()
+    attested_by = named_principal(kwargs.get("attested_by")) or _current_actor()
     notes = (kwargs.get("note") or "").strip()
     cites_raw = (kwargs.get("cites_json") or "[]").strip()
     try:
@@ -3880,9 +3889,10 @@ def _action_attest_gate_event(kwargs: dict[str, Any]) -> str:
 def _action_verify_gate_event(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.gate_events import verify_gate_event
+    from tinyassets.principals import named_principal
 
     event_id = (kwargs.get("event_id") or "").strip()
-    verifier_id = (kwargs.get("verifier_id") or _current_actor()).strip()
+    verifier_id = named_principal(kwargs.get("verifier_id")) or _current_actor()
     if not event_id:
         return json.dumps({"error": "event_id is required."})
     try:
@@ -3897,9 +3907,10 @@ def _action_verify_gate_event(kwargs: dict[str, Any]) -> str:
 def _action_dispute_gate_event(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.gate_events.store import dispute_gate_event
+    from tinyassets.principals import named_principal
 
     event_id = (kwargs.get("event_id") or "").strip()
-    disputed_by = (kwargs.get("disputed_by") or _current_actor()).strip()
+    disputed_by = named_principal(kwargs.get("disputed_by")) or _current_actor()
     reason = (kwargs.get("reason") or "").strip()
     if not event_id:
         return json.dumps({"error": "event_id is required."})
@@ -3915,9 +3926,10 @@ def _action_dispute_gate_event(kwargs: dict[str, Any]) -> str:
 def _action_retract_gate_event(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.gate_events.store import retract_gate_event
+    from tinyassets.principals import named_principal
 
     event_id = (kwargs.get("event_id") or "").strip()
-    retracted_by = (kwargs.get("retracted_by") or _current_actor()).strip()
+    retracted_by = named_principal(kwargs.get("retracted_by")) or _current_actor()
     note = (kwargs.get("note") or "").strip()
     if not event_id:
         return json.dumps({"error": "event_id is required."})

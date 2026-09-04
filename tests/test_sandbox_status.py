@@ -171,6 +171,13 @@ class TestGetSandboxStatus:
 # ─── get_status includes sandbox_status field ────────────────────────────────
 
 class TestGetStatusSandboxField:
+    @pytest.fixture(autouse=True)
+    def _home(self, founder_home):
+        """The operator has a home, so status reads a universe rather than
+        answering with the first-contact card (no-anonymous-principal)."""
+        self._universe = founder_home
+        return founder_home
+
     def _call_get_status(self, monkeypatch, tmp_path):
         """Call get_status with a minimal universe dir + mocked sandbox probe."""
         import tinyassets.providers.base as base_mod
@@ -178,7 +185,6 @@ class TestGetStatusSandboxField:
         base_mod._sandbox_probe_cache = {"bwrap_available": False, "reason": "test-host"}
         try:
             from tinyassets.universe_server import get_status
-            monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
             result_str = get_status()
         finally:
             base_mod._sandbox_probe_cache = original

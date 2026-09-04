@@ -2495,11 +2495,10 @@ def _emit_invoke_design_used(
     for ``invoke_branch_version_spec`` we still resolve via the live def
     because ``branch_versions.snapshot`` only carries topology, not author.
 
-    Skips emit when author is empty or "anonymous" — orphan-row
+    Skips emit when the author is unowned — orphan-row
     prevention. Per #48 §1.4 + impl-pair-read on #75: ``execute_step``
-    events MAY carry actor_id="anonymous" (the run-claimer might not be
-    a registered actor); ``design_used`` events MUST NEVER, because
-    crediting "anonymous" pollutes the ledger with synthetic-actor
+    events may carry an empty actor for retired rows; ``design_used`` events
+    MUST NEVER, because crediting an unowned row pollutes the ledger with
     attribution. Different events, different discipline.
 
     Wrapped in try/except by callers so emit failure never breaks the
@@ -2514,8 +2513,10 @@ def _emit_invoke_design_used(
     except KeyError:
         return  # Live def gone; skip emit (lineage walk handles attribution).
 
-    author = (raw.get("author") if isinstance(raw, dict) else "") or ""
-    if not author or author == "anonymous":
+    from tinyassets.principals import named_principal
+
+    author = named_principal(raw.get("author") if isinstance(raw, dict) else "")
+    if not author:
         return
 
     metadata = {
@@ -2704,9 +2705,11 @@ def _build_invoke_branch_node(
 
     def _resolve_actor() -> str:
         # The child runs as the parent run's authenticated actor — never a spec actor,
-        # never re-read from the mutable run record, never an anonymous fallback.
-        actor = (_ctx.actor or "").strip()
-        if not actor or actor == "anonymous":
+        # never re-read from the mutable run record, never a synthetic fallback.
+        from tinyassets.principals import named_principal
+
+        actor = named_principal(_ctx.actor)
+        if not actor:
             raise CompilerError(
                 f"Node '{node.node_id}': invoke_branch has no authenticated "
                 f"execution context; refusing (fail-closed)."
@@ -2865,8 +2868,10 @@ def _build_invoke_branch_version_node(
     )
 
     def _resolve_actor() -> str:
-        actor = (_ctx.actor or "").strip()
-        if not actor or actor == "anonymous":
+        from tinyassets.principals import named_principal
+
+        actor = named_principal(_ctx.actor)
+        if not actor:
             raise CompilerError(
                 f"Node '{node.node_id}': invoke_branch_version has no authenticated "
                 f"execution context; refusing (fail-closed)."

@@ -101,9 +101,12 @@ def _env_actor_grants() -> tuple[str, ...]:
 
 
 def _env_actor_can(action: str, *, universe_id: str = "") -> bool:
+    # The bound principal decides, not the environment. The helper keeps its
+    # name for its callers; what it resolves is the authenticated subject.
+    from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.auth.provider import PermissionScope, resolve_permission
 
-    actor = os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
+    actor = _current_actor()
     grants = _env_actor_grants()
     return resolve_permission(
         actor_id=actor,
@@ -1600,7 +1603,9 @@ def _unavailable_epoch2_summary(error: str) -> dict[str, Any]:
 def _may_view_unscoped_epoch2_integrity(udir: Path) -> bool:
     """Restrict exact unscoped corruption counts to universe admins."""
     actor_id = permissions.current_actor_id()
-    if actor_id == "anonymous":
+    from tinyassets.principals import has_named_principal
+
+    if not has_named_principal(actor_id):
         return False
     try:
         from tinyassets.daemon_server import universe_access_permission
@@ -1830,7 +1835,7 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
     # be gated on the `read_metadata` capability — not merely the legacy read
     # gate. A content-only (`unlisted`) universe sets public_read=True to keep
     # content readable, which the legacy preflight allows; without this gate an
-    # anonymous caller would read its metadata even though the level withholds it.
+    # unbound caller would read its metadata even though the level withholds it.
     from tinyassets.api import permissions, visibility
 
     if not visibility.visibility_permits(uid, "read_metadata"):
@@ -4207,7 +4212,9 @@ def _action_queue_cancel(
             "branch_task_id": branch_task_id,
         })
     if target.status == "running":
-        source = os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
+        from tinyassets.api.engine_helpers import _current_actor
+
+        source = _current_actor()
         is_owner = bool(target.claimed_by) and source == target.claimed_by
         can_cancel = _env_actor_can(
             ACTION_CANCEL_BRANCH_TASK,
@@ -4445,7 +4452,9 @@ def _action_post_to_goal_pool(
             "status": "rejected",
             "error": "priority_weight must be >= 0.",
         })
-    source = os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
+    from tinyassets.api.engine_helpers import _current_actor
+
+    source = _current_actor()
     if not _env_actor_can(ACTION_POST_PRIORITY_GOAL_POOL, universe_id=uid):
         pw = 0.0
 
@@ -4567,7 +4576,9 @@ def _action_submit_node_bid(
             ),
         })
 
-    source = os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
+    from tinyassets.api.engine_helpers import _current_actor
+
+    source = _current_actor()
     node_bid_id = new_node_bid_id()
     payload = {
         "node_bid_id": node_bid_id,
@@ -5802,7 +5813,7 @@ def _action_switch_universe(universe_id: str = "", **_kwargs: Any) -> str:
     # switch applies only to the current request/session scope — they select a
     # universe by passing `universe_id` on each tool call — and must NOT mutate
     # the host-global `.active_universe` marker that other users resolve through.
-    if permissions.is_authenticated_request():
+    if not permissions.is_local_single_tenant():
         return json.dumps({
             "universe_id": uid,
             "status": "selected",
@@ -5815,7 +5826,7 @@ def _action_switch_universe(universe_id: str = "", **_kwargs: Any) -> str:
             ),
         })
 
-    # Anonymous / dev single-tenant: write the active universe marker — the
+    # Local/dev single-tenant: write the active universe marker — the
     # tray app watches this file to switch the local daemon.
     marker = _base_path() / ".active_universe"
     try:
@@ -5903,7 +5914,7 @@ def _action_create_universe(
             ),
         }
 
-        # Auto-switch the daemon to the new universe — ONLY for anonymous / dev
+        # Auto-switch the daemon to the new universe — ONLY for local/dev
         # single-tenant (tray) creates. An authenticated founder's create is a
         # multi-tenant MCP operation: their universe is recorded as their
         # ``founder_home`` binding (below), and per the universe-creation spec
@@ -5911,7 +5922,7 @@ def _action_create_universe(
         # ``.active_universe`` marker to decide which universe a chatbot speaks
         # as. Writing it on a founder create clobbers the marker to the
         # last-created home and leaks it to other founders' omitted-scope reads.
-        if not permissions.is_authenticated_request():
+        if permissions.is_local_single_tenant():
             marker = base / ".active_universe"
             marker.write_text(uid, encoding="utf-8")
             result["note"] = (

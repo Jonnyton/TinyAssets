@@ -75,15 +75,23 @@ def base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture(autouse=True)
 def _reset_auth():
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
     yield
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
 
 
 def _anonymous() -> None:
-    set_provider(DevAuthProvider())
-    auth_middleware(None)
+    """Nobody bound at all, which is what an unauthenticated request is.
+
+    Installing the dev provider and resolving "dev" produces a REAL signed-in
+    identity (the local operator), so this used to drive an authenticated
+    caller and assert a refusal that could not happen -- the test passed only
+    while `current_actor_id()` answered "" for that identity.
+    """
+    from tinyassets.auth.middleware import clear_identity
+
+    clear_identity()
 
 
 def _authenticate(user_id: str) -> None:
@@ -126,8 +134,8 @@ class TestTierResolution:
         _anonymous()
         who = il.resolve_interlocutor_tier("u-pub")
         assert who.tier == il.T0
-        assert who.actor_id == "anonymous"
-        assert who.is_anonymous is True
+        assert who.actor_id == ""
+        assert who.is_public_visitor is True
         assert who.is_founder is False
 
     def test_authenticated_non_owner_is_t1(self, base):

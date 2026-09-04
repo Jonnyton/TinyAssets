@@ -9,12 +9,38 @@ from pathlib import Path
 import pytest
 
 
+def _become(user_id: str) -> None:
+    """Sign in as ``user_id``.
+
+    These tests used to set ``UNIVERSE_SERVER_USER``, which named the actor by
+    environment variable -- authority from a string anybody can set. The
+    autouse operator fixture rebinds between tests, so this does not leak.
+    """
+    from tinyassets.auth import middleware as _mw
+    from tinyassets.auth.provider import Identity
+
+    _mw._current_identity.set(
+        Identity(
+            user_id=user_id,
+            username=user_id,
+            display_name=user_id,
+            capabilities=[
+                "tinyassets.universe.read",
+                "tinyassets.universe.write",
+                "tinyassets.universe.admin",
+                "tinyassets.extensions.read",
+                "tinyassets.extensions.write",
+            ],
+        )
+    )
+
+
 @pytest.fixture
 def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "registrant")
+    _become("registrant")
     from tinyassets import universe_server as us
 
     importlib.reload(us)
@@ -59,7 +85,7 @@ def test_standalone_node_distinct_actor_approval_records_metadata(ext_env):
     us, _base, monkeypatch = ext_env
     _register_node(us)
 
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "host-operator")
+    _become("host-operator")
     approved = _call(us, "approve", node_id="code_node")
 
     assert approved["status"] == "approved"

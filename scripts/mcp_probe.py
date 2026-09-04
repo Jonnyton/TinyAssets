@@ -16,6 +16,10 @@ Raw call:
     tinyassets-probe --list
     tinyassets-probe --tool universe --args '{"action":"inspect","universe_id":"x"}' --raw
 
+The canary principal may run ``status``, ``tools``, raw ``get_status``, and raw
+``read_graph`` with exactly ``{"target":"status"}``. The server refuses every
+other tool call for this bearer with HTTP 403.
+
 All subcommands accept --url and --raw flags.
 """
 
@@ -26,7 +30,22 @@ import json
 import sys
 import time
 import urllib.request
+from pathlib import Path
 from typing import Any
+
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+
+from _canary_common import canary_bearer_for  # noqa: E402
+
+#: "Not specified" -- distinct from an explicit ``None``, which means "this
+#: daemon is pre-cutover, send no bearer". Omitting the argument reads the
+#: configured token WITHOUT a network call, so a direct caller (and every unit
+#: test that drives a helper) behaves as it always did.
+_FROM_ENV: Any = object()
+
+
 
 DEFAULT_URL = "https://tinyassets.io/mcp"
 MCP_PROTOCOL_VERSION = "2024-11-05"
@@ -40,7 +59,12 @@ def _vlog(msg: str) -> None:
         print(f"[probe] {msg}", file=sys.stderr)
 
 
-def _mcp_call(url: str, sid: str | None, payload: dict[str, Any]) -> tuple[dict | None, str | None]:
+def _mcp_call(
+    url: str,
+    sid: str | None,
+    payload: dict[str, Any],
+    bearer_token: str | None = None,
+) -> tuple[dict | None, str | None]:
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
@@ -48,6 +72,9 @@ def _mcp_call(url: str, sid: str | None, payload: dict[str, Any]) -> tuple[dict 
     }
     if sid:
         headers["mcp-session-id"] = sid
+    if bearer_token:
+        # Absent against a pre-cutover daemon, which refuses this bearer.
+        headers["Authorization"] = f"Bearer {bearer_token}"
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode(), method="POST", headers=headers
     )
@@ -64,7 +91,7 @@ def _mcp_call(url: str, sid: str | None, payload: dict[str, Any]) -> tuple[dict 
     return result, new_sid
 
 
-def _initialize(url: str) -> tuple[str | None, int]:
+def _initialize(url: str, bearer_token: str) -> tuple[str | None, int]:
     """Run MCP initialize + notifications/initialized. Returns (sid, exit_code)."""
     _vlog(f"initialize → {url}")
     init_resp, sid = _mcp_call(
@@ -80,13 +107,19 @@ def _initialize(url: str) -> tuple[str | None, int]:
                 "capabilities": {},
             },
         },
+        bearer_token,
     )
     if not init_resp or "result" not in init_resp:
         print("initialize failed", file=sys.stderr)
         print(init_resp, file=sys.stderr)
         return None, 1
     _vlog(f"session-id: {sid}")
-    _mcp_call(url, sid, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+    _mcp_call(
+        url,
+        sid,
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        bearer_token,
+    )
     _vlog("notifications/initialized sent")
     return sid, 0
 
@@ -99,7 +132,15 @@ def _tool_response_exit_code(resp: dict | None) -> int:
     return 0
 
 
-def _call_tool(url: str, sid: str | None, tool: str, tool_args: dict, *, raw: bool) -> int:
+def _call_tool(
+    url: str,
+    sid: str | None,
+    tool: str,
+    tool_args: dict,
+    bearer_token: str,
+    *,
+    raw: bool,
+) -> int:
     _vlog(f"tools/call {tool} args={tool_args}")
     resp, _ = _mcp_call(
         url,
@@ -110,6 +151,7 @@ def _call_tool(url: str, sid: str | None, tool: str, tool_args: dict, *, raw: bo
             "method": "tools/call",
             "params": {"name": tool, "arguments": tool_args},
         },
+        bearer_token,
     )
     if raw:
         print(json.dumps(resp, indent=2))
@@ -125,41 +167,49 @@ def _call_tool(url: str, sid: str | None, tool: str, tool_args: dict, *, raw: bo
     return 1
 
 
-def _cmd_status(url: str, raw: bool) -> int:
-    sid, rc = _initialize(url)
+def _cmd_status(url: str, raw: bool, bearer_token: str) -> int:
+    sid, rc = _initialize(url, bearer_token)
     if rc:
         return rc
-    return _call_tool(url, sid, "get_status", {}, raw=raw)
+    return _call_tool(url, sid, "get_status", {}, bearer_token, raw=raw)
 
 
-def _cmd_universes(url: str, raw: bool) -> int:
-    sid, rc = _initialize(url)
-    if rc:
-        return rc
-    return _call_tool(url, sid, "universe", {"action": "list"}, raw=raw)
-
-
-def _cmd_universe(url: str, universe_id: str, raw: bool) -> int:
-    sid, rc = _initialize(url)
+def _cmd_universes(url: str, raw: bool, bearer_token: str) -> int:
+    sid, rc = _initialize(url, bearer_token)
     if rc:
         return rc
     return _call_tool(
-        url, sid, "universe", {"action": "inspect", "universe_id": universe_id}, raw=raw
+        url, sid, "universe", {"action": "list"}, bearer_token, raw=raw,
     )
 
 
-def _cmd_wiki(url: str, raw: bool) -> int:
-    sid, rc = _initialize(url)
+def _cmd_universe(
+    url: str, universe_id: str, raw: bool, bearer_token: str,
+) -> int:
+    sid, rc = _initialize(url, bearer_token)
     if rc:
         return rc
-    return _call_tool(url, sid, "wiki", {"action": "list"}, raw=raw)
+    return _call_tool(
+        url, sid, "universe", {"action": "inspect", "universe_id": universe_id},
+        bearer_token, raw=raw,
+    )
 
 
-def _cmd_tools(url: str, raw: bool) -> int:
-    sid, rc = _initialize(url)
+def _cmd_wiki(url: str, raw: bool, bearer_token: str) -> int:
+    sid, rc = _initialize(url, bearer_token)
     if rc:
         return rc
-    resp, _ = _mcp_call(url, sid, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+    return _call_tool(url, sid, "wiki", {"action": "list"}, bearer_token, raw=raw)
+
+
+def _cmd_tools(url: str, raw: bool, bearer_token: str) -> int:
+    sid, rc = _initialize(url, bearer_token)
+    if rc:
+        return rc
+    resp, _ = _mcp_call(
+        url, sid, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        bearer_token,
+    )
     if not resp or "result" not in resp:
         print(json.dumps(resp, indent=2))
         return 1
@@ -181,9 +231,9 @@ def _format_latency_line(result: dict[str, Any]) -> str:
     )
 
 
-def _cmd_latency(url: str, raw: bool) -> int:
+def _cmd_latency(url: str, raw: bool, bearer_token: str) -> int:
     start = time.monotonic()
-    sid, rc = _initialize(url)
+    sid, rc = _initialize(url, bearer_token)
     if rc:
         latency_ms = int((time.monotonic() - start) * 1000)
         result = {
@@ -204,6 +254,7 @@ def _cmd_latency(url: str, raw: bool) -> int:
             "method": "tools/call",
             "params": {"name": "get_status", "arguments": {}},
         },
+        bearer_token,
     )
     latency_ms = int((time.monotonic() - start) * 1000)
     rc = _tool_response_exit_code(resp)
@@ -332,26 +383,29 @@ def main() -> int:
     global _VERBOSE
     p = _build_parser()
     args = p.parse_args()
+    # Which contract does THIS daemon keep? Asked once, after the URL is
+    # known, so one run never mixes the pre- and post-cutover shapes.
+    bearer = canary_bearer_for(args.url, "probe", getattr(args, 'timeout', 30.0))
     _VERBOSE = bool(args.verbose)
     url = args.url
     raw = args.raw
 
     if args.subcommand == "status":
-        return _cmd_status(url, raw)
+        return _cmd_status(url, raw, bearer)
     if args.subcommand == "universes":
-        return _cmd_universes(url, raw)
+        return _cmd_universes(url, raw, bearer)
     if args.subcommand == "universe":
-        return _cmd_universe(url, args.universe_id, raw)
+        return _cmd_universe(url, args.universe_id, raw, bearer)
     if args.subcommand == "wiki":
-        return _cmd_wiki(url, raw)
+        return _cmd_wiki(url, raw, bearer)
     if args.subcommand == "tools":
-        return _cmd_tools(url, raw)
+        return _cmd_tools(url, raw, bearer)
     if args.subcommand == "latency":
-        return _cmd_latency(url, raw)
+        return _cmd_latency(url, raw, bearer)
 
     # Legacy / raw path
     if args.list:
-        return _cmd_tools(url, raw)
+        return _cmd_tools(url, raw, bearer)
 
     if not args.tool:
         print(
@@ -366,10 +420,10 @@ def main() -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    sid, rc = _initialize(url)
+    sid, rc = _initialize(url, bearer)
     if rc:
         return rc
-    return _call_tool(url, sid, args.tool, tool_args, raw=raw)
+    return _call_tool(url, sid, args.tool, tool_args, bearer, raw=raw)
 
 
 if __name__ == "__main__":

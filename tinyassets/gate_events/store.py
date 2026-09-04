@@ -87,6 +87,9 @@ def attest_gate_event(
         cites: list of dicts with keys:
             branch_version_id (required), run_id (optional), contribution_summary (optional)
     """
+    from tinyassets.principals import named_principal
+
+    attested_by = named_principal(attested_by)
     if not goal_id:
         raise ValueError("goal_id is required")
     if not event_type:
@@ -167,6 +170,11 @@ def verify_gate_event(
     verifier_id: str,
 ) -> GateEvent:
     """Transition gate_event to 'verified'. Verifier must differ from attester."""
+    from tinyassets.principals import named_principal
+
+    verifier_id = named_principal(verifier_id)
+    if not verifier_id:
+        raise ValueError("verifier_id is required")
     db = _ensure_schema(base_path)
     with _connect(db) as conn:
         row = conn.execute(
@@ -198,6 +206,11 @@ def dispute_gate_event(
     reason: str,
 ) -> GateEvent:
     """Transition gate_event to 'disputed'."""
+    from tinyassets.principals import named_principal
+
+    disputed_by = named_principal(disputed_by)
+    if not disputed_by:
+        raise ValueError("disputed_by is required")
     db = _ensure_schema(base_path)
     with _connect(db) as conn:
         row = conn.execute(
@@ -228,6 +241,11 @@ def retract_gate_event(
     note: str = "",
 ) -> GateEvent:
     """Transition gate_event to 'retracted'. Audit trail preserved."""
+    from tinyassets.principals import named_principal
+
+    retracted_by = named_principal(retracted_by)
+    if not retracted_by:
+        raise ValueError("retracted_by is required")
     db = _ensure_schema(base_path)
     with _connect(db) as conn:
         row = conn.execute(
