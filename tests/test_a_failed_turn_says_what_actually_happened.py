@@ -243,6 +243,73 @@ def test_recording_never_breaks_the_failure_path(caplog):
     assert "u-test" in caplog.text
 
 
+def test_recording_keeps_provider_terminal_cause_after_shortening(caplog):
+    import logging
+
+    from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic, redacted_failure_detail
+    from tinyassets.universe_server import (
+        _record_served_failure,
+    )
+
+    detail = (
+        "codex exec returned exit code 1 quickly -- likely unavailable: "
+        + "model-list diagnostic " * 30
+        + "https://x-access-token:ghp_SECRETVALUE@github.com/o/r "
+        + "terminal cause: test-provider-refusal"
+    )
+    exc = AllProvidersExhaustedError(
+        "exhausted",
+        attempts=[ProviderAttemptDiagnostic(
+            provider="codex", status="failed", skip_class="endpoint_unreachable",
+            detail=detail,
+        )],
+    )
+    with caplog.at_level(logging.WARNING):
+        _record_served_failure("u-test", exc)
+    assert "codex exec returned exit code 1" in caplog.text
+    assert "terminal cause: test-provider-refusal" in caplog.text
+    assert "ghp_SECRETVALUE" not in caplog.text
+    assert len(redacted_failure_detail("x" * 500)) == 200
+    assert redacted_failure_detail("short reason") == "short reason"
+
+
+@pytest.mark.asyncio
+async def test_router_failure_terminal_cause_reaches_served_log(caplog):
+    import logging
+
+    from tinyassets.exceptions import ProviderUnavailableError
+    from tinyassets.providers.base import BaseProvider
+    from tinyassets.providers.router import ProviderRouter
+    from tinyassets.universe_server import _record_served_failure
+
+    secret = "ghp_" + "S" * 40
+    detail = (
+        "codex launch: " + "x" * 50
+        + " https://x-access-token:" + secret + "@github.com/o/r "
+        + "model-list diagnostic " * 20
+        + "terminal cause: test-provider-refusal"
+    )
+
+    class FailingProvider(BaseProvider):
+        name = "codex"
+        family = "openai"
+
+        async def complete(self, prompt, system, config, *, universe_dir=None):
+            raise ProviderUnavailableError(detail)
+
+    router = ProviderRouter(providers={"codex": FailingProvider()})
+    with pytest.raises(AllProvidersExhaustedError) as caught:
+        await router.call("writer", "test prompt", "test system")
+    with caplog.at_level(logging.WARNING):
+        _record_served_failure("u-test", caught.value)
+    attempt = next(a for a in caught.value.attempts if a.status == "failed")
+    assert "terminal cause: test-provider-refusal" in caplog.text
+    assert "terminal cause: test-provider-refusal" in attempt.detail
+    assert len(attempt.detail) <= 200
+    assert secret not in caplog.text
+    assert "ghp_" not in attempt.detail  # Also catches a partially cut secret.
+
+
 def test_a_secret_in_provider_detail_does_not_reach_the_log(caplog):
     """`detail` is provider text and may carry a token or a host path. It is
     scrubbed, and it never enters the owner's notice at all."""

@@ -25,6 +25,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
+| **P1** | [Checklist turn cannot start](2026-09-04-checklist-turn-cannot-start.md) — both exact-prompt attempts fail before the app agent answers; double-truncated provider diagnostics hide the terminal cause | 2026-09-04 |
 | **P1** | [Bundled and local MCP OAuth session lifecycle is only partly proven](2026-09-03-local-mcp-oauth-session-lifecycle-is-partly-proven.md) — production fails closed with no anonymous fallback; a 2026-09-04 fresh task found the direct refresh token invalid and both bundled aliases requiring reauthentication, so principal/universe equality remains unproven | 2026-09-04 |
 | **P2** | [Capacitor CLI still resolves a vulnerable UUID library](2026-09-03-capacitor-cli-uuid-advisory.md) — high/critical mobile build-chain advisories are removed, but current `@capacitor/cli` still reaches `uuid@7.0.3` through `xcode`; build-time only, no compatible upstream update yet | 2026-09-03 |
 | **P2** | [App Store privacy policy is still an explicitly unfinished legal draft](2026-09-03-app-store-privacy-policy-is-draft.md) — the deployed public URL now covers iOS and contains the needed contact/data sections, but it still says “Draft v0” and cannot truthfully be treated as approved without founder/counsel confirmation | 2026-09-03 |

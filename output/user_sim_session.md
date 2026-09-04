@@ -476,3 +476,22 @@ Code trace confirmed that response occurs only after the exact current-provider
 HTTP connection and `tinyassets.voice.v1` capability validate; two redundant
 Voice-specific host switches then overwrite `ready` with `voice_disabled`.
 No additional login, provider, credential, or microphone action was attempted.
+
+## [2026-09-04 15:57 PDT] USER ACK checklist capability loop
+
+Founder directs reusable capability fixes only; no private workflow editing or coaching. Existing signed-in webapp conversation is the explicit target, overriding fresh-client/incognito defaults.
+
+## [2026-09-04 15:57 PDT] TAB HYGIENE: 1 mission tab, URL=https://tinyassets.io/mcp/app
+
+Chrome extension route; reopened existing checklist history and composer visible. Unrelated user tabs untouched; this is returning-user proof, not first-contact proof.
+
+## [2026-09-04 15:57 PDT] USER ACTION deployed checklist retest
+
+Asked exactly: Retest your workflow checklist
+Got: sent message rendered verbatim; app is thinking. Fix revision 0512f335 deployed and protected receipt/canary passed in run 33925440487.
+
+## [2026-09-04 15:59 PDT] USER BUG checklist agent cannot start
+
+Both the exact retest message and one unchanged Send it again retry rendered an unknown turn failure. No checklist response or workflow modification occurred; bounded operator logs show a quick provider subprocess exit but cut off its terminal cause.
+
+TAB HYGIENE: 1 mission tab, URL=https://tinyassets.io/mcp/app, returning-user conversation unchanged.
