@@ -24,8 +24,7 @@ landing work that the reviewed core did not yet cover:
   retired persisted marker remains decode-compatible;
 - the public website stopped opening an unsigned MCP session and presents a
   dated checked-in snapshot plus the signed-in-connector boundary;
-- the static site moved from an end-of-life vulnerable Next release to current
-  Next 16.3.4 and React 19.2.8.
+- operational probes use identities scoped separately from user universes.
 
 The open local OAuth lifecycle concern remains explicit: logout, revocation,
 and already-running-task behavior are not claimed by this change. That concern
@@ -40,7 +39,6 @@ does not permit an unauthenticated request to become an application principal.
 - The rendered phone and desktop sweep reported zero console errors, zero
   console warnings, zero horizontal overflow, and every alias landing.
 - The design-system build passed.
-- `npm audit` reported zero vulnerabilities after the framework upgrade.
 - `openspec validate no-anonymous-principal --strict` passed.
 - Relevant Ruff E/F/I checks passed.
 - The shipped Claude plugin mirror was rebuilt from canonical sources and its
