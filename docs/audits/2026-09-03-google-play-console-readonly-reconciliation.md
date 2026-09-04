@@ -3,8 +3,9 @@
 **Date:** 2026-09-03
 **Environment:** authenticated Google Play Console in Chrome. The initial inventory
 was read-only. Subsequent explicitly authorized corrections saved the safe listing
-asset pair and the evidence-backed Advertising ID answer described below. Nothing was
-sent for review, submitted, invited, rolled out, or published.
+asset pair, the evidence-backed Advertising ID answer, and the verified dedicated
+reviewer credentials described below. Nothing was sent for review, submitted, invited,
+rolled out, or published.
 **Candidate evidence:** `codex/android-store-release`; Android code head
 `d7bb24d1c28a64ed5c50b2ad7608916227899dd2`, verified by release run
 `33823719041`. Later commits in this audit lane are documentation-only.
@@ -20,14 +21,14 @@ sent for review, submitted, invited, rolled out, or published.
 - Production access remains disabled until a qualifying closed test has at least 12
   continuously opted-in testers for at least 14 days.
 
-## App content: four declarations need attention
+## App content: three declarations need attention
 
 The App content overview—not the coarser dashboard counter—is authoritative for the
 remaining declarations:
 
 | Declaration | Live state | Prepared next state |
 |---|---|---|
-| Sign in details | Unsaved local staging only: **Yes** selected, Add-details dialog empty | WorkOS Email + Password is enabled. A separate Verified + Active reviewer user exists at `simkalholdingsllc+tinyassets-play-review@gmail.com` and completed one isolated sign-in to the Connect screen. Pause until the founder confirms that durable alias, then prove a second clean sign-in and save only after full, non-personal review-safe access exists. |
+| Sign in details | **Actioned** 2026-09-03; saved **Yes** with the `Play Reviewer` credential set, not sent for review | Dedicated address `play-review@tinyassets.io` routes through the TinyAssets mailbox to the founder-controlled Gmail. WorkOS user `user_01M1N3BFV6N1V1C9PP1NEWCCHP` is Verified + Active, has no organization or connected accounts, and shows sign-in count **2**. Both password sign-ins reached the same isolated empty universe without MFA or an email challenge after verification. The saved instructions identify the **Skip for now** path; the optional partner-device feedback switch is off. The mistaken Simkal plus-alias user was deleted only after this replacement was proven and saved. |
 | Target audience and content | Unstarted | Founder confirms the staged 18+ answers after Sign in details is complete. |
 | Data safety | Saved draft; not submitted | Reconcile against the exact shipped data flows and founder/legal approval, then submit only after Target audience permits it. |
 | Advertising ID | **Actioned** 2026-09-03; saved **No**, not sent for review | Re-open if the exact uploaded artifact or any native/JavaScript SDK dependency changes. |

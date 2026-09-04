@@ -30,29 +30,29 @@ cannot start without the founder.
   manifest, and locked dependencies all verified that no advertising ID is used. It
   is Actioned in Play but has not been sent for review.
 - WorkOS production now supports Email + Password with its recommended strong policy.
-  The founder/admin remains `jonathan.m.farnsworth@gmail.com`. A separate Play Reviewer
-  user exists at `simkalholdingsllc+tinyassets-play-review@gmail.com` and is Verified +
-  Active; its first isolated sign-in reached the Connect screen. Identity routing is
-  paused for founder review before a second sign-in or any Play credential save.
+  The founder/admin remains `jonathan.m.farnsworth@gmail.com`. The dedicated reviewer
+  identity is `play-review@tinyassets.io` (`user_01M1N3BFV6N1V1C9PP1NEWCCHP`), routed
+  through the TinyAssets `info@tinyassets.io` mailbox to the founder's controlled Gmail.
+  WorkOS shows it Verified + Active, with no organization or connected accounts and two
+  successful password sign-ins. Both sign-ins reached the same isolated empty universe.
+  Play **Sign in details** is saved and Actioned with that account; the mistaken Simkal
+  plus-alias reviewer was deleted after the replacement was proven.
 - **A signed bundle is live on the internal testing track**: release `1 (1.0)`,
   published 2026-09-03 11:10, 3.1 MB.
   Opt-in link: <https://play.google.com/apps/internaltest/4701716760893982267>
-- App content checklist reads **8 of 11**.
+- App content now shows **8 actioned declarations** and **3 needing attention**.
 
 ### The wall, stated precisely
 
-Google Play has three gates stacked in a fixed order, and none of them can be skipped:
+Google Play had three gates stacked in a fixed order. The first is now complete:
 
-1. **Sign in details** needs a final reviewer identity and two clean sign-in proofs.
-   Email + Password is enabled and the separate Simkal-plus-alias user completed one
-   clean sign-in, but it is intentionally not saved to Play while the founder confirms
-   whether that alias is the intended durable reviewer identity. Play's own dialog says
-   reviewers "are unable to create accounts, use their own existing accounts, or use
-   free trials."
-2. **Target audience and content** refuses to open until (1) is complete. Verified by
-   opening it: *"You must complete the Sign in details section before starting the
-   Target audience and content questionnaire."*
-3. **Data safety** cannot be submitted until (2) is done.
+1. **Sign in details — done 2026-09-03.** The durable TinyAssets alias, isolated WorkOS
+   user, two clean password sign-ins, and saved Play instruction set are all verified.
+   The optional Google/partner-device feedback switch was left off. Nothing was sent
+   for review.
+2. **Target audience and content** is now unblocked and still needs the founder to
+   confirm the staged 18+ answers before saving the declaration.
+3. **Data safety** remains a saved draft and cannot be submitted until (2) is done.
 
 Separately, and independent of those three: a personal developer account must run a
 **closed test with at least 12 testers, opted in continuously for 14 days**, before it
@@ -65,8 +65,9 @@ agent does shortens it.
 
 ### What the next session should actually do
 
-- Nothing on Play is agent-unblockable right now. Both remaining Play items are in
-  `docs/host-actions.md` and need the founder.
+- The remaining declarations needing attention are **Target audience and content**,
+  **Data safety**, and **Foreground service permissions**. Their founder checks remain
+  in `docs/host-actions.md`; do not submit or send anything for review without them.
 - **Do not** re-derive the `gh secret set` situation. It is denied by the harness
   classifier (tested four times, including piping from a file so no value entered
   argv). Do not route around it with `gh api` — that bypasses the intent of the

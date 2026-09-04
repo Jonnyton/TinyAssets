@@ -339,7 +339,7 @@ only then can the app be promoted to Production and be publicly downloadable.
 Do not confuse this with the internal-testing track already running — internal testing
 does not count toward the requirement, no matter how long it runs.
 
-### Google Play: finish the reusable reviewer account — identity routing paused
+### Google Play: reusable reviewer account — DONE 2026-09-03
 
 Play Console -> App content -> **Sign in details** (formerly "App access"). Our app is
 behind WorkOS AuthKit, so the honest answer to "Is any part of your app restricted?" is
@@ -352,82 +352,47 @@ exactly what we use. Google then warns, in the dialog itself:
 > contact you for more information."
 
 **Live identity reconciliation, 2026-09-03:** the WorkOS dashboard admin and sole
-TinyAssets team member is Jonathan Farnsworth, `jonathan.m.farnsworth@gmail.com`, with
-the Admin role. Google Play Console is also signed in with that address. The incidental
-Gmail tab used for verification was `simkalholdingsllc@gmail.com`; it is not an admin or
-owner identity.
+TinyAssets team member remains Jonathan Farnsworth, `jonathan.m.farnsworth@gmail.com`,
+with the Admin role. Google Play Console is also signed in with that address.
 
-Email + Password is now **enabled** in the production WorkOS environment with the
+Email + Password is **enabled** in the production WorkOS environment with the
 recommended strong policy (10-character minimum, complexity score 3, breached-password
-rejection). A separate AuthKit user named **Play Reviewer** was created as
-`simkalholdingsllc+tinyassets-play-review@gmail.com`; WorkOS shows it Verified and
-Active with Email + Password, no organization membership, and no connected accounts.
-Its first isolated sign-in reached TinyAssets's **Connect your subscription** screen.
-This did not replace or alter the founder/admin identity, but the address routes through
-the founder's less-preferred Simkal Gmail identity. Further account mutation is paused
-until the founder decides whether to keep that dedicated alias or replace it with a
-reviewer alias based on the preferred Jonathan identity.
+rejection). GoDaddy Email & Office now has the dedicated alias
+`play-review@tinyassets.io` on the TinyAssets-controlled `info@tinyassets.io` mailbox;
+that mailbox forwards to the founder's primary Gmail and keeps its own copy.
+
+The dedicated AuthKit user **Play Reviewer** is `play-review@tinyassets.io`, WorkOS id
+`user_01M1N3BFV6N1V1C9PP1NEWCCHP`. WorkOS shows Verified + Active, Email + Password,
+no organization membership, no connected accounts, and sign-in count **2**. The two
+password authentications reached the same isolated empty reviewer universe. After the
+one-time address verification, the repeat sign-in required no MFA or email challenge;
+the intervening Cloudflare human check was browser abuse protection, not an account
+second factor. Both sessions were signed out after proof.
+
+Play Console now shows **Sign in details** under Actioned, last edited 2026-09-03, with
+the `Play Reviewer` credentials and observed instructions: sign in with Email + Password,
+then choose **Skip for now** on the Connect screen to enter the empty reviewer universe.
+No organization, integrations, connected accounts, or founder data are attached. The
+optional Google/trusted-partner device feedback switch is off. The credential was saved
+as a draft only; it was not sent for review. The actual password exists only in Play's
+credential field and is intentionally absent from this repository.
+
+The mistaken `simkalholdingsllc+tinyassets-play-review@gmail.com` WorkOS user was
+permanently deleted only after the correct alias, delivery path, two sign-ins, and Play
+save were all proven. It never became the saved Play credential.
 
 WorkOS documents that AuthKit supports Email + Password and that the hosted UI exposes
 only the methods enabled in the dashboard
 (<https://workos.com/docs/authkit/email-password>,
-<https://workos.com/docs/authkit/hosted-ui>). If the reviewer identity is replaced,
-keep it a dedicated password user rather than a Google OAuth account:
-
-- Create a single review account such as `play-review@tinyassets.io` and sign into the
-  app once from a clean browser so its universe exists. Keep MFA,
-  magic-link, location approval, and expiring OTP requirements off for this dedicated
-  account. This is the one I recommend: it produces a reusable credential with no
-  second factor, which is what Google's own guidance requires.
-- **Hand over a dedicated Google account.** Works in principle, but a fresh Google account
-  signing in from a reviewer's machine invites exactly the 2-step-verification and
-  new-device challenges Google's guidance tells us to avoid. Prefer the first option.
-
-**The exact form, so it is a two-minute job when you have the credential.** "Add details"
-opens a dialog with:
-
-| Field | Required | What to put |
-|---|---|---|
-| Name | yes | `Reviewer account` |
-| Username, email address, or phone number | no* | the review account's email |
-| Password | no* | the review account's password |
-| Any other information required to access your app | no | see the paragraph below |
-| "…provide full access to all the features and content within this app" | checkbox | tick it |
-
-\* Marked optional by the form, but leaving them empty is what gets an app rejected —
-the reviewer has no other way in.
-
-Before filling the form, verify from a second fresh browser session that the credential
-works again without an email challenge. The current alias has one verified sign-in, not
-two. Then decide how the
-reviewer gets the app's substantive chat surface: provision a dedicated, review-safe AI
-provider connection on that account, or document the intentionally unconnected state
-and the **Skip for now** path. Do not attach a founder/personal provider credential to
-the reviewer account. If no non-personal way exists to exercise chat, that is a product
-access blocker to resolve before claiming that the account provides full access.
-
-Use this free-text instruction after verifying its labels against the exact candidate:
-
-> Open TinyAssets. Tap **Sign in**. Enter the reviewer email and password above, then
-> continue. No one-time code, organization selection, or location approval is required.
-> After sign-in, TinyAssets opens the account's universe. To inspect provider setup,
-> open **Connect**. **[If a review-safe provider is preconnected: identify it and the
-> safe test action.] [Otherwise: tap Skip for now; state clearly which chat behavior is
-> unavailable and why.]** Account and privacy controls are under **Account**.
-
-The bracketed branch must be replaced with observed truth; do not submit it verbatim.
-Store the actual password only in Play Console's credential field/password manager,
-never in this file, an issue, a chat, screenshots, or CI logs. Re-check it immediately
-before every submitted build. Google's reviewer-access requirements are at
+<https://workos.com/docs/authkit/hosted-ui>). Keep this reviewer as a dedicated password
+user; do not attach a founder/personal provider credential. Re-check the saved credential
+immediately before every submitted build. Google's reviewer-access requirements are at
 <https://support.google.com/googleplay/android-developer/answer/15748846>.
 
-**What it actually gates (corrected 2026-09-02):** Target audience and content refuses to
-start until Sign in details is complete — verified by opening it and reading the block:
-"You must complete the Sign in details section before starting the Target audience and
-content questionnaire." Data safety is answered and saved as a draft but cannot be
-submitted until Target audience is done. So this gates **two** remaining rows, not three.
-Content rating was *not* gated and is now complete (IARC, submitted 2026-09-02, Everyone /
-PEGI 3 / USK 0 / ClassInd L).
+**What it gated:** Sign in details is now complete, so Target audience and content is
+unblocked. Data safety is answered and saved as a draft but cannot be submitted until
+Target audience is done. Content rating was *not* gated and is complete (IARC, submitted
+2026-09-02, Everyone / PEGI 3 / USK 0 / ClassInd L).
 
 **This does not block a real install.** Play's internal testing track explicitly works
 "before you've finished setting up your app" — the App content checklist gates *production*
@@ -481,7 +446,8 @@ What remains after the secrets, and who does it (`docs/ops/google-play-launch.md
 | Build the signed AAB | **done** 2026-09-03 — built and signed in the container (`mobile/container/`), no secret needed |
 | Internal-testing release: upload the AAB, roll out | **done** 2026-09-03 11:10 — release `1 (1.0)`, track Active, 3.1 MB |
 | Verify the loop on a real phone (install from the internal-test link, sign in, chat) | **you — this is the live one.** Opt-in on the founder's Google account: https://play.google.com/apps/internaltest/4701716760893982267 |
-| Sign in details → Target audience → Data safety submit | blocked on the reviewer account above |
+| Sign in details | **done** 2026-09-03 — Actioned with the dedicated reviewer; not sent for review |
+| Target audience → Data safety submit | **you** — Sign in details no longer blocks the Target audience form |
 | Advertising ID declaration | **done 2026-09-03** — saved No after shipped-artifact, exact-candidate merged-manifest, and dependency verification; actioned but not sent for review |
 | Foreground-service declaration + behavior video | **you** — exact gate below |
 | Replace the unsafe uploaded conversation screenshot with staged `01-sign-in.png` | **done 2026-09-03** — live draft saved and both retained filenames verified; not sent for review |
