@@ -1410,6 +1410,16 @@ def test_the_android_shell_shows_no_checkout_ui():
     assert "if(!b || !PLAN || NATIVE) return;" in html
 
 
+def test_android_openai_browser_dismissal_stops_the_foreground_service():
+    """Closing the Custom Tab must immediately end its listener and notification."""
+    from pathlib import Path
+
+    html = (Path(onboarding.__file__).parent / "app.html").read_text(encoding="utf-8")
+    assert 'B.addListener("browserFinished"' in html
+    assert 'finishOpenAI(false, "OpenAI sign-in was closed.' in html
+    assert "pend&&pend.browserHandle" in html
+
+
 def test_the_app_itself_links_a_privacy_policy():
     """Google Play's User Data policy: a privacy policy link must be "within the
     app itself", not only in the store listing or on a website, and reachable in

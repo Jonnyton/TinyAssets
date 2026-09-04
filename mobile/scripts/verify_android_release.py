@@ -218,15 +218,29 @@ def verify_sources(mobile: Path, release: AndroidRelease) -> None:
         raise ValueError("LocalCallbackPlugin intent package differs from release identity")
     notification_safeguards = (
         "Manifest.permission.POST_NOTIFICATIONS",
+        "Build.VERSION_CODES.TIRAMISU",
         '@Permission(alias = "notifications"',
         'getPermissionState("notifications") != PermissionState.GRANTED',
         'requestPermissionForAlias("notifications", call, "notificationPermissionCallback")',
         "@PermissionCallback",
         'call.reject("Notification permission is required while browser sign-in is active")',
+        "LocalCallbackService.EXTRA_STARTUP_RECEIVER",
+        'call.reject("Sign-in notification did not start")',
+        'call.reject("Could not start the sign-in notification")',
     )
     missing = [item for item in notification_safeguards if item not in plugin]
     if missing:
         raise ValueError(f"LocalCallbackPlugin is missing notification safeguards: {missing}")
+    service = (mobile / "native/android/LocalCallbackService.java").read_text(encoding="utf-8")
+    startup_safeguards = (
+        "ResultReceiver startup",
+        "startup.send(STARTUP_OK",
+        "startup.send(STARTUP_FAILED",
+        'Log.e("TinyAssetsSignin"',
+    )
+    missing = [item for item in startup_safeguards if item not in service]
+    if missing:
+        raise ValueError(f"LocalCallbackService is missing startup safeguards: {missing}")
     voice = (mobile / "native/android/VoiceWebChromeClient.java").read_text(encoding="utf-8")
     safeguards = (
         'TRUSTED_SCHEME = "https"',

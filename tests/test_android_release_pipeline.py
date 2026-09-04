@@ -81,6 +81,14 @@ def test_android_release_config_matches_every_source_package_identity() -> None:
         'call.reject("Notification permission is required while browser sign-in is active")'
         in callback
     )
+    assert "LocalCallbackService.EXTRA_STARTUP_RECEIVER" in callback
+    assert 'call.reject("Sign-in notification did not start")' in callback
+    assert 'call.reject("Could not start the sign-in notification")' in callback
+
+    service = (MOBILE / "native/android/LocalCallbackService.java").read_text(encoding="utf-8")
+    assert "startup.send(STARTUP_OK" in service
+    assert "startup.send(STARTUP_FAILED" in service
+    assert 'Log.e("TinyAssetsSignin"' in service
 
     voice = (MOBILE / "native/android/VoiceWebChromeClient.java").read_text(encoding="utf-8")
     assert 'TRUSTED_SCHEME = "https"' in voice

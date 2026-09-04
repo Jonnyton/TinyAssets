@@ -7,7 +7,10 @@ import android.app.Service;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.IBinder;
+import android.os.ResultReceiver;
+import android.util.Log;
 
 /**
  * Keeps the app process alive while a loopback OAuth callback is pending.
@@ -23,6 +26,9 @@ import android.os.IBinder;
  * callback is handled or the flow ends.
  */
 public class LocalCallbackService extends Service {
+    static final String EXTRA_STARTUP_RECEIVER = "io.tinyassets.app.STARTUP_RECEIVER";
+    static final int STARTUP_OK = 1;
+    static final int STARTUP_FAILED = 2;
     static final String CHANNEL_ID = "tinyassets_signin";
     static final int NOTIFICATION_ID = 1455;
     // Hard ceiling: a sign-in never legitimately outlives this. Stops the
@@ -33,6 +39,14 @@ public class LocalCallbackService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        ResultReceiver startup = null;
+        if (intent != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                startup = intent.getParcelableExtra(EXTRA_STARTUP_RECEIVER, ResultReceiver.class);
+            } else {
+                startup = intent.getParcelableExtra(EXTRA_STARTUP_RECEIVER);
+            }
+        }
         NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && nm != null) {
             NotificationChannel ch = new NotificationChannel(
@@ -55,11 +69,17 @@ public class LocalCallbackService extends Service {
             } else {
                 startForeground(NOTIFICATION_ID, n);
             }
-        } catch (Exception e) {
-            // Without the foreground promotion the listener still runs; the
-            // process may just be frozen while backgrounded (the pre-fix state).
+        } catch (Throwable e) {
+            Log.e("TinyAssetsSignin", "Could not promote sign-in service", e);
+            if (startup != null) {
+                Bundle details = new Bundle();
+                details.putString("error", e.getClass().getSimpleName());
+                startup.send(STARTUP_FAILED, details);
+            }
             stopSelf();
+            return START_NOT_STICKY;
         }
+        if (startup != null) startup.send(STARTUP_OK, Bundle.EMPTY);
         handler.removeCallbacks(selfStop);
         handler.postDelayed(selfStop, MAX_LIFETIME_MS);
         return START_NOT_STICKY;

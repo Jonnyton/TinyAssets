@@ -3,6 +3,11 @@ package io.tinyassets.app;
 import android.Manifest;
 import android.content.Intent;
 import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.ResultReceiver;
+import android.util.Log;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
@@ -20,6 +25,7 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Loopback OAuth catcher: the one piece a phone needs to complete the same
@@ -110,11 +116,10 @@ public class LocalCallbackPlugin extends Plugin {
         }
         serve(server4, gen);
         if (server6 != null) serve(server6, gen);
-        keepAlive(true);
         JSObject r = new JSObject();
         r.put("port", port);
         r.put("ipv6", server6 != null);
-        call.resolve(r);
+        startKeepAlive(call, r);
     }
 
     private static ServerSocket bind(InetAddress addr, int port) throws IOException {
@@ -318,7 +323,7 @@ public class LocalCallbackPlugin extends Plugin {
         server6 = null;
         if (a != null) { try { a.close(); } catch (IOException ignored) { } }
         if (b != null) { try { b.close(); } catch (IOException ignored) { } }
-        keepAlive(false);
+        stopKeepAlive();
     }
 
     /**
@@ -330,21 +335,52 @@ public class LocalCallbackPlugin extends Plugin {
      * "Finishing your sign-in" notification) keeps the process schedulable for
      * exactly the life of the listener.
      */
-    private void keepAlive(boolean on) {
-        try {
-            android.content.Context ctx = getContext();
-            Intent svc = new Intent(ctx, LocalCallbackService.class);
-            if (on) {
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                    ctx.startForegroundService(svc);
-                } else {
-                    ctx.startService(svc);
+    private void startKeepAlive(PluginCall call, JSObject result) {
+        android.content.Context ctx = getContext();
+        Intent svc = new Intent(ctx, LocalCallbackService.class);
+        Handler handler = new Handler(Looper.getMainLooper());
+        AtomicBoolean completed = new AtomicBoolean(false);
+        Runnable timeout = () -> {
+            if (!completed.compareAndSet(false, true)) return;
+            stopServer();
+            call.reject("Sign-in notification did not start");
+        };
+        ResultReceiver startup = new ResultReceiver(handler) {
+            @Override
+            protected void onReceiveResult(int resultCode, Bundle resultData) {
+                if (!completed.compareAndSet(false, true)) return;
+                handler.removeCallbacks(timeout);
+                if (resultCode == LocalCallbackService.STARTUP_OK) {
+                    call.resolve(result);
+                    return;
                 }
-            } else {
-                ctx.stopService(svc);
+                stopServer();
+                call.reject("Could not start the sign-in notification");
             }
-        } catch (Throwable ignored) {
-            // Best effort: without it the listener still runs, just freezable.
+        };
+        svc.putExtra(LocalCallbackService.EXTRA_STARTUP_RECEIVER, startup);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ctx.startForegroundService(svc);
+            } else {
+                ctx.startService(svc);
+            }
+            handler.postDelayed(timeout, 5000L);
+        } catch (Throwable e) {
+            if (!completed.compareAndSet(false, true)) return;
+            handler.removeCallbacks(timeout);
+            stopServer();
+            call.reject("Could not start the sign-in notification: " + e.getClass().getSimpleName());
+        }
+    }
+
+    private void stopKeepAlive() {
+        android.content.Context ctx = getContext();
+        Intent svc = new Intent(ctx, LocalCallbackService.class);
+        try {
+            ctx.stopService(svc);
+        } catch (Throwable e) {
+            Log.e("TinyAssetsSignin", "Could not stop sign-in service", e);
         }
     }
 
