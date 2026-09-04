@@ -769,7 +769,7 @@ def write_graph(
 
     Args:
         target: What to write: goal, request, branch, universe, automation,
-            agent, or agent_binding. With target=goal, the default operation proposes a
+            agent, agent_binding, or connection. With target=goal, the default operation proposes a
             Goal; operation=set_canonical sets or unsets a canonical binding.
             The founder's home universe is auto-created on first contact; use
             target=universe to create an additional universe (or the home when
@@ -806,6 +806,10 @@ def write_graph(
             deposit again afterwards. Pass {"destination": "<name>"}. Use it when
             the owner asks you to remove a credential, or when a key was pasted
             against a destination they did not intend (owner-only).
+            Also with target=connection, configure_provider_capability declares or
+            revokes a non-secret capability on the universe's CURRENT serving
+            provider. The server derives its exact live connection and grant;
+            callers cannot select either or widen the provider's endpoint scope.
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
@@ -881,6 +885,17 @@ def write_graph(
             "cli:codex"|"cli:claude-code", "model": "<model>", "ref": "codex"|
             "claude-code"}. Owner-only, registration ONLY — NO secret here (deposit the
             api key out of band via the secure browser form / connect_http first).
+            For target=connection operation=configure_provider_capability, pass
+            {"capability_kind": "realtime_voice", "enabled": true,
+            "descriptor": {"protocol": "tinyassets.voice.v1", "session_url":
+            "https://provider.example/realtime/session", "service_name":
+            "Provider Voice", "privacy_url": "https://provider.example/privacy"}}
+            to declare Voice on the current user-owned HTTP provider. The optional
+            privacy_url must also be HTTPS. The session URL must already be in the
+            connection's exact POST allowlist. Pass enabled=false without a
+            descriptor to revoke. Owner plus home-universe admin authority is
+            required; subscription-only providers are refused rather than given a
+            second credential path.
             For target=automation operation=create, pass
             {"name": "Nightly digest", "branch_def_id": "<one of YOUR
             workflows>", "interval_seconds": 3600, "inputs": {...}} — or
@@ -1136,6 +1151,20 @@ def write_graph(
 
             return json.dumps(
                 remove_http(
+                    universe_id=graph_id,
+                    payload=payload_json,
+                )
+            )
+        if connection_operation == "configure_provider_capability":
+            # Capability metadata is attached only to the exact connection and
+            # grant already serving the authenticated founder's own home. The
+            # payload cannot select authority or widen its endpoint policy.
+            from tinyassets.api.provider_capability import (
+                configure_provider_capability,
+            )
+
+            return json.dumps(
+                configure_provider_capability(
                     universe_id=graph_id,
                     payload=payload_json,
                 )

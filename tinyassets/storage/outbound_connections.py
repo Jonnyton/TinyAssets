@@ -222,6 +222,28 @@ class ConnectionGrant:
     unprompted_action_cap: ActionCap | None
 
 
+@dataclass(frozen=True, slots=True)
+class ConnectionCapability:
+    """Bounded, credential-free metadata attached to one connection."""
+
+    connection_id: str
+    capability_kind: str
+    protocol: str
+    session_url: str
+    service_name: str
+    privacy_url: str
+
+    def descriptor(self) -> dict[str, str]:
+        result = {
+            "protocol": self.protocol,
+            "session_url": self.session_url,
+            "service_name": self.service_name,
+        }
+        if self.privacy_url:
+            result["privacy_url"] = self.privacy_url
+        return result
+
+
 @dataclass(frozen=True)
 class ActionCap:
     name: str
@@ -1771,6 +1793,68 @@ def _enforce_endpoint_allowlist(
     raise SsrfValidationError("outbound endpoint is not on the connection allowlist")
 
 
+_CONNECTION_CAPABILITY_KINDS = frozenset({"realtime_voice"})
+_REALTIME_VOICE_PROTOCOL = "tinyassets.voice.v1"
+_CAPABILITY_SERVICE_NAME_MAX = 80
+_CAPABILITY_URL_MAX = 2048
+
+
+def _validate_capability_kind(value: Any) -> str:
+    kind = value.strip() if isinstance(value, str) else ""
+    if kind not in _CONNECTION_CAPABILITY_KINDS:
+        raise ValueError("capability_kind is not supported")
+    return kind
+
+
+def _capability_https_url(name: str, value: Any, *, optional: bool = False) -> str:
+    text = value.strip() if isinstance(value, str) else ""
+    if optional and not text:
+        return ""
+    if not text or len(text) > _CAPABILITY_URL_MAX:
+        raise ValueError(f"{name} must be a bounded HTTPS URL")
+    try:
+        canonical = _parse_canonical_https_url(text, allowed_ports=frozenset({443}))
+    except SsrfValidationError as exc:
+        raise ValueError(f"{name} must be a canonical HTTPS URL") from exc
+    return _canonical_request_url(canonical)
+
+
+def _validate_connection_capability(
+    connection_id: str, capability_kind: str, descriptor: Any
+) -> ConnectionCapability:
+    """Validate the complete, closed metadata document for one capability."""
+
+    if not isinstance(descriptor, dict):
+        raise ValueError("capability descriptor must be an object")
+    kind = _validate_capability_kind(capability_kind)
+    required = {"protocol", "session_url", "service_name"}
+    allowed = required | {"privacy_url"}
+    if set(descriptor) - allowed or not required.issubset(descriptor):
+        raise ValueError("capability descriptor fields are invalid")
+    if descriptor.get("protocol") != _REALTIME_VOICE_PROTOCOL:
+        raise ValueError("capability protocol is not supported")
+    service_name = (
+        descriptor["service_name"].strip()
+        if isinstance(descriptor.get("service_name"), str)
+        else ""
+    )
+    if (
+        not 1 <= len(service_name) <= _CAPABILITY_SERVICE_NAME_MAX
+        or any(ord(char) < 32 or ord(char) == 127 for char in service_name)
+    ):
+        raise ValueError("capability service_name is invalid")
+    return ConnectionCapability(
+        connection_id=_required("connection_id", connection_id),
+        capability_kind=kind,
+        protocol=_REALTIME_VOICE_PROTOCOL,
+        session_url=_capability_https_url("session_url", descriptor.get("session_url")),
+        service_name=service_name,
+        privacy_url=_capability_https_url(
+            "privacy_url", descriptor.get("privacy_url"), optional=True
+        ),
+    )
+
+
 def _classify_global_address(ip_text: str) -> str:
     """Return the address only if it is globally routable; else fail closed.
 
@@ -2717,6 +2801,15 @@ CREATE TABLE IF NOT EXISTS outbound_connection_grants (
     unprompted_action_cap_json TEXT
 );
 
+CREATE TABLE IF NOT EXISTS connection_capabilities (
+    connection_id   TEXT NOT NULL
+        REFERENCES outbound_connections(connection_id) ON DELETE CASCADE,
+    capability_kind TEXT NOT NULL,
+    descriptor_json TEXT NOT NULL,
+    configured_at   REAL NOT NULL,
+    PRIMARY KEY (connection_id, capability_kind)
+);
+
 CREATE INDEX IF NOT EXISTS idx_outbound_grant_resolution
     ON outbound_connection_grants(owner_user_id, universe_id, revoked_at);
 
@@ -3212,6 +3305,99 @@ class ConnectionLedger:
             ).fetchall()
         return [_resource_from_row(row).to_view() for row in rows]
 
+    def configure_capability(
+        self,
+        *,
+        connection_id: str,
+        capability_kind: str,
+        descriptor: Any = None,
+        enabled: bool,
+    ) -> ConnectionCapability | None:
+        """Idempotently configure one bounded capability on existing authority.
+
+        The descriptor is metadata, never authority: enabling succeeds only when
+        the current connection is active HTTP authority whose existing scope and
+        endpoint allowlist already admit the exact realtime-session POST.
+        """
+
+        if not isinstance(enabled, bool):
+            raise ValueError("enabled must be a boolean")
+        connection_key = _required("connection_id", connection_id)
+        kind = _validate_capability_kind(capability_kind)
+        capability = (
+            _validate_connection_capability(connection_key, kind, descriptor)
+            if enabled
+            else None
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM outbound_connections WHERE connection_id = ?",
+                (connection_key,),
+            ).fetchone()
+            if row is None:
+                raise LookupError("connection resource does not exist")
+            resource = _resource_from_row(row)
+            if resource.revoked_at is not None:
+                raise PermissionError("connection resource is revoked")
+            if not enabled:
+                connection.execute(
+                    "DELETE FROM connection_capabilities "
+                    "WHERE connection_id = ? AND capability_kind = ?",
+                    (connection_key, kind),
+                )
+                return None
+            assert capability is not None
+            if resource.connection_type != "http" or "POST" not in resource.scopes:
+                raise PermissionError("connection does not authorize capability POST")
+            canonical = _parse_canonical_https_url(
+                capability.session_url, allowed_ports=frozenset({443})
+            )
+            _enforce_endpoint_allowlist(
+                canonical,
+                "POST",
+                resource.allowed_endpoints,
+                resource.access_mode,
+            )
+            connection.execute(
+                """
+                INSERT INTO connection_capabilities (
+                    connection_id, capability_kind, descriptor_json, configured_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(connection_id, capability_kind) DO UPDATE SET
+                    descriptor_json = excluded.descriptor_json,
+                    configured_at = excluded.configured_at
+                """,
+                (
+                    connection_key,
+                    kind,
+                    json.dumps(capability.descriptor(), sort_keys=True, separators=(",", ":")),
+                    time.time(),
+                ),
+            )
+        return capability
+
+    def get_connection_capability(
+        self, connection_id: str, capability_kind: str
+    ) -> ConnectionCapability | None:
+        """Return validated non-secret metadata without altering connection views."""
+
+        connection_key = _required("connection_id", connection_id)
+        kind = _validate_capability_kind(capability_kind)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT descriptor_json FROM connection_capabilities "
+                "WHERE connection_id = ? AND capability_kind = ?",
+                (connection_key, kind),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            descriptor = json.loads(str(row["descriptor_json"]))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("stored capability descriptor is invalid") from exc
+        return _validate_connection_capability(connection_key, kind, descriptor)
+
     def grant_connection(
         self,
         *,
@@ -3373,6 +3559,10 @@ class ConnectionLedger:
         record; this owns only the ledger rows.
         """
         with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM connection_capabilities WHERE connection_id = ?",
+                (connection_id,),
+            )
             connection.execute(
                 "DELETE FROM outbound_connection_grants WHERE connection_id = ?",
                 (connection_id,),

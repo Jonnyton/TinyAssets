@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import threading
 from hashlib import sha256
 from pathlib import Path
@@ -47,10 +48,14 @@ def _owner(sub: str = "user_owner"):
 
 def _seed_binding(
     base: Path,
+    monkeypatch,
     *,
     owner: str = "user_owner",
     universe_id: str = "u-owner-home",
 ) -> Path:
+    import tinyassets.daemon_server as daemon_server
+    import tinyassets.provider_serving_binding as serving
+    from tinyassets.provider_serving_binding import CurrentServingProviderAuthority
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     universe = base / universe_id
@@ -71,7 +76,12 @@ def _seed_binding(
                 "host": "bridge.example",
                 "path_template": "/v1/session",
                 "methods": ["POST"],
-            }
+            },
+            {
+                "host": "bridge.example",
+                "path_template": "/v1/session-2",
+                "methods": ["POST"],
+            },
         ],
     )
     ledger.grant_connection(
@@ -80,19 +90,41 @@ def _seed_binding(
         owner_user_id=owner,
         universe_id=universe_id,
     )
-    (universe / rv.VOICE_BINDING_FILENAME).write_text(
-        json.dumps(
-            {
-                "schema": rv.VOICE_PROTOCOL,
-                "connection_id": _CONNECTION_ID,
-                "grant_id": _GRANT_ID,
-                "session_url": _SESSION_URL,
-                "service_name": "Owner Voice Bridge",
-                "privacy_url": "https://bridge.example/privacy",
-            }
-        ),
-        encoding="utf-8",
+    ledger.configure_capability(
+        connection_id=_CONNECTION_ID,
+        capability_kind="realtime_voice",
+        enabled=True,
+        descriptor={
+            "protocol": rv.VOICE_PROTOCOL,
+            "session_url": _SESSION_URL,
+            "service_name": "Owner Voice Bridge",
+            "privacy_url": "https://bridge.example/privacy",
+        },
     )
+    monkeypatch.setattr(
+        daemon_server,
+        "get_founder_home",
+        lambda _base, actor: universe_id if actor == owner else "",
+    )
+    monkeypatch.setattr(
+        daemon_server,
+        "list_universe_acl",
+        lambda _base, *, universe_id: [
+            {"actor_id": owner, "permission": "admin"}
+        ],
+    )
+
+    def current(_base, *, universe_dir, universe_id, owner_user_id):
+        if owner_user_id != owner:
+            raise PermissionError("not owner")
+        return CurrentServingProviderAuthority(
+            provider="api_key_http:def-voice",
+            access_method="api_key_http",
+            connection_id=_CONNECTION_ID,
+            grant_id=_GRANT_ID,
+        )
+
+    monkeypatch.setattr(serving, "resolve_current_serving_provider_authority", current)
     return universe
 
 
@@ -235,27 +267,81 @@ def test_session_policy_requires_only_the_converse_tool():
     }
 
 
-def test_capability_is_locked_without_user_bound_connection(monkeypatch, tmp_path):
+def test_capability_is_unpowered_without_current_provider(monkeypatch, tmp_path):
     _enable(monkeypatch)
-    assert rv.voice_capability(tmp_path / "u-missing", "owner") == {
+    universe = tmp_path / "u-owner"
+    universe.mkdir()
+    import tinyassets.daemon_server as daemon_server
+    import tinyassets.provider_serving_binding as serving
+
+    monkeypatch.setattr(daemon_server, "get_founder_home", lambda *_args: "u-owner")
+    monkeypatch.setattr(
+        daemon_server,
+        "list_universe_acl",
+        lambda *_args, **_kwargs: [{"actor_id": "owner", "permission": "admin"}],
+    )
+    monkeypatch.setattr(
+        serving,
+        "resolve_current_serving_provider_authority",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            serving.NoServingProvider("not configured")
+        ),
+    )
+    assert rv.voice_capability(universe, "owner") == {
         "available": False,
-        "state": "locked",
-        "reason": "voice_compatible_resource_required",
+        "state": "unpowered",
+        "reason": "provider_not_configured",
+        "remediation": "existing_connection_surface",
     }
+
+
+def test_unpowered_session_returns_stable_closed_error(monkeypatch, tmp_path):
+    _enable(monkeypatch)
+    universe = tmp_path / "u-owner"
+    universe.mkdir()
+    import tinyassets.daemon_server as daemon_server
+    import tinyassets.provider_serving_binding as serving
+
+    monkeypatch.setattr(daemon_server, "get_founder_home", lambda *_args: "u-owner")
+    monkeypatch.setattr(
+        daemon_server,
+        "list_universe_acl",
+        lambda *_args, **_kwargs: [{"actor_id": "owner", "permission": "admin"}],
+    )
+    monkeypatch.setattr(
+        serving,
+        "resolve_current_serving_provider_authority",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            serving.NoServingProvider("not configured")
+        ),
+    )
+
+    with pytest.raises(rv.RealtimeVoiceError) as caught:
+        asyncio.run(rv.create_voice_session(universe, "owner", _OFFER_SDP))
+
+    assert caught.value.code == "provider_not_configured"
+    assert caught.value.status == 409
 
 
 def test_capability_is_ready_only_for_exact_owner_and_universe(monkeypatch, tmp_path):
     _enable(monkeypatch)
-    universe = _seed_binding(tmp_path)
+    universe = _seed_binding(tmp_path, monkeypatch)
     capability = rv.voice_capability(universe, "user_owner")
     disclosure_id = sha256(
         "\0".join(
-            (_CONNECTION_ID, "Owner Voice Bridge", "https://bridge.example/privacy")
+            (
+                _CONNECTION_ID,
+                rv.VOICE_PROTOCOL,
+                _SESSION_URL,
+                "Owner Voice Bridge",
+                "https://bridge.example/privacy",
+            )
         ).encode("utf-8")
     ).hexdigest()
     assert capability == {
         "available": True,
         "state": "ready",
+        "remediation": "none",
         "resource": "user_bound_voice_connection",
         "disclosure_id": disclosure_id,
         "service_name": "Owner Voice Bridge",
@@ -266,54 +352,128 @@ def test_capability_is_ready_only_for_exact_owner_and_universe(monkeypatch, tmp_
     assert rv.voice_capability(universe, "someone-else")["available"] is False
 
 
+def test_subscription_provider_reports_unsupported_without_remediation(
+    monkeypatch, tmp_path
+):
+    _enable(monkeypatch)
+    universe = _seed_binding(tmp_path, monkeypatch)
+    import tinyassets.provider_serving_binding as serving
+
+    monkeypatch.setattr(
+        serving,
+        "resolve_current_serving_provider_authority",
+        lambda *_args, **_kwargs: serving.CurrentServingProviderAuthority(
+            provider="codex", access_method="subscription_cli"
+        ),
+    )
+
+    assert rv.voice_capability(universe, "user_owner") == {
+        "available": False,
+        "state": "incompatible",
+        "reason": "provider_voice_unsupported",
+        "remediation": "none",
+    }
+
+
+def test_capability_revoke_is_seen_on_next_status_check(monkeypatch, tmp_path):
+    _enable(monkeypatch)
+    universe = _seed_binding(tmp_path, monkeypatch)
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    ledger = ConnectionLedger(tmp_path / "outbound.db")
+    ledger.configure_capability(
+        connection_id=_CONNECTION_ID,
+        capability_kind="realtime_voice",
+        enabled=False,
+    )
+
+    assert rv.voice_capability(universe, "user_owner") == {
+        "available": False,
+        "state": "incompatible",
+        "reason": "capability_not_declared",
+        "remediation": "existing_connection_surface",
+    }
+
+
+def test_grant_revoke_fails_closed_before_session(monkeypatch, tmp_path):
+    _enable(monkeypatch)
+    universe = _seed_binding(tmp_path, monkeypatch)
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    ConnectionLedger(tmp_path / "outbound.db").revoke_grant(_GRANT_ID)
+    proxy = _FakeProxy({})
+    with pytest.raises(rv.RealtimeVoiceError) as caught:
+        asyncio.run(
+            rv.create_voice_session(
+                universe,
+                "user_owner",
+                _OFFER_SDP,
+                proxy_factory=_proxy_factory(proxy),
+            )
+        )
+    assert caught.value.code == "voice_authority_invalid"
+    assert proxy.calls == []
+
+
 def test_capability_disclosure_changes_when_bound_service_changes(monkeypatch, tmp_path):
     _enable(monkeypatch)
-    universe = _seed_binding(tmp_path)
+    universe = _seed_binding(tmp_path, monkeypatch)
     first = rv.voice_capability(universe, "user_owner")["disclosure_id"]
-    binding_path = universe / rv.VOICE_BINDING_FILENAME
-    payload = json.loads(binding_path.read_text(encoding="utf-8"))
-    payload["service_name"] = "Replacement Voice Bridge"
-    binding_path.write_text(json.dumps(payload), encoding="utf-8")
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    ledger = ConnectionLedger(tmp_path / "outbound.db")
+    ledger.configure_capability(
+        connection_id=_CONNECTION_ID,
+        capability_kind="realtime_voice",
+        enabled=True,
+        descriptor={
+            "protocol": rv.VOICE_PROTOCOL,
+            "session_url": "https://bridge.example/v1/session-2",
+            "service_name": "Replacement Voice Bridge",
+            "privacy_url": "https://bridge.example/privacy",
+        },
+    )
     second = rv.voice_capability(universe, "user_owner")["disclosure_id"]
     assert second != first
 
 
 def test_capability_refuses_session_url_outside_connection_policy(monkeypatch, tmp_path):
     _enable(monkeypatch)
-    universe = _seed_binding(tmp_path)
-    path = universe / rv.VOICE_BINDING_FILENAME
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["session_url"] = "https://bridge.example/not-allowed"
-    path.write_text(json.dumps(payload), encoding="utf-8")
+    universe = _seed_binding(tmp_path, monkeypatch)
+    with sqlite3.connect(tmp_path / "outbound.db") as raw:
+        raw.execute(
+            "UPDATE connection_capabilities SET descriptor_json = ?",
+            (json.dumps({
+                "protocol": rv.VOICE_PROTOCOL,
+                "session_url": "https://bridge.example/not-allowed",
+                "service_name": "Owner Voice Bridge",
+            }),),
+        )
     assert rv.voice_capability(universe, "user_owner") == {
         "available": False,
-        "state": "locked",
-        "reason": "voice_compatible_resource_required",
+        "state": "incompatible",
+        "reason": "voice_capability_invalid",
+        "remediation": "existing_connection_surface",
     }
 
 
-def test_invalid_or_symlinked_binding_fails_closed(monkeypatch, tmp_path):
+def test_invalid_stored_capability_fails_closed(monkeypatch, tmp_path):
     _enable(monkeypatch)
-    universe = tmp_path / "u-owner-home"
-    universe.mkdir()
-    binding = universe / rv.VOICE_BINDING_FILENAME
-    binding.write_text("{broken", encoding="utf-8")
-    assert rv.voice_capability(universe, "user_owner")["reason"] == "voice_binding_invalid"
-    binding.unlink()
-    target = tmp_path / "binding.json"
-    target.write_text("{}", encoding="utf-8")
-    try:
-        binding.symlink_to(target)
-    except OSError as exc:
-        pytest.skip(f"symlink creation unavailable: {exc}")
-    assert rv.voice_capability(universe, "user_owner")["available"] is False
+    universe = _seed_binding(tmp_path, monkeypatch)
+    with sqlite3.connect(tmp_path / "outbound.db") as raw:
+        raw.execute(
+            "UPDATE connection_capabilities SET descriptor_json = '{broken'"
+        )
+    capability = rv.voice_capability(universe, "user_owner")
+    assert capability["available"] is False
+    assert capability["reason"] == "voice_capability_invalid"
 
 
 def test_session_uses_generic_scoped_proxy_and_returns_only_answer_fields(
     monkeypatch, tmp_path
 ):
     _enable(monkeypatch)
-    universe = _seed_binding(tmp_path)
+    universe = _seed_binding(tmp_path, monkeypatch)
     proxy = _FakeProxy(
         {
             "status": 200,
@@ -359,22 +519,16 @@ def test_session_uses_generic_scoped_proxy_and_returns_only_answer_fields(
 
 def test_session_offloads_binding_and_ledger_preflight(monkeypatch, tmp_path):
     _enable(monkeypatch)
-    universe = _seed_binding(tmp_path)
+    universe = _seed_binding(tmp_path, monkeypatch)
     caller_thread = threading.get_ident()
     worker_threads: list[int] = []
-    original_load = rv.load_voice_binding
-    original_authorized = rv._binding_authorized
+    original_resolve = rv._resolve_voice_binding
 
-    def load(path):
+    def resolve(path, owner_id):
         worker_threads.append(threading.get_ident())
-        return original_load(path)
+        return original_resolve(path, owner_id)
 
-    def authorized(path, owner_id, binding):
-        worker_threads.append(threading.get_ident())
-        return original_authorized(path, owner_id, binding)
-
-    monkeypatch.setattr(rv, "load_voice_binding", load)
-    monkeypatch.setattr(rv, "_binding_authorized", authorized)
+    monkeypatch.setattr(rv, "_resolve_voice_binding", resolve)
     proxy = _FakeProxy(
         {
             "status": 200,
@@ -393,13 +547,13 @@ def test_session_offloads_binding_and_ledger_preflight(monkeypatch, tmp_path):
             proxy_factory=_proxy_factory(proxy),
         )
     )
-    assert len(worker_threads) == 2
+    assert len(worker_threads) == 1
     assert all(thread_id != caller_thread for thread_id in worker_threads)
 
 
 def test_session_refuses_invalid_offer_before_opening_proxy(monkeypatch, tmp_path):
     _enable(monkeypatch)
-    universe = _seed_binding(tmp_path)
+    universe = _seed_binding(tmp_path, monkeypatch)
     proxy = _FakeProxy({})
     with pytest.raises(rv.RealtimeVoiceError) as caught:
         asyncio.run(
@@ -430,7 +584,7 @@ def test_upstream_statuses_become_stable_secret_free_errors(
     monkeypatch, tmp_path, upstream: int, code: str, status: int
 ):
     _enable(monkeypatch)
-    universe = _seed_binding(tmp_path)
+    universe = _seed_binding(tmp_path, monkeypatch)
     proxy = _FakeProxy({"status": upstream, "body": {"error": "hidden-secret"}})
     with pytest.raises(rv.RealtimeVoiceError) as caught:
         asyncio.run(
@@ -566,20 +720,31 @@ def test_route_missing_home_is_actionable(monkeypatch):
     )
 
 
-def test_status_route_is_authenticated_secret_free_and_locked(monkeypatch, tmp_path):
+def test_status_route_is_authenticated_secret_free_and_unpowered(monkeypatch, tmp_path):
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     _enable(monkeypatch)
     import tinyassets.onboarding as onboarding
 
     monkeypatch.setattr(onboarding, "_read_home", lambda _identity: "u-owner-home")
+    monkeypatch.setattr(
+        rv,
+        "voice_capability",
+        lambda *_args: {
+            "available": False,
+            "state": "unpowered",
+            "reason": "provider_not_configured",
+            "remediation": "existing_connection_surface",
+        },
+    )
     assert _drive_status()[:2] == (401, {"error": "authentication_required"})
     status, body, headers = _drive_status(identity=_owner())
     assert status == 200
     assert body == {
         "available": False,
-        "state": "locked",
-        "reason": "voice_compatible_resource_required",
+        "state": "unpowered",
+        "reason": "provider_not_configured",
+        "remediation": "existing_connection_surface",
     }
     assert headers["cache-control"] == "no-store"
 
@@ -590,7 +755,7 @@ def test_status_route_reports_ready_without_returning_connection_secret(
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     _enable(monkeypatch)
-    _seed_binding(tmp_path)
+    _seed_binding(tmp_path, monkeypatch)
     import tinyassets.onboarding as onboarding
 
     monkeypatch.setattr(onboarding, "_read_home", lambda _identity: "u-owner-home")
@@ -598,12 +763,19 @@ def test_status_route_reports_ready_without_returning_connection_secret(
     assert status == 200
     disclosure_id = sha256(
         "\0".join(
-            (_CONNECTION_ID, "Owner Voice Bridge", "https://bridge.example/privacy")
+            (
+                _CONNECTION_ID,
+                rv.VOICE_PROTOCOL,
+                _SESSION_URL,
+                "Owner Voice Bridge",
+                "https://bridge.example/privacy",
+            )
         ).encode("utf-8")
     ).hexdigest()
     assert body == {
         "available": True,
         "state": "ready",
+        "remediation": "none",
         "resource": "user_bound_voice_connection",
         "disclosure_id": disclosure_id,
         "service_name": "Owner Voice Bridge",

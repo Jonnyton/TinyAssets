@@ -1,8 +1,8 @@
 """Provider-neutral Realtime voice session broker for the shared app.
 
-Realtime is an auxiliary speech transport, never a TinyAssets writer. A
-universe opts in by binding an existing generic HTTP connection through a small
-``voice-connection.json`` manifest. The remote bridge implements the public
+Realtime is an auxiliary speech transport, never a TinyAssets writer. It uses a
+bounded capability declared on the exact user-owned HTTP connection already
+serving the founder's universe. The remote bridge implements the public
 TinyAssets voice protocol and may be backed by any service or local resource;
 this module contains no service-specific endpoint, model, credential name, or
 wire-event vocabulary. SDP signaling stays on the authenticated same-origin
@@ -13,27 +13,20 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
-VOICE_BINDING_FILENAME = "voice-connection.json"
 VOICE_PROTOCOL = "tinyassets.voice.v1"
 VOICE_DISCLOSURE_VERSION = 3
 VOICE_SESSION_MAX_SECONDS = 30 * 60
 VOICE_SESSION_WINDOW_SECONDS = 60.0
 VOICE_SESSIONS_PER_WINDOW = 10
-_MAX_BINDING_BYTES = 16 * 1024
-_MAX_SERVICE_NAME_CHARS = 80
-_MAX_URL_CHARS = 2048
 _MAX_SDP_CHARS = 64 * 1024
 _TRUTHY = {"1", "true", "yes", "on"}
-_REF_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{1,190}$")
 _session_buckets: dict[str, tuple[float, int]] = {}
 
 ProxyFactory = Callable[[Path, str, "VoiceBinding"], Any]
@@ -54,6 +47,7 @@ class VoiceBinding:
 
     connection_id: str
     grant_id: str
+    protocol: str
     session_url: str
     service_name: str
     privacy_url: str
@@ -84,108 +78,72 @@ def public_voice_config() -> dict[str, Any]:
     }
 
 
-def _https_url(value: Any) -> str:
-    text = value.strip() if isinstance(value, str) else ""
-    if not text or len(text) > _MAX_URL_CHARS:
-        raise RealtimeVoiceError("voice_binding_invalid", 409)
-    parts = urlsplit(text)
-    if (
-        parts.scheme != "https"
-        or not parts.hostname
-        or parts.username is not None
-        or parts.password is not None
-        or parts.fragment
-    ):
-        raise RealtimeVoiceError("voice_binding_invalid", 409)
-    try:
-        _ = parts.port
-    except ValueError as exc:
-        raise RealtimeVoiceError("voice_binding_invalid", 409) from exc
-    return text
-
-
-def load_voice_binding(universe_dir: str | Path) -> VoiceBinding:
-    """Load a bounded, non-symlinked universe voice binding or fail loudly."""
-
-    path = Path(universe_dir) / VOICE_BINDING_FILENAME
-    try:
-        if (
-            path.is_symlink()
-            or not path.is_file()
-            or path.stat().st_size > _MAX_BINDING_BYTES
-        ):
-            raise RealtimeVoiceError("voice_compatible_resource_required", 409)
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except RealtimeVoiceError:
-        raise
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise RealtimeVoiceError("voice_binding_invalid", 409) from exc
-    if not isinstance(payload, dict) or payload.get("schema") != VOICE_PROTOCOL:
-        raise RealtimeVoiceError("voice_binding_invalid", 409)
-    required = {"schema", "connection_id", "grant_id", "session_url", "service_name"}
-    allowed = required | {"privacy_url"}
-    if not required.issubset(payload) or not set(payload).issubset(allowed):
-        raise RealtimeVoiceError("voice_binding_invalid", 409)
-
-    connection_id = payload.get("connection_id")
-    grant_id = payload.get("grant_id")
-    if (
-        not isinstance(connection_id, str)
-        or not _REF_RE.fullmatch(connection_id)
-        or not isinstance(grant_id, str)
-        or not _REF_RE.fullmatch(grant_id)
-    ):
-        raise RealtimeVoiceError("voice_binding_invalid", 409)
-    service_name = payload.get("service_name")
-    if (
-        not isinstance(service_name, str)
-        or not 1 <= len(service_name.strip()) <= _MAX_SERVICE_NAME_CHARS
-        or any(ord(char) < 32 for char in service_name)
-    ):
-        raise RealtimeVoiceError("voice_binding_invalid", 409)
-    privacy = payload.get("privacy_url")
-    privacy_url = "" if privacy is None or privacy == "" else _https_url(privacy)
-    return VoiceBinding(
-        connection_id=connection_id,
-        grant_id=grant_id,
-        session_url=_https_url(payload.get("session_url")),
-        service_name=service_name.strip(),
-        privacy_url=privacy_url,
+def _resolve_voice_binding(universe_dir: Path, owner_user_id: str) -> VoiceBinding:
+    from tinyassets.daemon_server import get_founder_home, list_universe_acl
+    from tinyassets.provider_serving_binding import (
+        NoServingProvider,
+        resolve_current_serving_provider_authority,
     )
-
-
-def _binding_authorized(
-    universe_dir: Path, owner_user_id: str, binding: VoiceBinding
-) -> bool:
     from tinyassets.storage.outbound_connections import (
         ConnectionLedger,
         _enforce_endpoint_allowlist,
         _parse_canonical_https_url,
     )
 
-    db_path = universe_dir.parent / "outbound.db"
+    base = universe_dir.parent
+    universe_id = universe_dir.name
+    if get_founder_home(base, owner_user_id) != universe_id:
+        raise RealtimeVoiceError("voice_authority_invalid", 409)
+    if not any(
+        row.get("actor_id") == owner_user_id and row.get("permission") == "admin"
+        for row in list_universe_acl(base, universe_id=universe_id)
+    ):
+        raise RealtimeVoiceError("voice_authority_invalid", 409)
+    try:
+        authority = resolve_current_serving_provider_authority(
+            base,
+            universe_dir=universe_dir,
+            universe_id=universe_id,
+            owner_user_id=owner_user_id,
+        )
+    except (NoServingProvider, RealtimeVoiceError):
+        raise
+    except Exception as exc:
+        raise RealtimeVoiceError("voice_authority_invalid", 409) from exc
+    if authority.access_method != "api_key_http":
+        raise RealtimeVoiceError("provider_voice_unsupported", 409)
+
+    db_path = base / "outbound.db"
     if db_path.is_symlink() or not db_path.is_file():
-        return False
+        raise RealtimeVoiceError("voice_authority_invalid", 409)
     ledger = ConnectionLedger(db_path)
-    grant = ledger.get_grant(binding.grant_id)
-    view = ledger.get_connection_view(binding.connection_id)
+    grant = ledger.get_grant(authority.grant_id)
+    view = ledger.get_connection_view(authority.connection_id)
     authorized = bool(
         grant is not None
         and view is not None
         and grant.revoked_at is None
         and view.revoked_at is None
-        and grant.connection_id == binding.connection_id
+        and grant.connection_id == authority.connection_id
         and grant.owner_user_id == owner_user_id
         and view.owner_user_id == owner_user_id
-        and grant.universe_id == universe_dir.name
+        and grant.universe_id == universe_id
         and view.connection_type == "http"
         and "POST" in view.scopes
     )
     if not authorized:
-        return False
+        raise RealtimeVoiceError("voice_authority_invalid", 409)
+    try:
+        capability = ledger.get_connection_capability(
+            authority.connection_id, "realtime_voice"
+        )
+    except Exception as exc:
+        raise RealtimeVoiceError("voice_capability_invalid", 409) from exc
+    if capability is None:
+        raise RealtimeVoiceError("capability_not_declared", 409)
     try:
         canonical = _parse_canonical_https_url(
-            binding.session_url, allowed_ports=frozenset({443})
+            capability.session_url, allowed_ports=frozenset({443})
         )
         _enforce_endpoint_allowlist(
             canonical,
@@ -193,9 +151,16 @@ def _binding_authorized(
             view.allowed_endpoints,
             view.access_mode,
         )
-    except Exception:
-        return False
-    return True
+    except Exception as exc:
+        raise RealtimeVoiceError("voice_capability_invalid", 409) from exc
+    return VoiceBinding(
+        connection_id=authority.connection_id,
+        grant_id=authority.grant_id,
+        protocol=capability.protocol,
+        session_url=capability.session_url,
+        service_name=capability.service_name,
+        privacy_url=capability.privacy_url,
+    )
 
 
 def voice_capability(
@@ -204,39 +169,65 @@ def voice_capability(
     """Return a secret-free view of one universe's bound voice capability."""
 
     if not realtime_voice_enabled():
-        return {"available": False, "state": "disabled", "reason": "voice_disabled"}
+        return {
+            "available": False,
+            "state": "disabled",
+            "reason": "voice_disabled",
+            "remediation": "none",
+        }
     if universe_dir is None or not owner_user_id:
         return {
             "available": False,
-            "state": "locked",
+            "state": "unpowered",
             "reason": "no_home_universe",
+            "remediation": "none",
         }
+    universe = Path(universe_dir).resolve()
     try:
-        universe = Path(universe_dir).resolve()
-        binding = load_voice_binding(universe)
-        authorized = _binding_authorized(universe, owner_user_id, binding)
+        from tinyassets.provider_serving_binding import NoServingProvider
+
+        binding = _resolve_voice_binding(universe, owner_user_id)
     except RealtimeVoiceError as exc:
-        return {"available": False, "state": "locked", "reason": exc.code}
+        remediation = (
+            "existing_connection_surface"
+            if exc.code in {"capability_not_declared", "voice_capability_invalid"}
+            else "none"
+        )
+        return {
+            "available": False,
+            "state": "incompatible",
+            "reason": exc.code,
+            "remediation": remediation,
+        }
+    except NoServingProvider:
+        return {
+            "available": False,
+            "state": "unpowered",
+            "reason": "provider_not_configured",
+            "remediation": "existing_connection_surface",
+        }
     except Exception:
         return {
             "available": False,
-            "state": "locked",
-            "reason": "voice_binding_invalid",
-        }
-    if not authorized:
-        return {
-            "available": False,
-            "state": "locked",
-            "reason": "voice_compatible_resource_required",
+            "state": "incompatible",
+            "reason": "voice_authority_invalid",
+            "remediation": "none",
         }
     disclosure_id = sha256(
         "\0".join(
-            (binding.connection_id, binding.service_name, binding.privacy_url)
+            (
+                binding.connection_id,
+                binding.protocol,
+                binding.session_url,
+                binding.service_name,
+                binding.privacy_url,
+            )
         ).encode("utf-8")
     ).hexdigest()
     return {
         "available": True,
         "state": "ready",
+        "remediation": "none",
         "resource": "user_bound_voice_connection",
         "disclosure_id": disclosure_id,
         "service_name": binding.service_name,
@@ -351,10 +342,12 @@ async def create_voice_session(
     universe = Path(universe_dir).resolve()
 
     def resolve_binding() -> VoiceBinding:
-        binding = load_voice_binding(universe)
-        if not _binding_authorized(universe, owner_user_id, binding):
-            raise RealtimeVoiceError("voice_compatible_resource_required", 409)
-        return binding
+        from tinyassets.provider_serving_binding import NoServingProvider
+
+        try:
+            return _resolve_voice_binding(universe, owner_user_id)
+        except NoServingProvider as exc:
+            raise RealtimeVoiceError("provider_not_configured", 409) from exc
 
     binding = await run_in_threadpool(resolve_binding)
 
@@ -425,7 +418,6 @@ async def create_voice_session(
 
 
 __all__ = [
-    "VOICE_BINDING_FILENAME",
     "VOICE_DISCLOSURE_VERSION",
     "VOICE_SESSIONS_PER_WINDOW",
     "VOICE_SESSION_WINDOW_SECONDS",
@@ -434,7 +426,6 @@ __all__ = [
     "VoiceBinding",
     "allow_voice_session",
     "create_voice_session",
-    "load_voice_binding",
     "public_voice_config",
     "realtime_voice_enabled",
     "session_request",

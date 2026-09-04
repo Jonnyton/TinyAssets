@@ -9,6 +9,7 @@ The subscription path is untouched (see the existing served-router suite).
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -176,3 +177,49 @@ def test_open_provider_authorizes_and_reserves_a_served_turn(tmp_path, monkeypat
         )
         assert reservation is not None
         assert reservation.reserved_total_tokens >= 150
+
+
+def test_current_serving_authority_returns_exact_open_connection_without_secret(
+    tmp_path, monkeypatch
+) -> None:
+    from tinyassets.provider_serving_binding import (
+        resolve_current_serving_provider_authority,
+    )
+
+    universe_dir, _serving, definition = _bound_and_serving(tmp_path, monkeypatch)
+
+    authority = resolve_current_serving_provider_authority(
+        tmp_path,
+        universe_dir=universe_dir,
+        universe_id="u-owner",
+        owner_user_id="owner-1",
+    )
+
+    assert authority.provider == f"api_key_http:{definition.id}"
+    assert authority.access_method == "api_key_http"
+    assert authority.connection_id == _CONN_ID
+    assert authority.grant_id == _GRANT_ID
+    assert "credential" not in repr(authority).lower()
+
+
+def test_current_serving_authority_refuses_credential_reference_rotation(
+    tmp_path, monkeypatch
+) -> None:
+    from tinyassets.provider_serving_binding import (
+        resolve_current_serving_provider_authority,
+    )
+
+    universe_dir, _serving, _definition = _bound_and_serving(tmp_path, monkeypatch)
+    with sqlite3.connect(tmp_path / "outbound.db") as raw:
+        raw.execute(
+            "UPDATE outbound_connections SET credential_ref = ? WHERE connection_id = ?",
+            ("vault://http/rotated", _CONN_ID),
+        )
+
+    with pytest.raises(PermissionError, match="changed since binding"):
+        resolve_current_serving_provider_authority(
+            tmp_path,
+            universe_dir=universe_dir,
+            universe_id="u-owner",
+            owner_user_id="owner-1",
+        )

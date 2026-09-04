@@ -173,8 +173,9 @@ def test_voice_csp_and_disclosure_are_dark_until_all_flags(monkeypatch):
     assert "TinyAssets never substitutes a shared" in html
     assert "that you bound to this universe" in html
     assert "not store the raw audio" in html
-    assert "Voice needs a compatible connection" in html
-    assert "subscription, credential, or local" in html
+    assert "Voice needs a compatible connection" not in html
+    assert 'id="voice-unlock"' not in html
+    assert "current provider does not have compatible realtime Voice" in html
 
 
 def test_voice_client_keeps_converse_as_the_only_writer():
@@ -636,11 +637,12 @@ def _run_voice_adapter(tmp_path) -> dict:
 const CFG={voice:{enabled:true,disclosure_version:1,max_session_seconds:1800}};
 const store={}; const localStorage={getItem:k=>store[k]||null,setItem:(k,v)=>store[k]=String(v)};
 const timers=[]; function setTimeout(fn,ms){const timer={fn,ms};timers.push(timer);return timer;}
-function clearTimeout(){}
+const intervals=[];
+function setInterval(fn,ms){const timer={fn,ms};intervals.push(timer);return timer;}
+function clearTimeout(){} function clearInterval(){}
 class El{constructor(){this.hidden=true;this.disabled=false;this.textContent="";this.attrs={};}
 setAttribute(k,v){this.attrs[k]=v;} focus(){this.focused=true;} pause(){this.paused=true;}}
 const els={"btn-voice":new El(),"voice-disclosure":new El(),"btn-voice-accept":new El(),
-  "voice-unlock":new El(),"btn-voice-unlock-close":new El(),
   "voice-service-name":new El(),"voice-privacy-link":new El()};
 const $=id=>els[id]; let status=""; function setStatusLine(v){status=v||"";}
 const document={createElement:()=>new El()};
@@ -649,7 +651,8 @@ const navigator={mediaDevices:{getUserMedia:async()=>{mediaRequests++;return {ge
 let RTCPeerConnection;
 let traces=[]; function trace(...args){traces.push(args);}
 let turns=[];
-let capabilityDoc={available:false,state:"locked",reason:"voice_compatible_resource_required"};
+let capabilityDoc={available:false,state:"unpowered",reason:"provider_not_configured",
+  remediation:"existing_connection_surface"};
 let fetched=[];
 async function fetch(url){
   fetched.push(url);return {ok:true,status:200,json:async()=>capabilityDoc};
@@ -658,24 +661,53 @@ let voiceTurnImpl=async()=>"Exact universe reply.";
 async function sendVoiceTurn(message){turns.push(message);return await voiceTurnImpl(message);}
 async function ensureFreshToken(){} async function refreshAccessToken(){return false;}
 function authHeaders(){return {Authorization:"Bearer app"};} async function sleep(){}
+let connectCalls=[]; function showConnect(asGate){connectCalls.push(asGate);}
 """
     scenario = r"""
 (async()=>{
   const out={}; Voice.init(); await Voice.refreshCapability();
   await Voice.requestStart();
-  out.locked={state:Voice.state,label:els["btn-voice"].textContent,
+  out.unpowered={state:Voice.state,label:els["btn-voice"].textContent,
     disclosureShown:!els["voice-disclosure"].hidden,
-    unlockShown:!els["voice-unlock"].hidden,mediaRequests,fetched:fetched.slice(),status};
-  Voice.closeUnlock();
+    mediaRequests,fetched:fetched.slice(),status,connectCalls:connectCalls.slice()};
+  capabilityDoc={available:false,state:"incompatible",reason:"capability_not_declared",
+    remediation:"existing_connection_surface"};connectCalls=[];
+  await Voice.refreshCapability();await Voice.requestStart();
+  out.remediableIncompatible={state:Voice.state,disabled:els["btn-voice"].disabled,
+    mediaRequests,connectCalls:connectCalls.slice(),status};
+  capabilityDoc={available:false,state:"incompatible",reason:"provider_voice_unsupported",
+    remediation:"none"};connectCalls=[];
+  await Voice.refreshCapability();await Voice.requestStart();
+  out.unremediableIncompatible={state:Voice.state,disabled:els["btn-voice"].disabled,
+    mediaRequests,connectCalls:connectCalls.slice(),status};
+  CFG.voice.enabled=false;Voice.init();await Voice.requestStart();
+  out.disabled={state:Voice.state,disabled:els["btn-voice"].disabled,mediaRequests};
+  CFG.voice.enabled=true;
+  const realEnsureFreshToken=ensureFreshToken,fetchesBeforeDeadline=fetched.length;
+  ensureFreshToken=()=>new Promise(()=>{});
+  const deadlineResult=Voice._readCapability(5000).then(()=>"resolved",error=>error.message);
+  timers[timers.length-1].fn();
+  out.authorityDeadline={result:await deadlineResult,
+    fetches:fetched.length-fetchesBeforeDeadline};
+  ensureFreshToken=realEnsureFreshToken;
   capabilityDoc={available:true,state:"ready",resource:"user_bound_voice_connection",
+    remediation:"none",
     disclosure_id:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     service_name:"My bridge",privacy_url:"https://bridge.example/privacy"};
   await Voice.refreshCapability(); out.initial=Voice.state;
   await Voice.requestStart(); out.disclosureShown=!els["voice-disclosure"].hidden;
-  Voice.start=()=>{out.disclosureStarted=true;}; Voice.acceptDisclosure();
+  Voice.start=()=>{out.disclosureStarted=true;};
+  capabilityDoc=Object.assign({},capabilityDoc,
+    {disclosure_id:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+     service_name:"Changed bridge"});
+  await Voice.acceptDisclosure();
+  out.changedDuringDisclosure={started:!!out.disclosureStarted,state:Voice.state,
+    disclosureHidden:els["voice-disclosure"].hidden,accepted:Voice._accepted(),mediaRequests,status};
+  await Voice.requestStart();out.freshDisclosureShown=!els["voice-disclosure"].hidden;
+  await Voice.acceptDisclosure();
   out.acceptedFirst=Voice._accepted();
   Voice.capability=Object.assign({},capabilityDoc,
-    {disclosure_id:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"});
+    {disclosure_id:"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"});
   out.acceptedAfterRebind=Voice._accepted(); Voice.capability=capabilityDoc;
   const sent=[];
   Voice.dc={readyState:"open",send:v=>sent.push(JSON.parse(v)),
@@ -698,6 +730,18 @@ function authHeaders(){return {Authorization:"Bearer app"};} async function slee
   Voice.stream={getTracks:()=>[{stop:()=>stopped++}]}; Voice.pc={close:()=>pcClosed++};
   Voice.audio={pause:()=>audioPaused++,srcObject:{}}; Voice.stop(false);
   out.teardown={stopped,pcClosed,audioPaused,state:Voice.state};
+  let revokedStopped=0,revokedClosed=0;
+  Voice.capability=capabilityDoc;Voice.epoch=50;Voice.state="listening";
+  Voice.stream={getTracks:()=>[{stop:()=>revokedStopped++}]};
+  Voice.pc={close:()=>revokedClosed++};Voice.audio={pause:()=>{},srcObject:{}};
+  capabilityDoc={available:false,state:"incompatible",reason:"capability_not_declared",
+    remediation:"existing_connection_surface"};
+  await Voice._verifyAuthority(50);
+  out.authorityRevocation={stopped:revokedStopped,closed:revokedClosed,state:Voice.state,status};
+  capabilityDoc={available:true,state:"ready",resource:"user_bound_voice_connection",
+    remediation:"none",disclosure_id:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    service_name:"My bridge",privacy_url:"https://bridge.example/privacy"};
+  Voice.capability=capabilityDoc;
   Voice._armSessionLimit(9999);
   out.sessionLimitDelays=timers.slice(-2).map(timer=>timer.ms);
   let resolveStale;
@@ -721,12 +765,23 @@ function authHeaders(){return {Authorization:"Bearer app"};} async function slee
   out.staleFailure={state:Voice.state,sameChannel:Voice.dc===liveChannel};
   voiceTurnImpl=async()=>"Exact universe reply.";
   const realConnect=Voice._connect,realTeardown=Voice._teardownTransport;
-  let attempts=0; Voice.epoch=11; Voice.reconnecting=false; Voice.reconnectAttempts=0;
+  let attempts=0; Voice.epoch=10; Voice.reconnecting=false; Voice.reconnectAttempts=0;
   Voice._teardownTransport=()=>{};
   Voice._connect=async()=>{
     attempts++;if(attempts<3)throw new Error("offline");
     Voice.reconnecting=false;Voice.state="listening";
   };
+  capabilityDoc={available:false,state:"incompatible",reason:"capability_not_declared",
+    remediation:"existing_connection_surface"};
+  const mediaBeforeRevokedReconnect=mediaRequests;
+  await Voice.reconnect(10);
+  out.revokedReconnect={attempts,mediaRequests:mediaRequests-mediaBeforeRevokedReconnect,
+    state:Voice.state,status};
+  capabilityDoc={available:true,state:"ready",resource:"user_bound_voice_connection",
+    remediation:"none",disclosure_id:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    service_name:"My bridge",privacy_url:"https://bridge.example/privacy"};
+  Voice.capability=capabilityDoc;attempts=0;Voice.epoch=11;Voice.reconnecting=false;
+  Voice.reconnectAttempts=0;Voice.state="listening";
   await Voice.reconnect(11); out.reconnect={attempts,state:Voice.state};
   Voice._connect=realConnect;Voice._teardownTransport=realTeardown;
   Voice.canonicalResponsePending=false; Voice.audio={muted:true};
@@ -835,15 +890,42 @@ def test_voice_state_machine_permission_failure_is_recoverable(tmp_path):
 
 def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_path):
     out = _run_voice_adapter(tmp_path)
-    assert out["locked"]["state"] == "locked"
-    assert out["locked"]["label"] == "Voice · Connect"
-    assert out["locked"]["disclosureShown"] is False
-    assert out["locked"]["unlockShown"] is True
-    assert out["locked"]["mediaRequests"] == 0
-    assert set(out["locked"]["fetched"]) == {"/mcp/app/voice/status"}
-    assert "user-owned voice connection" in out["locked"]["status"]
+    assert out["unpowered"]["state"] == "unpowered"
+    assert out["unpowered"]["label"] == "Voice · Connect"
+    assert out["unpowered"]["disclosureShown"] is False
+    assert out["unpowered"]["mediaRequests"] == 0
+    assert set(out["unpowered"]["fetched"]) == {"/mcp/app/voice/status"}
+    assert "provider connection" in out["unpowered"]["status"]
+    assert out["unpowered"]["connectCalls"] == [True]
+    assert out["remediableIncompatible"]["state"] == "incompatible"
+    assert out["remediableIncompatible"]["disabled"] is False
+    assert out["remediableIncompatible"]["mediaRequests"] == 0
+    assert out["remediableIncompatible"]["connectCalls"] == [False]
+    assert out["unremediableIncompatible"]["state"] == "incompatible"
+    assert out["unremediableIncompatible"]["disabled"] is True
+    assert out["unremediableIncompatible"]["mediaRequests"] == 0
+    assert out["unremediableIncompatible"]["connectCalls"] == []
+    assert "does not expose" in out["unremediableIncompatible"]["status"]
+    assert out["disabled"] == {
+        "state": "unavailable",
+        "disabled": True,
+        "mediaRequests": 0,
+    }
+    assert out["authorityDeadline"] == {
+        "result": "voice_status_timeout",
+        "fetches": 0,
+    }
     assert out["initial"] == "idle"
     assert out["disclosureShown"] is True
+    assert out["changedDuringDisclosure"] == {
+        "started": False,
+        "state": "idle",
+        "disclosureHidden": True,
+        "accepted": False,
+        "mediaRequests": 0,
+        "status": "Voice connection changed. Review its disclosure before starting.",
+    }
+    assert out["freshDisclosureShown"] is True
     assert out["disclosureStarted"] is True
     assert out["acceptedFirst"] is True
     assert out["acceptedAfterRebind"] is False
@@ -872,6 +954,14 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
         "audioPaused": 1,
         "state": "idle",
     }
+    assert out["authorityRevocation"]["stopped"] == 1
+    assert out["authorityRevocation"]["closed"] == 1
+    assert out["authorityRevocation"]["state"] == "incompatible"
+    assert "not declared" in out["authorityRevocation"]["status"]
+    assert out["revokedReconnect"]["attempts"] == 0
+    assert out["revokedReconnect"]["mediaRequests"] == 0
+    assert out["revokedReconnect"]["state"] == "incompatible"
+    assert "not declared" in out["revokedReconnect"]["status"]
     assert out["sessionLimitDelays"] == [1_500_000, 1_800_000]
     assert out["staleSuccess"] == {
         "state": "listening",

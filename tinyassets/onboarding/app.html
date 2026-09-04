@@ -233,22 +233,6 @@
       </div>
     </div>
 
-    <div id="voice-unlock" class="voice-dialog" role="dialog" aria-modal="true"
-         aria-labelledby="voice-unlock-title" hidden>
-      <div class="voice-dialog-card">
-        <h2 id="voice-unlock-title">Voice needs a compatible connection</h2>
-        <p>Your current conversation engine can keep powering your universe even when it does
-        not include a compatible live-audio transport.</p>
-        <p>Voice unlocks when this universe has a user-owned voice connection implementing the
-        TinyAssets voice protocol. The bridge may use a subscription, credential, or local
-        resource you control. TinyAssets will not substitute a shared account or move your
-        conversation to another writer.</p>
-        <div class="voice-dialog-actions">
-          <button id="btn-voice-unlock-close" class="btn btn--primary" type="button">Keep typing</button>
-        </div>
-      </div>
-    </div>
-
     <!-- Connect subscription (secondary). -->
     <!-- Account: who you are here, and the in-app deletion path Google Play
          requires (mirrored on tinyassets.io/account for the web). -->
@@ -1152,7 +1136,8 @@
   const VOICE_LABELS={
     unavailable:"Voice is not enabled on this TinyAssets host.",
     checking:"Checking this universe's voice capability...",
-    locked:"Voice needs a compatible resource owned by this universe.",
+    unpowered:"Voice needs the provider connection your universe will use.",
+    incompatible:"Your current provider does not have compatible realtime Voice.",
     idle:"Voice ready.", requesting_permission:"Waiting for microphone permission...",
     connecting:"Connecting voice...", listening:"Listening...",
     thinking:"Your universe is thinking...", speaking:"Your universe is speaking...",
@@ -1160,7 +1145,8 @@
   };
   const VOICE_TRANSITIONS={
     unavailable:{enable:"idle"},
-    locked:{enable:"idle"},
+    unpowered:{enable:"idle"},
+    incompatible:{enable:"idle"},
     idle:{start:"requesting_permission"},
     requesting_permission:{permission_granted:"connecting",permission_denied:"error",failure:"error",stop:"idle"},
     connecting:{connected:"listening",disconnect:"reconnecting",failure:"error",stop:"idle"},
@@ -1184,8 +1170,11 @@
   }
   function voiceFriendlyError(code){
     const messages={
-      voice_compatible_resource_required:"Voice is locked. Bind a compatible user-owned voice connection to this universe to unlock it.",
-      voice_binding_invalid:"This universe's voice binding is invalid or unreadable.",
+      provider_not_configured:"Voice needs the same provider connection your universe uses for conversation.",
+      provider_voice_unsupported:"Your current provider can power typed conversation but does not expose compatible realtime Voice.",
+      capability_not_declared:"Your current provider connection has not declared a compatible realtime Voice capability.",
+      voice_capability_invalid:"Your current provider's Voice capability is invalid or no longer authorized.",
+      voice_authority_invalid:"Voice cannot confirm the current provider's authority. Typed chat still works.",
       voice_resource_rejected:"The bound voice service rejected this universe's connection.",
       voice_resource_rate_limited:"The bound voice service is rate-limited right now. Try again shortly.",
       voice_resource_failed:"The bound voice service could not start a session. Typed chat still works.",
@@ -1204,7 +1193,9 @@
   const Voice={
     state:"unavailable", pc:null, dc:null, stream:null, audio:null,
     capability:null,
-    stopTimer:null, warnTimer:null, reconnecting:false, reconnectAttempts:0,
+    stopTimer:null, warnTimer:null, authorityTimer:null,
+    disclosureOpen:false, acceptingDisclosure:false,
+    reconnecting:false, reconnectAttempts:0,
     epoch:0, handledCalls:new Set(), expectedReply:"", canonicalResponsePending:false,
     canonicalResponseInterrupted:false,
     init(){
@@ -1216,46 +1207,69 @@
       this._render();
     },
     _render(detail){
-      const btn=$("btn-voice"), active=!(["unavailable","checking","locked","idle","error"].includes(this.state));
-      const locked=this.state==="locked";
-      if(locked){btn.disabled=false;btn.title=VOICE_LABELS.locked;}
+      const btn=$("btn-voice"), active=!(["unavailable","checking","unpowered","incompatible","idle","error"].includes(this.state));
+      const canRemediate=(this.state==="unpowered"||this.state==="incompatible")&&
+        this.capability&&this.capability.remediation==="existing_connection_surface";
+      if(this.state==="unpowered"||this.state==="incompatible"){
+        btn.disabled=!canRemediate;btn.title=VOICE_LABELS[this.state]||"Voice unavailable";
+      }
       else if(this.state==="unavailable"||this.state==="checking"){btn.disabled=true;btn.title=VOICE_LABELS[this.state]||"Voice unavailable";}
       else{btn.disabled=false;btn.title=active?"Stop voice conversation":"Start a voice conversation";}
       btn.setAttribute("aria-pressed",active?"true":"false");
-      btn.setAttribute("aria-label",locked?"Voice requires a compatible resource":(active?"Stop voice conversation":"Start voice conversation"));
-      btn.textContent=locked?"Voice · Connect":(active?"Stop":"Voice");
+      btn.setAttribute("aria-label",canRemediate?"Open provider connection for Voice":(active?"Stop voice conversation":"Start voice conversation"));
+      btn.textContent=canRemediate?"Voice · Connect":(active?"Stop":"Voice");
       setStatusLine(detail||VOICE_LABELS[this.state]||"");
     },
     _event(event,detail){ this.state=voiceNextState(this.state,event); this._render(detail); },
     _accepted(){ try{const key=voiceDisclosureKey(this.capability);return !!key&&localStorage.getItem(key)==="accepted";}catch(_e){return false;} },
-    _showUnlock(){
-      this.returnFocus=document.activeElement;
-      $("voice-unlock").hidden=false; $("btn-voice-unlock-close").focus();
-      this._render(voiceFriendlyError(this.capability&&this.capability.reason));
-    },
-    closeUnlock(){
-      $("voice-unlock").hidden=true;
-      const target=this.returnFocus&&typeof this.returnFocus.focus==="function"
-        ?this.returnFocus:$("btn-voice");
-      target.focus(); this.returnFocus=null;
+    async _readCapability(timeoutMs=0){
+      let expired=false,timer=null;
+      const controller=timeoutMs&&typeof AbortController==="function"?new AbortController():null;
+      const operation=(async()=>{
+        await ensureFreshToken();
+        if(expired)throw new Error("voice_status_timeout");
+        const options={credentials:"same-origin",headers:authHeaders()};
+        if(controller)options.signal=controller.signal;
+        let response=await fetch("/mcp/app/voice/status",options);
+        if(response.status===401){
+          const refreshed=await refreshAccessToken();
+          if(expired)throw new Error("voice_status_timeout");
+          if(refreshed){
+            options.headers=authHeaders();response=await fetch("/mcp/app/voice/status",options);
+          }
+        }
+        let doc={};try{doc=await response.json();}catch(_e){}
+        if(!response.ok)throw new Error(doc.error||"voice_status_failed");
+        return doc;
+      })();
+      if(!timeoutMs)return operation;
+      const deadline=new Promise((_resolve,reject)=>{
+        timer=setTimeout(()=>{
+          expired=true;if(controller)controller.abort();
+          reject(new Error("voice_status_timeout"));
+        },timeoutMs);
+      });
+      try{
+        return await Promise.race([operation,deadline]);
+      }finally{if(timer)clearTimeout(timer);}
     },
     async refreshCapability(){
-      if(!(CFG.voice&&CFG.voice.enabled)){this.capability={available:false,state:"disabled",reason:"voice_disabled"};this.state="unavailable";this._render();return false;}
+      if(!(CFG.voice&&CFG.voice.enabled)){this.capability={available:false,state:"disabled",reason:"voice_disabled",remediation:"none"};this.state="unavailable";this._render();return false;}
       try{
-        await ensureFreshToken();
-        let response=await fetch("/mcp/app/voice/status",{credentials:"same-origin",headers:authHeaders()});
-        if(response.status===401 && await refreshAccessToken()) response=await fetch("/mcp/app/voice/status",{credentials:"same-origin",headers:authHeaders()});
-        let doc={};try{doc=await response.json();}catch(_e){}
-        if(!response.ok) throw new Error(doc.error||"voice_status_failed");
+        const doc=await this._readCapability();
         this.capability=doc;
-        this.state=doc.available?"idle":(doc.state==="disabled"?"unavailable":"locked");
+        this.state=doc.available?"idle":(doc.state==="disabled"?"unavailable":(doc.state==="unpowered"?"unpowered":"incompatible"));
         this._render(doc.available?undefined:voiceFriendlyError(doc.reason));
         return !!doc.available;
       }catch(_error){this.capability=null;this.state="checking";this._render("Voice capability could not be confirmed. Typed chat still works.");return false;}
     },
     async requestStart(){
       if(this.state==="unavailable") return this._render();
-      if(this.state==="locked"&&!await this.refreshCapability()) return this._showUnlock();
+      if((this.state==="unpowered"||this.state==="incompatible")&&!await this.refreshCapability()){
+        if(this.capability&&this.capability.remediation==="existing_connection_surface")
+          return showConnect(this.capability.state==="unpowered");
+        return this._render(voiceFriendlyError(this.capability&&this.capability.reason));
+      }
       if(!["idle","error"].includes(this.state)){ this.stop(); return; }
       if(!await this.refreshCapability()) return;
       if(!this._accepted()){
@@ -1264,16 +1278,40 @@
         const privacy=$("voice-privacy-link"), privacyUrl=this.capability&&this.capability.privacy_url;
         if(privacyUrl){privacy.href=privacyUrl;privacy.hidden=false;}else{privacy.removeAttribute("href");privacy.hidden=true;}
         this.returnFocus=document.activeElement;
+        this.disclosureOpen=true;
         $("voice-disclosure").hidden=false; $("btn-voice-accept").focus(); return;
       }
       this.start();
     },
-    acceptDisclosure(){
-      try{const key=voiceDisclosureKey(this.capability);if(key)localStorage.setItem(key,"accepted");}catch(_e){}
-      $("voice-disclosure").hidden=true; this.returnFocus=null; this.start();
+    async acceptDisclosure(){
+      if(!this.disclosureOpen||this.acceptingDisclosure)return;
+      this.acceptingDisclosure=true;
+      const button=$("btn-voice-accept"),offered=this.capability&&this.capability.disclosure_id;
+      button.disabled=true;
+      try{
+        const doc=await this._readCapability(5000);
+        if(!this.disclosureOpen)return;
+        if(!doc.available||!offered||doc.disclosure_id!==offered){
+          this.capability=doc;this.disclosureOpen=false;$("voice-disclosure").hidden=true;
+          this.returnFocus=null;
+          this.state=doc.available?"idle":(doc.state==="disabled"?"unavailable":
+            (doc.state==="unpowered"?"unpowered":"incompatible"));
+          this._render(doc.available?"Voice connection changed. Review its disclosure before starting.":voiceFriendlyError(doc.reason));
+          return;
+        }
+        this.capability=doc;
+        try{const key=voiceDisclosureKey(doc);if(key)localStorage.setItem(key,"accepted");}catch(_e){}
+        this.disclosureOpen=false;$("voice-disclosure").hidden=true;this.returnFocus=null;
+        this.start();
+      }catch(_error){
+        if(!this.disclosureOpen)return;
+        this.capability=null;this.disclosureOpen=false;$("voice-disclosure").hidden=true;
+        this.returnFocus=null;this.state="checking";
+        this._render("Voice capability could not be confirmed. Typed chat still works.");
+      }finally{this.acceptingDisclosure=false;button.disabled=false;}
     },
     cancelDisclosure(){
-      $("voice-disclosure").hidden=true;
+      this.disclosureOpen=false;$("voice-disclosure").hidden=true;
       const target=this.returnFocus&&typeof this.returnFocus.focus==="function"
         ?this.returnFocus:$("btn-voice");
       target.focus(); this.returnFocus=null;
@@ -1312,6 +1350,7 @@
         catch(_error){ throw new Error("voice_permission_denied"); }
         if(generation!==this.epoch){ this._disposeTransport(null,null,null,stream); return; }
         this.stream=stream;
+        this._armAuthorityChecks(generation);
         if(!isReconnect) this._event("permission_granted"); else this._render();
         if(typeof RTCPeerConnection!=="function") throw new Error("voice_unsupported");
         pc=new RTCPeerConnection(); this.pc=pc;
@@ -1347,6 +1386,7 @@
         this.reconnecting=false; this.reconnectAttempts=0;
         this.state=isReconnect?voiceNextState("reconnecting","connected"):voiceNextState("connecting","connected");
         this._render(); this._armSessionLimit(session.max_session_seconds);
+        this._armAuthorityChecks(generation);
       }catch(error){
         clearTimeout(channelTimer);
         this._disposeTransport(pc,dc,audio,stream);
@@ -1359,6 +1399,28 @@
       const limit=Math.max(1,Math.min(Number(seconds)||configured,configured));
       this.warnTimer=setTimeout(()=>this._render("Voice will stop in five minutes."),Math.max(0,limit-300)*1000);
       this.stopTimer=setTimeout(()=>this.stop(true,"Voice stopped at the session limit. Start again when you're ready."),limit*1000);
+    },
+    _armAuthorityChecks(generation){
+      clearInterval(this.authorityTimer);
+      this.authorityTimer=setInterval(()=>this._verifyAuthority(generation),5000);
+    },
+    _sameAuthority(doc){
+      return !!(doc&&doc.available&&this.capability&&
+        doc.disclosure_id===this.capability.disclosure_id);
+    },
+    async _verifyAuthority(generation){
+      if(generation!==this.epoch)return;
+      try{
+        const doc=await this._readCapability(5000);
+        if(generation!==this.epoch)return;
+        if(this._sameAuthority(doc))return;
+        this.capability=doc;
+        this.stop(true,voiceFriendlyError(doc&&doc.reason));
+      }catch(_error){
+        if(generation!==this.epoch)return;
+        this.capability=null;
+        this.stop(true,"Voice stopped because provider authority could not be confirmed. Typed chat still works.");
+      }
     },
     _send(event){ if(this.dc&&this.dc.readyState==="open") this.dc.send(JSON.stringify(event)); },
     async handleToolCall(event){
@@ -1428,6 +1490,18 @@
       while(this.reconnectAttempts<3&&generation===this.epoch){
         this.reconnectAttempts++;
         await sleep(400*Math.pow(2,this.reconnectAttempts-1));
+        try{
+          const doc=await this._readCapability(5000);
+          if(generation!==this.epoch)return;
+          if(!this._sameAuthority(doc)){
+            this.capability=doc;
+            this.stop(true,voiceFriendlyError(doc&&doc.reason));return;
+          }
+        }catch(_error){
+          if(generation!==this.epoch)return;
+          this.capability=null;
+          this.stop(true,"Voice stopped because provider authority could not be confirmed. Typed chat still works.");return;
+        }
         try{await this._connect(generation,true);return;}catch(_e){}
       }
       if(generation===this.epoch) this.fail(new Error("voice_reconnect_exhausted"));
@@ -1439,7 +1513,8 @@
       if(stream){try{stream.getTracks().forEach(track=>track.stop());}catch(_e){}}
     },
     _teardownTransport(){
-      clearTimeout(this.stopTimer);clearTimeout(this.warnTimer);this.stopTimer=null;this.warnTimer=null;
+      clearTimeout(this.stopTimer);clearTimeout(this.warnTimer);clearInterval(this.authorityTimer);
+      this.stopTimer=null;this.warnTimer=null;this.authorityTimer=null;
       const pc=this.pc,dc=this.dc,audio=this.audio,stream=this.stream;
       this.pc=null;this.dc=null;this.audio=null;this.stream=null;
       this._disposeTransport(pc,dc,audio,stream);
@@ -1447,9 +1522,12 @@
     stop(announce=true,detail){
       this.epoch++;this.reconnecting=false;this.reconnectAttempts=0;
       this.canonicalResponsePending=false;this.canonicalResponseInterrupted=false;
-      $("voice-disclosure").hidden=true;$("voice-unlock").hidden=true;this.returnFocus=null;
+      this.disclosureOpen=false;$("voice-disclosure").hidden=true;this.returnFocus=null;
       this.expectedReply="";this._teardownTransport();
-      this.state=this.capability&&this.capability.available?"idle":(this.capability&&this.capability.state==="locked"?"locked":((CFG.voice&&CFG.voice.enabled)?"checking":"unavailable"));
+      this.state=this.capability&&this.capability.available?"idle":
+        (this.capability&&this.capability.state==="unpowered"?"unpowered":
+        (this.capability&&this.capability.state!=="disabled"?"incompatible":
+        ((CFG.voice&&CFG.voice.enabled)?"checking":"unavailable")));
       if(announce) this._render(detail); else this._render("");
     },
     fail(error){
@@ -2276,10 +2354,6 @@
     $("btn-voice").addEventListener("click",()=>Voice.requestStart());
     $("btn-voice-accept").addEventListener("click",()=>Voice.acceptDisclosure());
     $("btn-voice-cancel").addEventListener("click",()=>Voice.cancelDisclosure());
-    $("btn-voice-unlock-close").addEventListener("click",()=>Voice.closeUnlock());
-    $("voice-unlock").addEventListener("keydown",event=>{
-      if(event.key==="Escape"){event.preventDefault();Voice.closeUnlock();}
-    });
     $("voice-disclosure").addEventListener("keydown",event=>{
       if(event.key==="Escape"){ event.preventDefault(); Voice.cancelDisclosure(); return; }
       if(event.key!=="Tab") return;

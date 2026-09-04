@@ -222,21 +222,24 @@ Recovered 2026-08-27 from PR #2463, which carried it on the retired board and ha
 
 ---
 
-### First-class Voice — choose an existing user-owned bridge for physical-device proof
+### First-class Voice — identify an eligible current provider for physical-device proof
 
 **Do not send a credential in chat and do not buy a platform key.** The shipped dark runtime accepts
 only an exact `tinyassets.voice.v1` bridge backed by a generic HTTP connection and grant already
 owned by the signed-in founder and their home universe. Host credentials, maintainer accounts,
 another user's connection, and platform-paid usage cannot unlock it.
 
-The user-facing binding action is not built yet; it is tracked in
-`docs/concerns/2026-09-03-realtime-voice-has-no-user-binding-surface.md`. After that lands, the
-smallest founder action is to select an already-connected compatible bridge in the app (or say
-that none exists) and authorize one bounded non-production physical-device proof. The proof order,
-stop conditions, and evidence packet are in `docs/ops/realtime-voice-mobile-handoff.md`. Enabling
-or releasing Voice still requires an explicit founder decision. Both Voice-specific production
-gates remain off meanwhile; generic outbound HTTP is already enabled for unrelated effectors and
-cannot unlock Voice on its own.
+The product path now binds the capability only to the universe's current serving provider and
+reuses the existing provider/connection setup. The smallest remaining founder action is to identify
+an already-authorized current provider with a compatible `tinyassets.voice.v1` bridge (or say that
+none exists), then explicitly authorize one bounded non-production physical-device proof. No host
+file or developer bypass counts. The proof order, stop conditions, and evidence packet are in
+`docs/ops/realtime-voice-mobile-handoff.md`.
+
+Stop for Jonathan at the rendered `ready` state before starting microphone acceptance. Enabling or
+releasing Voice remains a separate explicit founder decision. Both Voice-specific production gates
+remain off meanwhile; generic outbound HTTP is already enabled for unrelated effectors and cannot
+unlock Voice on its own.
 
 ---
 

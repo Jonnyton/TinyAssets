@@ -2,27 +2,43 @@
 
 Date: 2026-09-03
 Owner track: `codex/ios-store-release`
-Source change: `openspec/changes/archive/2026-09-04-add-realtime-voice-conversation/`
+Source changes:
+`openspec/changes/archive/2026-09-04-add-realtime-voice-conversation/` and
+`openspec/changes/negotiate-user-owned-voice-capability/`
 
-The shared `/mcp/app` client now contains a dark, foreground-only Realtime voice slice. The native
-release track owns the following packaging and store declarations. This branch deliberately does
-not change signing, enrollment, publication, or native release ownership.
+The shared `/mcp/app` client contains a dark, foreground-only Realtime Voice slice. Voice is one
+composer control and a capability of the universe's current serving provider. It does not select a
+second provider and does not ask for a second Voice credential. The native release track owns the
+packaging and store declarations below. This change does not alter signing, enrollment,
+publication, production flags, or native release ownership.
 
-The ready-state fixture is a non-secret `<universe>/voice-connection.json` file with schema
-`tinyassets.voice.v1`, exact `connection_id` and `grant_id` values for an existing active generic
-HTTP connection, an HTTPS `session_url`, a bounded `service_name`, and an optional HTTPS
-`privacy_url`. The connection must belong to the same owner
-and universe and allow `POST` to that exact session endpoint. The browser sends its bounded SDP
-offer to the authenticated same-origin session route; the bridge response returns only `protocol`,
-`answer_sdp`, `expires_at`, and `max_session_seconds`. No remote HTTP URL or temporary bearer is
-exposed to browser JavaScript.
+Readiness is stored as a non-secret `tinyassets.voice.v1` capability on the exact generic HTTP
+connection and grant already used by the signed-in founder's current serving provider. The
+authenticated `write_graph target=connection operation=configure_provider_capability` operation
+derives those records; callers cannot name another connection or grant. Its HTTPS session URL must
+already be in that connection's exact `POST` allowlist. Revoking the grant, deleting the connection,
+rotating its credential authority, changing the serving provider, or revoking the capability closes
+Voice on the next status/session check.
 
-As built on 2026-09-03, the app can create the underlying generic HTTP connection and grant but
-has no authenticated action that writes this non-secret binding file. That missing user-facing
-binding step is tracked in
-`docs/concerns/2026-09-03-realtime-voice-has-no-user-binding-surface.md`. Do not use host
-filesystem access as acceptance evidence: the live proof starts only after the user can select an
-already-connected compatible bridge through a product-owned authority path.
+The browser sends a bounded SDP offer only to the authenticated same-origin session route. The
+bridge response contains only `protocol`, `answer_sdp`, `expires_at`, and `max_session_seconds`; no
+long-lived credential or arbitrary remote URL reaches browser JavaScript. During a live session the
+client rechecks current authority every five seconds with a five-second timeout and tears down all
+local audio tracks when readiness or disclosure identity changes. Server-side session creation also
+re-resolves authority immediately before proxying.
+
+The single control behaves as follows:
+
+- `ready`: start after the current disclosure is accepted; only then request microphone access.
+- `unpowered`: open the existing provider request/setup flow.
+- `incompatible` with a safe remediation: focus the existing connection/request surface without
+  prefilling or submitting an endpoint extension.
+- `incompatible` without a remediation, or `disabled`: report unavailable and never request the
+  microphone.
+
+No host-written file, platform credential, maintainer account, another user's connection,
+platform-paid usage, anonymous access, or silent fallback can unlock Voice or count as acceptance
+evidence.
 
 ## iOS
 
@@ -42,59 +58,55 @@ already-connected compatible bridge through a product-owned authority path.
   other requested resource. A platform permission grant alone must not become a general WebView
   media grant.
 - Stop voice and release every audio track on pause/background.
-- In Google Play Data safety, account for audio transmitted off-device to the user-selected service under **Voice or
-  sound recordings**, and for the stored canonical text under the applicable user-content category.
-  The final collected/shared and ephemeral-processing answers must reflect the actual provider
-  agreement and retention controls used for release, not this implementation's lack of raw-audio
-  storage alone.
+- In Google Play Data safety, account for audio transmitted off-device to the user-selected service
+  under **Voice or sound recordings**, and for the stored canonical text under the applicable
+  user-content category. Final collected/shared and ephemeral-processing answers must reflect the
+  actual provider agreement and retention controls used for release.
 
 ## Coordinated acceptance
 
-Before enabling either platform, first prove that Voice is visibly locked and requests no
-microphone permission when the signed-in universe lacks a compatible user-owned voice connection.
-Then, on a test universe that already has such a connection and bridge bound, prove on a physical device that
-first-use disclosure precedes the OS permission prompt; deny and later retry work; headphones and
-speaker paths work; barge-in stops the current reply; backgrounding ends capture; reconnect is
-bounded; typed chat remains available after every voice failure; and a restored conversation
-contains exactly the canonical text turns, never raw audio or a synthetic duplicate. Do not ask
-Jonathan for a new credential or spend ceiling merely to run this proof, do not use a shared
-fallback, and do not publish as part of this proof.
+Keep both Voice-specific production gates off. First prove the single composer control's
+`disabled`, `unpowered`, and `incompatible` states in the rendered app without any microphone or
+bridge request. Then identify an already-authorized current provider with a compatible bridge. Stop
+for Jonathan at the rendered `ready` state and obtain his explicit authorization before beginning
+the bounded live microphone proof. If no eligible current provider exists, record that as the host
+action; do not create a second credential path or enable Voice merely to finish the change.
 
 ### Evidence packet and run order
 
 Record the pull-request head SHA, app build identifier, device model, OS version, test-universe id,
-bound resource kind (never its secret), UTC start/end, and the operator for every run. Screenshots
-must exclude tokens and OS account identifiers; network evidence records only origin, path, status,
-and timing.
+current serving provider kind, bound resource kind (never its secret), UTC start/end, and operator.
+Screenshots must exclude tokens and OS account identifiers; network evidence records only origin,
+path, status, and timing.
 
-1. **Writer-only authority proof.** Use a test universe powered by its assigned writer
-   with no compatible voice connection. Confirm `GET /mcp/app/voice/status` returns secret-free
-   `locked` metadata. Tap `Voice · Connect`; confirm the capability dialog appears, the privacy
-   disclosure does not, the OS microphone prompt does not, and neither `/voice/session` nor an
-   external voice endpoint is contacted. Send one typed turn and record that the assigned writer still
-   answers through canonical `converse`.
-2. **Already-bound compatible-connection proof.** Only if a test user has independently chosen to
-   bind a `tinyassets.voice.v1` bridge through an existing HTTP connection and grant, enable the
-   voice UI switch, session switch, and generic outbound-HTTP switch in non-production.
-   Confirm status becomes `ready`, disclosure version 3 names the bound service before the first OS microphone
-   prompt, and declining causes no session or audio request. Then accept, grant microphone access,
-   complete one short turn, and compare the visible/stored assistant text byte-for-byte with the
-   `converse` result before accepting spoken playback as evidence.
-3. **Lifecycle proof on each physical platform.** While speaking, interrupt once; background and
-   foreground once; disconnect and recover once; deny and later grant permission once; and exhaust
-   reconnect once in a controlled network-loss run. At each stop/error boundary verify the native
-   audio-capture indicator ends, all local tracks are released, no turn is submitted twice, and
-   typed chat remains usable.
-4. **Custody and persistence proof.** Confirm status/session responses are `no-store`, contain no
-   long-lived secret, and are scoped to the authenticated home universe. Confirm the conversation
-   store contains only the canonical founder/universe text pair—no microphone bytes, partial
-   transcripts or bridge audio events. Remove or revoke the compatible
-   connection and confirm the same universe returns to `locked` without changing its writer.
-5. **Post-run safety proof.** Turn all three non-production gates off, repeat the public MCP canary, and
-   record that production flags, signing, store submissions, billing configuration, and deployment
-   state were never changed by the acceptance run.
+1. **Closed-state proof.** Render `disabled`, `unpowered`, remediable `incompatible`, and
+   unremediable `incompatible`. Confirm the one Voice control either focuses the existing setup
+   surface or reports unavailable as specified. Confirm no disclosure, microphone prompt,
+   `/voice/session`, or external Voice endpoint request occurs. Send one typed turn and confirm the
+   current serving provider still answers through canonical `converse`.
+2. **Current-provider authority proof.** Using the public authenticated operation, configure only an
+   already-connected `tinyassets.voice.v1` bridge on the universe's current HTTP serving provider.
+   Confirm the response is secret-free and status becomes `ready`. Attempt another connection,
+   grant, owner, universe, method, or endpoint and confirm refusal. Do not manually write storage.
+3. **Founder stop and consent.** Show Jonathan the rendered `ready` state and disclosure version 3,
+   naming the selected service. Stop. Continue only after he explicitly authorizes this bounded
+   proof. Declining the disclosure must cause no session or audio request.
+4. **Physical lifecycle proof.** After authorization, grant microphone access and complete one
+   short turn. Compare visible and stored assistant text byte-for-byte with canonical `converse`.
+   Interrupt once; background and foreground once; disconnect and recover once; deny and later
+   grant permission once; and exhaust reconnect once under controlled network loss. At every stop
+   boundary verify the native capture indicator ends, all local tracks are released, no turn is
+   submitted twice, and typed chat remains usable.
+5. **Custody and revocation proof.** Confirm status/session responses are `no-store`, contain no
+   long-lived secret, and resolve only the authenticated home universe. Confirm storage contains
+   only canonical founder/universe text—no microphone bytes, partial transcripts, or bridge audio
+   events. Revoke the capability, grant, connection, or current serving binding and confirm Voice
+   closes within ten seconds without changing providers or falling back.
+6. **Post-run safety proof.** Leave both Voice-specific gates off, repeat the authenticated public
+   MCP canary, and record that production flags, signing, store submissions, billing configuration,
+   and release state were not changed by the acceptance run.
 
-Stop immediately on any cross-universe readiness, ambient/platform credential use, microphone
-prompt before ready/disclosure, non-canonical visible reply, duplicate `converse` call, audio that
-continues after a lifecycle stop, or secret-bearing log/response. Preserve the failure evidence,
-keep all gates off, and return the change to implementation review.
+Stop immediately on cross-universe readiness, ambient/platform credential use, microphone access
+before readiness and disclosure, non-canonical visible reply, duplicate `converse`, capture that
+continues after a lifecycle stop, or secret-bearing output. Preserve the evidence, keep all gates
+off, and return the change to implementation review.
