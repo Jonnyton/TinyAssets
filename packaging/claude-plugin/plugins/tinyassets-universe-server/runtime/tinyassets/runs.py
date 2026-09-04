@@ -2800,6 +2800,175 @@ class RunOutcome:
     child_failures: list[ChildFailure] = field(default_factory=list)
 
 
+class MissingRequiredInputs(ValueError):
+    """A Branch run lacks state that no guaranteed predecessor produces.
+
+    Raised before :func:`_prepare_run` so callers can return an actionable
+    refusal without minting a run id or reserving any execution resource.
+    """
+
+    failure_class = "missing_required_inputs"
+    actionable_by = "chatbot"
+
+    def __init__(
+        self,
+        missing_input_keys: list[str],
+        input_guidance: dict[str, dict[str, Any]],
+    ) -> None:
+        self.missing_input_keys = sorted(set(missing_input_keys))
+        self.input_guidance = {
+            key: input_guidance[key]
+            for key in self.missing_input_keys
+        }
+        joined = ", ".join(self.missing_input_keys)
+        self.suggested_action = (
+            "Retry with inputs_json containing the missing keys: " + joined
+        )
+        super().__init__(f"Required workflow inputs are missing: {joined}.")
+
+
+def _input_example(field_type: str) -> Any:
+    normalized = (field_type or "any").strip().lower()
+    if normalized in {"str", "string", "text"}:
+        return ""
+    if normalized in {"int", "integer", "float", "number"}:
+        return 0
+    if normalized in {"bool", "boolean"}:
+        return False
+    if normalized in {"list", "array"}:
+        return []
+    if normalized in {"dict", "object", "map"}:
+        return {}
+    return None
+
+
+def _missing_input_guidance(
+    branch: BranchDefinition,
+    missing: set[str],
+) -> dict[str, dict[str, Any]]:
+    schema = {
+        str(field.get("name") or "").strip(): field
+        for field in branch.state_schema or []
+        if isinstance(field, dict) and str(field.get("name") or "").strip()
+    }
+    guidance: dict[str, dict[str, Any]] = {}
+    for key in sorted(missing):
+        field = schema.get(key, {})
+        field_type = str(field.get("type") or "any").strip() or "any"
+        item: dict[str, Any] = {
+            "type": field_type,
+            "example": _input_example(field_type),
+        }
+        description = str(field.get("description") or "").strip()
+        if description:
+            item["description"] = description
+        guidance[key] = item
+    return guidance
+
+
+def preflight_required_inputs(
+    branch: BranchDefinition,
+    inputs: dict[str, Any],
+) -> None:
+    """Refuse unresolved declared inputs using a forward must-analysis.
+
+    Caller inputs and schema defaults exist on every path. A node output is
+    definitely available to a later consumer only when it is present on every
+    reachable predecessor route. Direct START routes keep loop-carried values
+    from being mistaken for first-entry inputs.
+    """
+    node_ids = {ref.id for ref in branch.graph_nodes}
+    if not node_ids:
+        return
+
+    node_defs = {node.node_id: node for node in branch.node_defs}
+    defs_by_graph_id = {
+        ref.id: node_defs.get(ref.node_def_id or ref.id)
+        for ref in branch.graph_nodes
+    }
+
+    adjacency: dict[str, set[str]] = {node_id: set() for node_id in node_ids}
+    predecessors: dict[str, set[str]] = {node_id: set() for node_id in node_ids}
+    start_targets = {branch.entry_point} if branch.entry_point in node_ids else set()
+
+    def add_route(source: str, target: str) -> None:
+        if target not in node_ids:
+            return
+        if source == "START":
+            start_targets.add(target)
+        elif source in node_ids:
+            adjacency[source].add(target)
+            predecessors[target].add(source)
+
+    for edge in branch.edges:
+        add_route(edge.from_node, edge.to_node)
+    for conditional in branch.conditional_edges:
+        for target in conditional.conditions.values():
+            add_route(conditional.from_node, target)
+
+    reachable: set[str] = set()
+    pending = list(start_targets)
+    while pending:
+        node_id = pending.pop()
+        if node_id in reachable:
+            continue
+        reachable.add(node_id)
+        pending.extend(adjacency.get(node_id, ()))
+
+    initial = set(seed_initial_state(inputs, branch.state_schema).keys())
+    declared_keys = set(initial)
+    produced: dict[str, set[str]] = {}
+    required: dict[str, set[str]] = {}
+    for node_id in reachable:
+        node = defs_by_graph_id.get(node_id)
+        produced[node_id] = set(node.output_keys if node is not None else ())
+        required[node_id] = set(node.input_keys if node is not None else ())
+        declared_keys.update(produced[node_id])
+        declared_keys.update(required[node_id])
+
+    available_in = {
+        node_id: (set(initial) if node_id in start_targets else set(declared_keys))
+        for node_id in reachable
+    }
+    available_out = {
+        node_id: available_in[node_id] | produced[node_id]
+        for node_id in reachable
+    }
+
+    changed = True
+    while changed:
+        changed = False
+        for node_id in sorted(reachable):
+            route_sets = [
+                available_out[pred]
+                for pred in predecessors[node_id]
+                if pred in reachable
+            ]
+            if node_id in start_targets:
+                route_sets.append(initial)
+            if route_sets:
+                common = set(route_sets[0])
+                for route_set in route_sets[1:]:
+                    common.intersection_update(route_set)
+            else:
+                common = set(initial)
+            new_in = initial | common
+            new_out = new_in | produced[node_id]
+            if new_in != available_in[node_id] or new_out != available_out[node_id]:
+                available_in[node_id] = new_in
+                available_out[node_id] = new_out
+                changed = True
+
+    missing: set[str] = set()
+    for node_id in reachable:
+        missing.update(required[node_id] - available_in[node_id])
+    if missing:
+        raise MissingRequiredInputs(
+            sorted(missing),
+            _missing_input_guidance(branch, missing),
+        )
+
+
 def _graph_node_order(branch: BranchDefinition) -> list[str]:
     return [gn.id for gn in branch.graph_nodes]
 
@@ -3941,6 +4110,8 @@ def execute_branch(
         (default), uses :data:`DEFAULT_RECURSION_LIMIT` (100). Branches
         with deep conditional loops (Tier-1 Step 6) bump this.
     """
+    branch = BranchDefinition.from_dict(branch.to_dict())
+    preflight_required_inputs(branch, inputs)
     run_id = _prepare_run(
         base_path,
         branch=branch, inputs=inputs,
@@ -4141,6 +4312,7 @@ def _execute_branch_core(
     # receipt share this detached snapshot; later author-store edits cannot
     # change the admitted subject underneath an asynchronous execution.
     branch = BranchDefinition.from_dict(branch.to_dict())
+    preflight_required_inputs(branch, inputs)
     run_id = _prepare_run(
         base_path,
         branch=branch, inputs=inputs,
@@ -4368,6 +4540,7 @@ def execute_branch_version(
 ) -> RunOutcome:
     """Execute an immutable published Branch version and block to completion."""
     branch = _load_branch_version(base_path, branch_version_id)
+    preflight_required_inputs(branch, inputs)
     run_id = _prepare_run(
         base_path,
         branch=branch,
@@ -5747,6 +5920,7 @@ __all__ = [
     "ChildRunAwaitTimeout",
     "RunCancelledError",
     "RunExecutionAuthorityLost",
+    "MissingRequiredInputs",
     "RunOutcome",
     "RunStepEvent",
     "VALID_RECEIPT_TYPES",
@@ -5789,6 +5963,7 @@ __all__ = [
     "poll_child_run_status",
     "MAX_INVOKE_BRANCH_DEPTH",
     "post_teammate_message",
+    "preflight_required_inputs",
     "read_teammate_messages",
     "ack_teammate_message",
 ]
