@@ -1,13 +1,11 @@
 # Google Play launch — drive-everything runbook
 
 Everything needed to publish the TinyAssets Android app to Google Play. As of
-2026-09-03 the app is created, the listing and declarations are filled, and a signed
-bundle is live on the internal testing track, so the founder's remaining actions are:
-(1) try the internal-test build on a phone, (2) confirm the durable reviewer identity,
-complete its second clean sign-in, and save it under Play Sign in details — the one
-thing genuinely blocking the App content rows, (3) review and submit the
-foreground-service declaration staged in §8a, (4) run
-the closed test Play requires before production access, and (5) click **Roll out**
+2026-09-03 the app is created, the listing and declarations are filled, release
+`2 (1.0.1)` is active on the private internal track. The founder's remaining actions
+are: (1) install that release from Play and try the loop on a phone, (2) review and
+submit the foreground-service declaration staged in §8a, (3) run
+the closed test Play requires before production access, and (4) click **Roll out**
 after review. The four upload-keystore secrets are **optional**: see §0.
 All content below is copy-paste ready.
 
@@ -30,6 +28,7 @@ Package name (permanent once published): **`io.tinyassets.app`**
 | Payment | ~~Authorize the $25 fee.~~ **Done** with the account. | — |
 | Signing key | The keystore is generated (§2, 2026-09-01). Adding its 4 values as repo secrets is **optional, not blocking** — `mobile/container/` builds and signs the bundle with no secret at all, and that is how the shipped build was made. Worth doing anyway: it turns each future release into one `gh workflow run`. One command, §3; an agent cannot run it (`gh secret set` is denied to it). | your machine → GitHub secrets |
 | Console forms | Creating the app, legal/policy declarations (incl. US export laws), Data safety, content rating, tester invitations, release uploads, review submission, and rollout are consequential account actions: the agent drives them only after the required action-time confirmation. Routine store-asset safety correction is different: when a listing accidentally exposes private material, the agent may remove that exact asset, replace it with an already prepared and verified-safe asset, and save the draft without asking again. That standing authority does not extend to unrelated media, sending for review, or publishing. | Play Console (agent; consequence-gated) |
+| Internal release 2 | ~~Publish release `2 (1.0.1)` to the existing private tester list.~~ **Done 2026-09-03 21:42 PT** — Play shows Active and Available to internal testers. | — |
 | **Device check** | **The live one.** Install the internal-test build, sign in, chat once: <https://play.google.com/apps/internaltest/4701716760893982267> | your phone |
 | Publish | Promote to Production → submit for review → click **Roll out**. | Play Console |
 
@@ -520,13 +519,20 @@ Done:
 - [x] Contact phone verified — one click, no SMS code. It was never a founder action.
 - [x] **targetSdk 36** via Capacitor 8 (§1a) — Play rejects anything less for a new app
 - [x] Internal-testing tester list "Founder devices"
-- [x] **Signed AAB built and uploaded** — see "How to build one" below
+- [x] **Signed AAB for `2 (1.0.1)` built and uploaded** from merge
+      `bf432f1b2dbe`; Play parsed API 24+, target SDK 36. SHA-256:
+      `135F006AA5072EF09EABE511800B12EF0ADDBBBDB0753859401F6C566B69EF1E`.
+      Published to the existing private internal tester list at 21:42 PT.
 - [x] Unsafe conversation screenshot removed from the live listing; clean
       `01-sign-in.png` uploaded and saved alongside `02-connect-subscription.png`.
       Both attached filenames were re-opened and verified after the draft save.
 
 Open, with what each actually waits on:
 
+- [x] **Internal release `2 (1.0.1)` published** 2026-09-03 21:42 PT. Play shows
+      **Active** and **Available to internal testers**. Its non-blocking warnings were
+      21 devices losing support (~0%; 7 phones, 11 tablets, 3 TVs) and no
+      deobfuscation file.
 - [ ] **You: open the opt-in link, accept, install, and try the loop** — sign in,
       connect a provider, send a message. This is the first real-user test and it is
       the only thing that can find what a compile cannot.

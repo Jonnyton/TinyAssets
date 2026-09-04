@@ -40,7 +40,10 @@ signed IPA are staged; the Xcode 26 upload fix, screenshots, device proof, and r
   Play **Sign in details** is saved and Actioned with that account; the mistaken Simkal
   plus-alias reviewer was deleted after the replacement was proven.
 - **A signed bundle is live on the internal testing track**: release `1 (1.0)`,
-  published 2026-09-03 11:10, 3.1 MB.
+  published 2026-09-03 11:10, 3.1 MB. Corrected release `2 (1.0.1)` is also fully
+  prepared from merged commit `bf432f1b2dbe`, uploaded, and accepted as API 24+ /
+  target SDK 36. Play now shows it **Active** and **Available to internal testers**
+  (published 2026-09-03 21:42 PT).
   Opt-in link: <https://play.google.com/apps/internaltest/4701716760893982267>
 - App content now shows **10 actioned declarations** and **1 needing attention**.
 
@@ -68,6 +71,11 @@ agent does shortens it.
 
 ### What the next session should actually do
 
+- Install internal release `2 (1.0.1)` from Play; do not rebuild or re-upload it.
+  Signed AAB SHA-256:
+  `135F006AA5072EF09EABE511800B12EF0ADDBBBDB0753859401F6C566B69EF1E`.
+  Play already reports it available to internal testers; the phone can reconnect for
+  the clean notification recording.
 - The only App content declaration needing attention is **Foreground service
   permissions**. Play requires a public demonstration-video link; no verified redacted
   phone recording exists yet. The exact shot list is in `docs/host-actions.md`. Do not
