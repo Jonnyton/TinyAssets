@@ -1,7 +1,7 @@
 # Windows lifecycle installer is cancelled without a verdict or log
 
 **Filed:** 2026-09-04 00:04 PDT  
-**Verified:** 2026-09-04, GitHub Actions run `33843457460`, attempts 1 and 2  
+**Verified:** 2026-09-04, GitHub Actions runs `33843457460` and `33916000603`
 **Severity:** P2
 
 ## Source (verbatim)
@@ -21,6 +21,13 @@ Attempt 2, exact bounded rerun job `100936661082`:
 GitHub returned no retained job log for the cancelled attempt:
 
 > `log not found: 100936661082`
+
+The same failure recurred on PR #2936, run `33916000603`, job
+`101164590946`. The artifact download completed at `20:29:17Z`; the lifecycle
+step remained `in_progress` until the run was explicitly cancelled at
+`20:44:03Z`, and GitHub again returned `log not found`. All other PR gates were
+green. This is the smallest evidence GitHub retained; it identifies the
+lifecycle step but cannot distinguish one of its child phases.
 
 ## Finding
 
@@ -46,10 +53,11 @@ image deployed healthy and passed the authenticated public MCP canary, and the
 running production Voice gates are independently default-off. It does leave the
 desktop unsigned-install lifecycle without fresh exact-head acceptance evidence.
 
-## Next action
+## Repair in progress
 
-Reproduce the lifecycle supervisor on an isolated Windows runner with durable
-per-phase checkpoints that survive cancellation, determine which child or phase
-outlives the 300-second supervisor budget, and repair the workflow so its own
-deadline emits a terminal verdict before GitHub can cancel the job. Do not start
-another blind rerun without adding that evidence path.
+The supervisor previously redirected descendant handles but deliberately let an
+escaped descendant survive after its PowerShell parent exited. The focused
+Windows proof now assigns the lifecycle tree to a kill-on-close Job Object and
+requires the descendant to be gone before the supervisor returns. Keep this
+concern open until a fresh exact-head lifecycle job returns a terminal verdict;
+then delete it rather than annotating it as resolved.

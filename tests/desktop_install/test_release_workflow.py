@@ -154,6 +154,8 @@ def test_unsigned_windows_lifecycle_is_bounded_and_diagnostic() -> None:
     assert "TimeoutExpired" in supervisor
     assert "process.wait(timeout=" in supervisor
     assert "taskkill" in supervisor
+    assert "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE" in supervisor
+    assert "AssignProcessToJobObject" in supervisor
 
 
 def test_windows_lifecycle_capture_replays_a_fixed_size_snapshot(
@@ -383,7 +385,7 @@ while ($true) {
     sys.platform != "win32" or PWSH is None,
     reason="Windows inherited descendant-handle contract",
 )
-def test_windows_lifecycle_supervisor_does_not_wait_for_descendant_pipe_eof(
+def test_windows_lifecycle_supervisor_terminates_escaped_descendants(
     tmp_path: Path,
 ) -> None:
     assert PWSH is not None
@@ -400,7 +402,7 @@ def test_windows_lifecycle_supervisor_does_not_wait_for_descendant_pipe_eof(
 Set-Content -LiteralPath $PidPath -Value $PID -NoNewline
 [Console]::Out.WriteLine("escaped descendant inherited output")
 Start-Sleep -Seconds 5
-Set-Content -LiteralPath $DonePath -Value "finished" -NoNewline
+Set-Content -LiteralPath $DonePath -Value "escaped" -NoNewline
 """,
         encoding="utf-8",
     )
@@ -441,6 +443,7 @@ exit 0
     env["TMP"] = str(tmp_path)
 
     started = time.monotonic()
+    escaped_pid = None
     try:
         result = subprocess.run(
             [
@@ -467,15 +470,37 @@ exit 0
         )
         supervisor_elapsed = time.monotonic() - started
     finally:
-        deadline = time.monotonic() + 8
-        while not escaped_done_path.exists() and time.monotonic() < deadline:
+        deadline = time.monotonic() + 2
+        while not escaped_pid_path.exists() and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert escaped_done_path.read_text(encoding="utf-8") == "finished"
+        if escaped_pid_path.exists():
+            escaped_pid = int(escaped_pid_path.read_text(encoding="utf-8"))
+            probe = subprocess.run(
+                ["tasklist.exe", "/FI", f"PID eq {escaped_pid}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if str(escaped_pid) in probe.stdout:
+                subprocess.run(
+                    ["taskkill.exe", "/PID", str(escaped_pid), "/T", "/F"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                    check=False,
+                )
 
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
     assert supervisor_elapsed < 3
     assert "lifecycle parent exiting with escaped PID" in output
+    assert "stage=process_tree.closed" in output
+    assert escaped_pid is not None
+    assert str(escaped_pid) not in probe.stdout
+    time.sleep(1)
+    assert not escaped_done_path.exists()
 
 
 def test_release_workflow_has_no_fake_signature_fallback() -> None:

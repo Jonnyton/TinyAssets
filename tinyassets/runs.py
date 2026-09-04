@@ -378,6 +378,44 @@ def _workspace_terminal_base(
     return universe_base
 
 
+def _finish_terminal_workspace_release(
+    base_path: str | Path,
+    run_id: str,
+    workspace_base: Path | None,
+    *,
+    local_owed: int = 0,
+) -> None:
+    """Finish release work after the terminal-status transaction committed.
+
+    A separate universe database is necessarily a second WAL transaction. Its
+    failure must not escape to a caller that will reclassify the already-
+    committed run, but it also must not disappear: log it and kick the exact
+    universe sweep, whose root-status repair path recreates the owed entry.
+    """
+    if local_owed:
+        _kick_workspace_sweep(base_path)
+    if workspace_base is None:
+        return
+    try:
+        with _connect(workspace_base) as workspace_conn:
+            workspace_owed = _enqueue_workspace_terminal(
+                workspace_conn, workspace_base, run_id
+            )
+    except Exception:
+        logger.exception(
+            "workspace terminal release enqueue failed for run %s in %s; "
+            "the universe sweep will repair it",
+            run_id,
+            workspace_base,
+        )
+        # Even a young terminal lock is repairable: the sweep reads the root
+        # status, so it does not rely on the one-hour unknown-run age bound.
+        _kick_workspace_sweep(workspace_base)
+        return
+    if workspace_owed:
+        _kick_workspace_sweep(workspace_base)
+
+
 #: How old a lock whose run is unknown to this database must be before the
 #: sweep will release it. A lock is written before its run row on a legitimate
 #: start, so anything shorter reaps live work during that race. Far above any
@@ -776,6 +814,7 @@ def _recover_orphaned_runs_on_read(base_path: str | Path) -> int:
         logger.exception("workspace startup reconciliation failed")
     count = 0
     now = _now()
+    releases: list[tuple[str, Path | None, int]] = []
     with _connect(base_path) as conn:
         rows = conn.execute(
             """
@@ -793,8 +832,17 @@ def _recover_orphaned_runs_on_read(base_path: str | Path) -> int:
                 now=now,
             ):
                 count += 1
-                # Same transaction as the rewrite; a failure rolls both back.
-                _enqueue_workspace_terminal(conn, base_path, row["run_id"])
+                # Same-database work is atomic with the rewrite.  A separate
+                # universe WAL is finished after this transaction commits.
+                run_id = str(row["run_id"])
+                owed = _enqueue_workspace_terminal(conn, base_path, run_id)
+                releases.append(
+                    (run_id, _workspace_terminal_base(conn, base_path, run_id), owed)
+                )
+    for run_id, workspace_base, owed in releases:
+        _finish_terminal_workspace_release(
+            base_path, run_id, workspace_base, local_owed=owed
+        )
     if count:
         logger.info("Recovered %d orphaned in-flight runs on read", count)
     return count
@@ -1537,26 +1585,20 @@ def update_run_status(
         return
     params.append(run_id)
     workspace_terminal_base: Path | None = None
-    kick_bases: list[Path] = []
+    owed = 0
     with _connect(base_path) as conn:
         conn.execute(
             f"UPDATE runs SET {', '.join(sets)} WHERE run_id = ?",
             params,
         )
-        owed = 0
         if status in _TERMINAL_STATUSES:
-            # The lease this run held is released THROUGH the outbox, in this
-            # same transaction (workspace-node D0): never a direct delete. An
-            # enqueue failure propagates so the connection closes WITHOUT a
-            # commit and the status write rolls back with it - half the state
-            # (terminal status, no owed release) must never land (Codex, code
-            # round 1; Hard Rule 8).
+            # A lease in this database is owed THROUGH the outbox in the same
+            # transaction (workspace-node D0): never a direct delete.  A
+            # separate universe WAL is handled after this root commit.
             owed = _enqueue_workspace_terminal(conn, base_path, run_id)
             workspace_terminal_base = _workspace_terminal_base(
                 conn, base_path, run_id
             )
-        if owed:
-            kick_bases.append(Path(base_path))
         # Phase 2 emit-site (Task #72): on terminal status transition, emit
         # one execute_step contribution event for attribution. Wrapped in
         # try/except so emit failure (malformed metadata, table missing,
@@ -1615,28 +1657,12 @@ def update_run_status(
                 )
 
     # The root transaction is committed before this separate universe write.
-    # SQLite cannot make two WAL databases crash-atomic. The periodic sweep is
-    # the recovery half of this protocol: it reads the terminal root status and
-    # repairs the narrow crash window. On the normal path, enqueue immediately
-    # so the next same-universe job does not wait for that backstop.
-    if workspace_terminal_base is not None:
-        with _connect(workspace_terminal_base) as workspace_conn:
-            workspace_owed = _enqueue_workspace_terminal(
-                workspace_conn, workspace_terminal_base, run_id
-            )
-        if workspace_owed:
-            kick_bases.append(workspace_terminal_base)
-
-    # Start sweepers only after every owning connection has committed. A
-    # thread started inside a transaction could otherwise race the commit it is
-    # meant to consume.
-    seen_kicks: set[Path] = set()
-    for kick_base in kick_bases:
-        resolved = kick_base.resolve()
-        if resolved in seen_kicks:
-            continue
-        seen_kicks.add(resolved)
-        _kick_workspace_sweep(kick_base)
+    # SQLite cannot make two WAL databases crash-atomic; the helper's sweep is
+    # the recovery half of the protocol and never reclassifies the run.
+    if status in _TERMINAL_STATUSES:
+        _finish_terminal_workspace_release(
+            base_path, run_id, workspace_terminal_base, local_owed=owed
+        )
 
 
 def record_run_receipt(
@@ -1746,6 +1772,8 @@ def list_run_receipts(
 
 def get_run(base_path: str | Path, run_id: str) -> dict[str, Any] | None:
     initialize_runs_db(base_path)
+    workspace_terminal_base: Path | None = None
+    terminal_owed = 0
     with _connect(base_path) as conn:
         row = conn.execute(
             "SELECT * FROM runs WHERE run_id = ?", (run_id,)
@@ -1758,6 +1786,10 @@ def get_run(base_path: str | Path, run_id: str) -> dict[str, Any] | None:
             status=row["status"],
             started_at=row["started_at"],
         ):
+            terminal_owed = _enqueue_workspace_terminal(conn, base_path, run_id)
+            workspace_terminal_base = _workspace_terminal_base(
+                conn, base_path, run_id
+            )
             row = conn.execute(
                 "SELECT * FROM runs WHERE run_id = ?", (run_id,)
             ).fetchone()
@@ -1773,6 +1805,13 @@ def get_run(base_path: str | Path, run_id: str) -> dict[str, Any] | None:
             """,
             (run_id,),
         ).fetchone()
+    if workspace_terminal_base is not None or terminal_owed:
+        _finish_terminal_workspace_release(
+            base_path,
+            run_id,
+            workspace_terminal_base,
+            local_owed=terminal_owed,
+        )
     if stats_row:
         try:
             result["concurrency"] = json.loads(stats_row["detail_json"] or "{}")
@@ -5311,6 +5350,7 @@ def recover_in_flight_runs(base_path: str | Path) -> int:
     """
     initialize_runs_db(base_path)
     now = _now()
+    releases: list[tuple[str, Path | None, int]] = []
     with _connect(base_path) as conn:
         in_flight = [
             row[0] for row in conn.execute(
@@ -5333,9 +5373,16 @@ def recover_in_flight_runs(base_path: str | Path) -> int:
         )
         count = cursor.rowcount
         for run_id in in_flight:
-            # Same transaction as the rewrite (scratch-storage spec): the
-            # lease an interrupted run held is owed to the outbox.
-            _enqueue_workspace_terminal(conn, base_path, run_id)
+            # Same-database work is atomic with the rewrite.  A separate
+            # universe WAL is finished after this transaction commits.
+            owed = _enqueue_workspace_terminal(conn, base_path, run_id)
+            releases.append(
+                (run_id, _workspace_terminal_base(conn, base_path, run_id), owed)
+            )
+    for run_id, workspace_base, owed in releases:
+        _finish_terminal_workspace_release(
+            base_path, run_id, workspace_base, local_owed=owed
+        )
     if count:
         logger.info("Recovered %d in-flight runs as 'interrupted'", count)
     return count

@@ -1,9 +1,11 @@
 """The run lifecycle owes the workspace outbox its work (workspace-node D0/D6).
 
-A run that held a scratch lease releases it THROUGH an outbox entry written in
-the same transaction as its terminal status; both orphan-recovery paths do the
-same; a once-per-process reconciler finishes what an earlier process left; and
-every workspace refusal is a first-class failure class with an action.
+A run that held a scratch lease releases it THROUGH an outbox entry.  A local
+lease is atomic with terminal status; a universe-owned lease is enqueued just
+after the root commit and repaired by its sweep across the two-WAL crash gap.
+Every terminal recovery path follows that protocol; a once-per-process
+reconciler finishes what an earlier process left; and every workspace refusal
+is a first-class failure class with an action.
 """
 from __future__ import annotations
 
@@ -136,6 +138,46 @@ def test_a_root_terminal_enqueues_the_universe_that_owns_the_workspace(
         ).fetchone()[0] == "completed"
 
 
+def test_a_universe_enqueue_failure_preserves_terminal_status_and_kicks_repair(
+    tmp_path, monkeypatch,
+):
+    """A second-WAL failure cannot roll back or reclassify the root commit."""
+    root = tmp_path / "data"
+    universe_id = "u-00000000000000000000000001"
+    universe = root / universe_id
+    universe.mkdir(parents=True)
+    _seed_run(root, "split-run", queue_universe_id=universe_id)
+    runs.initialize_runs_db(universe)
+    lease = _admit(universe, tmp_path, "split-run", universe=universe_id)
+    real_enqueue = runs._enqueue_workspace_terminal
+    kicks: list[Path] = []
+
+    def _fail_universe(conn, base_path, run_id):
+        if Path(base_path).resolve() == universe.resolve():
+            raise sqlite3.OperationalError("universe WAL unavailable")
+        return real_enqueue(conn, base_path, run_id)
+
+    monkeypatch.setattr(runs, "_enqueue_workspace_terminal", _fail_universe)
+    monkeypatch.setattr(runs, "_kick_workspace_sweep", lambda p: kicks.append(Path(p)))
+
+    runs.update_run_status(root, "split-run", status="completed")
+
+    with sqlite3.connect(runs.runs_db_path(root)) as conn:
+        assert conn.execute(
+            "SELECT status FROM runs WHERE run_id = ?", ("split-run",)
+        ).fetchone()[0] == "completed"
+    assert _pending(universe, "split-run") == []
+    assert kicks == [universe]
+
+    # The kicked pass is the durable recovery half of the two-WAL protocol.
+    monkeypatch.setattr(runs, "_enqueue_workspace_terminal", real_enqueue)
+    monkeypatch.setattr("tinyassets.workspace_fs.RealPoolFilesystem", _NoopFs)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root))
+    runs._workspace_sweep_once(universe, claimant="test")
+    after = workspace_pool.get_lease(runs.runs_db_path(universe), lease.lease_id)
+    assert after is not None and after.state == "AVAILABLE"
+
+
 def test_a_noncanonical_queue_universe_never_becomes_a_terminal_path(
     tmp_path, monkeypatch,
 ):
@@ -217,22 +259,41 @@ def test_a_run_holding_only_the_lock_releases_it(tmp_path, monkeypatch):
     assert _pending(base, "r2") == [("release_lock_only", None)]
 
 
-def test_read_time_orphan_recovery_enqueues(tmp_path, monkeypatch):
-    base = tmp_path / "data"
-    _seed_run(base, "r3", status="running")
-    lease = _admit(base, tmp_path, "r3")
-    monkeypatch.setattr(runs, "ensure_workspace_reconciled", lambda *_a, **_k: False)
-    # No worker owns r3 and its progress is stale: the read path marks it
-    # interrupted and, in the same transaction, owes the lease to the outbox.
-    monkeypatch.setattr(runs, "_mark_orphaned_run_if_needed", _always_orphan)
-    assert runs._recover_orphaned_runs_on_read(base) == 1
-    assert _pending(base, "r3") == [("wipe_scratch", lease.lease_id)]
+@pytest.mark.parametrize("entry_point", ["read_sweep", "get_run", "startup"])
+def test_every_orphan_recovery_path_enqueues_the_owning_universe(
+    tmp_path, monkeypatch, entry_point,
+):
+    root = tmp_path / "data"
+    universe_id = "u-00000000000000000000000002"
+    universe = root / universe_id
+    universe.mkdir(parents=True)
+    run_id = f"orphan-{entry_point}"
+    _seed_run(root, run_id, status="running", queue_universe_id=universe_id)
+    lease = _admit(universe, tmp_path, run_id, universe=universe_id)
+    kicks: list[Path] = []
+    monkeypatch.setattr(runs, "_kick_workspace_sweep", lambda p: kicks.append(Path(p)))
+
+    if entry_point == "read_sweep":
+        monkeypatch.setattr(
+            runs, "ensure_workspace_reconciled", lambda *_a, **_k: False
+        )
+        monkeypatch.setattr(runs, "_mark_orphaned_run_if_needed", _always_orphan)
+        assert runs._recover_orphaned_runs_on_read(root) == 1
+    elif entry_point == "get_run":
+        monkeypatch.setattr(runs, "_mark_orphaned_run_if_needed", _always_orphan)
+        assert runs.get_run(root, run_id)["status"] == "interrupted"
+    else:
+        assert runs.recover_in_flight_runs(root) == 1
+
+    assert _pending(root, run_id) == []
+    assert _pending(universe, run_id) == [("wipe_scratch", lease.lease_id)]
+    assert kicks == [universe]
 
 
-def _always_orphan(conn, *, run_id, status, started_at, now):
+def _always_orphan(conn, *, run_id, status, started_at, now=None):
     conn.execute(
         "UPDATE runs SET status = 'interrupted', finished_at = ? WHERE run_id = ?",
-        (now, run_id),
+        (now or time.time(), run_id),
     )
     return True
 
