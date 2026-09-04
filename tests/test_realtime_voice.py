@@ -214,11 +214,11 @@ def _drive_status(*, identity=None) -> tuple[int, dict, dict]:
     return response.status_code, json.loads(response.body or b"{}"), dict(response.headers)
 
 
-def test_voice_requires_all_independent_flags(monkeypatch):
+def test_voice_transport_uses_only_the_generic_outbound_gate(monkeypatch):
     for app_flag, api_flag, outbound_flag, expected in (
         ("", "", "", False),
-        ("1", "", "1", False),
-        ("", "1", "1", False),
+        ("", "", "1", True),
+        ("0", "0", "1", True),
         ("1", "1", "", False),
         ("yes", "true", "on", True),
     ):
@@ -387,7 +387,7 @@ def test_subscription_provider_routes_to_existing_connection_surface(
     }
 
 
-def test_capability_discovery_remains_actionable_while_sessions_are_disabled(
+def test_unsupported_provider_remains_actionable_without_legacy_voice_flags(
     monkeypatch, tmp_path
 ):
     universe = _seed_binding(tmp_path, monkeypatch)
@@ -411,16 +411,25 @@ def test_capability_discovery_remains_actionable_while_sessions_are_disabled(
     }
 
 
-def test_ready_capability_cannot_start_while_sessions_are_disabled(monkeypatch, tmp_path):
+def test_ready_capability_is_not_hidden_by_legacy_voice_flags(monkeypatch, tmp_path):
     universe = _seed_binding(tmp_path, monkeypatch)
+    monkeypatch.setenv("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED", "1")
     monkeypatch.delenv("TINYASSETS_REALTIME_VOICE_ENABLED", raising=False)
     monkeypatch.delenv("TINYASSETS_ALLOW_REALTIME_VOICE_API", raising=False)
 
     assert rv.voice_capability(universe, "user_owner") == {
-        "available": False,
-        "state": "disabled",
-        "reason": "voice_disabled",
+        "available": True,
+        "state": "ready",
         "remediation": "none",
+        "resource": "user_bound_voice_connection",
+        "disclosure_id": sha256(
+            (
+                f"{_CONNECTION_ID}\0tinyassets.voice.v1\0{_SESSION_URL}\0"
+                "Owner Voice Bridge\0https://bridge.example/privacy"
+            ).encode("utf-8")
+        ).hexdigest(),
+        "service_name": "Owner Voice Bridge",
+        "privacy_url": "https://bridge.example/privacy",
     }
 
 
@@ -522,6 +531,8 @@ def test_session_uses_generic_scoped_proxy_and_returns_only_answer_fields(
     monkeypatch, tmp_path
 ):
     _enable(monkeypatch)
+    monkeypatch.delenv("TINYASSETS_REALTIME_VOICE_ENABLED", raising=False)
+    monkeypatch.delenv("TINYASSETS_ALLOW_REALTIME_VOICE_API", raising=False)
     universe = _seed_binding(tmp_path, monkeypatch)
     proxy = _FakeProxy(
         {
@@ -650,8 +661,7 @@ def test_upstream_statuses_become_stable_secret_free_errors(
 
 def test_route_is_disabled_before_home_or_network(monkeypatch):
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
-    monkeypatch.delenv("TINYASSETS_REALTIME_VOICE_ENABLED", raising=False)
-    monkeypatch.delenv("TINYASSETS_ALLOW_REALTIME_VOICE_API", raising=False)
+    monkeypatch.delenv("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED", raising=False)
     status, body, headers = _drive({}, identity=_owner())
     assert (status, body) == (404, {"error": "voice_disabled"})
     assert headers["cache-control"] == "no-store"
@@ -729,6 +739,8 @@ def test_route_resolves_home_owner_and_returns_no_store(monkeypatch, tmp_path):
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     _enable(monkeypatch)
+    monkeypatch.delenv("TINYASSETS_REALTIME_VOICE_ENABLED", raising=False)
+    monkeypatch.delenv("TINYASSETS_ALLOW_REALTIME_VOICE_API", raising=False)
     import tinyassets.onboarding as onboarding
 
     monkeypatch.setattr(onboarding, "_read_home", lambda _identity: "u-owner-home")

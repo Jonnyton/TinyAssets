@@ -76,8 +76,50 @@
   provider change, or credential action occurred.
 - Both Voice-specific production switches remain off.
 
-Task 5.3 is complete. Task 5.4 remains blocked on the existing provider flow
+At the time of this proof, task 5.4 was blocked on the existing provider flow
 establishing an eligible current provider and Jonathan explicitly authorizing
-the bounded live microphone proof. The app must derive that binding; Jonathan
-should not be asked to name it manually. Voice must not be enabled merely to
-close the task.
+the bounded live microphone proof. The later live user correction below
+supersedes the provider prerequisite: the compatible user-owned capability is
+now present, while the redundant host switch is the remaining implementation
+blocker.
+
+## 2026-09-04 live user correction
+
+- Actual user result: a universe powered by the user's ChatGPT connection
+  rendered `Voice is not enabled on this TinyAssets host.` from the composer
+  Voice control.
+- Root cause: `voice_capability()` returned `voice_disabled` only after the
+  exact current-provider connection and `tinyassets.voice.v1` capability had
+  already validated. The two legacy Voice-specific host switches therefore
+  overrode valid user authority and created the dead end; the deterministic
+  browser test explicitly expected that failure.
+- Corrected contract: the exact user-owned current-provider capability is the
+  Voice readiness authority. The generic outbound HTTP switch remains the
+  fail-closed transport gate. No platform credential, platform-paid usage,
+  implicit provider switch, or second Voice credential path is introduced.
+- Acceptance boundary: deploy the correction and prove the authenticated
+  rendered app reaches `ready`; stop before microphone permission for
+  Jonathan's explicit bounded live test.
+
+### Focused correction verification
+
+- Environment: Windows development worktree on 2026-09-04, based on
+  `d8a48fb2` before the correction commit.
+- `python packaging/claude-plugin/build_plugin.py` rebuilt the packaged runtime
+  mirror and its import probe returned `probe-ok`.
+- `python -m pytest -q tests/test_realtime_voice.py tests/test_onboarding_app.py
+  tests/test_apply_daemon_env_voice_flags.py tests/test_mirror_parity_gate.py
+  tests/test_pre_commit_mirror_parity.py tests/test_invariants_framework.py`
+  passed: `163 passed in 33.52s`.
+- `python -m ruff check tinyassets/onboarding/realtime_voice.py
+  tests/test_realtime_voice.py tests/test_onboarding_app.py
+  tests/test_apply_daemon_env_voice_flags.py` passed.
+- `python scripts/openspec_flow.py check-change
+  negotiate-user-owned-voice-capability --provider codex` returned `ALLOWED`;
+  `openspec validate negotiate-user-owned-voice-capability --strict` passed;
+  and `git diff --check` passed.
+- The first cross-family correction review returned `ADAPT`. Its three narrow
+  findings are applied: an explicit `CFG.voice.enabled=false` browser arm,
+  non-contradictory transport-unavailable copy in both runtime mirrors, and the
+  explicit founder decision boundary in `docs/host-actions.md`. A clean
+  exact-head verdict is required before deployment.

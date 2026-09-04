@@ -65,12 +65,13 @@ evidence.
 
 ## Coordinated acceptance
 
-Keep both Voice-specific production gates off. First prove the single composer control's
-`disabled`, `unpowered`, and `incompatible` states in the rendered app without any microphone or
-bridge request. Then identify an already-authorized current provider with a compatible bridge. Stop
-for Jonathan at the rendered `ready` state and obtain his explicit authorization before beginning
-the bounded live microphone proof. If no eligible current provider exists, record that as the host
-action; do not create a second credential path or enable Voice merely to finish the change.
+Voice readiness comes from the exact current provider's user-owned capability; the retired
+Voice-specific host flags are not acceptance gates. Keep the generic outbound HTTP transport gate
+enabled, prove `unpowered` and `incompatible` states route through the existing connection path
+without microphone or bridge requests, and prove the already-authorized compatible current
+provider renders `ready`. Stop there for Jonathan and obtain his explicit authorization before
+beginning the bounded live microphone proof. Do not create a second credential path, request a
+platform key, or switch providers merely to finish the change.
 
 ### Evidence packet and run order
 
@@ -102,9 +103,9 @@ path, status, and timing.
    only canonical founder/universe text—no microphone bytes, partial transcripts, or bridge audio
    events. Revoke the capability, grant, connection, or current serving binding and confirm Voice
    closes within ten seconds without changing providers or falling back.
-6. **Post-run safety proof.** Leave both Voice-specific gates off, repeat the authenticated public
-   MCP canary, and record that production flags, signing, store submissions, billing configuration,
-   and release state were not changed by the acceptance run.
+6. **Post-run safety proof.** Leave the retired Voice-specific flags absent, repeat the authenticated
+   public MCP canary, and record that the generic outbound gate, signing, store submissions, billing
+   configuration, and release state were not changed by the acceptance run.
 
 Stop immediately on cross-universe readiness, ambient/platform credential use, microphone access
 before readiness and disclosure, non-canonical visible reply, duplicate `converse`, capture that

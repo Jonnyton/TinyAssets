@@ -61,13 +61,15 @@ def _truthy(name: str) -> bool:
 
 
 def realtime_voice_enabled() -> bool:
-    """True only when the app and both outbound kill switches are enabled."""
+    """True when user-owned HTTP transport is available.
 
-    return (
-        _truthy("TINYASSETS_REALTIME_VOICE_ENABLED")
-        and _truthy("TINYASSETS_ALLOW_REALTIME_VOICE_API")
-        and _truthy("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED")
-    )
+    Voice readiness is authorized by the exact current provider capability,
+    not by a second host-level product switch.  The generic outbound gate
+    remains the fail-closed operational boundary for the credential-blind
+    bridge request.
+    """
+
+    return _truthy("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED")
 
 
 def public_voice_config() -> dict[str, Any]:

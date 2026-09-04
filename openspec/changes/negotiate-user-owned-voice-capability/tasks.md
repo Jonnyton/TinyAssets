@@ -16,12 +16,11 @@
 
 - [x] 4.1 Make the composer Voice control start immediately when ready, focus the existing unpowered-provider request when no provider serves, and use the existing connection/request surface for a powered provider's capability gap; remove the separate Voice unlock modal.
 - [x] 4.2 Extend deterministic browser tests for the complete ready/unpowered/remediable-incompatible/unremediable-incompatible/disabled/start state machine, disclosure invalidation, and bounded mid-session revocation teardown, with no microphone or network request before readiness.
-- [x] 4.3 Keep current-provider capability discovery and the existing provider-connection remediation reachable from the Voice control while Voice session gates are off; preserve the closed session endpoint.
-- [x] 4.4 Prove an unsupported subscription binding opens the existing connection surface without requesting microphone access or starting a Voice session.
+- [x] 4.3 Keep current-provider capability discovery and the existing provider-connection remediation reachable from the Voice control while generic outbound transport is off, and prove an unsupported subscription binding opens that surface without requesting microphone access or starting a Voice session.
 
 ## 5. Durable truth and delivery
 
 - [x] 5.1 Record the founder-approved one-control/current-provider capability rule in `PLAN.md`, update the Voice handoff, and delete the resolved no-binding concern when the product path is complete.
-- [x] 5.2 Build the runtime mirror, run focused and required gates plus an exact-head opposite-provider implementation review, then land and deploy with both Voice-specific gates still off.
+- [x] 5.2 Build the runtime mirror, run focused and required gates plus an exact-head opposite-provider implementation review, then land and deploy without granting any platform credential or provider authority.
 - [x] 5.3 Prove disabled/unpowered/incompatible states through the rendered app and run the authenticated public canary; record ready-state proof as a founder-only host action if no eligible already-authorized provider exists.
-- [ ] 5.4 After the authenticated app derives an eligible already-authorized current provider and Jonathan explicitly authorizes the bounded proof, stop for his rendered ready-state and live microphone acceptance; never ask him to name a derivable binding or enable Voice merely to complete this change.
+- [ ] 5.4 Remove the redundant Voice-specific host switches so a derived eligible current provider reaches ready in production, then stop before microphone permission for Jonathan's explicit rendered live acceptance; never ask him to name a derivable binding or use platform authority.

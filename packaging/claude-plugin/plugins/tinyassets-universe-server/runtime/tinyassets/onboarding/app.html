@@ -1134,7 +1134,7 @@
   // Voice owns only microphone, WebRTC, and turn timing. The universe's
   // actual words still come from MCP.converse through sendVoiceTurn below.
   const VOICE_LABELS={
-    unavailable:"Voice sessions are not enabled yet. Typed chat still works.",
+    unavailable:"Voice transport is temporarily unavailable. Typed chat still works.",
     checking:"Checking this universe's voice capability...",
     unpowered:"Voice needs the provider connection your universe will use.",
     incompatible:"Your current provider does not have compatible realtime Voice.",
@@ -1186,7 +1186,7 @@
       voice_output_mismatch:"Voice stopped because the spoken reply did not match the conversation text. Typed chat still works.",
       no_home_universe:"Send one typed message first so your universe is ready.",
       same_origin_required:"Voice was blocked by the app's security boundary.",
-      voice_disabled:"Voice is not enabled on this TinyAssets host."
+      voice_disabled:"Voice transport is temporarily unavailable. Typed chat still works."
     };
     return messages[code]||"Voice could not connect. Typed chat still works.";
   }

@@ -16,8 +16,8 @@ Enabling Realtime voice SHALL NOT enroll, select, replace, or fall back to any p
 - **AND** the same control opens the existing provider connection or capability-request path and explains that compatible user-owned authority is required
 - **AND** TinyAssets does not request a separate Voice-only credential or widen to platform compute
 
-#### Scenario: Voice sessions are disabled while provider setup remains actionable
-- **GIVEN** the Voice session safety switches are disabled
+#### Scenario: Generic outbound transport is disabled while provider setup remains actionable
+- **GIVEN** generic outbound HTTP transport is disabled
 - **WHEN** the founder starts Voice without compatible current-provider authority
 - **THEN** TinyAssets discovers the current provider's capability state and opens the existing provider connection or capability-request path when remediation is available
 - **AND** no microphone permission or Voice session request occurs
@@ -33,6 +33,6 @@ Enabling Realtime voice SHALL NOT enroll, select, replace, or fall back to any p
 - **AND** the router does not substitute an API-key writer or any unselected provider
 
 #### Scenario: General API-key writer allowance remains disabled
-- **GIVEN** the voice session switch is enabled and `TINYASSETS_ALLOW_API_KEY_PROVIDERS` is disabled
+- **GIVEN** an exact user-owned Voice capability is ready and `TINYASSETS_ALLOW_API_KEY_PROVIDERS` is disabled
 - **WHEN** provider routing selects a writer
 - **THEN** the voice allowance does not make API-key writer providers eligible
