@@ -1194,6 +1194,7 @@
     state:"unavailable", pc:null, dc:null, stream:null, audio:null,
     capability:null,
     stopTimer:null, warnTimer:null, authorityTimer:null,
+    disclosureOpen:false, acceptingDisclosure:false,
     reconnecting:false, reconnectAttempts:0,
     epoch:0, handledCalls:new Set(), expectedReply:"", canonicalResponsePending:false,
     canonicalResponseInterrupted:false,
@@ -1277,16 +1278,40 @@
         const privacy=$("voice-privacy-link"), privacyUrl=this.capability&&this.capability.privacy_url;
         if(privacyUrl){privacy.href=privacyUrl;privacy.hidden=false;}else{privacy.removeAttribute("href");privacy.hidden=true;}
         this.returnFocus=document.activeElement;
+        this.disclosureOpen=true;
         $("voice-disclosure").hidden=false; $("btn-voice-accept").focus(); return;
       }
       this.start();
     },
-    acceptDisclosure(){
-      try{const key=voiceDisclosureKey(this.capability);if(key)localStorage.setItem(key,"accepted");}catch(_e){}
-      $("voice-disclosure").hidden=true; this.returnFocus=null; this.start();
+    async acceptDisclosure(){
+      if(!this.disclosureOpen||this.acceptingDisclosure)return;
+      this.acceptingDisclosure=true;
+      const button=$("btn-voice-accept"),offered=this.capability&&this.capability.disclosure_id;
+      button.disabled=true;
+      try{
+        const doc=await this._readCapability(5000);
+        if(!this.disclosureOpen)return;
+        if(!doc.available||!offered||doc.disclosure_id!==offered){
+          this.capability=doc;this.disclosureOpen=false;$("voice-disclosure").hidden=true;
+          this.returnFocus=null;
+          this.state=doc.available?"idle":(doc.state==="disabled"?"unavailable":
+            (doc.state==="unpowered"?"unpowered":"incompatible"));
+          this._render(doc.available?"Voice connection changed. Review its disclosure before starting.":voiceFriendlyError(doc.reason));
+          return;
+        }
+        this.capability=doc;
+        try{const key=voiceDisclosureKey(doc);if(key)localStorage.setItem(key,"accepted");}catch(_e){}
+        this.disclosureOpen=false;$("voice-disclosure").hidden=true;this.returnFocus=null;
+        this.start();
+      }catch(_error){
+        if(!this.disclosureOpen)return;
+        this.capability=null;this.disclosureOpen=false;$("voice-disclosure").hidden=true;
+        this.returnFocus=null;this.state="checking";
+        this._render("Voice capability could not be confirmed. Typed chat still works.");
+      }finally{this.acceptingDisclosure=false;button.disabled=false;}
     },
     cancelDisclosure(){
-      $("voice-disclosure").hidden=true;
+      this.disclosureOpen=false;$("voice-disclosure").hidden=true;
       const target=this.returnFocus&&typeof this.returnFocus.focus==="function"
         ?this.returnFocus:$("btn-voice");
       target.focus(); this.returnFocus=null;
@@ -1325,6 +1350,7 @@
         catch(_error){ throw new Error("voice_permission_denied"); }
         if(generation!==this.epoch){ this._disposeTransport(null,null,null,stream); return; }
         this.stream=stream;
+        this._armAuthorityChecks(generation);
         if(!isReconnect) this._event("permission_granted"); else this._render();
         if(typeof RTCPeerConnection!=="function") throw new Error("voice_unsupported");
         pc=new RTCPeerConnection(); this.pc=pc;
@@ -1496,7 +1522,7 @@
     stop(announce=true,detail){
       this.epoch++;this.reconnecting=false;this.reconnectAttempts=0;
       this.canonicalResponsePending=false;this.canonicalResponseInterrupted=false;
-      $("voice-disclosure").hidden=true;this.returnFocus=null;
+      this.disclosureOpen=false;$("voice-disclosure").hidden=true;this.returnFocus=null;
       this.expectedReply="";this._teardownTransport();
       this.state=this.capability&&this.capability.available?"idle":
         (this.capability&&this.capability.state==="unpowered"?"unpowered":

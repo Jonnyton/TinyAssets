@@ -696,10 +696,18 @@ let connectCalls=[]; function showConnect(asGate){connectCalls.push(asGate);}
     service_name:"My bridge",privacy_url:"https://bridge.example/privacy"};
   await Voice.refreshCapability(); out.initial=Voice.state;
   await Voice.requestStart(); out.disclosureShown=!els["voice-disclosure"].hidden;
-  Voice.start=()=>{out.disclosureStarted=true;}; Voice.acceptDisclosure();
+  Voice.start=()=>{out.disclosureStarted=true;};
+  capabilityDoc=Object.assign({},capabilityDoc,
+    {disclosure_id:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+     service_name:"Changed bridge"});
+  await Voice.acceptDisclosure();
+  out.changedDuringDisclosure={started:!!out.disclosureStarted,state:Voice.state,
+    disclosureHidden:els["voice-disclosure"].hidden,accepted:Voice._accepted(),mediaRequests,status};
+  await Voice.requestStart();out.freshDisclosureShown=!els["voice-disclosure"].hidden;
+  await Voice.acceptDisclosure();
   out.acceptedFirst=Voice._accepted();
   Voice.capability=Object.assign({},capabilityDoc,
-    {disclosure_id:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"});
+    {disclosure_id:"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"});
   out.acceptedAfterRebind=Voice._accepted(); Voice.capability=capabilityDoc;
   const sent=[];
   Voice.dc={readyState:"open",send:v=>sent.push(JSON.parse(v)),
@@ -909,6 +917,15 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
     }
     assert out["initial"] == "idle"
     assert out["disclosureShown"] is True
+    assert out["changedDuringDisclosure"] == {
+        "started": False,
+        "state": "idle",
+        "disclosureHidden": True,
+        "accepted": False,
+        "mediaRequests": 0,
+        "status": "Voice connection changed. Review its disclosure before starting.",
+    }
+    assert out["freshDisclosureShown"] is True
     assert out["disclosureStarted"] is True
     assert out["acceptedFirst"] is True
     assert out["acceptedAfterRebind"] is False
