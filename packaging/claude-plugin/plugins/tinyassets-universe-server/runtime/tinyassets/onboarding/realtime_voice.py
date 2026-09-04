@@ -342,7 +342,12 @@ async def create_voice_session(
     universe = Path(universe_dir).resolve()
 
     def resolve_binding() -> VoiceBinding:
-        return _resolve_voice_binding(universe, owner_user_id)
+        from tinyassets.provider_serving_binding import NoServingProvider
+
+        try:
+            return _resolve_voice_binding(universe, owner_user_id)
+        except NoServingProvider as exc:
+            raise RealtimeVoiceError("provider_not_configured", 409) from exc
 
     binding = await run_in_threadpool(resolve_binding)
 

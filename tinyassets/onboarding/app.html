@@ -1222,19 +1222,34 @@
     _event(event,detail){ this.state=voiceNextState(this.state,event); this._render(detail); },
     _accepted(){ try{const key=voiceDisclosureKey(this.capability);return !!key&&localStorage.getItem(key)==="accepted";}catch(_e){return false;} },
     async _readCapability(timeoutMs=0){
-      await ensureFreshToken();
+      let expired=false,timer=null;
       const controller=timeoutMs&&typeof AbortController==="function"?new AbortController():null;
-      const timer=controller?setTimeout(()=>controller.abort(),timeoutMs):null;
-      const options={credentials:"same-origin",headers:authHeaders()};
-      if(controller)options.signal=controller.signal;
-      try{
+      const operation=(async()=>{
+        await ensureFreshToken();
+        if(expired)throw new Error("voice_status_timeout");
+        const options={credentials:"same-origin",headers:authHeaders()};
+        if(controller)options.signal=controller.signal;
         let response=await fetch("/mcp/app/voice/status",options);
-        if(response.status===401&&await refreshAccessToken()){
-          options.headers=authHeaders();response=await fetch("/mcp/app/voice/status",options);
+        if(response.status===401){
+          const refreshed=await refreshAccessToken();
+          if(expired)throw new Error("voice_status_timeout");
+          if(refreshed){
+            options.headers=authHeaders();response=await fetch("/mcp/app/voice/status",options);
+          }
         }
         let doc={};try{doc=await response.json();}catch(_e){}
         if(!response.ok)throw new Error(doc.error||"voice_status_failed");
         return doc;
+      })();
+      if(!timeoutMs)return operation;
+      const deadline=new Promise((_resolve,reject)=>{
+        timer=setTimeout(()=>{
+          expired=true;if(controller)controller.abort();
+          reject(new Error("voice_status_timeout"));
+        },timeoutMs);
+      });
+      try{
+        return await Promise.race([operation,deadline]);
       }finally{if(timer)clearTimeout(timer);}
     },
     async refreshCapability(){

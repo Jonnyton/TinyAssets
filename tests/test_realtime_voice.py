@@ -295,6 +295,34 @@ def test_capability_is_unpowered_without_current_provider(monkeypatch, tmp_path)
     }
 
 
+def test_unpowered_session_returns_stable_closed_error(monkeypatch, tmp_path):
+    _enable(monkeypatch)
+    universe = tmp_path / "u-owner"
+    universe.mkdir()
+    import tinyassets.daemon_server as daemon_server
+    import tinyassets.provider_serving_binding as serving
+
+    monkeypatch.setattr(daemon_server, "get_founder_home", lambda *_args: "u-owner")
+    monkeypatch.setattr(
+        daemon_server,
+        "list_universe_acl",
+        lambda *_args, **_kwargs: [{"actor_id": "owner", "permission": "admin"}],
+    )
+    monkeypatch.setattr(
+        serving,
+        "resolve_current_serving_provider_authority",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            serving.NoServingProvider("not configured")
+        ),
+    )
+
+    with pytest.raises(rv.RealtimeVoiceError) as caught:
+        asyncio.run(rv.create_voice_session(universe, "owner", _OFFER_SDP))
+
+    assert caught.value.code == "provider_not_configured"
+    assert caught.value.status == 409
+
+
 def test_capability_is_ready_only_for_exact_owner_and_universe(monkeypatch, tmp_path):
     _enable(monkeypatch)
     universe = _seed_binding(tmp_path, monkeypatch)

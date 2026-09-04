@@ -683,6 +683,13 @@ let connectCalls=[]; function showConnect(asGate){connectCalls.push(asGate);}
   CFG.voice.enabled=false;Voice.init();await Voice.requestStart();
   out.disabled={state:Voice.state,disabled:els["btn-voice"].disabled,mediaRequests};
   CFG.voice.enabled=true;
+  const realEnsureFreshToken=ensureFreshToken,fetchesBeforeDeadline=fetched.length;
+  ensureFreshToken=()=>new Promise(()=>{});
+  const deadlineResult=Voice._readCapability(5000).then(()=>"resolved",error=>error.message);
+  timers[timers.length-1].fn();
+  out.authorityDeadline={result:await deadlineResult,
+    fetches:fetched.length-fetchesBeforeDeadline};
+  ensureFreshToken=realEnsureFreshToken;
   capabilityDoc={available:true,state:"ready",resource:"user_bound_voice_connection",
     remediation:"none",
     disclosure_id:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -895,6 +902,10 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
         "state": "unavailable",
         "disabled": True,
         "mediaRequests": 0,
+    }
+    assert out["authorityDeadline"] == {
+        "result": "voice_status_timeout",
+        "fetches": 0,
     }
     assert out["initial"] == "idle"
     assert out["disclosureShown"] is True
