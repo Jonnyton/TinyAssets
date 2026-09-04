@@ -128,6 +128,8 @@ def _record_run(
         branch_def_id=branch_def_id,
         thread_id=branch_def_id,
         inputs={},
+        # A run records who asked for it; there is no default principal.
+        actor="universe:u-leaderboard",
     )
     update_run_status(
         base_path,

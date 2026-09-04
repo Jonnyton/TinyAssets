@@ -148,7 +148,7 @@ def test_only_one_destination_is_removed(base: Path) -> None:
     assert [r["destination"] for r in left] == ["webhook:other"]
 
 
-def test_an_anonymous_caller_cannot_remove(base: Path) -> None:
+def test_an_anonymous_caller_cannot_remove(base: Path, nobody) -> None:
     """No login at all — the suite's canonical way to be unauthenticated.
 
     An earlier draft logged in, deposited, then called `set_provider(None)` and

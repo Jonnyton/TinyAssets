@@ -897,10 +897,10 @@ def _mutate(compose_text: str, old: str, new: str) -> str:
         ),
         (
             "daemon loses its healthcheck",
-            '    healthcheck:\n      # Use the same canary shape as Layer-1 '
-            "/ tier-3 / docker-build",
-            "    x-healthcheck-removed:\n      # Use the same canary shape as "
-            "Layer-1 / tier-3 / docker-build",
+            "    healthcheck:\n      # Liveness from release facts as the canary "
+            "service principal.",
+            "    x-healthcheck-removed:\n      # Liveness from release facts as the "
+            "canary service principal.",
         ),
         (
             "daemon image pinned via a different variable",

@@ -129,6 +129,7 @@ def app_config() -> dict[str, Any]:
     """
     from tinyassets.auth.wellknown import protected_resource_metadata
     from tinyassets.onboarding import openai_device as _openai
+    from tinyassets.onboarding.realtime_voice import public_voice_config
 
     prm = protected_resource_metadata()
     resource = str(prm.get("resource", "")).rstrip("/")
@@ -160,6 +161,7 @@ def app_config() -> dict[str, Any]:
             "redirect_path": _openai.BROWSER_REDIRECT_PATH,
             "device_verification_url": _openai.VERIFICATION_URL,
         },
+        "voice": public_voice_config(),
     }
 
 
@@ -529,17 +531,16 @@ async def _read_small_json(request: Any, limit: int = 4096) -> dict[str, Any] | 
 
 
 def _app_identity_required() -> Any:
-    """401 JSON when the request carries no resolved (non-anonymous) identity.
+    """401 JSON when the request carries no resolved named identity.
 
     The auth middleware resolves the app's bearer into the request identity
     contextvar before the handler runs; ``connect_llm`` re-checks it too."""
     from starlette.responses import JSONResponse
 
-    from tinyassets.auth.middleware import current_identity
-    from tinyassets.auth.provider import ANONYMOUS
+    from tinyassets.auth.middleware import current_identity_or_none
 
-    ident = current_identity()
-    if ident is ANONYMOUS or not getattr(ident, "user_id", "") or ident.user_id == "anonymous":
+    ident = current_identity_or_none()
+    if ident is None or not getattr(ident, "user_id", ""):
         return JSONResponse({"error": "authentication_required"}, status_code=401)
     return None
 
@@ -865,9 +866,108 @@ async def _handle_openai_exchange(request: Any) -> Any:
     )
 
 
+async def _handle_voice_session(request: Any) -> Any:
+    """Exchange bounded SDP through the signed-in founder's voice bridge.
+
+    There is deliberately no caller-supplied universe id. The long-lived
+    connection credential stays inside the generic broker and never crosses
+    this boundary.
+    """
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.onboarding.realtime_voice import (
+        RealtimeVoiceError,
+        allow_voice_session,
+        create_voice_session,
+        realtime_voice_enabled,
+    )
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    if not realtime_voice_enabled():
+        return JSONResponse(
+            {"error": "voice_disabled"}, status_code=404, headers=_NO_STORE
+        )
+    if not _same_origin_json(request, str(app_config().get("resource") or "")):
+        return JSONResponse(
+            {"error": "same_origin_required"}, status_code=403, headers=_NO_STORE
+        )
+    data = await _read_small_json(request, 70 * 1024)
+    if data is None:
+        return JSONResponse(
+            {"error": "invalid_json"}, status_code=400, headers=_NO_STORE
+        )
+    if set(data) != {"offer_sdp"}:
+        # Reject a caller-selected universe id: identity alone selects the
+        # connection scope for this first slice.
+        return JSONResponse(
+            {"error": "voice_session_fields_not_allowed"},
+            status_code=400,
+            headers=_NO_STORE,
+        )
+
+    identity = current_identity()
+    if not allow_voice_session(identity.user_id):
+        return JSONResponse(
+            {"error": "voice_session_rate_limited"},
+            status_code=429,
+            headers=_NO_STORE,
+        )
+    home = await run_in_threadpool(_read_home, identity)
+    if not home:
+        return JSONResponse(
+            {"error": "no_home_universe"}, status_code=409, headers=_NO_STORE
+        )
+    try:
+        result = await create_voice_session(
+            _universe_dir(home), identity.user_id, data.get("offer_sdp")
+        )
+    except RealtimeVoiceError as exc:
+        return JSONResponse(
+            {"error": exc.code}, status_code=exc.status, headers=_NO_STORE
+        )
+    return JSONResponse(result, headers=_NO_STORE)
+
+
+async def _handle_voice_status(request: Any) -> Any:
+    """Report whether this founder's universe has voice-capable authority.
+
+    This is a read-only, secret-free preflight.  The client checks it before
+    showing disclosure or requesting microphone access, so an ordinary Codex
+    subscription is never mistaken for Realtime API authority.
+    """
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.onboarding.realtime_voice import voice_capability
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    identity = current_identity()
+    home = await run_in_threadpool(_read_home, identity)
+    result = await run_in_threadpool(
+        voice_capability,
+        _universe_dir(home) if home else None,
+        identity.user_id,
+    )
+    return JSONResponse(result, headers=_NO_STORE)
+
+
 _TRACE_STEPS = frozenset({
     "openai.listener", "openai.browser", "openai.callback", "openai.deeplink",
     "openai.complete", "openai.exchange", "openai.finish",
+    "voice_output_mismatch",
 })
 _TRACE_BUCKET_MAX = 60          # lines per identity per window
 _TRACE_BUCKET_WINDOW = 600.0    # seconds
@@ -1500,6 +1600,8 @@ def onboarding_routes() -> list[Any]:
         Route("/mcp/app/openai/device/poll", _handle_openai_device_poll, methods=["POST"]),
         Route("/mcp/app/openai/begin", _handle_openai_begin, methods=["POST"]),
         Route("/mcp/app/openai/exchange", _handle_openai_exchange, methods=["POST"]),
+        Route("/mcp/app/voice/status", _handle_voice_status, methods=["GET"]),
+        Route("/mcp/app/voice/session", _handle_voice_session, methods=["POST"]),
         Route("/mcp/app/me", _handle_me, methods=["GET"]),
         Route("/mcp/app/trace", _handle_trace, methods=["POST"]),
         Route("/mcp/app/serving/bind", _handle_serving_bind, methods=["POST"]),

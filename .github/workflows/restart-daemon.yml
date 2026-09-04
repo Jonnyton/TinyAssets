@@ -125,6 +125,8 @@ jobs:
               "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py guard-host-mutation --command-timeout 120 -- /bin/bash -lc 'systemctl reset-failed tinyassets-daemon.service || true; systemctl restart tinyassets-daemon.service'"
 
       - name: Wait for public canary
+        env:
+          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         run: |
           for i in $(seq 1 24); do
             if python scripts/mcp_public_canary.py --url "$CANARY_URL" --timeout 10 >/dev/null 2>&1; then

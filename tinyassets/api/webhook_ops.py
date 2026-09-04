@@ -86,10 +86,18 @@ def _resolve_owned_branch(base: str, branch_def_id: str, uid: str) -> tuple[str,
         return bid, not_found
     author = (branch.get("author") or "").strip()
     caller = (current_request_actor_id() or "").strip()
-    owners = {caller, f"universe:{uid}"} - {"", "anonymous"}
+    owners = {caller, f"universe:{uid}"} - {""}
     if author not in owners:
         return bid, not_found
     return bid, None
+
+
+def _owner_principal() -> str:
+    """The authenticated caller a hook will run AS. Every hook has one
+    (authenticated-owner boundary D2); a request with none cannot mint."""
+    from tinyassets.api.permissions import current_request_actor_id
+
+    return (current_request_actor_id() or "").strip()
 
 
 def _action_mint_webhook(kwargs: dict[str, Any]) -> str:
@@ -108,7 +116,12 @@ def _action_mint_webhook(kwargs: dict[str, Any]) -> str:
     if err is not None:
         return err
 
-    token = webhook_hooks.mint(base, universe_id=uid, branch_def_id=bid)
+    owner = _owner_principal()
+    if not owner:
+        return json.dumps({"error": "authentication_required"})
+    token = webhook_hooks.mint(
+        base, universe_id=uid, branch_def_id=bid, owner_principal_id=owner
+    )
     url = f"{_public_base_url()}/mcp/hooks/{token}"
     return json.dumps({
         "text": (
@@ -213,7 +226,13 @@ def _action_create_source(kwargs: dict[str, Any]) -> str:
         )
     except ValueError as exc:
         return json.dumps({"error": str(exc)})
-    token = webhook_hooks.mint(base, universe_id=uid, branch_def_id=bid, source_id=source_id)
+    owner = _owner_principal()
+    if not owner:
+        return json.dumps({"error": "authentication_required"})
+    token = webhook_hooks.mint(
+        base, universe_id=uid, branch_def_id=bid, source_id=source_id,
+        owner_principal_id=owner,
+    )
     url = f"{_public_base_url()}/mcp/hooks/{token}"
     return json.dumps({
         "text": (

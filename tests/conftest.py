@@ -17,6 +17,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 from tinyassets.auth.middleware import auth_middleware, set_provider
 from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
+from tinyassets.providers import call as _provider_call
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -67,8 +68,6 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 # Force mock provider responses in all tests to avoid real API calls
-from tinyassets.providers import call as _provider_call
-
 _provider_call.set_force_mock(True)
 
 
@@ -168,7 +167,7 @@ def authenticate_request() -> Callable[[str | None], None]:
         auth_middleware(token)
 
     yield authenticate
-    auth_middleware(None)
+    auth_middleware("dev")
     set_provider(DevAuthProvider())
 
 
@@ -229,6 +228,142 @@ def _identity_fingerprint_key(monkeypatch):
     monkeypatch.setenv("TINYASSETS_IDENTITY_FINGERPRINT_VERSION", "v1")
 
 
+#: Who the suite runs as. A direct call into an API in a test stands in for an
+#: authenticated request, so the suite binds a NAMED operator the way the
+#: transport would -- rather than leaving the ContextVar empty, which would
+#: make every such call refuse and say nothing about the code under test.
+TEST_OPERATOR = Identity(
+    user_id="dev-tests",
+    username="dev-tests",
+    display_name="dev-tests",
+    capabilities=["read", "write", "submit_request", "list", "costly", "admin"],
+)
+
+
+@pytest.fixture(autouse=True)
+def _signed_in_operator(request):
+    """Bind a named operator for every test, and unbind afterwards.
+
+    There is no anonymous principal (founder, 2026-09-02): with nothing bound,
+    ``current_identity()`` raises. A test that wants NOBODY says so --
+    ``auth_middleware(None)`` -- and asserts the refusal; a test that wants a
+    different subject sets its own provider. Neither is affected by this, and
+    both used to be the only way a test got an identity at all.
+
+    The operator is DISTINCT PER TEST. A shared one leaked across tests that
+    share a data directory: an authenticated caller with no explicit scope
+    resolves their bound home, so a home auto-birthed by one test became the
+    resolved scope of the next, which had set up a differently-named universe
+    and got somebody else's serial id.
+    """
+    from tinyassets.auth import middleware as _mw
+
+    local_operator_process = _mw._local_operator_process
+    _mw._local_operator_process = False
+    operator = Identity(
+        user_id=f"test-operator::{request.node.nodeid}",
+        username="test-operator",
+        display_name="test-operator",
+        capabilities=list(TEST_OPERATOR.capabilities),
+    )
+    token = _mw._current_identity.set(operator)
+    try:
+        yield operator
+    finally:
+        try:
+            _mw._current_identity.reset(token)
+        except ValueError:
+            # A test that set the identity inside another context (or in a
+            # different task) leaves the token unresettable here; clearing is
+            # the equivalent end state.
+            _mw._current_identity.set(None)
+        _mw._local_operator_process = local_operator_process
+
+
+@pytest.fixture
+def founder_home(tmp_path, monkeypatch, _signed_in_operator):
+    """An isolated data dir where the signed-in operator HAS a home universe.
+
+    The state a founder is in after first contact, and the one an omitted
+    scope resolves to. Without it an authenticated caller with no bound home
+    gets the first-contact card from ``get_status`` and the designated public
+    universe from ``_request_universe`` -- both correct, and neither what a
+    test asserting "the status of my universe" means.
+
+    Returns the universe directory.
+    """
+    from tinyassets.daemon_server import (
+        claim_founder_home,
+        ensure_universe_registered,
+        grant_universe_access,
+    )
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    uid = "test-universe"
+    udir = tmp_path / uid
+    udir.mkdir(parents=True, exist_ok=True)
+    (udir / "dispatcher.json").write_text("{}", encoding="utf-8")
+    # The canonical completed-seed marker. A home without it is "bound but
+    # partial", which status reports as first contact rather than reading.
+    (udir / "soul.md").write_text("# test universe\n", encoding="utf-8")
+    ensure_universe_registered(
+        tmp_path, universe_id=uid, universe_path=udir, display_name=uid,
+    )
+    grant_universe_access(
+        tmp_path, universe_id=uid, actor_id=_signed_in_operator.user_id,
+        permission="admin", granted_by="tests",
+    )
+    claim_founder_home(tmp_path, _signed_in_operator.user_id, uid)
+    return udir
+
+
+@pytest.fixture
+def nobody():
+    """Nobody bound, for a test that asserts a refusal.
+
+    The autouse operator signs every test in, which is right: production has no
+    anonymous principal, so a test running as nobody is testing a state that
+    cannot happen. The exception is a test whose SUBJECT is the refusal -- it
+    has to be able to reach the unauthenticated path, and "just do not log in"
+    stopped meaning that the moment the default became signed-in.
+    """
+    from tinyassets.auth import middleware as _mw
+
+    token = _mw._current_identity.set(None)
+    bearer = _mw._current_bearer_present.set(False)
+    yield
+    for var, tok in ((_mw._current_identity, token), (_mw._current_bearer_present, bearer)):
+        try:
+            var.reset(tok)
+        except ValueError:
+            pass
+
+
+@pytest.fixture
+def signed_in():
+    """Run a block as a named subject: ``signed_in("workos|abc")``."""
+    from tinyassets.auth import middleware as _mw
+
+    tokens = []
+
+    def _bind(user_id: str, capabilities: Sequence[str] | None = None) -> Identity:
+        identity = Identity(
+            user_id=user_id,
+            username=user_id,
+            display_name=user_id,
+            capabilities=list(capabilities or TEST_OPERATOR.capabilities),
+        )
+        tokens.append(_mw._current_identity.set(identity))
+        return identity
+
+    yield _bind
+    for token in reversed(tokens):
+        try:
+            _mw._current_identity.reset(token)
+        except ValueError:
+            _mw._current_identity.set(None)
+
+
 @pytest.fixture(autouse=True)
 def _reset_runtime():
     """Clear runtime singletons before AND after every test to prevent leakage.
@@ -241,6 +376,17 @@ def _reset_runtime():
     runtime.reset()
     yield
     runtime.reset()
+
+
+@pytest.fixture(autouse=True)
+def _stop_workspace_sweepers_between_tests():
+    """No test may leave a process-global periodic worker for the next test."""
+    import sys
+
+    yield
+    runs = sys.modules.get("tinyassets.runs")
+    if runs is not None:
+        assert runs._stop_all_workspace_sweepers(timeout_s=2)
 
 
 @pytest.fixture(autouse=True)
@@ -446,3 +592,13 @@ def universe_input() -> dict[str, Any]:
         "cross_series_facts": [],
         "quality_trace": [],
     }
+
+
+# There is no anonymous principal (founder, 2026-09-02). The dev auth provider
+# names its local operator through UNIVERSE_SERVER_DEV_USER and refuses to
+# start without it; the suite runs as this named operator unless a test sets
+# its own. A test that wants NO identity calls auth_middleware(None) and
+# asserts the refusal, never a stand-in.
+import os as _os
+
+_os.environ.setdefault("UNIVERSE_SERVER_DEV_USER", "dev-tests")

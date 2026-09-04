@@ -36,11 +36,12 @@ def test_universe_treasury_status_is_read_only(monkeypatch, tmp_path: Path) -> N
     after = (tmp_path / DB_FILENAME).stat().st_mtime_ns
 
     assert after == before
-    # `_default_universe` moved from `api.universe` to `api.helpers`; reach it
-    # where it now lives rather than through the module that used to re-export it.
-    from tinyassets.api import helpers as universe_helpers
-
-    assert result["universe_id"] == universe_helpers._default_universe()
+    # The subject here is READ-ONLY-NESS. This used to also assert the id
+    # equalled `_default_universe()`, which held only while the caller was
+    # nobody and "the caller's universe" and "the single-tenant fallback" were
+    # the same question. A signed-in founder resolves to their own home, so the
+    # test asserts the answer NAMES a universe and stops asserting which.
+    assert isinstance(result["universe_id"], str) and result["universe_id"]
     assert result["read_only"] is True
     assert result["autonomous_spend_allowed"] is False
     assert result["treasury"]["fee_collected_total"] == 5000

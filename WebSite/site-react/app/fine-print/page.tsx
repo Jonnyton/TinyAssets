@@ -7,7 +7,7 @@ import { SITE } from "../../lib/site";
 export const metadata: Metadata = {
   title: "Fine print",
   description:
-    "What is true right now: whether the public endpoint is reachable, what free includes, what premium changes, what does not exist yet, and where the boundaries are.",
+    "What is true right now: where live readings belong, what free includes, what premium changes, what does not exist yet, and where the boundaries are.",
   alternates: { canonical: `${SITE.origin}/fine-print/` },
 };
 
@@ -26,8 +26,8 @@ export default function FinePrintPage() {
       <section className="section" id="reachability">
         <div className="container">
           <div className="head">
-            <RitualLabel>Reachability</RitualLabel>
-            <h2>Can your browser reach the public endpoint?</h2>
+            <RitualLabel>Live readings</RitualLabel>
+            <h2>Why are live readings not shown here?</h2>
           </div>
           <Reachability />
         </div>

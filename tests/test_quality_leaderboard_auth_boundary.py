@@ -39,6 +39,17 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
+def _sign_in(user_id: str) -> None:
+    """Bind the viewer. ``UNIVERSE_SERVER_USER`` used to name them; an
+    environment variable must never confer identity (founder, 2026-09-02)."""
+    from tinyassets.auth.middleware import auth_middleware, set_provider
+    from tinyassets.auth.provider import DevAuthProvider
+
+    set_provider(DevAuthProvider(user_id=user_id))
+    auth_middleware("dev")
+
+
+
 @pytest.fixture(autouse=True)
 def _mock_selector_passthrough(monkeypatch):
     """DESIGN-008 — pass-through selector mock for auth-boundary tests.
@@ -88,7 +99,7 @@ def _mock_selector_passthrough(monkeypatch):
 def us_env(tmp_path: Path, monkeypatch):
     """Daemon env where the calling actor is ``eve`` by default."""
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "eve")
+    _sign_in("eve")   # the viewer is a bound principal, never an env var
     from tinyassets import universe_server as us
     importlib.reload(us)
     yield us, tmp_path
@@ -296,7 +307,7 @@ def test_owner_sees_own_private_rows(us_env, monkeypatch):
     us, base = us_env
     _seed_universe(base)
     # Reload the daemon as alice.
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    _sign_in("alice")   # the viewer is a bound principal, never an env var
     importlib.reload(us)
     try:
         result = _call(us, "quality_leaderboard", goal_id="g-test")
@@ -353,7 +364,7 @@ def test_fork_count_includes_owned_private_forks_for_owner(us_env, monkeypatch):
     private + eve's public)."""
     us, base = us_env
     _seed_universe(base)
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    _sign_in("alice")   # the viewer is a bound principal, never an env var
     importlib.reload(us)
     try:
         result = _call(us, "quality_leaderboard", goal_id="g-test")
@@ -507,6 +518,7 @@ def test_visibility_filter_holds_even_with_signal_rich_branches(us_env):
     run_id = create_run(
         base, branch_def_id=seeds["priv_alice"],
         thread_id=seeds["priv_alice"], inputs={},
+        actor="universe:u-leaderboard",
     )
     update_run_status(
         base, run_id, status=RUN_STATUS_COMPLETED, finished_at=time.time(),

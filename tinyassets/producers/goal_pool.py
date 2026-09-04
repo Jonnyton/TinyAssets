@@ -487,7 +487,7 @@ def write_pool_post(
     branch_def_id: str,
     inputs: dict,
     priority_weight: float = 0.0,
-    posted_by: str = "anonymous",
+    posted_by: str = "",
     branch_task_id: str | None = None,
 ) -> Path:
     """Write a pool YAML. Performs flat-dict validation.

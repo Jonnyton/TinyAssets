@@ -49,7 +49,7 @@ export default function DevelopersPage() {
             </p>
             <p>
               JSON-RPC over HTTP with an initialised session. Claude.ai and ChatGPT use it as a
-              connector; the web, Android and desktop apps use it too. There is no other public
+              connector; the web, iOS, Android and desktop apps use it too. There is no other public
               endpoint, and anything claiming to be one is not us.
             </p>
             <p>

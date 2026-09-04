@@ -57,6 +57,7 @@ def test_unknown_domain_has_no_episodic_coordinate_shape():
 
 def test_fantasy_domain_registers_its_exact_episodic_coordinate_shape():
     import importlib
+
     from domains.fantasy_daemon.memory import schemas
 
     importlib.reload(schemas)

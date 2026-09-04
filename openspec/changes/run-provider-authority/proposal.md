@@ -1,15 +1,21 @@
 # Foreground runs need their own provider authority
 
+**Owner:** Patches, transferred from `resume` on 2026-09-03. The exact-provider
+admission check returned `ALLOWED`; this is a continuation of the existing
+single-intent change, not a fifth delivery lane.
+
 ## Why
 On prod `8cbf9769` every LLM-bearing node in a user-started run fails in ~150 ms with
 `permission_denied:provider_not_bound`. Public `run_branch` / `run_branch_version` LLM nodes are
 unreachable **for every user**, not just the founder. Effect-only and `source_code` branches are
 unaffected, which hid it: the agent's own Slack push lane used effect-only branches.
 
-Live evidence (founder's universe, 2026-08-26): a correct one-node branch — `prompt_template`,
-`effects: ["authenticated_external_call"]`, canonical `llm_policy {"preferred": {"provider": "codex"}}`,
-real `x:posting` connection/grant, consent granted, `runnable: true` — failed on runs
-`9195110bbbed418e`, `e81519ac30f24530`, `4e6e58608a8446fb`.
+Live evidence is retained only as a capability receipt. On 2026-09-03 the
+bound universe agent chose and ran its own prompt workflow after production was
+updated. The run still failed at first provider use with
+`permission_denied:provider_not_bound`; the selected provider was not invoked
+and no effect was attempted. Private universe, branch, run, prompt, credential,
+and destination details are intentionally omitted.
 
 Mechanism: `api/runs.py::_bind_run_provider_call` builds a `UniverseContext` with `universe_dir` +
 config and **no** authority carrier and **no** `provider_request`. `providers/router.py:465`
@@ -23,11 +29,17 @@ authority was intended and correct; **not replacing it with a foreground-run aut
 unintended reachability regression.**
 
 ## What changes
-A founder-initiated run that actually calls a provider gets a durable, server-owned run authority —
+A user-authorized run that actually calls a provider gets a durable, server-owned run authority —
 never a served request capability — from which the executor mints ONE pid-bound, one-use
 `ProviderInvocationCarrier` per provider attempt. Provider-free and explicitly mocked runs retain
 their previous behavior and create no run receipt. `work_item_kind="run"` already exists in
 `storage/provider_work_authority.py`; this change completes that dormant lane.
+
+The selected provider may be subscription-backed or a registered open HTTP
+provider. Subscription-backed calls use a sealed credential snapshot; open
+providers keep their existing connection-grant custody and credential-blind
+proxy path. The foreground authority lane must not reject a provider merely
+because it is open after ordinary serving selection has already authorized it.
 
 ## Non-goals
 Branch schema, the X connection/grant, outbound consent, effect dispatch and the public MCP handles

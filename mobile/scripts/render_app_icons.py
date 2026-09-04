@@ -9,7 +9,8 @@ Two stages, both idempotent:
    graphic). The feature graphic carries the only type, and its font must be an
    explicit file rather than a host lookup, or the same command renders different
    pixels on Windows, Linux and macOS (Codex 2026-09-02). Pass ``--font`` (and
-   optionally ``--font-bold``) to render it; omit them and it is skipped.
+   optionally ``--font-bold``) to redraw its type; without them, the reviewed
+   wordmark is preserved while its logo panel is refreshed.
 2. Always: render the Android density set from the sources into
    ``resources/android/`` — launcher icons and adaptive foregrounds from
    ``icon.png``, every splash size from ``splash.png`` (cover-fit + centre-crop, so
@@ -29,9 +30,9 @@ Usage (from ``mobile/``):
         --font /path/to/Inter-Regular.ttf --font-bold /path/to/Inter-Bold.ttf
 
 ``WebSite/brand/render_marks.py`` runs the second form for you as part of exporting
-the mark to every surface. Without ``--font`` the feature graphic — the only output
-with type on it — is SKIPPED rather than drawn with whatever font the host happens
-to have, so the brand pipeline stays runnable and the wordmark stays reproducible.
+the mark to every surface. Without ``--font`` the feature graphic's existing type
+is retained rather than redrawn with whatever font the host happens to have, so
+the brand pipeline stays runnable and the wordmark stays reproducible.
 """
 from __future__ import annotations
 
@@ -102,13 +103,21 @@ def render_sources(
     _save(i512, PLAY / "icon-512.png")
 
     if title_font is None or body_font is None:
-        # The committed feature graphic stays as it is. Skipping is the honest
-        # outcome: drawing this wordmark with a guessed font would silently
-        # change the shipped Play listing art depending on the machine.
-        print(
-            "feature-graphic-1024x500.png SKIPPED - pass --font (and --font-bold) "
-            "to re-render the wordmark"
-        )
+        # Preserve the reviewed wordmark while replacing the mark-bearing left
+        # panel. Logo changes must reach the store graphic even on a host without
+        # the exact fonts; guessing those fonts would silently alter the type.
+        feature = PLAY / "feature-graphic-1024x500.png"
+        if not feature.is_file():
+            raise SystemExit(
+                f"{feature} missing — pass --font and --font-bold to create it"
+            )
+        fg = Image.open(feature).convert("RGB")
+        if fg.size != (1024, 500):
+            raise SystemExit(f"{feature} must be 1024x500, got {fg.size}")
+        ImageDraw.Draw(fg).rectangle((0, 0, 469, 499), fill=BG)
+        m = logo.resize((360, 360), Image.LANCZOS)
+        fg.paste(m, (70, 70), m)
+        _save(fg, feature)
         return
     fg = Image.new("RGB", (1024, 500), BG)
     m = logo.resize((360, 360), Image.LANCZOS)
@@ -189,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument(
         "--font", type=Path,
-        help="TTF/OTF for the feature-graphic wordmark; omit to skip that one output",
+        help="TTF/OTF for the feature-graphic wordmark; omit to preserve its type",
     )
     ap.add_argument(
         "--font-bold", type=Path,

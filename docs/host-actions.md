@@ -98,16 +98,16 @@ next host-actions pass.
 
 ## Blocking a proof path
 
-### claude.ai account out of credits — blocks the browser `ui-test` route
+### Claude subscription spend limit — blocks Claude-family review and browser `ui-test`
 
-*2026-08-25 22:18Z: composer disabled, "monthly spend limit … out of credits"; weekly reset
-2026-08-28 19:00 PDT.*
+*Reverified 2026-09-03: three `peer_agent.py claude` review dispatches exited 1; the
+latest failed after 19 seconds with no review output. A minimal direct diagnostic on
+the earlier attempts reported that the monthly spend limit was reached.*
 
-Raise the limit, **or** test via the desktop app — Electron over the live SPA, CDP-testable, and it
-runs on the founder's own deposited subscription rather than the metered account.
-
-`ui-test` is the final acceptance path for chatbot-facing changes (`AGENTS.md` § *Quality Gates*),
-so this blocks acceptance, not just convenience.
+Raise or reset the Claude usage limit. Until then, Codex-authored public-surface changes
+cannot obtain the required opposite-family review, and the claude.ai browser route cannot
+provide final rendered-chat acceptance. The desktop app remains available for supporting
+SPA checks, but it does not replace either required gate.
 
 ---
 
@@ -256,27 +256,88 @@ reports `identity: not_configured`, tells the user, and writes a receipt under
 `python -c "from tinyassets.account_deletion import pending_deletions; print(pending_deletions('/data'))"`.
 Delete this paragraph on the next host-actions pass.
 
-### Apple App Store: enroll in the Apple Developer Program — nothing iOS can start without it
+### Apple App Store: enroll — signing and TestFlight cannot start without it
 
-**Checked 2026-09-02, not assumed.** Gmail holds exactly one Apple message, an Apple
-Account email verification from 2026-08-24; there is no Developer Program enrollment
-confirmation, no App Store Connect welcome, and no $99 receipt. `developer.apple.com/account`
-asks for a sign-in I cannot complete (I must not enter a password), so the browser cannot
-confirm it either. On that evidence: **not enrolled**.
+**Standing founder authorization (2026-09-03):** drive all ordinary Apple-required
+setup and completion steps for the iPhone Store objective without repeated approval,
+including required account/app attestations, API access and least-privilege credentials,
+signing/provisioning, builds, verified metadata/privacy answers, screenshots, uploads,
+TestFlight validation, App Review submission, and release/publication. Interrupt only
+for a new monetary charge, an irreversible destructive action, a material choice Apple
+does not require, or personal/legal facts that cannot be established truthfully from
+verified project/account evidence. Computer-use actions that policy requires to be
+confirmed at action time still follow that higher-level confirmation rule.
 
-Everything on the iOS side is already staged — the Capacitor iOS platform, the
-`tinyassets://` URL-scheme patch, the unsigned compile-check in `ios-build.yml`, and the
-listing/App-Privacy copy in `docs/ops/app-store-launch.md`. None of it can produce an
-installable app without an account.
+**Checked 2026-09-03, not assumed.** The account holder completed Apple's official
+creation form, but the final step returned only **"Your account cannot be created at
+this time."** There is no field-specific email, phone, birthday, country, or password
+validation on the page, and no new Apple email arrived. Apple Account and iCloud Sign-In
+were available on Apple's System Status page, so this is not a documented system-wide
+outage. The visible evidence cannot distinguish a temporary server-side rejection from
+a browser/network-specific rejection; it does not support claiming a phone-reuse,
+region, locked-account, or device-limit cause. Apple Support then reported making an
+unspecified change on its side and asked for one new creation attempt. After the account
+holder retried, the browser reached the signed-in Apple Account **Sign-In & Security**
+page and showed two-factor authentication with a trusted phone number. Account creation
+is therefore complete. The account holder confirmed that result and closed the completed
+Apple Support chat.
 
-1. **Enroll**: https://developer.apple.com/programs/enroll/ — $99/year, and identity
-   verification usually takes a day or two, sometimes longer. **Start this first**, because
-   the waiting is the long pole and it runs in parallel with everything else.
-2. Then the signing assets: a Distribution certificate, an App Store provisioning profile,
-   and an **App Store Connect API key** for CI upload (§3 of the runbook). You do NOT need a
-   Mac — CI builds on `macos-15` runners once those secrets exist.
-3. Then I create the App Store Connect record, fill the listing and App Privacy, and push a
-   build to TestFlight.
+Everything autonomous on the iOS build side is staged — the Capacitor platform,
+`tinyassets://` URL-scheme patch, native TinyAssets artwork, unsigned compile-check,
+manual signed-IPA workflow, opt-in TestFlight upload, and listing/App-Privacy copy.
+None of it can produce an installable app without account-owned signing material.
+
+1. **Complete — Apple Account created and verified (2026-09-03).** The signed-in account
+   page shows two-factor authentication and a trusted phone number. The account holder
+   also accepted the Apple Developer Agreement and declined optional developer-news email.
+
+2. **Complete — enrollment purchased and membership activated (2026-09-03).** The account
+   holder completed personal information and Secure Checkout. The signed-in developer portal
+   now shows program resources, a Team ID, and a 2027 renewal date. The Apple Developer
+   Program License Agreement and Apple Developer Agreement both show accepted on 2026-09-03.
+   At that checkpoint no signing assets or App Store Connect API credentials existed.
+3. **Complete — explicit App ID and App Store Connect record created (2026-09-03).** Verified in the
+   signed-in Apple Developer browser at `/account/resources/identifiers/list`: the
+   Identifiers table shows `TinyAssets iOS` / `io.tinyassets.app`. App Store Connect
+   Terms of Service V100 (last updated 04 June 2018) was accepted by the founder.
+   The founder then confirmed record creation. Apple ID `6808434444`; iOS 1.0 is
+   **Prepare for Submission**. Product metadata and manual release are saved, the
+   four-type privacy draft is configured but unpublished. Build 3 is attached to
+   the `Internal` TestFlight group, selected for App Store Version 1.0, and its
+   en-US **What to Test** and beta app description are saved. The group has manual
+   Xcode-build distribution, 0 testers, and no invitations sent. The free price
+   schedule is confirmed for all 175 displayed countries or regions; availability
+   remains unset.
+4. **Complete — signing, profile, and CI upload credentials (2026-09-03).** The active
+   Apple Distribution certificate expires 2027-09-03 and is paired with an exportable
+   private key. The active `TinyAssets App Store 2026` profile is App Store type for
+   `io.tinyassets.app`, contains that one certificate, and expires 2027-09-03. The
+   encrypted P12 and password, verified profile, and Developer-role `TinyAssets CI Upload`
+   App Store Connect API key are present as all six secrets named in §3.
+   The protected GitHub environment `app-store` is complete: founder approval is required,
+   and only `main` may deploy. You do NOT need a Mac — CI builds on `macos-15`.
+5. **Complete — Xcode 26 build accepted and processed by TestFlight (2026-09-03).**
+   Exact fix revision `6ccb3d24` received a Claude Opus **AGREE** review and landed in
+   PR #2798 as `76d795a1`. Every exact-head PR check passed, including `build-ios` and
+   `required-tests`. Protected run `33827279907` produced signed build 1.0.0 (3);
+   Apple reported no upload errors; App Store Connect matched its delivery UUID and
+   now shows Build 3 as **Ready to Submit** under Version 1.0.0. Receipt:
+   `docs/audits/2026-09-03-ios-testflight-upload-receipt.md`.
+6. **Complete — authenticated TestFlight/App Store metadata (2026-09-03).** The
+   founder reauthenticated, after which the beta app description and marketing URL
+   were saved, Build 3 was selected for App Store Version 1.0, and the free price
+   schedule was confirmed. Release mode remains manual. The internal-group and
+   Build 3 pages expose no automatic tester-notification control; the documented
+   checkbox belongs to external testing. With no external group or tester, the API's
+   residual `autoNotifyEnabled=true` has no recipient and is inert. Receipt:
+   `docs/audits/2026-09-03-ios-testflight-preparation-receipt.md`.
+7. Capture real iPhone-sized screenshots from the signed app, verify sign-in → connect →
+   chat through TestFlight, and complete the truthful console declarations. Before the final
+   Submit for Review decision, choose whether to accept the documented Guideline 4.2 wrapper
+   risk or first add and prove a meaningful iPhone-native interaction.
+8. If realtime voice is enabled in the candidate, review the final **Audio Data** and
+   **Other User Content** declarations against the provider retention configuration and
+   require physical-iPhone proof that capture stops on background/end before submission.
 
 ### Google Play: start the 12-tester closed test — this is the 14-day clock
 

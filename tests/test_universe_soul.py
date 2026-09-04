@@ -16,15 +16,26 @@ def us(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+    # BIND the identity rather than stubbing the function that reads it. The
+    # stub reached `current_identity` but not the contextvar the permission
+    # helpers read, so creation granted the universe to one principal and the
+    # ACL check asked about another -- `universe_access_denied` on a universe
+    # the caller had just made.
     identity = Identity(
         user_id="soul-test-user",
         username="soul-test-user",
-        capabilities=["write"],
+        capabilities=[
+            "tinyassets.universe.read",
+            "tinyassets.universe.write",
+            "tinyassets.universe.admin",
+            "tinyassets.universe.create",
+            "tinyassets.extensions.read",
+            "tinyassets.extensions.write",
+        ],
     )
-    monkeypatch.setattr(
-        "tinyassets.auth.middleware.current_identity",
-        lambda: identity,
-    )
+    from tinyassets.auth import middleware as _mw
+
+    _mw._current_identity.set(identity)
     import tinyassets.api.universe as module
 
     importlib.reload(module)
@@ -233,7 +244,8 @@ def test_submit_request_uses_soul_declared_loop_branch(us):
         request_type="general",
     ))
 
-    assert result["status"] == "pending"
+    assert "status" in result, result
+    assert result["status"] == "pending", result
     assert result["loop_dispatch"] == {
         "source": "soul.md",
         "has_soul": True,

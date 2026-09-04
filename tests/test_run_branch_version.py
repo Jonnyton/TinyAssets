@@ -114,6 +114,7 @@ class TestExecuteBranchVersionAsync:
                 tmp_path,
                 branch_version_id="nonexistent-bvid@deadbeef",
                 inputs={},
+                actor="universe:u-test",
             )
 
     def test_snapshot_drift_raises_typed_error(self, tmp_path):
@@ -157,6 +158,7 @@ class TestExecuteBranchVersionAsync:
         with pytest.raises(SnapshotSchemaDrift) as exc_info:
             execute_branch_version_async(
                 tmp_path, branch_version_id=bvid, inputs={},
+                actor="universe:u-test",
             )
         # Confirm class-level constants surface on the raised exception type.
         assert type(exc_info.value).failure_class == "snapshot_schema_drift"
@@ -187,6 +189,7 @@ class TestExecuteBranchVersionAsync:
         # original, even though the live def has been edited.
         outcome = execute_branch_version_async(
             tmp_path, branch_version_id=bvid, inputs={},
+            actor="universe:u-test",
         )
         assert outcome.run_id
         # Note: snapshot's NAME is not retained in branch_versions.snapshot
@@ -236,6 +239,7 @@ class TestCancellationVersionRuns:
         bvid = _publish(tmp_path, branch)
         outcome = execute_branch_version_async(
             tmp_path, branch_version_id=bvid, inputs={},
+            actor="universe:u-test",
         )
         # Cancel before worker finishes.
         request_cancel(tmp_path, outcome.run_id)

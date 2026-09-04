@@ -28,12 +28,38 @@ from pathlib import Path
 import pytest
 
 
+def _become(user_id: str) -> None:
+    """Sign in as ``user_id``.
+
+    These tests used to set ``UNIVERSE_SERVER_USER``, which named the actor by
+    environment variable -- authority from a string anybody can set. The
+    autouse operator fixture rebinds between tests, so this does not leak.
+    """
+    from tinyassets.auth import middleware as _mw
+    from tinyassets.auth.provider import Identity
+
+    _mw._current_identity.set(
+        Identity(
+            user_id=user_id,
+            username=user_id,
+            display_name=user_id,
+            capabilities=[
+                "tinyassets.universe.read",
+                "tinyassets.universe.write",
+                "tinyassets.universe.admin",
+                "tinyassets.extensions.read",
+                "tinyassets.extensions.write",
+            ],
+        )
+    )
+
+
 @pytest.fixture
 def goals_env(tmp_path, monkeypatch, authenticate_request):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    _become("alice")
     authenticate_request(
         "alice",
         capabilities=["tinyassets.goals.read", "tinyassets.goals.write"],
@@ -79,6 +105,9 @@ def test_ledger_actor_is_the_credential_subject_not_the_env_user(
     authenticated caller would be attributed to whoever the environment names.
     """
     us, base = goals_env
+    # The ENVIRONMENT, deliberately: this test exists to prove the env
+    # cannot forge the recorded actor. Signing mallory in would make
+    # them the real caller and the assertion would be about nothing.
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "mallory")
 
     json.loads(us.goals(action="propose", name="G2", description="x"))
@@ -95,37 +124,40 @@ def test_ledger_actor_is_the_credential_subject_not_the_env_user(
 def test_unauthenticated_write_is_anonymous_not_the_env_user(
     tmp_path, monkeypatch
 ) -> None:
-    """With NO credential, attribution must be `anonymous`, never the env user.
+    """With NO credential, there is no write at all -- and certainly not one
+    attributed to whoever the environment names.
 
-    This is the gap the first version of this fix left open, found in review.
-    Passing `actor=""` looked harmless, but `_append_ledger` resolves a falsy
-    actor via `actor or _current_actor()`, and `_current_actor()` reads
-    `UNIVERSE_SERVER_USER`. So an unauthenticated write was attributed to
-    whoever the environment happened to name — the ambient env forging an
-    identity, which is precisely what `_request_branch_actor` exists to stop.
-
-    Deliberately NOT asserting that the write is refused: production OAuth
-    blocks anonymous writes at a different layer, and this test is about
-    attribution honesty, not about relocating that gate.
+    This used to assert the row said `anonymous`, and said so deliberately:
+    "production OAuth blocks anonymous writes at a different layer, and this
+    test is about attribution honesty, not about relocating that gate". The
+    gate moved. A write with nobody behind it is refused, which is the honest
+    version of the same concern -- the audit trail cannot carry a forged
+    identity if it carries no row.
     """
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+    # Still set, and still ignored: the point of the test is that the ambient
+    # environment confers nothing.
+    # The ENVIRONMENT, deliberately: this test exists to prove the env
+    # cannot forge the recorded actor. Signing mallory in would make
+    # them the real caller and the assertion would be about nothing.
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "mallory")
     from tinyassets import universe_server as us
+    from tinyassets.auth.middleware import clear_identity
 
     importlib.reload(us)
     try:
-        json.loads(us.goals(action="propose", name="G3", description="x"))
+        clear_identity()
+        answer = json.loads(us.goals(action="propose", name="G3", description="x"))
+        assert "error" in answer, f"an unauthenticated propose was accepted: {answer}"
         rows = [
             r for r in _ledger_rows(base) if r.get("action") == "goals.propose"
         ]
-        assert rows, "no ledger row written for an unauthenticated propose"
-        assert rows[0].get("actor") == "anonymous", (
-            f"unauthenticated write recorded actor "
-            f"{rows[0].get('actor')!r}; the ambient UNIVERSE_SERVER_USER was "
-            f"'mallory', so anything but 'anonymous' means the env forged an "
-            f"identity into the audit trail"
+        assert rows == [], (
+            f"an unauthenticated write left {len(rows)} ledger row(s); the "
+            f"ambient UNIVERSE_SERVER_USER was 'mallory', so any row at all "
+            f"risks the env forging an identity into the audit trail"
         )
     finally:
         importlib.reload(us)
@@ -136,7 +168,7 @@ def extensions_env(tmp_path, monkeypatch, authenticate_request):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    _become("alice")
     authenticate_request("alice")
     from tinyassets import universe_server as us
 
@@ -161,6 +193,9 @@ def test_project_memory_set_writes_an_attributed_ledger_row(
     this pins attribution to the credential subject at the same time.
     """
     us, base = extensions_env
+    # The ENVIRONMENT, deliberately: this test exists to prove the env
+    # cannot forge the recorded actor. Signing mallory in would make
+    # them the real caller and the assertion would be about nothing.
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "mallory")
 
     result = json.loads(us.extensions(

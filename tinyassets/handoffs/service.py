@@ -722,8 +722,10 @@ def attest_outcome(
             raise handoff_authority.HandoffAuthorityError(
                 f"run {run_id!r} is not available to this account"
             )
-        owner = str(run.get("owner_user_id") or "").strip() or str(run.get("actor") or "")
-        if owner in ("", "anonymous") or owner != actor_id:
+        from tinyassets.principals import named_principal
+
+        owner = named_principal(run.get("owner_user_id")) or named_principal(run.get("actor"))
+        if not owner or owner != actor_id:
             raise handoff_authority.HandoffAuthorityError(
                 f"run {run_id!r} is not available to this account"
             )

@@ -21,6 +21,7 @@ each operation opens, commits, closes.
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import contextvars
 import copy
@@ -48,6 +49,7 @@ from tinyassets.graph_compiler import (
     compile_branch,
     seed_initial_state,
 )
+from tinyassets.principals import has_named_principal, named_principal
 
 logger = logging.getLogger(__name__)
 
@@ -225,16 +227,41 @@ def _mark_orphaned_run_if_needed(
 # ---------------------------------------------------------------------------
 
 _WORKSPACE_RECONCILE_LOCK = threading.Lock()
-#: (pid, resolved data root) pairs whose startup sweep SUCCEEDED and whose
-#: sweeper thread is running. Keyed by pid so a forked worker never inherits
-#: the parent's claim; reset after fork as well (Codex, code round 1).
+#: (pid, resolved data root) pairs whose startup sweep SUCCEEDED. Keyed by pid
+#: so a forked worker never inherits the parent's claim; reset after fork as
+#: well (Codex, code round 1).
 _WORKSPACE_RECONCILED: set[tuple[int, str]] = set()
 _WORKSPACE_RECONCILING: set[tuple[int, str]] = set()
+_WORKSPACE_STOP_REQUESTED: set[tuple[int, str]] = set()
+
+
+@dataclass(frozen=True)
+class _WorkspaceSweeperHandle:
+    """The owned lifecycle of one periodic workspace sweeper."""
+
+    stop_event: threading.Event
+    thread: threading.Thread
+
+
+_WORKSPACE_SWEEPERS: dict[tuple[int, str], _WorkspaceSweeperHandle] = {}
+# Capture the deadline clock for the same reason periodic workers capture their
+# sweep callable: another module mutating the shared ``time`` object must not
+# redirect an already-owned lifecycle operation.
+_WORKSPACE_SWEEPER_MONOTONIC = time.monotonic
 
 
 def _reset_workspace_reconciliation_after_fork() -> None:
+    global _WORKSPACE_RECONCILE_LOCK
+
+    # The child inherits the mutex state but not the thread that may have held
+    # it at fork time. Give the single surviving thread a fresh lock.
+    _WORKSPACE_RECONCILE_LOCK = threading.Lock()
     _WORKSPACE_RECONCILED.clear()
     _WORKSPACE_RECONCILING.clear()
+    _WORKSPACE_STOP_REQUESTED.clear()
+    # A fork retains Python objects but not the parent's other threads. Never
+    # mistake those dead handles for sweepers owned by the child.
+    _WORKSPACE_SWEEPERS.clear()
 
 
 if hasattr(os, "register_at_fork"):  # pragma: no branch - POSIX only
@@ -474,14 +501,143 @@ def _workspace_sweep_kick_body(base_path: str | Path) -> None:
         logger.exception("workspace sweep kick failed")
 
 
-def _workspace_sweeper_loop(base_path: str | Path, interval_s: float) -> None:
+def _workspace_sweeper_loop(
+    key: tuple[int, str],
+    base_path: str | Path,
+    interval_s: float,
+    stop_event: threading.Event,
+    sweep_once: Callable[..., int],
+) -> None:
     claimant = f"sweeper:{os.getpid()}"
-    while True:
-        time.sleep(interval_s)
-        try:
-            _workspace_sweep_once(base_path, claimant=claimant)
-        except Exception:  # noqa: BLE001 - the loop must outlive one bad pass
-            logger.exception("workspace sweep failed")
+    try:
+        while not stop_event.wait(interval_s):
+            try:
+                # The worker owns the callable it started with. Looking it up from
+                # module globals on every tick lets a later test monkeypatch (or a
+                # hot reload) redirect an already-running production worker.
+                sweep_once(base_path, claimant=claimant)
+            except Exception:  # noqa: BLE001 - the loop must outlive one bad pass
+                logger.exception("workspace sweep failed")
+    finally:
+        # A worker may request its own stop from inside ``sweep_once``. It
+        # cannot join itself, so retirement belongs to the loop finalizer.
+        current_thread = threading.current_thread()
+        with _WORKSPACE_RECONCILE_LOCK:
+            handle = _WORKSPACE_SWEEPERS.get(key)
+            if handle is not None and handle.thread is current_thread:
+                _WORKSPACE_SWEEPERS.pop(key, None)
+                _WORKSPACE_RECONCILED.discard(key)
+
+
+def _start_workspace_sweeper(
+    base_path: str | Path,
+    interval_s: float,
+    sweep_once: Callable[..., int] = _workspace_sweep_once,
+) -> _WorkspaceSweeperHandle | None:
+    """Start and register one stoppable sweeper for ``base_path``.
+
+    ``sweep_once`` is deliberately captured when this function is defined.
+    The periodic worker must not follow later process-global monkeypatches.
+    Tests that exercise the loop can inject their own callable directly.
+    """
+    key = (os.getpid(), str(Path(base_path).resolve()))
+    stop_event = threading.Event()
+    thread = threading.Thread(
+        target=_workspace_sweeper_loop,
+        args=(key, base_path, interval_s, stop_event, sweep_once),
+        name="workspace-sweeper",
+        daemon=True,
+    )
+    handle = _WorkspaceSweeperHandle(stop_event=stop_event, thread=thread)
+    with _WORKSPACE_RECONCILE_LOCK:
+        # A stop that arrived during startup owns this transition. Because the
+        # check and thread publication share the same lock, stop cannot report
+        # success and then have this reconciliation publish a worker.
+        if key in _WORKSPACE_STOP_REQUESTED:
+            return None
+        current = _WORKSPACE_SWEEPERS.get(key)
+        if current is not None and current.thread.is_alive():
+            return current
+        # Start while holding the lifecycle lock, then publish. A concurrent
+        # stop therefore sees either no handle or an already-started thread;
+        # it can never attempt to join a published-but-unstarted Thread.
+        thread.start()
+        _WORKSPACE_SWEEPERS[key] = handle
+    return handle
+
+
+def _stop_workspace_sweeper(
+    base_path: str | Path,
+    *,
+    timeout_s: float = 5.0,
+) -> bool:
+    """Stop and join one periodic sweeper; return whether it has stopped.
+
+    Removing the reconciliation marker makes a later caller rerun the startup
+    barrier before starting a replacement worker.
+    """
+    key = (os.getpid(), str(Path(base_path).resolve()))
+    with _WORKSPACE_RECONCILE_LOCK:
+        handle = _WORKSPACE_SWEEPERS.get(key)
+        if handle is None:
+            if key in _WORKSPACE_RECONCILING:
+                _WORKSPACE_STOP_REQUESTED.add(key)
+            _WORKSPACE_RECONCILED.discard(key)
+            return True
+    handle.stop_event.set()
+    if handle.thread is threading.current_thread():
+        return False
+    handle.thread.join(timeout=max(0.0, timeout_s))
+    stopped = not handle.thread.is_alive()
+    if stopped:
+        with _WORKSPACE_RECONCILE_LOCK:
+            current = _WORKSPACE_SWEEPERS.get(key)
+            if current is handle:
+                _WORKSPACE_SWEEPERS.pop(key, None)
+                _WORKSPACE_RECONCILED.discard(key)
+            elif current is None:
+                _WORKSPACE_RECONCILED.discard(key)
+            # A self-retiring old worker may already have been replaced while
+            # this caller joined it. Never clear the replacement's marker.
+    return stopped
+
+
+def _stop_all_workspace_sweepers(*, timeout_s: float = 5.0) -> bool:
+    """Stop every owned sweeper within one shared timeout budget."""
+    with _WORKSPACE_RECONCILE_LOCK:
+        reconciling_keys = {
+            key for key in _WORKSPACE_RECONCILING if key[0] == os.getpid()
+        }
+        # Application teardown uses this all-worker path. Arm the same startup
+        # veto as the single-worker stop before taking the handle snapshot, so
+        # an in-flight reconciliation cannot publish a worker after cleanup.
+        _WORKSPACE_STOP_REQUESTED.update(reconciling_keys)
+        handles = [
+            (key, handle)
+            for key, handle in _WORKSPACE_SWEEPERS.items()
+            if key[0] == os.getpid()
+        ]
+    if not handles:
+        return True
+    for _key, handle in handles:
+        handle.stop_event.set()
+    deadline = _WORKSPACE_SWEEPER_MONOTONIC() + max(0.0, timeout_s)
+    for _key, handle in handles:
+        if handle.thread is not threading.current_thread():
+            handle.thread.join(
+                timeout=max(0.0, deadline - _WORKSPACE_SWEEPER_MONOTONIC())
+            )
+    stopped = all(not handle.thread.is_alive() for _key, handle in handles)
+    with _WORKSPACE_RECONCILE_LOCK:
+        for key, handle in handles:
+            if not handle.thread.is_alive() and _WORKSPACE_SWEEPERS.get(key) is handle:
+                _WORKSPACE_SWEEPERS.pop(key, None)
+                _WORKSPACE_RECONCILED.discard(key)
+        late_handle = any(key in _WORKSPACE_SWEEPERS for key in reconciling_keys)
+    return stopped and not late_handle
+
+
+atexit.register(_stop_all_workspace_sweepers)
 
 
 def _ensure_scratch_root(base: Path) -> Path:
@@ -505,6 +661,7 @@ def ensure_workspace_reconciled(
     *,
     start_sweeper: bool = True,
     interval_s: float = _WORKSPACE_SWEEP_INTERVAL_S,
+    sweep_once: Callable[..., int] = _workspace_sweep_once,
 ) -> bool:
     """Once per process per data root: finish every outbox entry left by an
     earlier process (the admission barrier of the scratch-storage spec) and
@@ -530,18 +687,21 @@ def ensure_workspace_reconciled(
             logger.info("workspace startup sweep finished %d outbox entries", done)
         _reconcile_push_intents(base_path, when="startup")
         if start_sweeper:
-            threading.Thread(
-                target=_workspace_sweeper_loop, args=(base_path, interval_s),
-                name="workspace-sweeper", daemon=True,
-            ).start()
+            _start_workspace_sweeper(base_path, interval_s, sweep_once)
     except BaseException:
         # A failed attempt is not a completed one: the next caller retries.
         with _WORKSPACE_RECONCILE_LOCK:
             _WORKSPACE_RECONCILING.discard(key)
+            _WORKSPACE_STOP_REQUESTED.discard(key)
         raise
     with _WORKSPACE_RECONCILE_LOCK:
         _WORKSPACE_RECONCILING.discard(key)
-        _WORKSPACE_RECONCILED.add(key)
+        stop_requested = key in _WORKSPACE_STOP_REQUESTED
+        _WORKSPACE_STOP_REQUESTED.discard(key)
+        # A concurrent stop after registration deliberately wins: the next
+        # caller reruns the startup barrier and starts a fresh worker.
+        if not stop_requested and (not start_sweeper or key in _WORKSPACE_SWEEPERS):
+            _WORKSPACE_RECONCILED.add(key)
     return True
 
 
@@ -681,7 +841,7 @@ def initialize_runs_db(base_path: str | Path) -> Path:
         run_name       TEXT NOT NULL DEFAULT '',
         thread_id      TEXT NOT NULL,
         status         TEXT NOT NULL DEFAULT 'queued',
-        actor          TEXT NOT NULL DEFAULT 'anonymous',
+        actor          TEXT NOT NULL,
         owner_user_id  TEXT NOT NULL DEFAULT '',
         inputs_json    TEXT NOT NULL DEFAULT '{}',
         output_json    TEXT NOT NULL DEFAULT '{}',
@@ -1167,7 +1327,7 @@ def create_run(
     thread_id: str,
     inputs: dict[str, Any],
     run_name: str = "",
-    actor: str = "anonymous",
+    actor: str,
     branch_version_id: str | None = None,
     owner_user_id: str | None = None,
     daemon_id: str | None = None,
@@ -1176,6 +1336,10 @@ def create_run(
     branch_task_id: str | None = None,
     queue_universe_id: str | None = None,
 ) -> str:
+    actor = named_principal(actor)
+    if not actor:
+        # A run is somebody's; no synthetic principal is minted.
+        raise ValueError("create_run actor must be a real principal; an unowned value is not one")
     initialize_runs_db(base_path)
     run_id = uuid.uuid4().hex[:16]
     resolved_owner_user_id = (
@@ -1367,7 +1531,7 @@ def update_run_status(
                             base_path,
                             event_id=f"execute_step:{run_id}:{status}",
                             event_type="execute_step",
-                            actor_id=row["actor"] or "anonymous",
+                            actor_id=named_principal(row["actor"]),
                             owner_user_id=row["owner_user_id"] or "",
                             daemon_id=row["daemon_id"] or "",
                             runtime_instance_id=row["runtime_instance_id"] or "",
@@ -1625,7 +1789,7 @@ def attach_existing_child_run(
     child_run_id: str,
     child_branch_def_id: str = "",
     output_digest: str = "",
-    actor: str = "anonymous",
+    actor: str = "",   # no default principal; the caller names one or the write refuses
 ) -> dict[str, Any]:
     """Validate and attach a completed child run receipt to a waiting parent.
 
@@ -2178,7 +2342,7 @@ def add_judgment(
     text: str,
     node_id: str | None = None,
     tags: list[str] | None = None,
-    author: str = "anonymous",
+    author: str = "",
 ) -> dict[str, Any]:
     """Persist a user's natural-language judgment of a run or node.
 
@@ -2932,7 +3096,7 @@ def _invoke_graph(
             return
         node_def_id = getattr(nd, "node_def_id", "") or getattr(nd, "node_id", "")
         author = getattr(nd, "author", "") or ""
-        if not node_def_id or not author or author == "anonymous":
+        if not node_def_id or not has_named_principal(author):
             return
         try:
             from tinyassets.contribution_events import record_contribution_event
@@ -3730,7 +3894,7 @@ def execute_branch(
     branch: BranchDefinition,
     inputs: dict[str, Any],
     run_name: str = "",
-    actor: str = "anonymous",
+    actor: str = "",   # no default principal; the caller names one or the write refuses
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
@@ -3925,7 +4089,7 @@ def _execute_branch_core(
     branch: BranchDefinition,
     inputs: dict[str, Any],
     run_name: str = "",
-    actor: str = "anonymous",
+    actor: str = "",   # no default principal; the caller names one or the write refuses
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
@@ -4076,7 +4240,7 @@ def execute_branch_async(
     branch: BranchDefinition,
     inputs: dict[str, Any],
     run_name: str = "",
-    actor: str = "anonymous",
+    actor: str = "",   # no default principal; the caller names one or the write refuses
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
@@ -4169,7 +4333,7 @@ def execute_branch_version(
     branch_version_id: str,
     inputs: dict[str, Any],
     run_name: str = "",
-    actor: str = "anonymous",
+    actor: str = "",   # no default principal; the caller names one or the write refuses
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
@@ -4230,7 +4394,7 @@ def execute_branch_version_async(
     branch_version_id: str,
     inputs: dict[str, Any],
     run_name: str = "",
-    actor: str = "anonymous",
+    actor: str = "",   # no default principal; the caller names one or the write refuses
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,

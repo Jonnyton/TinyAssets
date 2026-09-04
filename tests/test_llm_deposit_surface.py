@@ -61,8 +61,13 @@ def _login(user_id: str) -> None:
 
 
 def _logout() -> None:
+    """Nobody bound. Resolving a "dev" token binds the LOCAL OPERATOR, which is
+    a real principal -- so a logged-out caller was still somebody, and a test
+    expecting `authentication_required` got a real answer instead."""
+    from tinyassets.auth.middleware import clear_identity
+
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    clear_identity()
 
 
 @pytest.fixture(autouse=True)
@@ -345,7 +350,7 @@ def test_admin_can_where_write_cannot(base: Path) -> None:
     assert _owner_rows(base, "u-both") == [("claude", "founder")]
 
 
-def test_anonymous_refused_before_vault_touch(base: Path) -> None:
+def test_anonymous_refused_before_vault_touch(base: Path, nobody) -> None:
     from tinyassets.credential_vault import credential_vault_path
 
     udir = _make_universe(base, "u-anon", admin="founder")

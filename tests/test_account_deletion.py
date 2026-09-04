@@ -51,7 +51,12 @@ def _seed_user(base: Path, sub: str, home: str) -> Path:
     grant_universe_access(
         base, universe_id=home, actor_id=sub, permission="admin", granted_by=sub
     )
-    webhook_hooks.mint(base, universe_id=home, branch_def_id=f"bd-{home}")
+    webhook_hooks.mint(
+        base,
+        universe_id=home,
+        branch_def_id=f"bd-{home}",
+        owner_principal_id=sub,
+    )
     return universe_dir
 
 
@@ -884,9 +889,9 @@ def app_route(monkeypatch, tmp_path):
 
 def _as(identity_user: str | None):
     from tinyassets.auth.middleware import identity_context
-    from tinyassets.auth.provider import ANONYMOUS, Identity
+    from tinyassets.auth.provider import Identity
 
-    ident = ANONYMOUS if identity_user is None else Identity(user_id=identity_user, username="a@x")
+    ident = None if identity_user is None else Identity(user_id=identity_user, username="a@x")
     return identity_context(ident)
 
 

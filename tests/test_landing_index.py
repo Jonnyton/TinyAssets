@@ -12,6 +12,8 @@ import asyncio
 import re
 
 from tinyassets.universe_server import _landing_index
+
+
 def _run(handler_coro):
     return asyncio.run(handler_coro)
 

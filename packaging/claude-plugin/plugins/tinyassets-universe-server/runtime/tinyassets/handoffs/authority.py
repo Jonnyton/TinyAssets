@@ -46,14 +46,15 @@ _ELIGIBLE_RUN_STATUSES: frozenset[str] = frozenset({"completed", "succeeded"})
 def request_subject() -> str:
     """Return the credential-validated request subject.
 
-    Raises rather than returning ``"anonymous"``: every caller of this module is
+    Raises rather than returning a synthetic subject: every caller of this module is
     about to touch external-effect authority, and a sentinel string that reads
     like an actor is exactly how an unauthenticated path acquires one.
     """
     from tinyassets.api.permissions import current_request_actor_id
+    from tinyassets.principals import named_principal
 
-    subject = (current_request_actor_id() or "").strip()
-    if not subject or subject == "anonymous":
+    subject = named_principal(current_request_actor_id())
+    if not subject:
         raise HandoffAuthorityError(
             "an authenticated account is required to initiate a handoff"
         )
@@ -89,8 +90,9 @@ def _run_owner(run: dict[str, Any]) -> str:
     owner = str(run.get("owner_user_id") or "").strip()
     if owner:
         return owner
-    actor = str(run.get("actor") or "").strip()
-    return "" if actor == "anonymous" else actor
+    from tinyassets.principals import named_principal
+
+    return named_principal(run.get("actor"))
 
 
 def resolve_source(

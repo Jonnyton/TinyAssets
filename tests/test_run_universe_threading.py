@@ -66,6 +66,7 @@ def test_resolve_effector_base_reads_run_row(tmp_path):
         tmp_path, branch=b, inputs={},
         provider_call=_fake_provider,
         _enqueue_universe_id="u-row",
+        actor="universe:u-test",
     )
     wait_for(outcome.run_id, timeout=10.0)
     assert _resolve_effector_base(str(tmp_path), outcome.run_id) == (
@@ -81,6 +82,7 @@ def test_execute_branch_async_records_running_universe(tmp_path):
         tmp_path, branch=b, inputs={},
         provider_call=_fake_provider,
         _enqueue_universe_id="u-tiny",
+        actor="universe:u-test",
     )
     wait_for(outcome.run_id, timeout=10.0)
     record = get_run(tmp_path, outcome.run_id)
@@ -94,6 +96,7 @@ def test_execute_branch_async_without_universe_leaves_it_unset(tmp_path):
     outcome = execute_branch_async(
         tmp_path, branch=b, inputs={},
         provider_call=_fake_provider,
+        actor="universe:u-test",
     )
     wait_for(outcome.run_id, timeout=10.0)
     record = get_run(tmp_path, outcome.run_id)

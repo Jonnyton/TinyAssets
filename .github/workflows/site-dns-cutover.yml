@@ -47,6 +47,8 @@ jobs:
           fi
 
       - name: Probe public surfaces (apply only)
+        env:
+          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         if: inputs.apply == true
         run: |
           set -euo pipefail

@@ -28,11 +28,11 @@ export default function CommonsPage() {
         <div className="container">
           <div className="head">
             <RitualLabel>Public universes</RitualLabel>
-            <h2>What is public right now.</h2>
+            <h2>What the latest snapshot showed.</h2>
             <p>
-              Read live from the public endpoint when your browser can reach it, otherwise shown
-              from the checked-in snapshot with its date. Every universe starts private; appearing
-              here is a choice its owner made.
+              This checked-in snapshot carries its capture date. Live discovery belongs in a
+              signed-in connector. Every universe starts private; appearing here is a choice its
+              owner made.
             </p>
             <p className="note">
               This is the raw list the endpoint reports as publicly discoverable, not a curated

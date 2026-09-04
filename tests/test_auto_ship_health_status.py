@@ -139,7 +139,7 @@ def test_get_status_response_includes_auto_ship_health(tmp_path, monkeypatch):
     universe.mkdir(parents=True, exist_ok=True)
     record_attempt(universe, _attempt(1, ship_status="opened"))
 
-    response = json.loads(get_status())
+    response = json.loads(get_status("test-universe"))
     assert "auto_ship_health" in response
     assert (
         response["auto_ship_health"]["recent_attempts"][0]["ship_attempt_id"]

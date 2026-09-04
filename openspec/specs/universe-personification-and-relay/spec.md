@@ -5,9 +5,7 @@
 ## Purpose
 
 A universe embodied as a first-party personified intelligence that speaks first-person and is the sole writer of its own brain; the connecting chatbot is a thin relay. Contact runs through a sandboxed `converse` turn on the universe's assigned engine.
-
 ## Requirements
-
 ### Requirement: Persona identity is sourced from the learned self-model, never the operational soul
 A universe's persona SHALL take its name and self-understanding from the universe's **learned self-model** — the per-universe OKF bundle the brain authors about itself, whose name is read from the `identity.md` frontmatter (`tinyassets.persona.resolve_persona` over `tinyassets.universe_self_model.read_self_model`). The persona SHALL NOT derive its identity from the operational soul's `name` or `purpose`; the soul stays the universe's operational state (loop branch, authority, the founder's premise). Until the brain has learned a name, the persona SHALL be unnamed (empty name) and its self-knowledge SHALL be a set of open questions.
 
@@ -129,3 +127,16 @@ The MCP `converse` handle (`tinyassets.universe_server.converse`) SHALL be found
 #### Scenario: a downstream failure is surfaced honestly
 - **WHEN** the universe intelligence cannot be reached during a `converse` call
 - **THEN** the handle returns an honest error message rather than a fabricated reply
+
+### Requirement: Voice is a rendering of the canonical universe turn, not a second author
+The voice surface SHALL relay each committed founder utterance through the existing `converse` operation and SHALL treat the exact returned text as the universe's canonical reply; Realtime SHALL NOT independently answer as, rename, or add facts for the universe.
+
+#### Scenario: Voice relay returns a universe reply
+- **WHEN** `converse` returns successfully for a spoken founder turn
+- **THEN** the app renders that exact text in the canonical conversation history
+- **AND** any speech output is treated only as an audio rendering of that reply
+
+#### Scenario: Speech renderer differs from canonical text
+- **WHEN** the speech renderer's output transcript differs materially from the canonical `converse` reply
+- **THEN** the canonical stored and displayed reply remains unchanged
+- **AND** the client records content-free mismatch evidence and does not replace history with the renderer output

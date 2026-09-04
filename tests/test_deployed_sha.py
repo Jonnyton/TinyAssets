@@ -11,6 +11,7 @@ read as "yes, it shipped."** That is exit 2, not exit 0.
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -80,6 +81,56 @@ def receipt(sha, **extra):
     state = {"git_sha": sha, "image_tag": f"ghcr.io/jonnyton/tinyassets-daemon:{sha[:12]}"}
     state.update(extra)
     return state
+
+
+def test_live_release_state_gets_pulse_as_canary(monkeypatch):
+    mod = load()
+    seen = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return json.dumps({"git_sha": "abc", "image_tag": "image:abc"}).encode()
+
+    def urlopen(request, timeout):
+        seen.append(request)
+        return Response()
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "canary-token")
+    result = mod.live_release_state("https://example/mcp/", 2.0)
+    assert result["git_sha"] == "abc"
+    assert seen[0].full_url == "https://example/mcp/pulse"
+    assert seen[0].get_header("Accept") == "application/json"
+    assert seen[0].get_header("Authorization") == "Bearer canary-token"
+
+
+def test_live_release_state_rejects_non_object(monkeypatch):
+    mod = load()
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return b"[]"
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda *a, **k: Response())
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "canary-token")
+    with pytest.raises(mod.DeployedShaError):
+        mod.live_release_state("https://example/mcp", 2.0)
 
 
 def test_deployed_head_contains_its_own_parent(monkeypatch, repo):
@@ -261,3 +312,34 @@ def test_non_string_image_tag_does_not_crash(monkeypatch, repo, bad):
     stub(mod, monkeypatch, {"git_sha": repo["head"], "image_tag": bad})
 
     assert mod.main(["--assert-contains", repo["head"]]) == 2
+
+
+def test_pulse_request_names_itself_so_cloudflare_does_not_challenge_it(monkeypatch):
+    """The stdlib default agent draws a managed-challenge 403 from Cloudflare on
+    the live surface (measured 2026-09-02), and this gate would then report
+    "cannot determine" forever."""
+    mod = load()
+    seen = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return json.dumps({"git_sha": "abc", "image_tag": "image:abc"}).encode()
+
+    def urlopen(request, timeout):
+        seen.append(request)
+        return Response()
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "canary-token")
+    mod.live_release_state("https://tinyassets.io/mcp", 2.0)
+    agent = seen[0].get_header("User-agent")
+    assert agent == mod.PULSE_USER_AGENT
+    assert "urllib" not in (agent or "").lower()

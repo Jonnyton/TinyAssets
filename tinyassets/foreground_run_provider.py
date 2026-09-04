@@ -113,10 +113,10 @@ class _ForegroundRunProviderSession:
 
     def _validate_founder_home(self) -> None:
         from tinyassets.daemon_server import get_founder_home
+        from tinyassets.principals import has_named_principal
 
         if (
-            not self._principal_id
-            or self._principal_id == "anonymous"
+            not has_named_principal(self._principal_id)
             or not self._universe_id
             or get_founder_home(self._base_path, self._principal_id) != self._universe_id
         ):
@@ -196,7 +196,6 @@ class _ForegroundRunProviderSession:
         from tinyassets.provider_assignment import provider_assignment_admission
         from tinyassets.provider_serving_binding import (
             _current_serving_authority,
-            _is_open_provider,
             resolve_serving_agent_binding,
         )
         from tinyassets.storage.provider_work_authority import (
@@ -244,10 +243,6 @@ class _ForegroundRunProviderSession:
                             universe_id=self._universe_id,
                             agent=agent,
                         )
-                        if _is_open_provider(assignment.provider):
-                            raise PermissionError(
-                                "foreground run LLM authority requires a subscription provider"
-                            )
                         declared = set().union(
                             *(
                                 _declared_policy_providers(node.get("llm_policy"))

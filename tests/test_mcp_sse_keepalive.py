@@ -27,9 +27,16 @@ import pytest
 from sse_starlette.sse import EventSourceResponse
 from starlette.testclient import TestClient
 
+#: The daemon serves no anonymous read, so a probe driving the REAL app through
+#: the real middleware has to present a bearer -- exactly as the connector does.
+#: Without it every request here 401s before the transport is exercised at all,
+#: which would test the auth gate instead of the keepalive.
+_PROBE_BEARER = "keepalive-probe-token"
+
 _HEADERS = {
     "Accept": "application/json, text/event-stream",
     "Content-Type": "application/json",
+    "Authorization": f"Bearer {_PROBE_BEARER}",
 }
 
 
@@ -39,10 +46,38 @@ def app_with_slow_tool(tmp_path, monkeypatch):
     (scaled) ping interval. Removed again so the canonical tool set is not
     widened for any other test."""
     from tinyassets import universe_server as us
+    from tinyassets.auth.middleware import set_provider
+    from tinyassets.auth.provider import AuthProvider, Identity
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     # 15s in production; scaled so the test takes seconds, not a minute.
     monkeypatch.setattr(EventSourceResponse, "DEFAULT_PING_INTERVAL", 1)
+
+    class _ProbeProvider(AuthProvider):
+        """Resolves exactly one token, the way the connector's does."""
+
+        def resolve_token(self, token):
+            if token != _PROBE_BEARER:
+                return None
+            return Identity(
+                user_id="keepalive-probe",
+                username="keepalive-probe",
+                capabilities=["tinyassets.universe.read"],
+            )
+
+        def is_auth_required(self) -> bool:
+            return True
+
+        def register_client(self, metadata):
+            return {"client_id": "keepalive-probe-client", **metadata}
+
+        def create_authorization(self, *args, **kwargs):
+            raise NotImplementedError("the probe never runs an OAuth dance")
+
+        def exchange_code(self, *args, **kwargs):
+            raise NotImplementedError("the probe never runs an OAuth dance")
+
+    previous = set_provider(_ProbeProvider())
 
     async def slow_probe(seconds: float = 3.0) -> str:
         await anyio.sleep(seconds)
@@ -54,6 +89,8 @@ def app_with_slow_tool(tmp_path, monkeypatch):
     finally:
         provider = getattr(us.mcp, "local_provider", None)   # fastmcp >= 3.4
         (provider.remove_tool if provider is not None else us.mcp.remove_tool)("slow_probe")
+        if previous is not None:
+            set_provider(previous)
 
 
 def _rpc(method: str, params: dict | None, rid: int | None) -> str:

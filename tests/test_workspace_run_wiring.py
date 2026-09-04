@@ -7,7 +7,9 @@ every workspace refusal is a first-class failure class with an action.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -35,9 +37,14 @@ def _seed_run(base: Path, run_id: str, status: str = "running") -> None:
     runs.initialize_runs_db(base)
     with runs._connect(base) as conn:
         conn.execute(
-            "INSERT INTO runs (run_id, branch_def_id, thread_id, status, started_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (run_id, "b1", f"t-{run_id}", status, time.time() - 7200),
+            "INSERT INTO runs "
+            "(run_id, branch_def_id, thread_id, status, started_at, actor) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                run_id, "b1", f"t-{run_id}", status, time.time() - 7200,
+                # Every run records who asked for it; the column is NOT NULL.
+                "universe:u-test",
+            ),
         )
 
 
@@ -255,6 +262,299 @@ def test_the_reconciler_retries_after_a_failed_attempt(tmp_path, monkeypatch):
     assert runs.ensure_workspace_reconciled(base, start_sweeper=False) is True
     assert runs.ensure_workspace_reconciled(base, start_sweeper=False) is False
     assert calls["n"] == 2
+
+
+def test_a_periodic_sweeper_owns_its_dependency_and_stops_promptly(
+    tmp_path, monkeypatch
+):
+    """An old worker cannot call a later test's process-global monkeypatch."""
+    base = tmp_path / "data"
+    owned_calls: list[str] = []
+    foreign_calls: list[str] = []
+    entered_sweep = threading.Event()
+    allow_sweep = threading.Event()
+    swept = threading.Event()
+
+    def owned_sweep(_base, *, claimant):
+        entered_sweep.set()
+        assert allow_sweep.wait(2)
+        owned_calls.append(claimant)
+        swept.set()
+        return 0
+
+    monkeypatch.setattr(workspace_pool, "startup_sweep", lambda *a, **k: 0)
+    monkeypatch.setattr(runs, "_reconcile_push_intents", lambda *a, **k: 0)
+    assert runs.ensure_workspace_reconciled(
+        base, interval_s=0.01, sweep_once=owned_sweep,
+    ) is True
+    handle = runs._WORKSPACE_SWEEPERS[(os.getpid(), str(base.resolve()))]
+    assert handle.thread.ident is not None, "an unstarted worker was published"
+    assert entered_sweep.wait(2), "the worker did not reach its owned callable"
+    monkeypatch.setattr(
+        runs,
+        "_workspace_sweep_once",
+        lambda _base, *, claimant: foreign_calls.append(claimant) or 0,
+    )
+    allow_sweep.set()
+    assert swept.wait(2), "the periodic worker did not run"
+    assert handle.thread.is_alive()
+    assert foreign_calls == [], "the old worker followed a later global monkeypatch"
+
+    assert runs._stop_workspace_sweeper(base, timeout_s=2) is True
+    assert not handle.thread.is_alive()
+    assert owned_calls, "the injected sweep dependency was not called"
+
+
+def test_stopping_a_sweeper_requires_the_startup_barrier_again(
+    tmp_path, monkeypatch
+):
+    base = tmp_path / "data"
+    monkeypatch.setattr(workspace_pool, "startup_sweep", lambda *a, **k: 0)
+    monkeypatch.setattr(runs, "_reconcile_push_intents", lambda *a, **k: 0)
+
+    assert runs.ensure_workspace_reconciled(base, interval_s=60) is True
+    first = runs._WORKSPACE_SWEEPERS[(os.getpid(), str(base.resolve()))]
+    assert runs._stop_workspace_sweeper(base, timeout_s=2) is True
+    assert not first.thread.is_alive()
+
+    assert runs.ensure_workspace_reconciled(base, start_sweeper=False) is True
+
+
+def test_stop_during_reconciliation_cannot_publish_a_late_worker(
+    tmp_path, monkeypatch
+):
+    base = tmp_path / "data"
+    startup_entered = threading.Event()
+    allow_startup = threading.Event()
+    results: list[bool] = []
+
+    def blocked_startup(*_args, **_kwargs):
+        startup_entered.set()
+        assert allow_startup.wait(2)
+        return 0
+
+    monkeypatch.setattr(workspace_pool, "startup_sweep", blocked_startup)
+    monkeypatch.setattr(runs, "_reconcile_push_intents", lambda *a, **k: 0)
+    reconciler = threading.Thread(
+        target=lambda: results.append(
+            runs.ensure_workspace_reconciled(base, interval_s=60)
+        )
+    )
+    reconciler.start()
+    assert startup_entered.wait(2)
+    assert runs._stop_workspace_sweeper(base, timeout_s=2) is True
+    allow_startup.set()
+    reconciler.join(2)
+
+    key = (os.getpid(), str(base.resolve()))
+    assert not reconciler.is_alive()
+    assert results == [True]
+    assert key not in runs._WORKSPACE_SWEEPERS
+    assert key not in runs._WORKSPACE_RECONCILED
+    assert key not in runs._WORKSPACE_STOP_REQUESTED
+
+
+def test_stop_all_during_reconciliation_cannot_publish_a_late_worker(
+    tmp_path, monkeypatch
+):
+    base = tmp_path / "data"
+    startup_entered = threading.Event()
+    allow_startup = threading.Event()
+    results: list[bool] = []
+
+    def blocked_startup(*_args, **_kwargs):
+        startup_entered.set()
+        assert allow_startup.wait(2)
+        return 0
+
+    monkeypatch.setattr(workspace_pool, "startup_sweep", blocked_startup)
+    monkeypatch.setattr(runs, "_reconcile_push_intents", lambda *a, **k: 0)
+    reconciler = threading.Thread(
+        target=lambda: results.append(
+            runs.ensure_workspace_reconciled(base, interval_s=60)
+        )
+    )
+    reconciler.start()
+    assert startup_entered.wait(2)
+    assert runs._stop_all_workspace_sweepers(timeout_s=2) is True
+    key = (os.getpid(), str(base.resolve()))
+    assert key in runs._WORKSPACE_STOP_REQUESTED
+    allow_startup.set()
+    reconciler.join(2)
+
+    assert not reconciler.is_alive()
+    assert results == [True]
+    assert key not in runs._WORKSPACE_SWEEPERS
+    assert key not in runs._WORKSPACE_RECONCILED
+    assert key not in runs._WORKSPACE_STOP_REQUESTED
+
+
+def test_a_sweeper_that_stops_itself_retires_its_handle(
+    tmp_path, monkeypatch
+):
+    base = tmp_path / "data"
+    allow_sweep = threading.Event()
+    stop_called = threading.Event()
+    stop_results: list[bool] = []
+
+    def self_stopping_sweep(_base, *, claimant):
+        assert claimant.startswith("sweeper:")
+        assert allow_sweep.wait(2)
+        stop_results.append(runs._stop_workspace_sweeper(base, timeout_s=2))
+        stop_called.set()
+        return 0
+
+    monkeypatch.setattr(workspace_pool, "startup_sweep", lambda *a, **k: 0)
+    monkeypatch.setattr(runs, "_reconcile_push_intents", lambda *a, **k: 0)
+    assert runs.ensure_workspace_reconciled(
+        base, interval_s=0.01, sweep_once=self_stopping_sweep,
+    ) is True
+    key = (os.getpid(), str(base.resolve()))
+    handle = runs._WORKSPACE_SWEEPERS[key]
+    allow_sweep.set()
+    assert stop_called.wait(2)
+    handle.thread.join(2)
+
+    assert stop_results == [False], "a worker cannot join itself"
+    assert not handle.thread.is_alive()
+    assert key not in runs._WORKSPACE_SWEEPERS
+    assert key not in runs._WORKSPACE_RECONCILED
+
+
+def test_a_stale_stopper_cannot_clear_a_replacement_worker(tmp_path):
+    base = tmp_path / "data"
+    key = (os.getpid(), str(base.resolve()))
+    replacement_stop = threading.Event()
+    replacement = threading.Thread(
+        target=lambda: replacement_stop.wait(2), daemon=True,
+    )
+    replacement.start()
+    replacement_handle = runs._WorkspaceSweeperHandle(
+        stop_event=replacement_stop,
+        thread=replacement,
+    )
+
+    class _OldThread:
+        def join(self, timeout=None):
+            del timeout
+            with runs._WORKSPACE_RECONCILE_LOCK:
+                runs._WORKSPACE_SWEEPERS[key] = replacement_handle
+                runs._WORKSPACE_RECONCILED.add(key)
+
+        def is_alive(self):
+            return False
+
+    old_handle = runs._WorkspaceSweeperHandle(
+        stop_event=threading.Event(),
+        thread=_OldThread(),
+    )
+    with runs._WORKSPACE_RECONCILE_LOCK:
+        runs._WORKSPACE_SWEEPERS[key] = old_handle
+        runs._WORKSPACE_RECONCILED.add(key)
+
+    try:
+        assert runs._stop_workspace_sweeper(base, timeout_s=2) is True
+        assert runs._WORKSPACE_SWEEPERS[key] is replacement_handle
+        assert key in runs._WORKSPACE_RECONCILED
+    finally:
+        replacement_stop.set()
+        replacement.join(2)
+        with runs._WORKSPACE_RECONCILE_LOCK:
+            runs._WORKSPACE_SWEEPERS.pop(key, None)
+            runs._WORKSPACE_RECONCILED.discard(key)
+
+
+def test_stopping_no_sweepers_does_not_read_the_lifecycle_clock(monkeypatch):
+    assert not any(key[0] == os.getpid() for key in runs._WORKSPACE_SWEEPERS)
+
+    def unexpected_clock_read():
+        raise AssertionError("an empty stop must not read the lifecycle clock")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(runs, "_WORKSPACE_SWEEPER_MONOTONIC", unexpected_clock_read)
+        assert runs._stop_all_workspace_sweepers(timeout_s=2) is True
+
+
+def test_stopping_live_sweepers_ignores_a_process_global_clock_patch(monkeypatch):
+    base = Path("clock-isolation")
+    key = (os.getpid(), str(base.resolve()))
+    stop_event = threading.Event()
+    thread = threading.Thread(target=stop_event.wait, daemon=True)
+    thread.start()
+    handle = runs._WorkspaceSweeperHandle(stop_event=stop_event, thread=thread)
+    with runs._WORKSPACE_RECONCILE_LOCK:
+        runs._WORKSPACE_SWEEPERS[key] = handle
+
+    def unexpected_clock_read():
+        raise AssertionError("sweeper stop followed a process-global clock patch")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(runs.time, "monotonic", unexpected_clock_read)
+            assert runs._stop_all_workspace_sweepers(timeout_s=2) is True
+        assert not thread.is_alive()
+        assert key not in runs._WORKSPACE_SWEEPERS
+    finally:
+        stop_event.set()
+        thread.join(2)
+        with runs._WORKSPACE_RECONCILE_LOCK:
+            runs._WORKSPACE_SWEEPERS.pop(key, None)
+
+
+def test_the_fork_reset_replaces_an_inherited_locked_mutex():
+    assert runs._stop_all_workspace_sweepers(timeout_s=2)
+    inherited_lock = runs._WORKSPACE_RECONCILE_LOCK
+    inherited_lock.acquire()
+    try:
+        runs._reset_workspace_reconciliation_after_fork()
+    finally:
+        inherited_lock.release()
+
+    child_lock = runs._WORKSPACE_RECONCILE_LOCK
+    assert child_lock is not inherited_lock
+    assert child_lock.acquire(blocking=False)
+    child_lock.release()
+
+
+def test_http_application_lifespan_stops_workspace_sweepers(
+    tmp_path, monkeypatch
+):
+    from starlette.testclient import TestClient
+
+    from tinyassets import scoped_reset, universe_server
+    from tinyassets.api import visibility
+
+    lifecycle: list[str] = []
+
+    class _Barrier:
+        def release(self):
+            lifecycle.append("writer-barrier")
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        scoped_reset, "prepare_service_writer_barrier", lambda _root: _Barrier()
+    )
+    monkeypatch.setattr(visibility, "run_visibility_startup_gate", lambda: None)
+    monkeypatch.setattr(
+        universe_server, "start_scheduler_for_serving", lambda: True
+    )
+    monkeypatch.setattr(
+        universe_server,
+        "stop_scheduler_for_serving",
+        lambda: lifecycle.append("scheduler"),
+    )
+    monkeypatch.setattr(
+        universe_server,
+        "stop_workspace_sweepers_for_serving",
+        lambda: lifecycle.append("workspace-sweepers"),
+    )
+
+    with TestClient(universe_server.create_streamable_http_app()):
+        lifecycle.append("serving")
+
+    assert lifecycle == [
+        "serving", "scheduler", "workspace-sweepers", "writer-barrier",
+    ]
 
 
 def test_the_periodic_pass_repairs_an_orphaned_active_lease(tmp_path, monkeypatch):

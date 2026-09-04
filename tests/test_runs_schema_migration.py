@@ -211,7 +211,14 @@ class TestMigrationExistingDb:
 class TestUpdateRunStatusProviderFields:
     def test_write_provider_used(self, tmp_path: Path) -> None:
         initialize_runs_db(tmp_path)
-        run_id = create_run(tmp_path, branch_def_id="b1", thread_id="t1", run_name="r", inputs={})
+        run_id = create_run(
+            tmp_path,
+            branch_def_id="b1",
+            thread_id="t1",
+            run_name="r",
+            inputs={},
+            actor="universe:u-test",
+        )
         update_run_status(
             tmp_path, run_id,
             status=RUN_STATUS_COMPLETED,
@@ -224,7 +231,14 @@ class TestUpdateRunStatusProviderFields:
 
     def test_write_model(self, tmp_path: Path) -> None:
         initialize_runs_db(tmp_path)
-        run_id = create_run(tmp_path, branch_def_id="b1", thread_id="t1", run_name="r", inputs={})
+        run_id = create_run(
+            tmp_path,
+            branch_def_id="b1",
+            thread_id="t1",
+            run_name="r",
+            inputs={},
+            actor="universe:u-test",
+        )
         update_run_status(
             tmp_path, run_id,
             status=RUN_STATUS_COMPLETED,
@@ -237,7 +251,14 @@ class TestUpdateRunStatusProviderFields:
 
     def test_write_token_count(self, tmp_path: Path) -> None:
         initialize_runs_db(tmp_path)
-        run_id = create_run(tmp_path, branch_def_id="b1", thread_id="t1", run_name="r", inputs={})
+        run_id = create_run(
+            tmp_path,
+            branch_def_id="b1",
+            thread_id="t1",
+            run_name="r",
+            inputs={},
+            actor="universe:u-test",
+        )
         update_run_status(
             tmp_path, run_id,
             status=RUN_STATUS_COMPLETED,
@@ -250,7 +271,14 @@ class TestUpdateRunStatusProviderFields:
 
     def test_provider_used_none_by_default(self, tmp_path: Path) -> None:
         initialize_runs_db(tmp_path)
-        run_id = create_run(tmp_path, branch_def_id="b1", thread_id="t1", run_name="r", inputs={})
+        run_id = create_run(
+            tmp_path,
+            branch_def_id="b1",
+            thread_id="t1",
+            run_name="r",
+            inputs={},
+            actor="universe:u-test",
+        )
         update_run_status(tmp_path, run_id, status=RUN_STATUS_COMPLETED, finished_at=time.time())
         row = get_run(tmp_path, run_id)
         assert row is not None
@@ -260,7 +288,14 @@ class TestUpdateRunStatusProviderFields:
 class TestListRecentRunsIncludesProviderFields:
     def test_list_recent_runs_has_provider_used_key(self, tmp_path: Path) -> None:
         initialize_runs_db(tmp_path)
-        run_id = create_run(tmp_path, branch_def_id="b1", thread_id="t1", run_name="r", inputs={})
+        run_id = create_run(
+            tmp_path,
+            branch_def_id="b1",
+            thread_id="t1",
+            run_name="r",
+            inputs={},
+            actor="universe:u-test",
+        )
         update_run_status(
             tmp_path, run_id,
             status=RUN_STATUS_COMPLETED,
@@ -274,7 +309,14 @@ class TestListRecentRunsIncludesProviderFields:
 
     def test_list_recent_runs_provider_used_none_when_absent(self, tmp_path: Path) -> None:
         initialize_runs_db(tmp_path)
-        run_id = create_run(tmp_path, branch_def_id="b1", thread_id="t1", run_name="r", inputs={})
+        run_id = create_run(
+            tmp_path,
+            branch_def_id="b1",
+            thread_id="t1",
+            run_name="r",
+            inputs={},
+            actor="universe:u-test",
+        )
         update_run_status(tmp_path, run_id, status=RUN_STATUS_COMPLETED, finished_at=time.time())
         runs = list_recent_runs(tmp_path, limit=1)
         assert len(runs) == 1
@@ -297,7 +339,14 @@ class TestResumePathProviderUsed:
 
     def test_resume_completion_writes_provider_used(self, tmp_path: Path) -> None:
         initialize_runs_db(tmp_path)
-        run_id = create_run(tmp_path, branch_def_id="b1", thread_id="t1", run_name="r", inputs={})
+        run_id = create_run(
+            tmp_path,
+            branch_def_id="b1",
+            thread_id="t1",
+            run_name="r",
+            inputs={},
+            actor="universe:u-test",
+        )
         update_run_status(
             tmp_path, run_id,
             status=RUN_STATUS_COMPLETED,
@@ -310,7 +359,14 @@ class TestResumePathProviderUsed:
 
     def test_resume_completion_null_provider_when_no_nodes_ran(self, tmp_path: Path) -> None:
         initialize_runs_db(tmp_path)
-        run_id = create_run(tmp_path, branch_def_id="b1", thread_id="t1", run_name="r", inputs={})
+        run_id = create_run(
+            tmp_path,
+            branch_def_id="b1",
+            thread_id="t1",
+            run_name="r",
+            inputs={},
+            actor="universe:u-test",
+        )
         update_run_status(
             tmp_path, run_id,
             status=RUN_STATUS_COMPLETED,
@@ -323,7 +379,14 @@ class TestResumePathProviderUsed:
 
     def test_list_recent_runs_reflects_resume_provider(self, tmp_path: Path) -> None:
         initialize_runs_db(tmp_path)
-        run_id = create_run(tmp_path, branch_def_id="b1", thread_id="t1", run_name="r", inputs={})
+        run_id = create_run(
+            tmp_path,
+            branch_def_id="b1",
+            thread_id="t1",
+            run_name="r",
+            inputs={},
+            actor="universe:u-test",
+        )
         update_run_status(
             tmp_path, run_id,
             status=RUN_STATUS_COMPLETED,

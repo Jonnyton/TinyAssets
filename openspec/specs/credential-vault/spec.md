@@ -5,9 +5,7 @@
 ## Purpose
 
 Per-universe typed credential store (as-built: flat JSON guarded by best-effort file permissions) with daemon-side resolvers and a provider auth env overlay so a universe runs on its founder's assigned engine, not the host's.
-
 ## Requirements
-
 ### Requirement: Per-Universe Typed Credential Store
 
 The system SHALL persist credentials in a per-universe vault file named `.credential-vault.json` inside the universe directory, written as a JSON object with `schema_version` 1 and a `credentials` list. Every credential record SHALL declare a `credential_type` that is one of `social`, `llm_subscription`, `llm_api_key`, or `vcs`; a record with any other type SHALL be rejected at write time. A Codex `llm_subscription` record that provides `auth_json_b64` SHALL contain a non-empty, strictly decodable base64 value whose decoded bytes are valid JSON; malformed values SHALL be rejected before the stored vault is replaced. The write helper (`tinyassets.credential_vault.write_credential_vault`) SHALL return a non-secret summary containing only the vault path, credential count, credential types, service names, collapsed-record count, and descriptors for any VCS purpose slots removed by a narrowing upsert, and SHALL never include secret material in that summary.
@@ -350,3 +348,30 @@ mapped to fixed error classes.
 #### Scenario: a mixed DNS answer is a refusal, and IPv6 is pinned correctly
 - **WHEN** the host resolves to one public IPv4 address and one private address, or to public IPv6 addresses only
 - **THEN** the mixed answer is refused as `workspace_checkout_failed` before any connection, and the IPv6-only answer yields a resolve rule with bracketed addresses for exactly `<host>:443`
+
+### Requirement: Realtime voice authority is universe-scoped and credential-blind
+The voice capability check and session broker SHALL use only a generic HTTP connection and grant explicitly bound to the authenticated owner's universe. The voice route SHALL NOT resolve or receive the long-lived connection credential; credential resolution and request signing remain inside the existing credential-blind broker child. The response to the app SHALL contain only a validated SDP answer and bounded, non-secret session metadata.
+
+#### Scenario: Compatible owner connection exchanges bounded signaling
+- **GIVEN** all host gates are enabled and the authenticated owner's universe has a valid voice binding referencing its active HTTP connection and grant
+- **WHEN** the owner requests a voice session
+- **THEN** the broker sends the provider-neutral session policy and bounded SDP offer through that exact credential-blind connection
+- **AND** it returns only a validated, bounded SDP answer and session metadata
+- **AND** the response contains no long-lived credential
+
+#### Scenario: Ambient credential is present but an owner connection is absent
+- **GIVEN** one or more process-global service credentials exist but the authenticated owner's universe has no valid bound voice connection
+- **WHEN** the owner requests a voice session
+- **THEN** capability is reported as locked and the broker fails before a network request
+- **AND** it does not use an ambient credential, platform connection, or another universe's grant
+
+#### Scenario: Conversation engine authority exists without voice authority
+- **GIVEN** a universe has a working assigned writer but no separately bound voice connection
+- **WHEN** the app checks Voice capability
+- **THEN** Voice is reported as locked while the writer remains available
+- **AND** TinyAssets does not request a new credential, substitute platform authority, or disturb writer routing
+
+#### Scenario: Secret-bearing paths are non-observable
+- **WHEN** session signaling succeeds or fails
+- **THEN** application logs, traces, exceptions, and conversation history contain no long-lived connection credential
+- **AND** the HTTP response is marked not cacheable

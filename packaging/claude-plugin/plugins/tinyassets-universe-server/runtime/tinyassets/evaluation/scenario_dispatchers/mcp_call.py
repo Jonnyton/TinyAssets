@@ -123,7 +123,7 @@ def mcp_call_dispatcher(
         except Exception as exc:  # noqa: BLE001
             evaluator_results.append({
                 "score": 0.0,
-                "label": getattr(evaluator, "__name__", "anonymous_evaluator"),
+                "label": getattr(evaluator, "__name__", "unnamed_evaluator"),
                 "details": {
                     "evaluator_exception": f"{type(exc).__name__}: {exc}",
                 },

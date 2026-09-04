@@ -557,7 +557,7 @@ def test_enqueue_binds_the_session_with_the_given_principal(env):
         return original(base_path, **kwargs)
 
     authenticate(None)  # no request context — a background thread has none
-    assert current_request_actor_id() == "anonymous"
+    assert current_request_actor_id() == ""  # nobody, not "anonymous"
 
     fgp.new_foreground_run_provider_session = _spy
     try:

@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS webhook_hooks (
     branch_def_id  TEXT NOT NULL,
     created_at     REAL NOT NULL,
     revoked_at     REAL,
-    source_id      TEXT
+    source_id      TEXT,
+    owner_principal_id TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_hooks_universe
     ON webhook_hooks(universe_id);
@@ -106,8 +107,21 @@ def _connect(base_path: str | Path) -> sqlite3.Connection:
             if key not in _initialized:
                 conn.executescript(_SCHEMA)
                 _migrate_hooks_to_hashed(conn)
+                _migrate_hooks_owner(conn)
                 _initialized.add(key)
     return conn
+
+
+def _migrate_hooks_owner(conn: sqlite3.Connection) -> None:
+    """Add ``owner_principal_id`` to a store created before hooks recorded
+    their owner (authenticated-owner boundary D2). Rows keep '' and REFUSE to
+    deliver until their owner re-creates them: a hook that runs as nobody is
+    the thing this change removes."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(webhook_hooks)")}
+    if "owner_principal_id" not in columns:
+        conn.execute(
+            "ALTER TABLE webhook_hooks ADD COLUMN owner_principal_id TEXT NOT NULL DEFAULT ''"
+        )
 
 
 def _migrate_hooks_to_hashed(conn: sqlite3.Connection) -> None:
@@ -158,12 +172,20 @@ def mint(
     *,
     universe_id: str,
     branch_def_id: str,
+    owner_principal_id: str,
     source_id: str | None = None,
     now: float | None = None,
 ) -> str:
     """Mint a fresh unguessable hook token. Returns the RAW token (shown once); only its
-    hash + prefix are persisted. The mint OPERATION checks ownership + authorship."""
-    for name, val in (("universe_id", universe_id), ("branch_def_id", branch_def_id)):
+    hash + prefix are persisted. The mint OPERATION checks ownership + authorship.
+
+    ``owner_principal_id`` is the authenticated caller; every delivery on this
+    hook runs as them (authenticated-owner boundary D2). Required and non-empty."""
+    for name, val in (
+        ("universe_id", universe_id),
+        ("branch_def_id", branch_def_id),
+        ("owner_principal_id", owner_principal_id),
+    ):
         if not isinstance(val, str) or not val:
             raise ValueError(f"webhook_hooks: {name} must be a non-empty string")
         if len(val) > MAX_ID_LEN:
@@ -180,9 +202,12 @@ def mint(
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
             "INSERT INTO webhook_hooks "
-            "(token_hash, token_prefix, universe_id, branch_def_id, created_at, source_id) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (_hash_token(token), token[:_PREFIX_LEN], universe_id, branch_def_id, ts, source_id),
+            "(token_hash, token_prefix, universe_id, branch_def_id, created_at, source_id, "
+            "owner_principal_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                _hash_token(token), token[:_PREFIX_LEN], universe_id, branch_def_id, ts,
+                source_id, owner_principal_id,
+            ),
         )
         conn.commit()
         return token
@@ -191,7 +216,8 @@ def mint(
 
 
 def resolve(base_path: str | Path, *, token: str) -> dict[str, Any] | None:
-    """Return ``{universe_id, branch_def_id, source_id}`` for an ACTIVE token, else None.
+    """Return ``{universe_id, branch_def_id, source_id, owner_principal_id}`` for an
+    ACTIVE token, else None.
 
     None covers unknown, revoked, and empty/malformed tokens alike (no enumeration signal).
     Resolution hashes the presented token; the raw token is never stored."""
@@ -200,8 +226,8 @@ def resolve(base_path: str | Path, *, token: str) -> dict[str, Any] | None:
     conn = _connect(base_path)
     try:
         row = conn.execute(
-            "SELECT universe_id, branch_def_id, source_id FROM webhook_hooks "
-            "WHERE token_hash = ? AND revoked_at IS NULL",
+            "SELECT universe_id, branch_def_id, source_id, owner_principal_id "
+            "FROM webhook_hooks WHERE token_hash = ? AND revoked_at IS NULL",
             (_hash_token(token),),
         ).fetchone()
         return dict(row) if row else None

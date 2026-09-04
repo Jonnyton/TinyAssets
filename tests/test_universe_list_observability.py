@@ -111,20 +111,28 @@ class TestListUniversesEmptyNote:
 
 
 class TestGetStatusUniverseExists:
-    def test_missing_universe_dir_flags_false(self, empty_base):
-        """_default_universe() falls through to "default-universe"; the
-        directory does not exist on disk. universe_exists must be False so
-        the chatbot narrates the fallback accurately instead of reporting
-        a live universe."""
+    def test_no_universe_bound_says_so_rather_than_naming_a_fallback(
+        self, empty_base,
+    ):
+        """The chatbot must narrate the situation accurately rather than
+        reporting a live universe.
+
+        This used to assert `universe_exists: False` on the full shape, because
+        an unauthenticated caller fell through to a `default-universe` that was
+        not on disk. A signed-in founder with no home never reaches that
+        fallback: they get the short shape, which says no universe is bound and
+        tells them what to do. That is the same guarantee, stated by the code
+        instead of inferred from a flag about a directory nobody made.
+        """
         result = json.loads(get_status())
-        assert result["universe_exists"] is False
-        assert any(
-            "does not exist on disk" in c for c in result["caveats"]
-        ), f"Expected a 'does not exist' caveat; got {result['caveats']}"
-        assert any(
-            "Create universe" in step
-            for step in result["actionable_next_steps"]
+        assert "universe_id" not in result, (
+            f"a universe was named for an account with no home: {result}"
         )
+        assert result["first_contact"]["event"] == "no_universe_yet"
+        assert "not bound" in result["first_contact"]["note"].lower() or (
+            "no complete home" in result["first_contact"]["note"].lower()
+        ), result["first_contact"]
+        assert result["next_step_for_user"], result
 
     def test_existing_universe_dir_flags_true(self, populated_base):
         result = json.loads(get_status(universe_id="alpha"))

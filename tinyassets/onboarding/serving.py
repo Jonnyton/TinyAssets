@@ -201,9 +201,11 @@ def ensure_founder_serving(
     # connection the owner registered, and the binding layer authorizes it.
     provider = _SERVICE_TO_PROVIDER.get(asked.lower(), asked)
     base = Path(base_path)
-    owner = (owner_user_id or "").strip()
+    from tinyassets.principals import named_principal
+
+    owner = named_principal(owner_user_id)
     uid = (universe_id or "").strip()
-    if not owner or owner == "anonymous" or not uid:
+    if not owner or not uid:
         return {"status": "held", "reason": "authentication_required"}
     with _gesture_lock(uid):
         # `_ensure_founder_serving_locked` classifies and RETURNS; it does not

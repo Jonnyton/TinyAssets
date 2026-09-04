@@ -72,15 +72,15 @@ the diff.
 - **Refresh labels are fixed:** `Refresh MCP` and `Refresh GitHub`.
 - **No phone numbers.**
 
-## The public-read boundary (tested)
+## The signed-in read boundary (tested)
 
-`lib/live.ts` reads only the public projection (`read_graph target=graphs`,
-`read_page` inventory) through `WebSite/shared/mcp/public-read-contract.js`.
-A public browser never downloads `get_status`, never requests goals or runs,
-never defaults a missing visibility to public, and never relabels the
-checked-in snapshot as a live read. `WebSite/site-react/scripts/public-boundary.test.mjs` and its canonical-contract
-sibling enforce this; extend them when you
-add a live surface.
+Every `/mcp` request needs a connector bearer. `lib/live.ts` therefore makes
+no MCP request from the public browser and returns an explicit sign-in-required
+state. Public pages render only the labelled checked-in snapshot. A live read
+belongs in an authenticated connector or account session, never a credential
+embedded in static JavaScript. `WebSite/site-react/scripts/public-boundary.test.mjs`
+and its canonical-contract sibling enforce this; extend them when you add an
+authenticated live surface.
 
 ## Routes
 
@@ -110,9 +110,9 @@ Then, still in `WebSite/site-react`:
   `lib/mcp-snapshot.json` when it is stale.
 
 Before declaring done: the sweep is clean, the screenshots were looked at,
-and the live surfaces on `npm run dev` render readable records or an explicit
-labelled empty/failed state after `Refresh MCP`. Reject raw placeholders such
-as `{}`, `[]`, `undefined`, or epoch numbers.
+and protected live surfaces render an explicit signed-in state while snapshots
+retain their date and provenance. Reject raw placeholders such as `{}`, `[]`,
+`undefined`, or epoch numbers.
 
 Ship through the normal pull-request path. A merge does not deploy. A host runs
 `deploy-site-react.yml` with `confirm: deploy`, then the canary and
@@ -139,7 +139,7 @@ boundary (the pinned preview-worker security test).
 |---|---|
 | `WebSite/site-react/` | The site source |
 | `WebSite/site-react/lib/site.ts` | Canonical URLs and the nav |
-| `WebSite/site-react/lib/live.ts` | Browser public-read client |
+| `WebSite/site-react/lib/live.ts` | Browser authentication boundary for live reads |
 | `WebSite/site-react/scripts/` | Tests, snapshot baker, sweep, preview validators |
 | `WebSite/design-system/` | `@tiny/design-system`: tokens, base, components, `DESIGN.md` |
 | `WebSite/brand/` | The mark's SVGs and exporters |

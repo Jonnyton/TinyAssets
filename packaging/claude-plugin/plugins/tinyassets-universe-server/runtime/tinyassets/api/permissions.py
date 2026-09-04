@@ -73,7 +73,7 @@ def operator_request_admission_verdict(
     uid = (universe_id or "").strip()
     identity = current_identity()
     actor_id = (identity.user_id or "").strip()
-    authenticated = bool(actor_id and actor_id != "anonymous")
+    authenticated = bool(actor_id)
     identity_metadata = identity.metadata or {}
     tenant_id = str(
         identity_metadata.get("org_id")
@@ -93,8 +93,8 @@ def operator_request_admission_verdict(
         return OperatorRequestAdmissionVerdict(
             allowed=allowed,
             error_code=error_code,
-            actor_id=actor_id or "anonymous",
-            tenant_id=tenant_id or actor_id or "anonymous",
+            actor_id=actor_id,
+            tenant_id=tenant_id or actor_id,
             universe_id=uid,
             trigger_source=(
                 "owner_queued"
@@ -233,31 +233,45 @@ def operator_request_transaction_checks(
 
 
 def current_request_actor_id() -> str:
-    """Return the authenticated request actor, ignoring env fallbacks."""
-    try:
-        from tinyassets.auth.middleware import current_identity
+    """The authenticated request subject, or "" when nothing is bound.
 
-        identity = current_identity()
-        subject = (getattr(identity, "user_id", "") or "").strip()
-        if subject:
-            return subject
-    except Exception:
-        pass
-    return "anonymous"
+    Never a stand-in: there is no synthetic principal (founder, 2026-09-02).
+    Callers that need an actor treat "" as a refusal.
+    """
+    from tinyassets.auth.middleware import current_identity_or_none
+
+    identity = current_identity_or_none()
+    if identity is None:
+        return ""
+    return (getattr(identity, "user_id", "") or "").strip()
 
 
 def current_actor_id() -> str:
     """Return the actor used for permission checks and error payloads.
 
     No environment fallback: the actor is exactly the authenticated request
-    subject (``anonymous`` when unauthenticated). A universe-server env var
-    must never confer write authority over a universe.
+    subject ("" when nothing is bound). A universe-server env var must never
+    confer write authority over a universe.
     """
     return current_request_actor_id()
 
 
 def is_authenticated_request() -> bool:
-    return current_request_actor_id() != "anonymous"
+    return bool(current_request_actor_id())
+
+
+def is_local_single_tenant() -> bool:
+    """Whether this process is the local single-tenant daemon (stdio/sse tray),
+    as opposed to a served multi-tenant request.
+
+    Use this, never ``not is_authenticated_request()``, to decide whether a
+    host-global side effect is safe: with a fail-closed boundary every caller
+    is authenticated, so that test is always False and the side effect never
+    happens.
+    """
+    from tinyassets.auth.middleware import is_local_operator_process
+
+    return is_local_operator_process()
 
 
 def universe_public_read_allowed(universe_id: str) -> bool:
@@ -297,8 +311,9 @@ def universe_public_read_allowed(universe_id: str) -> bool:
 def universe_access_allows(universe_id: str, *, write: bool = False) -> bool:
     """Return whether the current actor may read/write a universe.
 
-    Anonymous callers may read public universes only. Universe-brain writes
-    require an authenticated MCP user holding a ``write`` or ``admin`` grant.
+    Any authenticated caller may read a public universe. Universe-brain
+    writes require a ``write`` or ``admin`` grant on it. Nothing unauthenticated
+    reaches this check (the transport refused it).
     """
     uid = (universe_id or "").strip()
     if not uid:

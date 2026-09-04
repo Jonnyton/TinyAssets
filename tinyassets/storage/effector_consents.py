@@ -98,6 +98,9 @@ def grant_consent(
     that calls without specifying which destination it's granting
     consent to is a contract violation, not a recoverable error.
     """
+    from tinyassets.principals import named_principal
+
+    granted_by = named_principal(granted_by)
     if not sink:
         raise ValueError("grant_consent requires non-empty sink")
     if not destination:
