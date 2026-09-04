@@ -13,8 +13,9 @@ Runbooks stay where they are — `docs/ops/google-play-launch.md` and
 
 **Google Play: installable today, but only by invited testers.** Public availability
 is at minimum 14 days away and needs 12 real people. **Apple: the App Store record,
-metadata, unpublished privacy draft, signing/profile/API credentials, and a verified
-signed IPA are staged; the Xcode 26 upload fix, screenshots, device proof, and review remain.**
+metadata, unpublished privacy draft, signing/profile/API credentials, verified signed
+IPA, and both required screenshots are staged; legal/privacy attestations, one contact
+phone number, device proof, and review remain.**
 
 ---
 

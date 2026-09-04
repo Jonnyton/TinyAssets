@@ -18,6 +18,30 @@
       "2064x2752"
     ]
   },
+  "required_captures": [
+    {
+      "display": "6.5-inch iPhone",
+      "filename": "iphone-6.5.jpg",
+      "pixel_size": "1284x2778",
+      "alpha": false,
+      "sha256": "6f123b4dbf1d11c26b676cdb53d537d6b7145da8aba407d7ba560d186b50a03d",
+      "source_sha": "76d795a1a3794fc3f3112121a063ca21b3175ce0",
+      "capture_run": 33839432494,
+      "scene": "Signed-out TinyAssets app landing screen",
+      "status": "uploaded_and_persisted_in_app_store_connect"
+    },
+    {
+      "display": "13-inch iPad",
+      "filename": "ipad-13.jpg",
+      "pixel_size": "2064x2752",
+      "alpha": false,
+      "sha256": "a0be01762913af892862bde56be538a6f744aebbc740829dbc2b9f63783fe3ba",
+      "source_sha": "76d795a1a3794fc3f3112121a063ca21b3175ce0",
+      "capture_run": 33839432494,
+      "scene": "Signed-out TinyAssets app landing screen",
+      "status": "uploaded_and_persisted_in_app_store_connect"
+    }
+  ],
   "format": ["png", "jpg", "jpeg"],
   "alpha_allowed": false,
   "minimum_count": 1,

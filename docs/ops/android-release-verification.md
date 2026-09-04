@@ -34,8 +34,8 @@ Internal testing, first published 2026-09-03, and its expanded row contains only
 `android.permission.FOREGROUND_SERVICE_DATA_SYNC`. It does not list `AD_ID`.
 
 The public privacy policy was also read live on 2026-09-03 at
-<https://tinyassets.io/legal#privacy>. It explicitly covers the web, Android, and
-desktop clients; WorkOS identity, provider credentials, messages/files, billing
+<https://tinyassets.io/legal#privacy>. It explicitly covers the web, iOS, Android,
+and desktop clients; WorkOS identity, provider credentials, messages/files, billing
 records, processors, TLS, retention/deletion, and the absence of ads/analytics are
 described. Treat that as disclosure evidence, not proof that the saved Play Data
 safety draft selected the same answers—the Console submission still needs a direct

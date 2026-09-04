@@ -229,6 +229,20 @@ def test_app_store_screenshot_manifest_is_an_honest_ios_capture_contract() -> No
         "2048x2732",
         "2064x2752",
     }
+    captures = manifest["required_captures"]
+    assert {capture["display"] for capture in captures} == {
+        "6.5-inch iPhone",
+        "13-inch iPad",
+    }
+    assert all(capture["alpha"] is False for capture in captures)
+    assert all(
+        capture["status"] == "uploaded_and_persisted_in_app_store_connect"
+        for capture in captures
+    )
+    assert all(
+        capture["source_sha"] == "76d795a1a3794fc3f3112121a063ca21b3175ce0"
+        for capture in captures
+    )
     assert len(manifest["shots"]) == 5
     assert all(shot["status"] == "blocked_until_ios_capture" for shot in manifest["shots"])
     rules = " ".join(manifest["capture_rules"])
