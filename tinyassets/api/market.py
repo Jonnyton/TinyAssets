@@ -614,9 +614,10 @@ def _action_escrow_balance(kwargs: dict[str, Any]) -> str:
     # stranger's escrow for another (and, unset, read an unowned bucket).
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.payments.actions import action_escrow_balance
+    from tinyassets.principals import named_principal
     from tinyassets.storage import _connect
 
-    staker_id = (kwargs.get("staker_id") or _current_actor()).strip()
+    staker_id = named_principal(kwargs.get("staker_id")) or _current_actor()
     currency = (kwargs.get("currency") or "MicroToken").strip()
 
     with _connect(_base_path()) as conn:
@@ -829,10 +830,11 @@ def _action_record_outcome(kwargs: dict[str, Any]) -> str:
         OUTCOME_TYPES,
         record_user_attested_outcome_evidence,
     )
+    from tinyassets.principals import named_principal
     from tinyassets.runs import get_run
 
     run_id = (kwargs.get("run_id") or "").strip()
-    actor_id = (kwargs.get("actor_id") or "").strip()
+    actor_id = named_principal(kwargs.get("actor_id"))
     outcome_type = (kwargs.get("outcome_type") or "").strip()
     if not run_id:
         return json.dumps({"error": "run_id is required."})
@@ -3851,11 +3853,12 @@ def _action_gates_release_bonus(kwargs: dict[str, Any]) -> str:
 def _action_attest_gate_event(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.gate_events import attest_gate_event
+    from tinyassets.principals import named_principal
 
     goal_id = (kwargs.get("goal_id") or "").strip()
     event_type = (kwargs.get("event_type") or "").strip()
     event_date = (kwargs.get("event_date") or "").strip()
-    attested_by = (kwargs.get("attested_by") or _current_actor()).strip()
+    attested_by = named_principal(kwargs.get("attested_by")) or _current_actor()
     notes = (kwargs.get("note") or "").strip()
     cites_raw = (kwargs.get("cites_json") or "[]").strip()
     try:
@@ -3886,9 +3889,10 @@ def _action_attest_gate_event(kwargs: dict[str, Any]) -> str:
 def _action_verify_gate_event(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.gate_events import verify_gate_event
+    from tinyassets.principals import named_principal
 
     event_id = (kwargs.get("event_id") or "").strip()
-    verifier_id = (kwargs.get("verifier_id") or _current_actor()).strip()
+    verifier_id = named_principal(kwargs.get("verifier_id")) or _current_actor()
     if not event_id:
         return json.dumps({"error": "event_id is required."})
     try:
@@ -3903,9 +3907,10 @@ def _action_verify_gate_event(kwargs: dict[str, Any]) -> str:
 def _action_dispute_gate_event(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.gate_events.store import dispute_gate_event
+    from tinyassets.principals import named_principal
 
     event_id = (kwargs.get("event_id") or "").strip()
-    disputed_by = (kwargs.get("disputed_by") or _current_actor()).strip()
+    disputed_by = named_principal(kwargs.get("disputed_by")) or _current_actor()
     reason = (kwargs.get("reason") or "").strip()
     if not event_id:
         return json.dumps({"error": "event_id is required."})
@@ -3921,9 +3926,10 @@ def _action_dispute_gate_event(kwargs: dict[str, Any]) -> str:
 def _action_retract_gate_event(kwargs: dict[str, Any]) -> str:
     from tinyassets.api.engine_helpers import _current_actor
     from tinyassets.gate_events.store import retract_gate_event
+    from tinyassets.principals import named_principal
 
     event_id = (kwargs.get("event_id") or "").strip()
-    retracted_by = (kwargs.get("retracted_by") or _current_actor()).strip()
+    retracted_by = named_principal(kwargs.get("retracted_by")) or _current_actor()
     note = (kwargs.get("note") or "").strip()
     if not event_id:
         return json.dumps({"error": "event_id is required."})
