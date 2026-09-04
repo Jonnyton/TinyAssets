@@ -389,10 +389,11 @@ user; do not attach a founder/personal provider credential. Re-check the saved c
 immediately before every submitted build. Google's reviewer-access requirements are at
 <https://support.google.com/googleplay/android-developer/answer/15748846>.
 
-**What it gated:** Sign in details is now complete, so Target audience and content is
-unblocked. Data safety is answered and saved as a draft but cannot be submitted until
-Target audience is done. Content rating was *not* gated and is complete (IARC, submitted
-2026-09-02, Everyone / PEGI 3 / USK 0 / ClassInd L).
+**What it gated:** Sign in details, Target audience (**18 and over**), and Data safety
+are now Actioned and waiting in Publishing overview; nothing was sent for review.
+Data safety was corrected to list both password and OAuth account creation. Content
+rating remains complete (IARC, submitted 2026-09-02, Everyone / PEGI 3 / USK 0 /
+ClassInd L).
 
 **This does not block a real install.** Play's internal testing track explicitly works
 "before you've finished setting up your app" — the App content checklist gates *production*
@@ -441,13 +442,13 @@ What remains after the secrets, and who does it (`docs/ops/google-play-launch.md
 | Play Console: app created, declarations accepted | **done** 2026-09-02 |
 | Store listing, graphics, privacy URL, Ads/Government/Financial/Health | **done** |
 | Content rating (IARC) | **done** 2026-09-02 — Everyone / PEGI 3 |
-| Data safety | answered, **saved as a draft**; cannot submit until Target audience is done |
+| Data safety | **done** 2026-09-03 — Actioned with password + OAuth account creation; not sent for review |
 | Internal-testing tester list | **done** — "Founder devices" attached to the track |
 | Build the signed AAB | **done** 2026-09-03 — built and signed in the container (`mobile/container/`), no secret needed |
 | Internal-testing release: upload the AAB, roll out | **done** 2026-09-03 11:10 — release `1 (1.0)`, track Active, 3.1 MB |
 | Verify the loop on a real phone (install from the internal-test link, sign in, chat) | **you — this is the live one.** Opt-in on the founder's Google account: https://play.google.com/apps/internaltest/4701716760893982267 |
 | Sign in details | **done** 2026-09-03 — Actioned with the dedicated reviewer; not sent for review |
-| Target audience → Data safety submit | **you** — Sign in details no longer blocks the Target audience form |
+| Target audience | **done** 2026-09-03 — 18 and over, Actioned; not sent for review |
 | Advertising ID declaration | **done 2026-09-03** — saved No after shipped-artifact, exact-candidate merged-manifest, and dependency verification; actioned but not sent for review |
 | Foreground-service declaration + behavior video | **you** — exact gate below |
 | Replace the unsafe uploaded conversation screenshot with staged `01-sign-in.png` | **done 2026-09-03** — live draft saved and both retained filenames verified; not sent for review |

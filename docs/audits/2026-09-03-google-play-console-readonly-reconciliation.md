@@ -21,7 +21,7 @@ rolled out, or published.
 - Production access remains disabled until a qualifying closed test has at least 12
   continuously opted-in testers for at least 14 days.
 
-## App content: three declarations need attention
+## App content: one declaration needs attention
 
 The App content overview—not the coarser dashboard counter—is authoritative for the
 remaining declarations:
@@ -29,18 +29,18 @@ remaining declarations:
 | Declaration | Live state | Prepared next state |
 |---|---|---|
 | Sign in details | **Actioned** 2026-09-03; saved **Yes** with the `Play Reviewer` credential set, not sent for review | Dedicated address `play-review@tinyassets.io` routes through the TinyAssets mailbox to the founder-controlled Gmail. WorkOS user `user_01M1N3BFV6N1V1C9PP1NEWCCHP` is Verified + Active, has no organization or connected accounts, and shows sign-in count **2**. Both password sign-ins reached the same isolated empty universe without MFA or an email challenge after verification. The saved instructions identify the **Skip for now** path; the optional partner-device feedback switch is off. The mistaken Simkal plus-alias user was deleted only after this replacement was proven and saved. |
-| Target audience and content | Unstarted | Founder confirms the staged 18+ answers after Sign in details is complete. |
-| Data safety | Saved draft; not submitted | Reconcile against the exact shipped data flows and founder/legal approval, then submit only after Target audience permits it. |
+| Target audience and content | **Actioned** 2026-09-03; target age **18 and over**, not sent for review | No remaining form work. Re-check only if the intended audience changes. |
+| Data safety | **Actioned** 2026-09-03; not sent for review | Preview still shows the staged collected types, no third-party sharing, encryption in transit, and account deletion. Account creation was corrected from OAuth-only to **Username and password + OAuth** after the reviewer flow proved the production password method. |
 | Advertising ID | **Actioned** 2026-09-03; saved **No**, not sent for review | Re-open if the exact uploaded artifact or any native/JavaScript SDK dependency changes. |
 | Foreground service permissions | Unstarted | Console detects `FOREGROUND_SERVICE_DATA_SYNC`; use **Data sync → Network processing → Other** for the user-initiated local OAuth callback listener, then supply observed behavior and a redacted phone video. |
 
-## Data safety draft observed in Console
+## Data safety declaration observed in Console
 
-The saved draft—not merely the runbook—currently contains:
+The saved Actioned declaration—not merely the runbook—currently contains:
 
 - Collects or shares required data: **Yes**.
 - All collected data encrypted in transit: **Yes**.
-- Account creation: **OAuth**.
+- Account creation: **Username and password** and **OAuth**.
 - Account deletion URL: `https://tinyassets.io/account`.
 - Separate partial-data deletion without account deletion: **No**.
 - Selected types: Personal info (`Email address`, `User IDs`), Messages (`Other

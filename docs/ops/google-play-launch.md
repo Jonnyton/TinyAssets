@@ -267,8 +267,9 @@ Play's taxonomy, not ours. Answer exactly:
 - **Does your app collect or share user data?** Yes.
 - **Is all of the user data collected by your app encrypted in transit?** Yes.
 - **Do you provide a way for users to request that their data is deleted?** Yes.
-- **Account creation:** Yes, the app lets users create an account (sign-in via
-  WorkOS AuthKit). **Account deletion URL:** `https://tinyassets.io/account`.
+- **Account creation:** Yes, the app lets users create an account through both
+  **Username and password** and **OAuth** in WorkOS AuthKit. **Account deletion URL:**
+  `https://tinyassets.io/account`.
   Deleting the account deletes all associated data → answer that no separate
   partial-deletion option is offered.
 - **Data types collected** — each one *Collected*, *Not shared*, *not ephemeral*.
@@ -358,7 +359,7 @@ that is expected, not a mis-click.
 ## 8. Target audience & other declarations
 
 - **Target audience:** 18+ (an AI productivity tool; avoids the stricter
-  child-directed rules). Confirm.
+  child-directed rules). Saved and Actioned 2026-09-03; not sent for review.
 - **Ads:** No ads → declare "No".
 - **Government app:** No. **Financial features:** No.
 - **News app:** No.
@@ -470,18 +471,18 @@ not as work outstanding:
 1. ~~Play Console → **Create app**~~ — done: name `TinyAssets`, App, Free, declarations
    accepted, Play App Signing enrolled.
 2. ~~Fill the listing (§4), Data safety incl. the account-deletion URL (§6), Content
-   rating (§7), privacy URL (§4/§5), graphics (§9).~~ — done, except **Target audience
-   (§8)**, which Play refuses to open until Sign in details has a reviewer account.
+   rating (§7), privacy URL (§4/§5), graphics (§9), Sign in details, and Target audience
+   (§8).~~ — done. Data safety was updated to include both password and OAuth account
+   creation and saved as Actioned on 2026-09-03.
 3. ~~**Internal testing** release~~ — done 2026-09-03 11:10: bundle built by
    `mobile/container/`, uploaded, rolled out. Opt-in link in the status checklist below.
 
 Outstanding:
 
 4. Verify the full loop on a device from the internal-test link.
-5. Reviewer account → Sign in details → Target audience (§8) → submit Data safety.
-6. Review and submit the foreground-service declaration (§8a), including its video.
-7. **Closed test**, 12 testers for 14 days, then apply for production access.
-8. Promote to **Production** → submit for review (hours–days) → **Roll out**.
+5. Record the foreground-service behavior video and complete that declaration (§8a).
+6. **Closed test**, 12 testers for 14 days, then apply for production access.
+7. Promote to **Production** → submit for review (hours–days) → **Roll out**.
 
 ---
 
@@ -497,12 +498,12 @@ Outstanding:
 > Testers see the temporary name `io.tinyassets.app (unreviewed)` until the
 > listing review completes; that is expected, not a defect.
 
-Play Console's dashboard counter reads **8 of 11**, but the authoritative App content
-overview now shows **four declarations need attention**: Sign in details, Target
-audience, Data safety, and Foreground service permissions. Inspection on 2026-09-03
-confirmed the Data safety draft is complete through Preview; Advertising ID is saved
-as **No** under Actioned; the other three declarations are unstarted. That work gates
-*production*, not the existing internal test. Full evidence is in
+The authoritative App content overview now shows **one declaration needs attention**:
+Foreground service permissions. Sign in details, Target audience (18+), and Data safety
+are Actioned but not sent for review. Data safety's Preview retains the staged types,
+now accurately lists both password and OAuth account creation, and Advertising ID remains
+saved as **No** under Actioned. The foreground-service declaration gates *production*,
+not the existing internal test. Full evidence is in
 `docs/audits/2026-09-03-google-play-console-readonly-reconciliation.md`.
 
 Done:
@@ -512,8 +513,8 @@ Done:
 - [x] Account deletion in-app and at `tinyassets.io/account`
 - [x] Ads / Government / Financial / Health declarations, category, contact details
 - [x] **Content rating** — IARC submitted 2026-09-02, Everyone / PEGI 3 / USK 0 / ClassInd L
-- [x] Data safety answered and **saved as a draft**; read-only Console Preview matches
-      the staged types and shows Audio files `0/3`
+- [x] Data safety **Actioned** 2026-09-03; Console Preview matches the staged types,
+      Audio files remains `0/3`, and account creation lists password + OAuth
 - [x] Advertising ID saved as **No** after shipped-artifact, candidate merged-manifest,
       and dependency verification; present under Actioned, not sent for review
 - [x] Contact phone verified — one click, no SMS code. It was never a founder action.
@@ -529,15 +530,12 @@ Open, with what each actually waits on:
 - [ ] **You: open the opt-in link, accept, install, and try the loop** — sign in,
       connect a provider, send a message. This is the first real-user test and it is
       the only thing that can find what a compile cannot.
-- [ ] Founder: enable Email + Password sign-in in WorkOS and create a review account.
-      AuthKit currently offers only "Continue with SSO" and "Continue with Google"
-      (verified on the live page 2026-09-02), so there is no credential to give Google.
-      See `docs/host-actions.md`.
-- [ ] Sign in details → Target audience → Data safety submit — the chain that unlocks
-      the last three App content rows, all gated on the account above.
+- [x] Dedicated `play-review@tinyassets.io` WorkOS password reviewer; two clean isolated
+      sign-ins; Sign in details saved and Actioned; no founder data or provider attached
+- [x] Target audience saved as **18 and over**; Data safety corrected and Actioned
 - [ ] Foreground-service declaration (§8a): confirm the Console row, record the
       user-initiated OAuth callback video, select **Data sync → Network processing →
-      Other**, founder reviews the staged facts, then submit.
+      Other**, add the public redacted video link, then save. No verified video exists yet.
 - [ ] Founder: the four `ANDROID_UPLOAD_*` secrets. Not on the critical path any more —
       the container build below needs none of them — but they turn every future release
       into one `gh workflow run` instead of a manual build.

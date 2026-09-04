@@ -99,12 +99,12 @@ as the workflow artifact.
 
 ## Play policy gates before production access
 
-- App access: provide an active reviewer account and exact steps through WorkOS.
-  Google says reviewers cannot rely on creating their own account. The current live
-  login offers Google/SSO only, so a dedicated password-based reviewer path remains
-  the blocking prerequisite.
-- Target audience and Data safety: complete only from verified product behavior and
-  SDK/data-flow evidence. The saved draft is not a submitted declaration.
+- App access: **done 2026-09-03.** The dedicated WorkOS password reviewer completed two
+  clean isolated sign-ins, and Play Sign in details is Actioned with the observed
+  **Skip for now** path. No founder data or provider credential is attached.
+- Target audience and Data safety: **Actioned 2026-09-03, not sent for review.** Target
+  age is 18 and over. Data safety matches the verified SDK/data-flow evidence and lists
+  both password and OAuth account creation.
 - Advertising ID: the live Console declaration was saved as **No** on 2026-09-03 after
   shipped-artifact and exact-candidate verification. Keep that answer only for a
   candidate whose merged manifest passes this repository's permission allowlist.

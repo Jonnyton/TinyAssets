@@ -25,7 +25,8 @@ cannot start without the founder.
   graphics, privacy policy URL, in-app privacy link, account deletion, and the
   Ads / Government / Financial / Health declarations are all filled.
 - **Content rating** submitted 2026-09-02 — Everyone / PEGI 3 / USK 0 / ClassInd L.
-- **Data safety** answered and saved as a draft (it cannot be *submitted* yet; see below).
+- **Data safety** corrected to list password + OAuth account creation, saved, and
+  Actioned; it has not been sent for review.
 - **Advertising ID** saved as **No** after the shipped artifact, current merged
   manifest, and locked dependencies all verified that no advertising ID is used. It
   is Actioned in Play but has not been sent for review.
@@ -40,19 +41,20 @@ cannot start without the founder.
 - **A signed bundle is live on the internal testing track**: release `1 (1.0)`,
   published 2026-09-03 11:10, 3.1 MB.
   Opt-in link: <https://play.google.com/apps/internaltest/4701716760893982267>
-- App content now shows **8 actioned declarations** and **3 needing attention**.
+- App content now shows **10 actioned declarations** and **1 needing attention**.
 
 ### The wall, stated precisely
 
-Google Play had three gates stacked in a fixed order. The first is now complete:
+Google Play had three gates stacked in a fixed order. All three are now complete:
 
 1. **Sign in details — done 2026-09-03.** The durable TinyAssets alias, isolated WorkOS
    user, two clean password sign-ins, and saved Play instruction set are all verified.
    The optional Google/partner-device feedback switch was left off. Nothing was sent
    for review.
-2. **Target audience and content** is now unblocked and still needs the founder to
-   confirm the staged 18+ answers before saving the declaration.
-3. **Data safety** remains a saved draft and cannot be submitted until (2) is done.
+2. **Target audience and content — done 2026-09-03.** Saved as **18 and over** and
+   Actioned; not sent for review.
+3. **Data safety — done 2026-09-03.** The verified data-flow answers are Actioned,
+   including both password and OAuth account creation; not sent for review.
 
 Separately, and independent of those three: a personal developer account must run a
 **closed test with at least 12 testers, opted in continuously for 14 days**, before it
@@ -65,9 +67,10 @@ agent does shortens it.
 
 ### What the next session should actually do
 
-- The remaining declarations needing attention are **Target audience and content**,
-  **Data safety**, and **Foreground service permissions**. Their founder checks remain
-  in `docs/host-actions.md`; do not submit or send anything for review without them.
+- The only App content declaration needing attention is **Foreground service
+  permissions**. Play requires a public demonstration-video link; no verified redacted
+  phone recording exists yet. The exact shot list is in `docs/host-actions.md`. Do not
+  submit or send anything for review before that evidence exists.
 - **Do not** re-derive the `gh secret set` situation. It is denied by the harness
   classifier (tested four times, including piping from a file so no value entered
   argv). Do not route around it with `gh api` — that bypasses the intent of the
