@@ -107,7 +107,9 @@ capture() {
   sleep 20
 
   local screenshot="$output_dir/$filename"
-  xcrun simctl io "$udid" screenshot --type=png "$screenshot"
+  # JPEG preserves the native simulator dimensions while guaranteeing the
+  # alpha-free image Apple requires for store screenshots.
+  xcrun simctl io "$udid" screenshot --type=jpeg "$screenshot"
 
   local width
   local height
@@ -130,5 +132,5 @@ capture() {
   xcrun simctl shutdown "$udid"
 }
 
-capture "$iphone_udid" "iphone-6.5.png" "1242x2688,1284x2778"
-capture "$ipad_udid" "ipad-13.png" "2048x2732,2064x2752"
+capture "$iphone_udid" "iphone-6.5.jpg" "1242x2688,1284x2778"
+capture "$ipad_udid" "ipad-13.jpg" "2048x2732,2064x2752"
