@@ -102,6 +102,9 @@ def universe_with_log(tmp_path, monkeypatch):
     # the default-resolution path these tests exist to exercise (the
     # anonymous branch, which is what an uncredentialed test hits).
     monkeypatch.setattr(helpers, "_default_universe", lambda: "test-universe")
+    # ...and the branch an AUTHENTICATED caller with no bound home
+    # takes: `_designated_public_universe`, which honours this first.
+    monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "test-universe")
     return udir
 
 
@@ -180,6 +183,9 @@ def test_dispatch_guard_empty_match_adds_absence_caveat(tmp_path, monkeypatch):
     # the default-resolution path these tests exist to exercise (the
     # anonymous branch, which is what an uncredentialed test hits).
     monkeypatch.setattr(helpers, "_default_universe", lambda: "no-dispatch-universe")
+    # ...and the branch an AUTHENTICATED caller with no bound home
+    # takes: `_designated_public_universe`, which honours this first.
+    monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "no-dispatch-universe")
 
     response = _parse_response(_action_get_recent_events(tag="dispatch_guard"))
 
@@ -214,6 +220,9 @@ def test_dispatch_guard_missing_log_adds_absence_caveat(tmp_path, monkeypatch):
     # the default-resolution path these tests exist to exercise (the
     # anonymous branch, which is what an uncredentialed test hits).
     monkeypatch.setattr(helpers, "_default_universe", lambda: "fresh-dispatch-universe")
+    # ...and the branch an AUTHENTICATED caller with no bound home
+    # takes: `_designated_public_universe`, which honours this first.
+    monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "fresh-dispatch-universe")
 
     response = _parse_response(_action_get_recent_events(tag="dispatch_guard"))
 
@@ -280,6 +289,9 @@ def test_missing_log_returns_empty_with_caveat(tmp_path, monkeypatch):
     # the default-resolution path these tests exist to exercise (the
     # anonymous branch, which is what an uncredentialed test hits).
     monkeypatch.setattr(helpers, "_default_universe", lambda: "fresh-universe")
+    # ...and the branch an AUTHENTICATED caller with no bound home
+    # takes: `_designated_public_universe`, which honours this first.
+    monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "fresh-universe")
 
     response = _parse_response(_action_get_recent_events())
 

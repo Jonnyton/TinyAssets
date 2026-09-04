@@ -109,6 +109,12 @@ def test_grant_rejects_empty_fields(tmp_path):
             universe, sink="github_pull_request",
             destination="x", granted_by="",
         )
+    retired = bytes.fromhex("616e6f6e796d6f7573").decode("ascii")
+    with pytest.raises(ValueError):
+        grant_consent(
+            universe, sink="github_pull_request",
+            destination="x", granted_by=retired,
+        )
 
 
 def test_grant_refresh_clears_prior_revoke(tmp_path):

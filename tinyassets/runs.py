@@ -48,6 +48,7 @@ from tinyassets.graph_compiler import (
     compile_branch,
     seed_initial_state,
 )
+from tinyassets.principals import has_named_principal, named_principal
 
 logger = logging.getLogger(__name__)
 
@@ -681,7 +682,7 @@ def initialize_runs_db(base_path: str | Path) -> Path:
         run_name       TEXT NOT NULL DEFAULT '',
         thread_id      TEXT NOT NULL,
         status         TEXT NOT NULL DEFAULT 'queued',
-        actor          TEXT NOT NULL DEFAULT 'anonymous',
+        actor          TEXT NOT NULL,
         owner_user_id  TEXT NOT NULL DEFAULT '',
         inputs_json    TEXT NOT NULL DEFAULT '{}',
         output_json    TEXT NOT NULL DEFAULT '{}',
@@ -1167,7 +1168,7 @@ def create_run(
     thread_id: str,
     inputs: dict[str, Any],
     run_name: str = "",
-    actor: str = "anonymous",
+    actor: str,
     branch_version_id: str | None = None,
     owner_user_id: str | None = None,
     daemon_id: str | None = None,
@@ -1176,6 +1177,10 @@ def create_run(
     branch_task_id: str | None = None,
     queue_universe_id: str | None = None,
 ) -> str:
+    actor = named_principal(actor)
+    if not actor:
+        # A run is somebody's; no synthetic principal is minted.
+        raise ValueError("create_run actor must be a real principal; an unowned value is not one")
     initialize_runs_db(base_path)
     run_id = uuid.uuid4().hex[:16]
     resolved_owner_user_id = (
@@ -1367,7 +1372,7 @@ def update_run_status(
                             base_path,
                             event_id=f"execute_step:{run_id}:{status}",
                             event_type="execute_step",
-                            actor_id=row["actor"] or "anonymous",
+                            actor_id=named_principal(row["actor"]),
                             owner_user_id=row["owner_user_id"] or "",
                             daemon_id=row["daemon_id"] or "",
                             runtime_instance_id=row["runtime_instance_id"] or "",
@@ -1625,7 +1630,7 @@ def attach_existing_child_run(
     child_run_id: str,
     child_branch_def_id: str = "",
     output_digest: str = "",
-    actor: str = "anonymous",
+    actor: str = "",   # no default principal; the caller names one or the write refuses
 ) -> dict[str, Any]:
     """Validate and attach a completed child run receipt to a waiting parent.
 
@@ -2178,7 +2183,7 @@ def add_judgment(
     text: str,
     node_id: str | None = None,
     tags: list[str] | None = None,
-    author: str = "anonymous",
+    author: str = "",
 ) -> dict[str, Any]:
     """Persist a user's natural-language judgment of a run or node.
 
@@ -2932,7 +2937,7 @@ def _invoke_graph(
             return
         node_def_id = getattr(nd, "node_def_id", "") or getattr(nd, "node_id", "")
         author = getattr(nd, "author", "") or ""
-        if not node_def_id or not author or author == "anonymous":
+        if not node_def_id or not has_named_principal(author):
             return
         try:
             from tinyassets.contribution_events import record_contribution_event
@@ -3730,7 +3735,7 @@ def execute_branch(
     branch: BranchDefinition,
     inputs: dict[str, Any],
     run_name: str = "",
-    actor: str = "anonymous",
+    actor: str = "",   # no default principal; the caller names one or the write refuses
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
@@ -3925,7 +3930,7 @@ def _execute_branch_core(
     branch: BranchDefinition,
     inputs: dict[str, Any],
     run_name: str = "",
-    actor: str = "anonymous",
+    actor: str = "",   # no default principal; the caller names one or the write refuses
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
@@ -4076,7 +4081,7 @@ def execute_branch_async(
     branch: BranchDefinition,
     inputs: dict[str, Any],
     run_name: str = "",
-    actor: str = "anonymous",
+    actor: str = "",   # no default principal; the caller names one or the write refuses
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
@@ -4169,7 +4174,7 @@ def execute_branch_version(
     branch_version_id: str,
     inputs: dict[str, Any],
     run_name: str = "",
-    actor: str = "anonymous",
+    actor: str = "",   # no default principal; the caller names one or the write refuses
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
     concurrency_budget_override: int | None = None,
@@ -4230,7 +4235,7 @@ def execute_branch_version_async(
     branch_version_id: str,
     inputs: dict[str, Any],
     run_name: str = "",
-    actor: str = "anonymous",
+    actor: str = "",   # no default principal; the caller names one or the write refuses
     provider_call: Callable[..., str] | None = None,
     recursion_limit_override: int | None = None,
     on_node_status: Callable[[str, str], None] | None = None,

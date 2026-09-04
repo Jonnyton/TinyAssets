@@ -11,6 +11,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from verify_llm_binding import VerifyError, check_llm_binding, main  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def _canary_token(monkeypatch):
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "t" * 40)
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -143,9 +148,13 @@ def _make_post_fn(*responses: tuple[dict | None, str | None]):
     """Return a post_fn that yields successive (resp, sid) pairs."""
     it = iter(responses)
 
-    def _post(url, sid, payload, timeout):
+    calls = []
+
+    def _post(url, sid, payload, timeout, *, bearer_token=None):
+        calls.append({"payload": payload, "bearer_token": bearer_token})
         return next(it)
 
+    _post.calls = calls
     return _post
 
 
@@ -337,7 +346,7 @@ def test_get_status_no_result_raises_code1():
 
 
 def test_network_error_raises_code2():
-    def _failing_post(url, sid, payload, timeout):
+    def _failing_post(url, sid, payload, timeout, *, bearer_token=None):
         raise VerifyError(2, "network error")
 
     with pytest.raises(VerifyError) as exc_info:
@@ -374,7 +383,7 @@ def test_main_returns_3_on_unbound():
 
 
 def test_main_returns_2_on_network_error():
-    def _failing(url, sid, payload, timeout):
+    def _failing(url, sid, payload, timeout, *, bearer_token=None):
         raise VerifyError(2, "network error")
 
     with patch("verify_llm_binding._post", side_effect=_failing):
@@ -416,3 +425,24 @@ def test_main_returns_5_when_required_sandbox_missing():
             "--require-sandbox",
         ])
     assert code == 5
+
+
+def test_every_post_carries_canary_bearer():
+    post_fn = _make_post_fn(
+        (_INIT_OK, "sid"),
+        (_NOTIF_NONE, "sid"),
+        (_STATUS_BOUND, "sid"),
+    )
+    check_llm_binding("http://fake/mcp", 5.0, post_fn=post_fn)
+    assert all(call["bearer_token"] == "t" * 40 for call in post_fn.calls)
+
+
+def test_missing_token_exits_before_post(monkeypatch, capsys):
+    calls = []
+    monkeypatch.delenv("TINYASSETS_WIKI_CANARY_TOKEN", raising=False)
+    with patch("verify_llm_binding._post", side_effect=lambda *a, **k: calls.append(1)):
+        with pytest.raises(SystemExit) as exc:
+            main([])
+    assert exc.value.code == 2
+    assert not calls
+    assert "TINYASSETS_WIKI_CANARY_TOKEN" in capsys.readouterr().err

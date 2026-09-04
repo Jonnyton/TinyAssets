@@ -19,7 +19,7 @@ Authorization (fail-closed, owner-scoped):
 - The caller must be the authenticated ``admin``-ACL OWNER of the named
   universe. ``founder_grant.py`` names the ``admin`` ACL row as the canonical
   answer to "does this subject own THIS universe?"; a ``write``-ACL collaborator
-  is NOT an owner. Anonymous, non-owner, ``write`` collaborator, or a caller
+  is NOT an owner. An unbound, non-owner, ``write`` collaborator, or a caller
   naming a universe they do not own all get ``auth_failed``.
 - A code-channel approval additionally requires the caller to be the branch
   ``author`` and the branch to be PRIVATE. Public/commons branches run for other
@@ -65,15 +65,16 @@ def _auth_failed(detail: str, **extra: Any) -> str:
 
 
 def _authenticated_actor() -> str | None:
-    """Return the credential-validated request subject, or None if anonymous.
+    """Return the credential-validated request subject, or None if unbound.
 
     Never an environment fallback: a ``UNIVERSE_SERVER_USER`` env value must not
     confer approval authority over a universe.
     """
     from tinyassets.api.permissions import current_request_actor_id
+    from tinyassets.principals import named_principal
 
-    actor = (current_request_actor_id() or "").strip()
-    if not actor or actor == "anonymous":
+    actor = named_principal(current_request_actor_id())
+    if not actor:
         return None
     return actor
 

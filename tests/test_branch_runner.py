@@ -658,10 +658,15 @@ def test_normalize_placeholders_helper():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# Every run has a principal, and code runs in the universe that authored it,
+# so a branch under test names the same actor twice: as author and as runner.
+ACTOR = "universe:u-test"
+
+
 def test_execute_branch_end_to_end(tmp_path):
     from tinyassets.runs import execute_branch, get_run, list_events
 
-    b = BranchDefinition(name="test", entry_point="n1")
+    b = BranchDefinition(name="test", entry_point="n1", author=ACTOR)
     b.node_defs = [NodeDefinition(
         node_id="n1", display_name="N1",
         source_code="def run(state): return {'out': state.get('x', 0) * 2}",
@@ -676,8 +681,8 @@ def test_execute_branch_end_to_end(tmp_path):
         {"name": "x", "type": "int"}, {"name": "out", "type": "int"},
     ]
 
-    outcome = execute_branch(tmp_path, branch=b, inputs={"x": 21})
-    assert outcome.status == "completed"
+    outcome = execute_branch(tmp_path, branch=b, inputs={"x": 21}, actor="universe:u-test")
+    assert outcome.status == "completed", getattr(outcome, "error", outcome)
     assert outcome.output["out"] == 42
 
     record = get_run(tmp_path, outcome.run_id)
@@ -729,7 +734,7 @@ def test_execute_branch_reports_node_status_callback(tmp_path):
         execute_branch,
     )
 
-    b = BranchDefinition(name="test", entry_point="n1")
+    b = BranchDefinition(name="test", entry_point="n1", author=ACTOR)
     b.node_defs = [NodeDefinition(
         node_id="n1", display_name="N1",
         source_code="def run(state): return {'out': state.get('x', 0) * 2}",
@@ -750,6 +755,7 @@ def test_execute_branch_reports_node_status_callback(tmp_path):
         branch=b,
         inputs={"x": 21},
         on_node_status=lambda node_id, status: seen.append((node_id, status)),
+        actor="universe:u-test",
     )
 
     assert outcome.status == "completed"
@@ -770,7 +776,7 @@ def test_execute_branch_fails_on_compiler_error(tmp_path):
     b.graph_nodes = [GraphNodeRef(id="only", node_def_id="only")]
     b.state_schema = [{"name": "x", "type": "str"}]
 
-    outcome = execute_branch(tmp_path, branch=b, inputs={"x": "hi"})
+    outcome = execute_branch(tmp_path, branch=b, inputs={"x": "hi"}, actor="universe:u-test")
     assert outcome.status == "failed"
     assert outcome.error
 
@@ -797,12 +803,18 @@ def test_execute_branch_refuses_code_the_run_did_not_author(tmp_path):
         ]
         return b
 
-    outcome = execute_branch(tmp_path, branch=_branch("someone_else"), inputs={})
+    outcome = execute_branch(
+        tmp_path, branch=_branch("someone_else"), inputs={}, actor=ACTOR,
+    )
     assert outcome.status == "failed"
     assert "did not author" in outcome.error and "remix" in outcome.error
     assert _classify_failure(get_run(tmp_path, outcome.run_id)) == "node_not_accepted"
 
-    outcome = execute_branch(tmp_path, branch=_branch("anonymous"), inputs={})
+    # The same branch, authored by the actor. This used to read
+    # `_branch("anonymous")` against an actor that also defaulted to
+    # "anonymous" -- two placeholders comparing equal, which is not what
+    # "the actor authored it" means.
+    outcome = execute_branch(tmp_path, branch=_branch(ACTOR), inputs={}, actor=ACTOR)
     assert outcome.status == "completed", outcome.error
 
 
@@ -1219,6 +1231,7 @@ def test_cancel_run_interrupts_mid_flight(tmp_path):
     outcome = execute_branch_async(
         tmp_path, branch=b, inputs={},
         provider_call=fake_provider,
+        actor="universe:u-test",
     )
     assert outcome.status == "queued"
     # Request cancel while n2 is blocked on the gate.
@@ -1348,7 +1361,7 @@ def test_async_run_completes_successfully(tmp_path):
         wait_for,
     )
 
-    b = BranchDefinition(name="Async", entry_point="n")
+    b = BranchDefinition(name="Async", entry_point="n", author=ACTOR)
     b.node_defs = [NodeDefinition(
         node_id="n", display_name="N",
         source_code="def run(state): return {'out': state.get('x', 0) * 3}",
@@ -1363,7 +1376,7 @@ def test_async_run_completes_successfully(tmp_path):
         {"name": "x", "type": "int"}, {"name": "out", "type": "int"},
     ]
 
-    outcome = execute_branch_async(tmp_path, branch=b, inputs={"x": 7})
+    outcome = execute_branch_async(tmp_path, branch=b, inputs={"x": 7}, actor="universe:u-test")
     assert outcome.status == "queued"
     wait_for(outcome.run_id, timeout=10.0)
 

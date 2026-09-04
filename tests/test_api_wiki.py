@@ -60,10 +60,10 @@ def wiki_env(tmp_path, monkeypatch):
 @pytest.fixture(autouse=True)
 def _reset_auth_context():
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
     yield
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
 
 
 class _StaticAuthProvider(DevAuthProvider):
@@ -702,7 +702,16 @@ def test_wiki_default_discovery_dispatch_is_deterministic_across_256_calls(wiki_
             audience=audience,
         )
 
+    # A pool worker starts with an EMPTY context, so the bound caller is not
+    # there and every search refuses for authentication rather than exercising
+    # the dispatcher. The server binds per request on whatever thread serves
+    # it; each worker binds the same caller here.
+    from tinyassets.auth import middleware as _mw
+
+    _caller = _mw.current_identity_or_none()
+
     def invoke(_: int) -> str:
+        _mw._current_identity.set(_caller)
         return wiki(action="search", query="dispatcher-concurrency")
 
     reference = invoke(-1)

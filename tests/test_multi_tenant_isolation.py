@@ -89,7 +89,7 @@ def shared_base(tmp_path: Path, monkeypatch) -> Path:
     initialize_author_server(base)
     yield base
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
 
 
 def _universe_dirs(base: Path) -> list[Path]:
@@ -285,7 +285,7 @@ def test_cold_start_schema_race_no_preinit(tmp_path, monkeypatch):
             results = dict(pool.map(_create_as, subs))
     finally:
         set_provider(DevAuthProvider())
-        auth_middleware(None)
+        auth_middleware("dev")
 
     uids = {}
     for sub, out in results.items():

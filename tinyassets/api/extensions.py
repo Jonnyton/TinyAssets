@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -110,7 +109,7 @@ class NodeRegistration:
     output_keys: list[str]
     source_code: str
     dependencies: list[str] = field(default_factory=list)
-    author: str = "anonymous"
+    author: str = ""
     registered_at: str = ""
     enabled: bool = True
     approved: bool = False
@@ -1002,6 +1001,8 @@ def _ext_register(
                 "error": f"Source code contains disallowed pattern: '{pattern}'",
             })
 
+    from tinyassets.api.engine_helpers import _current_actor
+
     nodes = _load_nodes()
     existing = [n for n in nodes if n.get("node_id") == node_id]
     if existing:
@@ -1018,7 +1019,10 @@ def _ext_register(
         output_keys=out_keys,
         source_code=source_code,
         dependencies=deps,
-        author=os.environ.get("UNIVERSE_SERVER_USER", "anonymous"),
+        # The bound principal, never an environment variable and never a
+        # stand-in: this row is attribution, and a node registered by nobody is
+        # a node nobody can be asked about (Codex review, 2026-09-02, P0).
+        author=_current_actor(),
         registered_at=datetime.now(timezone.utc).isoformat(),
         enabled=True,
         approved=False,
@@ -1098,7 +1102,9 @@ def _ext_manage(node_id: str, action: str) -> str:
 
     if action == "approve":
         actor = _current_actor()
-        registrant = (nodes[idx].get("author") or "").strip() or "anonymous"
+        from tinyassets.principals import named_principal
+
+        registrant = named_principal(nodes[idx].get("author"))
         if actor == registrant:
             return json.dumps({
                 "status": "rejected",

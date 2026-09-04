@@ -57,6 +57,23 @@ def test_canary_token_reaches_write_page_over_stateful_streamable_http(
     transport_client: TestClient,
     tmp_path,
 ) -> None:
+    anonymous = _post_mcp(
+        transport_client,
+        {
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "anonymous-probe", "version": "1"},
+            },
+        },
+    )
+    assert anonymous.status_code == 401
+    assert anonymous.json() == {"error": "authentication_required"}
+    assert anonymous.headers["www-authenticate"].startswith("Bearer ")
+
     initialize = _post_mcp(
         transport_client,
         {
@@ -72,6 +89,7 @@ def test_canary_token_reaches_write_page_over_stateful_streamable_http(
                 },
             },
         },
+        bearer_token=_CANARY_TOKEN,
     )
     assert initialize.status_code == 200
     session_id = initialize.headers["mcp-session-id"]
@@ -80,6 +98,7 @@ def test_canary_token_reaches_write_page_over_stateful_streamable_http(
         transport_client,
         {"jsonrpc": "2.0", "method": "notifications/initialized"},
         session_id=session_id,
+        bearer_token=_CANARY_TOKEN,
     )
     assert initialized.status_code in {200, 202}
 
@@ -113,3 +132,22 @@ def test_canary_token_reaches_write_page_over_stateful_streamable_http(
     assert (
         tmp_path / "wiki" / "drafts" / "notes" / "uptime-probe.md"
     ).read_text(encoding="utf-8") == "real-transport-roundtrip"
+
+    read = _post_mcp(
+        transport_client,
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "read_page",
+                "arguments": {"page": "uptime-probe"},
+            },
+        },
+        session_id=session_id,
+        bearer_token=_CANARY_TOKEN,
+    )
+    assert read.status_code == 200
+    assert _response_json(read)["result"]["structuredContent"]["content"].endswith(
+        "real-transport-roundtrip"
+    )

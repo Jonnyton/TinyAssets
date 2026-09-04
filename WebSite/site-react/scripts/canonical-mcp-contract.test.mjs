@@ -5,7 +5,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
-  assertAnonymousSnapshotUrl,
+  assertSnapshotEndpoint,
   assertPublicBrowserEndpoint,
   assertPublicPlaygroundCall,
   assertCompleteCrawl,
@@ -114,9 +114,9 @@ test("public Playground execution contract accepts only bounded discovery reads"
   }
 });
 
-test("public snapshot URL requires a bare credential-free HTTPS endpoint", () => {
+test("snapshot URL requires a bare credential-free HTTPS endpoint", () => {
   assert.equal(
-    assertAnonymousSnapshotUrl("https://tinyassets.io/mcp"),
+    assertSnapshotEndpoint("https://tinyassets.io/mcp"),
     "https://tinyassets.io/mcp",
   );
   for (const unsafe of [
@@ -196,8 +196,8 @@ test("public snapshot URL requires a bare credential-free HTTPS endpoint", () =>
     )}`,
   ]) {
     assert.throws(
-      () => assertAnonymousSnapshotUrl(unsafe),
-      /anonymous.*credentials|bare MCP URL/i,
+      () => assertSnapshotEndpoint(unsafe),
+      /credentials|bare MCP URL/i,
     );
   }
   const excessivelyEncodedCredential = Array.from({ length: 20 }).reduce(
@@ -206,7 +206,7 @@ test("public snapshot URL requires a bare credential-free HTTPS endpoint", () =>
   );
   assert.throws(
     () =>
-      assertAnonymousSnapshotUrl(
+      assertSnapshotEndpoint(
         `https://tinyassets.io/mcp#${excessivelyEncodedCredential}`,
       ),
     /bare MCP URL/i,
@@ -216,7 +216,7 @@ test("public snapshot URL requires a bare credential-free HTTPS endpoint", () =>
     "file:///tmp/tinyassets-mcp",
   ]) {
     assert.throws(
-      () => assertAnonymousSnapshotUrl(insecureSnapshotUrl),
+      () => assertSnapshotEndpoint(insecureSnapshotUrl),
       /HTTPS MCP URL/i,
     );
   }
@@ -518,7 +518,7 @@ test("public clients and snapshot logs never surface untrusted error detail", ()
   const client = readFileSync(resolve(here, "../lib/live.ts"), "utf8");
   assert.doesNotMatch(client, /json\.error\.message|res\.statusText/);
   assert.doesNotMatch(client, /error:\s*error(?:\?\.|\.)(?:message|stack)/);
-  assert.match(client, /Public MCP read is unavailable/);
+  assert.match(client, /signed-in connector/);
   const snapshotSource = readFileSync(snapshotSourcePath, "utf8");
   assert.doesNotMatch(snapshotSource, /\.(?:message|stack)\b/);
   assert.doesNotMatch(
@@ -526,6 +526,8 @@ test("public clients and snapshot logs never surface untrusted error detail", ()
     /tool \$\{name\}.*JSON\.stringify\(args\).*e\.message|refresh failed: \$\{/,
   );
   assert.match(snapshotSource, /Required public snapshot refresh failed/);
+  assert.match(snapshotSource, /TINYASSETS_WIKI_CANARY_TOKEN/);
+  assert.match(snapshotSource, /Authorization:\s*`Bearer \$\{TOKEN\}`/);
 });
 
 test("page inventory rejects non-discovery scope and handles a missing omission note", () => {
@@ -867,9 +869,9 @@ test("the home page renders no live goal reader", () => {
   assert.doesNotMatch(home, /\bfetchPublicGoals?\b/);
 });
 
-test("shared contract works in dev and gates both preview and deploy", () => {
-  // `npm run dev` proxies same-origin /mcp to the live endpoint, so the
-  // browser client needs no special casing to show live data locally.
+test("the authenticated boundary gates both preview and deploy", () => {
+  // The proxy remains available to authenticated application work, while the
+  // public browser module is statically prevented from calling it.
   const nextConfig = readFileSync(nextConfigPath, "utf8");
   assert.match(
     nextConfig,
@@ -883,10 +885,8 @@ test("shared contract works in dev and gates both preview and deploy", () => {
   assert.match(preview, /WebSite\/shared\/\*\*/);
 
   const reactLive = readFileSync(resolve(here, "../lib/live.ts"), "utf8");
-  assert.match(
-    reactLive,
-    /assertPublicBrowserEndpoint\([\s\S]{0,160}NEXT_PUBLIC_MCP_PATH/,
-  );
+  assert.match(reactLive, /authRequired:\s*true/);
+  assert.doesNotMatch(reactLive, /\bfetch\s*\(|assertPublicBrowserEndpoint\(/);
 });
 
 test("explicit snapshot refresh reports a refused refresh as failure", () => {

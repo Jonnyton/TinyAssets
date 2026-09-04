@@ -13,9 +13,10 @@ npm ci             # first time
 npm run dev        # → http://localhost:3000
 ```
 
-Live data works here: dev proxies `/mcp` → `https://tinyassets.io/mcp`
-server-side (no CORS). The commons list and the fine-print reachability strip
-read the public projection through `../shared/mcp/public-read-contract.js`.
+The dev server proxies `/mcp` → `https://tinyassets.io/mcp` server-side (no
+CORS), but public site code supplies no bearer and does not use that route.
+The commons list shows its labelled checked-in snapshot; live readings require
+a signed-in connector.
 
 ## 2. Production-shaped static preview
 
@@ -23,9 +24,8 @@ read the public projection through `../shared/mcp/public-read-contract.js`.
 npm run preview    # next build + serves the real static export at http://localhost:4322
 ```
 
-No `/mcp` exists on localhost, so the live surfaces render the checked-in
-snapshot with a labelled failed read. That is a correct rendering, and the
-sweep asserts it stays labelled.
+No `/mcp` exists on localhost. The protected surfaces render the same labelled
+snapshot and signed-in state as the production-shaped public site.
 
 ## 3. Tests and the rendered sweep
 
@@ -37,9 +37,9 @@ node scripts/snapshot-public.mjs          # refresh lib/mcp-snapshot.json from t
 
 `scripts/` holds:
 
-- `canonical-mcp-contract.test.mjs`, `public-boundary.test.mjs`: the public
-  read contract and the boundary the pages must keep (public projection only,
-  live versus snapshot labelled, no operator status in a browser).
+- `canonical-mcp-contract.test.mjs`, `public-boundary.test.mjs`: the connector
+  contract and the boundary the pages must keep (no public browser MCP request,
+  snapshot provenance retained, no operator status in a browser).
 - `preview-worker-security.test.mjs`, `validate-preview-*.mjs` (+ tests): the
   hosted-preview trust boundary used by `preview-worker.yml`,
   `preview-worker-deploy.yml` and `preview-security.yml`.

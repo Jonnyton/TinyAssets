@@ -32,10 +32,10 @@ def _reset_auth():
     from tinyassets.auth.provider import DevAuthProvider
 
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
     yield
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
 
 
 @pytest.fixture(autouse=True)

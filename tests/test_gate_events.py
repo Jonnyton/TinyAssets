@@ -322,6 +322,24 @@ class TestGateEventInvariants:
                 event_date="2026-04-24", attested_by="", cites=[],
             )
 
+    def test_retired_unowned_marker_is_never_an_actor(self, tmp_path):
+        initialize_runs_db(tmp_path)
+        retired = bytes.fromhex("616e6f6e796d6f7573").decode("ascii")
+
+        with pytest.raises(ValueError, match="attested_by"):
+            attest_gate_event(
+                tmp_path, goal_id="g1", event_type="pub",
+                event_date="2026-04-24", attested_by=retired, cites=[],
+            )
+        with pytest.raises(ValueError, match="verifier_id"):
+            verify_gate_event(tmp_path, event_id="unused", verifier_id=retired)
+        with pytest.raises(ValueError, match="disputed_by"):
+            dispute_gate_event(
+                tmp_path, event_id="unused", disputed_by=retired, reason="test",
+            )
+        with pytest.raises(ValueError, match="retracted_by"):
+            retract_gate_event(tmp_path, event_id="unused", retracted_by=retired)
+
     def test_verify_nonexistent_raises_key_error(self, tmp_path):
         initialize_runs_db(tmp_path)
         with pytest.raises(KeyError):

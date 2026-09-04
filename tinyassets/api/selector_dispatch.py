@@ -514,7 +514,7 @@ def dispatch_selector(
     *,
     goal_id: str,
     candidate_branches: list[dict[str, Any]],
-    actor: str = "anonymous",
+    actor: str = "",   # no default principal; the caller names one or the write refuses
     timeout_s: float | None = None,
     provider_call: Any = None,
 ) -> dict[str, Any]:

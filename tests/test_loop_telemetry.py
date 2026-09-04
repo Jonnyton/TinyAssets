@@ -195,7 +195,8 @@ def _canary(daemon: dict) -> tuple[int, str]:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
     import last_activity_canary as canary
 
-    def fake_post(url, sid, payload, timeout, step_code=0):
+    # The canary negotiates a bearer once and passes it to every post.
+    def fake_post(url, sid, payload, timeout, step_code=0, bearer_token=None):
         if payload and payload.get("method") == "tools/call":
             return {
                 "result": {

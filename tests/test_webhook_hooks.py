@@ -10,11 +10,17 @@ from tinyassets.storage import webhook_hooks as hooks
 
 
 def test_mint_then_resolve_returns_the_binding(tmp_path):
-    token = hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-1")
+    token = hooks.mint(
+        tmp_path,
+        universe_id="u-a",
+        branch_def_id="b-1",
+        owner_principal_id="owner-test",
+    )
     assert isinstance(token, str) and len(token) >= 32
     got = hooks.resolve(tmp_path, token=token)
     # A plain per-branch webhook has no source binding (source_id is None).
-    assert got == {"universe_id": "u-a", "branch_def_id": "b-1", "source_id": None}
+    assert got == {"universe_id": "u-a", "branch_def_id": "b-1", "source_id": None,
+         "owner_principal_id": "owner-test"}
 
 
 def test_the_raw_token_is_never_stored_at_rest(tmp_path):
@@ -23,7 +29,12 @@ def test_the_raw_token_is_never_stored_at_rest(tmp_path):
 
     from tinyassets.storage import db_path
 
-    token = hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-1")
+    token = hooks.mint(
+        tmp_path,
+        universe_id="u-a",
+        branch_def_id="b-1",
+        owner_principal_id="owner-test",
+    )
     conn = sqlite3.connect(db_path(tmp_path))
     try:
         rows = conn.execute(
@@ -38,31 +49,56 @@ def test_the_raw_token_is_never_stored_at_rest(tmp_path):
 
 
 def test_tokens_are_unguessable_and_unique(tmp_path):
-    t1 = hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-1")
-    t2 = hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-1")
+    t1 = hooks.mint(
+        tmp_path,
+        universe_id="u-a",
+        branch_def_id="b-1",
+        owner_principal_id="owner-test",
+    )
+    t2 = hooks.mint(
+        tmp_path,
+        universe_id="u-a",
+        branch_def_id="b-1",
+        owner_principal_id="owner-test",
+    )
     assert t1 != t2
 
 
 def test_unknown_revoked_and_empty_tokens_all_resolve_to_none(tmp_path):
     assert hooks.resolve(tmp_path, token="nope") is None
     assert hooks.resolve(tmp_path, token="") is None
-    token = hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-1")
+    token = hooks.mint(
+        tmp_path,
+        universe_id="u-a",
+        branch_def_id="b-1",
+        owner_principal_id="owner-test",
+    )
     assert hooks.revoke(tmp_path, token=token) is True
     assert hooks.resolve(tmp_path, token=token) is None      # revoked -> None (indistinct)
     assert hooks.revoke(tmp_path, token=token) is False      # already revoked
 
 
 def test_a_token_binds_exactly_one_universe_and_branch(tmp_path):
-    ta = hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-a")
-    tb = hooks.mint(tmp_path, universe_id="u-b", branch_def_id="b-b")
+    ta = hooks.mint(
+        tmp_path,
+        universe_id="u-a",
+        branch_def_id="b-a",
+        owner_principal_id="owner-test",
+    )
+    tb = hooks.mint(
+        tmp_path,
+        universe_id="u-b",
+        branch_def_id="b-b",
+        owner_principal_id="owner-test",
+    )
     assert hooks.resolve(tmp_path, token=ta)["universe_id"] == "u-a"
     assert hooks.resolve(tmp_path, token=tb)["universe_id"] == "u-b"
 
 
 def test_list_is_scoped_to_one_universe(tmp_path):
-    hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-1")
-    hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-2")
-    hooks.mint(tmp_path, universe_id="u-b", branch_def_id="b-3")
+    hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-1", owner_principal_id="owner-test")
+    hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-2", owner_principal_id="owner-test")
+    hooks.mint(tmp_path, universe_id="u-b", branch_def_id="b-3", owner_principal_id="owner-test")
     a = hooks.list_for_universe(tmp_path, universe_id="u-a")
     assert {r["branch_def_id"] for r in a} == {"b-1", "b-2"}
     # list returns the non-secret prefix, NEVER the raw token (Codex #6).
@@ -71,15 +107,30 @@ def test_list_is_scoped_to_one_universe(tmp_path):
 
 def test_mint_rejects_empty_or_overlong_ids(tmp_path):
     with pytest.raises(ValueError):
-        hooks.mint(tmp_path, universe_id="", branch_def_id="b")
+        hooks.mint(tmp_path, universe_id="", branch_def_id="b", owner_principal_id="owner-test")
     with pytest.raises(ValueError):
-        hooks.mint(tmp_path, universe_id="u", branch_def_id="x" * (hooks.MAX_ID_LEN + 1))
+        hooks.mint(
+            tmp_path, universe_id="u",
+            branch_def_id="x" * (hooks.MAX_ID_LEN + 1),
+            owner_principal_id="owner-test",
+        )
+    # ...and an owner is required too: a hook with none refuses to deliver, so
+    # minting one is a mistake caught here rather than at delivery.
+    with pytest.raises(ValueError):
+        hooks.mint(
+            tmp_path, universe_id="u", branch_def_id="b", owner_principal_id="",
+        )
 
 
 # ── Durable admission (Codex #3) ────────────────────────────────────────────────
 
 def test_admission_caps_per_token_and_survives_restart(tmp_path):
-    token = hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-1")
+    token = hooks.mint(
+        tmp_path,
+        universe_id="u-a",
+        branch_def_id="b-1",
+        owner_principal_id="owner-test",
+    )
     now = 1000.0
     admitted = sum(
         hooks.admit(tmp_path, token=token, universe_id="u-a",
@@ -96,7 +147,15 @@ def test_admission_caps_per_token_and_survives_restart(tmp_path):
 
 
 def test_admission_caps_per_universe_across_tokens(tmp_path):
-    toks = [hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-1") for _ in range(4)]
+    toks = [
+        hooks.mint(
+            tmp_path,
+            universe_id="u-a",
+            branch_def_id="b-1",
+            owner_principal_id="owner-test",
+        )
+        for _ in range(4)
+    ]
     now = 2000.0
     admitted = 0
     for i in range(20):
@@ -146,7 +205,12 @@ def test_claim_delivery_is_atomic_under_concurrency(tmp_path):
 # ── Atomic in-flight reservation (Codex #5) ─────────────────────────────────────
 
 def test_reserve_dispatch_enforces_the_cap_and_active_check(tmp_path):
-    token = hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-1")
+    token = hooks.mint(
+        tmp_path,
+        universe_id="u-a",
+        branch_def_id="b-1",
+        owner_principal_id="owner-test",
+    )
     kw = dict(token=token, universe_id="u-a", cap=2, ttl_s=120.0, now=8000.0)
     r1, s1 = hooks.reserve_dispatch(tmp_path, **kw)
     r2, s2 = hooks.reserve_dispatch(tmp_path, **kw)
@@ -163,7 +227,12 @@ def test_reserve_dispatch_enforces_the_cap_and_active_check(tmp_path):
 
 
 def test_reserve_dispatch_reconciles_terminated_and_abandoned(tmp_path):
-    token = hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-1")
+    token = hooks.mint(
+        tmp_path,
+        universe_id="u-a",
+        branch_def_id="b-1",
+        owner_principal_id="owner-test",
+    )
     r1, _ = hooks.reserve_dispatch(tmp_path, token=token, universe_id="u-a",
                                    cap=1, ttl_s=120.0, now=9000.0)
     hooks.link_dispatch(tmp_path, reservation_id=r1, run_id="run-1")
@@ -180,7 +249,12 @@ def test_reserve_dispatch_reconciles_terminated_and_abandoned(tmp_path):
 def test_reserve_dispatch_is_atomic_under_concurrency(tmp_path):
     import threading
 
-    token = hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-1")
+    token = hooks.mint(
+        tmp_path,
+        universe_id="u-a",
+        branch_def_id="b-1",
+        owner_principal_id="owner-test",
+    )
     hooks._connect(tmp_path).close()
     outcomes: list[str] = []
     lock = threading.Lock()
@@ -205,7 +279,12 @@ def test_a_concurrent_revoke_and_reserve_never_both_win(tmp_path):
     # token can succeed. Race them; assert consistency (no reserve survives a completed revoke).
     import threading
 
-    token = hooks.mint(tmp_path, universe_id="u-a", branch_def_id="b-1")
+    token = hooks.mint(
+        tmp_path,
+        universe_id="u-a",
+        branch_def_id="b-1",
+        owner_principal_id="owner-test",
+    )
     hooks._connect(tmp_path).close()
     barrier = threading.Barrier(2)
     results: dict[str, Any] = {}
@@ -255,7 +334,8 @@ def test_migrates_a_legacy_plaintext_token_table(tmp_path):
 
     # The new code resolves the legacy token by hashing it, and the plaintext is gone.
     got = hooks.resolve(tmp_path, token="legacy-token-value")
-    assert got == {"universe_id": "u-a", "branch_def_id": "b-1", "source_id": None}
+    assert got == {"universe_id": "u-a", "branch_def_id": "b-1", "source_id": None,
+                   "owner_principal_id": ""}
     conn = sqlite3.connect(path)
     try:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(webhook_hooks)")}

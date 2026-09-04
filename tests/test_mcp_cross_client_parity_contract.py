@@ -27,19 +27,23 @@ def test_all_mcp_server_surfaces_register_tools_through_structured_adapter() -> 
     failures: list[str] = []
     for rel_path in MCP_SERVER_SURFACES:
         text = _read(rel_path)
-        tool_call_lines = [
+        registration_lines = [
             (lineno, line.strip())
             for lineno, line in enumerate(text.splitlines(), 1)
-            if ".tool(" in line
+            if ".tool(" in line or ".add_tool(" in line
         ]
 
         if "def _register_structured_tool" not in text:
             failures.append(f"{rel_path}: missing _register_structured_tool")
         if "return _structured_return(fn(*args, **kwargs))" not in text:
             failures.append(f"{rel_path}: adapter does not wrap with _structured_return")
-        if len(tool_call_lines) != 1:
-            calls = ", ".join(f"L{lineno}: {line}" for lineno, line in tool_call_lines)
-            failures.append(f"{rel_path}: expected one adapter .tool call, found {calls}")
+        if len(registration_lines) != 1:
+            calls = ", ".join(
+                f"L{lineno}: {line}" for lineno, line in registration_lines
+            )
+            failures.append(
+                f"{rel_path}: expected one adapter registration call, found {calls}"
+            )
 
     assert failures == []
 

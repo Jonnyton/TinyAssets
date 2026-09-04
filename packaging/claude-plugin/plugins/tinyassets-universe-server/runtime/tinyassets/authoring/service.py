@@ -69,6 +69,7 @@ from tinyassets.authoring.models import (
 )
 from tinyassets.authoring.store import AuthoringStore
 from tinyassets.ids import new_ulid
+from tinyassets.principals import named_principal
 
 #: Drafts are retained for this long; a diff anchor outside retention fails
 #: explicitly rather than being diffed against a substitute version.
@@ -86,8 +87,8 @@ def _resolve_store(store: AuthoringStore | None) -> AuthoringStore:
 
 
 def _require_actor(actor_id: str) -> str:
-    actor = (actor_id or "").strip()
-    if not actor or actor == "anonymous":
+    actor = named_principal(actor_id)
+    if not actor:
         raise AuthoringAccessError("authentication required to author artifacts")
     return actor
 

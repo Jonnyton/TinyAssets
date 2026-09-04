@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { fetchPublicUniverses } from "../lib/live";
+import { PUBLIC_READ_NEEDS_SIGN_IN } from "../lib/live";
 import { fmtRel, fmtStampStable, fmtCount } from "../lib/fmt";
 import snapshot from "../lib/mcp-snapshot.json";
 import type { Snapshot } from "../lib/types";
@@ -15,83 +15,28 @@ type Row = {
   last_activity_at: string | null;
 };
 
-type State =
-  | { kind: "reading"; rows: Row[]; provenance: string }
-  | { kind: "live"; rows: Row[]; fetchedAt: string }
-  | { kind: "snapshot"; rows: Row[]; reason: string };
-
 const baked = snapshot as Snapshot;
 const bakedRows: Row[] = discoverableRows(baked.universes);
 const bakedStamp = `checked-in snapshot from ${fmtStampStable(baked.fetched_at)}`;
 
 /**
- * The public universe list, read live through the public read contract
- * (read_graph target=graphs) with the checked-in snapshot as the labelled
- * fallback. A failed live read never relabels the snapshot as live.
+ * The public universe list from a labelled checked-in snapshot. Live discovery
+ * belongs to signed-in connectors; this browser never opens an MCP session.
  */
 export function PublicShapes() {
-  const [state, setState] = React.useState<State>({
-    kind: "reading",
-    rows: bakedRows,
-    provenance: bakedStamp,
-  });
-  const [busy, setBusy] = React.useState(false);
-
-  const refresh = React.useCallback(async () => {
-    setBusy(true);
-    try {
-      const live = await fetchPublicUniverses(100);
-      const rows: Row[] = discoverableRows(live).sort(
-          (a, b) =>
-            (Date.parse(b.last_activity_at ?? "") || 0) - (Date.parse(a.last_activity_at ?? "") || 0),
-        );
-      setState({ kind: "live", rows, fetchedAt: new Date().toISOString() });
-    } catch (error) {
-      setState({
-        kind: "snapshot",
-        rows: bakedRows,
-        reason: error instanceof Error ? error.message : "Public MCP read is unavailable",
-      });
-    } finally {
-      setBusy(false);
-    }
-  }, []);
-
-  React.useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  const rows = state.rows;
+  const rows = bakedRows;
 
   return (
     <div className={styles.wrap} aria-live="polite">
       <div className={styles.bar}>
-        {state.kind === "reading" && (
-          <span className={styles.stamp}>
-            <span className="dot" aria-hidden="true" /> reading the public endpoint… showing the {bakedStamp}
-          </span>
-        )}
-        {state.kind === "live" && (
-          <span className={styles.stamp}>
-            <span className="dot live" aria-hidden="true" /> live read from tinyassets.io/mcp,{" "}
-            {fmtRel(state.fetchedAt)}
-          </span>
-        )}
-        {state.kind === "snapshot" && (
-          <span className={styles.stamp}>
-            <span className="dot error" aria-hidden="true" /> live read failed ({state.reason}); showing the{" "}
-            {bakedStamp}
-          </span>
-        )}
-        <button className="btn btn--ghost btn--sm" onClick={refresh} disabled={busy}>
-          {busy ? "reading…" : "Refresh MCP"}
-        </button>
+        <span className={styles.stamp}>
+          <span className="dot" aria-hidden="true" /> {PUBLIC_READ_NEEDS_SIGN_IN}; {bakedStamp}
+        </span>
       </div>
 
       {rows.length === 0 ? (
         <p className={styles.empty}>
-          No public universes {state.kind === "live" ? "right now" : "in this snapshot"}. Every
-          universe starts private; publishing is a choice.
+          No public universes in this snapshot. Every universe starts private; publishing is a choice.
         </p>
       ) : (
         <div className="ledger--wrap">
@@ -124,8 +69,8 @@ export function PublicShapes() {
         </div>
       )}
       <p className="note">
-        This page reads only the public projection: universe ids and coarse activity. It never
-        downloads operator status or anyone&apos;s contents.
+        A signed-in connector may read the public projection: universe ids and coarse activity.
+        This page never downloads operator status or anyone&apos;s contents.
       </p>
     </div>
   );

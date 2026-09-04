@@ -221,6 +221,12 @@ def _drive(route_path: str, body: dict | None, *, identity=None, enabled=True, m
         if identity is not None:
             with identity_context(identity):
                 return await route.endpoint(req)
+        # `identity=None` means NOBODY IS HERE, which is what the 401 tests
+        # assert. The ambient signed-in operator would otherwise answer for
+        # them, and the route would return 200.
+        from tinyassets.auth.middleware import clear_identity
+
+        clear_identity()
         return await route.endpoint(req)
 
     resp = asyncio.run(run())
@@ -807,6 +813,12 @@ def _drive_get(path, *, identity=None, monkeypatch):
         if identity is not None:
             with identity_context(identity):
                 return await route.endpoint(req)
+        # `identity=None` means NOBODY IS HERE, which is what the 401 tests
+        # assert. The ambient signed-in operator would otherwise answer for
+        # them, and the route would return 200.
+        from tinyassets.auth.middleware import clear_identity
+
+        clear_identity()
         return await route.endpoint(req)
 
     resp = asyncio.run(run())

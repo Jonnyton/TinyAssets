@@ -26,7 +26,7 @@ What this module owns, and why each piece is here rather than in the store:
   rows from the retired activation layer can see them. They are read-only:
   no legacy action is reachable from here (task 3.3 deletes the rows).
 
-Anonymous writes return ``authentication_required`` rather than the generic
+Unsigned writes return ``authentication_required`` rather than the generic
 access-denied envelope: the spec names that token, and "you are not signed in"
 is a different instruction to the user than "your account lacks the grant".
 """
@@ -495,7 +495,7 @@ def automations(
     uid = _request_universe(universe_id)
 
     # Ordered deliberately: "sign in" before "you lack the grant". The spec
-    # names `authentication_required` for an anonymous create, and an anonymous
+    # names `authentication_required` for an unsigned create, and an unbound
     # caller has no grant to describe.
     if write and not permissions.is_authenticated_request():
         return {
