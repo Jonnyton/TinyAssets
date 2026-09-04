@@ -289,9 +289,9 @@ None of it can produce an installable app without account-owned signing material
 3. **Partially complete — explicit App ID registered (2026-09-03).** Verified in the
    signed-in Apple Developer browser at `/account/resources/identifiers/list`: the
    Identifiers table shows `TinyAssets iOS` / `io.tinyassets.app`. App Store Connect
-   presented a new Terms of Service before the Apps page, so no app record was created.
-   The account holder must review and accept those terms; then create the app record only
-   after a separate action-time confirmation.
+   Terms of Service V100 (last updated 04 June 2018) was accepted by the founder.
+   The complete New App form is staged; create the app record only after a separate
+   action-time confirmation.
 4. Create the Apple Distribution certificate + matching App Store Connect provisioning
    profile and an **App Store Connect API key**; add the six values in §3 of the runbook.
    The protected GitHub environment `app-store` is complete: founder approval is required,

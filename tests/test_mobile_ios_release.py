@@ -224,7 +224,8 @@ def test_app_store_metadata_packet_meets_apple_field_constraints() -> None:
     assert field("Support URL") == "https://tinyassets.io/legal#contact"
     assert field("Privacy Policy URL") == "https://tinyassets.io/legal#app-data"
     assert field("User Privacy Choices URL") == "https://tinyassets.io/account"
-    assert "| User access | Limited Access; add no users" in packet
+    assert "| User access | Full Access for the existing Account Holder" in packet
+    assert "no additional user is selected" in packet
 
     description_match = re.search(
         r"\*\*Description:\*\*\s*(.*?)\s*Review notes should say",

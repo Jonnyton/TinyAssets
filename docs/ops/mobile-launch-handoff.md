@@ -90,8 +90,9 @@ License Agreement and Apple Developer Agreement both show accepted on 2026-09-03
 signing assets or App Store Connect API credentials have been created. The explicit App ID
 `io.tinyassets.app` was registered and verified on 2026-09-03 in the signed-in Apple
 Developer browser: the Identifiers list showed `TinyAssets iOS` and the exact bundle ID.
-The App Store Connect app record is still absent because a new Terms of Service appeared
-before the Apps page; it was left untouched for the account holder to review. The exact
+The founder accepted App Store Connect Terms of Service V100 (last updated 04 June
+2018) on 2026-09-03. The app record is still absent, but the complete New App form is
+staged and waiting at the final **Create** button for action-time confirmation. The exact
 remaining values and confirmation boundaries are in
 `docs/ops/app-store-submission-packet.md`.
 

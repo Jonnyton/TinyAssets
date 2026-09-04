@@ -10,15 +10,15 @@ release the app.
 | Field | Value / action |
 |---|---|
 | Membership | Active; program resources, Team ID, and renewal date visible |
-| Current agreements | Apple Developer Program License Agreement and Apple Developer Agreement accepted 2026-09-03 |
+| Current agreements | Apple Developer Program License Agreement and Apple Developer Agreement accepted 2026-09-03; App Store Connect Terms of Service V100 (last updated 04 June 2018) accepted by the founder 2026-09-03 |
 | Platform | iOS |
 | App name | `TinyAssets` |
 | Explicit bundle ID | `io.tinyassets.app` |
 | Bundle ID description | `TinyAssets iOS` |
 | App ID registration | Complete 2026-09-03; verified in the signed-in Apple Developer Identifiers list |
-| App Store Connect record | Not created; a new Terms of Service is awaiting account-holder review |
+| App Store Connect record | Not created; the complete New App form is staged and awaiting action-time confirmation before **Create** |
 | SKU | `tinyassets-ios` |
-| User access | Limited Access; add no users (the Account Holder retains access) |
+| User access | Full Access for the existing Account Holder; the live form disables Limited Access and no additional user is selected |
 | Primary language | English (U.S.) |
 | Version | `1.0.0` |
 | Build | Use the numeric GitHub Actions run number |
@@ -245,13 +245,13 @@ one, so the server must remain compatible with the last released shell.
    Identifiers → **+** → App IDs → App → description `TinyAssets iOS` → explicit
    bundle ID `io.tinyassets.app` → Register. The signed-in Identifiers list showed
    the resulting name and exact bundle ID.
-2. **Blocked before mutation:** App Store Connect presented a new Terms of Service
-   before the Apps page. The account holder must review and accept it. Then go to
-   Apps → **+** → New App → iOS; name `TinyAssets`; primary
-   language English (U.S.); select the registered bundle ID; SKU
-   `tinyassets-ios`; choose Limited Access and add no users. The Account Holder
-   retains access. Stop for confirmation
-   immediately before Create.
+2. **Staged 2026-09-03, blocked before mutation:** the founder accepted App Store
+   Connect Terms of Service V100 (last updated 04 June 2018). The New App form is
+   open with iOS, name `TinyAssets`, primary language English (U.S.), registered
+   bundle ID `io.tinyassets.app`, and SKU `tinyassets-ios`. App Store Connect
+   disables Limited Access in this account, so Full Access is selected for the
+   existing Account Holder; no additional user is selected. Stop for action-time
+   confirmation immediately before Create.
 3. Enter product-page metadata and stage the privacy/age/export drafts. Stop at
    any new agreement, DSA trader-status choice, privacy publication, or other
    legal declaration.
