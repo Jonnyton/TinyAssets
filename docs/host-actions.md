@@ -312,13 +312,13 @@ None of it can produce an installable app without account-owned signing material
    App Store Connect API key are present as all six secrets named in §3.
    The protected GitHub environment `app-store` is complete: founder approval is required,
    and only `main` may deploy. You do NOT need a Mac — CI builds on `macos-15`.
-5. **In flight — build works; upload needs Xcode 26 fix.** Run `33824784381` produced
-   and independently checksum/profile-verified a signed 1.0.0 (1) IPA. Run `33824990349`
-   produced signed build 2, then App Store Connect rejected it before upload because
-   `macos-15` defaults to Xcode 16.4/iOS 18.5 and Apple requires Xcode/iOS SDK 26. The
-   local Xcode 26.3 workflow fix has 16 focused tests green and exact revision
-   `6ccb3d24` received a Claude Opus **AGREE** review. Canonical finding:
-   `docs/concerns/2026-09-03-ios-app-store-upload-requires-xcode-26.md`.
+5. **Complete — Xcode 26 build accepted and processed by TestFlight (2026-09-03).**
+   Exact fix revision `6ccb3d24` received a Claude Opus **AGREE** review and landed in
+   PR #2798 as `76d795a1`. Every exact-head PR check passed, including `build-ios` and
+   `required-tests`. Protected run `33827279907` produced signed build 1.0.0 (3);
+   Apple reported no upload errors; App Store Connect matched its delivery UUID and
+   now shows Build 3 as **Ready to Submit** under Version 1.0.0. Receipt:
+   `docs/audits/2026-09-03-ios-testflight-upload-receipt.md`.
 6. Capture real iPhone-sized screenshots from the signed app, verify sign-in → connect →
    chat through TestFlight, and complete the truthful console declarations. Before the final
    Submit for Review decision, choose whether to accept the documented Guideline 4.2 wrapper

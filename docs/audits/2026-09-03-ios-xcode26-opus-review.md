@@ -27,3 +27,8 @@ cross-family gate is satisfied and to land the revision are the approval relied 
 > The other surfaced items: `output/apple-xcode26-opus-review.md` [running] is this review; the three [vanished] entries belong to the `run-provider-authority-fallback` and `canary-auth` lanes, not this one.
 >
 > No further lane to take here — the brief is explicitly review-only ("do not edit or commit anything", no dispatch, one test file), so acting on F7, re-dispatching the vanished reviews, or landing the fix are all outside what this session was authorized to do. Verdict stands as delivered: AGREE, land it, carry F1–F3 and now F7 as follow-ups.
+
+The concern path quoted by the reviewer is historical: its file and index row were
+deleted after PR #2798 landed and protected run `33827279907` uploaded Xcode 26 build
+1.0.0 (3). The closure evidence is in
+`docs/audits/2026-09-03-ios-testflight-upload-receipt.md`.

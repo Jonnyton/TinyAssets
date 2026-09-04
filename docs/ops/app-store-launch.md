@@ -22,8 +22,8 @@ action-time confirmation under product policy remain subject to that policy.
 > on 2026-09-03; the explicit App ID and App Store Connect record were created and
 > verified that day. Product metadata and the unpublished privacy draft are saved,
 > and an empty internal TestFlight group exists. Signing, provisioning, API access, and
-> all six protected CI secrets are complete. A signed IPA is proven; TestFlight upload
-> is blocked on the reviewed Xcode 26 workflow correction recorded in `docs/concerns/`.
+> all six protected CI secrets are complete. Signed build 1.0.0 (3) was accepted by
+> App Store Connect on 2026-09-03, completed processing, and is **Ready to Submit**.
 > The copy-ready form answers, asset manifest, smoke checklist, and exact portal
 > sequence live in [`app-store-submission-packet.md`](app-store-submission-packet.md).
 
@@ -116,9 +116,14 @@ but does not select it for an App Store version or submit it for review.
 Live evidence 2026-09-03: run `33824784381` completed the protected Xcode archive,
 App Store export, and artifact upload for signed IPA 1.0.0 (1). Run `33824990349`
 completed the same signed build for build 2, then Apple's pre-upload validation rejected
-the runner-default Xcode 16.4/iOS 18.5 SDK because iOS 26 is now mandatory. The local
-workflow fix selects the installed Xcode 26.3 and fails closed on any non-26 SDK; see
-`docs/concerns/2026-09-03-ios-app-store-upload-requires-xcode-26.md`.
+the runner-default Xcode 16.4/iOS 18.5 SDK because iOS 26 is now mandatory. PR #2798
+landed the reviewed Xcode 26.3 selection and fail-closed SDK check as merge commit
+`76d795a1`. Protected run `33827279907` then built signed 1.0.0 (3), and Apple returned
+`No errors uploading 'App.ipa'` with delivery UUID
+`59f9e3ee-57b3-41c9-871b-91cb357b536f`. App Store Connect showed the same UUID as
+**Processing** under Build Uploads at 2026-09-03 18:56 PDT, then **Ready to Submit**
+under Version 1.0.0 after processing completed. Receipt:
+`docs/audits/2026-09-03-ios-testflight-upload-receipt.md`.
 
 ---
 
@@ -248,6 +253,7 @@ and [unavailability procedure](https://developer.apple.com/help/app-store-connec
 - [x] Protected `app-store` environment: founder approval + `main` only (§3)
 - [x] Signing setup and all six protected CI values complete (§3)
 - [x] Signed IPA 1.0.0 (1) built and checksum/profile verified
+- [x] Signed build 1.0.0 (3) uploaded, processed, and **Ready to Submit** in TestFlight
 - [ ] Screenshots captured (§6)
-- [ ] Build uploaded → TestFlight verified → submitted/manual release (§7)
+- [ ] TestFlight device flow verified → submitted/manual release (§7)
 - [ ] Founder: decide current-shell submission vs native differentiator before App Review
