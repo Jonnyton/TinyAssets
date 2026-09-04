@@ -247,7 +247,7 @@ def test_app_store_metadata_packet_meets_apple_field_constraints() -> None:
     assert "App Store Connect API access has not been" not in packet
 
     description_match = re.search(
-        r"\*\*Description:\*\*\s*(.*?)\s*Review notes should say",
+        r"\*\*Description:\*\*\s*(.*?)\s*The factual App Review Notes are saved",
         packet,
         flags=re.DOTALL,
     )
