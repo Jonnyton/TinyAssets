@@ -22,7 +22,10 @@ action-time confirmation under product policy remain subject to that policy.
 > on 2026-09-03; the explicit App ID and App Store Connect record were created and
 > verified that day. Product metadata and the unpublished privacy draft are saved,
 > and Build 3 is attached to the empty internal TestFlight group with its en-US
-> **What to Test** text saved. Signing, provisioning, API access, and
+> **What to Test** text saved. Its beta description and marketing URL are saved,
+> Build 3 is selected for App Store Version 1.0, and a free price schedule is
+> confirmed for all 175 displayed countries or regions. Signing, provisioning,
+> API access, and
 > all six protected CI secrets are complete. Signed build 1.0.0 (3) was accepted by
 > App Store Connect on 2026-09-03, completed processing, and is **Ready to Submit**.
 > The copy-ready form answers, asset manifest, smoke checklist, and exact portal
@@ -127,12 +130,15 @@ under Version 1.0.0 after processing completed. Receipt:
 `docs/audits/2026-09-03-ios-testflight-upload-receipt.md`.
 
 The App Store Connect API then saved Build 3's en-US **What to Test** text and
-attached it to the empty `Internal` group. The group still has zero testers, so no
-invitation or notification was sent. The least-privilege Developer key received a
-403 when asked to save the beta app description, set Build 3 automatic tester
-notification off, or select Build 3 for App Store Version 1.0. Those three fields
-remain founder reauthentication work; the version's build relationship remains
-empty and release mode remains manual. Receipt:
+attached it to the empty `Internal` group. After founder reauthentication, the web
+session saved the beta app description and marketing URL, selected Build 3 for App
+Store Version 1.0, and confirmed a free price schedule for all 175 displayed
+countries or regions. Release mode remains manual. The group still has zero testers,
+so no invitation or notification was sent. Its internal settings use manual
+distribution for Xcode builds. The internal-group and build pages expose no
+automatic tester-notification control; Apple's documented checkbox is in the
+external-testing flow, so the API's residual `autoNotifyEnabled=true` is inert with
+no external group or tester. Receipt:
 `docs/audits/2026-09-03-ios-testflight-preparation-receipt.md`.
 
 ---
@@ -259,7 +265,9 @@ and [unavailability procedure](https://developer.apple.com/help/app-store-connec
 - [x] Founder: App Store Connect Terms accepted and app record created (§0)
 - [x] Product metadata saved; manual release selected; privacy draft configured but not published
 - [x] Build 3 attached to the empty `Internal` TestFlight group; en-US **What to Test** saved; 0 testers
-- [ ] Founder reauth: save beta description, disable Build 3 auto-notify, and select Build 3 for Version 1.0
+- [x] Founder reauth: beta description saved and Build 3 selected for Version 1.0
+- [x] Free price schedule confirmed for all 175 displayed countries or regions
+- [ ] External-testing-only auto-notify control: revisit only if an external group is created; currently no recipients
 - [ ] Founder/counsel: approve final privacy policy; then land/deploy and verify the iOS wording
 - [x] Protected `app-store` environment: founder approval + `main` only (§3)
 - [x] Signing setup and all six protected CI values complete (§3)
