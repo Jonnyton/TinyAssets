@@ -6,23 +6,25 @@ import "./globals.css";
 import type { Metadata } from "next";
 import TopNav from "../components/TopNav";
 import Footer from "../components/Footer";
+import { TINYASSETS_MARK_VERSION } from "../components/TinyAssetsMark";
 import { SITE } from "../lib/site";
 
 const TITLE = "TinyAssets — your own AI universe";
 const DESCRIPTION =
   "A cloud agent of your own. It runs on the Claude or ChatGPT subscription you already pay for, connects to any platform, builds any automation from a few primitives, learns you as it goes, and keeps working after you close the tab.";
+const markAsset = (path: string) => `${path}?v=${TINYASSETS_MARK_VERSION}`;
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE.origin),
   title: { default: TITLE, template: "%s — TinyAssets" },
   description: DESCRIPTION,
-  manifest: "/site.webmanifest",
+  manifest: markAsset("/site.webmanifest"),
   icons: {
     icon: [
-      { url: "/favicon.ico", sizes: "16x16 32x32 48x48" },
-      { url: "/icon.svg", type: "image/svg+xml" },
+      { url: markAsset("/favicon.ico"), sizes: "16x16 32x32 48x48" },
+      { url: markAsset("/icon.svg"), type: "image/svg+xml" },
     ],
-    apple: "/apple-touch-icon.png",
+    apple: markAsset("/apple-touch-icon.png"),
   },
   openGraph: {
     siteName: "TinyAssets",
@@ -48,7 +50,7 @@ const jsonLd = {
       "@id": `${SITE.origin}/#org`,
       name: "TinyAssets",
       url: `${SITE.origin}/`,
-      logo: `${SITE.origin}/logo-mark.png`,
+      logo: `${SITE.origin}${markAsset("/logo-mark.png")}`,
       sameAs: [SITE.repo],
     },
     {
