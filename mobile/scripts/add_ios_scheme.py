@@ -7,6 +7,11 @@ slice can request capture. The URL scheme lets the in-app OAuth browser tab hand
 the sign-in code back to the app — the iOS counterpart of the Android
 intent-filter added by add_app_scheme.py.
 
+The generated shell uses only exempt operating-system encryption (HTTPS/TLS via
+WebKit and URLSession), so it also declares ``ITSAppUsesNonExemptEncryption`` as
+false. This keeps App Store Connect's export-compliance answer tied to the built
+artifact instead of a manual submission-time memory.
+
 iOS needs no loopback foreground-service (unlike Android's dataSync service):
 ASWebAuthenticationSession + the custom scheme carry the sign-in return natively.
 
@@ -43,6 +48,9 @@ MICROPHONE_PURPOSE = (
 MICROPHONE_BLOCK = f"""\t<key>NSMicrophoneUsageDescription</key>
 \t<string>{MICROPHONE_PURPOSE}</string>
 """
+EXPORT_COMPLIANCE_BLOCK = """\t<key>ITSAppUsesNonExemptEncryption</key>
+\t<false/>
+"""
 
 
 def install_configuration(info_plist: pathlib.Path = INFO_PLIST) -> int:
@@ -52,16 +60,22 @@ def install_configuration(info_plist: pathlib.Path = INFO_PLIST) -> int:
     text = info_plist.read_text(encoding="utf-8")
     microphone_key = "<key>NSMicrophoneUsageDescription</key>"
     microphone_value = f"<string>{MICROPHONE_PURPOSE}</string>"
+    export_key = "<key>ITSAppUsesNonExemptEncryption</key>"
     if microphone_key in text and microphone_value not in text:
         print("::error:: existing microphone purpose does not match the release copy")
+        return 1
+    if export_key in text and f"{export_key}\n\t<false/>" not in text:
+        print("::error:: existing export-compliance declaration is not false")
         return 1
     additions: list[str] = []
     if "<string>tinyassets</string>" not in text:
         additions.append(URL_TYPES_BLOCK)
     if microphone_key not in text:
         additions.append(MICROPHONE_BLOCK)
+    if export_key not in text:
+        additions.append(EXPORT_COMPLIANCE_BLOCK)
     if not additions:
-        print("TinyAssets URL scheme + microphone purpose already registered — nothing to do.")
+        print("TinyAssets iOS release configuration already registered — nothing to do.")
         return 0
 
     marker = "</dict>\n</plist>"
@@ -84,7 +98,10 @@ def install_configuration(info_plist: pathlib.Path = INFO_PLIST) -> int:
     if microphone_value not in check:
         print("::error:: failed to register the microphone purpose")
         return 1
-    print("registered tinyassets:// URL scheme + microphone purpose in Info.plist")
+    if f"{export_key}\n\t<false/>" not in check:
+        print("::error:: failed to register exempt export-compliance declaration")
+        return 1
+    print("registered TinyAssets iOS release configuration in Info.plist")
     return 0
 
 

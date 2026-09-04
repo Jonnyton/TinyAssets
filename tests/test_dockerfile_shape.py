@@ -84,6 +84,26 @@ def test_dockerfile_final_stage_has_nodejs_runtime():
     )
 
 
+def test_dockerfile_installs_immutable_github_cli_release_asset():
+    """The gh pin must remain available after the apt repository advances."""
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    assert "ARG TARGETARCH" in text
+    assert "ARG GH_VERSION=2.100.0" in text
+    assert (
+        "ARG GH_DEB_SHA256_AMD64="
+        "698c8d88cc19cc92bfe96bad58d10b2a5b274c52433d6dc57799c81f6139d5fc"
+    ) in text
+    assert (
+        "ARG GH_DEB_SHA256_ARM64="
+        "33ccd2ad7ce639c927e1cb209e36555b0e1fbb89f7a38239c0568040ec758612"
+    ) in text
+    assert "github.com/cli/cli/releases/download/v${GH_VERSION}" in text
+    assert 'echo "${gh_sha}  /tmp/gh.deb" | sha256sum -c -' in text
+    assert "apt-get install -y --no-install-recommends /tmp/gh.deb" in text
+    assert "cli.github.com/packages" not in text
+    assert 'apt-get install -y --no-install-recommends gh="${GH_VERSION}"' not in text
+
+
 def test_dockerfile_base_images_are_digest_pinned():
     """Both stages must use an immutable python base image digest."""
     from_lines = [

@@ -1,0 +1,59 @@
+{
+  "prepared_at": "2026-09-03",
+  "platform": "iOS",
+  "locale": "en-US",
+  "orientation": "portrait",
+  "preferred_display": "6.5-inch iPhone",
+  "accepted_pixel_sizes": [
+    "1242x2688",
+    "1284x2778"
+  ],
+  "format": ["png", "jpg", "jpeg"],
+  "alpha_allowed": false,
+  "minimum_count": 1,
+  "maximum_count": 10,
+  "capture_rules": [
+    "Capture the actual iOS app on an iPhone or iOS Simulator.",
+    "Use a clean dedicated review universe with no personal data or credentials visible.",
+    "Do not resize or frame Android screenshots as iPhone output.",
+    "Keep status bars, safe areas, and native rendering truthful to the captured device.",
+    "Do not show debug UI, transient errors, notification banners, or microphone indicators unless the scene explains voice."
+  ],
+  "shots": [
+    {
+      "order": 1,
+      "filename": "01-your-universe.png",
+      "scene": "Signed-in universe home",
+      "proof": "TinyAssets opens directly into the same persistent universe on iPhone.",
+      "status": "blocked_until_ios_capture"
+    },
+    {
+      "order": 2,
+      "filename": "02-real-conversation.png",
+      "scene": "Substantive universe conversation",
+      "proof": "A user message and useful universe response are visible without private content.",
+      "status": "blocked_until_ios_capture"
+    },
+    {
+      "order": 3,
+      "filename": "03-inspect-the-work.png",
+      "scene": "Inspectable work result or plan",
+      "proof": "The app shows real multi-step work rather than a generic chatbot claim.",
+      "status": "blocked_until_ios_capture"
+    },
+    {
+      "order": 4,
+      "filename": "04-connect-your-ai.png",
+      "scene": "Provider connection view",
+      "proof": "Users bring their own AI provider; no secret material is visible.",
+      "status": "blocked_until_ios_capture"
+    },
+    {
+      "order": 5,
+      "filename": "05-account-and-privacy.png",
+      "scene": "Account and privacy controls",
+      "proof": "Privacy information and account deletion are reachable in-app.",
+      "status": "blocked_until_ios_capture"
+    }
+  ]
+}

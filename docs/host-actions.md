@@ -98,16 +98,16 @@ next host-actions pass.
 
 ## Blocking a proof path
 
-### claude.ai account out of credits — blocks the browser `ui-test` route
+### Claude subscription spend limit — blocks Claude-family review and browser `ui-test`
 
-*2026-08-25 22:18Z: composer disabled, "monthly spend limit … out of credits"; weekly reset
-2026-08-28 19:00 PDT.*
+*Reverified 2026-09-03: three `peer_agent.py claude` review dispatches exited 1; the
+latest failed after 19 seconds with no review output. A minimal direct diagnostic on
+the earlier attempts reported that the monthly spend limit was reached.*
 
-Raise the limit, **or** test via the desktop app — Electron over the live SPA, CDP-testable, and it
-runs on the founder's own deposited subscription rather than the metered account.
-
-`ui-test` is the final acceptance path for chatbot-facing changes (`AGENTS.md` § *Quality Gates*),
-so this blocks acceptance, not just convenience.
+Raise or reset the Claude usage limit. Until then, Codex-authored public-surface changes
+cannot obtain the required opposite-family review, and the claude.ai browser route cannot
+provide final rendered-chat acceptance. The desktop app remains available for supporting
+SPA checks, but it does not replace either required gate.
 
 ---
 
@@ -258,6 +258,16 @@ Delete this paragraph on the next host-actions pass.
 
 ### Apple App Store: enroll — signing and TestFlight cannot start without it
 
+**Standing founder authorization (2026-09-03):** drive all ordinary Apple-required
+setup and completion steps for the iPhone Store objective without repeated approval,
+including required account/app attestations, API access and least-privilege credentials,
+signing/provisioning, builds, verified metadata/privacy answers, screenshots, uploads,
+TestFlight validation, App Review submission, and release/publication. Interrupt only
+for a new monetary charge, an irreversible destructive action, a material choice Apple
+does not require, or personal/legal facts that cannot be established truthfully from
+verified project/account evidence. Computer-use actions that policy requires to be
+confirmed at action time still follow that higher-level confirmation rule.
+
 **Checked 2026-09-03, not assumed.** The account holder completed Apple's official
 creation form, but the final step returned only **"Your account cannot be created at
 this time."** There is no field-specific email, phone, birthday, country, or password
@@ -281,23 +291,39 @@ None of it can produce an installable app without account-owned signing material
    page shows two-factor authentication and a trusted phone number. The account holder
    also accepted the Apple Developer Agreement and declined optional developer-news email.
 
-2. **Complete — enrollment submitted and membership purchased (2026-09-03).** The account
-   holder completed personal information and Secure Checkout; Apple shows the order-
-   confirmation page. The signed-in developer portal currently shows **Pending** and says
-   the purchase may take up to 48 hours to process. Do not click **complete your purchase**
-   again or submit a duplicate charge. Wait for activation before creating signing or App
-   Store Connect credentials.
-3. Register the explicit App ID and App Store Connect app record for `io.tinyassets.app`,
-   accepting any current Apple agreement presented to the account holder.
-4. Create the Apple Distribution certificate + matching App Store Connect provisioning
-   profile and an **App Store Connect API key**; add the six values in §3 of the runbook.
+2. **Complete — enrollment purchased and membership activated (2026-09-03).** The account
+   holder completed personal information and Secure Checkout. The signed-in developer portal
+   now shows program resources, a Team ID, and a 2027 renewal date. The Apple Developer
+   Program License Agreement and Apple Developer Agreement both show accepted on 2026-09-03.
+   At that checkpoint no signing assets or App Store Connect API credentials existed.
+3. **Complete — explicit App ID and App Store Connect record created (2026-09-03).** Verified in the
+   signed-in Apple Developer browser at `/account/resources/identifiers/list`: the
+   Identifiers table shows `TinyAssets iOS` / `io.tinyassets.app`. App Store Connect
+   Terms of Service V100 (last updated 04 June 2018) was accepted by the founder.
+   The founder then confirmed record creation. Apple ID `6808434444`; iOS 1.0 is
+   **Prepare for Submission**. Product metadata and manual release are saved, the
+   four-type privacy draft is configured but unpublished, and an empty `Internal`
+   TestFlight group exists with automatic distribution off, 0 testers, and 0 builds.
+4. **Complete — signing, profile, and CI upload credentials (2026-09-03).** The active
+   Apple Distribution certificate expires 2027-09-03 and is paired with an exportable
+   private key. The active `TinyAssets App Store 2026` profile is App Store type for
+   `io.tinyassets.app`, contains that one certificate, and expires 2027-09-03. The
+   encrypted P12 and password, verified profile, and Developer-role `TinyAssets CI Upload`
+   App Store Connect API key are present as all six secrets named in §3.
    The protected GitHub environment `app-store` is complete: founder approval is required,
-   only `main` may deploy, and no secrets are present yet. You do NOT need a Mac — CI builds
-   on `macos-15`.
-5. Capture real iPhone-sized screenshots from the signed app, verify sign-in → connect →
-   chat through TestFlight, complete the truthful console declarations, then make the final
-   Submit for Review decision.
-6. If realtime voice is enabled in the candidate, review the final **Audio Data** and
+   and only `main` may deploy. You do NOT need a Mac — CI builds on `macos-15`.
+5. **In flight — build works; upload needs Xcode 26 fix.** Run `33824784381` produced
+   and independently checksum/profile-verified a signed 1.0.0 (1) IPA. Run `33824990349`
+   produced signed build 2, then App Store Connect rejected it before upload because
+   `macos-15` defaults to Xcode 16.4/iOS 18.5 and Apple requires Xcode/iOS SDK 26. The
+   local Xcode 26.3 workflow fix has 16 focused tests green and exact revision
+   `6ccb3d24` received a Claude Opus **AGREE** review. Canonical finding:
+   `docs/concerns/2026-09-03-ios-app-store-upload-requires-xcode-26.md`.
+6. Capture real iPhone-sized screenshots from the signed app, verify sign-in → connect →
+   chat through TestFlight, and complete the truthful console declarations. Before the final
+   Submit for Review decision, choose whether to accept the documented Guideline 4.2 wrapper
+   risk or first add and prove a meaningful iPhone-native interaction.
+7. If realtime voice is enabled in the candidate, review the final **Audio Data** and
    **Other User Content** declarations against the provider retention configuration and
    require physical-iPhone proof that capture stops on background/end before submission.
 
