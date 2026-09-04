@@ -25,7 +25,6 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
-| **P2** | [Realtime voice has no post-fix exact-head approval](2026-09-03-realtime-voice-final-review-gap.md) — the third Opus round ended `ADAPT`; its sole stated blocker is repaired, but the saved receipt omitted referenced non-blocking findings and the three-round cap forbids another approval pass | 2026-09-03 |
 | **P2** | [Run submission accepts missing required branch inputs](2026-09-03-run-submission-accepts-missing-required-inputs.md) — unresolved required inputs are detected only after admission; submission needs an authority-preserving preflight refusal with exact missing-input guidance and no run row | 2026-09-03 |
 | **P1** | [The no-anonymous cutover is one of three and still leaves a public read](2026-09-03-no-anonymous-cutover-is-one-of-three.md) — the existing owned branch is an unmerged PR-1 source change; `/mcp/pulse`, residual anonymous fallbacks, a red targeted test, and no exact-head receipt remain | 2026-09-03 |
 | **P1** | [Local MCP OAuth session lifecycle is only partly proven](2026-09-03-local-mcp-oauth-session-lifecycle-is-partly-proven.md) — login authenticates the direct `workflow-live` client, but both bundled `codex_apps` connector surfaces stay anonymous in the same fresh task and emit no linking challenge | 2026-09-03 |

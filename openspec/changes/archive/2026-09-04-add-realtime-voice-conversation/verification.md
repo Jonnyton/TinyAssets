@@ -92,10 +92,10 @@ the 146-test focused run above. The round-two receipt is preserved at
 reviewed `20cc50e0` and returned `ADAPT` with one stated blocker: a superseded `_connect` attempt
 could globally tear down the replacement transport. That defect is repaired with attempt-local
 disposal and a deterministic two-attempt race regression. The saved review omitted the content of
-several non-blocking findings it referenced, and the three-round cap forbids another review. The
-exact-head approval gate therefore remains unresolved in
-`docs/concerns/2026-09-03-realtime-voice-final-review-gap.md`; the PR stays draft and dark pending
-a founder decision.
+several non-blocking findings it referenced, and the three-round cap forbids another review. On
+2026-09-03 the founder explicitly accepted that capped evidence and authorized a dark landing
+after exact-head CI. PR #2797 passed every required check and merged as `3edec0ab`; the resolved
+concern was deleted. This decision does not authorize enabling or releasing Voice.
 
 ## Rollout and rollback
 
@@ -107,6 +107,10 @@ Rollout remains blocked on native permission integration, final store privacy an
 authenticated locked-capability browser proof, one browser/device pass in a test universe that
 already has a compatible user-bound voice resource, public canary, rendered live conversation,
 and post-change deployed-SHA proof. No separate key or spend ceiling is requested from Jonathan.
+Production deploy run `33832278162` started the merged image healthy, then rolled it back because
+the canary principal's no-home `get_status` shape omitted `active_host` and `release_state`; the
+same pre-existing defect appears in run `33831877514` and is being repaired independently in PR
+#2814. The failed canary means this archive is landing evidence, not a deployed-SHA claim.
 The first cohort must monitor broker status counts, connection/reconnect failures, latency,
 session duration/usage estimates, and content-free `voice_output_mismatch` events. Any anomalous
 spend, mismatch, isolation, or capture-teardown signal disables the flag; text chat and canonical

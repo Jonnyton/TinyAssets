@@ -18,4 +18,4 @@
 
 - [ ] 4.1 Add coordinated iOS/Android microphone permissions and store privacy copy without changing signing, enrollment, publication, or release ownership.
 - [ ] 4.2 Run focused tests, lint, OpenSpec validation, public canary, rendered browser conversation, and one real-device voice pass only after that test universe already has a compatible user-bound `tinyassets.voice.v1` connection. Do not request a separate credential or budget merely to satisfy this task.
-- [ ] 4.3 Obtain opposite-provider implementation review, document staged rollout/monitoring/kill-switch evidence, sync specs, and archive only after the change lands.
+- [x] 4.3 Obtain opposite-provider implementation review, document staged rollout/monitoring/kill-switch evidence, sync specs, and archive only after the change lands.
