@@ -7,19 +7,23 @@ Paid Realtime calls: none
 
 ## Authority correction
 
-Founder direction on 2026-09-03 established universe authority as the capability boundary. The
-earlier proof plan incorrectly asked Jonathan to deposit a separate OpenAI API key and approve a
-spend ceiling. That host action was removed. Official OpenAI documentation currently exposes API
-credentials, not the existing ChatGPT/Codex subscription session, for Realtime calls; the branch
-therefore treats that subscription-only universe as Voice-locked and never borrows a platform key.
-Automated evidence below is being refreshed for the new capability preflight and locked-state UI.
+Founder direction on 2026-09-03 established universe authority as the capability boundary and,
+after this branch began, current `main` added the rule that the platform substrate may not grow a
+provider-specific path. The implementation now uses a provider-neutral `tinyassets.voice.v1`
+bridge referenced by a non-secret universe manifest and an existing generic HTTP connection/grant.
+Voice code never resolves the long-lived credential; the credential-blind broker child owns that
+boundary. A writer-only universe remains Voice-locked and no platform authority is borrowed.
 
 ## Automated evidence
 
 - `python -m pytest -q tests/test_realtime_voice.py tests/test_onboarding_app.py`
-  — **112 passed** after the authority correction and merge with current `main`. Coverage includes authenticated secret-free
-  capability status, ambient-key refusal, a locked UI that opens only the connection explanation,
-  and the existing exact-writer/audio lifecycle contract.
+  — **113 passed, 1 skipped** after the provider-neutral authority correction and merge with
+  current `main`. The skip is the platform-dependent symlink creation case. Coverage includes
+  authenticated secret-free capability status, connection/grant authority refusal, a locked UI
+  that opens only the connection explanation, and the exact-writer/audio lifecycle contract.
+- `python -m pytest -q tests/test_realtime_voice.py tests/test_onboarding_app.py tests/test_channel_agnostic_ratchet.py`
+  — **128 passed, 1 skipped** after the final same-origin SDP exchange replaced the earlier
+  client-side credential design. This is the current focused verification command.
 - `python -m pytest -q tests/test_mirror_parity_gate.py` — **15 passed** after rebuilding the
   packaged runtime mirror.
 - `python -m ruff check tinyassets/onboarding/__init__.py tinyassets/onboarding/realtime_voice.py tests/test_onboarding_app.py tests/test_realtime_voice.py` — **all checks passed**.
@@ -30,11 +34,12 @@ Automated evidence below is being refreshed for the new capability preflight and
 - `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp` — **exit 0** on
   2026-09-03. Production was not changed; this confirms the existing public MCP surface remained
   healthy while the branch stayed dark and local.
-- After removing the undocumented `OpenAI-Safety-Identifier` header:
-  `python -m pytest -q tests/test_realtime_voice.py tests/test_onboarding_app.py` — **107 passed**;
-  `python -m pytest -q tests/test_mirror_parity_gate.py` — **15 passed**; focused Ruff and strict
-  OpenSpec validation remained green. The stable signed-in identity still keys TinyAssets' local
-  mint limiter, but no provider identity header is invented outside the documented Realtime schema.
+- `python scripts/check_channel_agnostic.py` — **clean at the 686-reference baseline** after the
+  provider-neutral rewrite; the new voice module contributes no provider/channel reference.
+- `python scripts/linux_oracle.py -- -q tests/test_realtime_voice.py` — **not run** because the
+  local Docker Linux engine was unavailable (`dockerDesktopLinuxEngine` pipe missing). CI Linux is
+  required before the branch can be considered verified; the Windows symlink case remains skipped
+  locally for lack of symlink privilege.
 
 The deterministic browser harness executes the shipped JavaScript transition table and `Voice`
 adapter under Node. It proves that a locked universe shows `Voice · Connect`, opens the capability
@@ -43,19 +48,20 @@ status says a compatible resource is bound. It also covers permission failure/re
 muting with tolerated truncated transcript, call-id duplicate prevention, exact canonical tool
 output, untrusted-output refusal, uninterrupted mismatch failure/telemetry, transport teardown,
 bounded three-attempt reconnect, and the existing persisted text-history restore path. Server
-tests cover both flags, status/session authentication, same-origin enforcement for minting,
-empty-body contract, caller-universe rejection, two-identity home isolation, owner-vault-only key
-lookup, per-identity mint limits, stable upstream errors, response reduction/redaction, and
-no-store.
+tests cover all three flags, status/session authentication, same-origin enforcement for signaling,
+empty-body contract, caller-universe rejection, two-identity home isolation, missing/invalid/
+symlinked bindings, exact owner/universe connection grants, session-endpoint allowlisting, bounded
+SDP validation, per-identity
+session limits, stable bridge errors, response reduction/redaction, and no-store.
 
 ## Rendered browser evidence
 
 The earlier pre-correction `Voice ready` rendering is superseded and is not rollout evidence. In a
-new local in-app-browser rendering with both adapter flags enabled and an injected signed-in
+new local in-app-browser rendering with the voice gates enabled and an injected signed-in
 resource-less state, the actual app showed `Voice · Connect`; its accessible description was
-`Voice requires a compatible resource`, and the live status explained that the current
-ChatGPT/Codex subscription route has no documented Realtime audio authorization. This static
-preview made no status, microphone, session-broker, or OpenAI request. The deterministic shipped-
+`Voice requires a compatible resource`, and the status explained that a user-owned voice
+connection is required. This static preview made no status, microphone, session-broker, or remote
+service request. The deterministic shipped-
 JavaScript harness separately exercises activation of that control and proves it opens the unlock
 dialog without exposing the microphone disclosure.
 
@@ -65,16 +71,18 @@ or device proof.
 ## Independent review
 
 The corrected authority/security diff was dispatched read-only to the Claude peer on 2026-09-03
-with the required structured-disagreement contract. The peer process exited 1 after 17 seconds
-with no output. This is recorded in
-`docs/reviews/2026-09-03-realtime-voice-authority-correction-review.md` and is not counted as
-approval. Opposite-provider review remains a landing gate.
+with the required structured-disagreement contract. The initial process exited 1 after 17 seconds
+with no output. After the provider-neutral redesign, a fresh bounded review was dispatched; it
+also exited 1 with no output, after 10 seconds. Both failures are recorded in
+`docs/reviews/2026-09-03-realtime-voice-authority-correction-review.md`; neither is approval and no
+retry loop was started. Opposite-provider review remains a landing gate.
 
 ## Rollout and rollback
 
-The kill switch is either server flag: disabling `TINYASSETS_REALTIME_VOICE_ENABLED` removes the
-adapter and disabling `TINYASSETS_ALLOW_REALTIME_VOICE_API` independently prevents the initial
-OpenAI adapter from using a universe-bound API resource. Neither flag supplies spend authority.
+The kill switch is any of the three server flags: disabling `TINYASSETS_REALTIME_VOICE_ENABLED`
+removes the app adapter, disabling `TINYASSETS_ALLOW_REALTIME_VOICE_API` prevents session exchange,
+and disabling `TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED` closes generic egress. No flag
+supplies spend authority.
 Rollout remains blocked on native permission integration, final store privacy answers, an
 authenticated locked-capability browser proof, one browser/device pass in a test universe that
 already has a compatible user-bound voice resource, public canary, rendered live conversation,

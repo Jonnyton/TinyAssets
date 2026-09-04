@@ -220,11 +220,12 @@
          aria-labelledby="voice-disclosure-title" hidden>
       <div class="voice-dialog-card">
         <h2 id="voice-disclosure-title">Before voice starts</h2>
-        <p>Voice will use the compatible OpenAI Realtime resource you bound to this universe.
-        Your microphone audio goes directly to OpenAI for live speech, and any API use belongs
-        to that resource's account. TinyAssets never substitutes a shared credential. TinyAssets
-        keeps the words you send and your universe's text reply in this conversation, but does
-        not store the raw audio. OpenAI's API retention controls still apply.</p>
+        <p>Voice will use <strong id="voice-service-name">the voice connection</strong>
+        that you bound to this universe. Your microphone audio goes directly to that service,
+        and any use belongs to that resource's account. TinyAssets never substitutes a shared
+        credential. TinyAssets keeps the words you send and your universe's text reply in this
+        conversation, but does not store the raw audio.</p>
+        <p><a id="voice-privacy-link" href="#" hidden>Review this service's privacy terms</a></p>
         <div class="voice-dialog-actions">
           <button id="btn-voice-cancel" class="btn btn--link" type="button">Not now</button>
           <button id="btn-voice-accept" class="btn btn--primary" type="button">Continue</button>
@@ -236,11 +237,12 @@
          aria-labelledby="voice-unlock-title" hidden>
       <div class="voice-dialog-card">
         <h2 id="voice-unlock-title">Voice needs a compatible connection</h2>
-        <p>Your current ChatGPT or Codex subscription can keep powering your universe, but
-        OpenAI does not currently document that sign-in as authorization for Realtime audio.</p>
-        <p>Voice can unlock when this universe has a compatible user-owned subscription,
-        a voice credential you choose to bind, or a supported local voice resource. TinyAssets
-        will not substitute a shared account or move your conversation to another writer.</p>
+        <p>Your current conversation engine can keep powering your universe even when it does
+        not include a compatible live-audio transport.</p>
+        <p>Voice unlocks when this universe has a user-owned voice connection implementing the
+        TinyAssets voice protocol. The bridge may use a subscription, credential, or local
+        resource you control. TinyAssets will not substitute a shared account or move your
+        conversation to another writer.</p>
         <div class="voice-dialog-actions">
           <button id="btn-voice-unlock-close" class="btn btn--primary" type="button">Keep typing</button>
         </div>
@@ -1179,9 +1181,13 @@
   }
   function voiceFriendlyError(code){
     const messages={
-      voice_compatible_resource_required:"Voice is locked. Connect a compatible user-owned voice resource to this universe to unlock it. The current ChatGPT or Codex subscription route does not provide documented Realtime audio authorization.",
-      voice_openai_credential_rejected:"OpenAI rejected this universe's bound voice resource.",
-      voice_provider_rate_limited:"OpenAI voice is rate-limited right now. Try again shortly.",
+      voice_compatible_resource_required:"Voice is locked. Bind a compatible user-owned voice connection to this universe to unlock it.",
+      voice_binding_invalid:"This universe's voice binding is invalid or unreadable.",
+      voice_resource_rejected:"The bound voice service rejected this universe's connection.",
+      voice_resource_rate_limited:"The bound voice service is rate-limited right now. Try again shortly.",
+      voice_resource_failed:"The bound voice service could not start a session. Typed chat still works.",
+      voice_resource_unreachable:"The bound voice service could not be reached. Typed chat still works.",
+      voice_resource_bad_response:"The bound voice service returned an unusable session. Typed chat still works.",
       voice_session_rate_limited:"Too many voice connections were opened. Wait a minute and try again.",
       voice_permission_denied:"Microphone permission was denied. Typed chat still works.",
       voice_output_untrusted:"Voice stopped before playing an unverified reply. Typed chat still works.",
@@ -1250,6 +1256,10 @@
       if(!["idle","error"].includes(this.state)){ this.stop(); return; }
       if(!await this.refreshCapability()) return;
       if(!this._accepted()){
+        const service=(this.capability&&this.capability.service_name)||"the voice connection";
+        $("voice-service-name").textContent=service;
+        const privacy=$("voice-privacy-link"), privacyUrl=this.capability&&this.capability.privacy_url;
+        if(privacyUrl){privacy.href=privacyUrl;privacy.hidden=false;}else{privacy.removeAttribute("href");privacy.hidden=true;}
         this.returnFocus=document.activeElement;
         $("voice-disclosure").hidden=false; $("btn-voice-accept").focus(); return;
       }
@@ -1265,10 +1275,11 @@
         ?this.returnFocus:$("btn-voice");
       target.focus(); this.returnFocus=null;
     },
-    async _credential(){
+    async _session(offerSdp){
       await ensureFreshToken();
       const options={method:"POST",credentials:"same-origin",
-        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body:"{}"};
+        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+        body:JSON.stringify({offer_sdp:offerSdp})};
       let response=await fetch("/mcp/app/voice/session",options);
       if(response.status===401 && await refreshAccessToken()){
         options.headers=Object.assign({"Content-Type":"application/json"},authHeaders());
@@ -1276,7 +1287,8 @@
       }
       let doc={}; try{doc=await response.json();}catch(_e){}
       if(!response.ok) throw new Error(doc.error||"voice_session_failed");
-      if(!doc.value||!doc.calls_url) throw new Error("voice_session_invalid");
+      if(!doc.answer_sdp||doc.protocol!==(CFG.voice&&CFG.voice.protocol))
+        throw new Error("voice_session_invalid");
       return doc;
     },
     async start(){
@@ -1297,14 +1309,12 @@
       if(generation!==this.epoch){ stream.getTracks().forEach(track=>track.stop()); return; }
       this.stream=stream;
       if(!isReconnect) this._event("permission_granted"); else this._render();
-      const secret=await this._credential();
-      if(generation!==this.epoch) return this._teardownTransport();
       if(typeof RTCPeerConnection!=="function") throw new Error("voice_unsupported");
       const pc=new RTCPeerConnection(); this.pc=pc;
       const audio=document.createElement("audio"); audio.autoplay=true; audio.muted=true; this.audio=audio;
       pc.addEventListener("track",event=>{ if(event.streams&&event.streams[0]) audio.srcObject=event.streams[0]; });
       stream.getTracks().forEach(track=>pc.addTrack(track,stream));
-      const dc=pc.createDataChannel("oai-events"); this.dc=dc;
+      const dc=pc.createDataChannel("tinyassets-voice"); this.dc=dc;
       dc.addEventListener("message",event=>this.handleServerEvent(event.data));
       pc.addEventListener("connectionstatechange",()=>{
         if(generation!==this.epoch) return;
@@ -1316,16 +1326,23 @@
         dc.addEventListener("error",()=>{clearTimeout(timer);reject(new Error("voice_channel_failed"));},{once:true});
       });
       const offer=await pc.createOffer(); await pc.setLocalDescription(offer);
-      const answer=await fetch(secret.calls_url,{method:"POST",body:offer.sdp,
-        headers:{Authorization:"Bearer "+secret.value,"Content-Type":"application/sdp"}});
-      // The temporary bearer is never retained beyond this stack frame.
-      if(!answer.ok) throw new Error("voice_call_failed");
-      await pc.setRemoteDescription({type:"answer",sdp:await answer.text()});
+      if(pc.iceGatheringState!=="complete"){
+        await new Promise((resolve,reject)=>{
+          const changed=()=>{if(pc.iceGatheringState==="complete"){clearTimeout(timer);pc.removeEventListener("icegatheringstatechange",changed);resolve();}};
+          const timer=setTimeout(()=>{pc.removeEventListener("icegatheringstatechange",changed);reject(new Error("voice_ice_timeout"));},5000);
+          pc.addEventListener("icegatheringstatechange",changed);
+        });
+      }
+      const localSdp=pc.localDescription&&pc.localDescription.sdp;
+      if(!localSdp) throw new Error("voice_session_offer_invalid");
+      const session=await this._session(localSdp);
+      if(generation!==this.epoch) return this._teardownTransport();
+      await pc.setRemoteDescription({type:"answer",sdp:session.answer_sdp});
       await opened;
       if(generation!==this.epoch) return this._teardownTransport();
       this.reconnecting=false; this.reconnectAttempts=0;
       this.state=isReconnect?voiceNextState("reconnecting","connected"):voiceNextState("connecting","connected");
-      this._render(); this._armSessionLimit(secret.max_session_seconds);
+      this._render(); this._armSessionLimit(session.max_session_seconds);
     },
     _armSessionLimit(seconds){
       clearTimeout(this.stopTimer); clearTimeout(this.warnTimer);
@@ -1345,33 +1362,32 @@
         this.expectedReply=reply; this.canonicalResponsePending=true;
         this.canonicalResponseInterrupted=false;
         if(this.audio) this.audio.muted=false;
-        this._send({type:"conversation.item.create",item:{type:"function_call_output",call_id:callId,output:reply}});
-        this._send({type:"response.create",response:{tool_choice:"none",output_modalities:["audio"],
-          instructions:"Speak the function output exactly. Do not add, remove, summarize, or answer anything else."}});
+        this._send({type:"tool_result",call_id:callId,output:reply});
+        this._send({type:"speak",call_id:callId,source:"tool_result",verbatim:true});
       }catch(error){ this.fail(error); }
     },
     handleServerEvent(raw){
       let event; try{event=typeof raw==="string"?JSON.parse(raw):raw;}catch(_e){return;}
       if(!event||typeof event.type!=="string") return;
-      if(event.type==="input_audio_buffer.speech_started"){
-        // semantic VAD's interrupt_response=true performs provider cancellation.
+      if(event.type==="speech_started"){
+        // The bridge contract performs remote interruption.
         // Mute immediately so no stale/unverified audio can leak through locally.
         if(this.canonicalResponsePending) this.canonicalResponseInterrupted=true;
         if(this.audio) this.audio.muted=true;
         this.state="listening"; this._render(); return;
       }
-      if(event.type==="input_audio_buffer.speech_stopped"){
+      if(event.type==="speech_stopped"){
         this.state="thinking"; this._render(); return;
       }
-      if(event.type==="response.function_call_arguments.done"){
+      if(event.type==="tool_call"){
         this.handleToolCall(event); return;
       }
-      if(event.type==="response.output_audio.delta"||event.type==="response.audio.delta"){
+      if(event.type==="audio_started"){
         if(!this.canonicalResponsePending) return this.fail(new Error("voice_output_untrusted"));
         if(this.audio&&this.audio.muted) return;
         this.state="speaking"; this._render(); return;
       }
-      if(event.type==="response.output_audio_transcript.done"||event.type==="response.audio_transcript.done"){
+      if(event.type==="output_transcript"){
         const actual=voiceNormalize(event.transcript);
         const expected=voiceNormalize(this.expectedReply);
         if(expected&&actual&&expected!==actual){
@@ -1382,12 +1398,12 @@
         }
         return;
       }
-      if(event.type==="response.done"&&this.canonicalResponsePending){
+      if(event.type==="response_done"&&this.canonicalResponsePending){
         this.canonicalResponsePending=false;
         if(this.audio) this.audio.muted=true;
         this.state="listening"; this._render(); return;
       }
-      if(event.type==="error") this.fail(new Error("voice_provider_event"));
+      if(event.type==="error") this.fail(new Error("voice_resource_event"));
     },
     async reconnect(generation){
       if(this.reconnecting||generation!==this.epoch) return;

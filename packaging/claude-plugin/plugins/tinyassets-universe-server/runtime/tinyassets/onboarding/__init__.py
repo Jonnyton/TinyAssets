@@ -165,7 +165,7 @@ def app_config() -> dict[str, Any]:
     }
 
 
-def _csp(nonce: str, issuer: str, *, voice_enabled: bool = False) -> str:
+def _csp(nonce: str, issuer: str) -> str:
     """Strict CSP: inline script/style only via this request's nonce; network
     limited to same-origin ``/mcp`` plus the AuthKit token endpoint origin."""
     connect = "'self'"
@@ -173,8 +173,6 @@ def _csp(nonce: str, issuer: str, *, voice_enabled: bool = False) -> str:
         parts = urlsplit(issuer)
         if parts.scheme and parts.netloc:
             connect += f" {parts.scheme}://{parts.netloc}"
-    if voice_enabled:
-        connect += " https://api.openai.com"
     return (
         "default-src 'none'; "
         f"script-src 'nonce-{nonce}'; "
@@ -204,11 +202,7 @@ def render_app_html() -> tuple[str, str]:
         .replace(_CONFIG_PLACEHOLDER, blob)
         .replace(_REQUEST_TEXT_PLACEHOLDER, request_theme()["request_text"])
     )
-    return html, _csp(
-        nonce,
-        cfg["issuer"],
-        voice_enabled=bool(cfg.get("voice", {}).get("enabled")),
-    )
+    return html, _csp(nonce, cfg["issuer"])
 
 
 def request_theme() -> dict[str, str]:
@@ -874,10 +868,11 @@ async def _handle_openai_exchange(request: Any) -> Any:
 
 
 async def _handle_voice_session(request: Any) -> Any:
-    """Mint a short-lived Realtime secret for the signed-in founder's home.
+    """Exchange bounded SDP through the signed-in founder's voice bridge.
 
-    There is deliberately no caller-supplied universe id. The long-lived API
-    key stays in that home's credential vault and never crosses this boundary.
+    There is deliberately no caller-supplied universe id. The long-lived
+    connection credential stays inside the generic broker and never crosses
+    this boundary.
     """
     from starlette.concurrency import run_in_threadpool
     from starlette.responses import JSONResponse, PlainTextResponse
@@ -886,8 +881,8 @@ async def _handle_voice_session(request: Any) -> Any:
     from tinyassets.auth.middleware import current_identity
     from tinyassets.onboarding.realtime_voice import (
         RealtimeVoiceError,
-        allow_client_secret_mint,
-        mint_client_secret,
+        allow_voice_session,
+        create_voice_session,
         realtime_voice_enabled,
     )
 
@@ -904,14 +899,14 @@ async def _handle_voice_session(request: Any) -> Any:
         return JSONResponse(
             {"error": "same_origin_required"}, status_code=403, headers=_NO_STORE
         )
-    data = await _read_small_json(request, 256)
+    data = await _read_small_json(request, 70 * 1024)
     if data is None:
         return JSONResponse(
             {"error": "invalid_json"}, status_code=400, headers=_NO_STORE
         )
-    if data:
+    if set(data) != {"offer_sdp"}:
         # Reject a caller-selected universe id: identity alone selects the
-        # credential scope for this first slice.
+        # connection scope for this first slice.
         return JSONResponse(
             {"error": "voice_session_fields_not_allowed"},
             status_code=400,
@@ -919,7 +914,7 @@ async def _handle_voice_session(request: Any) -> Any:
         )
 
     identity = current_identity()
-    if not allow_client_secret_mint(identity.user_id):
+    if not allow_voice_session(identity.user_id):
         return JSONResponse(
             {"error": "voice_session_rate_limited"},
             status_code=429,
@@ -931,7 +926,9 @@ async def _handle_voice_session(request: Any) -> Any:
             {"error": "no_home_universe"}, status_code=409, headers=_NO_STORE
         )
     try:
-        result = await mint_client_secret(_universe_dir(home))
+        result = await create_voice_session(
+            _universe_dir(home), identity.user_id, data.get("offer_sdp")
+        )
     except RealtimeVoiceError as exc:
         return JSONResponse(
             {"error": exc.code}, status_code=exc.status, headers=_NO_STORE
@@ -961,7 +958,9 @@ async def _handle_voice_status(request: Any) -> Any:
     identity = current_identity()
     home = await run_in_threadpool(_read_home, identity)
     result = await run_in_threadpool(
-        voice_capability, _universe_dir(home) if home else None
+        voice_capability,
+        _universe_dir(home) if home else None,
+        identity.user_id,
     )
     return JSONResponse(result, headers=_NO_STORE)
 

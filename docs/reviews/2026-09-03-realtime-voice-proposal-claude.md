@@ -2,9 +2,9 @@
 
 Date: 2026-09-03
 
-> Superseded in part by the founder's later 2026-09-03 authority correction. This review approved
-> the earlier proposal shape; it does not approve the revised subscription-compatibility finding,
-> capability-status route, or locked-resource UI. See
+> Superseded for landing approval by the founder's later 2026-09-03 authority and
+> channel-agnostic corrections. This review approved the earlier provider-specific proposal shape;
+> it does not approve the provider-neutral bridge, capability-status route, or locked-resource UI. See
 > `docs/reviews/2026-09-03-realtime-voice-authority-correction-review.md`.
 
 Environment: read-only Claude Sonnet 5 peer in `codex/first-class-voice` at the proposal gate. The peer wrapper's stop hook replaced the saved final message with an unrelated dispatch-ledger tail; this review was recovered verbatim from the same Claude session transcript (`b4fb91f6-48f3-4fc0-84df-10b4e7bb373f`), where it appears as the completed pre-hook answer.

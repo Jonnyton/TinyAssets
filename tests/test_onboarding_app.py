@@ -152,7 +152,7 @@ def test_response_sets_security_headers(monkeypatch):
     assert resp.headers["Cache-Control"] == "no-store"
 
 
-def test_voice_csp_and_disclosure_are_dark_until_both_flags(monkeypatch):
+def test_voice_csp_and_disclosure_are_dark_until_all_flags(monkeypatch):
     _render(monkeypatch)
     monkeypatch.setenv("TINYASSETS_REALTIME_VOICE_ENABLED", "1")
     html, csp = onboarding.render_app_html()
@@ -161,29 +161,38 @@ def test_voice_csp_and_disclosure_are_dark_until_both_flags(monkeypatch):
 
     monkeypatch.setenv("TINYASSETS_ALLOW_REALTIME_VOICE_API", "1")
     html, csp = onboarding.render_app_html()
-    assert (
-        "connect-src 'self' https://inventive-van-62-staging.authkit.app "
-        "https://api.openai.com"
-    ) in csp
+    assert "authkit.app https:;" not in csp
+    assert '"enabled": false' in html
+
+    monkeypatch.setenv("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED", "1")
+    html, csp = onboarding.render_app_html()
+    assert "authkit.app https:;" not in csp
+    assert "connect-src 'self' https://inventive-van-62-staging.authkit.app;" in csp
     assert '"enabled": true' in html
-    assert "microphone audio goes directly to OpenAI" in html
-    assert "never substitutes a shared credential" in html
-    assert "compatible OpenAI Realtime resource you bound" in html
+    assert "microphone audio goes directly to that service" in html
+    assert "TinyAssets never substitutes a shared" in html
+    assert "that you bound to this universe" in html
     assert "not store the raw audio" in html
     assert "Voice needs a compatible connection" in html
-    assert "supported local voice resource" in html
+    assert "subscription, credential, or local" in html
 
 
 def test_voice_client_keeps_converse_as_the_only_writer():
     html, _csp = onboarding.render_app_html()
     assert 'event.name!=="converse"' in html
     assert "const payload=await MCP.converse(message);" in html
-    assert "Speak the function output exactly" in html
+    assert 'this._send({type:"tool_result",call_id:callId,output:reply});' in html
+    assert 'this._send({type:"speak",call_id:callId,source:"tool_result",verbatim:true});' in html
+    assert "body:JSON.stringify({offer_sdp:offerSdp})" in html
+    assert "sdp:session.answer_sdp" in html
+    assert 'pc.iceGatheringState!=="complete"' in html
+    assert "this._session(localSdp)" in html
+    assert 'Authorization:"Bearer "+secret.value' not in html
     assert "if(!this.canonicalResponsePending)" in html
     assert "if(this.audio) this.audio.muted=true" in html
     assert "localStorage.setItem(voiceDisclosureKey(),\"accepted\")" in html
     # Browser persistence is only the versioned disclosure receipt. Audio,
-    # ephemeral client secrets, and provider transcripts are never written.
+    # SDP, and bridge transcripts are never written.
     assert "localStorage.setItem(voiceDisclosureKey()" in html
     assert "localStorage.setItem(secret" not in html
     assert "localStorage.setItem(event.transcript" not in html
@@ -628,7 +637,8 @@ const store={}; const localStorage={getItem:k=>store[k]||null,setItem:(k,v)=>sto
 class El{constructor(){this.hidden=true;this.disabled=false;this.textContent="";this.attrs={};}
 setAttribute(k,v){this.attrs[k]=v;} focus(){this.focused=true;} pause(){this.paused=true;}}
 const els={"btn-voice":new El(),"voice-disclosure":new El(),"btn-voice-accept":new El(),
-  "voice-unlock":new El(),"btn-voice-unlock-close":new El()};
+  "voice-unlock":new El(),"btn-voice-unlock-close":new El(),
+  "voice-service-name":new El(),"voice-privacy-link":new El()};
 const $=id=>els[id]; let status=""; function setStatusLine(v){status=v||"";}
 const document={createElement:()=>new El()};
 let mediaRequests=0;
@@ -654,20 +664,21 @@ function authHeaders(){return {Authorization:"Bearer app"};} async function slee
     disclosureShown:!els["voice-disclosure"].hidden,
     unlockShown:!els["voice-unlock"].hidden,mediaRequests,fetched:fetched.slice(),status};
   Voice.closeUnlock();
-  capabilityDoc={available:true,state:"ready",resource:"user_bound_openai_api_credential"};
+  capabilityDoc={available:true,state:"ready",resource:"user_bound_voice_connection",
+    service_name:"My bridge",privacy_url:"https://bridge.example/privacy"};
   await Voice.refreshCapability(); out.initial=Voice.state;
   await Voice.requestStart(); out.disclosureShown=!els["voice-disclosure"].hidden;
   const sent=[];
   Voice.dc={readyState:"open",send:v=>sent.push(JSON.parse(v)),
     close:()=>{out.dcClosed=true;}};
   Voice.audio={muted:true};
-  await Voice.handleToolCall({type:"response.function_call_arguments.done",
+  await Voice.handleToolCall({type:"tool_call",
     call_id:"c1",name:"converse",arguments:'{"message":" hello "}'});
-  await Voice.handleToolCall({type:"response.function_call_arguments.done",
+  await Voice.handleToolCall({type:"tool_call",
     call_id:"c1",name:"converse",arguments:'{"message":" duplicate "}'});
-  Voice.handleServerEvent({type:"response.output_audio.delta",delta:"audio"});
-  Voice.handleServerEvent({type:"input_audio_buffer.speech_started"});
-  Voice.handleServerEvent({type:"response.output_audio_transcript.done",transcript:"Exact"});
+  Voice.handleServerEvent({type:"audio_started"});
+  Voice.handleServerEvent({type:"speech_started"});
+  Voice.handleServerEvent({type:"output_transcript",transcript:"Exact"});
   out.afterBargeIn=Voice.state; out.mutedAfterBargeIn=Voice.audio.muted;
   out.bargeInInterrupted=Voice.canonicalResponseInterrupted;
   out.turns=turns; out.toolEvents=sent;
@@ -683,11 +694,11 @@ function authHeaders(){return {Authorization:"Bearer app"};} async function slee
   };
   await Voice.reconnect(11); out.reconnect={attempts,state:Voice.state};
   Voice.canonicalResponsePending=false; Voice.audio={muted:true};
-  Voice.handleServerEvent({type:"response.output_audio.delta",delta:"ignored"});
+  Voice.handleServerEvent({type:"audio_started"});
   out.untrusted={state:Voice.state,status};
   Voice.state="speaking"; Voice.canonicalResponsePending=true;
   Voice.expectedReply="Exact universe reply."; Voice.audio={muted:false};
-  Voice.handleServerEvent({type:"response.output_audio_transcript.done",transcript:"Different"});
+  Voice.handleServerEvent({type:"output_transcript",transcript:"Different"});
   out.mismatch={state:Voice.state,status,traces};
   console.log(JSON.stringify(out));
 })().catch(e=>{console.error(e&&e.stack||e);process.exit(1);});
@@ -755,22 +766,23 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
     assert out["locked"]["unlockShown"] is True
     assert out["locked"]["mediaRequests"] == 0
     assert set(out["locked"]["fetched"]) == {"/mcp/app/voice/status"}
-    assert "current ChatGPT or Codex subscription route" in out["locked"]["status"]
+    assert "user-owned voice connection" in out["locked"]["status"]
     assert out["initial"] == "idle"
     assert out["disclosureShown"] is True
     assert out["afterBargeIn"] == "listening" and out["mutedAfterBargeIn"] is True
     assert out["bargeInInterrupted"] is True
     assert out["turns"] == ["hello"]
     assert out["toolEvents"][0] == {
-        "type": "conversation.item.create",
-        "item": {
-            "type": "function_call_output",
-            "call_id": "c1",
-            "output": "Exact universe reply.",
-        },
+        "type": "tool_result",
+        "call_id": "c1",
+        "output": "Exact universe reply.",
     }
-    assert out["toolEvents"][1]["type"] == "response.create"
-    assert out["toolEvents"][1]["response"]["tool_choice"] == "none"
+    assert out["toolEvents"][1] == {
+        "type": "speak",
+        "call_id": "c1",
+        "source": "tool_result",
+        "verbatim": True,
+    }
     assert out["teardown"] == {
         "stopped": 1,
         "pcClosed": 1,

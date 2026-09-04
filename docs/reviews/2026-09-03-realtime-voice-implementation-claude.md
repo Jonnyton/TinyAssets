@@ -2,9 +2,11 @@
 
 Date: 2026-09-03
 
-> Superseded in part by the founder's later 2026-09-03 authority correction. This review does not
-> approve the revised subscription-compatibility finding, capability-status route, or locked-
-> resource UI. See `docs/reviews/2026-09-03-realtime-voice-authority-correction-review.md`.
+> Superseded for landing approval by the founder's later 2026-09-03 authority and
+> channel-agnostic corrections. Its concrete findings were fixed and retained, but this review
+> predates the provider-neutral `tinyassets.voice.v1` bridge, exact connection/grant checks, and
+> revised client protocol. See
+> `docs/reviews/2026-09-03-realtime-voice-authority-correction-review.md`.
 
 Provider/model: Claude Sonnet, invoked through `scripts/peer_agent.py`
 Scope: uncommitted `add-realtime-voice-conversation` implementation and tests
