@@ -101,9 +101,9 @@ repeats annually.
 ## 1b. Version and release gates — generated defaults are not a release strategy
 
 `mobile/android-release.json` is the checked-in Android release source of truth. It
-records the next candidate: package `io.tinyassets.app`, version code `2`, version
-name `1.0.1`, min SDK 24, target/compile SDK 36. The existing internal-track artifact
-is code `1`, name `1.0`; promoting that exact artifact between tracks needs no rebuild.
+records the next candidate: package `io.tinyassets.app`, version code `3`, version
+name `1.0.2`, min SDK 24, target/compile SDK 36. The existing internal-track artifact
+is code `2`, name `1.0.1`; promoting that exact artifact between tracks needs no rebuild.
 
 Before uploading any new AAB, increase `versionCode`; Play never accepts a code it has
 seen before, even on a test track. A `mobile-v<versionName>` tag must match the file's
