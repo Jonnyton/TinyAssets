@@ -261,6 +261,53 @@ def _load_release_state() -> dict[str, Any]:
     return out
 
 
+def _active_host_snapshot(
+    served_llm_type: str = "",
+) -> tuple[dict[str, object], bool, list[str], str]:
+    """Return host-wide provider evidence without requiring a universe."""
+    import shutil as _shutil
+
+    api_key_enabled = api_key_providers_enabled()
+    api_key_vars_present = [
+        name for name in API_KEY_PROVIDER_ENV_VARS if os.environ.get(name)
+    ]
+    codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
+    codex_auth_file = codex_home / "auth.json"
+    from tinyassets.providers.base import subscription_auth_health as _auth_health
+
+    claude_authed = (
+        _shutil.which("claude")
+        and _auth_health("claude-code", allow_probe=False)["status"]
+        != "not_logged_in"
+    )
+    if os.environ.get("OLLAMA_HOST"):
+        endpoint_hint = "ollama"
+    elif api_key_enabled and os.environ.get("ANTHROPIC_BASE_URL"):
+        endpoint_hint = "anthropic"
+    elif _shutil.which("codex") and codex_auth_file.is_file():
+        endpoint_hint = "codex"
+    elif claude_authed:
+        endpoint_hint = "claude"
+    elif api_key_enabled and os.environ.get("OPENAI_API_KEY") and _shutil.which("codex"):
+        endpoint_hint = "codex"
+    elif api_key_enabled and os.environ.get("XAI_API_KEY"):
+        endpoint_hint = "xai"
+    elif api_key_enabled and os.environ.get("GEMINI_API_KEY"):
+        endpoint_hint = "gemini"
+    elif api_key_enabled and os.environ.get("GROQ_API_KEY"):
+        endpoint_hint = "groq"
+    else:
+        endpoint_hint = "unset"
+
+    active_host: dict[str, object] = {
+        "host_id": os.environ.get("UNIVERSE_SERVER_HOST_USER", "host"),
+        "served_llm_type": served_llm_type or "any",
+        "llm_endpoint_bound": endpoint_hint,
+        "api_key_providers_enabled": api_key_enabled,
+    }
+    return active_host, api_key_enabled, api_key_vars_present, endpoint_hint
+
+
 def _compact_ship_attempt(attempt: Any) -> dict[str, Any]:
     """Compact chatbot-facing summary of an auto-ship ledger row.
 
@@ -1163,6 +1210,7 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
 
     uid, needs_birth = _resolve_entry_universe(universe_id)
     if needs_birth:
+        active_host, _, _, _ = _active_host_snapshot()
         _about = (
             "TinyAssets hosts your own AI universe — a persistent mind that "
             "starts blank, learns who it is from you, and grows into your "
@@ -1183,6 +1231,8 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
             "identity_evidence": identity_evidence,
             "request_identity": request_identity,
             "schema_version": _STATUS_SCHEMA_VERSION,
+            "active_host": active_host,
+            "release_state": _load_release_state(),
             # Present on every status shape the probes can meet, universe or
             # not: the activity probe reads these instead of inspecting a
             # universe. Both, because `last_activity_at` goes stale for a quiet
@@ -1222,8 +1272,6 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
         denial["identity_evidence"] = identity_evidence
         denial["request_identity"] = request_identity
         return json.dumps(denial)
-    host_id = os.environ.get("UNIVERSE_SERVER_HOST_USER", "host")
-
     # Load the dispatcher config for the universe.
     try:
         from tinyassets.dispatcher import (
@@ -1243,13 +1291,6 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
         })
 
     served_llm_type = (cfg.served_llm_type or "").strip()
-    import shutil as _shutil
-    api_key_enabled = api_key_providers_enabled()
-    api_key_vars_present = [
-        name for name in API_KEY_PROVIDER_ENV_VARS if os.environ.get(name)
-    ]
-    codex_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
-    codex_auth_file = codex_home / "auth.json"
     # Priority chain mirrors the provider-router's preference order:
     # local/subscription endpoints beat API-key-only providers. Ollama is
     # always-local; codex+claude are subprocess-bound CLIs the daemon can drive;
@@ -1258,30 +1299,9 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
     # Claude is "bound" only when its binary AND subscription auth are present —
     # the binary-only check let a dead-auth claude masquerade as bound (the
     # 2026-06-25 blind spot). Codex already gates on auth.json below; mirror it.
-    from tinyassets.providers.base import subscription_auth_health as _auth_health
-    claude_authed = (
-        _shutil.which("claude")
-        and _auth_health("claude-code", allow_probe=False)["status"]
-        != "not_logged_in"
+    active_host, api_key_enabled, api_key_vars_present, endpoint_hint = (
+        _active_host_snapshot(served_llm_type)
     )
-    if os.environ.get("OLLAMA_HOST"):
-        endpoint_hint = "ollama"
-    elif api_key_enabled and os.environ.get("ANTHROPIC_BASE_URL"):
-        endpoint_hint = "anthropic"
-    elif _shutil.which("codex") and codex_auth_file.is_file():
-        endpoint_hint = "codex"
-    elif claude_authed:
-        endpoint_hint = "claude"
-    elif api_key_enabled and os.environ.get("OPENAI_API_KEY") and _shutil.which("codex"):
-        endpoint_hint = "codex"
-    elif api_key_enabled and os.environ.get("XAI_API_KEY"):
-        endpoint_hint = "xai"
-    elif api_key_enabled and os.environ.get("GEMINI_API_KEY"):
-        endpoint_hint = "gemini"
-    elif api_key_enabled and os.environ.get("GROQ_API_KEY"):
-        endpoint_hint = "groq"
-    else:
-        endpoint_hint = "unset"
 
     tier_routing_policy = {
         "served_llm_type": served_llm_type or "any",
@@ -1416,12 +1436,7 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
         )
 
     policy_payload = {
-        "active_host": {
-            "host_id": host_id,
-            "served_llm_type": served_llm_type or "any",
-            "llm_endpoint_bound": endpoint_hint,
-            "api_key_providers_enabled": api_key_enabled,
-        },
+        "active_host": active_host,
         "tier_routing_policy": tier_routing_policy,
     }
 

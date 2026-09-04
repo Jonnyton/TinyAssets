@@ -179,16 +179,30 @@ def _assert_reads_as_outage_not_onboarding(out: dict) -> None:
     assert "setup_paths" not in out, out
     assert out.get("error"), out
 
-def test_get_status_without_home_is_repeatable_and_side_effect_free(data_dir):
+def test_get_status_without_home_is_repeatable_and_side_effect_free(
+    data_dir, monkeypatch,
+):
     from tinyassets.api.status import get_status
     from tinyassets.daemon_server import get_founder_home
 
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+    (data_dir / "release-state.json").write_text(
+        json.dumps({"git_sha": "candidate-sha"}),
+        encoding="utf-8",
+    )
     _login("founder-1")
     first = json.loads(get_status())
     second = json.loads(get_status())
 
     assert first == second
     assert first["first_contact"]["event"] == "no_universe_yet"
+    assert first["active_host"] == {
+        "host_id": "host",
+        "served_llm_type": "any",
+        "llm_endpoint_bound": "ollama",
+        "api_key_providers_enabled": False,
+    }
+    assert first["release_state"]["git_sha"] == "candidate-sha"
     assert get_founder_home(data_dir, "founder-1") == ""
     assert _serial_dirs(data_dir) == []
 

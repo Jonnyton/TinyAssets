@@ -151,3 +151,55 @@ def test_canary_token_reaches_write_page_over_stateful_streamable_http(
     assert _response_json(read)["result"]["structuredContent"]["content"].endswith(
         "real-transport-roundtrip"
     )
+
+
+def test_canary_get_status_keeps_uptime_fields_without_a_home_universe(
+    transport_client: TestClient,
+) -> None:
+    initialize = _post_mcp(
+        transport_client,
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "deploy-canary", "version": "1.0"},
+            },
+        },
+        bearer_token=_CANARY_TOKEN,
+    )
+    assert initialize.status_code == 200
+    session_id = initialize.headers["mcp-session-id"]
+
+    initialized = _post_mcp(
+        transport_client,
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        session_id=session_id,
+        bearer_token=_CANARY_TOKEN,
+    )
+    assert initialized.status_code in {200, 202}
+
+    status = _post_mcp(
+        transport_client,
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "get_status", "arguments": {}},
+        },
+        session_id=session_id,
+        bearer_token=_CANARY_TOKEN,
+    )
+
+    assert status.status_code == 200
+    payload = _response_json(status)["result"]["structuredContent"]
+    assert payload["first_contact"]["event"] == "no_universe_yet"
+    assert set(payload["active_host"]) >= {
+        "host_id",
+        "served_llm_type",
+        "llm_endpoint_bound",
+        "api_key_providers_enabled",
+    }
+    assert "release_state" in payload
