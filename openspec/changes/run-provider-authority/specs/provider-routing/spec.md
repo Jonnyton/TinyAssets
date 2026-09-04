@@ -32,3 +32,9 @@ SHALL NOT authorize a foreground run.
 - **GIVEN** a foreground prompt run whose serving authority is missing, stale, revoked, cross-universe, owned by another principal, outside the node policy, or no longer matches the exact current assignment
 - **WHEN** provider admission or an attempt is evaluated
 - **THEN** the run fails closed with `permission_denied:provider_not_bound`, no different or ambient provider is substituted, and no effect fires
+
+#### Scenario: A refreshed serving assignment replaces stale run-class authority
+- **GIVEN** the owner's serving assignment is current and valid, but a deterministic run-class binding remains from an earlier assignment generation or credential
+- **WHEN** a foreground prompt node requests its first provider completion
+- **THEN** the stale run-class binding is transactionally rebound from the exact current serving authority before the run receipt is admitted
+- **AND** the selected provider is invoked under the refreshed binding without widening owner, universe, provider, policy, role, budget, expiry, or settlement authority

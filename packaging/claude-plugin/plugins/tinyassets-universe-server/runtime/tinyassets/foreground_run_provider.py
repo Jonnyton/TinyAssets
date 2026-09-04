@@ -18,6 +18,7 @@ from tinyassets.provider_work_authority import (
     ProviderUniverseWorkReceipt,
     ProviderUniverseWorkRoot,
     ProviderWorkAuthorityWriteOutcome,
+    ProviderWorkBindingFence,
     ProviderWorkBindingRoot,
     ProviderWorkBindingSeed,
     ProviderWorkBindingService,
@@ -61,6 +62,36 @@ def _declared_policy_providers(policy: dict[str, Any] | None) -> set[str]:
             if isinstance(candidate, dict) and candidate.get("provider"):
                 providers.add(str(candidate["provider"]).strip())
     return {provider for provider in providers if provider}
+
+
+def _binding_matches_seed(binding: Any, seed: ProviderWorkBindingSeed) -> bool:
+    """Whether an existing run-class binding already expresses ``seed``.
+
+    Binding ids are deterministic per owner/universe/provider/operation class,
+    so a past serving assignment leaves the same row the next assignment must
+    use.  Creation replay is generation-sensitive and therefore reports that
+    healthy existing row as a conflict after its first rebind.  Compare every
+    authority-bearing seed field before reusing it; any mismatch is repaired
+    through the binding service's fenced rebind path below.
+    """
+    return all(
+        (
+            getattr(getattr(binding, "state", None), "value", None) == "active",
+            binding.revocation_generation == 0,
+            binding.owner_user_id == seed.owner_user_id,
+            binding.universe_id == seed.universe_id,
+            binding.provider == seed.provider,
+            binding.credential_reference_digest == seed.credential_reference_digest,
+            binding.allowed_operations == seed.allowed_operations,
+            binding.allowed_roles == seed.allowed_roles,
+            binding.assignment_generation == seed.assignment_generation,
+            binding.assignment_digest == seed.assignment_digest,
+            binding.max_invocations == seed.max_invocations,
+            binding.max_tokens == seed.max_tokens,
+            binding.max_cost_microunits == seed.max_cost_microunits,
+            binding.expires_at == seed.expires_at,
+        )
+    )
 
 
 class _SeedResolver:
@@ -283,20 +314,34 @@ class _ForegroundRunProviderSession:
                             universe_id=seed.universe_id,
                             provider=seed.provider,
                         )
-                        issued = ProviderWorkBindingService(
-                            store,
-                            _SeedResolver(seed),
-                        ).issue_in_transaction(conn, root)
+                        child_binding = None
+                        service = ProviderWorkBindingService(store, _SeedResolver(seed))
+                        issued = service.issue_in_transaction(conn, root)
                         if (
-                            issued.outcome
-                            not in {
-                                ProviderWorkAuthorityWriteOutcome.APPLIED,
-                                ProviderWorkAuthorityWriteOutcome.REPLAYED,
-                            }
-                            or issued.record is None
+                            issued.outcome is ProviderWorkAuthorityWriteOutcome.CONFLICT
+                            and issued.record is not None
                         ):
-                            raise PermissionError("run child provider binding is unavailable")
-                        child_binding = issued.record
+                            if _binding_matches_seed(issued.record, seed):
+                                child_binding = issued.record
+                            else:
+                                issued = service.rebind_in_transaction(
+                                    conn,
+                                    ProviderWorkBindingFence(issued.record),
+                                    root,
+                                )
+                        if child_binding is None:
+                            if (
+                                issued.outcome
+                                not in {
+                                    ProviderWorkAuthorityWriteOutcome.APPLIED,
+                                    ProviderWorkAuthorityWriteOutcome.REPLAYED,
+                                }
+                                or issued.record is None
+                            ):
+                                raise PermissionError(
+                                    "run child provider binding is unavailable"
+                                )
+                            child_binding = issued.record
                         subject_ref = self._branch_version_id or (
                             f"{self._branch_def_id}@definition:"
                             f"{int(snapshot.get('version') or 1)}"

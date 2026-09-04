@@ -23,6 +23,10 @@
       that provider is subscription-backed or a registered open HTTP provider;
       registration without serving selection and every owner/universe/policy
       mismatch still launch nothing.
+- [x] 1.8 Reproduce the second post-deploy mismatch where serving status is healthy
+      but a deterministic run-class binding from an earlier assignment makes every
+      prompt run fail `provider_not_bound`; reuse an exact current child and refresh
+      a stale child only through a fenced transactional rebind.
 
 ## 2. Evidence
 
