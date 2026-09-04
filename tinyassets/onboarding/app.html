@@ -1221,7 +1221,7 @@
   const Voice={
     state:"unavailable", pc:null, dc:null, stream:null, audio:null,
     recognition:null, utterance:null, browserRestartTimer:null, browserTurn:null,
-    browserSubmitting:false,
+    browserSpeechTimer:null, browserSpeechFinish:null, browserSubmitting:false,
     capability:null,
     stopTimer:null, warnTimer:null, authorityTimer:null,
     disclosureOpen:false, acceptingDisclosure:false,
@@ -1300,10 +1300,9 @@
           voiceFriendlyError("browser_speech_unsupported");
         this._render(detail);return false;
       }catch(_error){
-        if(browserSpeechAvailable()){
-          this.capability=browserSpeechCapability({reason:"voice_status_failed"});this.state="idle";
-          this._render("Voice ready using your browser or device speech service.");return true;
-        }
+        // Browser speech replaces only a missing media bridge. A failed status
+        // read cannot prove that a universe has a writer, so keep this closed
+        // rather than bypassing the unpowered setup state.
         this.capability=null;this.state="checking";
         this._render("Voice capability could not be confirmed. Typed chat still works.");return false;
       }
@@ -1318,6 +1317,8 @@
       const localBrowserReady=this.capability&&this.capability.mode==="browser"&&
         browserSpeechAvailable();
       if(!localBrowserReady&&!await this.refreshCapability()){
+        if(!this.capability)
+          return this._render("Voice capability could not be confirmed. Typed chat still works.");
         if(this.capability&&this.capability.state==="unpowered"&&
           this.capability.remediation==="existing_connection_surface")
           return showConnect(this.capability.state==="unpowered",
@@ -1458,18 +1459,35 @@
     _speakBrowser(reply,generation){
       if(!browserSpeechAvailable())return Promise.reject(new Error("browser_speech_unsupported"));
       return new Promise((resolve,reject)=>{
+        let settled=false;
+        const finish=error=>{
+          if(settled)return;settled=true;
+          clearTimeout(this.browserSpeechTimer);this.browserSpeechTimer=null;
+          if(this.browserSpeechFinish===finish)this.browserSpeechFinish=null;
+          if(error)reject(error);else resolve();
+        };
+        this.browserSpeechFinish=finish;
         const utterance=new window.SpeechSynthesisUtterance(reply);this.utterance=utterance;
         utterance.lang=(navigator.language||document.documentElement.lang||"en-US");
         utterance.onend=()=>{
+          if(settled)return;
           if(generation===this.epoch&&this.utterance===utterance){
             this.utterance=null;this.browserSubmitting=false;this.state="listening";
             this._render();this._restartBrowser(generation);
           }
-          resolve();
+          finish();
         };
-        utterance.onerror=()=>{if(this.utterance===utterance)this.utterance=null;
-          reject(new Error("browser_speech_failed"));};
+        utterance.onerror=()=>{if(settled)return;
+          if(this.utterance===utterance)this.utterance=null;
+          finish(new Error("browser_speech_failed"));};
         this.state="speaking";this._render();
+        const speechMs=Math.min(120000,Math.max(15000,String(reply).length*75));
+        this.browserSpeechTimer=setTimeout(()=>{
+          if(settled)return;
+          if(this.utterance===utterance)this.utterance=null;
+          finish(new Error("browser_speech_failed"));
+          try{window.speechSynthesis.cancel();}catch(_e){}
+        },speechMs);
         window.speechSynthesis.cancel();window.speechSynthesis.speak(utterance);
       });
     },
@@ -1654,8 +1672,11 @@
     },
     _teardownTransport(){
       clearTimeout(this.stopTimer);clearTimeout(this.warnTimer);clearTimeout(this.browserRestartTimer);
+      const finishSpeech=this.browserSpeechFinish;
+      if(finishSpeech)finishSpeech();else clearTimeout(this.browserSpeechTimer);
       clearInterval(this.authorityTimer);
-      this.stopTimer=null;this.warnTimer=null;this.browserRestartTimer=null;this.authorityTimer=null;
+      this.stopTimer=null;this.warnTimer=null;this.browserRestartTimer=null;
+      this.browserSpeechTimer=null;this.browserSpeechFinish=null;this.authorityTimer=null;
       const recognition=this.recognition;this.recognition=null;
       if(recognition){try{recognition.abort();}catch(_e){}}
       if(window.speechSynthesis){try{window.speechSynthesis.cancel();}catch(_e){}}

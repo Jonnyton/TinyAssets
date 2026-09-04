@@ -667,9 +667,10 @@ let traces=[]; function trace(...args){traces.push(args);}
 let turns=[];
 let capabilityDoc={available:false,state:"unpowered",reason:"provider_not_configured",
   remediation:"existing_connection_surface"};
-let fetched=[];
+let fetched=[],fetchError=null;
 async function fetch(url){
-  fetched.push(url);return {ok:true,status:200,json:async()=>capabilityDoc};
+  fetched.push(url);if(fetchError)throw fetchError;
+  return {ok:true,status:200,json:async()=>capabilityDoc};
 }
 let voiceTurnImpl=async()=>"Exact universe reply.";
 async function sendVoiceTurn(message){turns.push(message);return await voiceTurnImpl(message);}
@@ -881,11 +882,18 @@ let connectCalls=[]; function showConnect(asGate,guidance){connectCalls.push({as
   window.webkitSpeechRecognition=FakeSpeechRecognition;
   window.SpeechSynthesisUtterance=class{constructor(text){this.text=text;}};
   window.speechSynthesis={
+    autoEnd:true,
     cancel(){speechCancels.push("cancel");},
-    speak(utterance){spoken.push(utterance.text);queueMicrotask(()=>utterance.onend());}
+    speak(utterance){spoken.push(utterance.text);
+      if(this.autoEnd)queueMicrotask(()=>utterance.onend());}
   };
   navigator.language="en-US";
   Voice.start=realStart;
+  fetchError=new Error("offline");connectCalls=[];Voice.stop(false);Voice.init();
+  await Voice.refreshCapability();await Voice.requestStart();
+  out.browserStatusFailure={state:Voice.state,label:els["btn-voice"].textContent,
+    disclosureShown:!els["voice-disclosure"].hidden,connectCalls:connectCalls.slice(),status};
+  fetchError=null;
   CFG.voice.enabled=false;
   capabilityDoc={available:false,state:"incompatible",reason:"provider_voice_unsupported",
     remediation:"existing_connection_surface"};connectCalls=[];turns=[];
@@ -920,6 +928,13 @@ let connectCalls=[]; function showConnect(asGate,guidance){connectCalls.push({as
     sessionFetches:fetched.slice(fetchesBeforeBrowser).filter(url=>url==="/mcp/app/voice/session").length,
     connectCalls:connectCalls.slice()
   };
+  window.speechSynthesis.autoEnd=false;
+  const stalledResult=[{transcript:"Speech watchdog"}];stalledResult.isFinal=true;
+  recognition.onresult({resultIndex:0,results:[stalledResult]});
+  await Promise.resolve();await Promise.resolve();await Promise.resolve();
+  const speechWatchdog=timers.slice().reverse().find(timer=>timer.ms>=15000&&timer.ms<=120000);
+  const stalledTurn=Voice.browserTurn;speechWatchdog.fn();await stalledTurn;
+  out.browserSpeechWatchdog={state:Voice.state,turns:turns.slice(),spoken:spoken.slice(),status};
   const cancelsBeforeStop=speechCancels.length;Voice.stop(false);
   out.browserFallbackStop={aborted:recognition.aborted,
     speechCancelsOnStop:speechCancels.length-cancelsBeforeStop,
@@ -1142,6 +1157,13 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
         "mediaRequests": 0,
         "recognitionInstances": 0,
     }
+    assert out["browserStatusFailure"] == {
+        "state": "checking",
+        "label": "Voice",
+        "disclosureShown": False,
+        "connectCalls": [],
+        "status": "Voice capability could not be confirmed. Typed chat still works.",
+    }
     assert out["browserFallbackDecline"] == {
         "disclosureShown": False,
         "recognitionInstances": 0,
@@ -1155,6 +1177,12 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
         "recognitionStops": 1,
         "sessionFetches": 0,
         "connectCalls": [],
+    }
+    assert out["browserSpeechWatchdog"] == {
+        "state": "error",
+        "turns": ["Hello, same universe", "Speech watchdog"],
+        "spoken": ["Exact universe reply.", "Exact universe reply."],
+        "status": "Your browser or device speech service stopped. Typed chat still works.",
     }
     assert out["browserFallbackStop"] == {
         "aborted": 1,

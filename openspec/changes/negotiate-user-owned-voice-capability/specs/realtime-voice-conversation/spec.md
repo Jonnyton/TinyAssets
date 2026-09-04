@@ -36,6 +36,11 @@ The shared TinyAssets app SHALL expose one Voice control beside the message comp
 - **THEN** the app names the browser/device limitation and keeps typed conversation available
 - **AND** it does not ask the user to reconnect the provider or imply that their ChatGPT subscription grants external Realtime API access
 
+#### Scenario: Conversation authority status cannot be confirmed
+- **WHEN** the authenticated Voice status request fails or times out
+- **THEN** the app does not infer that browser speech may bypass the unknown unpowered state
+- **AND** it starts no recognition, microphone capture, or provider setup
+
 #### Scenario: Every active state is perceivable
 - **WHEN** voice moves among requesting permission, connecting, listening, thinking, speaking, reconnecting, or error
 - **THEN** the app displays the current state and announces it through an accessible live region
@@ -44,6 +49,11 @@ The shared TinyAssets app SHALL expose one Voice control beside the message comp
 #### Scenario: Leaving voice stops capture
 - **WHEN** the user stops voice, signs out, hides the app, unloads the page, or the periodic authority check loses readiness
 - **THEN** all local microphone tracks and recognition stop, queued speech synthesis is cancelled, and the client returns to a non-capturing state
+
+#### Scenario: Browser speech synthesis does not settle
+- **WHEN** the browser fires neither completion nor error for a requested utterance
+- **THEN** the client cancels synthesis after a bounded local deadline and enters an actionable error state
+- **AND** the canonical text reply remains visible in history
 
 #### Scenario: Authority is revoked during an active session
 - **GIVEN** Voice is actively capturing
