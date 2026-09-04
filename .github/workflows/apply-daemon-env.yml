@@ -142,6 +142,8 @@ jobs:
                '${INPUT_KEY}' '${INPUT_VALUE}' /tmp/install-tinyassets-env.sh '${HELPER_SHA}'"
 
       - name: Public MCP canary (--assert-handles)
+        env:
+          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         run: |
           set -euo pipefail
           for i in 1 2 3 4 5 6; do

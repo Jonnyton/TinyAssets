@@ -13,17 +13,10 @@ import styles from "./Reachability.module.css";
  */
 export function Reachability() {
   const [vitals, setVitals] = React.useState<Vitals | null>(null);
-  const [busy, setBusy] = React.useState(true);
-
-  const refresh = React.useCallback(async () => {
-    setBusy(true);
-    setVitals(await fetchVitals());
-    setBusy(false);
-  }, []);
 
   React.useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    void fetchVitals().then(setVitals);
+  }, []);
 
   return (
     <div className={styles.strip} aria-live="polite">
@@ -34,7 +27,19 @@ export function Reachability() {
             <dd>reading tinyassets.io/mcp from your browser…</dd>
           </div>
         )}
-        {vitals && !vitals.reachable && (
+        {vitals?.authRequired && (
+          <>
+            <div>
+              <dt>live readings</dt>
+              <dd>sign-in required</dd>
+            </div>
+            <div>
+              <dt>detail</dt>
+              <dd>{vitals.error}</dd>
+            </div>
+          </>
+        )}
+        {vitals && !vitals.authRequired && !vitals.reachable && (
           <>
             <div>
               <dt>endpoint</dt>
@@ -46,7 +51,7 @@ export function Reachability() {
             </div>
           </>
         )}
-        {vitals && vitals.reachable && (
+        {vitals && !vitals.authRequired && vitals.reachable && (
           <>
             <div>
               <dt>endpoint</dt>
@@ -76,12 +81,8 @@ export function Reachability() {
         )}
       </dl>
       <div className={styles.bar}>
-        <button className="btn btn--ghost btn--sm" onClick={refresh} disabled={busy}>
-          {busy ? "reading…" : "Refresh MCP"}
-        </button>
         <span className="note">
-          Reads only the public projection. Reachable does not mean busy: activity is a separate
-          reading, and it covers public universes only.
+          Live reachability and activity stay private until a connector supplies a bearer.
         </span>
       </div>
     </div>

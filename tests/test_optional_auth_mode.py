@@ -76,10 +76,10 @@ class _FakeProvider(AuthProvider):
 @pytest.fixture(autouse=True)
 def _reset_auth_context():
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
     yield
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
 
 
 # ── create_provider() mode selection ───────────────────────────────────────
@@ -122,19 +122,23 @@ def test_optional_mode_resolves_valid_token():
     assert require_auth().user_id == "oauth-subject-1"
 
 
-def test_optional_mode_invalid_token_is_anonymous_not_gated():
+def test_optional_mode_invalid_token_is_nobody_and_refused():
     set_provider(_FakeProvider(required=False, identity=_SUBJECT))
-    auth_middleware("bad")
-    assert current_identity().user_id == "anonymous"
-    # The whole point: anonymous is allowed through, NOT 401'd.
-    assert require_auth().user_id == "anonymous"
+    assert auth_middleware("bad") is None
+    # Optional mode used to let nobody through here. There is no nobody now.
+    with pytest.raises(PermissionError):
+        current_identity()
+    with pytest.raises(PermissionError):
+        require_auth()
 
 
-def test_optional_mode_absent_token_is_anonymous():
+def test_optional_mode_absent_token_is_nobody_and_refused():
     set_provider(_FakeProvider(required=False, identity=_SUBJECT))
-    auth_middleware(None)
-    assert current_identity().user_id == "anonymous"
-    assert require_auth().user_id == "anonymous"
+    assert auth_middleware(None) is None
+    with pytest.raises(PermissionError):
+        current_identity()
+    with pytest.raises(PermissionError):
+        require_auth()
 
 
 # ── regression: gated mode still rejects (the rewritten 401 path) ──────────
@@ -155,8 +159,8 @@ def test_gated_mode_valid_token_resolves():
 
 # ── dev mode unchanged: a present token still resolves to anonymous ────────
 
-def test_dev_mode_token_present_stays_anonymous():
-    set_provider(DevAuthProvider())
-    auth_middleware("valid")  # DevAuthProvider.resolve_token returns ANONYMOUS
-    assert current_identity().user_id == "anonymous"
-    assert require_auth().user_id == "anonymous"
+def test_dev_mode_token_present_is_the_named_operator():
+    set_provider(DevAuthProvider(user_id="operator"))
+    auth_middleware("valid")  # any bearer resolves to the named operator
+    assert current_identity().user_id == "operator"
+    assert require_auth().user_id == "operator"

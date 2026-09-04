@@ -527,7 +527,7 @@ def materialize_pending_requests(
             continue
         text = str(req.get("text") or "").strip()
         req_type = str(req.get("type") or "general").strip()
-        source = str(req.get("source") or "anonymous").strip()
+        source = str(req.get("source") or "unattributed").strip()
         title_stub = text.splitlines()[0][:70] if text else req_type
         target_id = _slugify(f"request-{req_id}", fallback=f"request-{req_id}")
         metadata = {

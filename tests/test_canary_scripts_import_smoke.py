@@ -19,8 +19,10 @@ Coverage:
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -385,3 +387,58 @@ def test_uptime_canary_reuses_public_canary_error(loaded_modules):
         "`from mcp_public_canary import CanaryError` rather than "
         "redefining a local class."
     )
+
+
+def test_selfhost_smoke_missing_token_exits_before_network(monkeypatch, capsys):
+    import _canary_common
+
+    smoke = importlib.import_module("selfhost_smoke")
+    calls = []
+    monkeypatch.delenv("TINYASSETS_WIKI_CANARY_TOKEN", raising=False)
+    monkeypatch.setattr(
+        smoke, "canary_bearer_for",
+        lambda url, prog, timeout=10.0: _canary_common.require_canary_bearer(prog),
+    )
+    monkeypatch.setattr(
+        smoke.urllib.request, "urlopen", lambda *a, **k: calls.append((a, k)),
+    )
+    with pytest.raises(SystemExit) as exc:
+        smoke.main([])
+    assert exc.value.code == 2
+    assert not calls
+    assert "TINYASSETS_WIKI_CANARY_TOKEN" in capsys.readouterr().err
+
+
+def test_selfhost_smoke_post_sends_canary_bearer(monkeypatch):
+    smoke = importlib.import_module("selfhost_smoke")
+    token = "t" * 40
+    requests = []
+    response = MagicMock()
+    response.headers.get.return_value = "sid"
+    response.read.return_value = (
+        "data: " + json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}})
+    ).encode()
+    response.__enter__.return_value = response
+
+    def urlopen(request, timeout):
+        requests.append(request)
+        return response
+
+    monkeypatch.setattr(smoke.urllib.request, "urlopen", urlopen)
+    smoke._post(
+        "https://fake/mcp", None, smoke._INIT_PAYLOAD, 5.0,
+        bearer_token=token,
+    )
+    assert requests[0].get_header("Authorization") == f"Bearer {token}"
+
+
+def test_common_bearer_strips_token_and_rejects_whitespace(monkeypatch, capsys):
+    common = importlib.import_module("_canary_common")
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "  token-value  ")
+    assert common.canary_bearer() == "token-value"
+
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", "   ")
+    with pytest.raises(SystemExit) as exc:
+        common.require_canary_bearer("test")
+    assert exc.value.code == 2
+    assert "TINYASSETS_WIKI_CANARY_TOKEN" in capsys.readouterr().err

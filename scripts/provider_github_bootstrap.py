@@ -32,7 +32,6 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-
 TOKEN_ENV_NAMES = ("GH_TOKEN", "GITHUB_TOKEN", "WORKFLOW_PUSH_TOKEN", "GITHUB_PAT")
 
 

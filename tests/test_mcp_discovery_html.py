@@ -27,19 +27,15 @@ def client(app):
         yield test_client
 
 
-def test_browser_get_mcp_returns_discovery_html(client):
-    """GET /mcp with Accept: text/html returns discovery HTML, not MCP error."""
+def test_browser_get_mcp_is_challenged_like_everything_under_mcp(client):
+    """A browser GET of /mcp used to get discovery HTML anonymously. There is no
+    anonymous read of the endpoint (founder, 2026-09-02): it is challenged, and
+    the challenge names the authorization server so a client can proceed."""
     response = client.get("/mcp", headers={"Accept": "text/html"})
-    assert response.status_code == 200
-    assert "text/html" in response.headers["content-type"]
-    body = response.text
-    assert "TinyAssets MCP Server" in body
-    assert "MCP" in body  # at least mentions MCP
-    assert "https://github.com/Jonnyton/TinyAssets" in body
-    assert "<code>tinyassets</code>" in body
-    assert "Workflow MCP Server" not in body
-    assert "https://github.com/Jonnyton/Workflow" not in body
-    assert "<code>workflow</code>" not in body
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"].startswith("Bearer ")
+    assert "resource_metadata=" in response.headers["www-authenticate"]
+    assert response.json() == {"error": "authentication_required"}
 
 
 def test_browser_get_mcp_directory_is_an_ordinary_404(client):
@@ -54,17 +50,14 @@ def test_browser_get_mcp_directory_is_an_ordinary_404(client):
     assert response.text == "Not Found"
 
 
-def test_default_get_mcp_returns_discovery_json(client):
-    """Default curl-style GET returns discovery JSON, not a transport error."""
+def test_default_get_mcp_is_challenged_too(client):
+    """A curl-style GET is challenged the same way; discovery lives at the
+    .well-known routes, which stay public."""
     response = client.get("/mcp", headers={"Accept": "*/*"})
-    assert response.status_code == 200
-    assert "application/json" in response.headers["content-type"]
-    payload = response.json()
-    assert payload["name"] == "TinyAssets"
-    assert payload["type"] == "mcp_server_endpoint"
-    assert payload["transport"] == "streamable-http"
-    assert payload["related"]["source"] == "https://github.com/Jonnyton/TinyAssets"
-    assert "text/event-stream" in payload["how_to_connect"]["client_accept_header"]
+    assert response.status_code == 401
+    assert response.json() == {"error": "authentication_required"}
+    well_known = client.get("/mcp/.well-known/oauth-protected-resource")
+    assert well_known.status_code == 200
 
 
 def test_json_get_mcp_directory_is_an_ordinary_404(client):
@@ -79,12 +72,12 @@ def test_json_get_mcp_directory_is_an_ordinary_404(client):
     assert response.text == "Not Found"
 
 
-def test_head_mcp_returns_discovery_headers(client):
-    """HEAD /mcp returns discovery headers for browser-like probes."""
+def test_head_mcp_is_challenged(client):
+    """HEAD /mcp used to answer discovery headers to anybody; it is challenged
+    like every other request to the endpoint."""
     response = client.head("/mcp", headers={"Accept": "text/html"})
-    assert response.status_code == 200
-    assert "text/html" in response.headers["content-type"]
-    assert response.text == ""
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"].startswith("Bearer ")
 
 
 def test_get_with_mcp_protocol_version_header_passes_through(client):

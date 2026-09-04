@@ -7,8 +7,8 @@ never fire. Five PRs landed on 2026-07-21 and none reached production. No
 commit touched the broken surface, so only an out-of-band probe can catch this
 class — the same shape as the 2026-04-19 tunnel outage.
 
-This reads the sha production is *serving* from the live public MCP surface
-(``get_status`` -> ``release_state.git_sha``, written to the host volume by
+This reads the sha production is *serving* from the live public ``/mcp/pulse``
+receipt (``git_sha``, written to the host volume by
 ``deploy-prod.yml`` at deploy time) and compares it to git.
 
     # what is production serving, and how far behind origin/main is it?
@@ -53,11 +53,23 @@ import json
 import re
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT / "scripts") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+
+from _canary_common import require_canary_bearer  # noqa: E402
+
 DEFAULT_URL = "https://tinyassets.io/mcp"
+#: Cloudflare answers the stdlib's default ``Python-urllib/3.x`` agent with a
+#: managed-challenge 403 (measured against the live surface 2026-09-02), which
+#: this gate would report as "cannot determine" forever. Every other probe in
+#: scripts/ already names itself for the same reason.
+PULSE_USER_AGENT = "tinyassets-deploy-gate/1.0"
 DEFAULT_TIMEOUT = 30.0
 
 
@@ -97,64 +109,41 @@ def _git(*args: str) -> str:
 
 
 def live_release_state(url: str, timeout: float) -> dict[str, Any]:
-    """Read ``release_state`` from the live public MCP surface."""
-    sys.path.insert(0, str(REPO_ROOT / "scripts"))
-    try:
-        import mcp_public_canary as canary
-    except Exception as exc:  # pragma: no cover - import guard
-        raise DeployedShaError(f"cannot load mcp_public_canary: {exc}") from exc
+    """Read the release receipt as the canary service principal."""
+    pulse_url = f"{url.rstrip('/')}/pulse"
+    bearer = require_canary_bearer("deployed-sha")
+    request = urllib.request.Request(
+        pulse_url,
+        method="GET",
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {bearer}",
+            "User-Agent": PULSE_USER_AGENT,
+        },
+    )
 
     try:
-        status, headers, _ = canary._post(url, canary._INIT_PAYLOAD, timeout)
-        if status != 200:
-            raise DeployedShaError(f"non-200 status {status} from {url}")
-        session_id = headers.get("mcp-session-id")
-        if session_id:
-            canary._post(
-                url,
-                {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
-                timeout,
-                session_id,
-            )
-        status, _, body = canary._post(
-            url,
-            {
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "tools/call",
-                "params": {"name": "get_status", "arguments": {}},
-            },
-            timeout,
-            session_id,
-        )
-        if status != 200:
-            raise DeployedShaError(f"non-200 status {status} from {url} (get_status)")
-        payload = canary._parse_sse_or_json(body)
-    except DeployedShaError:
-        raise
-    except Exception as exc:
-        raise DeployedShaError(f"probe failed against {url}: {exc}") from exc
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            if response.status != 200:
+                raise DeployedShaError(
+                    f"non-200 status {response.status} from {pulse_url}"
+                )
+            body = response.read()
+    except urllib.error.HTTPError as exc:
+        raise DeployedShaError(f"non-200 status {exc.code} from {pulse_url}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise DeployedShaError(f"probe failed against {pulse_url}: {exc}") from exc
 
-    result = payload.get("result", payload)
-    if isinstance(result, dict) and "structuredContent" in result:
-        result = result["structuredContent"]
-    if isinstance(result, dict) and "content" in result:
-        blocks = [b.get("text", "") for b in result.get("content", []) if isinstance(b, dict)]
-        for block in blocks:
-            try:
-                result = json.loads(block)
-                break
-            except json.JSONDecodeError:
-                continue
+    try:
+        result = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DeployedShaError(f"non-JSON response from {pulse_url}") from exc
     if not isinstance(result, dict):
-        raise DeployedShaError("get_status payload is not an object")
-
-    release_state = result.get("release_state")
-    if not isinstance(release_state, dict):
         raise DeployedShaError(
-            "get_status carries no release_state object — cannot tell what is deployed"
+            f"pulse response is not an object: {type(result).__name__}"
         )
-    return release_state
+
+    return result
 
 
 def report(url: str, timeout: float) -> dict[str, Any]:

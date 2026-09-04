@@ -468,10 +468,14 @@ def _run_in_workspace(mount: Any, source: str, *, timeout: float = 120.0) -> Any
 def _seed_run(universe: Universe, run_id: str = RUN_ID) -> None:
     runs_module.initialize_runs_db(universe.universe_dir)
     with runs_module._connect(universe.universe_dir) as conn:
+        # `actor` is NOT NULL: a run is somebody's, and a fixture that inserts
+        # one straight into the table has to say whose. It used to inherit the
+        # column's "anonymous" default, which is the thing that is gone.
         conn.execute(
-            "INSERT INTO runs (run_id, branch_def_id, thread_id, status, started_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (run_id, "branch-e2e", f"t-{run_id}", "running", time.time()),
+            "INSERT INTO runs (run_id, branch_def_id, thread_id, status, started_at, actor) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (run_id, "branch-e2e", f"t-{run_id}", "running", time.time(),
+             "universe:u-workspace-e2e"),
         )
 
 

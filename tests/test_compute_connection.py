@@ -52,8 +52,13 @@ def _login(user_id: str) -> None:
 
 
 def _logout() -> None:
+    """Nobody bound. Resolving a "dev" token binds the LOCAL OPERATOR, which is
+    a real principal -- so a logged-out caller was still somebody, and a test
+    expecting `authentication_required` got a real answer instead."""
+    from tinyassets.auth.middleware import clear_identity
+
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    clear_identity()
 
 
 @pytest.fixture(autouse=True)
@@ -221,7 +226,7 @@ def test_subscription_cli_bad_ref_rejected(base: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_anonymous_refused(base: Path) -> None:
+def test_anonymous_refused(base: Path, nobody) -> None:
     _make_universe(base, "u-x", admin="founder")
     r = _connect("u-x", access_method="subscription_cli", protocol="cli:codex",
                  model="m", ref="codex")

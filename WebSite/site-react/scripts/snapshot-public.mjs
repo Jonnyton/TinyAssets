@@ -2,9 +2,9 @@
 // snapshot-public.mjs — refresh lib/mcp-snapshot.json, the checked-in public
 // fallback the site shows when a browser cannot reach the endpoint.
 //
-// It reads exactly what the browser reads: the public universe list through the
-// shared public read contract (read_graph target=graphs), sanitized to public
-// scalars, and fails closed if the endpoint cannot prove the list is complete.
+// It reads the public universe list through the shared projection contract
+// (read_graph target=graphs) as the named canary service principal, sanitizes
+// it to public scalars, and fails closed if completeness cannot be proven.
 // Nothing else is baked: no goals, no pages, no operator status.
 //
 //   node scripts/snapshot-public.mjs                 # refresh against tinyassets.io/mcp
@@ -18,7 +18,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  assertAnonymousSnapshotUrl,
+  assertSnapshotEndpoint,
   publicGraphCall,
   requireCompleteCollection,
   sanitizePublicUniverse,
@@ -26,9 +26,10 @@ import {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const OUT = resolve(here, "../lib/mcp-snapshot.json");
-const ENDPOINT = assertAnonymousSnapshotUrl(
+const ENDPOINT = assertSnapshotEndpoint(
   process.env.TINY_SNAPSHOT_URL || "https://tinyassets.io/mcp",
 );
+const TOKEN = (process.env.TINYASSETS_WIKI_CANARY_TOKEN || "").trim();
 const REQUIRED = process.env.SNAPSHOT_REQUIRED === "1";
 const LIMIT = 100;
 
@@ -36,9 +37,13 @@ let sessionId = null;
 let nextId = 1;
 
 async function rpc(method, params = {}) {
+  if (!TOKEN) {
+    throw new Error("TINYASSETS_WIKI_CANARY_TOKEN is required");
+  }
   const headers = {
     "Content-Type": "application/json",
     Accept: "application/json, text/event-stream",
+    Authorization: `Bearer ${TOKEN}`,
   };
   if (sessionId) headers["Mcp-Session-Id"] = sessionId;
   const res = await fetch(ENDPOINT, {

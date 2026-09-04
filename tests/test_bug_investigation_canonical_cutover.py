@@ -392,6 +392,7 @@ def test_goal_canonical_with_auto_refresh(base_path, monkeypatch):
     for _ in range(3):
         rid = create_run(
             base_path, branch_def_id="new", thread_id="new", inputs={},
+            actor="universe:u-test",
         )
         update_run_status(
             base_path, rid, status=RUN_STATUS_COMPLETED,
@@ -400,6 +401,7 @@ def test_goal_canonical_with_auto_refresh(base_path, monkeypatch):
     # Add a high-quality judgment to make 'new' rank first.
     rid_j = create_run(
         base_path, branch_def_id="new", thread_id="new", inputs={},
+        actor="universe:u-test",
     )
     update_run_status(
         base_path, rid_j, status=RUN_STATUS_COMPLETED, finished_at=now,

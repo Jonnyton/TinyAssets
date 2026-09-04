@@ -297,8 +297,10 @@ def grant_capabilities(
     normalized = _ordinary_capabilities(capabilities)
     if not normalized:
         return
-    subject = str(user_id or "").strip()
-    if not subject or subject == "anonymous":
+    from tinyassets.principals import named_principal
+
+    subject = named_principal(user_id)
+    if not subject:
         raise ValueError("capability grant requires an authenticated subject")
     initialize_author_server(base_path)
     scope = universe_id or "*"
@@ -710,7 +712,9 @@ def _ensure_capability_subject_account(
 ) -> None:
     """Provision an opaque authenticated subject without granting authority."""
 
-    if user_id == "anonymous":
+    from tinyassets.principals import has_named_principal
+
+    if not has_named_principal(user_id):
         raise ValueError("capability subject must be authenticated")
     row = conn.execute(
         "SELECT 1 FROM user_accounts WHERE user_id = ?",
@@ -861,6 +865,11 @@ def resolve_bearer_token(
         ).fetchone()
         if row is None:
             return None
+        from tinyassets.principals import has_named_principal
+
+        if not has_named_principal(row["user_id"]):
+            conn.execute("DELETE FROM user_sessions WHERE session_token = ?", (token,))
+            return None
         expires_at = row["expires_at"]
         if expires_at is not None and float(expires_at) < _now():
             conn.execute("DELETE FROM user_sessions WHERE session_token = ?", (token,))
@@ -878,9 +887,12 @@ def resolve_bearer_token(
 
 
 def actor_has_capability(actor: dict[str, Any], capability: str) -> bool:
+    from tinyassets.principals import named_principal
+
     grants = tuple(str(item) for item in actor.get("capabilities", []))
+    actor_id = named_principal(actor.get("user_id") or actor.get("username"))
     verdict = resolve_permission(
-        actor_id=str(actor.get("user_id") or actor.get("username") or "anonymous"),
+        actor_id=actor_id,
         action=capability,
         grants=grants,
         scope=PermissionScope(
@@ -888,7 +900,7 @@ def actor_has_capability(actor: dict[str, Any], capability: str) -> bool:
             actor_scope=str(actor.get("token_type", "user")),
         ),
         context=PermissionContext(
-            actor_id=str(actor.get("user_id") or actor.get("username") or "anonymous"),
+            actor_id=actor_id,
             presented_grants=grants,
             metadata={
                 "username": actor.get("username", ""),

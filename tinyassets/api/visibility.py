@@ -1,4 +1,4 @@
-"""Universe visibility model — the anonymous-reader access surface.
+"""Universe visibility model — the public-projection access surface.
 
 Truth split (see ``openspec/changes/universe-visibility/design.md`` and the
 delta spec ``openspec/specs/universe-visibility``):
@@ -29,7 +29,7 @@ rejected the first cut):
      fallback or an env opt-in to strictness.
 
 A reader holding a read/write/admin grant on a universe is never limited by
-anonymous visibility.
+public projection visibility.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ CAPABILITIES = ("discover_existence", "read_metadata", "read_content")
 
 @dataclass(frozen=True)
 class VisibilityLevel:
-    """A named triple of anonymous-reader capabilities."""
+    """A named triple of public-projection capabilities."""
 
     name: str
     discover_existence: bool
@@ -189,7 +189,7 @@ def declared_level_name(universe_id: str) -> str:
 def _reader_has_grant(universe_id: str) -> bool:
     """True when the current caller holds an explicit ACL grant on a universe.
 
-    A granted reader is never limited by anonymous visibility. This checks a
+    A granted reader is never limited by public projection visibility. This checks a
     real ``universe_acl`` row (read/write/admin) for the authenticated actor —
     NOT the "public universes return read" convenience convention.
     """
@@ -198,7 +198,9 @@ def _reader_has_grant(universe_id: str) -> bool:
     if not permissions.is_authenticated_request():
         return False
     actor = permissions.current_actor_id()
-    if not actor or actor == "anonymous":
+    from tinyassets.principals import has_named_principal
+
+    if not has_named_principal(actor):
         return False
     try:
         from tinyassets.daemon_server import list_universe_acl
@@ -226,7 +228,7 @@ def visibility_permits(universe_id: str, capability: str) -> bool:
     layer can never grant what legacy denies (so an inconsistent row with
     ``public_read=False`` plus a permissive explicit level cannot open a read).
     Within what legacy allows, a granted reader gets full access and every other
-    (anonymous / non-granted) reader is bound by the declared level, which is
+    public/non-granted reader is bound by the declared level, which is
     ``CLOSED`` for any undeclared universe.
     """
     if capability not in CAPABILITIES:
@@ -264,7 +266,7 @@ def page_content_permitted(
     reader that is not a *granted* reader of the page's universe (spec Req 3).
 
     Authentication alone is NOT authority here: a valid user with ordinary wiki
-    scope but no universe ACL grant is treated exactly like an anonymous reader,
+    scope but no universe ACL grant is treated exactly like a public visitor,
     so page restrictions cannot be bypassed by merely logging in.
     """
     declared = _page_declared_visibility(page_meta)
@@ -321,7 +323,7 @@ def set_universe_visibility(universe_id: str, level: str) -> VisibilityLevel:
     base = _base_path()
     ensure_universe_rules(base, universe_id=universe_id)
     # Keep the legacy public_read ceiling consistent: it is True iff the level
-    # grants an anonymous reader ANY capability. This makes the legacy gate a
+    # grants a public visitor ANY capability. This makes the legacy gate a
     # correct ceiling for `visibility_permits` (which ANDs with it).
     any_anon_capability = (
         resolved.discover_existence

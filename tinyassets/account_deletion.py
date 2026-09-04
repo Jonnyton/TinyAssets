@@ -585,9 +585,10 @@ def write_tombstone(base_path: str | Path, principal: str) -> None:
     clears it, which is the safe direction to fail.
     """
     from tinyassets.daemon_server import _connect, initialize_author_server
+    from tinyassets.principals import named_principal
 
-    subject = (principal or "").strip()
-    if not subject or subject == "anonymous":
+    subject = named_principal(principal)
+    if not subject:
         return
     initialize_author_server(base_path)
     with _connect(base_path) as conn:
@@ -826,16 +827,17 @@ def delete_account(
     content-free receipt.
 
     Raises :class:`AccountDeletionError` before changing anything when the
-    principal is empty/anonymous or the bound home path is unsafe, and
+    principal is empty or the bound home path is unsafe, and
     :class:`AccountDeletionBlocked` when someone else's data or live work is in
     scope. Once the home directory has been staged the account is gone; each
     later phase runs independently, so a failure in one never stops the phase
     that cancels the money, and anything unfinished lands in a durable receipt.
     """
     from tinyassets.daemon_server import _connect, get_founder_home, initialize_author_server
+    from tinyassets.principals import named_principal
 
-    principal = (founder_sub or "").strip()
-    if not principal or principal == "anonymous":
+    principal = named_principal(founder_sub)
+    if not principal:
         raise AccountDeletionError("no authenticated principal to delete")
     root = Path(base_path).resolve(strict=False)
     fingerprint = _fingerprint(principal)

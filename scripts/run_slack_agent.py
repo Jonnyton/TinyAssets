@@ -29,10 +29,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tinyassets.credential_vault import (  # noqa: E402
-    resolve_slack_app_token,
-    resolve_slack_token,
-)
 from tinyassets.effectors.slack_agent_service import (  # noqa: E402
     SlackAgentConfig,
     SlackAgentConfigError,
@@ -41,6 +37,11 @@ from tinyassets.effectors.slack_agent_service import (  # noqa: E402
 from tinyassets.effectors.slack_errors import safe_error_code  # noqa: E402
 from tinyassets.effectors.slack_socket_mode import (  # noqa: E402
     app_id_from_token,
+)
+
+from tinyassets.credential_vault import (  # noqa: E402
+    resolve_slack_app_token,
+    resolve_slack_token,
 )
 
 AUTH_TEST_URL = "https://slack.com/api/auth.test"

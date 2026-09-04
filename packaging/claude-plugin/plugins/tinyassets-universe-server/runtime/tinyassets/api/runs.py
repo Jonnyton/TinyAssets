@@ -63,7 +63,7 @@ def _bind_run_provider_call(
     ``principal_id`` names the person the run acts for. A foreground request
     omits it and the request identity is used, as before. A BACKGROUND trigger
     must pass it explicitly: the scheduler tick runs on its own thread with no
-    request context, so ``current_request_actor_id()`` there is ``anonymous`` and
+    request context, so ``current_request_actor_id()`` there is empty and
     the session's founder-home check refuses every run. The principal comes from
     the schedule row, recorded at registration from the authenticated owner —
     never from an ambient or host identity.
@@ -165,7 +165,7 @@ def _branch_run_scope_error(action: str, kwargs: dict[str, Any]) -> str | None:
 
     uid = str(kwargs.get("universe_id") or "").strip()
     if not uid:
-        if current_request_actor_id() != "anonymous":
+        if current_request_actor_id():
             return json.dumps({
                 "error": "branch_run_requires_universe",
                 "action": action,
@@ -199,6 +199,32 @@ def _run_universe_id(record: dict[str, Any]) -> str:
     return actor[len(prefix):].strip() if actor.startswith(prefix) else ""
 
 
+def _run_is_unreachable_unowned(record: dict[str, Any]) -> bool:
+    """A run row recorded before there was a principal, and with no owner.
+
+    ``create_run`` refuses the string now, so these are historical rows only.
+    The actor cannot grant anything: it names nobody, so it must not put the
+    row within reach of every scoped signed-in caller (Codex code review
+    round 1).
+
+    But a row that ALSO carries an ``owner_user_id`` is somebody's history,
+    and the owner keeps it: refusing there would delete the founder's own past
+    runs from every list without deleting anything (Codex round 2, P1). So the
+    actor is ignored as authority, and ownership decides -- which is what
+    ownership is for. A row with neither is unreachable, by anyone.
+    """
+    from tinyassets.principals import has_named_principal
+
+    if has_named_principal((record or {}).get("actor")):
+        return False
+    owner = str((record or {}).get("owner_user_id") or "").strip()
+    if not owner:
+        return True
+    from tinyassets.api.permissions import current_request_actor_id
+
+    return owner != current_request_actor_id()
+
+
 def _run_read_allowed(record: dict[str, Any]) -> bool:
     """Whether the current caller may READ a run's data.
 
@@ -206,6 +232,8 @@ def _run_read_allowed(record: dict[str, Any]) -> bool:
     universes stay readable, a private universe (``public_read=false``) requires
     a grant. Runs with no universe binding are not private-universe data.
     """
+    if _run_is_unreachable_unowned(record):
+        return False
     uid = _run_universe_id(record)
     if not uid:
         return True
@@ -232,6 +260,8 @@ def _run_write_allowed(record: dict[str, Any]) -> bool:
     caller with write access to that universe; runs with no universe binding are
     not universe-brain state.
     """
+    if _run_is_unreachable_unowned(record):
+        return False
     uid = _run_universe_id(record)
     if not uid:
         return True

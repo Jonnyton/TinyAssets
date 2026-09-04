@@ -43,10 +43,10 @@ _TEST_CONFIG = cd._Config(
 @pytest.fixture(autouse=True)
 def _reset_auth() -> Any:
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
     yield
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
 
 
 @pytest.fixture

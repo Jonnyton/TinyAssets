@@ -62,7 +62,7 @@ class _StaticAuthProvider(AuthProvider):
 
 def _reset_auth() -> None:
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
 
 
 def _authenticate_owner(

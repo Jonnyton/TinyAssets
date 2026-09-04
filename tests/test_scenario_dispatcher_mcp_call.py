@@ -12,13 +12,13 @@ runtime per the Slice 1 design's recommendation.
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from tinyassets.api.market import _action_goal_propose
 from tinyassets.evaluation.scenario_dispatchers.mcp_call import (
     mcp_call_dispatcher,
+)
+from tinyassets.evaluation.scenario_dispatchers.mcp_call import (
     register as register_mcp_call_dispatcher,
 )
 from tinyassets.evaluation.scenario_runner import (

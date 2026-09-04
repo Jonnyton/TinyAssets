@@ -40,14 +40,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tinyassets.credential_vault import (  # noqa: E402
-    load_credential_vault,
-    write_credential_vault,
-)
 from tinyassets.effectors.slack_errors import safe_error_code  # noqa: E402
 from tinyassets.effectors.slack_socket_mode import (  # noqa: E402
     app_id_from_token,
     is_app_token,
+)
+
+from tinyassets.credential_vault import (  # noqa: E402
+    load_credential_vault,
+    write_credential_vault,
 )
 
 AUTH_TEST_URL = "https://slack.com/api/auth.test"

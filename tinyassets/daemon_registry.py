@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets import daemon_server
+from tinyassets.principals import has_named_principal, named_principal
 from tinyassets.storage import DB_FILENAME
 from tinyassets.storage.request_admissions import (
     OPERATOR_CAPABILITY,
@@ -632,7 +633,8 @@ def _authority_scope(
     runtime: dict[str, Any] | None,
     actor_id: str,
 ) -> str:
-    if not actor_id or actor_id == "anonymous":
+    actor_id = named_principal(actor_id)
+    if not actor_id:
         return "none"
     delegated = daemon.get("metadata", {}).get("delegated_hosts", [])
     runtime_delegated = []
@@ -645,7 +647,10 @@ def _authority_scope(
     if (
         actor_id == "host"
         and runtime is not None
-        and runtime.get("created_by") in {"host", "anonymous"}
+        and (
+            runtime.get("created_by") == "host"
+            or not has_named_principal(runtime.get("created_by"))
+        )
     ):
         return "local_host"
     return "none"

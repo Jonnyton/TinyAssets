@@ -158,8 +158,16 @@ def test_the_author_can_mint_for_their_own_branch(env):
     _seed_branch(base, bid="mine", author="founder-a")
     out = _mint(uid_a, "mine")
     assert out.get("token") and out["url"].endswith(out["token"])
+    # The binding also records WHO minted it -- a webhook token is somebody's.
+    # An exact-dict assertion written when nothing owned one would hide that.
+    from tinyassets.api import permissions
+
     binding = webhook_hooks.resolve(base, token=out["token"])
-    assert binding == {"universe_id": uid_a, "branch_def_id": "mine", "source_id": None}
+    assert binding["universe_id"] == uid_a
+    assert binding["branch_def_id"] == "mine"
+    assert binding["source_id"] is None
+    assert binding["owner_principal_id"] == permissions.current_actor_id()
+    assert binding["owner_principal_id"], "a token minted by nobody"
 
 
 # ── Source ops end-to-end (owner-scoped, run_graph-reachable) ────────────────────
@@ -380,15 +388,28 @@ def test_concurrent_requests_never_overshoot_the_inflight_cap(env, monkeypatch):
     enqueued = {"n": 0}
     statuses: list[int] = []
 
-    def _blocking_enqueue(b, *, universe_id, branch_def_id, inputs):
+    def _blocking_enqueue(b, *, universe_id, branch_def_id, inputs, principal_id):
         with lock:
             enqueued["n"] += 1
         gate.wait(timeout=5)               # hold the reserved slot until released below
         return "run-x"
 
+    # A worker thread starts with an EMPTY context: contextvars do not cross a
+    # `threading.Thread` boundary, so the bound identity is not there and every
+    # request refuses before it can reserve a slot. In production the ASGI
+    # middleware binds per request on whatever thread serves it, so each firing
+    # thread binds the same caller here -- one Context cannot be shared, since
+    # `Context.run` refuses to be entered twice at once.
+    from tinyassets.auth import middleware as _mw
+
+    caller = _mw.current_identity_or_none()
+
+
     def _fire(i):
+        _mw._current_identity.set(caller)
         st, _ = wh.handle_hook(token=token, body=f'{{"i":{i}}}'.encode(),
-                               headers={}, base_path=base, enqueue=_blocking_enqueue)
+                               headers={}, base_path=base,
+                               enqueue=_blocking_enqueue)
         with lock:
             statuses.append(st)
 
@@ -406,7 +427,9 @@ def test_concurrent_requests_never_overshoot_the_inflight_cap(env, monkeypatch):
             break
         _time.sleep(0.01)
     with lock:
-        assert enqueued["n"] == 4 and statuses.count(503) == 6   # never overshot the cap
+        assert enqueued["n"] == 4 and statuses.count(503) == 6, (
+            f"enqueued={enqueued['n']} statuses={sorted(statuses)}"
+        )
     gate.set()
     for t in threads:
         t.join()
@@ -457,11 +480,22 @@ def test_every_non_deliverable_state_answers_404(env, monkeypatch):
     # a source hook whose event bus is off -> 404 (NOT 500), and no run
     from tinyassets.scheduler import shutdown_scheduler
     shutdown_scheduler()
-    src_token = webhook_hooks.mint(base, universe_id=uid, branch_def_id="b", source_id="s1")
+    src_token = webhook_hooks.mint(
+        base,
+        universe_id=uid,
+        branch_def_id="b",
+        source_id="s1",
+        owner_principal_id="owner-test",
+    )
     assert wh.handle_hook(token=src_token, body=b"{}", headers={}, base_path=base)[0] == 404
 
     # a valid token whose branch has vanished -> 404 (uniform), not 500
-    plain = webhook_hooks.mint(base, universe_id=uid, branch_def_id="ghost-branch")
+    plain = webhook_hooks.mint(
+        base,
+        universe_id=uid,
+        branch_def_id="ghost-branch",
+        owner_principal_id="owner-test",
+    )
     assert wh.handle_hook(token=plain, body=b"{}", headers={}, base_path=base)[0] == 404
     assert _runs_for_universe(base, uid) == []
 

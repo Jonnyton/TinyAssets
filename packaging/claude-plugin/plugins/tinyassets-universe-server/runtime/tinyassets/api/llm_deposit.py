@@ -132,8 +132,10 @@ def connect_llm(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     # 1. Server-derived authenticated principal. No env fallback (permissions.py).
     if not permissions.is_authenticated_request():
         return {"error": "authentication_required", "resource": "connection"}
-    actor = permissions.current_actor_id().strip()
-    if not actor or actor == "anonymous":
+    from tinyassets.principals import named_principal
+
+    actor = named_principal(permissions.current_actor_id())
+    if not actor:
         return {"error": "authentication_required", "resource": "connection"}
 
     # 2. Resolve the target universe and require the explicit `admin` ACL row.

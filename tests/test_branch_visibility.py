@@ -23,12 +23,39 @@ from typing import Callable
 import pytest
 
 
+def _become(user_id: str) -> None:
+    """Sign in as ``user_id``.
+
+    These tests used to set ``UNIVERSE_SERVER_USER`` and reload the module,
+    which named the actor by environment variable -- authority from a string
+    anybody can set. The autouse operator fixture rebinds between tests, so
+    this does not leak.
+    """
+    from tinyassets.auth import middleware as _mw
+    from tinyassets.auth.provider import Identity
+
+    _mw._current_identity.set(
+        Identity(
+            user_id=user_id,
+            username=user_id,
+            display_name=user_id,
+            capabilities=[
+                "tinyassets.universe.read",
+                "tinyassets.universe.write",
+                "tinyassets.universe.admin",
+                "tinyassets.extensions.read",
+                "tinyassets.extensions.write",
+            ],
+        )
+    )
+
+
 @pytest.fixture
 def base_path(tmp_path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    _become("alice")
     monkeypatch.setenv("TINYASSETS_GATES_ENABLED", "1")
     from tinyassets.daemon_server import initialize_author_server
     initialize_author_server(base)
@@ -225,7 +252,7 @@ def test_list_claims_hides_private_branch_from_non_owner(
 ):
     gid = _seed_claims_for_filter_tests(base_path)
     # Alice looks (non-owner of the private Branch).
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    _become("alice")
     from tinyassets.api import branches as br
     from tinyassets.api import market as mkt
     importlib.reload(mkt)
@@ -240,7 +267,7 @@ def test_list_claims_hides_private_branch_from_non_owner(
 
 def test_list_claims_shows_own_private_to_owner(base_path, monkeypatch):
     gid = _seed_claims_for_filter_tests(base_path)
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "bob")
+    _become("bob")
     from tinyassets.api import branches as br
     from tinyassets.api import market as mkt
     importlib.reload(mkt)
@@ -256,7 +283,7 @@ def test_leaderboard_hides_private_branch_from_non_owner(
     base_path, monkeypatch,
 ):
     gid = _seed_claims_for_filter_tests(base_path)
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    _become("alice")
     from tinyassets.api import branches as br
     from tinyassets.api import market as mkt
     importlib.reload(mkt)
@@ -270,7 +297,7 @@ def test_leaderboard_hides_private_branch_from_non_owner(
 
 def test_leaderboard_shows_own_private_to_owner(base_path, monkeypatch):
     gid = _seed_claims_for_filter_tests(base_path)
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "bob")
+    _become("bob")
     from tinyassets.api import branches as br
     from tinyassets.api import market as mkt
     importlib.reload(mkt)
@@ -326,7 +353,7 @@ def test_private_branch_on_public_goal_is_visible_to_owner(
     )
 
     # Bob owns it — sees his claim on the public leaderboard.
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "bob")
+    _become("bob")
     from tinyassets.api import branches as br
     from tinyassets.api import market as mkt
     importlib.reload(mkt)
@@ -335,7 +362,7 @@ def test_private_branch_on_public_goal_is_visible_to_owner(
     assert any(e["branch_def_id"] == "b-secret" for e in r["entries"])
 
     # Alice doesn't own it — doesn't see it, even though the Goal is public.
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    _become("alice")
     importlib.reload(mkt)
     importlib.reload(br)
     r2 = json.loads(mkt._action_gates_leaderboard({"goal_id": "g-public"}))
@@ -350,7 +377,7 @@ def test_branch_create_accepts_visibility(
     monkeypatch,
     authenticate_request: Callable[[str | None], None],
 ):
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    _become("alice")
     authenticate_request("alice")
     from tinyassets.api import branches as br
     from tinyassets.api import market as mkt
@@ -380,7 +407,7 @@ def test_branch_get_hides_private_from_non_owner(
     )
 
     # Alice probes for it.
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    _become("alice")
     authenticate_request("alice")
     from tinyassets.api import branches as br
     from tinyassets.api import market as mkt
@@ -392,7 +419,7 @@ def test_branch_get_hides_private_from_non_owner(
     assert "not found" in result["error"]
 
     # Bob can see it.
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "bob")
+    _become("bob")
     authenticate_request("bob")
     importlib.reload(mkt)
     importlib.reload(br)
@@ -443,7 +470,7 @@ def test_goal_get_hides_private_branch_from_non_owner(
     )
 
     # Alice (non-owner of the private branch) hits goals.get.
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    _become("alice")
     from tinyassets.api import branches as br
     from tinyassets.api import market as mkt
     importlib.reload(mkt)
@@ -456,7 +483,7 @@ def test_goal_get_hides_private_branch_from_non_owner(
     )
 
     # Bob (owner of the private branch) hits goals.get — sees both.
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "bob")
+    _become("bob")
     importlib.reload(mkt)
     importlib.reload(br)
     result = json.loads(mkt._action_goal_get({"goal_id": goal_saved["goal_id"]}))
@@ -511,7 +538,7 @@ def test_goal_common_nodes_hides_private_branch_from_non_owner(
     )
 
     # Alice asks. min_branches=1 so a single contributor surfaces.
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    _become("alice")
     from tinyassets.api import branches as br
     from tinyassets.api import market as mkt
     importlib.reload(mkt)
@@ -533,7 +560,7 @@ def test_goal_common_nodes_hides_private_branch_from_non_owner(
     )
 
     # Bob sees both contributions.
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "bob")
+    _become("bob")
     importlib.reload(mkt)
     importlib.reload(br)
     result = json.loads(mkt._action_goal_common_nodes({

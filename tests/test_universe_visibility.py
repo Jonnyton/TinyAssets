@@ -80,15 +80,23 @@ def wiki_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture(autouse=True)
 def _reset_auth() -> None:
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
     yield
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
 
 
 def _anonymous() -> None:
-    set_provider(DevAuthProvider())
-    auth_middleware(None)
+    """Nobody bound at all, which is what an unauthenticated request is.
+
+    Installing the dev provider and resolving "dev" produces a REAL signed-in
+    identity (the local operator), so this used to drive an authenticated
+    caller and assert a refusal that could not happen -- the test passed only
+    while `current_actor_id()` answered "" for that identity.
+    """
+    from tinyassets.auth.middleware import clear_identity
+
+    clear_identity()
 
 
 def _authenticate(user_id: str) -> None:
@@ -358,10 +366,17 @@ class TestEnumerationGate:
 # --------------------------------------------------------------------------- #
 # 6. Metadata gate (get_status + inspect) + blank-id name leak
 # --------------------------------------------------------------------------- #
+def test_nobody_bound_cannot_read_any_status(base):
+    _make_universe(base, "descr", level="metadata_only")
+    _anonymous()
+    with pytest.raises(PermissionError, match="Authentication required"):
+        status_mod.get_status("descr")
+
+
 class TestMetadataGate:
     def test_metadata_only_allows_status(self, base):
         _make_universe(base, "descr", level="metadata_only")
-        _anonymous()
+        _authenticate("stranger")  # a signed-in reader who is not the owner
         assert json.loads(status_mod.get_status("descr")).get("error") != (
             "universe_access_denied"
         )
@@ -374,8 +389,8 @@ class TestMetadataGate:
 
     def test_nonexistent_universe_status_is_diagnostic_not_denied(self, base):
         # A universe that does not exist has no metadata to protect; the
-        # not-found diagnostic stays ungated.
-        _anonymous()
+        # not-found diagnostic stays ungated for any signed-in reader.
+        _authenticate("stranger")
         out = json.loads(status_mod.get_status("does-not-exist"))
         assert out.get("error") != "universe_access_denied"
 

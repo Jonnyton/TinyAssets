@@ -58,6 +58,32 @@ def _init_git_repo(repo: Path) -> None:
     )
 
 
+def _become(user_id: str) -> None:
+    """Sign in as ``user_id``.
+
+    These tests used to set ``UNIVERSE_SERVER_USER``, which named the actor by
+    environment variable -- authority from a string anybody can set. The
+    autouse operator fixture rebinds between tests, so this does not leak.
+    """
+    from tinyassets.auth import middleware as _mw
+    from tinyassets.auth.provider import Identity
+
+    _mw._current_identity.set(
+        Identity(
+            user_id=user_id,
+            username=user_id,
+            display_name=user_id,
+            capabilities=[
+                "tinyassets.universe.read",
+                "tinyassets.universe.write",
+                "tinyassets.universe.admin",
+                "tinyassets.extensions.read",
+                "tinyassets.extensions.write",
+            ],
+        )
+    )
+
+
 @pytest.fixture
 def cached_gates_env(tmp_path, monkeypatch, authenticate_request):
     """A temp git repo with GATES_ENABLED + sqlite_cached backend."""
@@ -68,7 +94,7 @@ def cached_gates_env(tmp_path, monkeypatch, authenticate_request):
     base.mkdir()
     monkeypatch.chdir(repo)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    _become("alice")
     monkeypatch.setenv("GATES_ENABLED", "1")
     monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite_cached")
     # Branch mutation requires a credential-derived subject. Without one the

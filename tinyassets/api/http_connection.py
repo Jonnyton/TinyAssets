@@ -374,8 +374,10 @@ def connect_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     # 1. Server-derived authenticated principal (no env fallback).
     if not permissions.is_authenticated_request():
         return {"error": "authentication_required", "resource": "connection"}
-    actor = permissions.current_actor_id().strip()
-    if not actor or actor == "anonymous":
+    from tinyassets.principals import named_principal
+
+    actor = named_principal(permissions.current_actor_id())
+    if not actor:
         return {"error": "authentication_required", "resource": "connection"}
 
     # 2. Resolve universe; require an explicit admin ACL row for THIS actor on
@@ -772,8 +774,10 @@ def remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     # least as sensitive as depositing one.
     if not permissions.is_authenticated_request():
         return {"error": "authentication_required", "resource": "connection"}
-    actor = permissions.current_actor_id().strip()
-    if not actor or actor == "anonymous":
+    from tinyassets.principals import named_principal
+
+    actor = named_principal(permissions.current_actor_id())
+    if not actor:
         return {"error": "authentication_required", "resource": "connection"}
 
     uid = _request_universe(universe_id)
@@ -914,8 +918,10 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
 
     if not permissions.is_authenticated_request():
         return {"error": "authentication_required", "resource": "connection"}
-    actor = permissions.current_actor_id().strip()
-    if not actor or actor == "anonymous":
+    from tinyassets.principals import named_principal
+
+    actor = named_principal(permissions.current_actor_id())
+    if not actor:
         return {"error": "authentication_required", "resource": "connection"}
 
     uid = _request_universe(universe_id)
@@ -1254,8 +1260,10 @@ def preview_extend_http(*, universe_id: str = "", payload: Any = None) -> dict[s
 
     if not permissions.is_authenticated_request():
         return {"error": "authentication_required", "resource": "connection"}
-    actor = permissions.current_actor_id().strip()
-    if not actor or actor == "anonymous":
+    from tinyassets.principals import named_principal
+
+    actor = named_principal(permissions.current_actor_id())
+    if not actor:
         return {"error": "authentication_required", "resource": "connection"}
     uid = _request_universe(universe_id)
     base = _base_path()

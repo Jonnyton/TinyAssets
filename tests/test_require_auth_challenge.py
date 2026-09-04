@@ -1,13 +1,17 @@
-"""Require-auth challenge: a MISSING token on the MCP endpoint returns a 401
-WWW-Authenticate challenge when the provider opts in (WORKOS_REQUIRE_AUTH), so
-MCP clients (which only start OAuth on a 401) actually prompt the founder to
-sign in — otherwise the connector connects anonymously and first-contact never
-fires. Discovery routes stay public so the client can find the AS.
+"""The MCP endpoint challenges a missing bearer, always.
+
+Until 2026-09-02 the challenge was a provider OPTION (``WORKOS_REQUIRE_AUTH``):
+without it the connector connected anonymously and first-contact never fired.
+There is no anonymous principal now, so challenging is the transport's rule
+and no provider can opt out of it. Discovery routes and the other exempt
+paths (the D3 table in ``openspec/changes/no-anonymous-principal/design.md``)
+keep their own named authentication.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import pytest
@@ -23,11 +27,12 @@ from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
 _SUBJECT = Identity(user_id="founder-1", username="founder-1", capabilities=["read", "write"])
 
 
-class _ChallengeProvider(AuthProvider):
-    """Resolve-always provider that opts into the missing-token challenge."""
+class _ResolveAlwaysProvider(AuthProvider):
+    """A resolve-always provider. ``opt_out`` mimics the retired
+    ``challenge_unauthenticated() -> False`` option: the transport ignores it."""
 
-    def __init__(self, *, challenge: bool) -> None:
-        self._challenge = challenge
+    def __init__(self, *, opt_out: bool = False) -> None:
+        self._opt_out = opt_out
 
     def resolve_token(self, token: str) -> Identity | None:
         return _SUBJECT if token == "valid" else None
@@ -38,8 +43,8 @@ class _ChallengeProvider(AuthProvider):
     def resolve_always_writes(self) -> bool:
         return True
 
-    def challenge_unauthenticated(self) -> bool:
-        return self._challenge
+    def challenge_unauthenticated(self) -> bool:  # retired hook, deliberately kept here
+        return not self._opt_out
 
     def register_client(self, metadata: dict[str, Any]) -> dict[str, Any]:
         return {"client_id": "t", **metadata}
@@ -54,13 +59,19 @@ class _ChallengeProvider(AuthProvider):
 @pytest.fixture(autouse=True)
 def _reset_auth():
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
     yield
     set_provider(DevAuthProvider())
-    auth_middleware(None)
+    auth_middleware("dev")
 
 
-def _drive(path: str, *, token: str | None) -> tuple[list[dict], bool]:
+def _drive(
+    path: str,
+    *,
+    token: str | None,
+    method: str = "POST",
+    body: bytes = b"",
+) -> tuple[list[dict], bool]:
     """Run one request through AuthContextMiddleware; return (sent, app_called)."""
     called = {"hit": False}
 
@@ -74,13 +85,19 @@ def _drive(path: str, *, token: str | None) -> tuple[list[dict], bool]:
     async def _send(msg):  # noqa: ANN001, ANN202
         sent.append(msg)
 
+    delivered = False
+
     async def _receive():  # noqa: ANN202
-        return {"type": "http.request", "body": b""}
+        nonlocal delivered
+        if delivered:
+            return {"type": "http.disconnect"}
+        delivered = True
+        return {"type": "http.request", "body": body}
 
     headers = []
     if token is not None:
         headers.append((b"authorization", f"Bearer {token}".encode("latin1")))
-    scope = {"type": "http", "path": path, "headers": headers}
+    scope = {"type": "http", "method": method, "path": path, "headers": headers}
     asyncio.run(AuthContextMiddleware(_app)(scope, _receive, _send))
     return sent, called["hit"]
 
@@ -97,8 +114,14 @@ def _www_authenticate(sent: list[dict]) -> str:
     return ""
 
 
-def test_missing_token_on_mcp_is_challenged_when_opted_in():
-    set_provider(_ChallengeProvider(challenge=True))
+def _body(sent: list[dict]) -> bytes:
+    return b"".join(
+        m.get("body", b"") for m in sent if m["type"] == "http.response.body"
+    )
+
+
+def test_missing_token_on_mcp_is_challenged():
+    set_provider(_ResolveAlwaysProvider())
     sent, app_called = _drive("/mcp", token=None)
     assert not app_called                       # request never reached the app
     assert _status(sent) == 401
@@ -107,8 +130,19 @@ def test_missing_token_on_mcp_is_challenged_when_opted_in():
     assert "invalid_token" not in wa            # missing != invalid (RFC 6750)
 
 
-def test_discovery_routes_stay_public_under_challenge():
-    set_provider(_ChallengeProvider(challenge=True))
+def test_there_is_no_opt_out_of_the_challenge():
+    set_provider(_ResolveAlwaysProvider(opt_out=True))
+    sent, app_called = _drive("/mcp", token=None)
+    assert not app_called
+    assert _status(sent) == 401
+
+
+def test_the_provider_base_class_has_no_challenge_switch():
+    assert not hasattr(AuthProvider, "challenge_unauthenticated")
+
+
+def test_discovery_routes_stay_public():
+    set_provider(_ResolveAlwaysProvider())
     for path in (
         "/.well-known/oauth-protected-resource",
         "/mcp/.well-known/oauth-protected-resource",
@@ -120,33 +154,127 @@ def test_discovery_routes_stay_public_under_challenge():
 
 
 def test_valid_token_on_mcp_passes_through():
-    set_provider(_ChallengeProvider(challenge=True))
+    set_provider(_ResolveAlwaysProvider())
     sent, app_called = _drive("/mcp", token="valid")
     assert app_called
     assert _status(sent) == 200
 
 
-def test_no_challenge_when_not_opted_in_stays_anonymous():
-    set_provider(_ChallengeProvider(challenge=False))
-    sent, app_called = _drive("/mcp", token=None)
-    assert app_called                           # anonymous read proceeds
-    assert _status(sent) == 200
-
-
-def test_invalid_token_still_challenged_as_invalid():
-    set_provider(_ChallengeProvider(challenge=True))
+def test_invalid_token_is_challenged_as_invalid():
+    set_provider(_ResolveAlwaysProvider())
     sent, app_called = _drive("/mcp", token="bad")
     assert not app_called
     assert _status(sent) == 401
     assert 'error="invalid_token"' in _www_authenticate(sent)
 
 
-def test_auth_challenge_path_targets_mcp_only():
-    assert _auth_challenge_path("/mcp") is True
-    assert _auth_challenge_path("/mcp/") is True
-    assert _auth_challenge_path("/mcp/.well-known/oauth-protected-resource") is False
-    assert _auth_challenge_path("/.well-known/oauth-protected-resource") is False
-    assert _auth_challenge_path("/not-mcp") is False
+def test_cached_hosted_tool_call_gets_linking_challenge_without_dispatch(monkeypatch):
+    monkeypatch.setenv("WORKOS_MCP_RESOURCE", "https://tinyassets.io/mcp")
+    set_provider(_ResolveAlwaysProvider())
+    request = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 42,
+        "method": "tools/call",
+        "params": {"name": "get_status", "arguments": {}},
+    }).encode()
+
+    sent, app_called = _drive("/mcp", token=None, body=request)
+
+    assert not app_called
+    assert _status(sent) == 200
+    payload = json.loads(_body(sent))
+    assert payload["id"] == 42
+    assert payload["result"]["isError"] is True
+    challenges = payload["result"]["_meta"]["mcp/www_authenticate"]
+    assert len(challenges) == 1
+    assert "resource_metadata=\"https://tinyassets.io/mcp/.well-known/" in challenges[0]
+    assert 'error="invalid_token"' in challenges[0]
+    assert "error_description=" in challenges[0]
+
+
+def test_mixed_unauthenticated_batch_stays_on_transport_challenge():
+    set_provider(_ResolveAlwaysProvider())
+    request = json.dumps([
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+    ]).encode()
+
+    sent, app_called = _drive("/mcp", token=None, body=request)
+
+    assert not app_called
+    assert _status(sent) == 401
+
+
+def test_every_advertised_tool_is_oauth_only():
+    from tinyassets.universe_server import mcp
+
+    tools = asyncio.run(mcp.list_tools(run_middleware=True))
+    assert tools
+    expected = [{
+        "type": "oauth2",
+        "scopes": ["openid", "profile", "email", "offline_access"],
+    }]
+    for tool in tools:
+        wire = tool.to_mcp_tool().model_dump(by_alias=True, exclude_none=True)
+        assert wire["securitySchemes"] == expected, tool.name
+        assert wire["_meta"]["securitySchemes"] == expected, tool.name
+        assert all(scheme["type"] != "noauth" for scheme in wire["securitySchemes"])
+
+
+def test_dev_mode_challenges_a_missing_token_too():
+    # Dev mode used to resolve nobody to an anonymous reader. It resolves ANY
+    # bearer to the named operator and still refuses none at all.
+    set_provider(DevAuthProvider(user_id="operator"))
+    sent, app_called = _drive("/mcp", token=None)
+    assert not app_called
+    assert _status(sent) == 401
+    sent, app_called = _drive("/mcp", token="whatever")
+    assert app_called
+    assert _status(sent) == 200
+
+
+@pytest.mark.parametrize(
+    ("path", "challenged"),
+    [
+        ("/mcp", True),
+        ("/mcp/", True),
+        ("/mcp/anything", True),
+        ("/mcp/app", False),                       # the SPA shell loads before sign-in
+        ("/mcp/app/token", False),                 # its PKCE exchange
+        ("/mcp/app/settings", True),               # every other app route needs the bearer
+        ("/mcp/app/billing/webhook", False),       # Stripe-signed
+        ("/mcp/app/billing/checkout", True),
+        ("/mcp/pulse", True),                      # service-principal release facts
+        ("/mcp/pulse/", True),                     # exact path, nothing under it
+        ("/mcp/pulse/extra", True),
+        ("/mcp/.well-known/oauth-protected-resource", False),
+        ("/.well-known/oauth-protected-resource", False),
+        ("/not-mcp", False),
+        ("/", False),
+    ],
+)
+def test_exempt_table_is_exact_paths_not_prefixes(path, challenged, monkeypatch):
+    from tinyassets.auth import middleware as mw
+
+    monkeypatch.setattr(mw, "_inbound_hooks_enabled", lambda: False)
+    monkeypatch.setattr(mw, "connect_deposit_routes_enabled", lambda: False)
+    assert _auth_challenge_path(path) is challenged, path
+
+
+def test_hook_and_connect_routes_are_exempt_only_when_their_feature_is_on(monkeypatch):
+    from tinyassets.auth import middleware as mw
+
+    monkeypatch.setattr(mw, "_inbound_hooks_enabled", lambda: False)
+    monkeypatch.setattr(mw, "connect_deposit_routes_enabled", lambda: False)
+    assert _auth_challenge_path("/mcp/hooks/abc123") is True
+    assert _auth_challenge_path("/mcp/connect/deposit") is True
+
+    monkeypatch.setattr(mw, "_inbound_hooks_enabled", lambda: True)
+    monkeypatch.setattr(mw, "connect_deposit_routes_enabled", lambda: True)
+    assert _auth_challenge_path("/mcp/hooks/abc123") is False
+    assert _auth_challenge_path("/mcp/hooks/abc123/deeper") is True   # one segment only
+    assert _auth_challenge_path("/mcp/hooks/") is True
+    assert _auth_challenge_path("/mcp/connect/deposit") is False
 
 
 def test_challenge_metadata_url_is_routed_in_production(monkeypatch):
@@ -163,7 +291,7 @@ def test_challenge_metadata_url_is_routed_in_production(monkeypatch):
 
 def test_challenge_header_is_exact(monkeypatch):
     monkeypatch.setenv("WORKOS_MCP_RESOURCE", "https://tinyassets.io/mcp")
-    set_provider(_ChallengeProvider(challenge=True))
+    set_provider(_ResolveAlwaysProvider())
     sent, _ = _drive("/mcp", token=None)
     assert _www_authenticate(sent) == (
         'Bearer resource_metadata='
@@ -171,14 +299,15 @@ def test_challenge_header_is_exact(monkeypatch):
     )
 
 
-def test_workos_provider_challenge_respects_env(monkeypatch):
+def test_workos_provider_no_longer_reads_a_require_auth_switch(monkeypatch):
     from tinyassets.auth.workos_provider import WorkOSAuthProvider
 
     monkeypatch.setenv("WORKOS_AUTHKIT_DOMAIN", "example.authkit.app")
     monkeypatch.setenv("WORKOS_ALLOW_NO_AUDIENCE", "1")
-
-    monkeypatch.delenv("WORKOS_REQUIRE_AUTH", raising=False)
-    assert WorkOSAuthProvider.from_env().challenge_unauthenticated() is False
-
-    monkeypatch.setenv("WORKOS_REQUIRE_AUTH", "1")
-    assert WorkOSAuthProvider.from_env().challenge_unauthenticated() is True
+    monkeypatch.setenv("WORKOS_REQUIRE_AUTH", "0")
+    provider = WorkOSAuthProvider.from_env()
+    assert not hasattr(provider, "challenge_unauthenticated")
+    set_provider(provider)
+    sent, app_called = _drive("/mcp", token=None)
+    assert not app_called
+    assert _status(sent) == 401

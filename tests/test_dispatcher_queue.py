@@ -66,6 +66,32 @@ from tinyassets.storage.request_admissions import RequestAdmissionStore
 # ───────────────────────────────────────────────────────────────────────
 
 
+def _become(user_id: str) -> None:
+    """Sign in as ``user_id``.
+
+    These tests used to set ``UNIVERSE_SERVER_USER``, which named the actor by
+    environment variable -- authority from a string anybody can set. The
+    autouse operator fixture rebinds between tests, so this does not leak.
+    """
+    from tinyassets.auth import middleware as _mw
+    from tinyassets.auth.provider import Identity
+
+    _mw._current_identity.set(
+        Identity(
+            user_id=user_id,
+            username=user_id,
+            display_name=user_id,
+            capabilities=[
+                "tinyassets.universe.read",
+                "tinyassets.universe.write",
+                "tinyassets.universe.admin",
+                "tinyassets.extensions.read",
+                "tinyassets.extensions.write",
+            ],
+        )
+    )
+
+
 @pytest.fixture
 def universe_dir(tmp_path: Path) -> Path:
     """A fresh universe directory per test."""
@@ -708,7 +734,7 @@ def test_submit_host_without_grant_queues_user_request(
     server_base, monkeypatch,
 ):
     _, uid = server_base
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "host")
+    _become("host")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
     resp = _call_submit(universe_id=uid, text="do a scene")
     assert "branch_task_id" in resp and resp["branch_task_id"]
@@ -721,7 +747,7 @@ def test_submit_request_as_non_host_queues_user_request(
     server_base, monkeypatch,
 ):
     _, uid = server_base
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    _become("alice")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
     resp = _call_submit(universe_id=uid, text="please write")
     assert resp["branch_task_id"]
@@ -731,7 +757,7 @@ def test_submit_request_as_non_host_queues_user_request(
 
 def test_submit_creates_both_request_and_branch_task(server_base, monkeypatch):
     _, uid = server_base
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    _become("alice")
     _call_submit(universe_id=uid, text="do a scene")
     udir = Path(os.environ["TINYASSETS_DATA_DIR"]) / uid
     # requests.json populated
@@ -744,7 +770,7 @@ def test_submit_creates_both_request_and_branch_task(server_base, monkeypatch):
 
 def test_submit_8kib_cap_still_enforced(server_base, monkeypatch):
     _, uid = server_base
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    _become("alice")
     huge = "x" * (8 * 1024 + 1)
     resp = _call_submit(universe_id=uid, text=huge)
     assert "error" in resp
@@ -754,7 +780,7 @@ def test_submit_host_without_grant_priority_weight_is_rejected(
     server_base, monkeypatch,
 ):
     _, uid = server_base
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "host")
+    _become("host")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
     response = _call_submit(
         universe_id=uid,
@@ -768,7 +794,7 @@ def test_submit_host_without_grant_priority_weight_is_rejected(
 
 def test_submit_non_host_priority_weight_is_rejected(server_base, monkeypatch):
     _, uid = server_base
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    _become("alice")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
     resp = _call_submit(universe_id=uid, text="sneaky", priority_weight=50.0)
     assert resp["error"] == "priority_authorization_required"
@@ -778,7 +804,7 @@ def test_submit_non_host_priority_weight_is_rejected(server_base, monkeypatch):
 
 def test_submit_negative_priority_weight_rejected(server_base, monkeypatch):
     _, uid = server_base
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "host")
+    _become("host")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
     resp = _call_submit(universe_id=uid, text="bad", priority_weight=-10.0)
     assert "error" in resp
@@ -1069,7 +1095,7 @@ def test_invariant_2_cancel_branch_task_preserves_work_target(
     from tinyassets.work_targets import REQUESTS_FILENAME
 
     _, uid = server_base
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    _become("alice")
     _call_submit(universe_id=uid, text="keep this")
     udir = Path(os.environ["TINYASSETS_DATA_DIR"]) / uid
     q_before = read_queue(udir)
@@ -1186,7 +1212,7 @@ def test_invariant_9_positive_priority_never_silently_demotes(
 ):
     """Unauthorized positive priority fails without an ordinary queue row."""
     _, uid = server_base
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    _become("alice")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
     response = _call_submit(
         universe_id=uid,
@@ -1207,9 +1233,9 @@ def test_queue_list_returns_sorted_scored_queue(server_base, monkeypatch):
     from tinyassets.api.universe import _action_queue_list
 
     _, uid = server_base
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    _become("alice")
     _call_submit(universe_id=uid, text="A", request_type="general")
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "host")
+    _become("host")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
     _call_submit(universe_id=uid, text="B", request_type="general")
 
@@ -1645,7 +1671,7 @@ def test_queue_cancel_on_running_task_with_explicit_grant_requests_cancel(
     from tinyassets.branch_tasks import is_task_cancel_requested
 
     _, uid = server_base
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "host")
+    _become("host")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
     monkeypatch.setenv(
         "UNIVERSE_SERVER_CAPABILITIES",
@@ -1677,13 +1703,23 @@ def test_queue_cancel_on_running_task_as_owner_requests_cancel(
     from tinyassets.branch_tasks import is_task_cancel_requested
 
     _, uid = server_base
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "daemon-1")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
+    # Submitted by the fixture's granted requester...
     _call_submit(universe_id=uid, text="A")
     udir = Path(os.environ["TINYASSETS_DATA_DIR"]) / uid
     q = read_queue(udir)
     btid = q[0].branch_task_id
     claim_task(udir, btid, "daemon-1")
+
+    # ...and cancelled by the daemon that claimed it. `server_base` STUBS
+    # `current_identity`, so binding the contextvar is invisible here: the stub
+    # is what has to say who is calling.
+    monkeypatch.setattr(
+        "tinyassets.auth.middleware.current_identity",
+        lambda: Identity(
+            user_id="daemon-1", username="daemon-1", capabilities=["write"],
+        ),
+    )
 
     resp = json.loads(
         _action_queue_cancel(universe_id=uid, branch_task_id=btid),
@@ -1703,7 +1739,7 @@ def test_queue_cancel_on_running_task_unauthorized(
     from tinyassets.api.universe import _action_queue_cancel
 
     _, uid = server_base
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "random-guest")
+    _become("random-guest")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
     _call_submit(universe_id=uid, text="A")
     udir = Path(os.environ["TINYASSETS_DATA_DIR"]) / uid

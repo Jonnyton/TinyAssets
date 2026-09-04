@@ -457,11 +457,9 @@ def _ext_branch_create(kwargs: dict[str, Any]) -> str:
 def _request_branch_actor() -> str | None:
     """Return the credential-validated request subject, never an env actor."""
     from tinyassets.api.permissions import current_request_actor_id
+    from tinyassets.principals import named_principal
 
-    actor = (current_request_actor_id() or "").strip()
-    if not actor or actor == "anonymous":
-        return None
-    return actor
+    return named_principal(current_request_actor_id()) or None
 
 
 #: Recorded when a ledgered action ran without a credential-validated subject.
@@ -470,7 +468,7 @@ def _request_branch_actor() -> str | None:
 #: `UNIVERSE_SERVER_USER`. So passing "" would attribute an unauthenticated
 #: write to whoever the environment happens to name — the env forging identity,
 #: which is the thing `_request_branch_actor` exists to prevent.
-LEDGER_ACTOR_ANONYMOUS = "anonymous"
+LEDGER_ACTOR_UNBOUND = ""
 
 
 def ledger_actor() -> str:
@@ -481,7 +479,10 @@ def ledger_actor() -> str:
     :func:`_request_branch_actor` themselves and reject before mutating; this
     helper is only about attributing a write that is already permitted.
     """
-    return _request_branch_actor() or LEDGER_ACTOR_ANONYMOUS
+    actor = _request_branch_actor()
+    if actor is None:
+        raise PermissionError("authentication required for branch ledger writes")
+    return actor
 
 
 def _branch_not_found_message(selector: str) -> str:
@@ -691,11 +692,7 @@ def _ext_branch_approve_source_code(kwargs: dict[str, Any]) -> str:
     approved_node = next(
         (n for n in persisted.node_defs if n.node_id == nid), target_node,
     )
-    warning = (
-        "approval recorded with anonymous actor; configure authenticated "
-        "host identity before relying on this for shared-host policy"
-        if actor == "anonymous" else ""
-    )
+    warning = ""
     return json.dumps({
         "status": "approved",
         "branch_def_id": bid,
@@ -2127,7 +2124,7 @@ def _apply_node_spec(branch: Any, raw: dict[str, Any]) -> str:
             reasoning_effort=reasoning_effort,
             llm_policy=llm_policy,
             timeout_seconds=timeout_seconds,
-            author=raw.get("author") or _request_branch_actor() or "anonymous",
+            author=raw.get("author") or ledger_actor(),
             approved=approved_arg,
             approved_by=approved_by_arg,
             approved_at=approved_at_arg,
@@ -2533,7 +2530,7 @@ def _staged_branch_from_spec(
         description=spec.get("description") or "",
         domain_id=(spec.get("domain_id") or "").strip() or "workflow",
         goal_id=(spec.get("goal_id") or "").strip(),
-        author=_request_branch_actor() or "anonymous",
+        author=ledger_actor(),
         visibility=visibility,
         tags=list(spec.get("tags") or []),
         skills=[],

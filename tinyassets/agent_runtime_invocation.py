@@ -46,6 +46,7 @@ from tinyassets.execution_subject import (
     ExecutionSubjectKind,
     agent_binding_automation_id,
 )
+from tinyassets.principals import named_principal
 from tinyassets.provider_work_authority import (
     ProviderWorkBinding,
     ProviderWorkBindingResolver,
@@ -641,9 +642,9 @@ class AgentInvocationAdmissionService:
     ) -> LiveProviderWorkBindingDraft:
         binding = _text(agent_binding_id, "agent_binding_id")
         identity = current_identity()
-        owner = (getattr(identity, "user_id", "") or "").strip()
+        owner = named_principal(getattr(identity, "user_id", ""))
         boundary_id = current_request_boundary_id()
-        if not current_bearer_present() or not owner or owner == "anonymous" or boundary_id is None:
+        if not current_bearer_present() or not owner or boundary_id is None:
             raise AgentInvocationAdmissionBlocked(
                 "authentication_required",
                 "a live authenticated request is required",

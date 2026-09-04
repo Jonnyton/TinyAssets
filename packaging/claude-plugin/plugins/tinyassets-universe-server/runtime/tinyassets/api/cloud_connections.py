@@ -30,8 +30,9 @@ def _actor() -> str | None:
 
     if not permissions.is_authenticated_request():
         return None
-    actor = permissions.current_actor_id().strip()
-    return actor if actor and actor != "anonymous" else None
+    from tinyassets.principals import named_principal
+
+    return named_principal(permissions.current_actor_id()) or None
 
 
 def _repository(value: object) -> str:

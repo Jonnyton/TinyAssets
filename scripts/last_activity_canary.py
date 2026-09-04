@@ -1,29 +1,20 @@
 """last_activity_canary — prove node execution is 24/7, not just MCP surface.
 
 Complements ``mcp_public_canary`` (handshake) and ``mcp_tool_canary``
-(tools/list + universe inspect). Those catch "daemon is dark" and "tool
+(tools/list + status read). Those catch "daemon is dark" and "tool
 handler crashed" but NEITHER catches "MCP is green but node execution
 is stalled" — which is exactly the state we saw live on 2026-04-22
 before Task #14 landed the cloud-side worker.
 
 This canary asserts the daemon has done *actual work* within N minutes
-by reading ``daemon.last_activity_at`` from the ``read_graph
-target=graph`` tool result and comparing against ``now - threshold``.
+by reading ``daemon.last_activity_at`` from ``get_status`` and comparing
+against ``now - threshold``.
 
-Why ``read_graph target=graph`` (not ``get_status`` or ``universe``)
---------------------------------------------------------------------
-The task spec said ``get_status.daemon.last_activity_at``, but the
-actual ``get_status`` MCP tool doesn't expose a direct ``daemon``
-block with that field — its surface is oriented toward privacy /
-routing evidence (``active_host``, ``tier_routing_policy``,
-``evidence.activity_log_tail``, etc.). This canary originally read
-the ``universe action=inspect`` fat tool, but since the anonymous
-write gate (#1441) the deprecated fat tools refuse ALL anonymous
-calls — reads included — so an unauthenticated canary must use the
-canonical handle. ``read_graph target=graph`` routes to the same
-``_action_inspect_universe`` payload (``tinyassets/universe_server.py``,
-``read_graph`` target dispatch), so the ``daemon.last_activity_at``
-field and every shape assertion below are unchanged.
+Why ``get_status``
+------------------
+The canary principal cannot read a universe. ``get_status`` exposes the latest
+run-ledger progress time across the platform without granting universe access,
+so liveness remains observable inside the canary's narrow allowlist.
 
 Exit codes (task #15 spec)
 --------------------------
@@ -81,8 +72,17 @@ from _canary_common import (  # noqa: E402
     _extract_structured_tool_payload,
     _extract_tool_text,
     _init_payload,
+    canary_bearer,
+    canary_bearer_for,
 )
 from _canary_common import _post as _post_raw  # noqa: E402
+
+#: "Not specified" -- distinct from an explicit ``None``, which means "this
+#: daemon is pre-cutover, send no bearer". Omitting the argument reads the
+#: configured token WITHOUT a network call, so a direct caller (and every unit
+#: test that drives a helper) behaves as it always did.
+_FROM_ENV: Any = object()
+
 
 DEFAULT_URL = "https://tinyassets.io/mcp"
 DEFAULT_THRESHOLD_MIN = 30
@@ -161,20 +161,25 @@ def fetch_inspect_result(
     timeout: float,
     *,
     post_fn=None,
+    bearer_token: Any = _FROM_ENV,
 ) -> dict[str, Any]:
-    """Full MCP handshake + read_graph target=graph (universe inspect) call.
+    """Full MCP handshake + get_status call.
 
-    Returns the parsed inspect result as a dict (the top-level JSON
-    emitted by ``_action_inspect_universe``). ``post_fn`` is an
-    injection seam for tests.
+    Returns the parsed status result as a dict. ``post_fn`` is an injection
+    seam for tests.
 
     Raises LastActivityError on any failure — handshake failures get
     step_code=4, tool failures get step_code=3.
     """
+    if bearer_token is _FROM_ENV:
+        bearer_token = canary_bearer()
     post = post_fn or _post
 
     # Step 1: initialize. Any failure => exit 4 (handshake).
-    resp, sid = post(url, None, _INIT_PAYLOAD, timeout, step_code=4)
+    resp, sid = post(
+        url, None, _INIT_PAYLOAD, timeout, step_code=4,
+        bearer_token=bearer_token,
+    )
     if resp is None or "result" not in resp:
         raise LastActivityError(
             4, f"initialize returned no result: {resp!r}",
@@ -189,27 +194,30 @@ def fetch_inspect_result(
         )
 
     # Notifications/initialized. Protocol-required but response-less.
-    post(url, sid, _INITIALIZED_NOTIF, timeout, step_code=4)
+    post(
+        url, sid, _INITIALIZED_NOTIF, timeout, step_code=4,
+        bearer_token=bearer_token,
+    )
 
-    # Step 2: tools/call read_graph target=graph (routes to the same
-    # universe-inspect payload; the deprecated `universe` fat tool refuses
-    # anonymous calls since #1441). Failure => exit 3 (daemon responded
-    # but shape's off).
+    # Step 2: get_status is the allowed platform-wide activity source.
     call_payload = {
         "jsonrpc": "2.0", "id": 2,
         "method": "tools/call",
-        "params": {"name": "read_graph", "arguments": {"target": "graph"}},
+        "params": {"name": "get_status", "arguments": {}},
     }
-    resp, _ = post(url, sid, call_payload, timeout, step_code=3)
+    resp, _ = post(
+        url, sid, call_payload, timeout, step_code=3,
+        bearer_token=bearer_token,
+    )
     if resp is None or "result" not in resp:
         raise LastActivityError(
-            3, f"read_graph inspect returned no result: {resp!r}",
+            3, f"get_status returned no result: {resp!r}",
         )
     result = resp["result"]
     if result.get("isError"):
         text = _extract_tool_text(result)[:300]
         raise LastActivityError(
-            3, f"read_graph inspect isError=true: {text!r}",
+            3, f"get_status isError=true: {text!r}",
         )
     structured = _extract_structured_tool_payload(result)
     if structured is not None:
@@ -217,14 +225,19 @@ def fetch_inspect_result(
     text = _extract_tool_text(result)
     if not text:
         raise LastActivityError(
-            3, f"read_graph inspect returned no text content: {result!r}",
+            3, f"get_status returned no text content: {result!r}",
         )
     try:
-        return json.loads(text)
+        payload = json.loads(text)
     except json.JSONDecodeError as exc:
         raise LastActivityError(
-            3, f"read_graph inspect text not JSON: {exc}; preview={text[:200]!r}",
+            3, f"get_status text not JSON: {exc}; preview={text[:200]!r}",
         ) from exc
+    if not isinstance(payload, dict):
+        raise LastActivityError(
+            3, f"get_status payload is not an object: {type(payload).__name__}",
+        )
+    return payload
 
 
 def run_canary(
@@ -235,55 +248,47 @@ def run_canary(
     post_fn=None,
     now: _dt.datetime | None = None,
     verbose: bool = False,
+    bearer_token: Any = _FROM_ENV,
 ) -> tuple[int, str]:
     """Full canary flow. Returns (exit_code, human_message).
 
     ``now`` and ``post_fn`` are test seams — default to real time + real
     HTTP when unset.
 
-    Paused-daemon exemption: when ``daemon.is_paused`` is True or
-    ``daemon.staleness`` is ``'idle'``, the freshness check is skipped
-    and FRESH is returned with a ``(paused)`` annotation. A daemon that
-    is intentionally paused via the host's ``.pause`` signal is not
-    stale — the MCP surface is live, node execution is intentionally
-    suspended (host directive 2026-04-24). Only resume the freshness
-    gate when the daemon is unpaused.
+    The status surface intentionally exposes only the platform-wide timestamp;
+    universe phase and pause state are outside this principal's authority.
     """
+    if bearer_token is _FROM_ENV:
+        bearer_token = canary_bearer()
     current_now = now or _dt.datetime.now(tz=_dt.timezone.utc)
-    inspect = fetch_inspect_result(url, timeout, post_fn=post_fn)
+    inspect = fetch_inspect_result(
+        url, timeout, post_fn=post_fn, bearer_token=bearer_token,
+    )
 
     daemon = inspect.get("daemon")
     if not isinstance(daemon, dict):
         return 3, (
-            "inspect result has no daemon block; "
+            "get_status result has no daemon block; "
             f"top-level keys: {sorted(inspect.keys())}"
         )
 
-    staleness = daemon.get("staleness", "")
-    is_paused = bool(daemon.get("is_paused", False))
-
     if verbose:
-        print(f"[last-activity] universe_id={inspect.get('universe_id')} "
-              f"phase={daemon.get('phase')} staleness={staleness} "
-              f"is_paused={is_paused}")
-
-    if is_paused or staleness == "idle":
-        reason = "paused" if is_paused else "idle"
-        return 0, (
-            f"FRESH (paused/{reason}): daemon is intentionally "
-            f"{'paused via .pause signal' if is_paused else 'idle — no active work queued'}; "
-            f"last_activity_at={daemon.get('last_activity_at')!r} "
-            f"(freshness gate suspended while {reason})"
+        print(
+            f"[last-activity] last_activity_at={daemon.get('last_activity_at')!r}"
         )
 
-    # Worker-liveness preference (daemon-liveness-watchdog spec): the
-    # supervisor heartbeat distinguishes the two states content-activity
-    # mtimes conflate. A dead/stale beat is a wedge — page with that as
-    # the reason instead of the vaguer "activity stale". A live beat
-    # with no queued work is healthy idleness — don't page just because
-    # nothing has needed doing lately. A live beat with work present
-    # falls through to the freshness gate (the daemon should be making
-    # progress, and last_activity measures exactly that).
+    # The supervisor heartbeat distinguishes the two states content-activity
+    # mtimes conflate. A dead or stale beat is a WEDGE -- page with that as the
+    # reason instead of the vaguer "activity stale". A live beat with no queued
+    # work is healthy idleness. A live beat with work present falls through to
+    # the freshness gate, because the daemon should be making progress and
+    # last_activity measures exactly that.
+    #
+    # This lived here before the probe moved from `read_graph target=graph` to
+    # `get_status`, and moving it carried `last_activity_at` across while
+    # leaving this behind -- so on a quiet platform a wedged worker read as
+    # healthy, which is the one state this canary exists to catch. `get_status`
+    # carries a platform-wide summary now (the WORST worker on the daemon).
     liveness = daemon.get("worker_liveness")
     if isinstance(liveness, dict) and liveness.get("present"):
         alive = liveness.get("alive")
@@ -293,7 +298,7 @@ def run_canary(
                 f"{liveness.get('beat_age_s')}s old "
                 f"(phase={liveness.get('phase')!r}, "
                 f"consec_crashes={liveness.get('consec_crashes')}); "
-                "worker is wedged or dead — restart the worker container"
+                "worker is wedged or dead - restart the worker container"
             )
         if alive is True and not daemon.get("has_work", False):
             return 0, (
@@ -324,11 +329,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--verbose", action="store_true",
                     help="Print one-line summary + diagnostic fields.")
     args = ap.parse_args(argv)
+    # Which contract does THIS daemon keep? Asked once, after the URL is
+    # known, so one run never mixes the pre- and post-cutover shapes.
+    bearer = canary_bearer_for(args.url, "last-activity", args.timeout)
 
     try:
         code, msg = run_canary(
             args.url, args.timeout, args.threshold_min,
             verbose=args.verbose,
+            bearer_token=bearer,
         )
     except LastActivityError as exc:
         print(f"[last-activity] FAIL (exit {exc.code}): {exc.msg}",

@@ -134,8 +134,10 @@ def _owner_gate(universe_id: str):
     unauth = {"error": "authentication_required", "resource": "pending_request"}
     if not permissions.is_authenticated_request():
         return None, None, unauth
-    actor = permissions.current_actor_id().strip()
-    if not actor or actor == "anonymous":
+    from tinyassets.principals import named_principal
+
+    actor = named_principal(permissions.current_actor_id())
+    if not actor:
         return None, None, unauth
     uid = _request_universe(universe_id)
     admin = [

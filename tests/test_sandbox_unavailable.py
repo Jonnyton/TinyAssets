@@ -368,20 +368,28 @@ class TestExtBranchListSandboxFilter:
 # ---------------------------------------------------------------------------
 
 class TestGetStatusSandboxStatus:
-    def test_sandbox_status_key_present(self):
+    """These read the FULL status shape, which needs a universe to report on.
+
+    They used to get it by being nobody: an unauthenticated caller fell through
+    to the single-tenant default universe. A signed-in founder with no home
+    gets the short "no universe bound to this account yet" shape, which is
+    correct and carries no sandbox block -- so the tests bind a home.
+    """
+
+    def test_sandbox_status_key_present(self, founder_home):
         from tinyassets.universe_server import get_status
         fake_status = {"bwrap_available": False, "reason": "test host"}
         with patch("tinyassets.providers.base.get_sandbox_status", return_value=fake_status):
             result = json.loads(get_status())
-        assert "sandbox_status" in result
+        assert "sandbox_status" in result, result
         assert result["sandbox_status"]["bwrap_available"] is False
 
-    def test_sandbox_status_survives_probe_exception(self):
+    def test_sandbox_status_survives_probe_exception(self, founder_home):
         from tinyassets.universe_server import get_status
         _target = "tinyassets.providers.base.get_sandbox_status"
         with patch(_target, side_effect=RuntimeError("probe fail")):
             result = json.loads(get_status())
-        assert "sandbox_status" in result
+        assert "sandbox_status" in result, result
         assert result["sandbox_status"]["bwrap_available"] is False
 
 

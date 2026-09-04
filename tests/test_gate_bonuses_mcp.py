@@ -71,7 +71,17 @@ def _gates(monkeypatch, tmp_path, *, user: str = "test_user", host_user: str | N
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("GATES_ENABLED", "1")
     monkeypatch.setenv("TINYASSETS_PAID_MARKET", "on")
+    # An environment variable no longer names a principal (founder,
+    # 2026-09-02): the actor is the bound identity, so the test signs the
+    # staker in rather than exporting their name.
+    from tinyassets.auth import middleware as _mw
+    from tinyassets.auth.provider import Identity as _Identity
+
     monkeypatch.setenv("UNIVERSE_SERVER_USER", user)
+    _mw._current_identity.set(_Identity(
+        user_id=user, username=user,
+        capabilities=["read", "write", "list", "costly", "submit_request", "admin"],
+    ))
     if host_user is not None:
         monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", host_user)
     from tinyassets.universe_server import gates
@@ -244,8 +254,19 @@ class TestUnstakeBonus:
                claim_id=claim_id,
                bonus_stake=500,
                node_id="n1")
-        monkeypatch.setenv("UNIVERSE_SERVER_USER", "other_user")
+        # A DIFFERENT signed-in actor. Setting the env var used to switch who
+        # the caller was; it names nobody now, so the test binds the other
+        # principal -- which is what makes this assert an authority boundary
+        # rather than an env read.
+        from tinyassets.auth import middleware as _mw
+        from tinyassets.auth.provider import Identity as _Identity
         from tinyassets.universe_server import gates
+
+        monkeypatch.setenv("UNIVERSE_SERVER_USER", "other_user")
+        _mw._current_identity.set(_Identity(
+            user_id="other_user", username="other_user",
+            capabilities=["read", "write", "list", "costly", "submit_request"],
+        ))
         result = json.loads(gates(action="unstake_bonus", claim_id=claim_id))
         assert result["status"] == "rejected"
         assert "not authorized" in result["error"].lower()

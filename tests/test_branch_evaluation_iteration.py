@@ -549,7 +549,7 @@ def test_run_branch_resume_from_cross_actor_returns_error(p4_env):
                        resume_from=a_run["run_id"])
     finally:
         set_provider(DevAuthProvider())
-        auth_middleware(None)
+        auth_middleware("dev")
 
     assert "error" in result
     assert "not visible" in result["error"]
