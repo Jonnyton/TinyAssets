@@ -11,9 +11,16 @@ Enabling Realtime voice SHALL NOT enroll, select, replace, or fall back to any p
 
 #### Scenario: Assigned writer lacks a compatible voice capability
 - **GIVEN** a universe whose assigned writer works but whose current provider exposes no compatible realtime capability
-- **WHEN** the founder views or starts Voice
+- **WHEN** the founder starts Voice
 - **THEN** the writer remains selected and typed conversation continues
-- **AND** Voice is unavailable without requesting a second credential or widening to platform compute
+- **AND** the same control opens the existing provider connection or capability-request path and explains that compatible user-owned authority is required
+- **AND** TinyAssets does not request a separate Voice-only credential or widen to platform compute
+
+#### Scenario: Voice sessions are disabled while provider setup remains actionable
+- **GIVEN** the Voice session safety switches are disabled
+- **WHEN** the founder starts Voice without compatible current-provider authority
+- **THEN** TinyAssets discovers the current provider's capability state and opens the existing provider connection or capability-request path when remediation is available
+- **AND** no microphone permission or Voice session request occurs
 
 #### Scenario: Another provider has realtime capability
 - **WHEN** another connection or provider could supply realtime Voice but is not the current serving provider

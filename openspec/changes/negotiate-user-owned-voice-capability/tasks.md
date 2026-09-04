@@ -16,6 +16,8 @@
 
 - [x] 4.1 Make the composer Voice control start immediately when ready, focus the existing unpowered-provider request when no provider serves, and use the existing connection/request surface for a powered provider's capability gap; remove the separate Voice unlock modal.
 - [x] 4.2 Extend deterministic browser tests for the complete ready/unpowered/remediable-incompatible/unremediable-incompatible/disabled/start state machine, disclosure invalidation, and bounded mid-session revocation teardown, with no microphone or network request before readiness.
+- [x] 4.3 Keep current-provider capability discovery and the existing provider-connection remediation reachable from the Voice control while Voice session gates are off; preserve the closed session endpoint.
+- [x] 4.4 Prove an unsupported subscription binding opens the existing connection surface without requesting microphone access or starting a Voice session.
 
 ## 5. Durable truth and delivery
 

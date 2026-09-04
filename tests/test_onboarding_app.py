@@ -631,7 +631,13 @@ def _run_voice_adapter(tmp_path) -> dict:
     assert labels and transitions and voice
     functions = "\n".join(
         _js_function(html, name)
-        for name in ("voiceNextState", "voiceNormalize", "voiceDisclosureKey", "voiceFriendlyError")
+        for name in (
+            "voiceNextState",
+            "voiceNormalize",
+            "voiceDisclosureKey",
+            "voiceFriendlyError",
+            "voiceConnectionGuidance",
+        )
     )
     shim = r"""
 const CFG={voice:{enabled:true,disclosure_version:1,max_session_seconds:1800}};
@@ -661,7 +667,7 @@ let voiceTurnImpl=async()=>"Exact universe reply.";
 async function sendVoiceTurn(message){turns.push(message);return await voiceTurnImpl(message);}
 async function ensureFreshToken(){} async function refreshAccessToken(){return false;}
 function authHeaders(){return {Authorization:"Bearer app"};} async function sleep(){}
-let connectCalls=[]; function showConnect(asGate){connectCalls.push(asGate);}
+let connectCalls=[]; function showConnect(asGate,guidance){connectCalls.push({asGate,guidance});}
 """
     scenario = r"""
 (async()=>{
@@ -675,13 +681,24 @@ let connectCalls=[]; function showConnect(asGate){connectCalls.push(asGate);}
   await Voice.refreshCapability();await Voice.requestStart();
   out.remediableIncompatible={state:Voice.state,disabled:els["btn-voice"].disabled,
     mediaRequests,connectCalls:connectCalls.slice(),status};
-  capabilityDoc={available:false,state:"incompatible",reason:"provider_voice_unsupported",
+  capabilityDoc={available:false,state:"unpowered",reason:"no_home_universe",
     remediation:"none"};connectCalls=[];
   await Voice.refreshCapability();await Voice.requestStart();
   out.unremediableIncompatible={state:Voice.state,disabled:els["btn-voice"].disabled,
     mediaRequests,connectCalls:connectCalls.slice(),status};
-  CFG.voice.enabled=false;Voice.init();await Voice.requestStart();
-  out.disabled={state:Voice.state,disabled:els["btn-voice"].disabled,mediaRequests};
+  capabilityDoc={available:false,state:"incompatible",reason:"provider_voice_unsupported",
+    remediation:"existing_connection_surface"};connectCalls=[];
+  CFG.voice.enabled=false;Voice.init();await Voice.refreshCapability();await Voice.requestStart();
+  out.unsupportedWhileSessionFlagsOff={state:Voice.state,
+    disabled:els["btn-voice"].disabled,mediaRequests,
+    connectCalls:connectCalls.slice(),status};
+  capabilityDoc={available:false,state:"disabled",reason:"voice_disabled",
+    remediation:"none"};connectCalls=[];
+  Voice.init();await Voice.refreshCapability();await Voice.requestStart();
+  out.compatibleWhileSessionFlagsOff={state:Voice.state,
+    disabled:els["btn-voice"].disabled,mediaRequests,
+    connectCalls:connectCalls.slice(),status,
+    disclosureShown:!els["voice-disclosure"].hidden};
   CFG.voice.enabled=true;
   const realEnsureFreshToken=ensureFreshToken,fetchesBeforeDeadline=fetched.length;
   ensureFreshToken=()=>new Promise(()=>{});
@@ -690,6 +707,12 @@ let connectCalls=[]; function showConnect(asGate){connectCalls.push(asGate);}
   out.authorityDeadline={result:await deadlineResult,
     fetches:fetched.length-fetchesBeforeDeadline};
   ensureFreshToken=realEnsureFreshToken;
+  capabilityDoc={available:false,state:"unpowered",reason:"provider_not_configured",
+    remediation:"existing_connection_surface"};connectCalls=[];
+  Voice.capability=null;Voice.state="checking";Voice._render();
+  await Voice.requestStart();
+  out.checkingRetry={state:Voice.state,disabled:els["btn-voice"].disabled,
+    mediaRequests,connectCalls:connectCalls.slice()};
   capabilityDoc={available:true,state:"ready",resource:"user_bound_voice_connection",
     remediation:"none",
     disclosure_id:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -896,24 +919,81 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
     assert out["unpowered"]["mediaRequests"] == 0
     assert set(out["unpowered"]["fetched"]) == {"/mcp/app/voice/status"}
     assert "provider connection" in out["unpowered"]["status"]
-    assert out["unpowered"]["connectCalls"] == [True]
+    assert out["unpowered"]["connectCalls"] == [
+        {
+            "asGate": True,
+            "guidance": (
+                "Voice needs a realtime-capable provider connection that you authorize "
+                "for this universe. Connect the provider your universe should use; "
+                "TinyAssets will not supply a platform credential."
+            ),
+        }
+    ]
     assert out["remediableIncompatible"]["state"] == "incompatible"
     assert out["remediableIncompatible"]["disabled"] is False
     assert out["remediableIncompatible"]["mediaRequests"] == 0
-    assert out["remediableIncompatible"]["connectCalls"] == [False]
-    assert out["unremediableIncompatible"]["state"] == "incompatible"
+    assert out["remediableIncompatible"]["connectCalls"] == [
+        {
+            "asGate": False,
+            "guidance": (
+                "Your current provider still powers typed conversation, but it does not "
+                "provide compatible realtime Voice authority. Connect and select a "
+                "realtime-capable provider connection you authorize; TinyAssets will not "
+                "switch providers automatically."
+            ),
+        }
+    ]
+    assert out["unremediableIncompatible"]["state"] == "unpowered"
     assert out["unremediableIncompatible"]["disabled"] is True
     assert out["unremediableIncompatible"]["mediaRequests"] == 0
     assert out["unremediableIncompatible"]["connectCalls"] == []
-    assert "does not expose" in out["unremediableIncompatible"]["status"]
-    assert out["disabled"] == {
+    assert "typed message first" in out["unremediableIncompatible"]["status"]
+    assert out["unsupportedWhileSessionFlagsOff"] == {
+        "state": "incompatible",
+        "disabled": False,
+        "mediaRequests": 0,
+        "connectCalls": [
+            {
+                "asGate": False,
+                "guidance": (
+                    "Your current provider still powers typed conversation, but it does "
+                    "not provide compatible realtime Voice authority. Connect and select "
+                    "a realtime-capable provider connection you authorize; TinyAssets "
+                    "will not switch providers automatically."
+                ),
+            }
+        ],
+        "status": (
+            "Your current provider can power typed conversation but does not expose "
+            "compatible realtime Voice."
+        ),
+    }
+    assert out["compatibleWhileSessionFlagsOff"] == {
         "state": "unavailable",
         "disabled": True,
         "mediaRequests": 0,
+        "connectCalls": [],
+        "status": "Voice is not enabled on this TinyAssets host.",
+        "disclosureShown": False,
     }
     assert out["authorityDeadline"] == {
         "result": "voice_status_timeout",
         "fetches": 0,
+    }
+    assert out["checkingRetry"] == {
+        "state": "unpowered",
+        "disabled": False,
+        "mediaRequests": 0,
+        "connectCalls": [
+            {
+                "asGate": True,
+                "guidance": (
+                    "Voice needs a realtime-capable provider connection that you "
+                    "authorize for this universe. Connect the provider your universe "
+                    "should use; TinyAssets will not supply a platform credential."
+                ),
+            }
+        ],
     }
     assert out["initial"] == "idle"
     assert out["disclosureShown"] is True
