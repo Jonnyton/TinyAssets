@@ -29,6 +29,12 @@ step remained `in_progress` until the run was explicitly cancelled at
 green. This is the smallest evidence GitHub retained; it identifies the
 lifecycle step but cannot distinguish one of its child phases.
 
+PR #2936's first guarded head, `e3447755`, subsequently completed the exact
+Windows lifecycle job `101171997094` in 39 seconds and emitted
+`process_tree.closed`. That normal-output pass proves the Job Object closes the
+observed escape, but it does not clear the sustained-output disk-exhaustion
+defect described below; a fresh bounded-capture head still needs the exact gate.
+
 ## Finding
 
 The Voice provider-binding PR's unsigned Windows artifact built successfully,
@@ -55,9 +61,11 @@ desktop unsigned-install lifecycle without fresh exact-head acceptance evidence.
 
 ## Repair in progress
 
-The supervisor previously redirected descendant handles but deliberately let an
-escaped descendant survive after its PowerShell parent exited. The focused
-Windows proof now assigns the lifecycle tree to a kill-on-close Job Object and
-requires the descendant to be gone before the supervisor returns. Keep this
-concern open until a fresh exact-head lifecycle job returns a terminal verdict;
-then delete it rather than annotating it as resolved.
+The direct-file capture bounded replay but not storage: sustained child output
+could fill the runner disk before either timeout returned a verdict. The repair
+drains private pipes while storing at most the configured cap, assigns the
+lifecycle tree to a kill-on-close Job Object, closes that object before any
+bounded drain wait, and requires an escaped descendant to be gone before the
+supervisor returns. Keep this concern open until a fresh exact-head lifecycle
+job returns a terminal verdict; then delete it rather than annotating it as
+resolved.

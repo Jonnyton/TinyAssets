@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,6 +15,12 @@ from typing import BinaryIO, TextIO
 
 _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+_CHILD_BOOTSTRAP = (
+    "import subprocess, sys; "
+    "signal = sys.stdin.buffer.read(1); "
+    "raise SystemExit(125 if signal != b'1' else "
+    "subprocess.call(sys.argv[1:], stdin=subprocess.DEVNULL))"
+)
 
 
 class _JobObjectBasicLimitInformation(ctypes.Structure):
@@ -169,6 +176,26 @@ def _replay_capture(
         )
 
 
+def _drain_stream(
+    stream: BinaryIO,
+    *,
+    capture_writer: BinaryIO,
+    max_bytes: int,
+) -> int:
+    """Drain a child stream while storing at most ``max_bytes`` on disk."""
+    observed_bytes = 0
+    captured_bytes = 0
+    while chunk := stream.read(65_536):
+        observed_bytes += len(chunk)
+        remaining_bytes = max_bytes - captured_bytes
+        if remaining_bytes > 0:
+            captured = chunk[:remaining_bytes]
+            capture_writer.write(captured)
+            captured_bytes += len(captured)
+    capture_writer.flush()
+    return observed_bytes
+
+
 def _checkpoint(stage: str) -> None:
     print(
         f"::notice title=Windows lifecycle checkpoint::stage={stage}",
@@ -299,16 +326,15 @@ def main() -> int:
         _capture_file() as (stdout_capture_path, stdout_capture_writer),
         _capture_file() as (stderr_capture_path, stderr_capture_writer),
     ):
-        capture_streams = {
-            "stdout": (stdout_capture_path, stdout_capture_writer, sys.stdout),
-            "stderr": (stderr_capture_path, stderr_capture_writer, sys.stderr),
-        }
         try:
             process = subprocess.Popen(
-                command,
-                stdin=subprocess.DEVNULL,
-                stdout=stdout_capture_writer,
-                stderr=stderr_capture_writer,
+                [sys.executable, "-c", _CHILD_BOOTSTRAP, *command],
+                # The bootstrap cannot spawn PowerShell until its parent has
+                # assigned it to the kill-on-close Job Object.  This closes
+                # the create/assign race in which a fast child could escape.
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 creationflags=creationflags,
             )
         except OSError as exc:
@@ -317,12 +343,90 @@ def main() -> int:
             print(f"Windows lifecycle child failed to start: {exc}", file=sys.stderr)
             return 1
 
+        assert process.stdin is not None
+        assert process.stdout is not None
+        assert process.stderr is not None
+        capture_observed: dict[str, int] = {}
+        capture_errors: dict[str, str] = {}
+
+        def drain(
+            name: str,
+            stream: BinaryIO,
+            capture_writer: BinaryIO,
+        ) -> None:
+            try:
+                capture_observed[name] = _drain_stream(
+                    stream,
+                    capture_writer=capture_writer,
+                    max_bytes=args.max_capture_bytes_per_stream,
+                )
+            except OSError as exc:
+                capture_errors[name] = str(exc)
+                print(
+                    f"::warning title=Windows lifecycle capture::{name} drain stopped: {exc}",
+                    flush=True,
+                )
+
+        capture_streams = {
+            "stdout": (
+                process.stdout,
+                stdout_capture_path,
+                stdout_capture_writer,
+                sys.stdout,
+            ),
+            "stderr": (
+                process.stderr,
+                stderr_capture_path,
+                stderr_capture_writer,
+                sys.stderr,
+            ),
+        }
+        capture_threads = {
+            name: threading.Thread(
+                target=drain,
+                args=(name, stream, capture_writer),
+                name=f"windows-lifecycle-{name}-drain",
+                daemon=True,
+            )
+            for name, (
+                stream,
+                _path,
+                capture_writer,
+                _destination,
+            ) in capture_streams.items()
+        }
+        for thread in capture_threads.values():
+            thread.start()
+
         try:
             if process_job is not None:
                 process_job.assign(process)
         except OSError as exc:
             print(
                 f"Windows lifecycle process-tree guard failed to attach: {exc}",
+                file=sys.stderr,
+            )
+            _terminate_tree(
+                process, cleanup_timeout_seconds=args.cleanup_timeout_seconds
+            )
+            if process_job is not None:
+                process_job.close()
+            for stream in (process.stdout, process.stderr):
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+            for thread in capture_threads.values():
+                thread.join(timeout=args.cleanup_timeout_seconds)
+            return 1
+
+        try:
+            process.stdin.write(b"1")
+            process.stdin.flush()
+            process.stdin.close()
+        except OSError as exc:
+            print(
+                f"Windows lifecycle bootstrap failed to release: {exc}",
                 file=sys.stderr,
             )
             _terminate_tree(
@@ -355,22 +459,56 @@ def main() -> int:
             return_code = 1
 
         # Closing a kill-on-close Job Object terminates descendants that
-        # outlived the PowerShell root.  Without this, GitHub's Windows runner
-        # can keep the step open forever even after this supervisor returns.
+        # outlived the PowerShell root and closes every inherited pipe writer.
+        # Only after this boundary is closed may the bounded drains wait for
+        # EOF; capture storage itself is capped by _drain_stream.
         if process_job is not None:
             process_job.close()
         _checkpoint("process_tree.closed")
 
-        for name, (capture_path, capture_writer, destination) in capture_streams.items():
+        for name, (
+            stream,
+            capture_path,
+            capture_writer,
+            destination,
+        ) in capture_streams.items():
             _checkpoint(f"capture.{name}.started")
+            thread = capture_threads[name]
+            thread.join(timeout=args.cleanup_timeout_seconds)
+            if thread.is_alive():
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+                thread.join(timeout=args.cleanup_timeout_seconds)
+            if thread.is_alive():
+                print(
+                    "::error title=Windows lifecycle capture::"
+                    f"{name} drain survived bounded cleanup",
+                    flush=True,
+                )
+                # The process tree is already closed and the pipe handle was
+                # closed above.  Exit without running file-finalizer code that
+                # could contend with the stuck daemon drain.
+                sys.stdout.flush()
+                sys.stderr.flush()
+                os._exit(1)
             _replay_capture(
                 capture_path,
                 capture_writer=capture_writer,
                 name=name,
                 destination=destination,
                 max_bytes=args.max_capture_bytes_per_stream,
+                observed_bytes=capture_observed.get(name),
             )
+            try:
+                stream.close()
+            except OSError:
+                pass
             _checkpoint(f"capture.{name}.finished")
+
+        if capture_errors:
+            return_code = 1
 
     _checkpoint("supervisor.exiting")
     if timed_out:

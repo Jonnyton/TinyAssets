@@ -1,30 +1,36 @@
 # Workspace terminal release — cross-family review
 
-**Review round:** 1 of 3
+## Round 1
+
 **Reviewed commit:** `eab16fbbf254d8a01dcc3abcddeaf9e987634942`
 **Reviewer:** Claude Opus subprocess via `peer-agents`
 **Verdict:** `DISAGREE_EVIDENCE`
 
-## Findings returned
+The reviewer returned two actionable P1 findings:
 
-1. **P1 — completed runs could be rewritten as failed.** The second universe
-   database enqueue ran after the root terminal commit but could raise into the
-   background worker's outer exception handler. That handler would call
-   `update_run_status(..., failed)`, reclassifying an already-completed run.
-2. **P1 — sibling terminal writers omitted the universe enqueue.** Read-time
-   orphan recovery, `get_run` orphan recovery, and startup
-   `recover_in_flight_runs` still wrote terminal status only at the root and
-   therefore relied solely on the periodic universe repair.
+1. A failed second-database enqueue could escape into the background worker and
+   cause an already-completed root run to be rewritten as failed.
+2. Read-time orphan recovery, `get_run` orphan recovery, and startup recovery
+   omitted the universe-side enqueue.
 
-The reviewer reported two P2 findings and one P3 finding only by count; its
-referenced detailed output artifact was not created. Round 2 must return every
-remaining finding inline so no verdict depends on an absent artifact.
+Both were accepted. The follow-up centralizes the post-commit second-WAL
+enqueue behind a no-throw helper, kicks the exact universe sweep on failure,
+and routes all four terminal writers through the protocol. Tests prove the
+terminal status is preserved, the sweep repairs the gap, and all recovery entry
+points enqueue the owning universe. The reviewer also claimed two P2s and one
+P3 only by count; its referenced artifact did not exist.
 
-## Disposition
+## Round 2
 
-Both P1 findings were accepted. The follow-up centralizes the post-commit
-second-WAL enqueue behind a no-throw helper, kicks the exact universe sweep on
-failure, and routes all four terminal writers through the same protocol. Tests
-prove a failed universe enqueue preserves the completed root status, the sweep
-repairs the gap, and all three recovery entry points enqueue the owning
-universe. Round 2 reviews the resulting exact commit.
+**Reviewed commit:** `e3447755f92608fcfd554d42d1aa0ab54c1446b9`
+**Reviewer:** Claude Fable subprocess via `peer-agents`
+**Verdict:** `APPROVE`
+
+The reviewer stated both prior P1s were resolved and found no P2 blocker. It
+again claimed residual P3 items only by count rather than returning them inline,
+so those unspecified items cannot be acted on. It also advised excluding the
+then-uncommitted pipe capture. That advice is rejected by direct evidence: the
+committed direct-file implementation exhausted local disk under sustained
+output before either timeout produced a verdict. The corrected bounded drain is
+therefore included and receives the third and final review round on its exact
+commit.
