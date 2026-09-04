@@ -34,14 +34,18 @@
       (its two "must hold without served authority" tests describe the OLD reachability; update them
       to assert the new lane holds for an UNAUTHORIZED context and admits an authorized run).
 - [x] 2.2 Plugin mirror parity.
-- [ ] 2.3 Live proof after deploy: the bound universe agent chooses and runs its
+- [x] 2.3 Live proof after deploy: the bound universe agent chooses and runs its
       own provider-backed prompt workflow through ordinary user authority. Retain
       only a sanitized receipt proving the selected provider ran exactly as
       expected and, when the owner has independently approved a safe effect,
       that the reviewed effect happened exactly once. Patches does not inspect,
       edit, run, or delete the live branch and retains no private identifiers or
-      content.
-- [ ] 2.4 Fresh opposite-family review, or the documented hard-provider-limit
+      content. *(2026-09-04: after production deployed `f2e3b453`, the bound
+      universe agent independently reran owner-controlled effect-free prompt
+      workflows; parallel and heartbeat executions completed with real provider
+      calls and no run/provider/authority error.)*
+- [x] 2.4 Fresh opposite-family review, or the documented hard-provider-limit
       independent-review fallback, agrees that the follow-up preserves exact
       provider, owner, universe, policy, revocation, one-use carrier, budget,
-      and settlement fences before landing.
+      and settlement fences before landing. *(2026-09-03: Claude Opus APPROVE
+      on exact PR head `1cb308e1`; review receipt attached to PR #2828.)*
