@@ -273,7 +273,8 @@ one, so the server must remain compatible with the last released shell.
    smoke remains.
 7. **Blocked before upload 2026-09-03:** run `33824990349` built signed build 2,
    but Apple rejected the runner-default Xcode 16.4/iOS 18.5 SDK and now requires iOS
-   SDK 26. The local workflow fix selects Xcode 26.3; it awaits required Claude review.
+   SDK 26. Exact reviewed revision `6ccb3d24` selects Xcode 26.3 and has an Opus
+   **AGREE** receipt in `docs/audits/2026-09-03-ios-xcode26-opus-review.md`.
    TestFlight upload itself does not submit App Review.
 8. Complete App Privacy, age rating, export, screenshots, review notes, availability,
    and DSA status from verified evidence. Interrupt only where a personal/legal fact

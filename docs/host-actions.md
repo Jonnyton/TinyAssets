@@ -316,8 +316,8 @@ None of it can produce an installable app without account-owned signing material
    and independently checksum/profile-verified a signed 1.0.0 (1) IPA. Run `33824990349`
    produced signed build 2, then App Store Connect rejected it before upload because
    `macos-15` defaults to Xcode 16.4/iOS 18.5 and Apple requires Xcode/iOS SDK 26. The
-   local Xcode 26.3 workflow fix has 16 focused tests green; required Claude review is
-   blocked by that subscription's monthly spend limit. Canonical finding:
+   local Xcode 26.3 workflow fix has 16 focused tests green and exact revision
+   `6ccb3d24` received a Claude Opus **AGREE** review. Canonical finding:
    `docs/concerns/2026-09-03-ios-app-store-upload-requires-xcode-26.md`.
 6. Capture real iPhone-sized screenshots from the signed app, verify sign-in → connect →
    chat through TestFlight, and complete the truthful console declarations. Before the final

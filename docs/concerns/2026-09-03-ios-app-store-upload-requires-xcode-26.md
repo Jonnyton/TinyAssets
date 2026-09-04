@@ -22,14 +22,17 @@ and `.github/workflows/ios-release.yml`, then fails closed unless the selected
 workflows; 16 focused tests pass locally. Local `actionlint` is unavailable, so CI is
 the authoritative workflow-lint oracle.
 
-The required opposite-provider review was dispatched through `peer-agents`, but
-Claude Code refused because its subscription has reached the monthly spend limit.
-The fix must not land or roll out without that review.
+The first default-model dispatch exited 1 after eight seconds with empty stderr. A
+separate foreground check, `claude -p "Reply only: READY" --model fable`, returned
+"You've hit your monthly spend limit." Jonathan clarified that only Fable was
+exhausted, so the required read-only review ran once with Claude Opus against exact
+revision `6ccb3d24`. It exited 0 after 274 seconds and explicitly returned **AGREE,
+land it**; the verbatim receipt is
+`docs/audits/2026-09-03-ios-xcode26-opus-review.md`.
 
 ## Exit
 
-1. Obtain a structured Claude `AGREE` review of the focused workflow diff.
-2. Push the reviewed commit and require the `actionlint` and `build-ios` checks.
-3. Merge, dispatch `iOS signed release` from `main` with TestFlight upload enabled,
+1. Push reviewed revision `6ccb3d24` and require the `actionlint` and `build-ios` checks.
+2. Merge, dispatch `iOS signed release` from `main` with TestFlight upload enabled,
    and verify the build appears in App Store Connect.
-4. Delete this concern when the Xcode 26 upload is accepted.
+3. Delete this concern when the Xcode 26 upload is accepted.

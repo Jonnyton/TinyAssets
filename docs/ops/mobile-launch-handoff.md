@@ -99,8 +99,8 @@ distribution off, 0 testers, and 0 builds. An Apple Distribution certificate/pri
 key, matching App Store profile, and Developer-role CI upload key now exist; all six
 required values are protected GitHub environment secrets. Signed IPA 1.0.0 (1) is
 verified. Apple's upload rejected build 2 only because the runner defaulted to Xcode
-16.4/iOS 18.5 while iOS SDK 26 is mandatory; the local Xcode 26.3 fix awaits required
-Claude review. The exact remaining values and confirmation boundaries are in
+16.4/iOS 18.5 while iOS SDK 26 is mandatory; exact reviewed revision `6ccb3d24`
+selects Xcode 26.3 and has a Claude Opus **AGREE** receipt. The exact remaining values and confirmation boundaries are in
 `docs/ops/app-store-submission-packet.md`.
 
 What is ready, stated precisely — the gap here is wider than "just enrol":
