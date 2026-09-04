@@ -21,6 +21,7 @@ each operation opens, commits, closes.
 
 from __future__ import annotations
 
+import ast
 import atexit
 import contextlib
 import contextvars
@@ -46,6 +47,7 @@ from tinyassets.graph_compiler import (
     EmptyResponseError,
     NodeEnqueueContext,
     NodeTimeoutError,
+    _placeholder_keys,
     compile_branch,
     seed_initial_state,
 )
@@ -2876,6 +2878,49 @@ def _missing_input_guidance(
     return guidance
 
 
+def _required_node_inputs(node: Any) -> set[str]:
+    """Return only inputs whose absence is statically certain to fail.
+
+    ``input_keys`` is an access allowlist, not a requiredness declaration.
+    Prompt placeholders always index state during rendering. Code-node
+    ``state["key"]`` and one-argument ``state.pop("key")`` forms also fail on
+    absence; ``state.get`` remains optional. Dynamic access is left to runtime.
+    """
+    required = set(_placeholder_keys(str(node.prompt_template or "")))
+    source = str(node.source_code or "")
+    if source:
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return required
+        for item in ast.walk(tree):
+            if (
+                isinstance(item, ast.Subscript)
+                and isinstance(item.value, ast.Name)
+                and item.value.id == "state"
+                and isinstance(item.ctx, ast.Load)
+                and isinstance(item.slice, ast.Constant)
+                and isinstance(item.slice.value, str)
+            ):
+                required.add(item.slice.value)
+            elif (
+                isinstance(item, ast.Call)
+                and isinstance(item.func, ast.Attribute)
+                and isinstance(item.func.value, ast.Name)
+                and item.func.value.id == "state"
+                and item.func.attr == "pop"
+                and len(item.args) == 1
+                and isinstance(item.args[0], ast.Constant)
+                and isinstance(item.args[0].value, str)
+            ):
+                required.add(item.args[0].value)
+    await_spec = node.await_run_spec if isinstance(node.await_run_spec, dict) else {}
+    run_id_field = str(await_spec.get("run_id_field") or "").strip()
+    if run_id_field:
+        required.add(run_id_field)
+    return required
+
+
 def preflight_required_inputs(
     branch: BranchDefinition,
     inputs: dict[str, Any],
@@ -2934,7 +2979,7 @@ def preflight_required_inputs(
     for node_id in node_ids:
         node = defs_by_graph_id.get(node_id)
         produced[node_id] = set(node.output_keys if node is not None else ())
-        required[node_id] = set(node.input_keys if node is not None else ())
+        required[node_id] = _required_node_inputs(node) if node is not None else set()
 
     max_frontiers = 4096
 

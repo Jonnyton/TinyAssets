@@ -2,10 +2,11 @@
 
 ### Requirement: Run preflight resolves required state conservatively from graph topology
 The execution substrate SHALL analyze the frozen Branch snapshot before persistence,
-counting caller inputs and non-`None` schema defaults as initially available and a
-node output as available to a consumer only when every possible activation reaches
-that consumer after a producer has completed, including outputs merged from
-synchronized ordinary fan-out siblings.
+treating prompt placeholders and statically strict code-state accesses as mandatory,
+counting caller inputs and non-`None` schema defaults as initially available, and
+counting a node output only when every possible activation reaches that consumer
+after a producer has completed, including outputs merged from synchronized ordinary
+fan-out siblings. An `input_keys` allowlist entry alone SHALL NOT make a key required.
 
 #### Scenario: Guaranteed predecessor output satisfies a later consumer
 - **WHEN** a required key is absent initially but every reachable route to its consumer passes through an earlier node that declares the key in `output_keys`

@@ -1,6 +1,6 @@
 ## 1. Preflight Contract
 
-- [x] 1.1 Implement deterministic required-input analysis over frozen Branch topology, schema defaults, declared node inputs, and guaranteed predecessor outputs.
+- [x] 1.1 Implement deterministic required-input analysis over frozen Branch topology, schema defaults, statically mandatory node accesses, and guaranteed predecessor outputs.
 - [x] 1.2 Add a typed pre-admission failure carrying sorted missing keys and schema-derived type, description, and example guidance.
 
 ## 2. Run Integration

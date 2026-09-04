@@ -6,7 +6,10 @@ live-definition and immutable-version asynchronous execution reach
 calls `_prepare_run`. Missing state is discovered later by compiled nodes, after
 the run row and pending events exist.
 
-The preflight must understand graph topology without executing user code. Branches
+The preflight must understand graph topology without executing user code. An
+`input_keys` entry is an access allowlist and is not by itself required: prompt
+placeholders and statically strict code lookups are mandatory, while `state.get`
+and an unused declared key remain optional. Branches
 may fork, join, and loop, so "some predecessor writes this key" is insufficient:
 the producer must be guaranteed to run before the consumer on every possible
 route. Public handlers must also preserve their existing authorization order so a
@@ -19,8 +22,8 @@ new diagnostic cannot disclose a private Branch contract.
 - Refuse unresolved declared node inputs before `_prepare_run`.
 - Share one analysis and error contract across live-definition and immutable-
   version execution.
-- Count caller values, schema defaults, and topology-guaranteed predecessor
-  outputs as available.
+- Count caller values, schema defaults, and execution-guaranteed predecessor
+  outputs as available to statically mandatory consumers.
 - Return deterministic, agent-actionable guidance while producing no durable or
   external activity.
 
@@ -36,7 +39,12 @@ new diagnostic cannot disclose a private Branch contract.
 
 ### 1. Use bounded superstep-frontier analysis over the frozen Branch snapshot
 
-The analyzer models LangGraph's execution barrier: ordinary fan-out activates all
+The analyzer first derives mandatory accesses without widening the Branch
+contract: prompt placeholders, literal `state["key"]` code subscripts,
+one-argument `state.pop("key")`, and the declared await-run id field. Unused
+`input_keys`, `state.get`, and dynamic code accesses are not preflight failures.
+
+It then models LangGraph's execution barrier: ordinary fan-out activates all
 children in the next superstep and merges all sibling outputs, while a conditional
 edge activates exactly one declared target. It explores possible active-node
 frontiers independently for each required key and tracks whether that key has been
@@ -82,7 +90,7 @@ time-of-check/time-of-use gap.
 
 ### 4. Guidance is descriptive, not coercive
 
-For each missing key, guidance includes its declared type (or `any`), optional
+For each statically missing key, guidance includes its declared type (or `any`), optional
 description, and a JSON-compatible example shape (`""`, `0`, `false`, `[]`, `{}`,
 or `null`). Presence in caller inputs satisfies preflight even for falsey values;
 runtime semantics remain responsible for value interpretation.

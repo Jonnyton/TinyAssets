@@ -54,8 +54,53 @@ def _node(
         display_name=node_id,
         input_keys=list(inputs),
         output_keys=list(outputs),
-        prompt_template="constant prompt",
+        prompt_template=(
+            " ".join(f"{{{key}}}" for key in inputs)
+            if inputs
+            else "constant prompt"
+        ),
     )
+
+
+def test_declared_but_unused_input_remains_optional() -> None:
+    branch = _branch(
+        [NodeDefinition(
+            node_id="entry",
+            display_name="entry",
+            input_keys=["optional_context"],
+            prompt_template="constant prompt",
+        )],
+        [EdgeDefinition("entry", "END")],
+    )
+    preflight_required_inputs(branch, {})
+
+
+def test_code_state_get_is_optional_but_subscript_is_required() -> None:
+    optional = _branch(
+        [NodeDefinition(
+            node_id="entry",
+            display_name="entry",
+            input_keys=["context"],
+            output_keys=["result"],
+            source_code="def run(state):\n    return {'result': state.get('context', {})}\n",
+        )],
+        [EdgeDefinition("entry", "END")],
+    )
+    preflight_required_inputs(optional, {})
+
+    required = _branch(
+        [NodeDefinition(
+            node_id="entry",
+            display_name="entry",
+            input_keys=["context"],
+            output_keys=["result"],
+            source_code="def run(state):\n    return {'result': state['context']}\n",
+        )],
+        [EdgeDefinition("entry", "END")],
+    )
+    with pytest.raises(MissingRequiredInputs) as caught:
+        preflight_required_inputs(required, {})
+    assert caught.value.missing_input_keys == ["context"]
 
 
 def test_missing_keys_are_sorted_with_schema_guidance() -> None:
