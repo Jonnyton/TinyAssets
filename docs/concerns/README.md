@@ -25,6 +25,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
+| **P2** | [Windows lifecycle installer is cancelled without a verdict or log](2026-09-04-windows-lifecycle-installer-cancelled-without-verdict.md) — the exact unsigned artifact built and downloaded, but both the merge-time attempt and one bounded rerun were cancelled with the lifecycle step still in progress and no retained log; diagnose with durable phase receipts before another rerun | 2026-09-04 |
 | **P2** | [Run submission accepts missing required branch inputs](2026-09-03-run-submission-accepts-missing-required-inputs.md) — unresolved required inputs are detected only after admission; submission needs an authority-preserving preflight refusal with exact missing-input guidance and no run row | 2026-09-03 |
 | **P1** | [Bundled and local MCP OAuth session lifecycle is only partly proven](2026-09-03-local-mcp-oauth-session-lifecycle-is-partly-proven.md) — production now fails closed with no anonymous fallback, but Codex refresh is invalid, ChatGPT reconnect remains expired, and Claude is spend-limited; rendered principal equality is still unproven | 2026-09-03 |
 | **P2** | [Capacitor CLI still resolves a vulnerable UUID library](2026-09-03-capacitor-cli-uuid-advisory.md) — high/critical mobile build-chain advisories are removed, but current `@capacitor/cli` still reaches `uuid@7.0.3` through `xcode`; build-time only, no compatible upstream update yet | 2026-09-03 |

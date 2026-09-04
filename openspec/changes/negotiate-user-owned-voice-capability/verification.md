@@ -31,11 +31,16 @@
   control was clicked and no microphone, provider, credential, or disclosure
   action occurred.
 - CI exception: desktop release run `33843457460` was cancelled after the PR
-  merged. Its exact-artifact Windows install step was still in progress, so it
-  is not claimed as passed. This server/app change instead relies on the green
-  focused/required suites, platform builds, runtime mirror/import probe, exact-
-  head opposite-provider review, exact merge-image deploy, and authenticated
-  production canary recorded above.
+  merged. One bounded rerun of its exact job and head rebuilt all platform
+  artifacts successfully, but job `100936661082` was again cancelled after
+  fifteen minutes while the exact-artifact lifecycle step remained in progress;
+  GitHub retained no job log. It is not claimed as passed or as a product
+  failure. The recurrence is tracked separately in
+  `docs/concerns/2026-09-04-windows-lifecycle-installer-cancelled-without-verdict.md`.
+  This server/app change instead relies on the green focused/required suites,
+  platform builds, runtime mirror/import probe, exact-head opposite-provider
+  review, exact merge-image deploy, and authenticated production canary recorded
+  above.
 
 Task 5.3 remains open: production proves the disabled state, while rendered
 unpowered/incompatible acceptance and any ready-state proof remain deliberately
