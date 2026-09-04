@@ -372,6 +372,13 @@ None of it can produce an installable app without account-owned signing material
    **Other User Content** declarations against the provider retention configuration and
    require physical-iPhone proof that capture stops on background/end before submission.
 
+**Apple preflight evidence (2026-09-03):** **Add for Review** returned **Unable
+to Add for Review** and created no submission. The exact unresolved requirements
+are one 6.5-inch iPhone screenshot, one 13-inch iPad screenshot, Content Rights,
+Privacy Policy URL plus Admin-provided privacy practices, reviewer
+username/password, and reviewer first name, last name, email, and `+` country-code
+phone number. Version 1.0 remains **Prepare for Submission** with manual release.
+
 ### Google Play: start the 12-tester closed test — this is the 14-day clock
 
 **This is the long pole for Play, and only you can start it.** A personal developer

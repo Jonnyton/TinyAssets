@@ -278,6 +278,7 @@ and [unavailability procedure](https://developer.apple.com/help/app-store-connec
 - [x] Signing setup and all six protected CI values complete (§3)
 - [x] Signed IPA 1.0.0 (1) built and checksum/profile verified
 - [x] Signed build 1.0.0 (3) uploaded, processed, and **Ready to Submit** in TestFlight
-- [ ] Screenshots captured (§6; requires a Mac/iOS Simulator or physical iPhone — this Windows host has no `xcrun`)
+- [x] Apple pre-review validation run; no submission created
+- [ ] Screenshots captured (§6; Apple requires 6.5-inch iPhone and 13-inch iPad images; this Windows host has no `xcrun`)
 - [ ] TestFlight device flow verified → submitted/manual release (§7)
 - [ ] Founder: decide current-shell submission vs native differentiator before App Review

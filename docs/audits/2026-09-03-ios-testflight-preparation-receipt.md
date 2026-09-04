@@ -21,7 +21,7 @@
   the verified marketing URL `https://tinyassets.io`.
 - The authenticated web session selected Build 3 for App Store Version 1.0 and
   saved the relationship. The version remains `PREPARE_FOR_SUBMISSION` with
-  manual release selected; **Add for Review** was not used.
+  manual release selected.
 - The authenticated web session saved factual App Review Notes identifying the
   Capacitor shell's pinned URL, absent purchase/advertising/voice surfaces, and
   critical review paths. No credential or personal contact detail was entered.
@@ -36,6 +36,13 @@
 - Apple Silicon Mac and Apple Vision Pro availability were both disabled and
   saved because those compatibility paths have not been tested. Public App Store
   distribution remains selected; storefront availability remains unset.
+- Apple's **Add for Review** preflight was invoked after all safe preparation.
+  It returned **Unable to Add for Review**, left the version in
+  `PREPARE_FOR_SUBMISSION`, and created no review submission. Its exact global
+  blockers are a 13-inch iPad screenshot, a 6.5-inch iPhone screenshot, Content
+  Rights, a Privacy Policy URL, and Admin-provided privacy practices. Its exact
+  page-level blockers are reviewer username/password plus first name, last name,
+  email, and an international-format phone number.
 
 ## Automatic-notification finding
 
@@ -74,4 +81,5 @@ because the secure local password vault was locked, and account-holder review
 contact details remain personal facts that must not be guessed.
 
 No external TestFlight review, App Review submission, tester invitation, legal
-declaration, privacy publication, or public release occurred.
+declaration, privacy publication, or public release occurred. The failed
+preflight did not add the version to review.

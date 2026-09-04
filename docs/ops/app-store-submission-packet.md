@@ -306,19 +306,26 @@ one, so the server must remain compatible with the last released shell.
    unset because Apple's truthful third-party-content answer includes a regional
    rights attestation. Interrupt only where a personal/legal fact cannot be
    established truthfully. Keep release mode manual until publication.
-9. Obtain the action-time confirmations product policy requires immediately before
+9. **Complete preflight 2026-09-03:** **Add for Review** returned **Unable to Add
+   for Review** and did not create a submission. Apple requires one 13-inch iPad
+   screenshot, one 6.5-inch iPhone screenshot, Content Rights, a Privacy Policy
+   URL, published privacy practices from an Admin, reviewer username/password,
+   and reviewer first name, last name, email, and `+` country-code phone number.
+10. Obtain the action-time confirmations product policy requires immediately before
    **Submit for Review** and **Release This Version**.
 
 ## External gates that remain
 
-- An actual iPhone or iOS Simulator for authentic screenshots and device smoke;
-  this Windows host has no `xcrun`, and a physical iPhone is required for
+- A Mac/iOS Simulator or actual Apple device for the exact screenshots Apple
+  requires: at least one 6.5-inch iPhone image and one 13-inch iPad image. This
+  Windows host has no `xcrun`; a physical iPhone is additionally required for
   microphone-release proof if voice ships.
 - Founder/counsel confirmation of Content Rights (Apple's truthful
   third-party-content answer also attests necessary rights), plus live privacy,
   storefront availability, and DSA/trader declarations.
-- Account-holder-controlled feedback/reviewer contact details and the existing
-  least-privilege App Review sign-in identity, entered only in App Store Connect.
+- Account-holder-controlled reviewer first name, last name, email, and
+  international-format phone number, plus the existing least-privilege App Review
+  username/password, entered only in App Store Connect.
   The secure local password vault was locked during this pass, so credentials
   were not extracted or copied into repository files.
 - Automatic tester notification cannot be changed on the current internal-only
