@@ -305,10 +305,9 @@ jobs:
         # Those keep a principal. The right one is a short-lived GitHub OIDC
         # token bound to this repository and workflow, not a standing shared
         # secret a human mints and rotates (Codex design review 2026-09-03:
-        # "public pulse plus short-lived, claim-bound OIDC"). Until that lands
-        # the shared bearer still works if present; without it the deep probes
-        # skip LOUDLY and the deploy proceeds, because a missing observability
-        # credential is not a reason to leave production on an old image.
+        # "public pulse plus short-lived, claim-bound OIDC"). Until that lands,
+        # the shared bearer is required because both the container healthcheck
+        # and the deep probes cross the authenticated boundary.
         env:
           TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         run: |
@@ -316,8 +315,6 @@ jobs:
           if [ "${#TINYASSETS_WIKI_CANARY_TOKEN}" -lt 32 ]; then
             echo "::error::TINYASSETS_WIKI_CANARY_TOKEN is unset or under 32 bytes. The protected pulse healthcheck and authenticated MCP probes require this service-principal credential."
             exit 1
-            echo "canary bearer absent — deep probes will skip"
-            exit 0
           fi
           scp -i ~/.ssh/do_deploy -o BatchMode=yes deploy/install-tinyassets-env.sh \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"
