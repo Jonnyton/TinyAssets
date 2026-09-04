@@ -1,12 +1,12 @@
 ## MODIFIED Requirements
 
 ### Requirement: Voice mode is explicit, foreground-only, and accessible
-The shared TinyAssets app SHALL expose one Voice control beside the message composer, SHALL start immediately from that control when the authenticated universe's current provider has a compatible user-authorized capability, SHALL reuse the existing provider connection/request path otherwise, SHALL require an explicit user start action, and SHALL stop every microphone track when the user leaves voice mode, hides or unloads the app, signs out, or reaches an unrecoverable error.
+The shared TinyAssets app SHALL expose one Voice control beside the message composer. It SHALL use an authorized current-provider realtime bridge when present, and otherwise SHALL use supported browser/device speech recognition and synthesis around the same canonical `converse` operation when typed conversation works. It SHALL require an explicit user start action and transport-specific disclosure, and SHALL stop recognition, microphone capture, and speech output when the user leaves voice mode, hides or unloads the app, signs out, or reaches an unrecoverable error.
 
-#### Scenario: Voice transport is unavailable
+#### Scenario: Realtime bridge transport is unavailable
 - **WHEN** generic outbound HTTP transport is disabled
-- **THEN** the app does not start microphone capture or request a voice session
-- **AND** it presents a concise unavailable reason without disabling typed conversation
+- **THEN** the app does not request a realtime voice session
+- **AND** supported browser/device speech may still wrap canonical typed conversation without using outbound HTTP
 
 #### Scenario: Legacy Voice host flags are absent
 - **GIVEN** generic outbound HTTP transport is enabled
@@ -25,12 +25,16 @@ The shared TinyAssets app SHALL expose one Voice control beside the message comp
 - **THEN** the app opens or focuses the existing unpowered-universe provider request
 - **AND** it makes no microphone request, bridge request, or Voice-specific credential request
 
-#### Scenario: Current provider cannot supply realtime Voice
+#### Scenario: Current provider cannot supply a realtime bridge
 - **WHEN** the current provider can power typed conversation but has no compatible realtime capability
-- **THEN** the app identifies Voice as unavailable for that provider and keeps typed conversation available
-- **AND** it offers the existing user-authorized connection/request path only when status returns `remediation: existing_connection_surface`
-- **AND** status returns `remediation: none` otherwise and the app remains unavailable without a separate Voice credential flow
-- **AND** the affordance never pre-fills or auto-submits an endpoint extension from capability metadata
+- **AND** browser speech recognition and synthesis are available
+- **THEN** the Voice control offers browser/device speech around the existing canonical conversation
+- **AND** it does not open provider setup, request another credential, switch writers, or call `/voice/session`
+
+#### Scenario: Browser speech input is unavailable
+- **WHEN** typed conversation works, no compatible realtime bridge exists, and the browser exposes no supported speech-recognition interface
+- **THEN** the app names the browser/device limitation and keeps typed conversation available
+- **AND** it does not ask the user to reconnect the provider or imply that their ChatGPT subscription grants external Realtime API access
 
 #### Scenario: Every active state is perceivable
 - **WHEN** voice moves among requesting permission, connecting, listening, thinking, speaking, reconnecting, or error
@@ -39,7 +43,7 @@ The shared TinyAssets app SHALL expose one Voice control beside the message comp
 
 #### Scenario: Leaving voice stops capture
 - **WHEN** the user stops voice, signs out, hides the app, unloads the page, or the periodic authority check loses readiness
-- **THEN** all local microphone tracks stop and the client returns to a non-capturing state
+- **THEN** all local microphone tracks and recognition stop, queued speech synthesis is cancelled, and the client returns to a non-capturing state
 
 #### Scenario: Authority is revoked during an active session
 - **GIVEN** Voice is actively capturing
@@ -72,11 +76,17 @@ The voice client SHALL use a WebRTC session configured through the versioned `ti
 - **AND** typed conversation remains available
 
 ### Requirement: Audio privacy and resource use are disclosed before capture
-The app SHALL confirm capability and then disclose before its first microphone permission request that audio is sent to the service named by the current user-owned connection capability, any service use belongs to that resource, TinyAssets never substitutes shared authority, TinyAssets stores the canonical text exchange but not raw audio, and the service's privacy terms apply. The disclosure SHALL link those terms when the capability supplies a validated HTTPS privacy URL. Its opaque disclosure identity SHALL be derived from the connection id and complete canonical descriptor, including protocol, session URL, service name, and privacy URL.
+The app SHALL disclose the selected speech transport before its first microphone permission request. For a bridge it SHALL name the current user-owned connection capability and link validated privacy terms when supplied. For browser speech it SHALL explain that the browser/device speech service performs recognition and synthesis, may process audio remotely depending on the browser, and is separate from the universe's connected writer. Both disclosures SHALL state that TinyAssets submits and stores the canonical text exchange but not raw audio and never substitutes shared provider authority.
+
+#### Scenario: Browser speech relays one canonical turn
+- **WHEN** browser recognition returns a final non-empty utterance
+- **THEN** the app submits that exact text once through authenticated `converse`
+- **AND** renders the exact canonical reply before passing that same text to speech synthesis
+- **AND** sends no raw audio to a TinyAssets route
 
 #### Scenario: First voice start requires current disclosure
-- **WHEN** the browser profile has not accepted the current disclosure version and identity for the current connection capability
-- **THEN** the app first confirms a compatible resource and presents the disclosure before requesting microphone permission or a voice session
+- **WHEN** the browser profile has not accepted the current disclosure version and identity for the selected bridge or browser speech transport
+- **THEN** the app first confirms an available speech transport and presents its disclosure before requesting microphone permission or a voice session
 - **AND** declining leaves typed conversation available and sends no audio
 
 #### Scenario: Voice resource or bridge descriptor changes

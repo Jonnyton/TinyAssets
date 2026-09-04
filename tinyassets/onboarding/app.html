@@ -220,11 +220,16 @@
          aria-labelledby="voice-disclosure-title" hidden>
       <div class="voice-dialog-card">
         <h2 id="voice-disclosure-title">Before voice starts</h2>
-        <p>Voice will use <strong id="voice-service-name">the voice connection</strong>
+        <p id="voice-disclosure-bridge">Voice will use <strong id="voice-service-name">the voice connection</strong>
         that you bound to this universe. Your microphone audio goes directly to that service,
         and any use belongs to that resource's account. TinyAssets never substitutes a shared
         credential. TinyAssets keeps the words you send and your universe's text reply in this
         conversation, but does not store the raw audio.</p>
+        <p id="voice-disclosure-browser" hidden>Your browser or device speech service will turn
+        your microphone audio into text and read your universe's reply aloud. Depending on your
+        browser, speech recognition may send audio to the browser vendor and may not work offline.
+        TinyAssets sends the recognized text through the same conversation as typed chat and keeps
+        that text exchange, but TinyAssets does not receive or store the raw audio.</p>
         <p><a id="voice-privacy-link" href="#" hidden>Review this service's privacy terms</a></p>
         <div class="voice-dialog-actions">
           <button id="btn-voice-cancel" class="btn btn--link" type="button">Not now</button>
@@ -1130,14 +1135,14 @@
   }
   function setStatusLine(t){ $("status-line").textContent=t||""; }
 
-  // ---- Realtime voice -------------------------------------------------
-  // Voice owns only microphone, WebRTC, and turn timing. The universe's
-  // actual words still come from MCP.converse through sendVoiceTurn below.
+  // ---- Voice ----------------------------------------------------------
+  // Voice owns only speech transport and turn timing. The universe's actual
+  // words still come from MCP.converse through sendVoiceTurn below.
   const VOICE_LABELS={
     unavailable:"Voice transport is temporarily unavailable. Typed chat still works.",
     checking:"Checking this universe's voice capability...",
     unpowered:"Voice needs the provider connection your universe will use.",
-    incompatible:"Your current provider does not have compatible realtime Voice.",
+    incompatible:"Speech input is not supported in this browser or device.",
     idle:"Voice ready.", requesting_permission:"Waiting for microphone permission...",
     connecting:"Connecting voice...", listening:"Listening...",
     thinking:"Your universe is thinking...", speaking:"Your universe is speaking...",
@@ -1161,8 +1166,24 @@
     return row[event]||state;
   }
   function voiceNormalize(text){ return String(text||"").trim().replace(/\s+/g," "); }
+  function browserSpeechConstructor(){
+    return window.SpeechRecognition||window.webkitSpeechRecognition||null;
+  }
+  function browserSpeechAvailable(){
+    return typeof browserSpeechConstructor()==="function"&&!!window.speechSynthesis&&
+      typeof window.SpeechSynthesisUtterance==="function";
+  }
+  function browserSpeechCapability(source){
+    return Object.assign({},source||{}, {
+      available:true,state:"ready",remediation:"none",resource:"browser_speech",
+      mode:"browser",disclosure_id:"browser_speech_v1",
+      service_name:"your browser or device speech service",privacy_url:""
+    });
+  }
   function voiceDisclosureKey(capability){
     const version=Number(CFG.voice&&CFG.voice.disclosure_version)||1;
+    if(capability&&capability.mode==="browser")
+      return "ta_voice_disclosure_v"+version+"_browser_speech_v1";
     const disclosureId=capability&&typeof capability.disclosure_id==="string"
       ?capability.disclosure_id:"";
     if(!/^[a-f0-9]{64}$/.test(disclosureId)) return "";
@@ -1184,6 +1205,8 @@
       voice_permission_denied:"Microphone permission was denied. Typed chat still works.",
       voice_output_untrusted:"Voice stopped before playing an unverified reply. Typed chat still works.",
       voice_output_mismatch:"Voice stopped because the spoken reply did not match the conversation text. Typed chat still works.",
+      browser_speech_unsupported:"Speech input is not supported in this browser or device. Typed chat still works.",
+      browser_speech_failed:"Your browser or device speech service stopped. Typed chat still works.",
       no_home_universe:"Send one typed message first so your universe is ready.",
       same_origin_required:"Voice was blocked by the app's security boundary.",
       voice_disabled:"Voice transport is temporarily unavailable. Typed chat still works."
@@ -1197,6 +1220,8 @@
   }
   const Voice={
     state:"unavailable", pc:null, dc:null, stream:null, audio:null,
+    recognition:null, utterance:null, browserRestartTimer:null, browserTurn:null,
+    browserSubmitting:false,
     capability:null,
     stopTimer:null, warnTimer:null, authorityTimer:null,
     disclosureOpen:false, acceptingDisclosure:false,
@@ -1212,7 +1237,7 @@
     },
     _render(detail){
       const btn=$("btn-voice"), active=!(["unavailable","checking","unpowered","incompatible","idle","error"].includes(this.state));
-      const canRemediate=(this.state==="unpowered"||this.state==="incompatible")&&
+      const canRemediate=this.state==="unpowered"&&
         this.capability&&this.capability.remediation==="existing_connection_surface";
       if(this.state==="unpowered"||this.state==="incompatible"){
         btn.disabled=!canRemediate;btn.title=VOICE_LABELS[this.state]||"Voice unavailable";
@@ -1261,22 +1286,50 @@
     async refreshCapability(){
       try{
         const doc=await this._readCapability();
+        if(doc.available){
+          this.capability=Object.assign({},doc,{mode:"bridge"});this.state="idle";
+          this._render();return true;
+        }
+        if(doc.state!=="unpowered"&&browserSpeechAvailable()){
+          this.capability=browserSpeechCapability(doc);this.state="idle";
+          this._render("Voice ready using your browser or device speech service.");return true;
+        }
         this.capability=doc;
-        this.state=doc.available?"idle":(doc.state==="disabled"?"unavailable":(doc.state==="unpowered"?"unpowered":"incompatible"));
-        this._render(doc.available?undefined:voiceFriendlyError(doc.reason));
-        return !!doc.available;
-      }catch(_error){this.capability=null;this.state="checking";this._render("Voice capability could not be confirmed. Typed chat still works.");return false;}
+        this.state=doc.state==="unpowered"?"unpowered":"incompatible";
+        const detail=doc.state==="unpowered"?voiceFriendlyError(doc.reason):
+          voiceFriendlyError("browser_speech_unsupported");
+        this._render(detail);return false;
+      }catch(_error){
+        if(browserSpeechAvailable()){
+          this.capability=browserSpeechCapability({reason:"voice_status_failed"});this.state="idle";
+          this._render("Voice ready using your browser or device speech service.");return true;
+        }
+        this.capability=null;this.state="checking";
+        this._render("Voice capability could not be confirmed. Typed chat still works.");return false;
+      }
     },
     async requestStart(){
       const inactive=["unavailable","checking","unpowered","incompatible","idle","error"];
       if(!inactive.includes(this.state)){this.stop();return;}
-      if(!await this.refreshCapability()){
-        if(this.capability&&this.capability.remediation==="existing_connection_surface")
+      // A browser-speech capability was already detected while entering the
+      // signed-in view. Keep this click synchronous until disclosure/start so
+      // browsers that require a user gesture for microphone permission see the
+      // actual Voice tap. Bridge mode still rechecks server authority here.
+      const localBrowserReady=this.capability&&this.capability.mode==="browser"&&
+        browserSpeechAvailable();
+      if(!localBrowserReady&&!await this.refreshCapability()){
+        if(this.capability&&this.capability.state==="unpowered"&&
+          this.capability.remediation==="existing_connection_surface")
           return showConnect(this.capability.state==="unpowered",
             voiceConnectionGuidance(this.capability.reason));
-        return this._render(voiceFriendlyError(this.capability&&this.capability.reason));
+        const reason=this.capability&&this.capability.state!=="unpowered"
+          ?"browser_speech_unsupported":(this.capability&&this.capability.reason);
+        return this._render(voiceFriendlyError(reason));
       }
       if(!this._accepted()){
+        const browserMode=this.capability&&this.capability.mode==="browser";
+        $("voice-disclosure-browser").hidden=!browserMode;
+        $("voice-disclosure-bridge").hidden=!!browserMode;
         const service=(this.capability&&this.capability.service_name)||"the voice connection";
         $("voice-service-name").textContent=service;
         const privacy=$("voice-privacy-link"), privacyUrl=this.capability&&this.capability.privacy_url;
@@ -1293,6 +1346,12 @@
       const button=$("btn-voice-accept"),offered=this.capability&&this.capability.disclosure_id;
       button.disabled=true;
       try{
+        if(this.capability&&this.capability.mode==="browser"){
+          if(!browserSpeechAvailable())throw new Error("browser_speech_unsupported");
+          const key=voiceDisclosureKey(this.capability);if(key)localStorage.setItem(key,"accepted");
+          this.disclosureOpen=false;$("voice-disclosure").hidden=true;this.returnFocus=null;
+          this.start();return;
+        }
         const doc=await this._readCapability(5000);
         if(!this.disclosureOpen)return;
         if(!doc.available||!offered||doc.disclosure_id!==offered){
@@ -1341,8 +1400,85 @@
       const generation=++this.epoch;
       this.handledCalls.clear(); this.expectedReply=""; this.reconnectAttempts=0;
       this.state="idle"; this._event("start");
+      if(this.capability&&this.capability.mode==="browser"){
+        try{await this._startBrowser(generation);}
+        catch(error){if(generation===this.epoch)this.fail(error);}
+        return;
+      }
       try{ await this._connect(generation,false); }
       catch(error){ if(generation===this.epoch) this.fail(error); }
+    },
+    async _startBrowser(generation){
+      const Constructor=browserSpeechConstructor();
+      if(typeof Constructor!=="function"||!browserSpeechAvailable())
+        throw new Error("browser_speech_unsupported");
+      const recognition=new Constructor();this.recognition=recognition;
+      recognition.continuous=false;recognition.interimResults=false;recognition.maxAlternatives=1;
+      recognition.lang=(navigator.language||document.documentElement.lang||"en-US");
+      recognition.onstart=()=>{
+        if(generation!==this.epoch||this.recognition!==recognition)return;
+        this.state="listening";this._render();
+      };
+      recognition.onresult=event=>{
+        if(generation!==this.epoch||this.recognition!==recognition||this.browserSubmitting)return;
+        let transcript="";
+        for(let i=event.resultIndex||0;i<(event.results||[]).length;i++){
+          const result=event.results[i];
+          if(result&&result.isFinal!==false&&result[0])transcript+=String(result[0].transcript||"");
+        }
+        transcript=transcript.trim();if(!transcript)return;
+        this.browserSubmitting=true;
+        try{recognition.stop();}catch(_e){}
+        this.browserTurn=this._handleBrowserUtterance(transcript,generation);
+      };
+      recognition.onerror=event=>{
+        if(generation!==this.epoch||this.recognition!==recognition)return;
+        const code=String(event&&event.error||"");
+        if(code==="aborted"||code==="no-speech")return;
+        this.fail(new Error(code==="not-allowed"||code==="service-not-allowed"
+          ?"voice_permission_denied":"browser_speech_failed"));
+      };
+      recognition.onend=()=>{
+        if(generation!==this.epoch||this.recognition!==recognition||
+          this.browserSubmitting||this.state==="thinking"||this.state==="speaking")return;
+        this.state="listening";this._render();this._restartBrowser(generation);
+      };
+      try{recognition.start();}catch(_error){throw new Error("browser_speech_failed");}
+      this._armSessionLimit(Number(CFG.voice&&CFG.voice.max_session_seconds)||1800);
+    },
+    async _handleBrowserUtterance(message,generation){
+      this.state="thinking";this._render();
+      try{
+        const reply=await sendVoiceTurn(message);
+        if(generation!==this.epoch)return;
+        await this._speakBrowser(reply,generation);
+      }catch(error){if(generation===this.epoch)this.fail(error);}
+      finally{if(generation===this.epoch)this.browserSubmitting=false;}
+    },
+    _speakBrowser(reply,generation){
+      if(!browserSpeechAvailable())return Promise.reject(new Error("browser_speech_unsupported"));
+      return new Promise((resolve,reject)=>{
+        const utterance=new window.SpeechSynthesisUtterance(reply);this.utterance=utterance;
+        utterance.lang=(navigator.language||document.documentElement.lang||"en-US");
+        utterance.onend=()=>{
+          if(generation===this.epoch&&this.utterance===utterance){
+            this.utterance=null;this.browserSubmitting=false;this.state="listening";
+            this._render();this._restartBrowser(generation);
+          }
+          resolve();
+        };
+        utterance.onerror=()=>{if(this.utterance===utterance)this.utterance=null;
+          reject(new Error("browser_speech_failed"));};
+        this.state="speaking";this._render();
+        window.speechSynthesis.cancel();window.speechSynthesis.speak(utterance);
+      });
+    },
+    _restartBrowser(generation){
+      clearTimeout(this.browserRestartTimer);
+      this.browserRestartTimer=setTimeout(()=>{
+        if(generation!==this.epoch||!this.recognition||this.state!=="listening")return;
+        try{this.recognition.start();}catch(_error){this.fail(new Error("browser_speech_failed"));}
+      },250);
     },
     async _connect(generation,isReconnect){
       let stream=null,pc=null,audio=null,dc=null,channelTimer=null;
@@ -1517,8 +1653,13 @@
       if(stream){try{stream.getTracks().forEach(track=>track.stop());}catch(_e){}}
     },
     _teardownTransport(){
-      clearTimeout(this.stopTimer);clearTimeout(this.warnTimer);clearInterval(this.authorityTimer);
-      this.stopTimer=null;this.warnTimer=null;this.authorityTimer=null;
+      clearTimeout(this.stopTimer);clearTimeout(this.warnTimer);clearTimeout(this.browserRestartTimer);
+      clearInterval(this.authorityTimer);
+      this.stopTimer=null;this.warnTimer=null;this.browserRestartTimer=null;this.authorityTimer=null;
+      const recognition=this.recognition;this.recognition=null;
+      if(recognition){try{recognition.abort();}catch(_e){}}
+      if(window.speechSynthesis){try{window.speechSynthesis.cancel();}catch(_e){}}
+      this.utterance=null;this.browserTurn=null;this.browserSubmitting=false;
       const pc=this.pc,dc=this.dc,audio=this.audio,stream=this.stream;
       this.pc=null;this.dc=null;this.audio=null;this.stream=null;
       this._disposeTransport(pc,dc,audio,stream);
