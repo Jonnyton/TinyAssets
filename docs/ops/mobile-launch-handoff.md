@@ -29,6 +29,11 @@ cannot start without the founder.
 - **Advertising ID** saved as **No** after the shipped artifact, current merged
   manifest, and locked dependencies all verified that no advertising ID is used. It
   is Actioned in Play but has not been sent for review.
+- WorkOS production now supports Email + Password with its recommended strong policy.
+  The founder/admin remains `jonathan.m.farnsworth@gmail.com`. A separate Play Reviewer
+  user exists at `simkalholdingsllc+tinyassets-play-review@gmail.com` and is Verified +
+  Active; its first isolated sign-in reached the Connect screen. Identity routing is
+  paused for founder review before a second sign-in or any Play credential save.
 - **A signed bundle is live on the internal testing track**: release `1 (1.0)`,
   published 2026-09-03 11:10, 3.1 MB.
   Opt-in link: <https://play.google.com/apps/internaltest/4701716760893982267>
@@ -38,11 +43,12 @@ cannot start without the founder.
 
 Google Play has three gates stacked in a fixed order, and none of them can be skipped:
 
-1. **Sign in details** needs working reviewer credentials. Our app is behind WorkOS
-   AuthKit, and the live sign-in page offers only *"Continue with SSO"* and
-   *"Continue with Google"* — there is **no email-and-password option**, so there is
-   no credential we could hand Google today. Play's own dialog says reviewers "are
-   unable to create accounts, use their own existing accounts, or use free trials."
+1. **Sign in details** needs a final reviewer identity and two clean sign-in proofs.
+   Email + Password is enabled and the separate Simkal-plus-alias user completed one
+   clean sign-in, but it is intentionally not saved to Play while the founder confirms
+   whether that alias is the intended durable reviewer identity. Play's own dialog says
+   reviewers "are unable to create accounts, use their own existing accounts, or use
+   free trials."
 2. **Target audience and content** refuses to open until (1) is complete. Verified by
    opening it: *"You must complete the Sign in details section before starting the
    Target audience and content questionnaire."*

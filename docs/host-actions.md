@@ -339,7 +339,7 @@ only then can the app be promoted to Production and be publicly downloadable.
 Do not confuse this with the internal-testing track already running — internal testing
 does not count toward the requirement, no matter how long it runs.
 
-### Google Play: create a reusable reviewer account — password sign-in is disabled
+### Google Play: finish the reusable reviewer account — identity routing paused
 
 Play Console -> App content -> **Sign in details** (formerly "App access"). Our app is
 behind WorkOS AuthKit, so the honest answer to "Is any part of your app restricted?" is
@@ -351,31 +351,37 @@ exactly what we use. Google then warns, in the dialog itself:
 > existing accounts**, or use free trials to access your app. They are also unable to
 > contact you for more information."
 
-**The fork in the earlier draft of this file is now closed.** I checked the live AuthKit
-sign-in page (`https://unassuming-environment-16.authkit.app/`, the issuer the served app
-config actually names) on 2026-09-02. It offers exactly two things: an email box whose
-button reads **"Continue with SSO"**, and **"Continue with Google"**. There is no
-email-and-password option. So password sign-in is **not enabled** in our WorkOS
-environment, and no credential we could hand Google today would work.
+**Live identity reconciliation, 2026-09-03:** the WorkOS dashboard admin and sole
+TinyAssets team member is Jonathan Farnsworth, `jonathan.m.farnsworth@gmail.com`, with
+the Admin role. Google Play Console is also signed in with that address. The incidental
+Gmail tab used for verification was `simkalholdingsllc@gmail.com`; it is not an admin or
+owner identity.
 
-That leaves one clean action and one poor one. WorkOS documents that AuthKit supports
-Email + Password and that the hosted UI exposes only the methods enabled in the
-dashboard (<https://workos.com/docs/authkit/email-password>,
-<https://workos.com/docs/authkit/hosted-ui>), so this is configuration/account work,
-not a new app authentication implementation:
+Email + Password is now **enabled** in the production WorkOS environment with the
+recommended strong policy (10-character minimum, complexity score 3, breached-password
+rejection). A separate AuthKit user named **Play Reviewer** was created as
+`simkalholdingsllc+tinyassets-play-review@gmail.com`; WorkOS shows it Verified and
+Active with Email + Password, no organization membership, and no connected accounts.
+Its first isolated sign-in reached TinyAssets's **Connect your subscription** screen.
+This did not replace or alter the founder/admin identity, but the address routes through
+the founder's less-preferred Simkal Gmail identity. Further account mutation is paused
+until the founder decides whether to keep that dedicated alias or replace it with a
+reviewer alias based on the preferred Jonathan identity.
 
-- **Enable Email + Password authentication in the WorkOS dashboard** (Authentication →
-  sign-in methods), then create a single review account such as `play-review@tinyassets.io`
-  and sign into the app once from a clean browser so its universe exists. Keep MFA,
+WorkOS documents that AuthKit supports Email + Password and that the hosted UI exposes
+only the methods enabled in the dashboard
+(<https://workos.com/docs/authkit/email-password>,
+<https://workos.com/docs/authkit/hosted-ui>). If the reviewer identity is replaced,
+keep it a dedicated password user rather than a Google OAuth account:
+
+- Create a single review account such as `play-review@tinyassets.io` and sign into the
+  app once from a clean browser so its universe exists. Keep MFA,
   magic-link, location approval, and expiring OTP requirements off for this dedicated
   account. This is the one I recommend: it produces a reusable credential with no
   second factor, which is what Google's own guidance requires.
 - **Hand over a dedicated Google account.** Works in principle, but a fresh Google account
   signing in from a reviewer's machine invites exactly the 2-step-verification and
   new-device challenges Google's guidance tells us to avoid. Prefer the first option.
-
-Why this is yours and not mine: I must not create accounts, and I must not type a password
-into any field. Both halves of this are the parts I am barred from.
 
 **The exact form, so it is a two-minute job when you have the credential.** "Add details"
 opens a dialog with:
@@ -391,8 +397,9 @@ opens a dialog with:
 \* Marked optional by the form, but leaving them empty is what gets an app rejected —
 the reviewer has no other way in.
 
-Before filling the form, verify from a clean browser/device that the credential works
-twice without an email challenge and reaches the signed-in app. Then decide how the
+Before filling the form, verify from a second fresh browser session that the credential
+works again without an email challenge. The current alias has one verified sign-in, not
+two. Then decide how the
 reviewer gets the app's substantive chat surface: provision a dedicated, review-safe AI
 provider connection on that account, or document the intentionally unconnected state
 and the **Skip for now** path. Do not attach a founder/personal provider credential to

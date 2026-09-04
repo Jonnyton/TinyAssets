@@ -27,7 +27,7 @@ remaining declarations:
 
 | Declaration | Live state | Prepared next state |
 |---|---|---|
-| Sign in details | Unstarted; neither Yes nor No selected | **Yes**, after a reusable reviewer account and full, non-personal review-safe access exist. |
+| Sign in details | Unsaved local staging only: **Yes** selected, Add-details dialog empty | WorkOS Email + Password is enabled. A separate Verified + Active reviewer user exists at `simkalholdingsllc+tinyassets-play-review@gmail.com` and completed one isolated sign-in to the Connect screen. Pause until the founder confirms that durable alias, then prove a second clean sign-in and save only after full, non-personal review-safe access exists. |
 | Target audience and content | Unstarted | Founder confirms the staged 18+ answers after Sign in details is complete. |
 | Data safety | Saved draft; not submitted | Reconcile against the exact shipped data flows and founder/legal approval, then submit only after Target audience permits it. |
 | Advertising ID | **Actioned** 2026-09-03; saved **No**, not sent for review | Re-open if the exact uploaded artifact or any native/JavaScript SDK dependency changes. |

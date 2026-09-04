@@ -3,9 +3,10 @@
 Everything needed to publish the TinyAssets Android app to Google Play. As of
 2026-09-03 the app is created, the listing and declarations are filled, and a signed
 bundle is live on the internal testing track, so the founder's remaining actions are:
-(1) try the internal-test build on a phone, (2) enable password sign-in in WorkOS and
-create a Play reviewer account — the one thing genuinely blocking the App content
-rows, (3) review and submit the foreground-service declaration staged in §8a, (4) run
+(1) try the internal-test build on a phone, (2) confirm the durable reviewer identity,
+complete its second clean sign-in, and save it under Play Sign in details — the one
+thing genuinely blocking the App content rows, (3) review and submit the
+foreground-service declaration staged in §8a, (4) run
 the closed test Play requires before production access, and (5) click **Roll out**
 after review. The four upload-keystore secrets are **optional**: see §0.
 All content below is copy-paste ready.
