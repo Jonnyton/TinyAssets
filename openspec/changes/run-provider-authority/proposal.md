@@ -23,6 +23,15 @@ classifies any context without `provider_invocation` as a served turn and demand
 `provider_request`, so the call is held before policy, credentials, serving selection or consent are
 ever examined.
 
+The first implementation exposed a second live reachability failure after the
+same universe refreshed its serving assignment. Run-class binding ids are
+deterministic per owner/universe/provider. The old run-class row survived the
+refresh, so issuing the current child returned `CONFLICT`; meanwhile serving
+status correctly validated the refreshed parent. Every new prompt run was then
+flattened to `permission_denied:provider_not_bound`. The run lane now reuses an
+exact current child and transactionally rebinds a stale child from the current
+serving seed before admitting the run.
+
 History (Codex, cross-family): the run binding landed `9c326385` (2026-08-09) and `04eb0f60`
 (2026-08-11) flipped the run tests to "must hold without served authority". Removing ambient
 authority was intended and correct; **not replacing it with a foreground-run authority lane was an

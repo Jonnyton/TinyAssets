@@ -31,6 +31,14 @@ as launch authority.
 Earliest of: run deadline, claim lease, run cancellation/terminalization, serving-binding expiry.
 Rotation, revocation, credential change or assignment-generation change stops all further launches.
 
+The deterministic run-class binding row is durable across those changes. On a
+later admission, an exact active row is reused. Any row whose credential,
+assignment, operation, role, budget, or expiry facts differ from the freshly
+validated serving parent is refreshed only through the binding service's
+generation-checked transactional rebind. A raw creation conflict is never
+treated as absence of provider authority, and an old row is never trusted as
+current merely because its deterministic id matches.
+
 ## Provider kinds
 The ACTIVE serving assignment is authoritative for both subscription-backed
 and registered open providers. A subscription provider receives only a sealed,

@@ -498,6 +498,112 @@ def test_foreground_run_launches_active_serving_provider_and_settles_once(
     assert claim["state"] == "released"
 
 
+def test_foreground_run_refreshes_a_stale_run_binding_after_serving_rebind(
+    tmp_path: Path,
+    monkeypatch,
+    authenticate_request,
+) -> None:
+    """A real credential rotation refreshes once, then exact children replay."""
+    first, provider, _captured = _run_branch(
+        tmp_path,
+        monkeypatch,
+        authenticate_request,
+        _branch(node_count=1),
+    )
+    assert first["terminal_status"] == "completed", first["terminal_error"]
+
+    from tinyassets.api import runs as api_runs
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.custom_agents import list_bindings
+    from tinyassets.provider_assignment import load_provider_assignment
+    from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
+    from tinyassets.provider_work_authority import provider_work_binding_id
+    from tinyassets.runs import get_run, wait_for
+    from tinyassets.storage.provider_work_authority import (
+        SQLiteProviderWorkAuthorityStore,
+    )
+
+    binding_id = provider_work_binding_id(
+        owner_user_id="acct_alice",
+        universe_id="universe_alice",
+        provider="codex",
+        binding_class="run_graph",
+    )
+    store = SQLiteProviderWorkAuthorityStore(tmp_path)
+    original_child = store.get(binding_id)
+    assert original_child is not None
+
+    # Rotate the actual deposited record, then drive the same public serving
+    # rebind path that reconnecting the app uses.  This advances custody,
+    # assignment, and parent-binding generations while leaving the deterministic
+    # run-class child from the first run in place.
+    write_credential_vault(
+        tmp_path / "universe_alice",
+        [{
+            "credential_type": "llm_subscription",
+            "service": "codex",
+            "auth_json_b64": "eyJyb3RhdGVkIjp0cnVlfQ==",
+        }],
+        owner_user_id="acct_alice",
+        universe_id="universe_alice",
+    )
+    serving = next(
+        row
+        for row in list_bindings(
+            tmp_path, universe_id="universe_alice", limit=100,
+        )
+        if row["status"] == "serving" and row["created_by"] == "acct_alice"
+    )
+    rebound = bind_serving_provider(
+        base_path=tmp_path,
+        universe_dir=tmp_path / "universe_alice",
+        owner_user_id="acct_alice",
+        universe_id="universe_alice",
+        agent_binding_id=serving["agent_binding_id"],
+        expected_revision=int(serving["revision"]),
+        provider="codex",
+    )
+    configured = rebound["agent_binding"]
+    set_serving(
+        base_path=tmp_path,
+        universe_dir=tmp_path / "universe_alice",
+        owner_user_id="acct_alice",
+        universe_id="universe_alice",
+        agent_binding_id=configured["agent_binding_id"],
+        expected_revision=int(configured["revision"]),
+        enabled=True,
+    )
+    assignment = load_provider_assignment(tmp_path, universe_id="universe_alice")
+    assert assignment is not None
+    assert assignment.generation > original_child.assignment_generation
+    assert store.get(binding_id) == original_child, "serving rebind leaves the child stale"
+
+    def run_again() -> dict[str, Any]:
+        response = json.loads(api_runs._action_run_branch({
+            "branch_def_id": "branch_foreground_1",
+            "universe_id": "universe_alice",
+        }))
+        wait_for(response["run_id"], timeout=10)
+        record = get_run(tmp_path, response["run_id"])
+        assert record is not None
+        return record
+
+    second = run_again()
+    assert second["status"] == "completed", second["error"]
+    refreshed_child = store.get(binding_id)
+    assert refreshed_child is not None
+    assert refreshed_child.generation == original_child.generation + 1
+    assert refreshed_child.assignment_generation == assignment.generation
+    assert refreshed_child.assignment_digest == assignment.assignment_digest
+
+    # A third admission sees an exact child. It must reuse it without another
+    # rebind, otherwise a normal concurrent run would fence the prior receipt.
+    third = run_again()
+    assert third["status"] == "completed", third["error"]
+    assert store.get(binding_id) == refreshed_child
+    assert len(provider.calls) == 3
+
+
 def test_foreground_run_launches_selected_open_provider_and_settles_once(
     tmp_path: Path,
     monkeypatch,
