@@ -25,8 +25,8 @@ exceptions in `docs/host-actions.md`.
 | Build | Use the numeric GitHub Actions run number |
 | Primary category | Productivity |
 | Secondary category | None |
-| Price | Free; no in-app purchases in this build |
-| TestFlight | Internal group `Internal`; automatic distribution off; Build 3 attached; 0 testers and no invitations sent |
+| Price | Free; United States (USD) base and `$0.00` schedule for all 175 displayed countries or regions saved 2026-09-03; no in-app purchases in this build |
+| TestFlight | Internal group `Internal`; manual distribution for Xcode builds; Build 3 attached; 0 testers and no invitations sent |
 
 The explicit App ID, App Store Connect record, Apple Distribution certificate/private
 key, App Store provisioning profile, Developer-role CI upload key, and all six protected
@@ -97,14 +97,15 @@ never in this repository.
   and account-holder contact details directly in App Store Connect. Never place
   credentials or personal contact details in this repository.
 
-The en-US **What to Test** text above is saved on Build 3. The Developer-role API
-key cannot save the app-level beta description, disable Build 3's
-`autoNotifyEnabled` value, or attach the build to App Store Version 1.0; those
-three fields require founder reauthentication in App Store Connect. The empty
-Internal group remains configured with automatic distribution off and has zero
-testers, so attaching Build 3 sent no invitation or notification. Keep that group
-empty until the founder approves invitations, and disable build auto-notify before
-adding any tester.
+The en-US **What to Test** text above is saved on Build 3. After founder
+reauthentication, the app-level beta description and verified marketing URL were
+also saved, and Build 3 was selected for App Store Version 1.0. The empty Internal
+group remains configured for manual distribution of Xcode builds and has zero
+testers, so no invitation or notification was sent. The live internal-group and
+build pages expose no automatic tester-notification control; Apple's documented
+checkbox belongs to the external-testing flow. The API's residual
+`autoNotifyEnabled=true` value is therefore inert while there is no external group
+or tester. Keep all groups empty until the founder approves invitations.
 
 Internal testing comes first. External testing may trigger TestFlight App Review
 and is a separate submission boundary.
@@ -264,9 +265,11 @@ one, so the server must remain compatible with the last released shell.
    category, copyright, support/marketing URLs, and manual release are saved. The
    four-type App Privacy draft is fully configured for App Functionality, linked
    to identity, and no tracking, but it is not published and its legal-policy URLs
-   remain blank. Build 3 is attached to the `Internal` TestFlight group and its
-   en-US **What to Test** text is saved; the group has automatic distribution off,
-   zero testers, and no invitations were sent. Stop at any new agreement, DSA
+   remain blank. Build 3 is attached to the `Internal` TestFlight group, selected
+   for App Store Version 1.0, and its en-US **What to Test** and app-level beta
+   description are saved. The group has manual Xcode-build distribution, zero
+   testers, and no invitations were sent. A free price schedule is saved for all
+   175 displayed countries or regions; availability remains unset. Stop at any new agreement, DSA
    trader-status choice, privacy publication, or other legal declaration.
 4. **Complete 2026-09-03:** the founder approved credential creation. A 2048-bit
    Apple Distribution certificate/private-key pair was created and verified, then
@@ -288,7 +291,10 @@ one, so the server must remain compatible with the last released shell.
    Review submission, external testing submission, tester invitation, or public
    release occurred. Receipts: `docs/audits/2026-09-03-ios-testflight-upload-receipt.md`
    and `docs/audits/2026-09-03-ios-testflight-preparation-receipt.md`.
-8. Complete App Privacy, age rating, export, screenshots, review notes, availability,
+8. **Partially complete 2026-09-03:** an authenticated App Store Connect session
+   saved the beta app description and marketing URL, selected Build 3 for Version
+   1.0, and confirmed the free price schedule. Complete App Privacy, age rating,
+   screenshots, review contact/sign-in details, availability,
    and DSA status from verified evidence. Interrupt only where a personal/legal fact
    cannot be established truthfully. Keep release mode manual until publication.
 9. Obtain the action-time confirmations product policy requires immediately before
@@ -296,13 +302,15 @@ one, so the server must remain compatible with the last released shell.
 
 ## External gates that remain
 
-- Founder reauthentication in App Store Connect to save the beta app description,
-  turn Build 3 automatic tester notification off, and select Build 3 for App Store
-  Version 1.0. The Developer-role API key is forbidden from those three writes.
 - An actual iPhone or iOS Simulator for authentic screenshots and device smoke;
   a physical iPhone is required for microphone-release proof if voice ships.
-- Founder approval of live privacy, age-rating, content-rights, export,
-  availability, and DSA/trader declarations.
+- Founder approval of live privacy, age-rating, content-rights, availability,
+  DSA/trader, Mac, and Vision Pro distribution declarations or choices.
+- Account-holder-controlled feedback/reviewer contact details and a dedicated
+  disposable App Review sign-in account, entered only in App Store Connect.
+- Automatic tester notification cannot be changed on the current internal-only
+  UI. Build 3 has no external group or tester, so the API's residual `true` value
+  is inert; revisit the checkbox only if an external-testing group is created.
 - Final founder/counsel approval of the privacy policy, followed by PR #2798 land,
   deploy, and a live check that the iOS disclosure is present.
 - Action-time confirmation where product policy requires it for App Review submission
