@@ -83,3 +83,13 @@ contact details remain personal facts that must not be guessed.
 No external TestFlight review, App Review submission, tester invitation, legal
 declaration, privacy publication, or public release occurred. The failed
 preflight did not add the version to review.
+
+## Follow-up: required screenshots and second preflight
+
+On 2026-09-03 local / 2026-09-04 UTC, macOS CI run `33839432494` captured the
+required iPhone and iPad images from Build 3's exact source. Both were validated,
+visually inspected, uploaded, and verified after reloading App Store Connect. A
+fresh **Add for Review** preflight no longer listed either screenshot; it still
+failed without creating a submission on Content Rights, privacy URL/publication,
+and the reviewer contact/sign-in block. Full evidence:
+`docs/audits/2026-09-03-ios-app-store-screenshot-preflight-receipt.md`.

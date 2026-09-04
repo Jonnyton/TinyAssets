@@ -358,29 +358,42 @@ None of it can produce an installable app without account-owned signing material
    Vision Pro availability are disabled and saved. Storefront availability is
    still unset. Factual App Review Notes describing the pinned Capacitor shell,
    absent commerce/advertising/voice UI, and critical review paths are also saved;
-   no reviewer credential or personal contact detail was entered.
-8. Capture real iPhone-sized screenshots from the signed app and verify sign-in →
-   connect → chat through TestFlight. This Windows host cannot supply that proof:
-   Apple's simulator inventory failed because `xcrun` is unavailable. Unlock the
-   secure local password vault to enter the existing least-privilege reviewer
-   identity directly in App Store Connect, and supply the account-holder review
-   contact details. Do not copy either into the repository.
-9. Counsel/founder must complete Content Rights: TinyAssets accesses third-party
+   no reviewer credential or personal contact detail was persisted at that point.
+8. **Complete — required screenshots (2026-09-03).** Manual macOS CI run
+   `33839432494` built the simulator app from Build 3's exact source, captured and
+   validated `1284x2778` iPhone and `2064x2752` iPad images, and both images were
+   visually inspected and uploaded. App Store Connect shows `1 of 10 Screenshots`
+   in each required set after reload. Receipt:
+   `docs/audits/2026-09-03-ios-app-store-screenshot-preflight-receipt.md`.
+9. **Prepared — reviewer identity (2026-09-03).** The dedicated
+   `play-review@tinyassets.io` identity and its saved Google Play password were
+   recovered directly from Play's `Play Reviewer` record and accepted by Apple's
+   fields without entering the secret in this repository. Known contact name/email
+   are Jonathan Farnsworth / `jonathan.m.farnsworth@gmail.com`. The founder's local
+   candidate profile at
+   `C:\Users\Jonathan\Projects\Job Search\.claude\skills\job-application-assistant\01-candidate-profile.md`
+   contains the authoritative phone number; do not duplicate it in this repository.
+   Explicit action-time authorization is still required before transmitting that
+   number to App Store Connect. Apple will not persist this page until the whole
+   contact block is complete.
+10. Counsel/founder must complete Content Rights: TinyAssets accesses third-party
    content, while Apple's truthful **Yes** answer also attests necessary rights in
    every region. That legal fact was not inferred; the modal was cancelled.
-10. Complete the remaining truthful console declarations. Before the final
+11. Complete the remaining truthful console declarations. Before the final
    Submit for Review decision, choose whether to accept the documented Guideline 4.2 wrapper
    risk or first add and prove a meaningful iPhone-native interaction.
-11. If realtime voice is enabled in the candidate, review the final **Audio Data** and
+12. If realtime voice is enabled in the candidate, review the final **Audio Data** and
    **Other User Content** declarations against the provider retention configuration and
    require physical-iPhone proof that capture stops on background/end before submission.
 
-**Apple preflight evidence (2026-09-03):** **Add for Review** returned **Unable
-to Add for Review** and created no submission. The exact unresolved requirements
-are one 6.5-inch iPhone screenshot, one 13-inch iPad screenshot, Content Rights,
-Privacy Policy URL plus Admin-provided privacy practices, reviewer
+**Apple preflight evidence (2026-09-03):** after both required screenshots persisted,
+**Add for Review** returned **Unable to Add for Review** and created no submission.
+The screenshot blockers are gone. The exact unresolved requirements are Content
+Rights, Privacy Policy URL plus Admin-provided privacy practices, reviewer
 username/password, and reviewer first name, last name, email, and `+` country-code
-phone number. Version 1.0 remains **Prepare for Submission** with manual release.
+phone number. The reviewer credentials and contact values are known; transmitting the
+existing profile phone number to Apple still requires explicit action-time
+authorization. Version 1.0 remains **Prepare for Submission** with manual release.
 
 ### Google Play: start the 12-tester closed test — this is the 14-day clock
 

@@ -147,6 +147,36 @@ used only for the named purpose, and not used for tracking.
 | User Content → Other User Content | Conversation text and user-selected text/code/document attachments | App Functionality |
 | Other Data → Other Data Types | Provider credential or connection material deposited by the user into the secure vault | App Functionality |
 
+### Verified code basis (2026-09-03)
+
+- **The iOS shell uses the same hosted client and data path.**
+  `mobile/capacitor.config.json` fixes the bundle to
+  `https://tinyassets.io/mcp/app`; it does not add a separate native data plane.
+- **Email address and user ID are identity data used for app functionality.**
+  `tinyassets/auth/workos_provider.py` validates the WorkOS AuthKit token and binds
+  its stable `sub` user ID to the TinyAssets identity. The deployed legal disclosure
+  identifies the corresponding WorkOS sign-in email and user ID.
+- **Conversation text is retained as user content.**
+  `tinyassets/conversation_store.py` persists `speaker` and `content` per authenticated
+  universe/session. `tinyassets/onboarding/app.html` sends typed content through
+  `converse` and restores the recent conversation.
+- **Selected files are user content, not ambient device collection.**
+  `tinyassets/onboarding/app.html` exposes an explicit file picker, accepts text/code/
+  document formats, rejects binary/oversized files, reads selected content client-side,
+  and embeds it verbatim in the user's message.
+- **Provider connection material is deposited intentionally and retained in a vault.**
+  `tinyassets/connect_deposit.py` presents a password input and states the credential
+  is written to the private vault, never logged or echoed. `tinyassets/credential_vault.py`
+  validates and atomically persists those records.
+- **No native analytics, advertising, or purchase SDK is present.**
+  `mobile/package.json` contains only Capacitor core/platform/app/browser/splash/status
+  dependencies. The native shell has no analytics, advertising, StoreKit, payment, or
+  crash-reporting dependency; voice remains dark for Build 3.
+
+This evidence supports the saved four-row draft. It does **not** supply the legal/vendor
+attestation required to publish it: vendor contracts and production treatment still
+need founder/counsel confirmation.
+
 For every row: **linked to identity: Yes**; **tracking: No**; advertising,
 third-party advertising, and developer advertising purposes: **No**. The app has
 no advertising SDK, analytics SDK, mobile crash-reporting SDK, location, contacts,
@@ -316,23 +346,29 @@ one, so the server must remain compatible with the last released shell.
 
 ## External gates that remain
 
-- A Mac/iOS Simulator or actual Apple device for the exact screenshots Apple
-  requires: at least one 6.5-inch iPhone image and one 13-inch iPad image. This
-  Windows host has no `xcrun`; a physical iPhone is additionally required for
-  microphone-release proof if voice ships.
+- The required 6.5-inch iPhone and 13-inch iPad screenshots were captured from Build
+  3's exact source, passed dimension/alpha and visual checks, and persisted in App
+  Store Connect. Receipt:
+  `docs/audits/2026-09-03-ios-app-store-screenshot-preflight-receipt.md`. A physical
+  iPhone is separately required for microphone-release proof if voice ships; Build 3
+  remains voice-dark.
 - Founder/counsel confirmation of Content Rights (Apple's truthful
   third-party-content answer also attests necessary rights), plus live privacy,
   storefront availability, and DSA/trader declarations.
 - Account-holder-controlled reviewer first name, last name, email, and
-  international-format phone number, plus the existing least-privilege App Review
-  username/password, entered only in App Store Connect.
-  The secure local password vault was locked during this pass, so credentials
-  were not extracted or copied into repository files.
+  international-format phone number. The existing least-privilege App Review
+  username/password was recovered from Google Play's dedicated reviewer record and
+  accepted by the App Store Connect fields without copying it into repository files.
+  The founder's local `01-candidate-profile.md` is the authoritative source for the
+  phone; do not duplicate it here. Apple saves the sign-in and contact fields as one
+  block, and explicit action-time authorization is still required before transmitting
+  that phone number to Apple.
 - Automatic tester notification cannot be changed on the current internal-only
   UI. Build 3 has no external group or tester, so the API's residual `true` value
   is inert; revisit the checkbox only if an external-testing group is created.
-- Final founder/counsel approval of the privacy policy, followed by PR #2798 land,
-  deploy, and a live check that the iOS disclosure is present.
+- Final founder/counsel approval of the privacy policy. PR #2798 is landed and deployed,
+  and the live disclosure already includes iOS; its own visible **Draft v0** status is
+  the remaining policy blocker.
 - Action-time confirmation where product policy requires it for App Review submission
   or other representational external actions, notwithstanding the standing directive.
 
