@@ -29,4 +29,3 @@ Enabling Realtime voice SHALL NOT enroll, select, replace, or fall back to any p
 - **GIVEN** the voice session switch is enabled and `TINYASSETS_ALLOW_API_KEY_PROVIDERS` is disabled
 - **WHEN** provider routing selects a writer
 - **THEN** the voice allowance does not make API-key writer providers eligible
-
