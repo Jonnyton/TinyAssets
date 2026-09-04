@@ -18,7 +18,7 @@ dedicated scratch filesystem with project quotas) is the named follow-up.
 
 ### Requirement: Workspace admission is one transaction and release follows a persisted outbox that reconciles every crash window
 
-The runtime SHALL perform the storage reservation (lease bound or universe quota), the pool-total check, the job-lock acquisition, the byte-ledger reservation of the operation's maximum charge and the `ACTIVE` transition in one `BEGIN IMMEDIATE` transaction in the runs database, SHALL write a run's terminal status and its `workspace_outbox` entries in one transaction, and SHALL release storage and locks only through that outbox.
+The runtime SHALL perform the storage reservation (lease bound or universe quota), the pool-total check, the job-lock acquisition, the byte-ledger reservation of the operation's maximum charge and the `ACTIVE` transition in one `BEGIN IMMEDIATE` transaction in the workspace-owning runs database, and SHALL release storage and locks only through a persisted `workspace_outbox` entry. When the canonical run row and workspace state share one database, terminal status and outbox entries SHALL be one transaction. When the run row lives at the data root and workspace state lives in the universe database, the terminal path SHALL commit the root status, immediately select the exact universe from server-written execution context, enqueue release in that universe database, and kick that universe's sweep; it SHALL never derive a path from a noncanonical universe id or create an absent universe database. The universe's periodic sweep SHALL treat a terminal status in the root database as recovery evidence and enqueue the same release after a crash between the two database writes.
 An outbox entry SHALL carry one action — `wipe_scratch(lease, generation)`,
 `discard_permanent_generation(repo_key, generation)` or
 `release_lock_only` — and the universe and host locks to release. A single
@@ -42,6 +42,14 @@ no grace-window reuse.
 #### Scenario: two admissions cannot oversubscribe the pool
 - **WHEN** two checkouts are admitted concurrently with 5 GiB of pool capacity left and 4 GiB leases
 - **THEN** exactly one acquires a reservation and the other is refused as `workspace_pool_busy`
+
+#### Scenario: a root-owned terminal run releases universe-owned locks immediately
+- **WHEN** a run row at the data root becomes terminal while its lease and locks live in the exact universe database named by its server-written execution context
+- **THEN** the terminal path enqueues release in that universe database and kicks its sweep without waiting for the periodic repair pass
+
+#### Scenario: a crash between the two terminal writes is repaired
+- **WHEN** the root terminal status committed but the daemon stopped before the universe outbox entry committed
+- **THEN** the next universe sweep reads the terminal root status, enqueues the release, and processes it through the same idempotent outbox protocol
 
 #### Scenario: the next user's run never sees the previous lease's bytes
 - **WHEN** a lease is released and a different universe's run is granted a lease

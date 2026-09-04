@@ -154,6 +154,12 @@ def test_unsigned_windows_lifecycle_is_bounded_and_diagnostic() -> None:
     assert "TimeoutExpired" in supervisor
     assert "process.wait(timeout=" in supervisor
     assert "taskkill" in supervisor
+    assert "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE" in supervisor
+    assert "AssignProcessToJobObject" in supervisor
+    assert "_drain_stream" in supervisor
+    assert "subprocess.PIPE" in supervisor
+    assert "thread.join(timeout=" in supervisor
+    assert "_CHILD_BOOTSTRAP" in supervisor
 
 
 def test_windows_lifecycle_capture_replays_a_fixed_size_snapshot(
@@ -197,12 +203,43 @@ def test_windows_lifecycle_capture_replays_a_fixed_size_snapshot(
     assert "observed at least 2055 bytes" in warning
 
 
-def test_windows_lifecycle_supervisor_has_no_descendant_eof_dependency() -> None:
+def test_windows_lifecycle_capture_storage_is_strictly_bounded(tmp_path: Path) -> None:
+    supervisor = _supervisor_module()
+    capture_path = tmp_path / "bounded.capture"
+
+    class SustainedOutput:
+        remaining = 5_000_000
+
+        def read(self, size: int) -> bytes:
+            take = min(size, self.remaining)
+            self.remaining -= take
+            return b"x" * take
+
+    with capture_path.open("w+b") as capture_writer:
+        observed = supervisor._drain_stream(
+            SustainedOutput(),
+            capture_writer=capture_writer,
+            max_bytes=4096,
+        )
+
+    assert observed == 5_000_000
+    assert capture_path.stat().st_size == 4096
+
+
+def test_windows_lifecycle_closes_tree_before_bounded_drain_wait() -> None:
     supervisor = SUPERVISOR.read_text(encoding="utf-8")
 
-    assert "subprocess.PIPE" not in supervisor
-    assert "_drain_stream" not in supervisor
-    assert "threading.Thread" not in supervisor
+    close_boundary = supervisor.index('_checkpoint("process_tree.closed")')
+    bounded_join = supervisor.index("thread.join(timeout=", close_boundary)
+    assert close_boundary < bounded_join
+
+
+def test_windows_lifecycle_assigns_guard_before_releasing_bootstrap() -> None:
+    supervisor = SUPERVISOR.read_text(encoding="utf-8")
+
+    assign = supervisor.index("process_job.assign(process)")
+    release = supervisor.index('process.stdin.write(b"1")')
+    assert assign < release
 
 
 def test_windows_lifecycle_cleanup_never_uses_run_timeout_cleanup(
@@ -248,58 +285,6 @@ def test_windows_lifecycle_cleanup_never_uses_run_timeout_cleanup(
 
     assert cleanup.killed is True
     assert target.killed is True
-
-
-@pytest.mark.skipif(
-    sys.platform != "win32",
-    reason="Windows inherited file-handle cursor contract",
-)
-def test_windows_lifecycle_capture_reader_is_independent_from_live_writer(
-    tmp_path: Path,
-) -> None:
-    supervisor = _supervisor_module()
-    capture_path = tmp_path / "live-capture.bin"
-    ready_path = tmp_path / "writer-ready"
-    writer_script = """
-import os
-import pathlib
-import sys
-
-sys.stdout.buffer.write(b"phase-marker\\n")
-sys.stdout.buffer.flush()
-pathlib.Path(sys.argv[1]).write_text("ready", encoding="utf-8")
-payload = b"x" * 65536
-while True:
-    os.write(sys.stdout.fileno(), payload)
-"""
-
-    with capture_path.open("w+b") as capture_writer:
-        process = subprocess.Popen(
-            [sys.executable, "-c", writer_script, str(ready_path)],
-            stdin=subprocess.DEVNULL,
-            stdout=capture_writer,
-            stderr=subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        try:
-            deadline = time.monotonic() + 5
-            while not ready_path.exists() and time.monotonic() < deadline:
-                time.sleep(0.01)
-            assert ready_path.exists(), "synthetic capture writer did not start"
-
-            destination = io.StringIO()
-            supervisor._replay_capture(
-                capture_path,
-                capture_writer=capture_writer,
-                name="stdout",
-                destination=destination,
-                max_bytes=262_144,
-            )
-        finally:
-            process.kill()
-            process.wait(timeout=5)
-
-    assert destination.getvalue().startswith("phase-marker\n")
 
 
 @pytest.mark.skipif(
@@ -383,7 +368,7 @@ while ($true) {
     sys.platform != "win32" or PWSH is None,
     reason="Windows inherited descendant-handle contract",
 )
-def test_windows_lifecycle_supervisor_does_not_wait_for_descendant_pipe_eof(
+def test_windows_lifecycle_supervisor_terminates_escaped_descendants(
     tmp_path: Path,
 ) -> None:
     assert PWSH is not None
@@ -400,7 +385,7 @@ def test_windows_lifecycle_supervisor_does_not_wait_for_descendant_pipe_eof(
 Set-Content -LiteralPath $PidPath -Value $PID -NoNewline
 [Console]::Out.WriteLine("escaped descendant inherited output")
 Start-Sleep -Seconds 5
-Set-Content -LiteralPath $DonePath -Value "finished" -NoNewline
+Set-Content -LiteralPath $DonePath -Value "escaped" -NoNewline
 """,
         encoding="utf-8",
     )
@@ -441,6 +426,7 @@ exit 0
     env["TMP"] = str(tmp_path)
 
     started = time.monotonic()
+    escaped_pid = None
     try:
         result = subprocess.run(
             [
@@ -467,15 +453,37 @@ exit 0
         )
         supervisor_elapsed = time.monotonic() - started
     finally:
-        deadline = time.monotonic() + 8
-        while not escaped_done_path.exists() and time.monotonic() < deadline:
+        deadline = time.monotonic() + 2
+        while not escaped_pid_path.exists() and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert escaped_done_path.read_text(encoding="utf-8") == "finished"
+        if escaped_pid_path.exists():
+            escaped_pid = int(escaped_pid_path.read_text(encoding="utf-8"))
+            probe = subprocess.run(
+                ["tasklist.exe", "/FI", f"PID eq {escaped_pid}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if str(escaped_pid) in probe.stdout:
+                subprocess.run(
+                    ["taskkill.exe", "/PID", str(escaped_pid), "/T", "/F"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                    check=False,
+                )
 
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
     assert supervisor_elapsed < 3
     assert "lifecycle parent exiting with escaped PID" in output
+    assert "stage=process_tree.closed" in output
+    assert escaped_pid is not None
+    assert str(escaped_pid) not in probe.stdout
+    time.sleep(1)
+    assert not escaped_done_path.exists()
 
 
 def test_release_workflow_has_no_fake_signature_fallback() -> None:

@@ -60,9 +60,16 @@ another's; a universe never needs to be bigger than the codebase it works on.
   the runs database; the reservation is reconciled downward to measured
   bytes after the transfer, and an unknown or interrupted transfer keeps
   the maximum.
-- **Terminal workspace outbox** *(R2, R3)*: a run's terminal status and its
-  outbox entries are written in one transaction into `workspace_outbox`
-  (runs database). Entries carry an action — `wipe_scratch(lease,
+- **Terminal workspace outbox** *(R2, R3)*: admission state lives in the
+  universe's runs database while the canonical run row lives at the data
+  root. On a terminal transition the root status commits, the runtime
+  immediately selects the exact universe from server-written execution
+  context, writes its `workspace_outbox` entry there, and kicks that
+  universe's sweep. The two WAL databases cannot provide one crash-atomic
+  transaction, so the periodic universe sweep treats a terminal root status
+  as recovery evidence and repairs a crash between those writes. When run and
+  workspace state share one database, status and outbox remain one
+  transaction. Entries carry an action — `wipe_scratch(lease,
   generation)`, `discard_permanent_generation(repo_key, generation)`,
   `release_lock_only` — plus the universe and host locks to release. A
   single in-process processor claims entries at-least-once with a claim
