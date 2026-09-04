@@ -1,9 +1,9 @@
 # Google Play Console read-only reconciliation
 
-**Date:** 2026-09-03  
+**Date:** 2026-09-03
 **Environment:** authenticated Google Play Console in Chrome; read-only navigation
 only. No form control was changed, no draft was saved, and nothing was uploaded,
-submitted, invited, rolled out, or published.  
+submitted, invited, rolled out, or published.
 **Candidate branch/head:** `codex/android-store-release` at `d4cdcfc1` before this
 evidence-only update.
 
