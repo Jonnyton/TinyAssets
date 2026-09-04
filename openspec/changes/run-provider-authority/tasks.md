@@ -37,6 +37,7 @@
       that the reviewed effect happened exactly once. Patches does not inspect,
       edit, run, or delete the live branch and retains no private identifiers or
       content.
-- [ ] 2.4 Fresh opposite-family review agrees that the follow-up preserves exact
-      provider, owner, universe, policy, revocation, one-use carrier, budget, and
-      settlement fences before landing.
+- [ ] 2.4 Fresh opposite-family review, or the documented hard-provider-limit
+      independent-review fallback, agrees that the follow-up preserves exact
+      provider, owner, universe, policy, revocation, one-use carrier, budget,
+      and settlement fences before landing.

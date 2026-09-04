@@ -3,7 +3,8 @@
 Cross-family review: Codex, 2026-08-26 (ADAPT before the first build). Ownership
 transferred to Patches on 2026-09-03 after bound-agent live proof still failed.
 The follow-up implementation requires a fresh opposite-family review before
-landing.
+landing, or the documented hard-provider-limit independent-review fallback in
+`docs/reference/quality-gates.md` when that provider is unavailable.
 
 ## The primitive
 A user-authorized run must NOT carry a served request capability. A request capability represents
