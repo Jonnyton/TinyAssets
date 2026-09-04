@@ -3,10 +3,12 @@
 Everything needed to publish the TinyAssets Android app to Google Play. As of
 2026-09-03 the app is created, the listing and declarations are filled, and a signed
 bundle is live on the internal testing track, so the founder's remaining actions are:
-(1) try the internal-test build on a phone, (2) enable password sign-in in WorkOS and
-create a Play reviewer account — the one thing genuinely blocking the App content
-rows, (3) run the closed test Play requires before production access, and (4) click
-**Roll out** after review. The four upload-keystore secrets are **optional**: see §0.
+(1) try the internal-test build on a phone, (2) confirm the durable reviewer identity,
+complete its second clean sign-in, and save it under Play Sign in details — the one
+thing genuinely blocking the App content rows, (3) review and submit the
+foreground-service declaration staged in §8a, (4) run
+the closed test Play requires before production access, and (5) click **Roll out**
+after review. The four upload-keystore secrets are **optional**: see §0.
 All content below is copy-paste ready.
 
 Package name (permanent once published): **`io.tinyassets.app`**
@@ -27,7 +29,7 @@ Package name (permanent once published): **`io.tinyassets.app`**
 | Phone | ~~Verify the contact phone `+12067997835`.~~ **Done 2026-09-02 — and it was never a founder action.** It took one click in the Console and sent no SMS code, despite the padlock text implying otherwise. Try such a step before handing it over. | — |
 | Payment | ~~Authorize the $25 fee.~~ **Done** with the account. | — |
 | Signing key | The keystore is generated (§2, 2026-09-01). Adding its 4 values as repo secrets is **optional, not blocking** — `mobile/container/` builds and signs the bundle with no secret at all, and that is how the shipped build was made. Worth doing anyway: it turns each future release into one `gh workflow run`. One command, §3; an agent cannot run it (`gh secret set` is denied to it). | your machine → GitHub secrets |
-| Console forms | Creating the app, its declarations (incl. US export laws), listing, Data safety, content rating and the internal-testing release are **form submissions on your Google account**: the agent drives them in the browser only after an explicit "yes" in chat. Those named here are **done** (2026-09-02/03); what is left needs the reviewer account below. | Play Console (agent, gated on your yes) |
+| Console forms | Creating the app, legal/policy declarations (incl. US export laws), Data safety, content rating, tester invitations, release uploads, review submission, and rollout are consequential account actions: the agent drives them only after the required action-time confirmation. Routine store-asset safety correction is different: when a listing accidentally exposes private material, the agent may remove that exact asset, replace it with an already prepared and verified-safe asset, and save the draft without asking again. That standing authority does not extend to unrelated media, sending for review, or publishing. | Play Console (agent; consequence-gated) |
 | **Device check** | **The live one.** Install the internal-test build, sign in, chat once: <https://play.google.com/apps/internaltest/4701716760893982267> | your phone |
 | Publish | Promote to Production → submit for review → click **Roll out**. | Play Console |
 
@@ -94,6 +96,34 @@ correct. CI is immune because it always starts clean.
 **Do not "fix" a future rejection by lowering the target.** The number only ever
 goes up; re-check the page above before each release, because the August cutover
 repeats annually.
+
+---
+
+## 1b. Version and release gates — generated defaults are not a release strategy
+
+`mobile/android-release.json` is the checked-in Android release source of truth. It
+records the next candidate: package `io.tinyassets.app`, version code `2`, version
+name `1.0.1`, min SDK 24, target/compile SDK 36. The existing internal-track artifact
+is code `1`, name `1.0`; promoting that exact artifact between tracks needs no rebuild.
+
+Before uploading any new AAB, increase `versionCode`; Play never accepts a code it has
+seen before, even on a test track. A `mobile-v<versionName>` tag must match the file's
+`versionName` exactly. Both the GitHub workflow and local container now regenerate the
+platform, apply the checked-in version, verify identity/SDK/permissions/artwork, run
+`lintRelease`, verify Gradle's merged release manifest, sign with the pinned upload
+certificate, and emit a SHA-256 file beside the AAB.
+
+The dated evidence, smoke-test matrix, Android-vitals thresholds, track progression,
+and first-release/update rollback plans live in
+[`android-release-verification.md`](android-release-verification.md).
+
+The next candidate also carries a dormant native microphone bridge for the
+first-class voice lane. It requests `RECORD_AUDIO` only after a web request from the
+exact production origin and a native disclosure/Continue tap, grants audio capture
+only, and tears capture down when the app backgrounds. **Do not enable the web voice
+flag, mention voice in the listing, or change Data safety answers until the internal
+phone matrix in the verification sheet is green.** Presence of the permission is not
+evidence that capture works or that audio is collected.
 
 ---
 
@@ -237,8 +267,9 @@ Play's taxonomy, not ours. Answer exactly:
 - **Does your app collect or share user data?** Yes.
 - **Is all of the user data collected by your app encrypted in transit?** Yes.
 - **Do you provide a way for users to request that their data is deleted?** Yes.
-- **Account creation:** Yes, the app lets users create an account (sign-in via
-  WorkOS AuthKit). **Account deletion URL:** `https://tinyassets.io/account`.
+- **Account creation:** Yes, the app lets users create an account through both
+  **Username and password** and **OAuth** in WorkOS AuthKit. **Account deletion URL:**
+  `https://tinyassets.io/account`.
   Deleting the account deletes all associated data → answer that no separate
   partial-deletion option is offered.
 - **Data types collected** — each one *Collected*, *Not shared*, *not ephemeral*.
@@ -253,6 +284,17 @@ Play's taxonomy, not ours. Answer exactly:
   | Messages → **Other in-app messages** | what you say to your universe | **Required** — chatting *is* the app's primary functionality, and Play asks that data required for primary functionality be declared required, not that the user could decline to type | App functionality |
   | Files and docs → **Files and docs** | attachments you send it | Optional (attaching is a choice) | App functionality |
   | App activity → **Other user-generated content** | the AI-provider credential you deposit (Play has no "credentials" type; this is its category for user-entered content that fits nowhere else) | Optional (Connect can be skipped) | App functionality |
+
+  **Voice is intentionally absent from this saved-data draft.** The Android
+  candidate contains dormant microphone plumbing, but the web control and store copy
+  remain off. Before enabling it, record the real phone/network behavior and take one
+  of these evidence-backed branches:
+
+  | Observed voice behavior | Data safety consequence |
+  |---|---|
+  | Raw audio leaves the device or is retained by TinyAssets/a provider | Add **Audio files → Voice or sound recordings** and accurately mark collection, sharing, retention/ephemeral handling, optionality, and purpose. |
+  | Audio stays on-device and only a transcript leaves the device | Do not add the audio type solely for local processing; keep the retained/sent transcript under **Messages → Other in-app messages**, and preserve device/network proof. |
+  | Behavior cannot be proved | Keep voice disabled and do not guess at the declaration. |
 
   Do **not** declare Financial info → Purchase history unless the paid plan is
   bought inside the Android app (see §8, payments).
@@ -271,6 +313,11 @@ Play's taxonomy, not ours. Answer exactly:
 - **Data sold?** No. **Used for ads?** No.
 - **Security practices:** encrypted in transit — Yes; deletion mechanism — Yes;
   independent security review — No.
+
+This section is a **policy draft, not legal approval**. Immediately before submission,
+compare every selected Console row against the exact release's permissions, SDKs,
+live privacy notice, account-deletion behavior, and processor contracts. The founder
+must approve the final answers; an agent must not make that declaration.
 
 ---
 
@@ -312,7 +359,7 @@ that is expected, not a mis-click.
 ## 8. Target audience & other declarations
 
 - **Target audience:** 18+ (an AI productivity tool; avoids the stricter
-  child-directed rules). Confirm.
+  child-directed rules). Saved and Actioned 2026-09-03; not sent for review.
 - **Ads:** No ads → declare "No".
 - **Government app:** No. **Financial features:** No.
 - **News app:** No.
@@ -325,14 +372,77 @@ that is expected, not a mis-click.
 
 ---
 
+## 8a. Foreground-service declaration — required before production review
+
+The app targets Android 14+ and declares a `dataSync` foreground service for the
+short-lived, user-initiated local OAuth callback listener. Google's current rule
+requires every foreground-service type to be declared in Play Console with a feature
+description, defer/interruption impact, and demonstration video. The earlier claim
+that this type needed no Play declaration was false.
+
+The exact staged copy and video shot list are in
+[`android-release-verification.md`](android-release-verification.md). They are prepared
+evidence, not a submitted legal/policy declaration. The founder must review the facts
+and authorize the Console submission.
+
+Use this approval packet only after the internal-phone recording matches it:
+
+| Play prompt | Draft answer / evidence |
+|---|---|
+| Foreground-service type | `dataSync` |
+| Feature using it | User-initiated **Connect OpenAI** subscription sign-in. TinyAssets temporarily runs a local loopback callback listener while the external browser completes OAuth; a persistent notification keeps the operation visible. |
+| Why it cannot be deferred | If the listener is not ready while the external sign-in completes, its local callback cannot be received and the user must restart sign-in. No background sync or user content is lost. |
+| What happens if interrupted | The callback is not delivered, the attempt times out, and no credential from that attempt is stored. The user can retry. |
+| Video evidence | Tap **Connect OpenAI**; show the foreground-service notification; complete or cancel the browser step; return to TinyAssets; show the notification disappearing. Redact account identifiers, callback parameters, and secrets. |
+
+Do not submit if the notification is absent, remains after success/cancel/timeout, the
+service starts without the user's Connect action, or the callback/credential behavior
+differs from the draft. Record the discrepancy and fix/retest first.
+
+---
+
+## 8b. Advertising ID declaration — saved answer: No
+
+The live App content overview previously showed this as a separate unstarted
+declaration. For any candidate, answer **No** only after rebuilding the exact upload
+artifact and passing merged-manifest verification:
+
+- `mobile/package.json` contains no ads, analytics, Firebase, or Play advertising SDK.
+- `mobile/scripts/verify_android_release.py` permits only Internet, foreground-service,
+  microphone, and Capacitor's non-exported receiver permission. If a dependency merges
+  `com.google.android.gms.permission.AD_ID`, the release fails on permission drift.
+- Re-open this decision whenever dependencies change; absence from the source manifest
+  alone is insufficient because library manifests can add it during merge.
+
+Fresh exact-artifact evidence (2026-09-03): the downloaded version `1 (1.0)` APK hash
+matches the recorded release evidence and Android build-tools 36 reports no `AD_ID`
+permission. Play's authenticated uploaded-artifact view independently lists version
+`1 (1.0)` on Internal testing and shows only `FOREGROUND_SERVICE_DATA_SYNC` in its
+expanded sensitive-permission row. Candidate head
+`d7bb24d1c28a64ed5c50b2ad7608916227899dd2` also passed run `33823719041` through a
+real `bundleRelease` followed by the merged-manifest verifier. All 226 package-lock
+entries were searched; none names an ads, advertising, analytics, Firebase, Google
+Mobile Ads, or Play Services dependency. The exact form answer supported by both the
+active baseline and the candidate is therefore:
+
+> **Does your app use advertising ID? No.**
+
+With explicit approval, this answer was saved in Play Console on 2026-09-03. Play
+confirmed **Change saved** and the App content overview moved Advertising ID from
+**Need attention** to **Actioned**. It remains an unsent Publishing overview change;
+nothing was submitted for review or published.
+
+---
+
 ## 9. Graphics (staged in `docs/ops/play-assets/` — see that folder)
 
 - **App icon:** 512×512 PNG (rendered by `mobile/scripts/render_app_icons.py
   --from-logo … --font …`, see `mobile/resources/README.md`; the committed file
   is canonical — regenerate only to change the mark).
 - **Feature graphic:** 1024×500 PNG.
-- **Phone screenshots:** ≥2, 16:9 or 9:16, min 320px — captured from the live app
-  (sign-in, a universe conversation). Capture procedure in §10.
+- **Phone screenshots:** ≥2, 16:9 or 9:16, min 320px — captured from the live app.
+  The staged pair is the signed-out screen plus the Connect view; dimensions and
+  privacy state are recorded in the asset README. Capture procedure in §10.
 
 ---
 
@@ -340,8 +450,16 @@ that is expected, not a mis-click.
 
 Screenshots come from the live app so they're honest:
 1. Open `https://tinyassets.io/mcp/app` (or the installed app) at phone width.
-2. Capture: the sign-in screen, a universe conversation, the Connect view.
-3. Save to `docs/ops/play-assets/screenshots/` and upload in the listing.
+2. Capture a representative set without account, universe, credential, branch, run,
+   debug, notification, or browser-chrome identifiers.
+3. Save to `docs/ops/play-assets/screenshots/`; run the release artwork verifier;
+   visually inspect every file; only then upload it in the listing.
+
+On 2026-09-03, a clean 540×960 signed-out capture replaced the stale conversation
+image that exposed an internal universe id and implementation discussion. The pair
+passes the repository's Play artwork rules. The live Console draft was then corrected
+and saved: its two attached phone screenshots are `01-sign-in.png` and
+`02-connect-subscription.png`; the private conversation image is no longer attached.
 
 ---
 
@@ -353,15 +471,16 @@ not as work outstanding:
 1. ~~Play Console → **Create app**~~ — done: name `TinyAssets`, App, Free, declarations
    accepted, Play App Signing enrolled.
 2. ~~Fill the listing (§4), Data safety incl. the account-deletion URL (§6), Content
-   rating (§7), privacy URL (§4/§5), graphics (§9).~~ — done, except **Target audience
-   (§8)**, which Play refuses to open until Sign in details has a reviewer account.
+   rating (§7), privacy URL (§4/§5), graphics (§9), Sign in details, and Target audience
+   (§8).~~ — done. Data safety was updated to include both password and OAuth account
+   creation and saved as Actioned on 2026-09-03.
 3. ~~**Internal testing** release~~ — done 2026-09-03 11:10: bundle built by
    `mobile/container/`, uploaded, rolled out. Opt-in link in the status checklist below.
 
 Outstanding:
 
 4. Verify the full loop on a device from the internal-test link.
-5. Reviewer account → Sign in details → Target audience (§8) → submit Data safety.
+5. Record the foreground-service behavior video and complete that declaration (§8a).
 6. **Closed test**, 12 testers for 14 days, then apply for production access.
 7. Promote to **Production** → submit for review (hours–days) → **Roll out**.
 
@@ -379,8 +498,13 @@ Outstanding:
 > Testers see the temporary name `io.tinyassets.app (unreviewed)` until the
 > listing review completes; that is expected, not a defect.
 
-Play Console's App content counter reads **8 of 11**. That counter gates
-*production*, not internal testing — which is why the app is installable now.
+The authoritative App content overview now shows **one declaration needs attention**:
+Foreground service permissions. Sign in details, Target audience (18+), and Data safety
+are Actioned but not sent for review. Data safety's Preview retains the staged types,
+now accurately lists both password and OAuth account creation, and Advertising ID remains
+saved as **No** under Actioned. The foreground-service declaration gates *production*,
+not the existing internal test. Full evidence is in
+`docs/audits/2026-09-03-google-play-console-readonly-reconciliation.md`.
 
 Done:
 
@@ -389,45 +513,61 @@ Done:
 - [x] Account deletion in-app and at `tinyassets.io/account`
 - [x] Ads / Government / Financial / Health declarations, category, contact details
 - [x] **Content rating** — IARC submitted 2026-09-02, Everyone / PEGI 3 / USK 0 / ClassInd L
-- [x] Data safety answered and **saved as a draft**
+- [x] Data safety **Actioned** 2026-09-03; Console Preview matches the staged types,
+      Audio files remains `0/3`, and account creation lists password + OAuth
+- [x] Advertising ID saved as **No** after shipped-artifact, candidate merged-manifest,
+      and dependency verification; present under Actioned, not sent for review
 - [x] Contact phone verified — one click, no SMS code. It was never a founder action.
 - [x] **targetSdk 36** via Capacitor 8 (§1a) — Play rejects anything less for a new app
 - [x] Internal-testing tester list "Founder devices"
 - [x] **Signed AAB built and uploaded** — see "How to build one" below
+- [x] Unsafe conversation screenshot removed from the live listing; clean
+      `01-sign-in.png` uploaded and saved alongside `02-connect-subscription.png`.
+      Both attached filenames were re-opened and verified after the draft save.
 
 Open, with what each actually waits on:
 
 - [ ] **You: open the opt-in link, accept, install, and try the loop** — sign in,
       connect a provider, send a message. This is the first real-user test and it is
       the only thing that can find what a compile cannot.
-- [ ] Founder: enable Email + Password sign-in in WorkOS and create a review account.
-      AuthKit currently offers only "Continue with SSO" and "Continue with Google"
-      (verified on the live page 2026-09-02), so there is no credential to give Google.
-      See `docs/host-actions.md`.
-- [ ] Sign in details → Target audience → Data safety submit — the chain that unlocks
-      the last three App content rows, all gated on the account above.
+- [x] Dedicated `play-review@tinyassets.io` WorkOS password reviewer; two clean isolated
+      sign-ins; Sign in details saved and Actioned; no founder data or provider attached
+- [x] Target audience saved as **18 and over**; Data safety corrected and Actioned
+- [ ] Foreground-service declaration (§8a): confirm the Console row, record the
+      user-initiated OAuth callback video, select **Data sync → Network processing →
+      Other**, add the public redacted video link, then save. No verified video exists yet.
 - [ ] Founder: the four `ANDROID_UPLOAD_*` secrets. Not on the critical path any more —
       the container build below needs none of them — but they turn every future release
       into one `gh workflow run` instead of a manual build.
 - [ ] Closed testing: 12 testers for 14 days, then apply for production access.
+- [ ] Independent cross-family review of the later voice-native slice. The original
+      release review does not cover it; the prepared request and exact retry path are
+      in `docs/audits/2026-09-03-android-store-release-claude-review.md`.
 - [ ] Production roll out (§11) — your final click.
 
 ### How to build a signed AAB with no GitHub secrets
 
 The release workflow is the nice path, but it is not the only one, and it was never
-the blocker it looked like. A container that mirrors the workflow's own steps
-produces the same artifact in about five minutes:
+the blocker it looked like. A container that mirrors the workflow's build half
+produces the same verified **unsigned** bundle in about five minutes; `sign.sh` then
+applies the upload key:
 
 - **Toolchain**: Ubuntu 24.04, **JDK 21** (Capacitor 8 compiles at source/target 21),
   **node 22**, Android **platform 36** + **build-tools 36.0.0**.
-- **Build**: `npm ci` → `rm -rf android` → `cap add android` → `cap sync android` →
-  `add_app_scheme.py` → `add_app_icons.py` → `gradlew bundleRelease`.
+- **Build**: `npm ci` → preserve any old `android/` as a superseded snapshot →
+  `cap add android` → `cap sync android` → `add_app_scheme.py` → `add_app_icons.py` →
+  `configure_android_release.py` → `verify_android_release.py` →
+  `gradlew lintRelease bundleRelease` → merged-manifest verification.
 - **Sign**: the workflow's own jarsigner step, including the fail-closed certificate
   pin, with passwords passed via `-storepass:env` so they never reach argv. Strip
   CRLF from `upload-keystore.env` first — see `docs/host-actions.md` for why.
 - **Upload**: the Console's file input accepts the `.aab` directly.
 
-The `rm -rf android` is load-bearing: `cap add android` refuses to overwrite an
-existing platform, and `cap sync` *preserves* a stale `variables.gradle`, so a tree
-generated under Capacitor 6 keeps minSdk 22 / SDK 34 and would build a bundle Play
-rejects while looking perfectly healthy.
+Fresh generation is load-bearing: `cap add android` refuses to overwrite an existing
+platform, and `cap sync` *preserves* a stale `variables.gradle`, so a tree generated
+under Capacitor 6 keeps minSdk 22 / SDK 34 and would build a bundle Play rejects while
+looking perfectly healthy. The release config asserts those generated SDK values; it
+does not rewrite the dependency-owned template. The container moves an existing
+directory aside; it does not delete untracked native work. Create a `mobile-v*` tag
+only after its commit is in `main`; the signing workflow rejects refs outside main's
+history.

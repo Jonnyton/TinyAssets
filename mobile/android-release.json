@@ -1,0 +1,8 @@
+{
+  "appId": "io.tinyassets.app",
+  "versionCode": 2,
+  "versionName": "1.0.1",
+  "minSdk": 24,
+  "targetSdk": 36,
+  "compileSdk": 36
+}
