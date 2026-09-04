@@ -8,7 +8,8 @@ the run row and pending events exist.
 
 The preflight must understand graph topology without executing user code. An
 `input_keys` entry is an access allowlist and is not by itself required: prompt
-placeholders and statically strict code lookups are mandatory, while `state.get`
+placeholders and unguarded literal lookups in the straight-line prefix of a code
+node's `run` function are mandatory, while guarded or dynamic access, `state.get`,
 and an unused declared key remain optional. Branches
 may fork, join, and loop, so "some predecessor writes this key" is insufficient:
 the producer must be guaranteed to run before the consumer on every possible
@@ -40,9 +41,11 @@ new diagnostic cannot disclose a private Branch contract.
 ### 1. Use bounded superstep-frontier analysis over the frozen Branch snapshot
 
 The analyzer first derives mandatory accesses without widening the Branch
-contract: prompt placeholders, literal `state["key"]` code subscripts,
-one-argument `state.pop("key")`, and the declared await-run id field. Unused
-`input_keys`, `state.get`, and dynamic code accesses are not preflight failures.
+contract: prompt placeholders, unguarded literal `state["key"]` code subscripts
+and one-argument `state.pop("key")` calls in the straight-line prefix of the
+sandbox entry function, and the declared await-run id field. It deliberately
+under-approximates code: unused `input_keys`, `state.get`, guarded/conditional
+lookups, dynamic accesses, and accesses after control flow are left to runtime.
 
 It then models LangGraph's execution barrier: ordinary fan-out activates all
 children in the next superstep and merges all sibling outputs, while a conditional

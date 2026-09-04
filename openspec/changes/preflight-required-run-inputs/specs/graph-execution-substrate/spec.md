@@ -2,11 +2,16 @@
 
 ### Requirement: Run preflight resolves required state conservatively from graph topology
 The execution substrate SHALL analyze the frozen Branch snapshot before persistence,
-treating prompt placeholders and statically strict code-state accesses as mandatory,
+treating prompt placeholders and unguarded literal code-state accesses in the
+straight-line prefix of the sandbox entry function as mandatory,
 counting caller inputs and non-`None` schema defaults as initially available, and
 counting a node output only when every possible activation reaches that consumer
 after a producer has completed, including outputs merged from synchronized ordinary
 fan-out siblings. An `input_keys` allowlist entry alone SHALL NOT make a key required.
+
+#### Scenario: Guarded code access remains a runtime choice
+- **WHEN** a code node conditionally dereferences or pops a state key only after checking for its presence, or handles its absence through control flow
+- **THEN** preflight does not require the key and the code node's existing runtime behavior decides the result
 
 #### Scenario: Guaranteed predecessor output satisfies a later consumer
 - **WHEN** a required key is absent initially but every reachable route to its consumer passes through an earlier node that declares the key in `output_keys`

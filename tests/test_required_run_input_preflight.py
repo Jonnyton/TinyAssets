@@ -103,6 +103,42 @@ def test_code_state_get_is_optional_but_subscript_is_required() -> None:
     assert caught.value.missing_input_keys == ["context"]
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "def run(state):\n"
+            "    if 'context' not in state:\n"
+            "        return {'result': 'default'}\n"
+            "    return {'result': state['context']}\n"
+        ),
+        (
+            "def run(state):\n"
+            "    return {'result': state['context'] if 'context' in state else 'default'}\n"
+        ),
+        (
+            "def run(state):\n"
+            "    try:\n"
+            "        return {'result': state.pop('context')}\n"
+            "    except KeyError:\n"
+            "        return {'result': 'default'}\n"
+        ),
+    ],
+)
+def test_guarded_code_state_access_remains_optional(source: str) -> None:
+    branch = _branch(
+        [NodeDefinition(
+            node_id="entry",
+            display_name="entry",
+            input_keys=["context"],
+            output_keys=["result"],
+            source_code=source,
+        )],
+        [EdgeDefinition("entry", "END")],
+    )
+    preflight_required_inputs(branch, {})
+
+
 def test_missing_keys_are_sorted_with_schema_guidance() -> None:
     branch = _branch(
         [_node("entry", inputs=("zeta", "context"))],

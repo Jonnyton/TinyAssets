@@ -2878,34 +2878,47 @@ def _missing_input_guidance(
     return guidance
 
 
-def _required_node_inputs(node: Any) -> set[str]:
-    """Return only inputs whose absence is statically certain to fail.
+def _straight_line_code_state_inputs(source: str) -> set[str]:
+    """Return literal state lookups in the unguarded prefix of ``run``.
 
-    ``input_keys`` is an access allowlist, not a requiredness declaration.
-    Prompt placeholders always index state during rendering. Code-node
-    ``state["key"]`` and one-argument ``state.pop("key")`` forms also fail on
-    absence; ``state.get`` remains optional. Dynamic access is left to runtime.
+    This deliberately under-approximates requiredness. Lookups inside control
+    flow, comprehensions, or lambdas may be protected by user code, so runtime
+    remains authoritative for them.
     """
-    required = set(_placeholder_keys(str(node.prompt_template or "")))
-    source = str(node.source_code or "")
-    if source:
-        try:
-            tree = ast.parse(source)
-        except SyntaxError:
-            return required
-        for item in ast.walk(tree):
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return set()
+    run_def = next(
+        (
+            item
+            for item in tree.body
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and item.name == "run"
+        ),
+        None,
+    )
+    if run_def is None:
+        return set()
+
+    class _StrictAccessVisitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.keys: set[str] = set()
+
+        def visit_Subscript(self, item: ast.Subscript) -> None:
             if (
-                isinstance(item, ast.Subscript)
-                and isinstance(item.value, ast.Name)
+                isinstance(item.value, ast.Name)
                 and item.value.id == "state"
                 and isinstance(item.ctx, ast.Load)
                 and isinstance(item.slice, ast.Constant)
                 and isinstance(item.slice.value, str)
             ):
-                required.add(item.slice.value)
-            elif (
-                isinstance(item, ast.Call)
-                and isinstance(item.func, ast.Attribute)
+                self.keys.add(item.slice.value)
+            self.generic_visit(item)
+
+        def visit_Call(self, item: ast.Call) -> None:
+            if (
+                isinstance(item.func, ast.Attribute)
                 and isinstance(item.func.value, ast.Name)
                 and item.func.value.id == "state"
                 and item.func.attr == "pop"
@@ -2913,7 +2926,75 @@ def _required_node_inputs(node: Any) -> set[str]:
                 and isinstance(item.args[0], ast.Constant)
                 and isinstance(item.args[0].value, str)
             ):
-                required.add(item.args[0].value)
+                self.keys.add(item.args[0].value)
+            self.generic_visit(item)
+
+        def visit_BoolOp(self, _item: ast.BoolOp) -> None:
+            return
+
+        def visit_IfExp(self, _item: ast.IfExp) -> None:
+            return
+
+        def visit_Lambda(self, _item: ast.Lambda) -> None:
+            return
+
+        def visit_ListComp(self, _item: ast.ListComp) -> None:
+            return
+
+        def visit_SetComp(self, _item: ast.SetComp) -> None:
+            return
+
+        def visit_DictComp(self, _item: ast.DictComp) -> None:
+            return
+
+        def visit_GeneratorExp(self, _item: ast.GeneratorExp) -> None:
+            return
+
+        def visit_FunctionDef(self, _item: ast.FunctionDef) -> None:
+            return
+
+        def visit_AsyncFunctionDef(self, _item: ast.AsyncFunctionDef) -> None:
+            return
+
+        def visit_ClassDef(self, _item: ast.ClassDef) -> None:
+            return
+
+    visitor = _StrictAccessVisitor()
+    compound: tuple[type[ast.AST], ...] = (
+        ast.If,
+        ast.For,
+        ast.AsyncFor,
+        ast.While,
+        ast.Try,
+        ast.With,
+        ast.AsyncWith,
+        ast.Match,
+    )
+    try_star = getattr(ast, "TryStar", None)
+    if try_star is not None:
+        compound = (*compound, try_star)
+    for statement in run_def.body:
+        if isinstance(statement, compound):
+            break
+        visitor.visit(statement)
+        if isinstance(statement, (ast.Return, ast.Raise)):
+            break
+    return visitor.keys
+
+
+def _required_node_inputs(node: Any) -> set[str]:
+    """Return only inputs whose absence is statically certain to fail.
+
+    ``input_keys`` is an access allowlist, not a requiredness declaration.
+    Prompt placeholders always index state during rendering. Unguarded literal
+    lookups in the straight-line prefix of a code node's ``run`` function also
+    fail on absence. Guarded, dynamic, or otherwise conditional code access is
+    left to runtime so preflight cannot reject a branch that handles absence.
+    """
+    required = set(_placeholder_keys(str(node.prompt_template or "")))
+    source = str(node.source_code or "")
+    if source:
+        required.update(_straight_line_code_state_inputs(source))
     await_spec = node.await_run_spec if isinstance(node.await_run_spec, dict) else {}
     run_id_field = str(await_spec.get("run_id_field") or "").strip()
     if run_id_field:
