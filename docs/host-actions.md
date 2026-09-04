@@ -302,8 +302,9 @@ None of it can produce an installable app without account-owned signing material
    Terms of Service V100 (last updated 04 June 2018) was accepted by the founder.
    The founder then confirmed record creation. Apple ID `6808434444`; iOS 1.0 is
    **Prepare for Submission**. Product metadata and manual release are saved, the
-   four-type privacy draft is configured but unpublished, and an empty `Internal`
-   TestFlight group exists with automatic distribution off, 0 testers, and 0 builds.
+   four-type privacy draft is configured but unpublished. Build 3 is attached to
+   the `Internal` TestFlight group and its en-US **What to Test** text is saved;
+   the group has automatic distribution off, 0 testers, and no invitations sent.
 4. **Complete — signing, profile, and CI upload credentials (2026-09-03).** The active
    Apple Distribution certificate expires 2027-09-03 and is paired with an exportable
    private key. The active `TinyAssets App Store 2026` profile is App Store type for
@@ -319,11 +320,20 @@ None of it can produce an installable app without account-owned signing material
    Apple reported no upload errors; App Store Connect matched its delivery UUID and
    now shows Build 3 as **Ready to Submit** under Version 1.0.0. Receipt:
    `docs/audits/2026-09-03-ios-testflight-upload-receipt.md`.
-6. Capture real iPhone-sized screenshots from the signed app, verify sign-in → connect →
+6. **Founder reauthentication required — three TestFlight/App Store fields.** The
+   signed-in web session expired. The Developer-role API key successfully attached
+   Build 3 to the empty Internal group and saved its en-US **What to Test** text,
+   but Apple returned 403 for the app-level beta description, changing Build 3
+   `autoNotifyEnabled` from true to false, and selecting Build 3 for App Store
+   Version 1.0. Reauthenticate in App Store Connect, save the staged beta description,
+   disable automatic tester notification before adding any tester, and select Build 3.
+   Release mode is already manual. Receipt:
+   `docs/audits/2026-09-03-ios-testflight-preparation-receipt.md`.
+7. Capture real iPhone-sized screenshots from the signed app, verify sign-in → connect →
    chat through TestFlight, and complete the truthful console declarations. Before the final
    Submit for Review decision, choose whether to accept the documented Guideline 4.2 wrapper
    risk or first add and prove a meaningful iPhone-native interaction.
-7. If realtime voice is enabled in the candidate, review the final **Audio Data** and
+8. If realtime voice is enabled in the candidate, review the final **Audio Data** and
    **Other User Content** declarations against the provider retention configuration and
    require physical-iPhone proof that capture stops on background/end before submission.
 

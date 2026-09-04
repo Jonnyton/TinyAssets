@@ -26,7 +26,7 @@ exceptions in `docs/host-actions.md`.
 | Primary category | Productivity |
 | Secondary category | None |
 | Price | Free; no in-app purchases in this build |
-| TestFlight | Empty internal group `Internal`; automatic distribution off; 0 testers and 0 builds |
+| TestFlight | Internal group `Internal`; automatic distribution off; Build 3 attached; 0 testers and no invitations sent |
 
 The explicit App ID, App Store Connect record, Apple Distribution certificate/private
 key, App Store provisioning profile, Developer-role CI upload key, and all six protected
@@ -85,7 +85,7 @@ text-file attachment, account deletion, and the privacy link are the critical
 review paths. Private reviewer-account details belong only in App Store Connect,
 never in this repository.
 
-## TestFlight copy — staged, not transmitted
+## TestFlight copy and transmission state
 
 - **Beta App Description:**
   `TinyAssets is a persistent AI universe for real multi-step work. This beta validates the installed iPhone shell, sign-in return, conversation continuity, file attachment, and recovery behavior before App Store submission.`
@@ -97,7 +97,15 @@ never in this repository.
   and account-holder contact details directly in App Store Connect. Never place
   credentials or personal contact details in this repository.
 
-Keep automatic tester notification off until the founder approves invitations.
+The en-US **What to Test** text above is saved on Build 3. The Developer-role API
+key cannot save the app-level beta description, disable Build 3's
+`autoNotifyEnabled` value, or attach the build to App Store Version 1.0; those
+three fields require founder reauthentication in App Store Connect. The empty
+Internal group remains configured with automatic distribution off and has zero
+testers, so attaching Build 3 sent no invitation or notification. Keep that group
+empty until the founder approves invitations, and disable build auto-notify before
+adding any tester.
+
 Internal testing comes first. External testing may trigger TestFlight App Review
 and is a separate submission boundary.
 
@@ -256,9 +264,10 @@ one, so the server must remain compatible with the last released shell.
    category, copyright, support/marketing URLs, and manual release are saved. The
    four-type App Privacy draft is fully configured for App Functionality, linked
    to identity, and no tracking, but it is not published and its legal-policy URLs
-   remain blank. An empty `Internal` TestFlight group exists with automatic
-   distribution off. No tester or build was added. Stop at any new agreement,
-   DSA trader-status choice, privacy publication, or other legal declaration.
+   remain blank. Build 3 is attached to the `Internal` TestFlight group and its
+   en-US **What to Test** text is saved; the group has automatic distribution off,
+   zero testers, and no invitations were sent. Stop at any new agreement, DSA
+   trader-status choice, privacy publication, or other legal declaration.
 4. **Complete 2026-09-03:** the founder approved credential creation. A 2048-bit
    Apple Distribution certificate/private-key pair was created and verified, then
    backed up as an encrypted P12. The active `TinyAssets App Store 2026` App Store
@@ -271,11 +280,14 @@ one, so the server must remain compatible with the last released shell.
    1.0.0 (1); its checksum, bundle/version/build, embedded profile CMS signature,
    distribution entitlement, and certificate match were verified. Physical-device
    smoke remains.
-7. **Blocked before upload 2026-09-03:** run `33824990349` built signed build 2,
-   but Apple rejected the runner-default Xcode 16.4/iOS 18.5 SDK and now requires iOS
-   SDK 26. Exact reviewed revision `6ccb3d24` selects Xcode 26.3 and has an Opus
-   **AGREE** receipt in `docs/audits/2026-09-03-ios-xcode26-opus-review.md`.
-   TestFlight upload itself does not submit App Review.
+7. **Complete 2026-09-03:** PR #2798 landed the independently reviewed Xcode 26.3
+   selection and fail-closed SDK check. Protected run `33827279907` built and
+   uploaded signed 1.0.0 (3); Apple reported no upload errors, processing completed,
+   and Build 3 is **Ready to Submit**. The App Store Connect API then saved the en-US
+   **What to Test** text and attached Build 3 to the empty `Internal` group. No App
+   Review submission, external testing submission, tester invitation, or public
+   release occurred. Receipts: `docs/audits/2026-09-03-ios-testflight-upload-receipt.md`
+   and `docs/audits/2026-09-03-ios-testflight-preparation-receipt.md`.
 8. Complete App Privacy, age rating, export, screenshots, review notes, availability,
    and DSA status from verified evidence. Interrupt only where a personal/legal fact
    cannot be established truthfully. Keep release mode manual until publication.
@@ -284,7 +296,9 @@ one, so the server must remain compatible with the last released shell.
 
 ## External gates that remain
 
-- Opposite-provider review, land, and rerun of the Xcode 26 workflow correction.
+- Founder reauthentication in App Store Connect to save the beta app description,
+  turn Build 3 automatic tester notification off, and select Build 3 for App Store
+  Version 1.0. The Developer-role API key is forbidden from those three writes.
 - An actual iPhone or iOS Simulator for authentic screenshots and device smoke;
   a physical iPhone is required for microphone-release proof if voice ships.
 - Founder approval of live privacy, age-rating, content-rights, export,

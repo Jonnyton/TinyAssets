@@ -21,7 +21,8 @@ action-time confirmation under product policy remain subject to that policy.
 > stand. The short version for iOS: Apple Developer Program membership activated
 > on 2026-09-03; the explicit App ID and App Store Connect record were created and
 > verified that day. Product metadata and the unpublished privacy draft are saved,
-> and an empty internal TestFlight group exists. Signing, provisioning, API access, and
+> and Build 3 is attached to the empty internal TestFlight group with its en-US
+> **What to Test** text saved. Signing, provisioning, API access, and
 > all six protected CI secrets are complete. Signed build 1.0.0 (3) was accepted by
 > App Store Connect on 2026-09-03, completed processing, and is **Ready to Submit**.
 > The copy-ready form answers, asset manifest, smoke checklist, and exact portal
@@ -124,6 +125,15 @@ landed the reviewed Xcode 26.3 selection and fail-closed SDK check as merge comm
 **Processing** under Build Uploads at 2026-09-03 18:56 PDT, then **Ready to Submit**
 under Version 1.0.0 after processing completed. Receipt:
 `docs/audits/2026-09-03-ios-testflight-upload-receipt.md`.
+
+The App Store Connect API then saved Build 3's en-US **What to Test** text and
+attached it to the empty `Internal` group. The group still has zero testers, so no
+invitation or notification was sent. The least-privilege Developer key received a
+403 when asked to save the beta app description, set Build 3 automatic tester
+notification off, or select Build 3 for App Store Version 1.0. Those three fields
+remain founder reauthentication work; the version's build relationship remains
+empty and release mode remains manual. Receipt:
+`docs/audits/2026-09-03-ios-testflight-preparation-receipt.md`.
 
 ---
 
@@ -248,7 +258,8 @@ and [unavailability procedure](https://developer.apple.com/help/app-store-connec
 - [x] Apple: explicit App ID `io.tinyassets.app` registered and verified (2026-09-03)
 - [x] Founder: App Store Connect Terms accepted and app record created (§0)
 - [x] Product metadata saved; manual release selected; privacy draft configured but not published
-- [x] Empty `Internal` TestFlight group created with automatic distribution off
+- [x] Build 3 attached to the empty `Internal` TestFlight group; en-US **What to Test** saved; 0 testers
+- [ ] Founder reauth: save beta description, disable Build 3 auto-notify, and select Build 3 for Version 1.0
 - [ ] Founder/counsel: approve final privacy policy; then land/deploy and verify the iOS wording
 - [x] Protected `app-store` environment: founder approval + `main` only (§3)
 - [x] Signing setup and all six protected CI values complete (§3)
