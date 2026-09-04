@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import faulthandler
 import os
 import shutil
 import subprocess
@@ -66,19 +67,21 @@ class _WindowsKillOnCloseJob:
         self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         self._kernel32.CreateJobObjectW.restype = ctypes.c_void_p
         self._kernel32.SetInformationJobObject.argtypes = [
-            ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
         ]
         self._kernel32.AssignProcessToJobObject.argtypes = [
-            ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
         ]
         self._kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
         self._handle = self._kernel32.CreateJobObjectW(None, None)
         if not self._handle:
             raise ctypes.WinError(ctypes.get_last_error())
         limits = _JobObjectExtendedLimitInformation()
-        limits.BasicLimitInformation.LimitFlags = (
-            _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        )
+        limits.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         if not self._kernel32.SetInformationJobObject(
             self._handle,
             _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
@@ -91,9 +94,7 @@ class _WindowsKillOnCloseJob:
 
     def assign(self, process: subprocess.Popen[bytes]) -> None:
         process_handle = ctypes.c_void_p(int(process._handle))  # type: ignore[attr-defined]
-        if not self._kernel32.AssignProcessToJobObject(
-            self._handle, process_handle
-        ):
+        if not self._kernel32.AssignProcessToJobObject(self._handle, process_handle):
             raise ctypes.WinError(ctypes.get_last_error())
 
     def close(self) -> None:
@@ -130,6 +131,15 @@ def _arguments() -> argparse.Namespace:
     )
     parser.add_argument("--phase-timeout-seconds", type=_bounded_int(1, 900), default=180)
     parser.add_argument("--total-timeout-seconds", type=_bounded_int(1, 3600), default=300)
+    parser.add_argument(
+        "--hard-timeout-seconds",
+        type=_bounded_int(1, 3600),
+        default=420,
+        help=(
+            "whole-supervisor deadline; dumps every thread stack and exits if "
+            "any supervisor operation outlives the child-wait budget"
+        ),
+    )
     parser.add_argument("--cleanup-timeout-seconds", type=_bounded_int(1, 60), default=10)
     parser.add_argument(
         "--max-capture-bytes-per-stream",
@@ -285,8 +295,7 @@ def _terminate_tree(process: subprocess.Popen[bytes], *, cleanup_timeout_seconds
     _checkpoint("cleanup.finished")
 
 
-def main() -> int:
-    args = _arguments()
+def _run(args: argparse.Namespace) -> int:
     try:
         installer = args.installer.resolve(strict=True)
         lifecycle = args.lifecycle_script.resolve(strict=True)
@@ -406,9 +415,7 @@ def main() -> int:
                 f"Windows lifecycle process-tree guard failed to attach: {exc}",
                 file=sys.stderr,
             )
-            _terminate_tree(
-                process, cleanup_timeout_seconds=args.cleanup_timeout_seconds
-            )
+            _terminate_tree(process, cleanup_timeout_seconds=args.cleanup_timeout_seconds)
             if process_job is not None:
                 process_job.close()
             for stream in (process.stdout, process.stderr):
@@ -429,9 +436,7 @@ def main() -> int:
                 f"Windows lifecycle bootstrap failed to release: {exc}",
                 file=sys.stderr,
             )
-            _terminate_tree(
-                process, cleanup_timeout_seconds=args.cleanup_timeout_seconds
-            )
+            _terminate_tree(process, cleanup_timeout_seconds=args.cleanup_timeout_seconds)
             if process_job is not None:
                 process_job.close()
             return 1
@@ -523,6 +528,33 @@ def main() -> int:
             file=sys.stderr,
         )
     return return_code
+
+
+def main() -> int:
+    args = _arguments()
+    _checkpoint(f"supervisor.hard_deadline.armed.{args.hard_timeout_seconds}s")
+    try:
+        # faulthandler owns a native watchdog thread.  Unlike the ordinary
+        # process.wait timeout, this bounds preflight, job-object calls,
+        # cleanup, capture replay, and interpreter teardown as one lifetime.
+        faulthandler.dump_traceback_later(
+            args.hard_timeout_seconds,
+            repeat=False,
+            file=sys.stderr,
+            exit=True,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(
+            f"Windows lifecycle supervisor hard deadline could not be armed: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        return _run(args)
+    finally:
+        faulthandler.cancel_dump_traceback_later()
+        _checkpoint("supervisor.hard_deadline.cancelled")
 
 
 if __name__ == "__main__":

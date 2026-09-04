@@ -134,6 +134,7 @@ def test_unsigned_windows_lifecycle_is_bounded_and_diagnostic() -> None:
     assert "windows_lifecycle_supervisor.py" in install_job
     assert "--phase-timeout-seconds 90" in install_job
     assert "--total-timeout-seconds 300" in install_job
+    assert "--hard-timeout-seconds 420" in install_job
     assert "PhaseTimeoutSeconds" in lifecycle
     assert "WaitForExit" in lifecycle
     assert ".Kill()" not in lifecycle
@@ -160,6 +161,9 @@ def test_unsigned_windows_lifecycle_is_bounded_and_diagnostic() -> None:
     assert "subprocess.PIPE" in supervisor
     assert "thread.join(timeout=" in supervisor
     assert "_CHILD_BOOTSTRAP" in supervisor
+    assert "faulthandler.dump_traceback_later" in supervisor
+    assert "faulthandler.cancel_dump_traceback_later" in supervisor
+    assert "exit=True" in supervisor
 
 
 def test_windows_lifecycle_capture_replays_a_fixed_size_snapshot(
@@ -362,6 +366,62 @@ while ($true) {
     ):
         assert f"stage={stage}" in output
     assert len(output) < 20_000
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or PWSH is None,
+    reason="Windows whole-supervisor hard-deadline contract",
+)
+def test_windows_lifecycle_hard_deadline_exits_outside_child_wait(
+    tmp_path: Path,
+) -> None:
+    installer = tmp_path / "synthetic installer.exe"
+    installer.write_bytes(b"not executed by the injected lifecycle")
+    lifecycle = tmp_path / "synthetic hard-deadline lifecycle.ps1"
+    lifecycle.write_text(
+        """param(
+    [Parameter(Mandatory = $true)][string]$Installer,
+    [int]$PhaseTimeoutSeconds = 180
+)
+while ($true) {
+    Start-Sleep -Seconds 1
+}
+""",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["TEMP"] = str(tmp_path)
+    env["TMP"] = str(tmp_path)
+
+    started = time.monotonic()
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SUPERVISOR),
+            "--installer",
+            str(installer),
+            "--lifecycle-script",
+            str(lifecycle),
+            "--phase-timeout-seconds",
+            "20",
+            "--total-timeout-seconds",
+            "20",
+            "--hard-timeout-seconds",
+            "2",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env=env,
+        check=False,
+    )
+    elapsed = time.monotonic() - started
+    output = result.stdout + result.stderr
+
+    assert result.returncode != 0
+    assert elapsed < 8
+    assert "stage=supervisor.hard_deadline.armed.2s" in output
+    assert "Timeout (0:00:02)!" in output
 
 
 @pytest.mark.skipif(
