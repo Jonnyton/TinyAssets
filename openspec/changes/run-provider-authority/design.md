@@ -51,10 +51,13 @@ parallel calls reserve independently.
 
 ## Budget lifecycle
 Reserve invocations/max-tokens/max-cost transactionally → arm and mint immediately before launch →
-success persists actual input/output tokens and cost and releases the unused reservation. Definitive
-pre-launch refusal → `cancelled_before_launch`. Confirmed provider failure → `failed` with known
-actuals. Timeout/crash after possible dispatch → `indeterminate`, conservatively charged until
-reconciliation. Terminal run → release the claim and cancel still-unarmed reservations.
+success with complete telemetry persists actual input/output tokens and cost and releases the unused
+reservation. A successful response without trustworthy cost or token telemetry (including today's
+open-provider protocol response, which has no generic price source) settles `indeterminate` and is
+conservatively charged rather than inventing a zero cost. Definitive pre-launch refusal →
+`cancelled_before_launch`. Confirmed provider failure → `failed` with known actuals. Timeout/crash
+after possible dispatch → `indeterminate`, conservatively charged until reconciliation. Terminal run
+→ release the claim and cancel still-unarmed reservations.
 
 **Do not copy the background lane unchanged:** its one-use carrier is sound for provenance, but its
 durable actual-usage settlement is still unfinished (the strict xfail in

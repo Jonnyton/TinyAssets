@@ -20,7 +20,8 @@ SHALL NOT authorize a foreground run.
 #### Scenario: The selected open provider runs once
 - **GIVEN** a user-authorized foreground Branch run with one prompt node and a current ACTIVE registered open provider whose connection grant is current, universe-bound, and allowed by the node policy
 - **WHEN** the node requests its provider completion
-- **THEN** one run carrier is reserved and consumed, the exact open provider is invoked exactly once through the credential-blind proxy without a subscription snapshot, and the reservation settles from the actual outcome
+- **THEN** one run carrier is reserved and consumed, and the exact open provider is invoked exactly once through the credential-blind proxy without a subscription snapshot
+- **AND** the reservation settles `succeeded` only when the provider supplies complete trustworthy token and cost telemetry; otherwise it settles `indeterminate` and remains conservatively charged without inventing zero-cost usage
 
 #### Scenario: Registration without active serving selection grants nothing
 - **GIVEN** a registered open provider that is not the owner's current ACTIVE serving assignment for the run's universe
