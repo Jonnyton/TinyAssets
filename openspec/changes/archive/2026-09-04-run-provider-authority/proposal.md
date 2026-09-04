@@ -10,12 +10,13 @@ On prod `8cbf9769` every LLM-bearing node in a user-started run fails in ~150 ms
 unreachable **for every user**, not just the founder. Effect-only and `source_code` branches are
 unaffected, which hid it: the agent's own Slack push lane used effect-only branches.
 
-Live evidence is retained only as a capability receipt. On 2026-09-03 the
-bound universe agent chose and ran its own prompt workflow after production was
-updated. The run still failed at first provider use with
-`permission_denied:provider_not_bound`; the selected provider was not invoked
-and no effect was attempted. Private universe, branch, run, prompt, credential,
-and destination details are intentionally omitted.
+Live evidence is retained only as a capability receipt. On 2026-09-04, after
+production deployed `f2e3b453`, the bound universe agent independently reran
+owner-controlled, provider-backed prompt workflows through the ordinary user
+surface. Parallel prompt execution and the minimal heartbeat prompt both
+completed with real provider calls and no run, provider, or authority error.
+No effect was part of either proof. Private universe, branch, run, prompt,
+credential, and destination details are intentionally omitted.
 
 Mechanism: `api/runs.py::_bind_run_provider_call` builds a `UniverseContext` with `universe_dir` +
 config and **no** authority carrier and **no** `provider_request`. `providers/router.py:465`

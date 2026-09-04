@@ -2,9 +2,9 @@
 
 Cross-family review: Codex, 2026-08-26 (ADAPT before the first build). Ownership
 transferred to Patches on 2026-09-03 after bound-agent live proof still failed.
-The follow-up implementation requires a fresh opposite-family review before
-landing, or the documented hard-provider-limit independent-review fallback in
-`docs/reference/quality-gates.md` when that provider is unavailable.
+Claude Opus independently reviewed exact PR head `1cb308e1` on 2026-09-03 and
+returned APPROVE after mutation checks proved both stale-child refresh and
+exact-child reuse. The durable review receipt is attached to PR #2828.
 
 ## The primitive
 A user-authorized run must NOT carry a served request capability. A request capability represents
