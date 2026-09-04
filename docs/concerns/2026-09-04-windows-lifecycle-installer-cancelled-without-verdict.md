@@ -1,6 +1,6 @@
 # Windows lifecycle installer is cancelled without a verdict or log
 
-**Filed:** 2026-09-04 00:04 PDT  
+**Filed:** 2026-09-04 00:04 PDT
 **Verified:** 2026-09-04, GitHub Actions runs `33843457460`, `33916000603`,
 and `33920975686`
 **Severity:** P2
@@ -9,14 +9,14 @@ and `33920975686`
 
 Attempt 1, exact job `100931525845`:
 
-> `conclusion":"cancelled"`  
+> `conclusion":"cancelled"`
 > `Install, probe, repair, and uninstall exact CI artifact` — `status":"in_progress"`
 
 Attempt 2, exact bounded rerun job `100936661082`:
 
-> `started_at":"2026-09-04T06:44:04Z"`  
-> `completed_at":"2026-09-04T06:59:04Z"`  
-> `conclusion":"cancelled"`  
+> `started_at":"2026-09-04T06:44:04Z"`
+> `completed_at":"2026-09-04T06:59:04Z"`
+> `conclusion":"cancelled"`
 > `Install, probe, repair, and uninstall exact CI artifact` — `status":"in_progress"`
 
 GitHub returned no retained job log for the cancelled attempt:
@@ -83,10 +83,12 @@ until this exact Windows proof returns a terminal verdict.
 
 The existing bounded pipe capture and kill-on-close Job Object remain. The
 narrow correction arms `faulthandler`'s native watchdog around the complete
-supervisor before preflight, with a 420-second deadline between the 300-second
-child wait and 600-second GitHub job timeout. If ordinary control flow stalls,
-the watchdog writes every thread stack directly to workflow stderr and exits
-non-zero. A Windows regression exercises the hard deadline independently of
-the child-wait deadline. Keep this concern open until a fresh exact-head
+supervisor before preflight and deliberately leaves it armed through interpreter
+exit, with a 420-second deadline between the 300-second child wait and
+900-second GitHub job timeout. If ordinary control flow or interpreter teardown
+stalls, the watchdog writes every thread stack directly to workflow stderr and
+exits non-zero. A subprocess regression returns from the injected supervisor
+body and then stalls in an `atexit` handler, proving the hard deadline covers a
+path outside the child wait. Keep this concern open until a fresh exact-head
 lifecycle job returns a terminal verdict; then delete it rather than annotating
 it as resolved.

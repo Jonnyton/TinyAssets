@@ -550,11 +550,10 @@ def main() -> int:
         )
         return 1
 
-    try:
-        return _run(args)
-    finally:
-        faulthandler.cancel_dump_traceback_later()
-        _checkpoint("supervisor.hard_deadline.cancelled")
+    # Deliberately leave the watchdog armed.  Cancelling it after _run returns
+    # would remove the only bound on a stalled atexit handler or interpreter
+    # teardown.  A normal interpreter exit discards the watchdog immediately.
+    return _run(args)
 
 
 if __name__ == "__main__":
