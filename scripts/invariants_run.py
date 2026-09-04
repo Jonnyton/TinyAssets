@@ -36,6 +36,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.invariants import Invariant, Status  # noqa: E402
+from scripts.invariants.brand_parity import BrandParityInvariant  # noqa: E402
 from scripts.invariants.context_budget import (  # noqa: E402
     ContextBudgetInvariant,
 )
@@ -50,6 +51,7 @@ from scripts.invariants.tab_single import TabSingleInvariant  # noqa: E402
 
 def _all_invariants() -> list[Invariant]:
     return [
+        BrandParityInvariant(),
         CrossProviderDriftInvariant(),
         MirrorParityInvariant(),
         MojibakeInvariant(),

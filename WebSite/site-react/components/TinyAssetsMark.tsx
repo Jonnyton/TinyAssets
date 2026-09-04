@@ -3,6 +3,10 @@
 // so the inline mark can never drift from the icons, the tray, or the stores.
 import * as React from "react";
 
+// Content fingerprint used by every browser-loaded mark URL. A new drawing gets
+// a new URL even when a browser has cached the old favicon indefinitely.
+export const TINYASSETS_MARK_VERSION = "ef7e1cdb0f17";
+
 /**
  * The compact TinyAssets mark: Mount Baker from Everett, a howling wolf, the
  * ember moon, and the galaxy. `tile` squares the badge off for an app icon.

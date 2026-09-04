@@ -34,10 +34,11 @@ python scripts/render_app_icons.py --from-logo ../assets/icon.png \
 
 The feature graphic is the only output with type on it, and its font must be an
 explicit file: rendered from whatever the host happens to have installed, the same
-command produces different pixels on different machines. Without `--font` it is
-skipped and the committed one is left alone, so `render_marks.py` (which does not
-pass one) stays runnable. Rendered with Pillow 10.x; the committed PNGs are
-canonical — re-render only to change the art, and review the pixel diff.
+command produces different pixels on different machines. Without `--font`, the
+renderer preserves the reviewed wordmark and deterministically replaces its logo
+panel, so a mark change still reaches the Play listing. Rendered with Pillow 10.x;
+the committed PNGs are generated outputs — change the canonical geometry, re-run,
+and review the pixel diff.
 
 `scripts/add_app_icons.py` fails the build if any file in `android/` is missing or
 the wrong size for the template it is copied into, so a Capacitor upgrade that
