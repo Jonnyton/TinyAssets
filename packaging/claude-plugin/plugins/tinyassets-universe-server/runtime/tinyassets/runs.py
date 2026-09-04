@@ -324,6 +324,60 @@ def _enqueue_workspace_terminal(
     return written
 
 
+def _workspace_terminal_base(
+    conn: sqlite3.Connection,
+    base_path: str | Path,
+    run_id: str,
+) -> Path | None:
+    """Return the separate universe DB that owns *run_id*'s workspace state.
+
+    Run rows are authoritative at the data root, while the workspace adapter
+    deliberately contains leases, locks, and outbox rows inside the running
+    universe. The terminal transition therefore has to name that second DB
+    explicitly; looking for its rows through the root connection is the bug
+    that left every completed workspace run holding both locks.
+
+    ``queue_universe_id`` is server-written execution context. Older rows may
+    only carry the same identity in ``actor``. Both routes still pass the
+    canonical universe-id grammar before becoming a path, and an absent DB is
+    not created as a side effect of a terminal transition.
+    """
+    try:
+        row = conn.execute(
+            "SELECT queue_universe_id, actor FROM runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        # Compatibility for narrow legacy/test schemas with no queue column.
+        row = conn.execute(
+            "SELECT actor FROM runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    keys = set(row.keys())
+    universe_id = (
+        str(row["queue_universe_id"] or "").strip()
+        if "queue_universe_id" in keys
+        else ""
+    )
+    if not universe_id:
+        actor = str(row["actor"] or "").strip() if "actor" in keys else ""
+        if actor.startswith("universe:"):
+            universe_id = actor.removeprefix("universe:").strip()
+    from tinyassets.ids import is_universe_serial
+
+    if not is_universe_serial(universe_id):
+        return None
+    root = Path(base_path).resolve()
+    if root.name == universe_id:
+        return None
+    universe_base = (root / universe_id).resolve()
+    if universe_base.parent != root or not runs_db_path(universe_base).is_file():
+        return None
+    return universe_base
+
+
 #: How old a lock whose run is unknown to this database must be before the
 #: sweep will release it. A lock is written before its run row on a legitimate
 #: start, so anything shorter reaps live work during that race. Far above any
@@ -1482,6 +1536,8 @@ def update_run_status(
     if not sets:
         return
     params.append(run_id)
+    workspace_terminal_base: Path | None = None
+    kick_bases: list[Path] = []
     with _connect(base_path) as conn:
         conn.execute(
             f"UPDATE runs SET {', '.join(sets)} WHERE run_id = ?",
@@ -1496,13 +1552,11 @@ def update_run_status(
             # (terminal status, no owed release) must never land (Codex, code
             # round 1; Hard Rule 8).
             owed = _enqueue_workspace_terminal(conn, base_path, run_id)
+            workspace_terminal_base = _workspace_terminal_base(
+                conn, base_path, run_id
+            )
         if owed:
-            # Release promptly, not at the sweeper's next tick: the job lock
-            # this run held would otherwise refuse the universe's next checkout
-            # as workspace_busy for up to the sweep interval (lane B finding).
-            # After the commit (the connection context exits before the
-            # thread's first sweep reaches the row), off the caller's path.
-            _kick_workspace_sweep(base_path)
+            kick_bases.append(Path(base_path))
         # Phase 2 emit-site (Task #72): on terminal status transition, emit
         # one execute_step contribution event for attribution. Wrapped in
         # try/except so emit failure (malformed metadata, table missing,
@@ -1559,6 +1613,30 @@ def update_run_status(
                     "status update preserved",
                     run_id, status, exc,
                 )
+
+    # The root transaction is committed before this separate universe write.
+    # SQLite cannot make two WAL databases crash-atomic. The periodic sweep is
+    # the recovery half of this protocol: it reads the terminal root status and
+    # repairs the narrow crash window. On the normal path, enqueue immediately
+    # so the next same-universe job does not wait for that backstop.
+    if workspace_terminal_base is not None:
+        with _connect(workspace_terminal_base) as workspace_conn:
+            workspace_owed = _enqueue_workspace_terminal(
+                workspace_conn, workspace_terminal_base, run_id
+            )
+        if workspace_owed:
+            kick_bases.append(workspace_terminal_base)
+
+    # Start sweepers only after every owning connection has committed. A
+    # thread started inside a transaction could otherwise race the commit it is
+    # meant to consume.
+    seen_kicks: set[Path] = set()
+    for kick_base in kick_bases:
+        resolved = kick_base.resolve()
+        if resolved in seen_kicks:
+            continue
+        seen_kicks.add(resolved)
+        _kick_workspace_sweep(kick_base)
 
 
 def record_run_receipt(

@@ -33,17 +33,24 @@ class _NoopFs:
         raise AssertionError("nothing exists, nothing to remove")
 
 
-def _seed_run(base: Path, run_id: str, status: str = "running") -> None:
+def _seed_run(
+    base: Path,
+    run_id: str,
+    status: str = "running",
+    *,
+    queue_universe_id: str = "",
+    actor: str = "universe:u-test",
+) -> None:
     runs.initialize_runs_db(base)
     with runs._connect(base) as conn:
         conn.execute(
             "INSERT INTO runs "
-            "(run_id, branch_def_id, thread_id, status, started_at, actor) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "(run_id, branch_def_id, thread_id, status, started_at, actor, "
+            "queue_universe_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 run_id, "b1", f"t-{run_id}", status, time.time() - 7200,
                 # Every run records who asked for it; the column is NOT NULL.
-                "universe:u-test",
+                actor, queue_universe_id or None,
             ),
         )
 
@@ -89,6 +96,60 @@ def test_a_terminal_status_enqueues_the_lease_in_the_same_write(tmp_path, monkey
     runs.update_run_status(base, "r1", status="completed", finished_at=time.time())
     assert _pending(base, "r1") == [("wipe_scratch", lease.lease_id)]
     assert kicks == [base], "a finished run's release is kicked, not left to the tick"
+
+
+@pytest.mark.parametrize("identity_source", ["queue", "legacy_actor"])
+def test_a_root_terminal_enqueues_the_universe_that_owns_the_workspace(
+    tmp_path, monkeypatch, identity_source,
+):
+    """Production topology: run at root, workspace rows in the universe.
+
+    This is stronger than the periodic repair regression: the outbox row must
+    exist on the normal terminal path, before any sweep gets a chance.
+    """
+    root = tmp_path / "data"
+    universe_id = "u-00000000000000000000000000"
+    universe = root / universe_id
+    universe.mkdir(parents=True)
+    _seed_run(
+        root,
+        "root-run",
+        queue_universe_id=universe_id if identity_source == "queue" else "",
+        actor=(
+            "universe:u-test"
+            if identity_source == "queue"
+            else f"universe:{universe_id}"
+        ),
+    )
+    lease = _admit(universe, tmp_path, "root-run", universe=universe_id)
+    kicks: list[Path] = []
+    monkeypatch.setattr(runs, "_kick_workspace_sweep", lambda p: kicks.append(Path(p)))
+
+    runs.update_run_status(root, "root-run", status="completed", finished_at=time.time())
+
+    assert _pending(root, "root-run") == []
+    assert _pending(universe, "root-run") == [("wipe_scratch", lease.lease_id)]
+    assert kicks == [universe]
+    with sqlite3.connect(runs.runs_db_path(root)) as conn:
+        assert conn.execute(
+            "SELECT status FROM runs WHERE run_id = ?", ("root-run",)
+        ).fetchone()[0] == "completed"
+
+
+def test_a_noncanonical_queue_universe_never_becomes_a_terminal_path(
+    tmp_path, monkeypatch,
+):
+    root = tmp_path / "data"
+    escaped = tmp_path / "escaped"
+    escaped.mkdir()
+    _seed_run(root, "hostile-run", queue_universe_id="../escaped")
+    kicks: list[Path] = []
+    monkeypatch.setattr(runs, "_kick_workspace_sweep", lambda p: kicks.append(Path(p)))
+
+    runs.update_run_status(root, "hostile-run", status="completed")
+
+    assert kicks == []
+    assert not runs.runs_db_path(escaped).exists()
 
 
 def test_an_enqueue_failure_rolls_the_terminal_status_back(tmp_path, monkeypatch):
