@@ -212,6 +212,20 @@ class ServingProviderNotOwned(PermissionError):
     so naming it discloses nothing they could not see."""
 
 
+class NoServingProvider(PermissionError):
+    """The founder has no current serving binding."""
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentServingProviderAuthority:
+    """Secret-free result of the canonical serving-authority revalidation."""
+
+    provider: str
+    access_method: str
+    connection_id: str = ""
+    grant_id: str = ""
+
+
 def _open_serving_context(
     base: Path, universe_id: str, owner_user_id: str, definition_id: str
 ) -> tuple[str, str, str, str]:
@@ -771,6 +785,72 @@ def resolve_serving_agent_binding(
     return matches[0]
 
 
+def resolve_current_serving_provider_authority(
+    base_path: str | Path,
+    *,
+    universe_dir: str | Path,
+    universe_id: str,
+    owner_user_id: str,
+) -> CurrentServingProviderAuthority:
+    """Resolve exactly the provider serving one founder, with live custody checks.
+
+    The returned projection is deliberately credential-free. Open HTTP providers
+    include only the exact connection/grant ids needed by server-internal
+    capability code; subscription providers carry no auxiliary connection.
+    """
+
+    base = Path(base_path)
+    uid = universe_id.strip()
+    owner = owner_user_id.strip()
+    if not uid or not owner:
+        raise ValueError("owner and universe are required")
+    universe = _canonical_universe(base, universe_dir, uid)
+    store = SQLiteProviderWorkAuthorityStore(base)
+    with provider_assignment_admission().shared(universe):
+        matches = [
+            binding
+            for binding in list_bindings(base, universe_id=uid, limit=100)
+            if binding["status"] == "serving" and binding["created_by"] == owner
+        ]
+        if not matches:
+            raise NoServingProvider("connect your provider before enabling serving")
+        if len(matches) != 1:
+            raise PermissionError(
+                "connect your provider: exactly one founder serving binding is required"
+            )
+        binding_id = str(matches[0]["agent_binding_id"])
+        agent = get_binding(base, universe_id=uid, binding_id=binding_id)
+        if agent is None or agent["status"] != "serving":
+            raise PermissionError("connect your provider before enabling serving")
+        with store.connection() as conn:
+            conn.execute("BEGIN")
+            assignment, _provider_binding, _custody = _current_serving_authority(
+                conn,
+                store=store,
+                universe_dir=universe,
+                owner_user_id=owner,
+                universe_id=uid,
+                agent=agent,
+            )
+            conn.rollback()
+
+    if not _is_open_provider(assignment.provider):
+        return CurrentServingProviderAuthority(
+            provider=assignment.provider,
+            access_method="subscription_cli",
+        )
+    definition_id = assignment.provider.split("api_key_http:", 1)[-1]
+    _provider_name, grant_id, connection_id, _credential_ref = _open_serving_context(
+        base, uid, owner, definition_id
+    )
+    return CurrentServingProviderAuthority(
+        provider=assignment.provider,
+        access_method="api_key_http",
+        connection_id=connection_id,
+        grant_id=grant_id,
+    )
+
+
 def list_serving_universes(base_path: str | Path) -> list[str]:
     """Return universes with exactly one fully-current serving enrollment."""
 
@@ -831,8 +911,11 @@ def list_serving_universes(base_path: str | Path) -> list[str]:
 
 
 __all__ = [
+    "CurrentServingProviderAuthority",
+    "NoServingProvider",
     "bind_serving_provider",
     "list_serving_universes",
+    "resolve_current_serving_provider_authority",
     "resolve_serving_agent_binding",
     "set_serving",
 ]
