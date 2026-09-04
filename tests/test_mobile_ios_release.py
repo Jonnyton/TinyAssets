@@ -195,6 +195,26 @@ def test_ios_workflows_select_the_app_store_required_sdk() -> None:
         assert '[[ "$sdk_version" == 26.* ]]' in text
 
 
+def test_ios_build_workflow_captures_store_screenshots_only_on_manual_request() -> None:
+    workflow = BUILD_WORKFLOW.read_text(encoding="utf-8")
+    assert "capture_store_screenshots:" in workflow
+    assert "inputs.source_ref || github.sha" in workflow
+    assert ".capture-tools/mobile/scripts/capture_ios_store_screenshots.sh" in workflow
+    assert "ref: ${{ github.ref }}" in workflow
+    assert "github.event_name == 'workflow_dispatch'" in workflow
+    assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in workflow
+
+
+def test_ios_store_capture_script_enforces_apple_dimensions_and_no_alpha() -> None:
+    script = (MOBILE / "scripts" / "capture_ios_store_screenshots.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "1242x2688,1284x2778" in script
+    assert "2048x2732,2064x2752" in script
+    assert '[[ "$alpha" != "no" ]]' in script
+    assert "xcrun simctl io" in script
+
+
 def test_app_store_screenshot_manifest_is_an_honest_ios_capture_contract() -> None:
     manifest = json.loads(SCREENSHOT_MANIFEST.read_text(encoding="utf-8"))
     assert manifest["platform"] == "iOS"
@@ -205,6 +225,24 @@ def test_app_store_screenshot_manifest_is_an_honest_ios_capture_contract() -> No
         "1242x2688",
         "1284x2778",
     }
+    assert set(manifest["required_displays"]["13-inch iPad"]) == {
+        "2048x2732",
+        "2064x2752",
+    }
+    captures = manifest["required_captures"]
+    assert {capture["display"] for capture in captures} == {
+        "6.5-inch iPhone",
+        "13-inch iPad",
+    }
+    assert all(capture["alpha"] is False for capture in captures)
+    assert all(
+        capture["status"] == "uploaded_and_persisted_in_app_store_connect"
+        for capture in captures
+    )
+    assert all(
+        capture["source_sha"] == "76d795a1a3794fc3f3112121a063ca21b3175ce0"
+        for capture in captures
+    )
     assert len(manifest["shots"]) == 5
     assert all(shot["status"] == "blocked_until_ios_capture" for shot in manifest["shots"])
     rules = " ".join(manifest["capture_rules"])
