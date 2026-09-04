@@ -237,12 +237,18 @@ registration was the old `plug-and-play-test-model` test artifact and was not th
 binding. Do not ask Jonathan to name what the app can derive, and do not treat either registration
 as realtime authority.
 
-The smallest remaining founder action is therefore a choice: use the existing provider setup to
-connect and select a real user-owned `api_key_http` provider that offers a compatible
-`tinyassets.voice.v1` bridge, or leave Voice unavailable. Only after the app derives that compatible
-current binding should Jonathan be asked to authorize one bounded non-production physical-device
-proof. No host file or developer bypass counts. The proof order, stop conditions, and evidence
-packet are in `docs/ops/realtime-voice-mobile-handoff.md`.
+The capability-first tap shipped in PR #2924 and was proved through the rendered signed-in app on
+2026-09-04. The composer derived the unsupported current binding, rendered `Voice · Connect`, and
+one tap opened the existing provider setup with an explanation that compatible realtime authority
+must be user-owned and that TinyAssets will not switch providers automatically. No microphone,
+disclosure, session, provider change, credential action, or platform-paid usage occurred.
+
+The smallest remaining founder action is therefore available from that same Voice control: use
+the existing provider setup to connect and select a real user-owned `api_key_http` provider that
+offers a compatible `tinyassets.voice.v1` bridge, or leave Voice unavailable. Only after the app
+derives that compatible current binding should Jonathan be asked to authorize one bounded
+non-production physical-device proof. No host file or developer bypass counts. The proof order,
+stop conditions, and evidence packet are in `docs/ops/realtime-voice-mobile-handoff.md`.
 
 Stop for Jonathan at the rendered `ready` state before starting microphone acceptance. Enabling or
 releasing Voice remains a separate explicit founder decision. Both Voice-specific production gates
