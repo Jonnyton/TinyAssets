@@ -4,12 +4,17 @@
 Define the independently bounded, diagnostic CI lifecycle gate for unsigned Windows desktop installers while keeping signing, publication, clean-machine acceptance, and organic-use readiness separate.
 ## Requirements
 ### Requirement: Windows release lifecycle verification has an independent total deadline
-The desktop release workflow SHALL execute the exact unsigned Windows installer lifecycle beneath a non-PowerShell parent supervisor whose total deadline is independent of all waits and cleanup performed by the lifecycle child. The supervisor deadline MUST expire before the GitHub job timeout begins cancellation, and the job timeout MUST remain as defense in depth rather than the primary lifecycle bound.
+The desktop release workflow SHALL execute the exact unsigned Windows installer lifecycle beneath a non-PowerShell parent supervisor whose total deadline is independent of all waits and cleanup performed by the lifecycle child. A native watchdog SHALL also bound the supervisor's complete lifetime, including preflight, process-tree ownership, child wait, cleanup, capture replay, and interpreter teardown. The watchdog SHALL remain armed through interpreter exit. On expiry it SHALL write all thread stacks directly to workflow stderr and exit non-zero before the GitHub job timeout begins cancellation. The child-wait deadline, whole-supervisor deadline, and GitHub job timeout MUST be ordered with explicit diagnostic margin, and the job timeout MUST remain defense in depth rather than the primary lifecycle bound.
 
 #### Scenario: Lifecycle child hangs inside a phase or cleanup path
 - **WHEN** the Windows lifecycle child does not exit before the supervisor's total deadline
 - **THEN** the supervisor reports a non-zero timeout verdict without waiting for the GitHub job timeout
 - **AND** cleanup of the child tree is itself bounded
+
+#### Scenario: Supervisor stalls outside the child wait
+- **WHEN** any supervisor operation or interpreter teardown outlives the whole-supervisor deadline
+- **THEN** the native watchdog emits the blocked thread stacks and terminates the supervisor non-zero
+- **AND** the workflow receives that terminal failure before its job timeout can cancel the job and discard the log
 
 #### Scenario: Lifecycle completes normally
 - **WHEN** install, packaged health probe, same-version repair, and content-preserving uninstall all complete within the total deadline

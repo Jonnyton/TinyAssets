@@ -129,11 +129,12 @@ def test_unsigned_windows_lifecycle_is_bounded_and_diagnostic() -> None:
         "  sign-and-verify:", 1
     )[0]
 
-    assert "timeout-minutes: 10" in install_job
+    assert "timeout-minutes: 15" in install_job
     assert "actions/setup-python@v5" in install_job
     assert "windows_lifecycle_supervisor.py" in install_job
     assert "--phase-timeout-seconds 90" in install_job
     assert "--total-timeout-seconds 300" in install_job
+    assert "--hard-timeout-seconds 420" in install_job
     assert "PhaseTimeoutSeconds" in lifecycle
     assert "WaitForExit" in lifecycle
     assert ".Kill()" not in lifecycle
@@ -160,6 +161,9 @@ def test_unsigned_windows_lifecycle_is_bounded_and_diagnostic() -> None:
     assert "subprocess.PIPE" in supervisor
     assert "thread.join(timeout=" in supervisor
     assert "_CHILD_BOOTSTRAP" in supervisor
+    assert "faulthandler.dump_traceback_later" in supervisor
+    assert "faulthandler.cancel_dump_traceback_later" not in supervisor
+    assert "exit=True" in supervisor
 
 
 def test_windows_lifecycle_capture_replays_a_fixed_size_snapshot(
@@ -362,6 +366,54 @@ while ($true) {
     ):
         assert f"stage={stage}" in output
     assert len(output) < 20_000
+
+
+def test_windows_lifecycle_hard_deadline_covers_interpreter_teardown(
+    tmp_path: Path,
+) -> None:
+    driver = tmp_path / "stall_during_interpreter_teardown.py"
+    driver.write_text(
+        f"""import atexit
+import importlib.util
+import sys
+import threading
+
+spec = importlib.util.spec_from_file_location(
+    "windows_lifecycle_supervisor_under_test", {str(SUPERVISOR)!r}
+)
+assert spec is not None and spec.loader is not None
+supervisor = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(supervisor)
+supervisor._run = lambda args: 0
+atexit.register(lambda: threading.Event().wait())
+sys.argv = [
+    "windows_lifecycle_supervisor.py",
+    "--installer",
+    "unused.exe",
+    "--hard-timeout-seconds",
+    "2",
+]
+raise SystemExit(supervisor.main())
+""",
+        encoding="utf-8",
+    )
+
+    started = time.monotonic()
+    result = subprocess.run(
+        [sys.executable, str(driver)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    elapsed = time.monotonic() - started
+    output = result.stdout + result.stderr
+
+    assert result.returncode != 0
+    assert elapsed < 8
+    assert "stage=supervisor.hard_deadline.armed.2s" in output
+    assert "Timeout (0:00:02)!" in output
+    assert "stall_during_interpreter_teardown.py" in output
 
 
 @pytest.mark.skipif(
