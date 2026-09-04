@@ -52,7 +52,7 @@
     "mobile/resources/icon.png": "577b2b1a2266c07ceabdcb14c32c9da4f3c2d1ae589b74c033cc1df8081926bb",
     "mobile/resources/splash.png": "54fb65163cee6f349e19d8b62b1302c8a2d2fe6bc79f36c7aeb58a4947d06b4d",
     "tinyassets/desktop/app.ico": "cfbe78e2719ed6543b87d9ea2767ec7493b8d78199855724452ccbf105a6fc87",
-    "tinyassets/onboarding/app.html": "934342ec6b9bb865d5ccc08d994a43323a135b964ff0dd3d76c4073aff9c86ce"
+    "tinyassets/onboarding/app.html": "12ceeffcfd42960a91beebfc6d272eb926a5588f98855c449e07548b61c17613"
   },
   "generators": {
     "WebSite/brand/render_marks.py": "ca87b1c1a7e1bd5506b709dd7ada47e0c93754751bba3047e0ba8f2d186de6f4",

@@ -238,6 +238,18 @@ def test_session_limit_is_per_identity_and_resets():
     ) is True
 
 
+def test_status_limit_is_per_identity_and_resets(monkeypatch):
+    monkeypatch.setattr(rv, "VOICE_STATUS_CHECKS_PER_WINDOW", 2)
+    monkeypatch.setattr(rv, "_status_buckets", {})
+    assert rv.allow_voice_status("owner-a", now=10.0) is True
+    assert rv.allow_voice_status("owner-a", now=10.0) is True
+    assert rv.allow_voice_status("owner-a", now=10.0) is False
+    assert rv.allow_voice_status("owner-b", now=10.0) is True
+    assert rv.allow_voice_status(
+        "owner-a", now=10.0 + rv.VOICE_STATUS_WINDOW_SECONDS
+    ) is True
+
+
 def test_public_config_contains_only_protocol_and_limits(monkeypatch):
     _enable(monkeypatch)
     config = rv.public_voice_config()
@@ -352,7 +364,7 @@ def test_capability_is_ready_only_for_exact_owner_and_universe(monkeypatch, tmp_
     assert rv.voice_capability(universe, "someone-else")["available"] is False
 
 
-def test_subscription_provider_reports_unsupported_without_remediation(
+def test_subscription_provider_routes_to_existing_connection_surface(
     monkeypatch, tmp_path
 ):
     _enable(monkeypatch)
@@ -371,6 +383,43 @@ def test_subscription_provider_reports_unsupported_without_remediation(
         "available": False,
         "state": "incompatible",
         "reason": "provider_voice_unsupported",
+        "remediation": "existing_connection_surface",
+    }
+
+
+def test_capability_discovery_remains_actionable_while_sessions_are_disabled(
+    monkeypatch, tmp_path
+):
+    universe = _seed_binding(tmp_path, monkeypatch)
+    import tinyassets.provider_serving_binding as serving
+
+    monkeypatch.setattr(
+        serving,
+        "resolve_current_serving_provider_authority",
+        lambda *_args, **_kwargs: serving.CurrentServingProviderAuthority(
+            provider="codex", access_method="subscription_cli"
+        ),
+    )
+    monkeypatch.delenv("TINYASSETS_REALTIME_VOICE_ENABLED", raising=False)
+    monkeypatch.delenv("TINYASSETS_ALLOW_REALTIME_VOICE_API", raising=False)
+
+    assert rv.voice_capability(universe, "user_owner") == {
+        "available": False,
+        "state": "incompatible",
+        "reason": "provider_voice_unsupported",
+        "remediation": "existing_connection_surface",
+    }
+
+
+def test_ready_capability_cannot_start_while_sessions_are_disabled(monkeypatch, tmp_path):
+    universe = _seed_binding(tmp_path, monkeypatch)
+    monkeypatch.delenv("TINYASSETS_REALTIME_VOICE_ENABLED", raising=False)
+    monkeypatch.delenv("TINYASSETS_ALLOW_REALTIME_VOICE_API", raising=False)
+
+    assert rv.voice_capability(universe, "user_owner") == {
+        "available": False,
+        "state": "disabled",
+        "reason": "voice_disabled",
         "remediation": "none",
     }
 
@@ -747,6 +796,22 @@ def test_status_route_is_authenticated_secret_free_and_unpowered(monkeypatch, tm
         "remediation": "existing_connection_surface",
     }
     assert headers["cache-control"] == "no-store"
+
+
+def test_status_route_rate_limits_before_home_resolution(monkeypatch):
+    monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
+    import tinyassets.onboarding as onboarding
+
+    monkeypatch.setattr(rv, "allow_voice_status", lambda _user_id: False)
+    monkeypatch.setattr(
+        onboarding,
+        "_read_home",
+        lambda _identity: pytest.fail("rate limit must precede home resolution"),
+    )
+    assert _drive_status(identity=_owner())[:2] == (
+        429,
+        {"error": "voice_status_rate_limited"},
+    )
 
 
 def test_status_route_reports_ready_without_returning_connection_secret(

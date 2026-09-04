@@ -1134,7 +1134,7 @@
   // Voice owns only microphone, WebRTC, and turn timing. The universe's
   // actual words still come from MCP.converse through sendVoiceTurn below.
   const VOICE_LABELS={
-    unavailable:"Voice is not enabled on this TinyAssets host.",
+    unavailable:"Voice sessions are not enabled yet. Typed chat still works.",
     checking:"Checking this universe's voice capability...",
     unpowered:"Voice needs the provider connection your universe will use.",
     incompatible:"Your current provider does not have compatible realtime Voice.",
@@ -1190,6 +1190,11 @@
     };
     return messages[code]||"Voice could not connect. Typed chat still works.";
   }
+  function voiceConnectionGuidance(code){
+    if(code==="provider_not_configured")
+      return "Voice needs a realtime-capable provider connection that you authorize for this universe. Connect the provider your universe should use; TinyAssets will not supply a platform credential.";
+    return "Your current provider still powers typed conversation, but it does not provide compatible realtime Voice authority. Connect and select a realtime-capable provider connection you authorize; TinyAssets will not switch providers automatically.";
+  }
   const Voice={
     state:"unavailable", pc:null, dc:null, stream:null, audio:null,
     capability:null,
@@ -1199,11 +1204,10 @@
     epoch:0, handledCalls:new Set(), expectedReply:"", canonicalResponsePending:false,
     canonicalResponseInterrupted:false,
     init(){
-      const enabled=!!(CFG.voice&&CFG.voice.enabled);
-      this.state=enabled?"checking":"unavailable"; this.capability=null;
+      this.state="checking"; this.capability=null;
       const btn=$("btn-voice");
       btn.disabled=true;
-      btn.title=enabled?"Checking this universe's voice capability":VOICE_LABELS.unavailable;
+      btn.title="Checking this universe's voice capability";
       this._render();
     },
     _render(detail){
@@ -1213,7 +1217,8 @@
       if(this.state==="unpowered"||this.state==="incompatible"){
         btn.disabled=!canRemediate;btn.title=VOICE_LABELS[this.state]||"Voice unavailable";
       }
-      else if(this.state==="unavailable"||this.state==="checking"){btn.disabled=true;btn.title=VOICE_LABELS[this.state]||"Voice unavailable";}
+      else if(this.state==="unavailable"){btn.disabled=true;btn.title=VOICE_LABELS[this.state]||"Voice unavailable";}
+      else if(this.state==="checking"){btn.disabled=false;btn.title="Check Voice again";}
       else{btn.disabled=false;btn.title=active?"Stop voice conversation":"Start a voice conversation";}
       btn.setAttribute("aria-pressed",active?"true":"false");
       btn.setAttribute("aria-label",canRemediate?"Open provider connection for Voice":(active?"Stop voice conversation":"Start voice conversation"));
@@ -1254,7 +1259,6 @@
       }finally{if(timer)clearTimeout(timer);}
     },
     async refreshCapability(){
-      if(!(CFG.voice&&CFG.voice.enabled)){this.capability={available:false,state:"disabled",reason:"voice_disabled",remediation:"none"};this.state="unavailable";this._render();return false;}
       try{
         const doc=await this._readCapability();
         this.capability=doc;
@@ -1264,14 +1268,14 @@
       }catch(_error){this.capability=null;this.state="checking";this._render("Voice capability could not be confirmed. Typed chat still works.");return false;}
     },
     async requestStart(){
-      if(this.state==="unavailable") return this._render();
-      if((this.state==="unpowered"||this.state==="incompatible")&&!await this.refreshCapability()){
+      const inactive=["unavailable","checking","unpowered","incompatible","idle","error"];
+      if(!inactive.includes(this.state)){this.stop();return;}
+      if(!await this.refreshCapability()){
         if(this.capability&&this.capability.remediation==="existing_connection_surface")
-          return showConnect(this.capability.state==="unpowered");
+          return showConnect(this.capability.state==="unpowered",
+            voiceConnectionGuidance(this.capability.reason));
         return this._render(voiceFriendlyError(this.capability&&this.capability.reason));
       }
-      if(!["idle","error"].includes(this.state)){ this.stop(); return; }
-      if(!await this.refreshCapability()) return;
       if(!this._accepted()){
         const service=(this.capability&&this.capability.service_name)||"the voice connection";
         $("voice-service-name").textContent=service;
@@ -2053,13 +2057,13 @@
   }
   function enterSignedOut(){ clearInterval(statusTimer); MCP.sessionId=null; Voice.stop(false);
     sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(EXP_KEY); cancelOpenAIFlow(); resetOpenAIUI(); showView("signin"); }
-  function showConnect(asGate){ Voice.stop(false); showView("connect");
+  function showConnect(asGate,guidance){ Voice.stop(false); showView("connect");
     // Web has no loopback listener: the guided device-code path IS the path.
     if(!openaiBusy) resetOpenAIUI();
     $("btn-connect-back").textContent = asGate ? "Skip for now" : "Back to chat";
-    $("connect-status").textContent = asGate
+    $("connect-status").textContent = guidance || (asGate
       ? "Your universe needs a mind to think with. Connect the subscription it should run on — credentials go straight to the connector over TLS, never through chat, never logged."
-      : "Credentials go straight to the connector over TLS — never through chat, never logged."; }
+      : "Credentials go straight to the connector over TLS — never through chat, never logged."); }
 
   function autoGrow(el){ el.style.height="auto"; el.style.height=Math.min(el.scrollHeight,window.innerHeight*0.4)+"px"; }
 

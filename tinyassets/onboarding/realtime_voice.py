@@ -25,9 +25,12 @@ VOICE_DISCLOSURE_VERSION = 3
 VOICE_SESSION_MAX_SECONDS = 30 * 60
 VOICE_SESSION_WINDOW_SECONDS = 60.0
 VOICE_SESSIONS_PER_WINDOW = 10
+VOICE_STATUS_WINDOW_SECONDS = 60.0
+VOICE_STATUS_CHECKS_PER_WINDOW = 60
 _MAX_SDP_CHARS = 64 * 1024
 _TRUTHY = {"1", "true", "yes", "on"}
 _session_buckets: dict[str, tuple[float, int]] = {}
+_status_buckets: dict[str, tuple[float, int]] = {}
 
 ProxyFactory = Callable[[Path, str, "VoiceBinding"], Any]
 
@@ -168,13 +171,6 @@ def voice_capability(
 ) -> dict[str, Any]:
     """Return a secret-free view of one universe's bound voice capability."""
 
-    if not realtime_voice_enabled():
-        return {
-            "available": False,
-            "state": "disabled",
-            "reason": "voice_disabled",
-            "remediation": "none",
-        }
     if universe_dir is None or not owner_user_id:
         return {
             "available": False,
@@ -190,7 +186,13 @@ def voice_capability(
     except RealtimeVoiceError as exc:
         remediation = (
             "existing_connection_surface"
-            if exc.code in {"capability_not_declared", "voice_capability_invalid"}
+            if exc.code
+            in {
+                "provider_voice_unsupported",
+                "capability_not_declared",
+                "voice_capability_invalid",
+                "voice_authority_invalid",
+            }
             else "none"
         )
         return {
@@ -224,6 +226,13 @@ def voice_capability(
             )
         ).encode("utf-8")
     ).hexdigest()
+    if not realtime_voice_enabled():
+        return {
+            "available": False,
+            "state": "disabled",
+            "reason": "voice_disabled",
+            "remediation": "none",
+        }
     return {
         "available": True,
         "state": "ready",
@@ -245,6 +254,24 @@ def allow_voice_session(user_id: str, *, now: float | None = None) -> bool:
     if count >= VOICE_SESSIONS_PER_WINDOW:
         return False
     _session_buckets[user_id] = (start, count + 1)
+    return True
+
+
+def allow_voice_status(user_id: str, *, now: float | None = None) -> bool:
+    """Bound repeated capability resolution for one authenticated owner."""
+
+    moment = time.monotonic() if now is None else now
+    start, count = _status_buckets.get(user_id, (moment, 0))
+    if moment - start >= VOICE_STATUS_WINDOW_SECONDS:
+        start, count = moment, 0
+    if count >= VOICE_STATUS_CHECKS_PER_WINDOW:
+        return False
+    _status_buckets[user_id] = (start, count + 1)
+    if len(_status_buckets) > 5000:
+        for key in sorted(_status_buckets, key=lambda item: _status_buckets[item][0])[
+            :1000
+        ]:
+            _status_buckets.pop(key, None)
     return True
 
 
