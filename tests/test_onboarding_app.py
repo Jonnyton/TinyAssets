@@ -688,18 +688,28 @@ let connectCalls=[]; function showConnect(asGate,guidance){connectCalls.push({as
     mediaRequests,connectCalls:connectCalls.slice(),status};
   capabilityDoc={available:false,state:"incompatible",reason:"provider_voice_unsupported",
     remediation:"existing_connection_surface"};connectCalls=[];
-  CFG.voice.enabled=false;Voice.init();await Voice.refreshCapability();await Voice.requestStart();
-  out.unsupportedWhileSessionFlagsOff={state:Voice.state,
+  CFG.voice.enabled=true;Voice.init();await Voice.refreshCapability();await Voice.requestStart();
+  out.unsupportedWithTransportEnabled={state:Voice.state,
     disabled:els["btn-voice"].disabled,mediaRequests,
     connectCalls:connectCalls.slice(),status};
+  CFG.voice.enabled=false;
   capabilityDoc={available:false,state:"disabled",reason:"voice_disabled",
     remediation:"none"};connectCalls=[];
   Voice.init();await Voice.refreshCapability();await Voice.requestStart();
-  out.compatibleWhileSessionFlagsOff={state:Voice.state,
+  out.transportDisabled={state:Voice.state,
     disabled:els["btn-voice"].disabled,mediaRequests,
     connectCalls:connectCalls.slice(),status,
     disclosureShown:!els["voice-disclosure"].hidden};
   CFG.voice.enabled=true;
+  capabilityDoc={available:true,state:"ready",resource:"user_bound_voice_connection",
+    remediation:"none",
+    disclosure_id:"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    service_name:"My bridge",privacy_url:"https://bridge.example/privacy"};connectCalls=[];
+  Voice.init();await Voice.refreshCapability();await Voice.requestStart();
+  out.readyWithoutLegacyFlags={state:Voice.state,
+    disabled:els["btn-voice"].disabled,mediaRequests,
+    connectCalls:connectCalls.slice(),status,
+    disclosureShown:!els["voice-disclosure"].hidden};
   const realEnsureFreshToken=ensureFreshToken,fetchesBeforeDeadline=fetched.length;
   ensureFreshToken=()=>new Promise(()=>{});
   const deadlineResult=Voice._readCapability(5000).then(()=>"resolved",error=>error.message);
@@ -948,7 +958,7 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
     assert out["unremediableIncompatible"]["mediaRequests"] == 0
     assert out["unremediableIncompatible"]["connectCalls"] == []
     assert "typed message first" in out["unremediableIncompatible"]["status"]
-    assert out["unsupportedWhileSessionFlagsOff"] == {
+    assert out["unsupportedWithTransportEnabled"] == {
         "state": "incompatible",
         "disabled": False,
         "mediaRequests": 0,
@@ -968,13 +978,21 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
             "compatible realtime Voice."
         ),
     }
-    assert out["compatibleWhileSessionFlagsOff"] == {
+    assert out["transportDisabled"] == {
         "state": "unavailable",
         "disabled": True,
         "mediaRequests": 0,
         "connectCalls": [],
-        "status": "Voice is not enabled on this TinyAssets host.",
+        "status": "Voice transport is temporarily unavailable. Typed chat still works.",
         "disclosureShown": False,
+    }
+    assert out["readyWithoutLegacyFlags"] == {
+        "state": "idle",
+        "disabled": False,
+        "mediaRequests": 0,
+        "connectCalls": [],
+        "status": "Voice ready.",
+        "disclosureShown": True,
     }
     assert out["authorityDeadline"] == {
         "result": "voice_status_timeout",

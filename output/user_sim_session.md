@@ -467,3 +467,12 @@ MISSION SUMMARY:
   platform credential use: none occurred.
 - Ready/live-microphone acceptance: intentionally NOT RUN; both Voice session
   switches remain off and no eligible current provider is present.
+
+## [2026-09-04 13:45 PDT] USER BUG compatible Voice authority dead-ends on host switch
+
+Actual user report: a universe already powered by the user's ChatGPT connection
+rendered `Voice is not enabled on this TinyAssets host.` after the Voice tap.
+Code trace confirmed that response occurs only after the exact current-provider
+HTTP connection and `tinyassets.voice.v1` capability validate; two redundant
+Voice-specific host switches then overwrite `ready` with `voice_disabled`.
+No additional login, provider, credential, or microphone action was attempted.

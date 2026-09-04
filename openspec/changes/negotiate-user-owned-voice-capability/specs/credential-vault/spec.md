@@ -6,7 +6,7 @@ The voice capability declaration, capability check, and session broker SHALL use
 Capability metadata SHALL be stored in a `connection_capabilities` table keyed by `(connection_id, capability_kind)` and linked to the owning connection. Connection deletion SHALL remove its capability rows in the same transaction before the deterministic connection id can be reused.
 
 #### Scenario: Compatible current provider exchanges bounded signaling
-- **GIVEN** all host gates are enabled and the authenticated owner's current provider has a valid realtime capability on its active HTTP connection and grant
+- **GIVEN** generic outbound HTTP transport is enabled and the authenticated owner's current provider has a valid realtime capability on its active HTTP connection and grant
 - **WHEN** the owner requests a voice session
 - **THEN** the broker sends the provider-neutral session policy and bounded SDP offer through that exact credential-blind connection
 - **AND** it returns only a validated, bounded SDP answer and session metadata

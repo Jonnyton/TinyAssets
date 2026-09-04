@@ -222,20 +222,21 @@ Recovered 2026-08-27 from PR #2463, which carried it on the retired board and ha
 
 ---
 
-### First-class Voice — connect a compatible current provider before physical-device proof
+### First-class Voice — stop at microphone acceptance after the capability-gate fix deploys
 
 **Do not send a credential in chat and do not buy a platform key.** The shipped dark runtime accepts
 only an exact `tinyassets.voice.v1` bridge backed by a generic HTTP connection and grant already
 owned by the signed-in founder and their home universe. Host credentials, maintainer accounts,
 another user's connection, and platform-paid usage cannot unlock it.
 
-The product path now binds the capability only to the universe's current serving provider and
-reuses the existing provider/connection setup. An authenticated read-only app check on 2026-09-04
-resolved the founder universe's actual current binding as `codex` via `subscription_cli`. That
-binding cannot satisfy the shipped HTTP bridge contract. The only visible `openai_chat` HTTP
-registration was the old `plug-and-play-test-model` test artifact and was not the active serving
-binding. Do not ask Jonathan to name what the app can derive, and do not treat either registration
-as realtime authority.
+The product path binds the capability only to the universe's current serving provider and reuses
+the existing provider/connection setup. An earlier authenticated check on 2026-09-04 found a
+`codex/subscription_cli` binding and correctly routed Voice to that setup path. A later real-user
+result from a universe powered by the user's ChatGPT connection rendered `Voice is not enabled on
+this TinyAssets host.` That server state is returned only after the exact current-provider HTTP
+connection, owner, universe, grant, credential rotation, endpoint, method, and
+`tinyassets.voice.v1` capability have already validated. The user-owned capability is therefore
+present; asking for another provider or credential would be wrong.
 
 The capability-first tap shipped in PR #2924 and was proved through the rendered signed-in app on
 2026-09-04. The composer derived the unsupported current binding, rendered `Voice · Connect`, and
@@ -243,17 +244,19 @@ one tap opened the existing provider setup with an explanation that compatible r
 must be user-owned and that TinyAssets will not switch providers automatically. No microphone,
 disclosure, session, provider change, credential action, or platform-paid usage occurred.
 
-The smallest remaining founder action is therefore available from that same Voice control: use
-the existing provider setup to connect and select a real user-owned `api_key_http` provider that
-offers a compatible `tinyassets.voice.v1` bridge, or leave Voice unavailable. Only after the app
-derives that compatible current binding should Jonathan be asked to authorize one bounded
-non-production physical-device proof. No host file or developer bypass counts. The proof order,
-stop conditions, and evidence packet are in `docs/ops/realtime-voice-mobile-handoff.md`.
+The implementation fix removes the two redundant Voice-specific host switches that overwrote this
+validated user capability with `voice_disabled`. The exact user-owned capability remains the
+readiness authority, and the existing generic outbound HTTP switch remains the transport kill
+switch. After the fix is merged, deployed, and the authenticated app renders the compatible
+current provider as ready, stop before microphone permission for Jonathan's explicit bounded
+physical-device proof. No host file, developer bypass, new credential, or platform-funded usage
+counts. The proof order, stop conditions, and evidence packet are in
+`docs/ops/realtime-voice-mobile-handoff.md`.
 
-Stop for Jonathan at the rendered `ready` state before starting microphone acceptance. Enabling or
-releasing Voice remains a separate explicit founder decision. Both Voice-specific production gates
-remain off meanwhile; generic outbound HTTP is already enabled for unrelated effectors and cannot
-unlock Voice on its own.
+Stop for Jonathan at the rendered `ready` state before starting microphone acceptance. The app
+must derive the current binding; do not ask him to name it or reconnect it manually. Running the
+live microphone acceptance and releasing Voice beyond that bounded proof remain explicit founder
+decisions.
 
 ---
 

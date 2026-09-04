@@ -12,14 +12,14 @@ Jonathan's 2026-09-03 product decision is authoritative: one Voice control stays
 - Let an authenticated owner declare or revoke a capability only for the connection/grant currently powering their home universe.
 - Resolve Voice readiness from the current serving provider and live grant on every status/session request.
 - Make the composer Voice control one-tap when ready and reuse existing connection/request UI when not ready.
-- Preserve the existing credential-blind broker, exact endpoint/method scope, writer routing, disclosure, and dark-launch gates.
+- Preserve the existing credential-blind broker, exact endpoint/method scope, writer routing, disclosure, and generic outbound transport gate.
 
 **Non-Goals:**
 
 - Creating a Voice-specific credential, account, billing path, provider SDK, or platform-funded fallback.
 - Guessing capability from a provider brand, model name, URL substring, or ambient host credential.
 - Automatically selecting a different provider or connection from the one currently serving the universe.
-- Enabling either Voice-specific production gate, publishing a store release, or claiming live acceptance before Jonathan's bounded test.
+- Publishing a store release or claiming live acceptance before Jonathan's bounded test.
 - Background audio, raw-audio persistence, wake words, or changes to the canonical `converse` writer.
 
 ## Decisions
@@ -57,7 +57,7 @@ The existing connection form/request rail invokes this operation after the user 
 
 ### 3. Voice resolution follows the current serving provider; it never searches for substitutes
 
-`voice_capability()` resolves exactly one current founder serving binding. For an `api_key_http` provider it loads the provider definition's grant, resolves that grant to its redacted connection, and reads the connection's `realtime_voice` capability. It reuses `_current_serving_authority` and `verify_open_grant_custody` rather than reimplementing serving authority, including the credential-reference rotation digest, then additionally checks exact owner, universe, HTTP type, `POST`, protocol, capability row, and endpoint allowlist.
+`voice_capability()` resolves exactly one current founder serving binding. For an `api_key_http` provider it loads the provider definition's grant, resolves that grant to its redacted connection, and reads the connection's `realtime_voice` capability. It reuses `_current_serving_authority` and `verify_open_grant_custody` rather than reimplementing serving authority, including the credential-reference rotation digest, then additionally checks exact owner, universe, HTTP type, `POST`, protocol, capability row, and endpoint allowlist. Once those checks pass, that user-owned capability is the Voice readiness authority; legacy Voice-specific host flags cannot override it. The existing generic outbound HTTP switch remains the operational transport kill switch.
 
 Current subscription-CLI providers advertise no realtime capability in this slice because their subscription interfaces expose no documented provider-neutral SDP bridge. They therefore return `provider_voice_unsupported`, not a request for a platform key. A future adapter may expose the same generic descriptor only when it can do so from the user's own authenticated provider resource.
 
@@ -70,7 +70,7 @@ The existing `btn-voice` remains the only Voice entry point:
 - `ready`: one tap proceeds directly to the existing disclosure (if needed) and microphone/session start.
 - `unpowered`: the app opens/focuses the existing synthesized provider request; no Voice-specific setup dialog is shown.
 - `provider_voice_unsupported` or `capability_not_declared`: the app names the current provider capability gap. Status returns the closed `remediation` enum `existing_connection_surface` only when the current provider has an authorized remediation exposed by that existing surface, otherwise `none`; the client follows that value deterministically.
-- `disabled` or invalid authority: the app stays non-capturing and explains the failure without changing typed conversation.
+- generic outbound transport disabled or invalid authority: the app stays non-capturing and explains the failure without changing typed conversation.
 
 The old Voice unlock modal is removed. No path requests microphone permission until status is `ready`.
 
@@ -97,10 +97,10 @@ While Voice is active, the client polls the authenticated status route every fiv
 1. Add the ledger table and fail-closed capability APIs; existing connections have no capability rows and remain valid for their existing purposes. Extend connection deletion to remove capability rows in the same transaction.
 2. Replace the file-based Voice resolver and tests with current-serving-provider capability resolution.
 3. Update the shared app state machine and remove the separate unlock modal.
-4. Keep both Voice-specific flags off while deploying. Run focused tests, required CI, authenticated public canary, and rendered browser proof of the disabled, unpowered, and incompatible states. Record ready-state proof as blocked on an eligible already-authorized provider rather than manufacturing authority.
-5. After Jonathan identifies an already user-authorized provider that exposes `tinyassets.voice.v1` and explicitly authorizes the bounded proof, enable only in that proof environment and stop for his live microphone test.
+4. Retire the redundant Voice-specific host flags. Run focused tests, required CI, authenticated public canary, and rendered browser proof that an exact compatible capability reaches ready while capability gaps reuse the existing connection path. The generic outbound HTTP gate remains fail-closed.
+5. After the app derives an already user-authorized provider that exposes `tinyassets.voice.v1`, stop before microphone permission for Jonathan's explicit bounded live test.
 
-Rollback is code-only while the flags remain off. The additive capability table may remain unused; removing a capability row or reverting the resolver leaves no credential or broader authority behind.
+Rollback disables generic outbound HTTP or reverts the code. The additive capability table may remain unused; removing a capability row or reverting the resolver leaves no credential or broader authority behind.
 
 ## Open Questions
 

@@ -50,6 +50,7 @@ Each flag reads as a string; truthy = `"on"`, `"1"`, `"true"`, `"yes"` (case-ins
 | `TINYASSETS_PAID_MARKET` | Enables the paid-market bid/claim surface. `TINYASSETS_DISPATCHER_ENABLED` must also be on. Phase-G flag. | `off`. |
 | `TINYASSETS_GOAL_POOL` | Enables the goal-pool producer in `workflow.producers.goal_pool` — cross-branch goal aggregation. | `off`. |
 | `TINYASSETS_PRODUCER_INTERFACE` | Enables the producer-interface surface — multi-producer concurrency for branches. | `on`. |
+| `TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED` | Master transport gate for credential-blind outbound HTTP through user-owned connection grants, including compatible realtime Voice bridges. This gate never grants provider authority, selects a provider, or authorizes platform-funded usage; each call still requires its exact owner, universe, grant, method, endpoint, credential, and capability checks. | `off`. |
 | `TINYASSETS_TIERED_SCOPE` | Enables the tiered-memory-scope retrieval router (`workflow.retrieval.router`). Memory scope is tier-gated (node/branch/goal/user/universe). | `off` (Stage 1 monitoring; flip to `on` at Stage 2c per task #19). |
 | `GATES_ENABLED` | Enables outcome-gate claims (Phase 6). When off, `gates` tool returns placeholder. | `off`. |
 | `TINYASSETS_SUPERVISOR_LIVENESS_TTL_S` | How long `get_status` may reuse a supervisor-liveness snapshot. Computing it reads ~59 per-worker liveness files and was 58% of a status request after the storage walk was cached. The default is sized against the watchdog threshold it feeds (`stuck_pending_max_age_s < 60`), not by feel. `0` disables. | `5` (seconds). |
@@ -61,8 +62,6 @@ Each flag reads as a string; truthy = `"on"`, `"1"`, `"true"`, `"yes"` (case-ins
 | `TINYASSETS_RUN_MAX_CONCURRENT` | Integer cap on concurrent in-flight branch runs. | Unset = unlimited. |
 | `TINYASSETS_IDLE_CYCLE_SINGLE_FLIGHT` | Dedupe the no-claim idle heartbeat cycle across fleet workers (`tinyassets/idle_cycle.py`): the winner holds a run lock for the cycle's lifetime (long cycles exclude others; released on process death), and a worker skips when a DIFFERENT worker's stamp is fresh; own stamps never block. Falsy = `"0"`/`"false"`/`"off"`/`"no"`. | `on`. |
 | `TINYASSETS_IDLE_CYCLE_FOREIGN_FRESH_S` | Freshness window (seconds) for the idle-cycle stamp; finite positive numbers only (anything else falls back to default). Keep below the supervisor idle respawn period (~322s at backoff ceiling) and above worker phase offset; also the max heartbeat gap after a stamp-holder death. | `240`. |
-| `TINYASSETS_REALTIME_VOICE_ENABLED` | Makes the shared app's foreground Voice surface available. A universe without a compatible user-bound voice connection sees the capability as locked. This flag supplies no credential or spend authority; both outbound kill switches below must also be truthy. | `off`. |
-| `TINYASSETS_ALLOW_REALTIME_VOICE_API` | Defense-in-depth kill switch for minting sessions through a universe's provider-neutral voice bridge. It is not user spend authority and never makes an ambient/platform credential eligible. | `off`. |
 
 ## LLM + provider routing
 

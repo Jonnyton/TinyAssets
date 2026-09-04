@@ -3,10 +3,17 @@
 ### Requirement: Voice mode is explicit, foreground-only, and accessible
 The shared TinyAssets app SHALL expose one Voice control beside the message composer, SHALL start immediately from that control when the authenticated universe's current provider has a compatible user-authorized capability, SHALL reuse the existing provider connection/request path otherwise, SHALL require an explicit user start action, and SHALL stop every microphone track when the user leaves voice mode, hides or unloads the app, signs out, or reaches an unrecoverable error.
 
-#### Scenario: Voice is unavailable by default
-- **WHEN** any required voice or outbound allowance is disabled
+#### Scenario: Voice transport is unavailable
+- **WHEN** generic outbound HTTP transport is disabled
 - **THEN** the app does not start microphone capture or request a voice session
 - **AND** it presents a concise unavailable reason without disabling typed conversation
+
+#### Scenario: Legacy Voice host flags are absent
+- **GIVEN** generic outbound HTTP transport is enabled
+- **AND** the current provider exposes an authorized `tinyassets.voice.v1` capability
+- **WHEN** the Voice-specific legacy host flags are unset or false
+- **THEN** the app still reports Voice ready and proceeds directly from the composer control
+- **AND** readiness comes only from the user's exact current-provider capability, never platform authority
 
 #### Scenario: Current provider is Voice-ready
 - **WHEN** the signed-in founder taps the composer Voice control and the current provider exposes an authorized `tinyassets.voice.v1` capability
