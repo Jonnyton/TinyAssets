@@ -58,6 +58,26 @@ serving-control parity. Those are outside this five-verb lifecycle audit and
 remain owned by their dedicated concerns or OpenSpec changes; this re-audit
 does not mark them resolved.
 
+## Acceptance-criteria audit
+
+- The missing-input concern now uses an isolated maintainer-owned universe for
+  negative and lifecycle tests. Live proof is performed by the user or bound
+  universe agent against that actor's own disposable branch, with only the
+  sanitized outcome retained.
+- `served-agent-build-run` task 5.5 still proposes a live cross-universe refusal
+  probe and a tracked conversation log. Cross-universe authority negatives
+  belong in isolated test custody, not a live user's universe; any retained
+  rendered proof must omit branch identifiers and content.
+- `run-provider-authority` task 2.3 still pins live proof to one specific private
+  branch and one external action. Its owner must replace that public fixture
+  reference with generic owner-driven proof and a sanitized capability receipt.
+- The canonical owner-delete scenarios are correctly scoped: the author calls
+  delete on their own branch, while non-author denial is proved without using a
+  live user branch as a maintainer fixture.
+
+These findings do not authorize Patches to edit either active owner lane. They
+are handoff requirements for those owners when the changes resume.
+
 ## Delivery boundary
 
 The active `served-agent-build-run` change is not an admissible implementation
