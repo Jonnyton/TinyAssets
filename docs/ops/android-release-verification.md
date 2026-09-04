@@ -90,6 +90,11 @@ as the workflow artifact.
   the blocking prerequisite.
 - Target audience and Data safety: complete only from verified product behavior and
   SDK/data-flow evidence. The saved draft is not a submitted declaration.
+- Advertising ID: the live Console declaration is unstarted. Stage **No** only for an
+  exact candidate whose merged manifest passes this repository's permission allowlist.
+  `com.google.android.gms.permission.AD_ID` is not allowed, and `mobile/package.json`
+  contains no ads/analytics/Firebase dependency. Any SDK that merges the permission
+  must fail the release verifier and force the answer to be reconsidered.
 - Foreground service: because the bundle declares a `dataSync` foreground service
   and targets Android 14+, Google requires a Play Console declaration with a
   description, interruption/defer impact, and demonstration video. Use this staged
@@ -106,6 +111,9 @@ as the workflow artifact.
   - Video proof: Record the user tapping **Connect OpenAI**, the foreground-service
     notification while the browser is open, the return to TinyAssets, and the
     notification disappearing. Redact account identifiers and never record secrets.
+  - Console category: **Data sync → Network processing → Other**. The live declaration
+    is unstarted and directly reports `FOREGROUND_SERVICE_DATA_SYNC` in an uploaded
+    artifact.
 
 - Personal-account production access: at least 12 testers must remain opted into a
   closed test continuously for 14 days before the production-access application.

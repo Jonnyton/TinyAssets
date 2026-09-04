@@ -18,5 +18,11 @@ meet Play's dimension and aspect-ratio rules and expose no account, universe, br
 run, or credential identifiers. They are staged only; uploading them remains an
 outbound Console action.
 
+**Live Console reconciliation (2026-09-03):** the default listing still contains
+uploaded `01-universe-conversation.png` (1080×1920, uploaded 2026-09-02). The clean
+`01-sign-in.png` replacement is repository-staged only. Remove/replace the Console
+asset only under the explicit upload boundary; until then, the listing is not ready to
+send for review even though Play labels the saved listing that way.
+
 The app's own launcher icon + splash come from `mobile/resources/` (see its README);
 this folder is only what the store listing uploads.

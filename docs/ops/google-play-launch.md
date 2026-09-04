@@ -399,6 +399,24 @@ differs from the draft. Record the discrepancy and fix/retest first.
 
 ---
 
+## 8b. Advertising ID declaration — staged answer: No
+
+The live App content overview shows this as a separate unstarted declaration. For the
+current candidate, answer **No** only after rebuilding the exact upload artifact and
+passing merged-manifest verification:
+
+- `mobile/package.json` contains no ads, analytics, Firebase, or Play advertising SDK.
+- `mobile/scripts/verify_android_release.py` permits only Internet, foreground-service,
+  microphone, and Capacitor's non-exported receiver permission. If a dependency merges
+  `com.google.android.gms.permission.AD_ID`, the release fails on permission drift.
+- Re-open this decision whenever dependencies change; absence from the source manifest
+  alone is insufficient because library manifests can add it during merge.
+
+This is a staged policy answer, not a saved declaration. The founder must confirm the
+exact candidate evidence and save it in Play Console.
+
+---
+
 ## 9. Graphics (staged in `docs/ops/play-assets/` — see that folder)
 
 - **App icon:** 512×512 PNG (rendered by `mobile/scripts/render_app_icons.py
@@ -462,11 +480,13 @@ Outstanding:
 > Testers see the temporary name `io.tinyassets.app (unreviewed)` until the
 > listing review completes; that is expected, not a defect.
 
-Play Console's App content counter reads **8 of 11**. That counter gates
-*production*, not internal testing — which is why the app is installable now.
-The foreground-service declaration was not independently recorded in the Console
-handoff; Google's current policy requires it, so treat it as unverified even if the
-counter still shows only three incomplete rows.
+Play Console's dashboard counter reads **8 of 11**, but the authoritative App content
+overview shows **five declarations need attention**: Sign in details, Target audience,
+Data safety, Advertising ID, and Foreground service permissions. Read-only inspection
+on 2026-09-03 confirmed the Data safety draft is complete through Preview, while the
+other four declarations are unstarted. That work gates *production*, not the existing
+internal test. Full evidence is in
+`docs/audits/2026-09-03-google-play-console-readonly-reconciliation.md`.
 
 Done:
 
@@ -475,13 +495,15 @@ Done:
 - [x] Account deletion in-app and at `tinyassets.io/account`
 - [x] Ads / Government / Financial / Health declarations, category, contact details
 - [x] **Content rating** — IARC submitted 2026-09-02, Everyone / PEGI 3 / USK 0 / ClassInd L
-- [x] Data safety answered and **saved as a draft**
+- [x] Data safety answered and **saved as a draft**; read-only Console Preview matches
+      the staged types and shows Audio files `0/3`
 - [x] Contact phone verified — one click, no SMS code. It was never a founder action.
 - [x] **targetSdk 36** via Capacitor 8 (§1a) — Play rejects anything less for a new app
 - [x] Internal-testing tester list "Founder devices"
 - [x] **Signed AAB built and uploaded** — see "How to build one" below
 - [x] Unsafe conversation screenshot removed; clean live signed-out capture staged
-      alongside the Connect capture (not uploaded by this change)
+      alongside the Connect capture. The live Console still has the unsafe old image;
+      replacement is not uploaded by this change.
 
 Open, with what each actually waits on:
 
@@ -494,8 +516,14 @@ Open, with what each actually waits on:
       See `docs/host-actions.md`.
 - [ ] Sign in details → Target audience → Data safety submit — the chain that unlocks
       the last three App content rows, all gated on the account above.
+- [ ] Advertising ID declaration: answer **No** only after confirming the exact
+      candidate still passes the merged-manifest permission gate (no `AD_ID`) and no
+      dependency introduces an advertising-ID SDK.
 - [ ] Foreground-service declaration (§8a): confirm the Console row, record the
-      user-initiated OAuth callback video, founder reviews the staged facts, then submit.
+      user-initiated OAuth callback video, select **Data sync → Network processing →
+      Other**, founder reviews the staged facts, then submit.
+- [ ] Replace the uploaded `01-universe-conversation.png` with staged
+      `01-sign-in.png`; this remains an explicit Console upload action.
 - [ ] Founder: the four `ANDROID_UPLOAD_*` secrets. Not on the critical path any more —
       the container build below needs none of them — but they turn every future release
       into one `gh workflow run` instead of a manual build.
