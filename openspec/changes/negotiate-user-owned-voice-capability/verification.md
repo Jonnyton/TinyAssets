@@ -50,10 +50,34 @@
   review, exact merge-image deploy, and authenticated production canary recorded
   above.
 
-Task 5.3 remains open: production proves the disabled state, while rendered
-unpowered/incompatible acceptance and any ready-state proof remain deliberately
-outside this dark deployment. Task 5.4 remains blocked on the existing provider
-flow establishing an eligible current provider and Jonathan explicitly
-authorizing the bounded live microphone proof. The app must derive that binding;
-Jonathan should not be asked to name it manually. Voice must not be enabled
-merely to close either task.
+## 2026-09-04 capability-first tap follow-up
+
+- Merge: PR #2924 merged as
+  `2bdb7c47577d66e4bfb8fb8de00b6eac606ab76b` at `2026-09-04T19:29:20Z`.
+- CI: required tests passed in 15m41s; slow tests, invariants, the browser
+  trust-boundary contract, bundle/plugin import probes, Linux/macOS/Windows
+  builds, signing checks, and the unsigned Windows install check all passed.
+- Cross-family review: Claude returned `ADAPT`; its authority-remediation,
+  transient-retry, and status-rate-limit findings were applied. An isolated
+  exact-head follow-up returned `APPROVE` for implementation commit `16c06450`.
+  A final exact-head receipt review returned `APPROVE` for `319922c9` and is
+  recorded on PR #2924.
+- Deployment command: `gh run view 33911684121 --log`. Result: the fail-safe
+  deploy reported healthy image
+  `sha256:af26db43eff2325084353bb3c1e10dfb0a17151882308eb033c0d316cd636d2d`.
+  Its authenticated `mcp_public_canary.py --assert-handles` passed, and its
+  protected `deployed_sha.py --assert-contains` reported production exactly at
+  merge `2bdb7c47577d66e4bfb8fb8de00b6eac606ab76b`.
+- Rendered signed-in app proof: the current `codex/subscription_cli` binding
+  rendered an enabled `Open provider connection for Voice` control. One tap
+  opened the pre-existing provider connection view and explained that compatible
+  realtime authority must be user-owned and that TinyAssets will not switch
+  providers automatically. No disclosure, microphone prompt, Voice session,
+  provider change, or credential action occurred.
+- Both Voice-specific production switches remain off.
+
+Task 5.3 is complete. Task 5.4 remains blocked on the existing provider flow
+establishing an eligible current provider and Jonathan explicitly authorizing
+the bounded live microphone proof. The app must derive that binding; Jonathan
+should not be asked to name it manually. Voice must not be enabled merely to
+close the task.

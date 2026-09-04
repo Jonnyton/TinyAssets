@@ -435,3 +435,35 @@ MISSION SUMMARY:
 - Current binding derived by the authenticated app: `codex/subscription_cli`.
 - Eligible `api_key_http` Voice bridge currently serving: no.
 - No provider, credential, flag, Voice, or microphone state was changed.
+
+## [2026-09-04 12:34 PDT] VOICE CAPABILITY-FIRST TAP — LIVE PROOF
+
+TAB HYGIENE: one task-owned Chrome tab opened the production signed-in founder
+app. No chatbot prompt, provider connection, credential entry, permission grant,
+or workflow mutation was performed.
+
+DEPLOYMENT: production release receipt reports merge
+`2bdb7c47577d66e4bfb8fb8de00b6eac606ab76b` on image digest
+`sha256:af26db43eff2325084353bb3c1e10dfb0a17151882308eb033c0d316cd636d2d`.
+The deploy job's authenticated public canary and protected receipt assertion
+both passed.
+
+USER ACTION: The rendered composer showed an enabled Voice control with
+accessible description `Open provider connection for Voice` and visible status
+`Your current provider can power typed conversation but does not expose
+compatible realtime Voice.` One tap opened the existing `Connect your
+subscription` view. The rendered explanation read:
+
+`Your current provider still powers typed conversation, but it does not provide
+compatible realtime Voice authority. Connect and select a realtime-capable
+provider connection you authorize; TinyAssets will not switch providers
+automatically.`
+
+MISSION SUMMARY:
+- Capability-first unsupported-provider tap: PASS.
+- Existing connection surface reused: PASS.
+- Provider derived without asking the founder to name it: PASS.
+- Microphone prompt, disclosure, Voice session, automatic provider switch, and
+  platform credential use: none occurred.
+- Ready/live-microphone acceptance: intentionally NOT RUN; both Voice session
+  switches remain off and no eligible current provider is present.
