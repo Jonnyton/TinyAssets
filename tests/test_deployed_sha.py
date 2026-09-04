@@ -112,6 +112,25 @@ def test_live_release_state_gets_pulse_as_canary(monkeypatch):
     assert seen[0].get_header("Authorization") == "Bearer canary-token"
 
 
+def test_live_release_state_without_canary_bearer_exits_before_network(monkeypatch):
+    mod = load()
+    called = False
+
+    def urlopen(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("network must not run without the canary principal")
+
+    monkeypatch.delenv("TINYASSETS_WIKI_CANARY_TOKEN", raising=False)
+    monkeypatch.setattr(mod.urllib.request, "urlopen", urlopen)
+
+    with pytest.raises(SystemExit) as exc:
+        mod.live_release_state("https://tinyassets.io/mcp", 2.0)
+
+    assert exc.value.code == 2
+    assert called is False
+
+
 def test_live_release_state_rejects_non_object(monkeypatch):
     mod = load()
 

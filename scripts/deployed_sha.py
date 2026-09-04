@@ -15,10 +15,17 @@ receipt (``git_sha``, written to the host volume by
     python scripts/deployed_sha.py
 
     # the gate: fail unless production contains this commit
+    # TINYASSETS_WIKI_CANARY_TOKEN is the constrained canary-principal bearer.
+    # No anonymous fallback exists; an absent credential exits 2 before I/O.
     python scripts/deployed_sha.py --assert-contains HEAD
     python scripts/deployed_sha.py --assert-contains 8cbf9769
 
     python scripts/deployed_sha.py --json
+
+``deploy-prod.yml`` runs the same assertion after publishing each successful
+release receipt, in the GitHub Actions environment that already holds the
+canary credential. Local callers must export ``TINYASSETS_WIKI_CANARY_TOKEN``
+before invoking the command.
 
 **Known limit — it proves the RECEIPT, not the running binary.**
 ``release_state`` is a JSON file the deploy job writes to the host volume;
