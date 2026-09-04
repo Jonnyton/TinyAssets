@@ -125,7 +125,7 @@ Do not save the declaration until the Play-installed phone proves notification,
 success, cancellation, timeout, and teardown behavior and supplies the redacted video
 described in `docs/ops/android-release-verification.md`.
 
-## Corrected internal release prepared; publication withheld
+## Corrected internal release published to private testers
 
 Re-verified 2026-09-03 on the Play Console internal track after PR #2793 merged as
 `bf432f1b2dbef8c1e51bc1e19e34dd3517136241`. Production deploy run `33836646850`
@@ -141,7 +141,8 @@ upload certificate pin and post-signature JAR verification passed. Bundle SHA-25
 
 Play accepted the upload as `2 (1.0.1)`, API 24+, target SDK 36, with no errors. Its
 two warnings are 21 devices no longer supported (~0%: 7 phones, 11 tablets, 3 TVs)
-and no deobfuscation file. The release is saved at Preview and confirm. The next
-button is explicitly **Save and publish**, with the notice that changes publish to
-Google Play immediately, so it was not clicked. The phone stays disconnected until
-that internal release is published and Play finishes processing it.
+and no deobfuscation file. With explicit founder approval limited to the existing
+private internal track, **Save and publish** was confirmed. At 2026-09-03 21:42 PT,
+Play showed the track Active, latest release `2 (1.0.1)`, and **Available to internal
+testers**. No production publication or review submission was performed. The phone
+remained untouched until this availability state was visible.

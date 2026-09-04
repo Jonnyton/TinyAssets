@@ -522,7 +522,7 @@ What remains after the secrets, and who does it (`docs/ops/google-play-launch.md
 | Internal-testing tester list | **done** — "Founder devices" attached to the track |
 | Build the signed AAB | **done** 2026-09-03 — built and signed in the container (`mobile/container/`), no secret needed |
 | Internal-testing release: upload the AAB, roll out | **done** 2026-09-03 11:10 — release `1 (1.0)`, track Active, 3.1 MB |
-| Corrected internal release `2 (1.0.1)` | **prepared, publication withheld** 2026-09-03 — merged source `bf432f1b2dbe`; signed AAB uploaded and accepted; no errors. The Console is open at **Save and publish**. Clicking it makes the build available to the existing internal tester list. |
+| Corrected internal release `2 (1.0.1)` | **done** 2026-09-03 21:42 PT — merged source `bf432f1b2dbe`; signed AAB accepted; Play shows Active and Available to internal testers. |
 | Verify the loop on a real phone (install from the internal-test link, sign in, chat) | **you — this is the live one.** Opt-in on the founder's Google account: https://play.google.com/apps/internaltest/4701716760893982267 |
 | Sign in details | **done** 2026-09-03 — Actioned with the dedicated reviewer; not sent for review |
 | Target audience | **done** 2026-09-03 — 18 and over, Actioned; not sent for review |
