@@ -412,6 +412,19 @@ passing merged-manifest verification:
 - Re-open this decision whenever dependencies change; absence from the source manifest
   alone is insufficient because library manifests can add it during merge.
 
+Fresh exact-artifact evidence (2026-09-03): the downloaded version `1 (1.0)` APK hash
+matches the recorded release evidence and Android build-tools 36 reports no `AD_ID`
+permission. Play's authenticated uploaded-artifact view independently lists version
+`1 (1.0)` on Internal testing and shows only `FOREGROUND_SERVICE_DATA_SYNC` in its
+expanded sensitive-permission row. Candidate head
+`d7bb24d1c28a64ed5c50b2ad7608916227899dd2` also passed run `33823719041` through a
+real `bundleRelease` followed by the merged-manifest verifier. All 226 package-lock
+entries were searched; none names an ads, advertising, analytics, Firebase, Google
+Mobile Ads, or Play Services dependency. The exact form answer supported by both the
+active baseline and the candidate is therefore:
+
+> **Does your app use advertising ID? No.**
+
 This is a staged policy answer, not a saved declaration. The founder must confirm the
 exact candidate evidence and save it in Play Console.
 

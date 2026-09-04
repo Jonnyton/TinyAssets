@@ -62,6 +62,37 @@ dependency adds it, the verifier fails with `permission drift` before the bundle
 can pass. The Play draft should therefore answer **No** only for an exact bundle that
 passes the merged-manifest verifier.
 
+Re-verification on 2026-09-03, Windows host:
+
+- `gh run download 33797592515 --name tinyassets-android-debug-apk` retrieved the
+  version `1 (1.0)` artifact used for the baseline/internal-release evidence. Its
+  SHA-256 is
+  `5baadde6f09c0afcfcc34a0ccdc76613d3744280d7865abe05c6012bc548689e`, matching
+  the recorded artifact exactly.
+- Android build-tools 36.0.0 `aapt dump permissions app-debug.apk` reports only
+  `INTERNET`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC`, and Capacitor's
+  package-scoped non-exported receiver permission. It does not report
+  `com.google.android.gms.permission.AD_ID`.
+- The authenticated Play Console's **App bundles and APKs using sensitive
+  permissions** view lists uploaded version `1 (1.0)` on Internal testing, first
+  published 2026-09-03. Expanding that exact row reports only
+  `android.permission.FOREGROUND_SERVICE_DATA_SYNC`; Play does not report `AD_ID` for
+  the shipped artifact.
+- Exact candidate head `d7bb24d1c28a64ed5c50b2ad7608916227899dd2` passed Android
+  release run `33823719041`. The log records version `1.0.1 (2)`, a successful real
+  `bundleRelease`, and a successful `verify_android_release.py --merged` check. That
+  check's permission allowlist excludes `AD_ID` and fails on any unexpected merged
+  permission.
+- Parsing all 226 package entries in `mobile/package-lock.json` found no dependency
+  name matching advertising, ads, analytics, Firebase, Google Mobile Ads, or Play
+  Services. The runtime dependencies remain the Capacitor shell packages listed in
+  `mobile/package.json`.
+
+Exact truthful declaration for these artifacts: **Does your app use advertising ID?
+No.** Re-open this decision if the uploaded artifact or any native/JavaScript SDK
+dependency changes. Saving the Console answer remains a policy-declaration boundary;
+this evidence does not itself submit it.
+
 ## Listing asset discrepancy — resolved 2026-09-03
 
 With explicit user authorization, the clean

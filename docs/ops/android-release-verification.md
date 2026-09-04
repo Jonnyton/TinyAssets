@@ -18,6 +18,21 @@ monitoring, and rollback shape.
 | Local signed build | The container path produced the Play-uploaded bundle earlier on 2026-09-03. A fresh re-run in this worktree stopped during `npm ci` with Docker `ENOSPC`, before Android generation; that is a host storage failure, not a passing build | Re-run after Docker storage is recovered |
 | Device behavior | No dated phone install/sign-in/conversation result is recorded | Open; founder action |
 
+Advertising-ID evidence was re-run on the Windows host on 2026-09-03. Downloading the
+baseline from GitHub Actions run `33797592515` reproduced SHA-256
+`5baadde6f09c0afcfcc34a0ccdc76613d3744280d7865abe05c6012bc548689e`; Android
+build-tools 36.0.0 `aapt dump permissions` reported no
+`com.google.android.gms.permission.AD_ID`. Exact candidate head
+`d7bb24d1c28a64ed5c50b2ad7608916227899dd2` passed real `bundleRelease` plus
+`verify_android_release.py --merged` in run `33823719041`, whose allowlist rejects
+`AD_ID` as permission drift. The Play declaration packet therefore supports **No** for
+both the active baseline and this candidate.
+
+The authenticated Play Console supplied a second shipped-artifact check on the same
+date: **App bundles and APKs using sensitive permissions** lists version `1 (1.0)` on
+Internal testing, first published 2026-09-03, and its expanded row contains only
+`android.permission.FOREGROUND_SERVICE_DATA_SYNC`. It does not list `AD_ID`.
+
 The public privacy policy was also read live on 2026-09-03 at
 <https://tinyassets.io/legal#privacy>. It explicitly covers the web, Android, and
 desktop clients; WorkOS identity, provider credentials, messages/files, billing
