@@ -131,6 +131,8 @@ jobs:
           python-version: '3.11'
 
       - name: Probe canonical URL after deploy
+        env:
+          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         if: >
           github.event_name == 'push' ||
           (github.event_name == 'workflow_dispatch' && inputs.dry_run != 'true')
