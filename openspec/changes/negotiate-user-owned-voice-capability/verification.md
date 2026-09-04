@@ -38,17 +38,13 @@
   `plug-and-play-test-model` artifact. The current binding is therefore not an
   eligible `api_key_http` Voice bridge, and no ready-state or microphone proof
   is presently available.
-- CI exception: desktop release run `33843457460` was cancelled after the PR
-  merged. One bounded rerun of its exact job and head rebuilt all platform
-  artifacts successfully, but job `100936661082` was again cancelled after
-  fifteen minutes while the exact-artifact lifecycle step remained in progress;
-  GitHub retained no job log. It is not claimed as passed or as a product
-  failure. The recurrence is tracked separately in
-  `docs/concerns/2026-09-04-windows-lifecycle-installer-cancelled-without-verdict.md`.
-  This server/app change instead relies on the green focused/required suites,
-  platform builds, runtime mirror/import probe, exact-head opposite-provider
-  review, exact merge-image deploy, and authenticated production canary recorded
-  above.
+- CI follow-up: the original desktop release run `33843457460` and its first
+  bounded rerun ended without a retained lifecycle verdict. PR #2936 repaired
+  the Windows lifecycle supervisor's unbounded capture and process-tree close
+  path. Its exact-head rerun `33919243682`, job `101175830777`, completed the
+  Windows install/probe/repair/uninstall lifecycle in 50 seconds. The repair
+  merged as `2102d6308a79babe6ffcc196e434f1e054986b33`; production reported that
+  revision after the authenticated public canary passed on 2026-09-04.
 
 ## 2026-09-04 capability-first tap follow-up
 
