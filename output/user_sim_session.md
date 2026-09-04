@@ -398,3 +398,40 @@ CONCLUSION: the served webapp agent can now self-serve compute-provider registra
 read-back not available (read_graph target=connections lists outbound connections, not
 provider definitions — a follow-up: add a definitions read surface). Post-fix clean-use
 evidence = this founder run; no other users exist yet.
+
+---
+
+## [2026-09-03 23:39 PDT] VOICE DARK-DEPLOY RENDERED CHECK
+
+TAB HYGIENE: one task-owned in-app browser tab for the production app check;
+no chatbot prompt was sent.
+
+USER ACTION: Opened the signed-in founder app at
+`https://tinyassets.io/mcp/app`. The single Voice control rendered beside the
+composer as disabled, with visible status `Voice is not enabled on this
+TinyAssets host.` No Voice click, disclosure, microphone permission, provider
+change, credential action, or live session was attempted.
+
+MISSION SUMMARY:
+- Production disabled-state rendering: PASS.
+- Ready/live-microphone acceptance: intentionally NOT RUN; explicit founder
+  authority and an eligible already-authorized current provider are still
+  required.
+- This is rendered app evidence, not a rendered Claude.ai/ChatGPT connector
+  conversation and not a claim of cross-client Voice acceptance.
+
+## [2026-09-04 00:02 PDT] VOICE CURRENT-PROVIDER READBACK
+
+TAB HYGIENE: one task-owned signed-in TinyAssets app tab for this read-only
+check.
+
+USER ACTION: Asked the founder universe which provider currently powers it and
+explicitly asked for no changes. The rendered response identified `codex` via
+`subscription_cli` as the active binding. It said the visible `openai_chat` HTTP
+registration is the inactive old `plug-and-play-test-model` artifact, not the
+serving authority.
+
+MISSION SUMMARY:
+- Current binding derived by the authenticated app: `codex/subscription_cli`.
+- Eligible `api_key_http` Voice bridge currently serving: no.
+- No provider, credential, flag, Voice, or microphone state was changed.

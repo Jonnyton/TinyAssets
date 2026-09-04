@@ -222,7 +222,7 @@ Recovered 2026-08-27 from PR #2463, which carried it on the retired board and ha
 
 ---
 
-### First-class Voice — identify an eligible current provider for physical-device proof
+### First-class Voice — connect a compatible current provider before physical-device proof
 
 **Do not send a credential in chat and do not buy a platform key.** The shipped dark runtime accepts
 only an exact `tinyassets.voice.v1` bridge backed by a generic HTTP connection and grant already
@@ -230,11 +230,19 @@ owned by the signed-in founder and their home universe. Host credentials, mainta
 another user's connection, and platform-paid usage cannot unlock it.
 
 The product path now binds the capability only to the universe's current serving provider and
-reuses the existing provider/connection setup. The smallest remaining founder action is to identify
-an already-authorized current provider with a compatible `tinyassets.voice.v1` bridge (or say that
-none exists), then explicitly authorize one bounded non-production physical-device proof. No host
-file or developer bypass counts. The proof order, stop conditions, and evidence packet are in
-`docs/ops/realtime-voice-mobile-handoff.md`.
+reuses the existing provider/connection setup. An authenticated read-only app check on 2026-09-04
+resolved the founder universe's actual current binding as `codex` via `subscription_cli`. That
+binding cannot satisfy the shipped HTTP bridge contract. The only visible `openai_chat` HTTP
+registration was the old `plug-and-play-test-model` test artifact and was not the active serving
+binding. Do not ask Jonathan to name what the app can derive, and do not treat either registration
+as realtime authority.
+
+The smallest remaining founder action is therefore a choice: use the existing provider setup to
+connect and select a real user-owned `api_key_http` provider that offers a compatible
+`tinyassets.voice.v1` bridge, or leave Voice unavailable. Only after the app derives that compatible
+current binding should Jonathan be asked to authorize one bounded non-production physical-device
+proof. No host file or developer bypass counts. The proof order, stop conditions, and evidence
+packet are in `docs/ops/realtime-voice-mobile-handoff.md`.
 
 Stop for Jonathan at the rendered `ready` state before starting microphone acceptance. Enabling or
 releasing Voice remains a separate explicit founder decision. Both Voice-specific production gates
