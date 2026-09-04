@@ -75,6 +75,7 @@ from tinyassets.api.helpers import (
 from tinyassets.catalog import list_unreconciled_writes
 from tinyassets.ids import new_universe_id
 from tinyassets.ingestion.canon_io import iter_canon_files, safe_canon_path
+from tinyassets.storage.workspace_authority import GitScopeError, normalize_repo
 from tinyassets.universe_bundle import seed_okf_bundle
 from tinyassets.universe_soul import (
     NO_LOOP_DECLARED,
@@ -3541,7 +3542,7 @@ def _shorten(value: Any, max_chars: int) -> str:
     return text[: max(0, max_chars - 15)].rstrip() + "\n...[truncated]"
 
 
-def _github_repo(explicit: str = "") -> str:
+def _github_repo(explicit: Any = "") -> str:
     """The repository this read is about, from the CALLER or the deployment.
 
     Never a literal. This used to default to the platform's own repository, so a
@@ -3550,7 +3551,12 @@ def _github_repo(explicit: str = "") -> str:
     row-5 criterion (2026-09-03): *no platform code path that assumes one named
     repo*. An empty answer is honest; the caller reports it.
     """
-    return (explicit or os.environ.get("TINYASSETS_GITHUB_REPO", "")).strip()
+    candidate = explicit if explicit not in ("", None) else os.environ.get(
+        "TINYASSETS_GITHUB_REPO", ""
+    )
+    if candidate == "":
+        return ""
+    return normalize_repo(candidate)
 
 
 def _github_get_json(
@@ -3685,7 +3691,7 @@ def _action_community_change_context(
     *,
     filter_text: str = "",
     limit: int = 10,
-    repo: str = "",
+    repo: Any = "",
     **_kwargs: Any,
 ) -> str:
     """Read-only community change-loop context for chatbot review.
@@ -3697,7 +3703,17 @@ def _action_community_change_context(
       reviews.
     - "issue:NUMBER": issue metadata and recent comments.
     """
-    repo = _github_repo(repo)
+    try:
+        repo = _github_repo(repo)
+    except GitScopeError:
+        return json.dumps({
+            "kind": "community_change_context",
+            "error": "invalid repository",
+            "detail": (
+                "Name the repository as owner/name using only letters, numbers, "
+                "dots, underscores, or hyphens."
+            ),
+        })
     if not repo:
         return json.dumps({
             "kind": "community_change_context",

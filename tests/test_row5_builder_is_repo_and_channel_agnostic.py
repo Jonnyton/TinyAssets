@@ -149,7 +149,7 @@ def test_no_platform_module_hard_codes_a_repository() -> None:
     import ast
 
     root = Path(__file__).resolve().parent.parent / "tinyassets"
-    exempt = {"auto_ship.py", "auto_ship_pr.py", "universe_server.py"}
+    exempt = {"auto_ship.py", "auto_ship_pr.py"}
     offenders: list[str] = []
     for path in sorted(root.rglob("*.py")):
         if path.name in exempt:
@@ -174,9 +174,17 @@ def test_no_platform_module_hard_codes_a_repository() -> None:
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 if id(node) in docstrings:
                     continue
+                source_link = "https://github.com/jonnyton/tinyassets"
+                lower = node.value.lower()
+                if source_link in lower and (
+                    "github repository" in lower or lower.strip() == source_link
+                ):
+                    # The server's homepage and manifest identify the platform's
+                    # own source. They do not select a user's target repository.
+                    continue
                 # A concrete owner/name pair for the platform's own repo, reaching
                 # the runtime as a VALUE rather than described in prose.
-                if "jonnyton/tinyassets" in node.value.lower():
+                if "jonnyton/tinyassets" in lower:
                     rel = path.relative_to(root.parent).as_posix()
                     offenders.append(f"{rel}:{node.lineno}")
     assert not offenders, (
