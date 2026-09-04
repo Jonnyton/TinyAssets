@@ -193,10 +193,10 @@ def test_app_store_screenshot_manifest_is_an_honest_ios_capture_contract() -> No
     assert manifest["platform"] == "iOS"
     assert 1 <= manifest["minimum_count"] <= manifest["maximum_count"] <= 10
     assert manifest["alpha_allowed"] is False
+    assert manifest["preferred_display"] == "6.5-inch iPhone"
     assert set(manifest["accepted_pixel_sizes"]) == {
-        "1320x2868",
-        "1290x2796",
-        "1260x2736",
+        "1242x2688",
+        "1284x2778",
     }
     assert len(manifest["shots"]) == 5
     assert all(shot["status"] == "blocked_until_ios_capture" for shot in manifest["shots"])
@@ -226,6 +226,12 @@ def test_app_store_metadata_packet_meets_apple_field_constraints() -> None:
     assert field("User Privacy Choices URL") == "https://tinyassets.io/account"
     assert "| User access | Full Access for the existing Account Holder" in packet
     assert "no additional user is selected" in packet
+    assert "| App Store Connect record | Created and verified 2026-09-03" in packet
+    assert "Apple ID `6808434444`" in packet
+    assert "| TestFlight | Empty internal group `Internal`; automatic distribution off" in packet
+    assert "all four saved draft entries use App Functionality only" in packet
+    assert "App Functionality; Account Management" not in packet
+    assert "it is not published and its legal-policy URLs" in packet
 
     description_match = re.search(
         r"\*\*Description:\*\*\s*(.*?)\s*Review notes should say",

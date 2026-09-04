@@ -286,17 +286,20 @@ None of it can produce an installable app without account-owned signing material
    now shows program resources, a Team ID, and a 2027 renewal date. The Apple Developer
    Program License Agreement and Apple Developer Agreement both show accepted on 2026-09-03.
    No signing assets or App Store Connect API credentials have been created.
-3. **Partially complete — explicit App ID registered (2026-09-03).** Verified in the
+3. **Complete — explicit App ID and App Store Connect record created (2026-09-03).** Verified in the
    signed-in Apple Developer browser at `/account/resources/identifiers/list`: the
    Identifiers table shows `TinyAssets iOS` / `io.tinyassets.app`. App Store Connect
    Terms of Service V100 (last updated 04 June 2018) was accepted by the founder.
-   The complete New App form is staged; create the app record only after a separate
-   action-time confirmation.
+   The founder then confirmed record creation. Apple ID `6808434444`; iOS 1.0 is
+   **Prepare for Submission**. Product metadata and manual release are saved, the
+   four-type privacy draft is configured but unpublished, and an empty `Internal`
+   TestFlight group exists with automatic distribution off, 0 testers, and 0 builds.
 4. Create the Apple Distribution certificate + matching App Store Connect provisioning
    profile and an **App Store Connect API key**; add the six values in §3 of the runbook.
    The protected GitHub environment `app-store` is complete: founder approval is required,
    only `main` may deploy, and no secrets are present yet. You do NOT need a Mac — CI builds
-   on `macos-15`.
+   on `macos-15`. The live Apple Distribution flow is waiting at **Upload a Certificate
+   Signing Request**; no CSR was uploaded and no credential was created.
 5. Capture real iPhone-sized screenshots from the signed app, verify sign-in → connect →
    chat through TestFlight, and complete the truthful console declarations. Before the final
    Submit for Review decision, choose whether to accept the documented Guideline 4.2 wrapper

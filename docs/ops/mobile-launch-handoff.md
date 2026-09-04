@@ -12,9 +12,9 @@ Runbooks stay where they are — `docs/ops/google-play-launch.md` and
 ## The one-line status
 
 **Google Play: installable today, but only by invited testers.** Public availability
-is at minimum 14 days away and needs 12 real people. **Apple: the code/build lane is
-ready; account enrollment, signing assets, the app record, screenshots, and review
-still require founder-owned state.**
+is at minimum 14 days away and needs 12 real people. **Apple: the App Store record,
+metadata, and unpublished privacy draft are staged; signing assets, screenshots,
+device proof, and review still require founder-owned state.**
 
 ---
 
@@ -91,9 +91,12 @@ signing assets or App Store Connect API credentials have been created. The expli
 `io.tinyassets.app` was registered and verified on 2026-09-03 in the signed-in Apple
 Developer browser: the Identifiers list showed `TinyAssets iOS` and the exact bundle ID.
 The founder accepted App Store Connect Terms of Service V100 (last updated 04 June
-2018) on 2026-09-03. The app record is still absent, but the complete New App form is
-staged and waiting at the final **Create** button for action-time confirmation. The exact
-remaining values and confirmation boundaries are in
+2018) on 2026-09-03. The TinyAssets App Store Connect record now exists (Apple ID
+`6808434444`), with iOS 1.0 in **Prepare for Submission**. Product metadata and
+manual release are saved; the four-type privacy draft is configured but unpublished,
+with legal-policy URLs blank. An empty `Internal` TestFlight group exists with automatic
+distribution off, 0 testers, and 0 builds. The exact remaining values and confirmation
+boundaries are in
 `docs/ops/app-store-submission-packet.md`.
 
 What is ready, stated precisely — the gap here is wider than "just enrol":
@@ -147,11 +150,11 @@ Local evidence, Windows checkout, 2026-09-03:
 - PR #2798 exact-head `build-ios` on GitHub's `macos-15` runner — passed 2026-09-03
   after the App ID registration update.
 
-Membership is active and the explicit App ID exists. The next account gate is the new
-App Store Connect Terms of Service, which remains untouched for the account holder to
-review. The app record does not exist, and no signing certificate, provisioning profile,
-or API key has been created. Until those separately approved steps are complete, the
-release workflow cannot produce an installable IPA or reach TestFlight.
+Membership, the explicit App ID, and the App Store Connect record are active. No
+signing certificate, provisioning profile, or API key has been created. The Apple
+Distribution flow is staged at the CSR upload step; that private-key boundary needs
+separate action-time approval. Until those credentials exist, the release workflow
+cannot produce an installable IPA or upload a build to TestFlight.
 
 ---
 

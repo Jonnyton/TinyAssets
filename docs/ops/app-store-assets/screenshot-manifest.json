@@ -3,11 +3,10 @@
   "platform": "iOS",
   "locale": "en-US",
   "orientation": "portrait",
-  "preferred_display": "6.9-inch iPhone",
+  "preferred_display": "6.5-inch iPhone",
   "accepted_pixel_sizes": [
-    "1320x2868",
-    "1290x2796",
-    "1260x2736"
+    "1242x2688",
+    "1284x2778"
   ],
   "format": ["png", "jpg", "jpeg"],
   "alpha_allowed": false,

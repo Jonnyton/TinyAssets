@@ -16,7 +16,7 @@ release the app.
 | Explicit bundle ID | `io.tinyassets.app` |
 | Bundle ID description | `TinyAssets iOS` |
 | App ID registration | Complete 2026-09-03; verified in the signed-in Apple Developer Identifiers list |
-| App Store Connect record | Not created; the complete New App form is staged and awaiting action-time confirmation before **Create** |
+| App Store Connect record | Created and verified 2026-09-03; Apple ID `6808434444`; iOS 1.0 is **Prepare for Submission** |
 | SKU | `tinyassets-ios` |
 | User access | Full Access for the existing Account Holder; the live form disables Limited Access and no additional user is selected |
 | Primary language | English (U.S.) |
@@ -25,11 +25,12 @@ release the app.
 | Primary category | Productivity |
 | Secondary category | None |
 | Price | Free; no in-app purchases in this build |
+| TestFlight | Empty internal group `Internal`; automatic distribution off; 0 testers and 0 builds |
 
-The first irreversible portal mutation is registering the explicit App ID. The
-second is creating the App Store Connect record. Confirm immediately before each
-final **Register/Create** action. Do not create signing credentials or an App
-Store Connect API key in the same step.
+The explicit App ID and App Store Connect record are complete. The next persistent
+portal mutation is creating signing credentials. Do not create a certificate,
+private key, provisioning profile, or App Store Connect API key without explicit
+action-time approval.
 
 ## Product-page metadata
 
@@ -131,8 +132,8 @@ used only for the named purpose, and not used for tracking.
 
 | Apple data type | What the app sends or stores | Purpose |
 |---|---|---|
-| Contact Info → Email Address | WorkOS sign-in email | App Functionality; Account Management |
-| Identifiers → User ID | WorkOS account identifier | App Functionality; Account Management |
+| Contact Info → Email Address | WorkOS sign-in email | App Functionality |
+| Identifiers → User ID | WorkOS account identifier | App Functionality |
 | User Content → Other User Content | Conversation text and user-selected text/code/document attachments | App Functionality |
 | Other Data → Other Data Types | Provider credential or connection material deposited by the user into the secure vault | App Functionality |
 
@@ -148,6 +149,8 @@ user-connected AI provider receives user content at the user's direction. Before
 publishing the label, confirm the current vendor contracts and production data
 path support the intended service-provider/user-directed-transfer treatment.
 App Store Connect's **Publish** confirmation is a separate founder approval.
+The live 2026-09-03 questionnaire did not offer a separate Account Management
+purpose; all four saved draft entries use App Functionality only.
 
 ### Conditional voice delta
 
@@ -204,8 +207,9 @@ requires a fresh determination.
 
 The capture contract is checked in at
 `app-store-assets/screenshot-manifest.json`. Capture one to ten PNG or JPEG images
-with no alpha channel. Prefer one portrait 6.9-inch set at an Apple-accepted size
-(`1320×2868`, `1290×2796`, or `1260×2736`); App Store Connect scales it for
+with no alpha channel. Prefer one portrait 6.5-inch set at an Apple-accepted size
+(`1242×2688` or `1284×2778`); the live App Store Connect form presented these
+under the 6.5-inch display slot on 2026-09-03 and scales them for
 smaller iPhones. Use an actual iPhone or iOS Simulator build, not resized Android
 captures or a browser mockup.
 
@@ -245,16 +249,16 @@ one, so the server must remain compatible with the last released shell.
    Identifiers → **+** → App IDs → App → description `TinyAssets iOS` → explicit
    bundle ID `io.tinyassets.app` → Register. The signed-in Identifiers list showed
    the resulting name and exact bundle ID.
-2. **Staged 2026-09-03, blocked before mutation:** the founder accepted App Store
-   Connect Terms of Service V100 (last updated 04 June 2018). The New App form is
-   open with iOS, name `TinyAssets`, primary language English (U.S.), registered
-   bundle ID `io.tinyassets.app`, and SKU `tinyassets-ios`. App Store Connect
-   disables Limited Access in this account, so Full Access is selected for the
-   existing Account Holder; no additional user is selected. Stop for action-time
-   confirmation immediately before Create.
-3. Enter product-page metadata and stage the privacy/age/export drafts. Stop at
-   any new agreement, DSA trader-status choice, privacy publication, or other
-   legal declaration.
+2. **Complete 2026-09-03:** the founder accepted App Store Connect Terms of Service
+   V100 (last updated 04 June 2018), then confirmed creation of the TinyAssets app
+   record. Apple ID `6808434444`; iOS 1.0 is **Prepare for Submission**.
+3. **Partially complete 2026-09-03:** product-page copy, subtitle, Productivity
+   category, copyright, support/marketing URLs, and manual release are saved. The
+   four-type App Privacy draft is fully configured for App Functionality, linked
+   to identity, and no tracking, but it is not published and its legal-policy URLs
+   remain blank. An empty `Internal` TestFlight group exists with automatic
+   distribution off. No tester or build was added. Stop at any new agreement,
+   DSA trader-status choice, privacy publication, or other legal declaration.
 4. On a Mac/Xcode, create or select an Apple Distribution certificate and an App
    Store Connect provisioning profile for the exact bundle ID. Creating these
    persistent credentials requires explicit action-time approval.
@@ -275,9 +279,8 @@ one, so the server must remain compatible with the last released shell.
 
 ## External gates that remain
 
-- Account-holder review and acceptance of the newly presented App Store Connect Terms
-  of Service, followed by separate action-time confirmation to create the app record.
-- A Mac/Xcode and explicit approval to create signing credentials/API key.
+- A CSR/private key and explicit action-time approval to create the Apple
+  Distribution certificate, provisioning profile, and App Store Connect API key.
 - A signed build plus actual iPhone or iOS Simulator for authentic screenshots;
   a physical iPhone is required for microphone-release proof if voice ships.
 - Founder approval of live privacy, age-rating, content-rights, export,
