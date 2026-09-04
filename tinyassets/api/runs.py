@@ -52,6 +52,10 @@ logger = logging.getLogger("universe_server.runs")
 ENV_CAPABILITIES_VAR = "UNIVERSE_SERVER_CAPABILITIES"
 
 
+def _missing_required_inputs_response(exc: Any) -> str:
+    return json.dumps(exc.to_dict())
+
+
 def _bind_run_provider_call(
     provider_call: Any,
     universe_id: str,
@@ -818,6 +822,7 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
         RUN_STATUS_COMPLETED,
         RUN_STATUS_FAILED,
         RUN_STATUS_INTERRUPTED,
+        MissingRequiredInputs,
         execute_branch_async,
         get_run,
         record_lineage,
@@ -960,6 +965,8 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
             recursion_limit_override=recursion_limit_override,
             _enqueue_universe_id=_request_universe(kwargs.get("universe_id") or ""),
         )
+    except MissingRequiredInputs as exc:
+        return _missing_required_inputs_response(exc)
     except Exception as exc:
         logger.exception("run_branch failed for %s", bid)
         return json.dumps(_classify_run_error(exc, bid))
@@ -2120,6 +2127,7 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
     the new ``runs.branch_version_id`` column for attribution.
     """
     from tinyassets.runs import (
+        MissingRequiredInputs,
         SnapshotSchemaDrift,
         execute_branch_version_async,
     )
@@ -2185,6 +2193,8 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
             provider_call=provider_call,
             recursion_limit_override=recursion_limit_override,
         )
+    except MissingRequiredInputs as exc:
+        return _missing_required_inputs_response(exc)
     except KeyError as exc:
         return json.dumps({"error": str(exc).strip("'\"")})
     except SnapshotSchemaDrift as exc:

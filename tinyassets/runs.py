@@ -21,6 +21,7 @@ each operation opens, commits, closes.
 
 from __future__ import annotations
 
+import ast
 import atexit
 import contextlib
 import contextvars
@@ -46,6 +47,7 @@ from tinyassets.graph_compiler import (
     EmptyResponseError,
     NodeEnqueueContext,
     NodeTimeoutError,
+    _placeholder_keys,
     compile_branch,
     seed_initial_state,
 )
@@ -2800,6 +2802,330 @@ class RunOutcome:
     child_failures: list[ChildFailure] = field(default_factory=list)
 
 
+class MissingRequiredInputs(ValueError):
+    """A Branch run lacks state that no guaranteed predecessor produces.
+
+    Raised before :func:`_prepare_run` so callers can return an actionable
+    refusal without minting a run id or reserving any execution resource.
+    """
+
+    failure_class = "missing_required_inputs"
+    actionable_by = "chatbot"
+
+    def __init__(
+        self,
+        missing_input_keys: list[str],
+        input_guidance: dict[str, dict[str, Any]],
+    ) -> None:
+        self.missing_input_keys = sorted(set(missing_input_keys))
+        self.input_guidance = {
+            key: input_guidance[key]
+            for key in self.missing_input_keys
+        }
+        joined = ", ".join(self.missing_input_keys)
+        self.suggested_action = (
+            "Retry with inputs_json containing the missing keys: " + joined
+        )
+        super().__init__(f"Required workflow inputs are missing: {joined}.")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "error": str(self),
+            "failure_class": self.failure_class,
+            "missing_input_keys": self.missing_input_keys,
+            "input_guidance": self.input_guidance,
+            "suggested_action": self.suggested_action,
+            "actionable_by": self.actionable_by,
+        }
+
+
+def _input_example(field_type: str) -> Any:
+    normalized = (field_type or "any").strip().lower()
+    if normalized in {"str", "string", "text"}:
+        return ""
+    if normalized in {"int", "integer", "float", "number"}:
+        return 0
+    if normalized in {"bool", "boolean"}:
+        return False
+    if normalized in {"list", "array"}:
+        return []
+    if normalized in {"dict", "object", "map"}:
+        return {}
+    return None
+
+
+def _missing_input_guidance(
+    branch: BranchDefinition,
+    missing: set[str],
+) -> dict[str, dict[str, Any]]:
+    schema = {
+        str(field.get("name") or "").strip(): field
+        for field in branch.state_schema or []
+        if isinstance(field, dict) and str(field.get("name") or "").strip()
+    }
+    guidance: dict[str, dict[str, Any]] = {}
+    for key in sorted(missing):
+        field = schema.get(key, {})
+        field_type = str(field.get("type") or "any").strip() or "any"
+        item: dict[str, Any] = {
+            "type": field_type,
+            "example": _input_example(field_type),
+        }
+        description = str(field.get("description") or "").strip()
+        if description:
+            item["description"] = description
+        guidance[key] = item
+    return guidance
+
+
+def _straight_line_code_state_inputs(source: str) -> set[str]:
+    """Return literal state lookups in the unguarded prefix of ``run``.
+
+    This deliberately under-approximates requiredness. Lookups inside control
+    flow, comprehensions, or lambdas may be protected by user code, so runtime
+    remains authoritative for them.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return set()
+    run_def = next(
+        (
+            item
+            for item in tree.body
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and item.name == "run"
+        ),
+        None,
+    )
+    if run_def is None:
+        return set()
+
+    class _StrictAccessVisitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.keys: set[str] = set()
+
+        def visit_Subscript(self, item: ast.Subscript) -> None:
+            if (
+                isinstance(item.value, ast.Name)
+                and item.value.id == "state"
+                and isinstance(item.ctx, ast.Load)
+                and isinstance(item.slice, ast.Constant)
+                and isinstance(item.slice.value, str)
+            ):
+                self.keys.add(item.slice.value)
+            self.generic_visit(item)
+
+        def visit_Call(self, item: ast.Call) -> None:
+            if (
+                isinstance(item.func, ast.Attribute)
+                and isinstance(item.func.value, ast.Name)
+                and item.func.value.id == "state"
+                and item.func.attr == "pop"
+                and len(item.args) == 1
+                and isinstance(item.args[0], ast.Constant)
+                and isinstance(item.args[0].value, str)
+            ):
+                self.keys.add(item.args[0].value)
+            self.generic_visit(item)
+
+        def visit_BoolOp(self, _item: ast.BoolOp) -> None:
+            return
+
+        def visit_IfExp(self, _item: ast.IfExp) -> None:
+            return
+
+        def visit_Lambda(self, _item: ast.Lambda) -> None:
+            return
+
+        def visit_ListComp(self, _item: ast.ListComp) -> None:
+            return
+
+        def visit_SetComp(self, _item: ast.SetComp) -> None:
+            return
+
+        def visit_DictComp(self, _item: ast.DictComp) -> None:
+            return
+
+        def visit_GeneratorExp(self, _item: ast.GeneratorExp) -> None:
+            return
+
+        def visit_FunctionDef(self, _item: ast.FunctionDef) -> None:
+            return
+
+        def visit_AsyncFunctionDef(self, _item: ast.AsyncFunctionDef) -> None:
+            return
+
+        def visit_ClassDef(self, _item: ast.ClassDef) -> None:
+            return
+
+    visitor = _StrictAccessVisitor()
+    compound: tuple[type[ast.AST], ...] = (
+        ast.If,
+        ast.For,
+        ast.AsyncFor,
+        ast.While,
+        ast.Try,
+        ast.With,
+        ast.AsyncWith,
+        ast.Match,
+    )
+    try_star = getattr(ast, "TryStar", None)
+    if try_star is not None:
+        compound = (*compound, try_star)
+    for statement in run_def.body:
+        if isinstance(statement, compound):
+            break
+        visitor.visit(statement)
+        if isinstance(statement, (ast.Return, ast.Raise)):
+            break
+    return visitor.keys
+
+
+def _required_node_inputs(node: Any) -> set[str]:
+    """Return only inputs whose absence is statically certain to fail.
+
+    ``input_keys`` is an access allowlist, not a requiredness declaration.
+    Prompt placeholders always index state during rendering. Unguarded literal
+    lookups in the straight-line prefix of a code node's ``run`` function also
+    fail on absence. Guarded, dynamic, or otherwise conditional code access is
+    left to runtime so preflight cannot reject a branch that handles absence.
+    """
+    required = set(_placeholder_keys(str(node.prompt_template or "")))
+    source = str(node.source_code or "")
+    if source:
+        required.update(_straight_line_code_state_inputs(source))
+    await_spec = node.await_run_spec if isinstance(node.await_run_spec, dict) else {}
+    run_id_field = str(await_spec.get("run_id_field") or "").strip()
+    if run_id_field:
+        required.add(run_id_field)
+    return required
+
+
+def preflight_required_inputs(
+    branch: BranchDefinition,
+    inputs: dict[str, Any],
+) -> None:
+    """Refuse inputs missing on any possible graph-superstep execution.
+
+    LangGraph ordinary fan-out executes every child in one superstep and merges
+    their outputs at the barrier. Conditional fan-out chooses one target. We
+    therefore explore bounded active-node frontiers rather than treating every
+    incoming edge as an alternative path; that preserves parallel fan-in while
+    still refusing a key absent on one conditional route. Availability is
+    monotonic across supersteps, so each key needs only a boolean state.
+    """
+    node_ids = {ref.id for ref in branch.graph_nodes}
+    if not node_ids:
+        return
+
+    node_defs = {node.node_id: node for node in branch.node_defs}
+    defs_by_graph_id = {
+        ref.id: node_defs.get(ref.node_def_id or ref.id)
+        for ref in branch.graph_nodes
+    }
+
+    ordinary_children: dict[str, set[str]] = {
+        node_id: set() for node_id in node_ids
+    }
+    conditional_options: dict[str, list[tuple[str, ...]]] = {
+        node_id: [] for node_id in node_ids
+    }
+    start_targets = {branch.entry_point} if branch.entry_point in node_ids else set()
+
+    def add_ordinary_route(source: str, target: str) -> None:
+        if target not in node_ids:
+            return
+        if source == "START":
+            start_targets.add(target)
+        elif source in node_ids:
+            ordinary_children[source].add(target)
+
+    for edge in branch.edges:
+        add_ordinary_route(edge.from_node, edge.to_node)
+    for conditional in branch.conditional_edges:
+        if conditional.from_node not in node_ids:
+            continue
+        options = tuple(sorted({
+            target
+            for target in conditional.conditions.values()
+            if target in node_ids
+        }))
+        if options:
+            conditional_options[conditional.from_node].append(options)
+
+    initial = set(seed_initial_state(inputs, branch.state_schema).keys())
+    produced: dict[str, set[str]] = {}
+    required: dict[str, set[str]] = {}
+    for node_id in node_ids:
+        node = defs_by_graph_id.get(node_id)
+        produced[node_id] = set(node.output_keys if node is not None else ())
+        required[node_id] = _required_node_inputs(node) if node is not None else set()
+
+    max_frontiers = 4096
+
+    def next_frontiers(active: frozenset[str]) -> set[frozenset[str]] | None:
+        base = {
+            child
+            for node_id in active
+            for child in ordinary_children[node_id]
+        }
+        frontiers: set[frozenset[str]] = {frozenset(base)}
+        for node_id in sorted(active):
+            for options in conditional_options[node_id]:
+                expanded: set[frozenset[str]] = set()
+                for frontier in frontiers:
+                    for option in options:
+                        expanded.add(frontier | {option})
+                        if len(expanded) > max_frontiers:
+                            return None
+                frontiers = expanded
+        return frontiers
+
+    def can_reach_consumer_without(key: str) -> bool:
+        work: list[tuple[frozenset[str], bool]] = [
+            (frozenset(start_targets), key in initial)
+        ]
+        seen: set[tuple[frozenset[str], bool]] = set()
+        while work:
+            active, available = work.pop()
+            state = (active, available)
+            if state in seen:
+                continue
+            seen.add(state)
+            if len(seen) > max_frontiers:
+                return True
+            if not available and any(key in required[node_id] for node_id in active):
+                return True
+            available_after = available or any(
+                key in produced[node_id] for node_id in active
+            )
+            following = next_frontiers(active)
+            if following is None:
+                return True
+            work.extend(
+                (frontier, available_after)
+                for frontier in following
+                if frontier
+            )
+        return False
+
+    candidate_keys = {
+        key
+        for node_required in required.values()
+        for key in node_required
+        if key not in initial
+    }
+    missing = {
+        key for key in candidate_keys if can_reach_consumer_without(key)
+    }
+    if missing:
+        raise MissingRequiredInputs(
+            sorted(missing),
+            _missing_input_guidance(branch, missing),
+        )
+
+
 def _graph_node_order(branch: BranchDefinition) -> list[str]:
     return [gn.id for gn in branch.graph_nodes]
 
@@ -3941,6 +4267,8 @@ def execute_branch(
         (default), uses :data:`DEFAULT_RECURSION_LIMIT` (100). Branches
         with deep conditional loops (Tier-1 Step 6) bump this.
     """
+    branch = BranchDefinition.from_dict(branch.to_dict())
+    preflight_required_inputs(branch, inputs)
     run_id = _prepare_run(
         base_path,
         branch=branch, inputs=inputs,
@@ -4141,6 +4469,7 @@ def _execute_branch_core(
     # receipt share this detached snapshot; later author-store edits cannot
     # change the admitted subject underneath an asynchronous execution.
     branch = BranchDefinition.from_dict(branch.to_dict())
+    preflight_required_inputs(branch, inputs)
     run_id = _prepare_run(
         base_path,
         branch=branch, inputs=inputs,
@@ -4368,6 +4697,7 @@ def execute_branch_version(
 ) -> RunOutcome:
     """Execute an immutable published Branch version and block to completion."""
     branch = _load_branch_version(base_path, branch_version_id)
+    preflight_required_inputs(branch, inputs)
     run_id = _prepare_run(
         base_path,
         branch=branch,
@@ -5747,6 +6077,7 @@ __all__ = [
     "ChildRunAwaitTimeout",
     "RunCancelledError",
     "RunExecutionAuthorityLost",
+    "MissingRequiredInputs",
     "RunOutcome",
     "RunStepEvent",
     "VALID_RECEIPT_TYPES",
@@ -5789,6 +6120,7 @@ __all__ = [
     "poll_child_run_status",
     "MAX_INVOKE_BRANCH_DEPTH",
     "post_teammate_message",
+    "preflight_required_inputs",
     "read_teammate_messages",
     "ack_teammate_message",
 ]

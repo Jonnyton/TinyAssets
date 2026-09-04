@@ -160,6 +160,7 @@ def execute_claimed_branch_task(
         from tinyassets.runs import (
             RUN_STATUS_COMPLETED,
             BranchTaskRunReservationConflict,
+            MissingRequiredInputs,
             RunCancelledError,
             RunExecutionAuthorityLost,
             execute_branch_version,
@@ -268,6 +269,16 @@ def execute_claimed_branch_task(
                         root, branch_version_id=branch_version_id, **execution_kwargs
                     )
                     assert_authority()
+        except MissingRequiredInputs as exc:
+            return (
+                False,
+                exc.failure_class,
+                {
+                    "branch_def_id": branch_def_id,
+                    "branch_version_id": branch_version_id,
+                    **exc.to_dict(),
+                },
+            )
         except BranchTaskRunReservationConflict:
             reserved = get_run_by_branch_task_id(root, branch_task_id=task_id)
             if reserved is None:
