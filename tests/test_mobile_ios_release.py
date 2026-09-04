@@ -199,7 +199,8 @@ def test_ios_build_workflow_captures_store_screenshots_only_on_manual_request() 
     workflow = BUILD_WORKFLOW.read_text(encoding="utf-8")
     assert "capture_store_screenshots:" in workflow
     assert "inputs.source_ref || github.sha" in workflow
-    assert "capture_ios_store_screenshots.sh" in workflow
+    assert ".capture-tools/mobile/scripts/capture_ios_store_screenshots.sh" in workflow
+    assert "ref: ${{ github.ref }}" in workflow
     assert "github.event_name == 'workflow_dispatch'" in workflow
     assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in workflow
 

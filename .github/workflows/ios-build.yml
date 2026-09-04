@@ -48,6 +48,16 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.source_ref || github.sha }}
 
+      - name: Check out screenshot tooling separately from the app source
+        if: github.event_name == 'workflow_dispatch' && inputs.capture_store_screenshots
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.ref }}
+          path: .capture-tools
+          sparse-checkout: mobile/scripts/capture_ios_store_screenshots.sh
+          sparse-checkout-cone-mode: false
+
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
@@ -116,7 +126,7 @@ jobs:
       - name: Capture authentic App Store screenshots
         if: github.event_name == 'workflow_dispatch' && inputs.capture_store_screenshots
         run: |
-          mobile/scripts/capture_ios_store_screenshots.sh \
+          .capture-tools/mobile/scripts/capture_ios_store_screenshots.sh \
             "$RUNNER_TEMP/TinyAssetsDerivedData/Build/Products/Debug-iphonesimulator/App.app" \
             "$RUNNER_TEMP/ios-store-screenshots"
 
