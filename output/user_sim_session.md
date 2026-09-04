@@ -419,3 +419,19 @@ MISSION SUMMARY:
   required.
 - This is rendered app evidence, not a rendered Claude.ai/ChatGPT connector
   conversation and not a claim of cross-client Voice acceptance.
+
+## [2026-09-04 00:02 PDT] VOICE CURRENT-PROVIDER READBACK
+
+TAB HYGIENE: one task-owned signed-in TinyAssets app tab for this read-only
+check.
+
+USER ACTION: Asked the founder universe which provider currently powers it and
+explicitly asked for no changes. The rendered response identified `codex` via
+`subscription_cli` as the active binding. It said the visible `openai_chat` HTTP
+registration is the inactive old `plug-and-play-test-model` artifact, not the
+serving authority.
+
+MISSION SUMMARY:
+- Current binding derived by the authenticated app: `codex/subscription_cli`.
+- Eligible `api_key_http` Voice bridge currently serving: no.
+- No provider, credential, flag, Voice, or microphone state was changed.

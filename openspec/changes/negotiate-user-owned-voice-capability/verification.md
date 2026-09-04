@@ -30,6 +30,14 @@
   rendered status read `Voice is not enabled on this TinyAssets host.` No Voice
   control was clicked and no microphone, provider, credential, or disclosure
   action occurred.
+- Authenticated binding check: from that signed-in app, the founder universe was
+  asked in ordinary user language to inspect its live serving binding without
+  changing anything. Its rendered answer identified `codex` via
+  `subscription_cli` as the active binding. It identified the only visible
+  `openai_chat` HTTP registration as the inactive old
+  `plug-and-play-test-model` artifact. The current binding is therefore not an
+  eligible `api_key_http` Voice bridge, and no ready-state or microphone proof
+  is presently available.
 - CI exception: desktop release run `33843457460` was cancelled after the PR
   merged. One bounded rerun of its exact job and head rebuilt all platform
   artifacts successfully, but job `100936661082` was again cancelled after
@@ -44,7 +52,8 @@
 
 Task 5.3 remains open: production proves the disabled state, while rendered
 unpowered/incompatible acceptance and any ready-state proof remain deliberately
-outside this dark deployment. Task 5.4 remains blocked on Jonathan naming an
-eligible already-authorized current provider and explicitly authorizing the
-bounded live microphone proof. Voice must not be enabled merely to close either
-task.
+outside this dark deployment. Task 5.4 remains blocked on the existing provider
+flow establishing an eligible current provider and Jonathan explicitly
+authorizing the bounded live microphone proof. The app must derive that binding;
+Jonathan should not be asked to name it manually. Voice must not be enabled
+merely to close either task.
