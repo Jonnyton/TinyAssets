@@ -2286,6 +2286,7 @@ def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
         set_canonical_branch,
         set_goal_canonical,
     )
+    from tinyassets.principals import named_principal
 
     gid = (kwargs.get("goal_id") or "").strip()
     if not gid:
@@ -2298,9 +2299,10 @@ def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
     except KeyError:
         return json.dumps({"status": "rejected", "error": f"Goal '{gid}' not found."})
 
-    actor = _current_actor()
-    scope_actor = (kwargs.get("scope") or "").strip()
-    if scope_actor and not actor:
+    actor = named_principal(_current_actor())
+    raw_scope_actor = str(kwargs.get("scope") or "").strip()
+    scope_actor = named_principal(raw_scope_actor)
+    if raw_scope_actor and (not actor or not scope_actor):
         return json.dumps({
             "status": "rejected",
             "error": "Authentication is required for a personal canonical.",

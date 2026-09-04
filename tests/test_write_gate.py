@@ -120,7 +120,7 @@ def test_rejection_is_actionable_for_anonymous():
     assert payload["tool"] == "write_graph"
     # Actionable: says how to get access. Nothing "stays open" any more.
     assert "OAuth" in payload["error"]
-    assert "anonymous access" in payload["error"].lower()
+    assert "unsigned access" in payload["error"].lower()
 
 
 def test_resolved_identity_passes_gate():
