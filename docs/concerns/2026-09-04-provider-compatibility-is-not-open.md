@@ -30,6 +30,16 @@ not a maintained vendor list.
   execution restriction, not just an overly narrow registration validator.
   A generic executor can reuse this existing resolution seam and `BaseProvider`
   contract; merely allowing arbitrary names would create unusable connections.
+- Follow-up inspection at 2026-09-05 01:35 UTC, local reviewed commit
+  `8e210a9d`, using `rg -n` and source reads: `tinyassets/api/compute_connection.py`
+  has a third compiled CLI-name check, `_CLI_REFS`, in the owner-facing
+  `connect_compute` handler. Its opening claim of no allowlist is contradicted
+  by its subscription branch. Extending only the definition/resolver will leave
+  registration blocked. The current read surface lists registered definitions,
+  not a fresh account-scoped model catalogue; no `list_models`, `model_catalog`,
+  `available_models`, `default_model`, or `model_selection` implementation name
+  was found under `tinyassets` (name-search evidence, not proof no equivalent
+  mechanism could exist under another name).
 - `ProviderDefinition.model` is already an owner-supplied connection-local
   selection field, but `_cli_provider` discards it for subscription definitions.
   `ModelConfig` has no model selector; that does not mean no selection surface

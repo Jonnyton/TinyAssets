@@ -783,10 +783,11 @@ class CodexProvider(BaseProvider):
                 'web_search="cached"',
                 "--json",
             ]
+        model_args = ["-m", model] if model else []
         cmd = [
             *base_cmd,
             "exec",
-            *(["-m", model] if model else []),
+            *model_args,
             *effort_args,
             *sandbox_args,
             # Disable the `apps` feature (codex >= 0.135 default: stable/on) on

@@ -80,3 +80,22 @@ cleanup, not changes to model selection or authority.
 
 VERDICT: APPROVE. Linux CI, verified deployment and the rendered app retest still
 gate shipping/acceptance claims. The checklist goal remains unproven.
+
+## Mechanical CI followup (2026-09-05 01:44 UTC, author verification)
+
+Linux CI run 33936213987: 14,640 passed, 54 skipped, 11 failed and 2 collection
+errors; the existing quarantine comparison identified two NEW failures. The new
+concern lacked its README link, and a static command-shape test stopped at the
+inner optional-model list's first closing bracket. Added the index row and
+hoisted the exact same conditional expression into `model_args` before command
+construction. Argument values/order, conditions, authority and error behavior
+are unchanged; no test or gate was weakened. Canonical/plugin mirror rebuilt.
+
+Local Windows command: `python -m pytest -q tests/test_dockerfile_shape.py
+tests/test_concerns_index_matches_the_directory.py tests/test_codex_cli_compat.py
+tests/test_providers.py tests/test_cli_smoke_tool_envelopes.py
+tests/test_provider_served_router.py` — 242 passed, 3 skipped. Ruff and diff check
+pass. The additional concern evidence records the existing owner-registration
+allowlist, not new behavior. This is author verification of mechanical changes
+after the round-3 reviewed tree, not a fourth independent review. Fresh Linux CI
+and deployed rendered proof remain required.
