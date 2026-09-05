@@ -1893,6 +1893,19 @@ _TURN_ENDED_FAILURE_CLASSES = {
         "for this universe will fix it. Nothing is wrong with your usage or "
         "your billing."
     ),
+    # The most likely thing to go wrong with a BYO subscription, and until
+    # 2026-09-05 the ONE cause with no sentence here: a usage limit carries no
+    # auth tell, so `classify_unavailable` bucketed it as `endpoint_unreachable`
+    # and the owner was told the opposite ("it is not a usage or billing
+    # limit"). Names the two real exits -- wait, or serve on something else --
+    # because "send again shortly" is useless against a limit that resets in
+    # days.
+    "quota_or_cooldown": (
+        "Your universe's model provider says the subscription it runs on has "
+        "hit its usage limit, so the turn could not run. Nothing is broken and "
+        "nothing is misconfigured. It will work again when that limit resets; "
+        "to keep going now, connect this universe to a different model."
+    ),
     "endpoint_unreachable": (
         "Your universe could not reach its model provider at all. That is a "
         "network or service problem rather than anything you set up wrong; "
@@ -1929,12 +1942,18 @@ _PLATFORM_FAULT_TELLS = (
 )
 
 
-#: The ``skip_class`` values set by explicit measurement, never by a substring
-#: guess: a cooldown window or a timer fired. `endpoint_unreachable` is the
-#: no-tell fallback of `classify_unavailable` (providers/diagnostics.py) -- it
-#: means "no evidence found", not "the network is down" -- and promoting it
-#: would tell an owner whose credential silently expired that it is "nothing
-#: you set up wrong" (Codex, review round 1, P6).
+#: The ``skip_class`` values that are EVIDENCED rather than inferred: a cooldown
+#: window or a timer fired, or the provider stated the cause in its own words.
+#: `quota_or_cooldown` reaches here both ways -- a measured cooldown, and (since
+#: 2026-09-05) `classify_unavailable`'s narrow `_QUOTA_TELLS`, phrases like
+#: "usage limit" and "purchase more credits" that occur in no other kind of
+#: message. That is reading the provider's report, not guessing at it, which is
+#: the same bar `_AUTH_EVIDENCE_TELLS` clears below.
+#:
+#: `endpoint_unreachable` stays out. It is the no-tell fallback of
+#: `classify_unavailable` -- it means "no evidence found", not "the network is
+#: down" -- and promoting it would tell an owner whose credential silently
+#: expired that it is "nothing you set up wrong" (Codex, review round 1, P6).
 _MEASURED_SKIP_CLASSES = frozenset({"quota_or_cooldown", "timed_out"})
 
 #: `auth_invalid` is ALSO a substring guess: `classify_unavailable` matches
@@ -2147,10 +2166,18 @@ def _served_failure_notice(exc: BaseException) -> str:
     # and useful, and hiding it behind "we do not know" trades one wrong answer
     # for another. Hard Rule 8 cuts this way too: fail loudly.
     if any(lie in text for lie in _MISLEADING_ROUTER_TELLS):
+        # "it is not a usage or billing limit" was an ASSERTION made in the one
+        # branch defined by having no evidence for any cause -- and on
+        # 2026-09-05 it was flatly false: codex had said "You've hit your usage
+        # limit" and this branch denied it to the founder's face. The denial
+        # earns its place (the router's "exhausted" wording is what sends owners
+        # to check their billing) but only as what we can actually stand
+        # behind: the provider did not report one.
         return (
             "Your universe's turn could not run, and we could not identify why. "
-            "This is not necessarily anything you did, and it is not a usage or "
-            "billing limit -- rather than guess, we have recorded the details."
+            "This is not necessarily anything you did, and the provider did not "
+            "report a usage or billing limit -- rather than guess, we have "
+            "recorded the details."
         )
     return f"Your universe couldn't be reached right now: {exc}"
 
