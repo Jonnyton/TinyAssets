@@ -16,9 +16,38 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
+def request_tool_roots(request: dict) -> list:
+    """Read classic and Responses-lite tool envelopes without model-name rules.
+
+    Native CLI models may use input additional_tools instead of a top-level
+    tools array. Both envelopes carry the same nested namespace/spec structure.
+    Absence and malformed envelopes remain failures, not an empty success.
+    """
+    roots = []
+    found = False
+    if "tools" in request:
+        if not isinstance(request["tools"], list):
+            raise ValueError("tools is not an array")
+        roots.extend(request["tools"])
+        found = True
+    inputs = request.get("input", [])
+    if not isinstance(inputs, list):
+        raise ValueError("input is not an array")
+    for item in inputs:
+        if isinstance(item, dict) and item.get("type") == "additional_tools":
+            if not isinstance(item.get("tools"), list):
+                raise ValueError("additional_tools.tools is not an array")
+            roots.extend(item["tools"])
+            found = True
+    if not found or not roots:
+        raise ValueError("model request omitted tool specifications")
+    return roots
+
+
 def run_smoke(command: list[str]) -> None:
     seen: set[str] = set()
     violations: set[str] = set()
+    resolved_models: set[str] = set()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -43,7 +72,11 @@ def run_smoke(command: list[str]) -> None:
                     {"protocolVersion": request["params"]["protocolVersion"],
                      "capabilities": {"tools": {}},
                      "serverInfo": {"name": "cli-smoke", "version": "1"}}
-                    if method == "initialize" else {"tools": []}
+                    if method == "initialize" else {"tools": [{
+                        "name": "read_graph", "description": "Read fixture graph metadata",
+                        "inputSchema": {"type": "object", "properties": {},
+                                        "additionalProperties": False},
+                    }]}
                 )
                 reply = {"jsonrpc": "2.0", "id": request["id"], "result": result}
                 status = 200
@@ -51,9 +84,16 @@ def run_smoke(command: list[str]) -> None:
                 seen.add("model-auth-refused")
                 try:
                     request = json.loads(body)
-                    tools = request["tools"]
-                    if not isinstance(tools, list):
-                        raise ValueError("tools is not an array")
+                    resolved_model = request.get("model")
+                    if not isinstance(resolved_model, str) or not resolved_model.strip():
+                        violations.add("CLI did not resolve a nonempty native model")
+                    else:
+                        seen.add("native-model-resolved")
+                        resolved_models.add(resolved_model)
+                    tools = request_tool_roots(request)
+                    lite = self.headers.get("x-openai-internal-codex-responses-lite") == "true"
+                    if lite:
+                        seen.add("code-mode-encoding")
                     pending = list(tools)
                     forbidden = {"local_shell", "shell", "exec_command", "write_stdin",
                                  "unified_exec"}
@@ -62,6 +102,14 @@ def run_smoke(command: list[str]) -> None:
                         if isinstance(item, dict):
                             for key in ("name", "type"):
                                 value = item.get(key)
+                                if isinstance(value, str) and value.endswith("read_graph"):
+                                    seen.add("engine-source-discoverable")
+                                if value == "tool_search" and "tinyassets" in str(
+                                    item.get("description", "")
+                                ):
+                                    seen.add("engine-source-discoverable")
+                                if value == "exec" and lite:
+                                    seen.add("code-mode-executor-advertised")
                                 # Both 0.135 and 0.153 advertise native file
                                 # patching independently of ShellTool. This is
                                 # not shell execution; the unchanged outer jail
@@ -112,7 +160,7 @@ def run_smoke(command: list[str]) -> None:
                     if feature_states.get(name) != "false":
                         raise RuntimeError(f"Codex no longer disables {name}")
                 args = [
-                    *command, "exec", "-m", "gpt-5.4", "--sandbox", "workspace-write",
+                    *command, "exec", "--sandbox", "workspace-write",
                     "--ignore-user-config", "--ignore-rules", *disabled, "--json",
                     "--ephemeral", "--skip-git-repo-check", "-c", 'web_search="cached"',
                     "-c", 'model_provider="cli_smoke"',
@@ -136,20 +184,34 @@ def run_smoke(command: list[str]) -> None:
                 failures = [event.get("error", {}).get("message", "") for event in events
                             if event.get("type") == "turn.failed"]
                 required = {"initialize", "tools/list", "model-auth-refused",
-                            "model-tools-inspected"}
+                            "model-tools-inspected", "native-model-resolved"}
+                # CLI defers MCP specs to tool discovery. Classic requests name
+                # the engine in tool_search; code-mode-only requests can hide
+                # all deferred names in the isolate's ALL_TOOLS. This startup
+                # check cannot prove invocation there; rendered app proof must.
+                if "code-mode-encoding" in seen:
+                    required.add("code-mode-executor-advertised")
+                else:
+                    required.add("engine-source-discoverable")
                 if (result.returncode != 1 or not failures or "401" not in failures[-1]
                         or violations or not required <= seen):
                     raise RuntimeError(
                         f"Codex startup did not reach the expected auth refusal: "
                         f"exit={result.returncode}, observed={sorted(seen)}, "
                         f"violations={sorted(violations)}, "
+                        f"models={sorted(resolved_models)}, "
                         f"stdout_tail={result.stdout[-500:]!r}, "
                         f"stderr_tail={result.stderr[-500:]!r}"
                     )
         finally:
             server.shutdown()
             worker.join(timeout=5)
-    print("Codex startup PASS: MCP bearer delivered, no shell specs, fake auth refused; "
+    discovery = ("visible" if "engine-source-discoverable" in seen
+                 else "unobserved-code-mode-deferred")
+    print("Codex startup PASS: native model resolved, MCP bearer delivered, "
+          "no shell specs in initial request, fake auth refused; "
+          f"models={sorted(resolved_models)}; "
+          f"engine_discovery={discovery}; "
           f"native_file_patch_advertised={'native-file-patch-advertised' in seen}")
 
 

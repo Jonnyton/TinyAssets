@@ -987,9 +987,15 @@ class TestCodexProvider:
                 await provider.complete("prompt", "system", ModelConfig())
 
     @pytest.mark.asyncio
-    async def test_skip_git_repo_check_in_command_without_bwrap(self):
+    @pytest.mark.parametrize("override", [None, "", " \t"])
+    async def test_skip_git_repo_check_in_command_without_bwrap(self, monkeypatch, override):
         """codex exec must bypass sandbox only when bwrap is unavailable."""
         from tinyassets.providers.codex_provider import CodexProvider
+
+        if override is None:
+            monkeypatch.delenv("TINYASSETS_CODEX_MODEL", raising=False)
+        else:
+            monkeypatch.setenv("TINYASSETS_CODEX_MODEL", override)
 
         captured_cmd = []
         mock_proc = AsyncMock()
@@ -1010,7 +1016,7 @@ class TestCodexProvider:
             patch("asyncio.create_subprocess_exec", side_effect=_fake_exec),
         ):
             provider = CodexProvider()
-            await provider.complete("prompt", "system", ModelConfig())
+            response = await provider.complete("prompt", "system", ModelConfig())
 
         assert "--skip-git-repo-check" in captured_cmd, (
             f"Expected --skip-git-repo-check in command: {captured_cmd}"
@@ -1021,8 +1027,9 @@ class TestCodexProvider:
             assert ("--disable", name) in zip(captured_cmd, captured_cmd[1:])
         assert "--ephemeral" in captured_cmd
         assert "-C" in captured_cmd
-        assert "-m" in captured_cmd
-        assert captured_cmd[captured_cmd.index("-m") + 1] == "gpt-5.4"
+        assert "-m" not in captured_cmd and "--model" not in captured_cmd
+        assert "gpt-5.4" not in captured_cmd
+        assert response.model == "provider-default"
 
     @pytest.mark.asyncio
     async def test_runs_from_repo_root_so_coding_tasks_can_read_source(self):
@@ -1071,7 +1078,7 @@ class TestCodexProvider:
             captured_cmd.extend(args)
             return mock_proc
 
-        monkeypatch.setenv("TINYASSETS_CODEX_MODEL", "gpt-5.5")
+        monkeypatch.setenv("TINYASSETS_CODEX_MODEL", "future-model-2030")
         with (
             patch("tinyassets.providers.codex_provider._resolve_codex_cmd",
                   return_value=(["codex"], False)),
@@ -1082,7 +1089,7 @@ class TestCodexProvider:
             provider = CodexProvider()
             await provider.complete("prompt", "system", ModelConfig())
 
-        assert captured_cmd[captured_cmd.index("-m") + 1] == "gpt-5.5"
+        assert captured_cmd[captured_cmd.index("-m") + 1] == "future-model-2030"
 
     @pytest.mark.asyncio
     async def test_uses_workspace_sandbox_when_bwrap_available(self):

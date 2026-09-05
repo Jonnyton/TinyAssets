@@ -35,7 +35,7 @@ _DEFAULT_POLL_SECONDS = 2.0
 # outside a user's universe (PLAN.md, 2026-08-29).
 SUPERVISOR_HEARTBEAT_FILENAME = ".worker_supervisor.json"
 DEFAULT_WORKER_MODELS = {
-    "codex": "gpt-5",
+    "codex": "provider-default",
     "claude-code": "claude",
 }
 

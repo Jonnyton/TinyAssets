@@ -507,3 +507,20 @@ workflow, connection, or credential was modified. Stopped repeated retries
 and handed the startup diagnosis to the opposite model family.
 
 TAB HYGIENE: 1 mission tab, URL=https://tinyassets.io/mcp/app.
+
+## [2026-09-04 17:51 PDT] USER ACTION deployed compatibility retest
+
+Asked exactly: Retest your workflow checklist
+Got: new message rendered verbatim; app is thinking. Revision c30daa8f is live,
+with protected containment and public canary success in deploy 33934197685.
+
+TAB HYGIENE: one controlled mission tab (1346516692), existing signed-in
+conversation at https://tinyassets.io/mcp/app. A second user-owned app tab is
+outside this browser session's controlled tabs and was left untouched. No new
+tab/chat, workflow edit, connection change, or retry of the unrelated `ji` message.
+
+## [2026-09-04 17:51 PDT] USER BUG unsupported platform model prevents retest
+
+Got: the app rendered an unknown turn failure before answering. The deployed
+diagnostics now reveal HTTP 400: TinyAssets' implicit gpt-5.4 request is not
+supported for the connected ChatGPT account. No repeated prompt was sent.

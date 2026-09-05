@@ -159,10 +159,30 @@ The provider layer SHALL represent per-call routing with an immutable `UniverseC
 #### Scenario: provider response carries model evidence
 - **WHEN** a provider completes a model call
 - **THEN** it returns text together with provider name, model name, model family, latency in milliseconds, and whether the response is degraded
+- **AND** when native CLI selection does not expose the resolved model name, the model field uses the explicit `provider-default` label rather than inventing an exact name
 
 #### Scenario: policy routing returns response telemetry
 - **WHEN** `call_with_policy` completes through a policy provider or the role fallback chain
 - **THEN** it returns response text, the provider used, and call metadata containing model, family, latency, degraded state, and attempt count
+
+### Requirement: An unspecified subscription model is not a platform model pin
+The Codex subscription adapter SHALL omit the model argument when its existing
+operator-global `TINYASSETS_CODEX_MODEL` override is unset or whitespace-only,
+delegating selection to the same connected CLI. A nonempty override SHALL be
+trimmed and passed unchanged, without a compiled model allowlist or a substitute
+model retry after rejection. Served config isolation, tool restrictions,
+credential custody, and provider authority SHALL remain unchanged. This operator
+override is not a user connection-local model selection surface.
+
+#### Scenario: native default without fabricated model evidence
+- **WHEN** no explicit operator model override is supplied
+- **THEN** the adapter supplies no model flag and reports `provider-default` in its response and default runtime label
+- **AND** it does not load otherwise-forbidden user or project configuration to obtain a model
+
+#### Scenario: explicit unknown model remains explicit
+- **WHEN** the operator supplies a model name not known to the platform
+- **THEN** the adapter passes that exact trimmed name to the CLI and reports it as the requested model
+- **AND** a rejection remains a failure, without changing the model, account, or provider
 
 ### Requirement: Runtime eligibility and exhaustion produce bounded cooldowns and structured evidence
 The provider runtime SHALL distinguish imported/registered providers, quota or cooldown eligibility, subscription-auth eligibility, and call failure. The standalone fallback router MUST independently guard optional provider imports, register CLI providers only when their binary availability probe succeeds, and expose only registered names through `available_providers`. `QuotaTracker` SHALL keep process-local monotonic cooldown and rate-window state, applying 120 seconds after unavailable or timeout failures and 30 seconds after other provider failures; successful API-backed calls record their configured rolling-window usage. When an unpinned non-judge role chain exhausts, `AllProvidersExhaustedError` SHALL carry per-provider attempt diagnostics and a chain-state snapshot rather than requiring log parsing.

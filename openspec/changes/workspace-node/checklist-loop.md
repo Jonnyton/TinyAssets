@@ -135,3 +135,62 @@ and updated its references; no behavior, guard, or baseline change. Local
 ratchet plus focused suite: 204 passed, 3 skipped. Final container build
 `33932130912` had already passed the strengthened bearer/tool-spec smoke on
 Linux CLI 0.153.4. CI must rerun on the naming-only follow-up before landing.
+
+## Compatibility round landed, 2026-09-05 00:44 UTC
+
+PR #2964 merged as `c30daa8f5ee86f8db64f6bf7c2ea7b1a7b94396b` after required
+Linux run `33933159500`: 14,620 passed, 54 skipped, nine failed and two collection
+errors all covered by the existing quarantine; zero new failures and zero stale
+quarantine entries. The gate passed, not an entirely failure-free suite.
+Production image build `33933967217` is in progress; merge is not live proof.
+
+Founder separately requires compatibility with providers unknown to TinyAssets
+without routine platform patches. The pinned CLI/catalogue repair does not meet
+that architectural outcome; the verified execution/registration gap is recorded
+in `docs/concerns/2026-09-04-provider-compatibility-is-not-open.md`.
+
+Deploy `33934197685` completed 2026-09-05 00:50 UTC. Its authenticated
+`python scripts/deployed_sha.py --url https://tinyassets.io/mcp --assert-contains
+c30daa8f5ee86f8db64f6bf7c2ea7b1a7b94396b` gate confirms production contains
+the fix; `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp
+--assert-handles` passed. At 00:51 UTC the existing browser conversation received
+exactly `Retest your workflow checklist`; the message rendered verbatim and the
+app is thinking. The previous retry button targets a different user message and
+was not used. Checklist acceptance remains pending.
+
+The 00:51 UTC app turn failed before a checklist reply. Retained diagnostics
+prove HTTP 400 rejection of the implicit platform model, not provider absence:
+`gpt-5.4` is unsupported for the connected ChatGPT account. A model-only
+production `printenv TINYASSETS_CODEX_MODEL` read returned exit 1/unset.
+
+## Native model recovery, 2026-09-05 01:05 UTC
+
+Work continues on `codex/provider-native-model-defaults`. Removing the implicit
+model argv pin preserves explicit operator overrides and all isolation flags;
+outcome and runtime labels say `provider-default`, not an invented model name.
+The founder clarified the durable target: provider default initially, user-saved
+defaults and choice from all models available through their connection. PLAN and
+the compatibility concern record that target; ignored connection-local model
+selection remains open, not silently activated by this patch.
+
+Independent shape review ADAPT supported the change and required label/document
+alignment plus coverage. Baseline Windows selection: 153 passed, 3 skipped.
+New native-default tests failed on the old forced model (3 failed, 2 explicit
+override cases passed). Changed expanded selection: 183 passed, 3 skipped; Ruff
+and plugin mirror import probe passed. Local Linux oracle could not start
+because Docker Desktop's Linux engine is unavailable; Linux CI remains required.
+
+Initial hold: credential-free real CLI smoke, now omitting the model flag,
+resolved `gpt-6-astra` but omitted tools from outgoing model requests. The fake
+required MCP initialized/listed tools; even advertising `read_graph` did not
+produce a tools field. Three attempts failed the same inspection invariant;
+stopped retries and dispatched independent round-2 diagnosis/review (peer output
+`output/provider-native-model-review.md`, completed execution handle 67648).
+
+Round 2 returned ADAPT at 01:14 UTC: implementation supported, fixture must
+understand Responses-lite additional_tools input items and deferred MCP discovery.
+After those corrections the native-default real CLI smoke passed; it still
+requires nonempty tool specs and applies the forbidden-name walk. It explicitly
+reports code-mode deferred engine visibility as unobserved, not a proven tool
+call. This unauthenticated custom-provider run uses the bundled default, not the
+account default. App retest remains the final proof; no checklist row is closed.
