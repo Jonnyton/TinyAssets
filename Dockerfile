@@ -30,7 +30,7 @@ FROM python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e3
 
 ARG TARGETARCH
 ARG NODEJS_VERSION=20.20.2-1nodesource1
-ARG CODEX_CLI_VERSION=0.135.0
+ARG CODEX_CLI_VERSION=0.153.4
 ARG CLAUDE_CODE_CLI_VERSION=2.1.183
 ARG NODESOURCE_REPO_CHECKSUM=b42e0321dabdc24e892115da705cf061167eac12a317f23d329862d0aa0a271d
 ARG RUSTUP_VERSION=1.28.2
@@ -94,9 +94,11 @@ RUN set -e; \
 # flock wrapper there instead (see below). Adding the same wrapper in
 # the builder stage would just be dead weight, so we run the binary
 # directly here.
+COPY scripts/codex_cli_smoke.py /tmp/codex_cli_smoke.py
 RUN mkdir -p /opt/codex-install && \
     npm install --prefix /opt/codex-install "@openai/codex@${CODEX_CLI_VERSION}" && \
-    /opt/codex-install/node_modules/.bin/codex --version
+    /opt/codex-install/node_modules/.bin/codex --version && \
+    python /tmp/codex_cli_smoke.py /opt/codex-install/node_modules/.bin/codex
 
 # Install Claude Code CLI next to Codex so the daemon can register the
 # subscription-backed claude-code provider when CLAUDE_CONFIG_DIR is present.

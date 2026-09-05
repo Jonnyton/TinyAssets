@@ -1017,6 +1017,8 @@ class TestCodexProvider:
         )
         assert "--dangerously-bypass-approvals-and-sandbox" in captured_cmd
         assert "--full-auto" not in captured_cmd
+        for name in ("apps", "plugins", "remote_plugin"):
+            assert ("--disable", name) in zip(captured_cmd, captured_cmd[1:])
         assert "--ephemeral" in captured_cmd
         assert "-C" in captured_cmd
         assert "-m" in captured_cmd
@@ -1083,7 +1085,7 @@ class TestCodexProvider:
         assert captured_cmd[captured_cmd.index("-m") + 1] == "gpt-5.5"
 
     @pytest.mark.asyncio
-    async def test_uses_full_auto_when_bwrap_available(self):
+    async def test_uses_workspace_sandbox_when_bwrap_available(self):
         """Healthy bwrap hosts should keep Codex's sandboxed auto mode."""
         from tinyassets.providers.codex_provider import CodexProvider
 
@@ -1108,7 +1110,10 @@ class TestCodexProvider:
             provider = CodexProvider()
             await provider.complete("prompt", "system", ModelConfig())
 
-        assert "--full-auto" in captured_cmd
+        assert ("--sandbox", "workspace-write") in zip(captured_cmd, captured_cmd[1:])
+        assert "--full-auto" not in captured_cmd
+        for name in ("apps", "plugins", "remote_plugin"):
+            assert ("--disable", name) in zip(captured_cmd, captured_cmd[1:])
         assert "--dangerously-bypass-approvals-and-sandbox" not in captured_cmd
         assert "--skip-git-repo-check" in captured_cmd
         assert "--ephemeral" in captured_cmd

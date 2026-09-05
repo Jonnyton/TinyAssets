@@ -145,11 +145,38 @@ def _redacted_stderr_excerpt(stderr_text: str, limit: int = 240) -> str:
     lines = [line.strip() for line in stderr_text.strip().splitlines() if line.strip()]
     if not lines:
         return "(no stderr)"
-    text = _SECRET_SHAPES.sub("[redacted]", lines[-1])
+    from tinyassets.workspace_git import scrub_text
+
+    text = _SECRET_SHAPES.sub("[redacted]", scrub_text(lines[-1]))
     if len(text) <= limit:
         return text
     half = (limit - 5) // 2
     return text[:half] + " ... " + text[-half:]
+
+
+def _structured_failure_excerpt(stdout: bytes, stderr_text: str, *, machine: bool) -> str:
+    """Prefer a failed JSON turn's own reason over unrelated tracing stderr."""
+    if machine:
+        last_error = ""
+        terminal_error = ""
+        for line in stdout.decode("utf-8", errors="replace").splitlines():
+            try:
+                event = json.loads(line)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") == "turn.failed":
+                error = event.get("error")
+                if isinstance(error, dict) and isinstance(error.get("message"), str):
+                    terminal_error = error["message"]
+            elif event.get("type") == "error" and isinstance(event.get("message"), str):
+                last_error = event["message"]
+        if terminal_error or last_error:
+            # Flatten before scrubbing: never drop an error's first line or
+            # cut through a credential before matching its complete shape.
+            return _redacted_stderr_excerpt(" ".join((terminal_error or last_error).splitlines()))
+    return _redacted_stderr_excerpt(stderr_text)
 
 
 def _codex_home_file_mounts(codex_home: Path) -> list[str]:
@@ -686,9 +713,10 @@ class CodexProvider(BaseProvider):
         base_cmd, use_shell = _resolve_codex_cmd()
         model = _codex_model()
         sandbox_status = get_sandbox_status()
-        sandbox_args = ["--full-auto"] if sandbox_status.get("bwrap_available") else [
-            "--dangerously-bypass-approvals-and-sandbox"
-        ]
+        sandbox_args = (
+            ["--sandbox", "workspace-write"] if sandbox_status.get("bwrap_available")
+            else ["--dangerously-bypass-approvals-and-sandbox"]
+        )
         # Prompt-node calls use Codex as a subscription-backed text model, but
         # loop-investigation coding prompts still need repo source/tests mounted.
         # Prefer Codex's sandboxed auto mode when bwrap is actually usable;
@@ -725,11 +753,14 @@ class CodexProvider(BaseProvider):
                 )
             binary_mounts = _codex_sandbox_mounts(base_cmd)
             sandbox_args = [
-                "--full-auto",
+                "--sandbox",
+                "workspace-write",
                 "--ignore-user-config",
                 "--ignore-rules",
                 "--disable",
                 "shell_tool",
+                # Legacy compatibility flag; modern CLI gates all command
+                # tools on shell_tool (unified_exec is now always enabled).
                 "--disable",
                 "unified_exec",
                 # MCP surface for the served turn (see _codex_engine_mcp_args):
@@ -772,6 +803,13 @@ class CodexProvider(BaseProvider):
             # `enable_mcp_apps` / `apps_mcp_path_override` cannot resurrect it.
             "--disable",
             "apps",
+            # Remote plugin sync became default-on in CLI 0.153.4. This
+            # provider consumes only the engine's explicit MCP surface, never
+            # account/local plugin tools or their injected instructions.
+            "--disable",
+            "plugins",
+            "--disable",
+            "remote_plugin",
             "--skip-git-repo-check",
             "--ephemeral",
         ]
@@ -914,6 +952,9 @@ class CodexProvider(BaseProvider):
         elapsed_ms = (time.monotonic() - start) * 1000
 
         stderr_text = stderr.decode("utf-8", errors="replace")
+        failure_excerpt = _structured_failure_excerpt(
+            stdout, stderr_text, machine=machine_accounting,
+        )
         # Sandbox failures are classified FIRST: they are a host defect, not a
         # provider outage, and must surface as such instead of being folded
         # into a "likely unavailable" cooldown (how the 2026-08-21 outage hid).
@@ -932,11 +973,11 @@ class CodexProvider(BaseProvider):
         elif proc.returncode == 1 and elapsed_ms < 5000:
             raise ProviderUnavailableError(
                 "codex exec returned exit code 1 quickly -- likely unavailable: "
-                + _redacted_stderr_excerpt(stderr_text)
+                + failure_excerpt
             )
         elif proc.returncode != 0:
             raise ProviderError(
-                f"codex exec exit {proc.returncode}: {stderr_text}"
+                f"codex exec exit {proc.returncode}: {failure_excerpt}"
             )
 
         stdout_text = stdout.decode("utf-8", errors="replace").strip()

@@ -513,7 +513,8 @@ def test_codex_provider_flag_is_on_exec_command():
     assert '"exec"' in cmd_block
     assert "--skip-git-repo-check" in cmd_block
     assert "*sandbox_args" in cmd_block
-    assert "--full-auto" in text
+    assert '"--sandbox", "workspace-write"' in text
+    assert '"--full-auto"' not in text
     assert "--dangerously-bypass-approvals-and-sandbox" in text
 
 

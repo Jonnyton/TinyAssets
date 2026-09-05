@@ -495,3 +495,15 @@ Got: sent message rendered verbatim; app is thinking. Fix revision 0512f335 depl
 Both the exact retest message and one unchanged Send it again retry rendered an unknown turn failure. No checklist response or workflow modification occurred; bounded operator logs show a quick provider subprocess exit but cut off its terminal cause.
 
 TAB HYGIENE: 1 mission tab, URL=https://tinyassets.io/mcp/app, returning-user conversation unchanged.
+
+## [2026-09-04 16:34 PDT] USER BUG checklist turn still cannot start
+
+After revision 97da0ead deployed with protected receipt and canary green in
+run 33929823161, clicked Send it again on the existing message. The rendered
+message remained exactly: Retest your workflow checklist
+
+Got: unknown turn failure again, before any checklist answer. No private
+workflow, connection, or credential was modified. Stopped repeated retries
+and handed the startup diagnosis to the opposite model family.
+
+TAB HYGIENE: 1 mission tab, URL=https://tinyassets.io/mcp/app.
