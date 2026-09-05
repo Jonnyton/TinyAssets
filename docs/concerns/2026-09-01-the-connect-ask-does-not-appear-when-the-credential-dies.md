@@ -70,6 +70,16 @@ Cost: `list_requests` is a hot read on every rail poll, so the check needs to be
 cheap or cached; a filesystem stat of the vault record is probably acceptable,
 a live provider probe is not.
 
+### Measured, not inferred (2026-09-05 17:45 UTC, production)
+
+`list_requests(universe_id="u-01kxm1vszd8hwp7em418asq8h9")` returns
+`"pending": [], "count": 0`. The suppressing condition held for the whole
+outage and is checkable after the fact: the universe's `provider_assignments`
+row was written `2026-09-05T00:11:37Z` (generation 4, provider `codex`) and the
+failing turns ran at `17:19Z`, so a serving binding row existed continuously
+across every failure. `_serving_llm_bound` returns True whenever one does — so
+the ask was suppressed for seventeen hours while every turn died.
+
 ### The vault check alone does not cover the third state (2026-09-05)
 
 `_usable_subscription_record` answers "is there a usable credential here", and
