@@ -154,7 +154,7 @@ def _redacted_stderr_excerpt(stderr_text: str, limit: int = 240) -> str:
     return text[:half] + " ... " + text[-half:]
 
 
-def _codex_failure_excerpt(stdout: bytes, stderr_text: str, *, machine: bool) -> str:
+def _structured_failure_excerpt(stdout: bytes, stderr_text: str, *, machine: bool) -> str:
     """Prefer a failed JSON turn's own reason over unrelated tracing stderr."""
     if machine:
         last_error = ""
@@ -952,7 +952,9 @@ class CodexProvider(BaseProvider):
         elapsed_ms = (time.monotonic() - start) * 1000
 
         stderr_text = stderr.decode("utf-8", errors="replace")
-        failure_excerpt = _codex_failure_excerpt(stdout, stderr_text, machine=machine_accounting)
+        failure_excerpt = _structured_failure_excerpt(
+            stdout, stderr_text, machine=machine_accounting,
+        )
         # Sandbox failures are classified FIRST: they are a host defect, not a
         # provider outage, and must surface as such instead of being folded
         # into a "likely unavailable" cooldown (how the 2026-08-21 outage hid).

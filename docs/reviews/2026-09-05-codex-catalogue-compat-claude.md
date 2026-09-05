@@ -45,7 +45,9 @@ The substantive final verdict was recovered from transcript
 `f8dad2d5-764f-4b96-8356-94edd68910d2` because the wrapper retained an unrelated
 closing-hook message. That closing message's incorrect reference to a slow-exit
 line is not evidence; the actual code sends both nonzero exits through
-`_codex_failure_excerpt`, as accepted in the implementation review.
+`_structured_failure_excerpt`, as accepted in the implementation review
+(mechanically renamed after CI to describe its structured-input contract
+without adding a vendor-named runtime identifier; no behavior change).
 
 ## Verification and limits
 

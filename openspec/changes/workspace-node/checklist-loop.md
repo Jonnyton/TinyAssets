@@ -126,3 +126,12 @@ pass; native file patching is explicitly reported as unchanged baseline,
 contained by the existing read-only mounts. Keepalive and both non-served
 launch tests now also pin account/plugin restrictions. Follow-up tests: 83
 passed. Final Linux CI and live deploy/retest remain outstanding.
+
+Linux required run `33932155764` completed 2026-09-05 00:25 UTC with 14,618
+passing tests and two new ratchet failures: the new structured-error helper's
+vendor-prefixed identifier increased the provider-name count from 75 to 76.
+Mechanically renamed that generic JSON helper to `_structured_failure_excerpt`
+and updated its references; no behavior, guard, or baseline change. Local
+ratchet plus focused suite: 204 passed, 3 skipped. Final container build
+`33932130912` had already passed the strengthened bearer/tool-spec smoke on
+Linux CLI 0.153.4. CI must rerun on the naming-only follow-up before landing.

@@ -8,7 +8,7 @@ import pytest
 
 from tinyassets.exceptions import ProviderError
 from tinyassets.providers.base import ModelConfig
-from tinyassets.providers.codex_provider import _codex_failure_excerpt
+from tinyassets.providers.codex_provider import _structured_failure_excerpt
 
 
 def _event(kind, **fields):
@@ -21,26 +21,28 @@ def test_terminal_json_reason_wins_over_tracing_and_transient_errors():
         + _event("turn.failed", error={"message": "first line\nmodel unavailable"})
         + _event("error", message="teardown noise")
     )
-    assert _codex_failure_excerpt(output, "catalogue " + "x" * 5000, machine=True) == (
+    assert _structured_failure_excerpt(output, "catalogue " + "x" * 5000, machine=True) == (
         "first line model unavailable"
     )
 
 
 @pytest.mark.parametrize("raw", [b"", b"not json\n[]\n", _event("turn.failed", error=42)])
 def test_unusable_json_falls_back_to_scrubbed_stderr(raw):
-    assert _codex_failure_excerpt(raw, "model unavailable", machine=True) == "model unavailable"
+    assert _structured_failure_excerpt(raw, "model unavailable", machine=True) == (
+        "model unavailable"
+    )
 
 
 def test_last_error_event_is_kept_without_a_turn_failed_event():
     raw = _event("error", message="first") + _event("error", message="last")
-    assert _codex_failure_excerpt(raw, "noise", machine=True) == "last"
-    assert _codex_failure_excerpt(raw, "plain stderr", machine=False) == "plain stderr"
+    assert _structured_failure_excerpt(raw, "noise", machine=True) == "last"
+    assert _structured_failure_excerpt(raw, "plain stderr", machine=False) == "plain stderr"
 
 
 def test_entire_json_message_is_scrubbed_before_clipping():
     secret = "sk-" + "Sensitive" * 25
     message = "start " + "x" * 105 + secret + "y" * 400 + " terminal cause"
-    result = _codex_failure_excerpt(_event("error", message=message), "", machine=True)
+    result = _structured_failure_excerpt(_event("error", message=message), "", machine=True)
     assert len(result) <= 240
     assert "Sensitive" not in result and "sk-" not in result
     assert result.startswith("start ") and result.endswith("terminal cause")
