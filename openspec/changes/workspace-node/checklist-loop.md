@@ -118,3 +118,11 @@ landing. Independent implementation review is running; no deployment claimed.
 
 Rollback: normal fail-safe deploy of prior immutable image if startup or public
 connector health regresses. No migration or user-state rollback is needed.
+
+Final independent review approved 2026-09-05 00:10 UTC; durable artifact:
+`docs/reviews/2026-09-05-codex-catalogue-compat-claude.md`. The strengthened smoke
+inspects actual model tool specs and MCP bearer headers. Both old and new CLI
+pass; native file patching is explicitly reported as unchanged baseline,
+contained by the existing read-only mounts. Keepalive and both non-served
+launch tests now also pin account/plugin restrictions. Follow-up tests: 83
+passed. Final Linux CI and live deploy/retest remain outstanding.

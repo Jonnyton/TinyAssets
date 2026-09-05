@@ -1017,6 +1017,8 @@ class TestCodexProvider:
         )
         assert "--dangerously-bypass-approvals-and-sandbox" in captured_cmd
         assert "--full-auto" not in captured_cmd
+        for name in ("apps", "plugins", "remote_plugin"):
+            assert ("--disable", name) in zip(captured_cmd, captured_cmd[1:])
         assert "--ephemeral" in captured_cmd
         assert "-C" in captured_cmd
         assert "-m" in captured_cmd
@@ -1110,6 +1112,8 @@ class TestCodexProvider:
 
         assert ("--sandbox", "workspace-write") in zip(captured_cmd, captured_cmd[1:])
         assert "--full-auto" not in captured_cmd
+        for name in ("apps", "plugins", "remote_plugin"):
+            assert ("--disable", name) in zip(captured_cmd, captured_cmd[1:])
         assert "--dangerously-bypass-approvals-and-sandbox" not in captured_cmd
         assert "--skip-git-repo-check" in captured_cmd
         assert "--ephemeral" in captured_cmd

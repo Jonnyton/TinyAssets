@@ -98,3 +98,5 @@ def test_image_pin_and_keepalive_use_catalogue_compatible_launch():
     keepalive = (root / ".github/workflows/codex-auth-keepalive.yml").read_text()
     assert "--full-auto" not in keepalive
     assert "codex exec --sandbox workspace-write" in keepalive
+    for name in ("apps", "plugins", "remote_plugin"):
+        assert f"--disable {name}" in keepalive

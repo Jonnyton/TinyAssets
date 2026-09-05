@@ -18,6 +18,7 @@ from pathlib import Path
 
 def run_smoke(command: list[str]) -> None:
     seen: set[str] = set()
+    violations: set[str] = set()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -29,6 +30,8 @@ def run_smoke(command: list[str]) -> None:
         def do_POST(self):
             body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
             if self.path == "/mcp":
+                if self.headers.get("Authorization") != "Bearer smoke-fixture-not-a-credential":
+                    violations.add("MCP bearer header missing or changed")
                 request = json.loads(body)
                 method = request.get("method", "")
                 seen.add(method)
@@ -46,6 +49,33 @@ def run_smoke(command: list[str]) -> None:
                 status = 200
             else:
                 seen.add("model-auth-refused")
+                try:
+                    request = json.loads(body)
+                    tools = request["tools"]
+                    if not isinstance(tools, list):
+                        raise ValueError("tools is not an array")
+                    pending = list(tools)
+                    forbidden = {"local_shell", "shell", "exec_command", "write_stdin",
+                                 "unified_exec"}
+                    while pending:
+                        item = pending.pop()
+                        if isinstance(item, dict):
+                            for key in ("name", "type"):
+                                value = item.get(key)
+                                # Both 0.135 and 0.153 advertise native file
+                                # patching independently of ShellTool. This is
+                                # not shell execution; the unchanged outer jail
+                                # keeps universe/auth mounts read-only.
+                                if value == "apply_patch":
+                                    seen.add("native-file-patch-advertised")
+                                if isinstance(value, str) and value in forbidden:
+                                    violations.add("shell-shaped model tool: " + value)
+                            pending.extend(item.values())
+                        elif isinstance(item, list):
+                            pending.extend(item)
+                    seen.add("model-tools-inspected")
+                except (ValueError, KeyError, TypeError):
+                    violations.add("model tool specs could not be inspected")
                 reply = {"error": {"message": "Missing bearer authentication: CLI smoke",
                                    "type": "authentication_error"}}
                 status = 401
@@ -105,18 +135,22 @@ def run_smoke(command: list[str]) -> None:
                 events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
                 failures = [event.get("error", {}).get("message", "") for event in events
                             if event.get("type") == "turn.failed"]
+                required = {"initialize", "tools/list", "model-auth-refused",
+                            "model-tools-inspected"}
                 if (result.returncode != 1 or not failures or "401" not in failures[-1]
-                        or not {"initialize", "tools/list", "model-auth-refused"} <= seen):
+                        or violations or not required <= seen):
                     raise RuntimeError(
                         f"Codex startup did not reach the expected auth refusal: "
                         f"exit={result.returncode}, observed={sorted(seen)}, "
+                        f"violations={sorted(violations)}, "
                         f"stdout_tail={result.stdout[-500:]!r}, "
                         f"stderr_tail={result.stderr[-500:]!r}"
                     )
         finally:
             server.shutdown()
             worker.join(timeout=5)
-    print("Codex startup PASS: required MCP initialized, tools disabled, fake auth refused")
+    print("Codex startup PASS: MCP bearer delivered, no shell specs, fake auth refused; "
+          f"native_file_patch_advertised={'native-file-patch-advertised' in seen}")
 
 
 if __name__ == "__main__":
