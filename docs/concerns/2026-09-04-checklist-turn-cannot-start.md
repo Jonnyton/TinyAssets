@@ -45,6 +45,41 @@ Catalogue visibility alone does not prove responses-side model rejection;
 do not change selected models without that evidence. Structured failure
 messages are now retained so a second launch cause can be identified.
 
+## Post-upgrade live result, 2026-09-05 00:51 UTC
+
+PR #2964 deployed c30daa8f with protected containment and public canary passing
+in deploy 33934197685. The exact app retest still failed before a checklist
+reply. Bounded `docker logs --since 2026-09-05T00:50:40Z --until
+2026-09-05T00:52:00Z tinyassets-daemon` now retains the terminal cause: HTTP 400,
+the requested `gpt-5.4` model is unsupported for this ChatGPT account.
+`_codex_model` imposes that model when no environment override is supplied.
+Thus catalogue compatibility was real but not sufficient for recovery.
+
+The next bounded repair under independent shape review removes the implicit
+platform model pin, delegating unspecified selection to the same connected
+CLI's catalogue-aware default while retaining explicit overrides. No new
+hardcoded model list, credential substitution, private workflow edit, or
+cross-provider fallback is authorized. Keep the full provider-agnostic finding
+open independently of this outage repair.
+
+Independent round-2 review (2026-09-05 01:14 UTC) traced the offline native-model
+smoke failure to two test assumptions: Responses-lite carries tool specs in
+`input[].additional_tools`, and MCP specs may be deferred to tool discovery
+rather than enumerated on the initial request. Source: official CLI 0.153.4
+`core/tests/suite/responses_lite.rs` and `core/src/tools/spec_plan.rs`. Corrected
+the fixture to inspect both tool envelopes, require nonempty specs, retain the
+recursive forbidden-name check, and report code-mode deferred engine visibility
+as unobserved rather than claiming invocation. The real CLI smoke now passes.
+
+The credential-free custom-provider smoke uses the bundled model default, not
+the authenticated account catalogue. It proves startup/wire/config invariants,
+not the account default's tool execution. Code mode's isolate can discover
+deferred tools through ALL_TOOLS; the initial request cannot exhaustively expose
+that registry. A stubbed discovery/execution probe would strengthen offline
+coverage; the reviewer treated that as follow-up, not a landing blocker. The
+unchanged OS sandbox and tool registry restrictions still apply. A rendered app
+retest remains mandatory before declaring recovery or a checklist pass.
+
 Do not substitute credentials, change provider bindings, or repair workflow
 definitions to close this finding. The acceptance is a real rendered reply and
 ultimately the agent's independent checklist passing.

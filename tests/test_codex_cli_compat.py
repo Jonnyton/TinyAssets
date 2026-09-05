@@ -102,3 +102,52 @@ def test_image_pin_and_keepalive_use_catalogue_compatible_launch():
     assert "codex exec --sandbox workspace-write" in keepalive
     for name in ("apps", "plugins", "remote_plugin"):
         assert f"--disable {name}" in keepalive
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("override", [None, "", " \t", "future-model-2030", " future-model-2030 "])
+async def test_served_model_selection_is_native_unless_explicit(monkeypatch, tmp_path, override):
+    from tinyassets.providers import codex_provider as provider
+
+    if override is None:
+        monkeypatch.delenv("TINYASSETS_CODEX_MODEL", raising=False)
+    else:
+        monkeypatch.setenv("TINYASSETS_CODEX_MODEL", override)
+    auth_dir = tmp_path / "auth"
+    auth_dir.mkdir()
+    proc = AsyncMock()
+    proc.returncode = 0
+    launch = AsyncMock(return_value=proc)
+    monkeypatch.setattr(provider, "_resolve_codex_cmd", lambda: (["codex"], False))
+    monkeypatch.setattr(provider, "get_sandbox_status", lambda: {
+        "bwrap_available": True, "bwrap_path": "fake-bwrap",
+    })
+    monkeypatch.setattr(provider, "subprocess_env_for_provider", lambda *a, **kw: {
+        "CODEX_HOME": str(auth_dir),
+    })
+    monkeypatch.setattr(provider, "_codex_sandbox_mounts", lambda command: [])
+    monkeypatch.setattr(provider, "_codex_home_file_mounts", lambda path: [])
+    monkeypatch.setattr(provider.asyncio, "create_subprocess_exec", launch)
+    monkeypatch.setattr(provider, "_stream_codex_exec", AsyncMock(return_value=(
+        _event("item.completed", item={"type": "agent_message", "text": "result"})
+        + _event("turn.completed", usage={"input_tokens": 3, "output_tokens": 2}),
+        b"",
+    )))
+    result = await provider.CodexProvider().complete(
+        "prompt", "system", ModelConfig(sandbox_workspace=True), universe_dir=tmp_path,
+    )
+    inner = launch.call_args.args[launch.call_args.args.index("--") + 1:]
+    expected = (override or "").strip()
+    if expected:
+        assert inner[inner.index("-m") + 1] == expected
+        assert result.model == expected
+    else:
+        assert "-m" not in inner and "--model" not in inner
+        assert result.model == "provider-default"
+    assert result.text == "result" and result.input_tokens == 3 and result.output_tokens == 2
+    assert "--ignore-user-config" in inner and "--ignore-rules" in inner
+    assert "--dangerously-bypass-approvals-and-sandbox" not in inner
+    assert ("--sandbox", "workspace-write") in zip(inner, inner[1:])
+    for name in ("shell_tool", "apps", "plugins", "remote_plugin"):
+        assert ("--disable", name) in zip(inner, inner[1:])
+    assert launch.await_count == 1

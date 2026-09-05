@@ -222,8 +222,14 @@ def _reasoning_effort_args(effort: str | None) -> list[str]:
 
 
 def _codex_model() -> str:
-    """Return the Codex CLI model to request for provider calls."""
-    return os.environ.get("TINYASSETS_CODEX_MODEL", "gpt-5.4").strip() or "gpt-5.4"
+    """Return an explicit operator override, or let the connected CLI choose.
+
+    A compiled model default can become unsupported by an otherwise healthy
+    subscription. An unspecified model belongs to the provider's own selection,
+    not a platform-maintained catalogue. Never retry a rejected explicit choice
+    with some other model.
+    """
+    return os.environ.get("TINYASSETS_CODEX_MODEL", "").strip()
 
 
 def _codex_workdir() -> str:
@@ -777,11 +783,11 @@ class CodexProvider(BaseProvider):
                 'web_search="cached"',
                 "--json",
             ]
+        model_args = ["-m", model] if model else []
         cmd = [
             *base_cmd,
             "exec",
-            "-m",
-            model,
+            *model_args,
             *effort_args,
             *sandbox_args,
             # Disable the `apps` feature (codex >= 0.135 default: stable/on) on
@@ -1043,7 +1049,9 @@ class CodexProvider(BaseProvider):
         return ProviderResponse(
             text=text,
             provider=self.name,
-            model=model,
+            # JSONL does not report the resolved model. Do not invent an exact
+            # model name or scrape unstructured stderr to fill this field.
+            model=model or "provider-default",
             family=self.family,
             latency_ms=elapsed_ms,
             input_tokens=input_tokens,

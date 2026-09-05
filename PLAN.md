@@ -526,6 +526,7 @@ _Last audited: 2026-05-19_
 
 **Principles:**
 - *Agent definitions are provider-portable; subscriptions are private bindings.* A public definition declares capabilities and optional provider/model requirements, never credentials. At installation, the universe binds it to the user's existing Claude, Codex, API-key, local-model, or future provider resources under the resource ledger and `allowed_providers` policy. Provider choice may change without forking the reusable agent definition.
+- *Model choice belongs to the user and their connection, not a compiled platform default* (founder directive, revised 2026-09-04). Use the provider's default until the user chooses otherwise. Users can save their own default and select from all models actually available through their own connection; preserve explicit choices across provider updates. Discover availability from the connection, not a platform-maintained model list. New providers and model releases must not require adding vendor/model names to the platform core. This supersedes the earlier same-day latest-model default request and is the design target, not a claim that the current CLI adapters implement it.
 - *Error loudly when the remaining provider can't produce acceptable work.* Fake success is worse than failure. (Hard Rule #8.)
 - *User-owned compute precedes market compute.* A user MUST be able to bind and
   use their own compute/provider authority before TinyAssets offers that user

@@ -23,6 +23,18 @@ def test_assigned_queue_consumer_flag_is_dark_by_default(monkeypatch) -> None:
     assert assigned_queue_consumer_enabled() is False
 
 
+@pytest.mark.parametrize("override", [None, "", " \t", "future-model-2030"])
+def test_worker_model_label_matches_native_or_explicit_selection(monkeypatch, override):
+    monkeypatch.delenv("TINYASSETS_WORKER_MODEL", raising=False)
+    if override is None:
+        monkeypatch.delenv("TINYASSETS_CODEX_MODEL", raising=False)
+    else:
+        monkeypatch.setenv("TINYASSETS_CODEX_MODEL", override)
+    assert consumer_module._worker_model_for_provider("codex") == (
+        (override or "").strip() or "provider-default"
+    )
+
+
 def test_flag_off_poll_performs_zero_claim_work(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", raising=False)
     consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
