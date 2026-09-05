@@ -64,7 +64,7 @@ Founder restored the tab and explicitly told this task to proceed. Sent exactly
 app reported an unknown turn failure. One unchanged retry after the provider's
 120-second cooldown failed identically. The bounded server log showed the
 model subprocess exiting before a turn, and double truncation of the provider's
-error hid its terminal cause. See the new checklist-turn concern; no checklist
+error hid its terminal cause. The recovery evidence is recorded below; no checklist
 row has been newly accepted, and no private workflow state was edited.
 
 Next round preserves the head and tail of already-scrubbed provider failure
@@ -91,7 +91,7 @@ Claude diagnosis. Subsequent read-only metadata narrowed one confirmed defect:
 live catalogue HTTP 200 declares `max`, which deployed Codex CLI 0.135.0 cannot
 deserialize. The next generic compatibility round is isolated on
 `codex/provider-catalogue-compat`; no workflow, provider binding, credential, or
-user state is altered. See the checklist-turn concern for evidence and limits.
+user state is altered. See the recovery record below for evidence and limits.
 
 ## Compatibility round verification, 2026-09-04 23:56 UTC
 
@@ -194,3 +194,44 @@ requires nonempty tool specs and applies the forbidden-name walk. It explicitly
 reports code-mode deferred engine visibility as unobserved, not a proven tool
 call. This unauthenticated custom-provider run uses the bundled default, not the
 account default. App retest remains the final proof; no checklist row is closed.
+
+Release queue, 2026-09-05 02:12 UTC: PR #2977 merged as
+`9d361262896519c1ab3c05c4154d6aac0a151588` at 02:08:56 UTC. Final independent
+round-3 review APPROVE is recorded in
+`docs/reviews/2026-09-05-provider-native-model-defaults-claude.md`; no fourth round.
+The first Linux run found two new failures (concern index entry and static command
+shape parsing); mechanical corrections are pushed and 242 focused local tests
+pass, 3 skip. Fresh required Linux run 33937064317 passed: 14,642 tests passed,
+54 skipped, 9 failed and 2 collection errors matched the existing quarantine,
+zero new failures and zero stale quarantine entries. This is a green baseline
+comparison, not a failure-free suite. Both image smoke checks passed. Production
+image publication 33938244843 is active. Production remains c30daa8f, and no app
+prompt has been sent since its 00:51 UTC failure. Verify the actual deployed
+target plus authenticated public canary, then send only the exact
+retest request in the existing app conversation. Never claim this PR closes the
+broader provider/model-selection gap or any checklist row before rendered proof.
+
+Deployment verified at 2026-09-05 02:15 UTC: image build 33938244843 succeeded;
+deploy 33938479563 passed authenticated `mcp_public_canary.py --assert-handles`
+and protected `deployed_sha.py --assert-contains` for
+`9d361262896519c1ab3c05c4154d6aac0a151588`. Exact retest request sent and rendered
+in the existing app at 02:15 UTC; app is thinking. No private workflow, binding,
+credential, model preference, or external destination was changed.
+
+Rendered result at 02:17 UTC: the app reports all fresh runs settled. Sequential
+`23afa7e5342146b3`, parallel `dda972835cc149f4`, heartbeat `675c4f54d8634185`
+completed with provider-call evidence. Missing `context` was refused preflight.
+Workspace `1c34376d6b9b498d` and overlapping `228acaa65de54cc3` completed; the
+agent qualifies contention as smoke evidence, not fairness proof. External run
+`6df9005077324601` still received HTTP 404 for the expired webhook destination.
+The agent explicitly says the full nine-row checklist is NOT cleared and only
+enumerates seven previously exercised lanes. The other two rows remain
+unidentified/unverified; do not substitute these six PASS rows for full success.
+
+Next: the existing host-action row for the expired exact delivery destination is
+still needed; asked the founder asynchronously to restore/choose it through the
+app's owner-controlled setup, without pasting credentials. No platform defect is
+established merely by that third-party 404. No workflow/connection repair or
+coaching is authorized. Preserve the full acceptance scope and obtain actual
+rendered evidence for the omitted lanes as well. Native-default startup recovery
+is verified; broader provider portability/model choice remains open separately.

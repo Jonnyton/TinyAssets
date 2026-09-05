@@ -46,6 +46,16 @@ not a maintained vendor list.
   exists. The operator-global environment knob is not a substitute for that
   connection-local seam. Do not silently activate previously ignored values
   (which may be placeholders) during the current outage patch.
+- Read-only follow-up on 2026-09-05 01:48 UTC: `call.py` registers universe
+  definitions into a process-global router, and `provider_resolver.py` replaces
+  entries by the provider's name. `router.py` freshly resolves authorized
+  `api_key_http:<definition-id>` identities but not CLI definitions by id. Thus
+  simply assigning each definition's model onto a shared named CLI instance
+  would create a cross-connection preference hazard. This is a design constraint
+  for the future selector, not evidence that the currently ignored CLI model
+  field has already leaked a user's selection. Carry the authorized connection
+  and model choice per invocation, or give execution definitions isolated
+  identities; never make the saved owner preference mutable process-global state.
 - `openspec/specs/provider-routing/spec.md`, requirements "Compute-agnostic"
   and open provider registration: promises no compiled provider set and owner
   registration by description without a code change or platform allowlist.
@@ -57,13 +67,28 @@ The open registry does not yet meet the broader portability promise. Existing
 `byo-llm-connect-flow` planning establishes ownership/binding boundaries but is
 not an implementation of arbitrary CLI compatibility.
 
+Independent follow-up: [Claude portability exploration](../reviews/2026-09-05-provider-portability-exploration-claude.md)
+at 2026-09-05 02:08 UTC found additional closed maps in credential overlays,
+serving bindings and subscription deposits, and confirmed model participates in
+definition identity. The lead reverified those source paths. Model-as-preference
+therefore needs an identity-preserving migration; merely honoring the current
+field is not the whole fix. The review records design qualifications rather than
+authorizing unchecked profile variables, local-only execution or guessed defaults.
+
 ## Incident distinction
 
 The installed production CLI was pinned at 0.135.0; it did not automatically
 update. A live model catalogue exposed a reasoning value its parser could not
-accept. See `2026-09-04-checklist-turn-cannot-start.md` for the dated read-only
-evidence and uncertainty about the terminal cause. PR #2964 is an immediate
+accept. See [the checklist recovery record](../../openspec/changes/workspace-node/checklist-loop.md)
+and [native-model review](../reviews/2026-09-05-provider-native-model-defaults-claude.md)
+for dated evidence and the distinction between catalogue mismatch and model
+rejection. PR #2964 is an immediate
 compatibility/diagnostic repair, not closure of this architectural finding.
+
+PR #2977 deployed `9d361262` at 2026-09-05 02:15 UTC. The exact app retest
+returned at 02:17 UTC with real provider-backed sequential, parallel and heartbeat
+passes. This closes the observed startup incident, not open-provider extension,
+model discovery, saved owner defaults, or the complete workflow checklist.
 
 ## Required outcome and proposed direction (not shipped design)
 
