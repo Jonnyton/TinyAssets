@@ -144,20 +144,56 @@ def dominant_retry_after_s(
     return None
 
 
-def classify_unavailable(error: BaseException) -> SkipClass:
-    """Heuristically classify a ``ProviderUnavailableError`` as auth vs network.
+#: The provider saying, in its OWN words, that the subscription is out of usage.
+#: These are not a guess at a cause the way the bare auth tells below are: each
+#: phrase only ever appears in a quota message, so matching one is reading the
+#: provider's report rather than inferring from it.
+#:
+#: Live 2026-09-05: the founder's universe served on codex, codex exited 1 with
+#: "You've hit your usage limit. Visit ... to purchase more credits or try again
+#: at Sep 7th, 2026 2:29 AM", and this function had NO quota branch -- the
+#: message carries no auth tell, so a plain usage limit could only come out as
+#: ``endpoint_unreachable``. That bucket is the one ``_attempt_class`` refuses
+#: to promote, so the turn reached the owner as "we could not identify why ...
+#: it is not a usage or billing limit" -- the exact opposite of the truth, about
+#: the single most likely thing to go wrong with a BYO subscription.
+_QUOTA_TELLS = (
+    "usage limit",
+    "purchase more credits",
+    "out of credits",
+    "insufficient_quota",
+    "insufficient quota",
+    "quota exceeded",
+    "exceeded your quota",
+    "rate limit",
+    "rate_limit",
+    "too many requests",
+    "429",
+)
 
-    The base ``ProviderUnavailableError`` covers both auth failures (401/403,
-    expired subscription bundle) and network failures (connection refused,
-    DNS, timeouts that aren't ``ProviderTimeoutError``). This split is the
-    main signal operators need: auth_invalid points at the subscription auth
-    bundle / API keys, endpoint_unreachable points at network / service.
+
+def classify_unavailable(error: BaseException) -> SkipClass:
+    """Heuristically classify a ``ProviderUnavailableError``.
+
+    The base ``ProviderUnavailableError`` covers auth failures (401/403,
+    expired subscription bundle), exhausted subscriptions, and network failures
+    (connection refused, DNS, timeouts that aren't ``ProviderTimeoutError``).
+    This split is the main signal operators need: quota_or_cooldown points at
+    the subscription's own meter, auth_invalid at the auth bundle / API keys,
+    endpoint_unreachable at network / service.
+
+    Quota is tested FIRST and on narrow evidence. A quota message routinely
+    carries an auth tell as an incidental word ("token quota exceeded", a 401
+    served for an unpaid account), and reading that as a dead credential sends
+    the owner to rotate a credential that is fine.
 
     Conservative — defaults to ``endpoint_unreachable`` when the message
-    doesn't contain auth-tells, since that's the safer wrong guess (it
-    triggers retry/wait rather than premature credential rotation).
+    contains no tell at all, since that's the safer wrong guess (it triggers
+    retry/wait rather than premature credential rotation).
     """
     msg = str(error).lower()
+    if any(t in msg for t in _QUOTA_TELLS):
+        return "quota_or_cooldown"
     auth_tells = (
         "auth", "credential", "token", "401", "403",
         "unauthor", "forbidden", "expired", "invalid_token", "no_credentials",
