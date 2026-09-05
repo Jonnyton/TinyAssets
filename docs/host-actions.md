@@ -222,41 +222,41 @@ Recovered 2026-08-27 from PR #2463, which carried it on the retired board and ha
 
 ---
 
-### First-class Voice — stop at microphone acceptance after the capability-gate fix deploys
+### First-class Voice — stop before microphone acceptance after browser speech deploys
 
-**Do not send a credential in chat and do not buy a platform key.** The shipped dark runtime accepts
-only an exact `tinyassets.voice.v1` bridge backed by a generic HTTP connection and grant already
-owned by the signed-in founder and their home universe. Host credentials, maintainer accounts,
-another user's connection, and platform-paid usage cannot unlock it.
+**Do not send a credential in chat and do not buy a platform key.** Voice must keep using the same
+authenticated home universe and canonical `converse` writer that already answers typed chat. Host
+credentials, maintainer accounts, another user's connection, platform-paid usage, and a silent
+provider substitute cannot unlock it or count as acceptance.
 
-The product path binds the capability only to the universe's current serving provider and reuses
-the existing provider/connection setup. An earlier authenticated check on 2026-09-04 found a
-`codex/subscription_cli` binding and correctly routed Voice to that setup path. A later real-user
-result from a universe powered by the user's ChatGPT connection rendered `Voice is not enabled on
-this TinyAssets host.` That server state is returned only after the exact current-provider HTTP
-connection, owner, universe, grant, credential rotation, endpoint, method, and
-`tinyassets.voice.v1` capability have already validated. The user-owned capability is therefore
-present; asking for another provider or credential would be wrong.
+The 2026-09-04 signed-in acceptance result supersedes the earlier capability receipts: typed chat
+worked through the user's connected ChatGPT authority, while Voice asked to connect again and then
+reported that the connection was unsupported. The root cause was treating an optional
+`tinyassets.voice.v1` WebRTC bridge as a prerequisite for speech. A subscription CLI connection
+does not document that bridge, and a ChatGPT subscription must not be interpreted as external
+Realtime API entitlement. Asking for another provider or credential is therefore wrong.
 
-The capability-first tap shipped in PR #2924 and was proved through the rendered signed-in app on
-2026-09-04. The composer derived the unsupported current binding, rendered `Voice · Connect`, and
-one tap opened the existing provider setup with an explanation that compatible realtime authority
-must be user-owned and that TinyAssets will not switch providers automatically. No microphone,
-disclosure, session, provider change, credential action, or platform-paid usage occurred.
+The product fix separates conversation authority from speech transport. When the browser or device
+exposes speech recognition and synthesis, Voice captures one final transcript, submits it exactly
+once through the same authenticated canonical `converse` path as typed chat, renders the exact
+reply, and reads that reply aloud. TinyAssets receives recognized text but no microphone bytes.
+The browser vendor or device speech service may process recognition remotely and may not work
+offline; the disclosure says so before microphone access. A compatible `tinyassets.voice.v1`
+bridge remains an optional richer transport, not a reason to reconnect an already-working writer.
 
-The implementation fix removes the two redundant Voice-specific host switches that overwrote this
-validated user capability with `voice_disabled`. The exact user-owned capability remains the
-readiness authority, and the existing generic outbound HTTP switch remains the transport kill
-switch. After the fix is merged, deployed, and the authenticated app renders the compatible
-current provider as ready, stop before microphone permission for Jonathan's explicit bounded
-physical-device proof. No host file, developer bypass, new credential, or platform-funded usage
-counts. The proof order, stop conditions, and evidence packet are in
+After the fix is merged and deployed, open the authenticated app in the exact browser/device that
+failed. A working conversation plus supported browser speech must render `Voice` without
+`Voice · Connect`; the first tap may show the browser-speech disclosure but must stop before
+microphone permission for Jonathan's explicit bounded physical-device proof. An unsupported
+browser must name that browser/device limitation while typed chat remains usable. No host file,
+developer bypass, new credential, provider switch, or platform-funded usage counts. The proof
+order, stop conditions, and evidence packet are in
 `docs/ops/realtime-voice-mobile-handoff.md`.
 
-Stop for Jonathan at the rendered `ready` state before starting microphone acceptance. The app
-must derive the current binding; do not ask him to name it or reconnect it manually. Running the
-live microphone acceptance and releasing Voice beyond that bounded proof remain explicit founder
-decisions.
+Stop for Jonathan at the rendered disclosure or honest unsupported-browser state before starting
+microphone acceptance. The app must derive the current binding; do not ask him to name it or
+reconnect it manually. Running the live microphone acceptance and releasing Voice beyond that
+bounded proof remain explicit founder decisions.
 
 ---
 

@@ -533,16 +533,19 @@ _Last audited: 2026-05-19_
   fallback, never the prerequisite path, and maintainer quota is never an
   implicit substitute for either.
 - *Universe authority is the capability boundary.* A universe may use only the
-  provider capabilities its user has explicitly bound to it. Voice is a
-  capability of the universe's **current serving provider**, never a separately
-  selected provider: if that provider has a compatible user-owned Voice
-  capability, the single composer control starts it after any required
-  disclosure; if the universe is unpowered, the control opens the existing
-  provider setup; if the current provider lacks the capability, it opens the
-  existing connection/request surface only when that surface can remediate the
-  gap, otherwise it reports Voice unavailable. Voice MUST NOT introduce a
-  second credential flow, silently switch providers, use platform or maintainer
-  credentials, or aggregate usage across users.
+  provider capabilities its user has explicitly bound to it. Every Voice turn
+  uses the universe's **current serving provider** through canonical
+  `converse`, never a separately selected writer. Speech transport is distinct:
+  the single composer control may use the user's browser/device speech service
+  to turn speech into text and render the exact reply, or use an authorized
+  `tinyassets.voice.v1` bridge when the current provider connection declares
+  one. A missing realtime bridge MUST NOT send a user whose typed conversation
+  already works through redundant provider setup. If the universe is
+  unpowered, the control opens the existing provider setup; if the browser has
+  no supported speech input and no bridge exists, it reports that device
+  limitation. Voice MUST NOT introduce a second credential flow, silently
+  switch writers, use platform or maintainer credentials, or aggregate usage
+  across users.
 - *Fallback chain correctness is a first-class invariant.* Every provider named in a fallback chain must be either registered AND reachable at startup, or explicitly excluded with a logged reason. Phantom chain entries are a bug. A chain that reads `[claude-code, codex, gemini-free, ...]` but whose first entry's CLI binary is absent silently degrades the whole chain; operators reading config see one chain, the runtime iterates a different one. Register-and-probe at startup; emit structured evidence of the effective chain via `get_status`; refuse to advertise unreachable providers. (Corroborated by BUG-025 + 2026-04-21 prod-LLM-binding incident + 2026-04-23 revert-loop P0.)
 - *Required files must be probed at startup and fail loud if missing.* When code declares a required on-disk artifact (ASP rule files, schema definitions, seeded fixtures, vendored configs), startup must probe for it and refuse to start if absent — not log a WARNING and continue with an empty fallback. Silent substrate-degradation from missing artifacts produces runs that report success while behaving as no-ops; that violates Hard Rule #8 at an earlier lifecycle phase. (Corroborated by BUG-026: `data/world_rules.lp` absent silently reduced the ASP constraint engine to a no-op.)
 

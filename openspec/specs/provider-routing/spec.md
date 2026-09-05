@@ -636,14 +636,14 @@ Enabling Realtime voice SHALL NOT enroll, select, replace, or fall back to any p
 - **GIVEN** a universe whose assigned writer works but whose current provider exposes no compatible realtime capability
 - **WHEN** the founder starts Voice
 - **THEN** the writer remains selected and typed conversation continues
-- **AND** the same control opens the existing provider connection or capability-request path and explains that compatible user-owned authority is required
-- **AND** TinyAssets does not request a separate Voice-only credential or widen to platform compute
+- **AND** supported browser/device speech relays recognized text through that same writer's canonical `converse` path
+- **AND** TinyAssets does not open provider setup, request a Voice-only credential, infer Realtime API entitlement, or widen to platform compute
 
-#### Scenario: Generic outbound transport is disabled while provider setup remains actionable
+#### Scenario: Generic outbound bridge transport is disabled
 - **GIVEN** generic outbound HTTP transport is disabled
 - **WHEN** the founder starts Voice without compatible current-provider authority
-- **THEN** TinyAssets discovers the current provider's capability state and opens the existing provider connection or capability-request path when remediation is available
-- **AND** no microphone permission or Voice session request occurs
+- **THEN** supported browser/device speech remains available because it uses canonical `converse`, not the outbound bridge
+- **AND** TinyAssets makes no Voice session request and does not change provider authority
 
 #### Scenario: Another provider has realtime capability
 - **WHEN** another connection or provider could supply realtime Voice but is not the current serving provider

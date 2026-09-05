@@ -173,9 +173,11 @@ def test_voice_csp_and_disclosure_are_dark_until_all_flags(monkeypatch):
     assert "TinyAssets never substitutes a shared" in html
     assert "that you bound to this universe" in html
     assert "not store the raw audio" in html
+    assert "browser or device speech service" in html
+    assert "may send audio to the browser vendor" in html
     assert "Voice needs a compatible connection" not in html
     assert 'id="voice-unlock"' not in html
-    assert "current provider does not have compatible realtime Voice" in html
+    assert "Speech input is not supported in this browser or device" in html
 
 
 def test_voice_client_keeps_converse_as_the_only_writer():
@@ -634,6 +636,9 @@ def _run_voice_adapter(tmp_path) -> dict:
         for name in (
             "voiceNextState",
             "voiceNormalize",
+            "browserSpeechConstructor",
+            "browserSpeechAvailable",
+            "browserSpeechCapability",
             "voiceDisclosureKey",
             "voiceFriendlyError",
             "voiceConnectionGuidance",
@@ -647,11 +652,14 @@ const intervals=[];
 function setInterval(fn,ms){const timer={fn,ms};intervals.push(timer);return timer;}
 function clearTimeout(){} function clearInterval(){}
 class El{constructor(){this.hidden=true;this.disabled=false;this.textContent="";this.attrs={};}
-setAttribute(k,v){this.attrs[k]=v;} focus(){this.focused=true;} pause(){this.paused=true;}}
+setAttribute(k,v){this.attrs[k]=v;} removeAttribute(k){delete this.attrs[k];}
+focus(){this.focused=true;} pause(){this.paused=true;}}
 const els={"btn-voice":new El(),"voice-disclosure":new El(),"btn-voice-accept":new El(),
-  "voice-service-name":new El(),"voice-privacy-link":new El()};
+  "voice-service-name":new El(),"voice-privacy-link":new El(),
+  "voice-disclosure-browser":new El(),"voice-disclosure-bridge":new El()};
 const $=id=>els[id]; let status=""; function setStatusLine(v){status=v||"";}
-const document={createElement:()=>new El()};
+const document={createElement:()=>new El(),documentElement:{lang:"en-US"}};
+const window={};
 let mediaRequests=0;
 const navigator={mediaDevices:{getUserMedia:async()=>{mediaRequests++;return {getTracks:()=>[]};}}};
 let RTCPeerConnection;
@@ -659,9 +667,10 @@ let traces=[]; function trace(...args){traces.push(args);}
 let turns=[];
 let capabilityDoc={available:false,state:"unpowered",reason:"provider_not_configured",
   remediation:"existing_connection_surface"};
-let fetched=[];
+let fetched=[],fetchError=null;
 async function fetch(url){
-  fetched.push(url);return {ok:true,status:200,json:async()=>capabilityDoc};
+  fetched.push(url);if(fetchError)throw fetchError;
+  return {ok:true,status:200,json:async()=>capabilityDoc};
 }
 let voiceTurnImpl=async()=>"Exact universe reply.";
 async function sendVoiceTurn(message){turns.push(message);return await voiceTurnImpl(message);}
@@ -729,7 +738,7 @@ let connectCalls=[]; function showConnect(asGate,guidance){connectCalls.push({as
     service_name:"My bridge",privacy_url:"https://bridge.example/privacy"};
   await Voice.refreshCapability(); out.initial=Voice.state;
   await Voice.requestStart(); out.disclosureShown=!els["voice-disclosure"].hidden;
-  Voice.start=()=>{out.disclosureStarted=true;};
+  const realStart=Voice.start;Voice.start=()=>{out.disclosureStarted=true;};
   capabilityDoc=Object.assign({},capabilityDoc,
     {disclosure_id:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
      service_name:"Changed bridge"});
@@ -863,6 +872,82 @@ let connectCalls=[]; function showConnect(asGate,guidance){connectCalls.push({as
     livePcClosed:livePc.closed,liveTrackStopped:liveStream.track.stopped};
   sessionResolvers[1]({answer_sdp:"v=0\\r\\n",max_session_seconds:1800});
   await secondConnect;out.connectRace.finalState=Voice.state;
+  const recognitionInstances=[],spoken=[],speechCancels=[];
+  class FakeSpeechRecognition{
+    constructor(){this.started=0;this.stopped=0;this.aborted=0;recognitionInstances.push(this);}
+    start(){this.started++;if(this.onstart)this.onstart();}
+    stop(){this.stopped++;if(this.onend)this.onend();}
+    abort(){this.aborted++;if(this.onend)this.onend();}
+  }
+  window.webkitSpeechRecognition=FakeSpeechRecognition;
+  window.SpeechSynthesisUtterance=class{constructor(text){this.text=text;}};
+  window.speechSynthesis={
+    autoEnd:true,
+    cancel(){speechCancels.push("cancel");},
+    speak(utterance){spoken.push(utterance.text);
+      if(this.autoEnd)queueMicrotask(()=>utterance.onend());}
+  };
+  navigator.language="en-US";
+  Voice.start=realStart;
+  fetchError=new Error("offline");connectCalls=[];Voice.stop(false);Voice.init();
+  await Voice.refreshCapability();await Voice.requestStart();
+  out.browserStatusFailure={state:Voice.state,label:els["btn-voice"].textContent,
+    disclosureShown:!els["voice-disclosure"].hidden,connectCalls:connectCalls.slice(),status};
+  fetchError=null;
+  CFG.voice.enabled=false;
+  capabilityDoc={available:false,state:"incompatible",reason:"provider_voice_unsupported",
+    remediation:"existing_connection_surface"};connectCalls=[];turns=[];
+  Voice.stop(false);Voice.init();await Voice.refreshCapability();
+  const fetchesBeforeBrowser=fetched.length;
+  await Voice.requestStart();
+  out.browserFallbackBeforeAccept={
+    state:Voice.state,label:els["btn-voice"].textContent,
+    disclosureShown:!els["voice-disclosure"].hidden,
+    browserDisclosure:!els["voice-disclosure-browser"].hidden,
+    bridgeDisclosure:!els["voice-disclosure-bridge"].hidden,
+    connectCalls:connectCalls.slice(),mediaRequests,
+    recognitionInstances:recognitionInstances.length
+  };
+  Voice.cancelDisclosure();
+  out.browserFallbackDecline={
+    disclosureShown:!els["voice-disclosure"].hidden,
+    recognitionInstances:recognitionInstances.length,
+    sessionFetches:fetched.slice(fetchesBeforeBrowser).filter(url=>url==="/mcp/app/voice/session").length
+  };
+  await Voice.requestStart();
+  await Voice.acceptDisclosure();await Promise.resolve();
+  const recognition=recognitionInstances[recognitionInstances.length-1];
+  const finalResult=[{transcript:"Hello, same universe"}];finalResult.isFinal=true;
+  recognition.onresult({resultIndex:0,results:[finalResult]});
+  const duplicateResult=[{transcript:"Duplicate"}];duplicateResult.isFinal=true;
+  recognition.onresult({resultIndex:0,results:[duplicateResult]});
+  await Voice.browserTurn;
+  out.browserFallbackTurn={
+    state:Voice.state,turns:turns.slice(),spoken:spoken.slice(),
+    recognitionStarts:recognition.started,recognitionStops:recognition.stopped,
+    sessionFetches:fetched.slice(fetchesBeforeBrowser).filter(url=>url==="/mcp/app/voice/session").length,
+    connectCalls:connectCalls.slice()
+  };
+  window.speechSynthesis.autoEnd=false;
+  const stoppedResult=[{transcript:"Stop during speech"}];stoppedResult.isFinal=true;
+  recognition.onresult({resultIndex:0,results:[stoppedResult]});
+  await Promise.resolve();await Promise.resolve();await Promise.resolve();
+  const stoppedTurn=Voice.browserTurn,cancelsBeforeSpeechStop=speechCancels.length;
+  Voice.stop(false);await stoppedTurn;
+  out.browserSpeechTeardown={state:Voice.state,aborted:recognition.aborted,
+    speechCancels:speechCancels.length-cancelsBeforeSpeechStop};
+  await Voice.requestStart();await Promise.resolve();
+  const watchdogRecognition=recognitionInstances[recognitionInstances.length-1];
+  const stalledResult=[{transcript:"Speech watchdog"}];stalledResult.isFinal=true;
+  watchdogRecognition.onresult({resultIndex:0,results:[stalledResult]});
+  await Promise.resolve();await Promise.resolve();await Promise.resolve();
+  const speechWatchdog=timers.slice().reverse().find(timer=>timer.ms>=30000&&timer.ms<=1800000);
+  const stalledTurn=Voice.browserTurn;speechWatchdog.fn();await stalledTurn;
+  out.browserSpeechWatchdog={state:Voice.state,turns:turns.slice(),spoken:spoken.slice(),status};
+  const cancelsBeforeStop=speechCancels.length;Voice.stop(false);
+  out.browserFallbackStop={aborted:watchdogRecognition.aborted,
+    speechCancelsOnStop:speechCancels.length-cancelsBeforeStop,
+    state:Voice.state};
   console.log(JSON.stringify(out));
 })().catch(e=>{console.error(e&&e.stack||e);process.exit(1);});
 """
@@ -940,19 +1025,10 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
         }
     ]
     assert out["remediableIncompatible"]["state"] == "incompatible"
-    assert out["remediableIncompatible"]["disabled"] is False
+    assert out["remediableIncompatible"]["disabled"] is True
     assert out["remediableIncompatible"]["mediaRequests"] == 0
-    assert out["remediableIncompatible"]["connectCalls"] == [
-        {
-            "asGate": False,
-            "guidance": (
-                "Your current provider still powers typed conversation, but it does not "
-                "provide compatible realtime Voice authority. Connect and select a "
-                "realtime-capable provider connection you authorize; TinyAssets will not "
-                "switch providers automatically."
-            ),
-        }
-    ]
+    assert out["remediableIncompatible"]["connectCalls"] == []
+    assert "not supported in this browser or device" in out["remediableIncompatible"]["status"]
     assert out["unremediableIncompatible"]["state"] == "unpowered"
     assert out["unremediableIncompatible"]["disabled"] is True
     assert out["unremediableIncompatible"]["mediaRequests"] == 0
@@ -960,30 +1036,23 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
     assert "typed message first" in out["unremediableIncompatible"]["status"]
     assert out["unsupportedWithTransportEnabled"] == {
         "state": "incompatible",
-        "disabled": False,
-        "mediaRequests": 0,
-        "connectCalls": [
-            {
-                "asGate": False,
-                "guidance": (
-                    "Your current provider still powers typed conversation, but it does "
-                    "not provide compatible realtime Voice authority. Connect and select "
-                    "a realtime-capable provider connection you authorize; TinyAssets "
-                    "will not switch providers automatically."
-                ),
-            }
-        ],
-        "status": (
-            "Your current provider can power typed conversation but does not expose "
-            "compatible realtime Voice."
-        ),
-    }
-    assert out["transportDisabled"] == {
-        "state": "unavailable",
         "disabled": True,
         "mediaRequests": 0,
         "connectCalls": [],
-        "status": "Voice transport is temporarily unavailable. Typed chat still works.",
+        "status": (
+            "Speech input is not supported in this browser or device. "
+            "Typed chat still works."
+        ),
+    }
+    assert out["transportDisabled"] == {
+        "state": "incompatible",
+        "disabled": True,
+        "mediaRequests": 0,
+        "connectCalls": [],
+        "status": (
+            "Speech input is not supported in this browser or device. "
+            "Typed chat still works."
+        ),
         "disclosureShown": False,
     }
     assert out["readyWithoutLegacyFlags"] == {
@@ -1086,6 +1155,57 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
         "livePcClosed": False,
         "liveTrackStopped": False,
         "finalState": "listening",
+    }
+    assert out["browserFallbackBeforeAccept"] == {
+        "state": "idle",
+        "label": "Voice",
+        "disclosureShown": True,
+        "browserDisclosure": True,
+        "bridgeDisclosure": False,
+        "connectCalls": [],
+        "mediaRequests": 0,
+        "recognitionInstances": 0,
+    }
+    assert out["browserStatusFailure"] == {
+        "state": "checking",
+        "label": "Voice",
+        "disclosureShown": False,
+        "connectCalls": [],
+        "status": "Voice capability could not be confirmed. Typed chat still works.",
+    }
+    assert out["browserFallbackDecline"] == {
+        "disclosureShown": False,
+        "recognitionInstances": 0,
+        "sessionFetches": 0,
+    }
+    assert out["browserFallbackTurn"] == {
+        "state": "listening",
+        "turns": ["Hello, same universe"],
+        "spoken": ["Exact universe reply."],
+        "recognitionStarts": 1,
+        "recognitionStops": 1,
+        "sessionFetches": 0,
+        "connectCalls": [],
+    }
+    assert out["browserSpeechWatchdog"] == {
+        "state": "error",
+        "turns": ["Hello, same universe", "Stop during speech", "Speech watchdog"],
+        "spoken": [
+            "Exact universe reply.",
+            "Exact universe reply.",
+            "Exact universe reply.",
+        ],
+        "status": "Your browser or device speech service stopped. Typed chat still works.",
+    }
+    assert out["browserSpeechTeardown"] == {
+        "state": "idle",
+        "aborted": 1,
+        "speechCancels": 1,
+    }
+    assert out["browserFallbackStop"] == {
+        "aborted": 1,
+        "speechCancelsOnStop": 1,
+        "state": "idle",
     }
 
 
