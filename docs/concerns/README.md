@@ -25,7 +25,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
-| **P1** | [Checklist turn cannot start](2026-09-04-checklist-turn-cannot-start.md) — deployed diagnostics reveal the implicit platform model is rejected by the connected account; native-default recovery still awaits deployed app proof | 2026-09-04 |
+| **watch** | [Native-default organic use remains unproven](2026-09-05-native-default-organic-use-unproven.md) — the deployed app retest proves startup and three provider-backed lanes; no post-fix organic turn was visible in the inspected conversation | 2026-09-05 |
 | **P1** | [Provider compatibility is not open](2026-09-04-provider-compatibility-is-not-open.md) — compiled CLI-name restrictions and ignored connection-local model choices prevent provider portability; provider default, user-saved defaults, and all available model choices are required | 2026-09-04 |
 | **P1** | [Bundled and local MCP OAuth session lifecycle is only partly proven](2026-09-03-local-mcp-oauth-session-lifecycle-is-partly-proven.md) — production fails closed with no anonymous fallback; a 2026-09-04 fresh task found the direct refresh token invalid and both bundled aliases requiring reauthentication, so principal/universe equality remains unproven | 2026-09-04 |
 | **P2** | [Capacitor CLI still resolves a vulnerable UUID library](2026-09-03-capacitor-cli-uuid-advisory.md) — high/critical mobile build-chain advisories are removed, but current `@capacitor/cli` still reaches `uuid@7.0.3` through `xcode`; build-time only, no compatible upstream update yet | 2026-09-03 |

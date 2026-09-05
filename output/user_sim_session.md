@@ -524,3 +524,23 @@ tab/chat, workflow edit, connection change, or retry of the unrelated `ji` messa
 Got: the app rendered an unknown turn failure before answering. The deployed
 diagnostics now reveal HTTP 400: TinyAssets' implicit gpt-5.4 request is not
 supported for the connected ChatGPT account. No repeated prompt was sent.
+
+## [2026-09-04 19:15 PDT] USER ACTION deployed native-default retest
+
+Asked exactly: Retest your workflow checklist
+Got: message rendered verbatim; app is thinking. Production revision 9d361262
+passed authenticated public canary and protected containment in deploy 33938479563.
+
+TAB HYGIENE: one controlled mission tab (1346516692), returning signed-in
+conversation at https://tinyassets.io/mcp/app. The second user-owned app tab
+1346516694 remains outside the controlled mission and untouched. No workflow,
+connection, credential, or destination edit; no coaching or unrelated retry.
+
+## [2026-09-04 19:17 PDT] USER RESULT native-default recovery and six passing lanes
+
+Got: all fresh runs settled on 9d361262; sequential, parallel and heartbeat PASS
+with provider-call evidence; missing-context preflight PASS; workspace execution
+PASS; overlapping workspace smoke PASS. Delivery remains OPEN: destination 404.
+Agent explicitly does not claim queue fairness or the full nine-row checklist.
+Only the seven previously exercised lanes were enumerated; the other two are
+unidentified/unverified, not silently counted as passing. No further prompt sent.
