@@ -64,7 +64,7 @@ Founder restored the tab and explicitly told this task to proceed. Sent exactly
 app reported an unknown turn failure. One unchanged retry after the provider's
 120-second cooldown failed identically. The bounded server log showed the
 model subprocess exiting before a turn, and double truncation of the provider's
-error hid its terminal cause. See the new checklist-turn concern; no checklist
+error hid its terminal cause. The recovery evidence is recorded below; no checklist
 row has been newly accepted, and no private workflow state was edited.
 
 Next round preserves the head and tail of already-scrubbed provider failure
@@ -91,7 +91,7 @@ Claude diagnosis. Subsequent read-only metadata narrowed one confirmed defect:
 live catalogue HTTP 200 declares `max`, which deployed Codex CLI 0.135.0 cannot
 deserialize. The next generic compatibility round is isolated on
 `codex/provider-catalogue-compat`; no workflow, provider binding, credential, or
-user state is altered. See the checklist-turn concern for evidence and limits.
+user state is altered. See the recovery record below for evidence and limits.
 
 ## Compatibility round verification, 2026-09-04 23:56 UTC
 
