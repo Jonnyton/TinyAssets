@@ -112,3 +112,33 @@ policy-differential observation test, and receipt persistence/readback.
 `python packaging/claude-plugin/build_plugin.py` staged 393 files and passed
 the import probe. Ruff passed on the two canonical runtime and four test files.
 These results do not prove Linux isolation, live deployment, or app acceptance.
+
+## Linux and deploy evidence, 2026-09-08
+
+PR #3442 merged as `0e485ba0add1b852d712b4c5d349e542a4131268` after
+exact-head Claude approval and required CI run 34204412801. The gate reports
+no new failures (the broad suite retains known failures). Its JUnit artifact
+10047675276 contains all four changed files: pool 71/0 skipped, effector 144/2
+skipped, effects-at-node-time 40/0 skipped, run-snapshot 9/0 skipped; zero
+failures/errors in all four. Thus 262 passed and 2 skipped on Linux, not a claim
+that the entire repository suite is green.
+
+Image build 34205838812 succeeded; production deploy 34206123316 succeeded,
+including authenticated public `--assert-handles` canary and protected
+`deployed_sha.py --assert-contains` for the immutable target. Local canary bearer
+is absent; these commands ran in the authorized CI environment holding it.
+Rendered app acceptance is recorded below, separately from these deployment gates.
+
+## Rendered acceptance, 2026-09-08 08:48 UTC
+
+After the protected deploy gate, sent exactly `Retest your workflow checklist`
+through the existing Chrome conversation at `https://tinyassets.io/mcp/app`.
+The app read deploy `0e485ba0add1` and marked contention recovery **PASS**: the
+second workspace run observed two lock conflicts, retried and completed.
+It also passed sequential, parallel, heartbeat, preflight, workspace+code and
+read-only repository access. Busy retry-exhaustion refusal remained OPEN and
+the stale exact webhook destination remained FAIL 404. No private workflow,
+automation, connection or destination was edited by this task. This is live
+test acceptance for the additive evidence capability, not completion of the
+whole checklist. No post-fix organic receipt use is visible yet; retained in
+the workspace-admission concern. Full rendered trace: `output/user_sim_session.md`.
