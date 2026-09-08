@@ -240,7 +240,7 @@ def _bind_founder_identity(capabilities=_READ_CAPABILITIES):
 # the served agent SEE the compute providers it can register/select.
 _PINNED_READ_TARGETS = frozenset({
     "status", "graph", "branches", "branch", "runs", "run",
-    "compute", "connections",
+    "compute", "connections", "automations", "automation",
     # What you have asked your user for and what came back. Read-only and
     # carries no credential material — the answer to a credential ask goes to
     # the vault, never into this read.
@@ -272,12 +272,15 @@ def read_graph(
     target: str = "status",
     branch_id: str = "",
     run_id: str = "",
+    automation_id: str = "",
 ) -> str:
     """Read your OWN universe's status or graph, without changing anything.
 
     Scoped to YOUR universe — you cannot read another one.
 
     Args:
+        automation_id: For ``target="automation"`` only, the identifier returned
+            by ``target="automations"``. Reads remain pinned to your universe.
         run_id: For ``target="run"`` only - the id ``run_graph`` returned. Ignored
             for every other target.
         branch_id: For ``target="branch"`` only - the ``branch_def_id`` of the
@@ -310,8 +313,12 @@ def read_graph(
             owner deposited plus any github pipe, each with its ``connection_id``,
             ``grant_id``, ``destination`` label, and allowed ``host``/``path``, so
             you can build an authenticated_external_call node without asking the
-            owner to paste those ids back; secrets are never included). Any other
-            value is refused.
+            owner to paste those ids back; secrets are never included),
+            ``automations`` (list recurring triggers,
+            their desired state, revision and latest run) and ``automation``
+            (inspect one by automation_id). A paused or retired trigger is not
+            evidence that an already-running job has stopped. Any other target
+            is refused.
     """
     import json
 
@@ -332,6 +339,14 @@ def read_graph(
 
     token = _bind_founder_identity()
     try:
+        if normalized in {"automations", "automation"}:
+            from tinyassets.api.automations import automations
+
+            return _automation_response(automations(
+                action="list" if normalized == "automations" else "get",
+                universe_id=_GRAPH_ID,
+                automation_id=(automation_id or "").strip(),
+            ))
         # graph_id is PINNED, never caller-supplied: the agent cannot address
         # another universe. ``branch`` is the one target that also needs a
         # selector, and the underlying get_branch is author-gated (a private
@@ -913,6 +928,61 @@ def _sanitize_served_patch_changes(changes: object) -> str:
     return json.dumps(changes, separators=(",", ":"))
 
 
+def _write_served_automation(
+    *, operation: str, automation_id: str, expected_revision: int, payload_json: str,
+) -> str:
+    """The existing owner control plane, not a second scheduler or broad proxy."""
+    import json
+
+    from tinyassets.api.automations import automations
+    from tinyassets.auth.middleware import _current_identity
+    from tinyassets.served_tools import SERVED_AUTOMATION_WRITE_OPERATIONS
+
+    op = (operation or "").strip().lower()
+    if op not in SERVED_AUTOMATION_WRITE_OPERATIONS:
+        return json.dumps({
+            "error": "unknown_automation_action",
+            "allowed_operations": sorted(SERVED_AUTOMATION_WRITE_OPERATIONS),
+        })
+    if len((payload_json or "").encode("utf-8")) > _SERVED_MAX_SPEC_BYTES:
+        return json.dumps({"error": "automation payload_json too large"})
+    if op != "create" and (payload_json or "").strip():
+        return json.dumps({
+            "error": (
+                "automation controls use automation_id and expected_revision, not payload_json"
+            ),
+        })
+    if op != "create" and not (automation_id or "").strip():
+        return json.dumps({"error": "automation_id is required"})
+    if op == "create":
+        try:
+            document = json.loads(payload_json or "{}")
+        except (ValueError, RecursionError):
+            return json.dumps({"error": "payload_json must be a JSON object"})
+        if not isinstance(document, dict):
+            return json.dumps({"error": "payload_json must be a JSON object"})
+        ticket, refused = _admission_parts(
+            _engine_run_admit(fail_closed=True, want_ticket=True, kind="engine")
+        )
+        if ticket is None:
+            return _engine_refusal("automation create", refused)
+    else:
+        document = None
+    # Pausing/retiring must remain available when new work cannot be admitted.
+    # Actual ownership, admin ACL and revision CAS are rechecked in the adapter.
+    token = _bind_founder_identity(("write",))
+    try:
+        return _automation_response(automations(
+            action=op,
+            universe_id=_GRAPH_ID,
+            automation_id=(automation_id or "").strip(),
+            expected_revision=expected_revision,
+            payload=document,
+        ))
+    finally:
+        _current_identity.reset(token)
+
+
 @mcp.tool
 def write_graph(
     target: str = "",
@@ -922,10 +992,25 @@ def write_graph(
     payload_json: str = "",
     idempotency_key: str = "",
     branch_id: str = "",
+    automation_id: str = "",
+    expected_revision: int = 0,
 ) -> str:
     """Build or EDIT one of YOUR OWN universe's workflow shapes (branches).
 
     The build half of build+run parity (run it afterward with run_graph).
+
+    **Recurring work:** ``target="automation"`` supports ``operation="create"``,
+    ``operation="pause"``, ``operation="resume"`` and ``operation="delete"``.
+    Create takes ``payload_json`` with name, branch_def_id, optional inputs, and
+    exactly one of interval_seconds or cron_expr. It schedules your own workflow
+    using existing creation checks and the universe's current serving provider.
+    To control an existing trigger, first read ``read_graph target="automation"``
+    (or ``target="automations"``), then pass its automation_id and current
+    expected_revision. Pause stops future triggers; resume reactivates the existing
+    schedule; delete retires it and removes that automation's branch dependency.
+    None cancels an already-running job. Read back the trigger and its last run
+    before claiming work has stopped. These are existing owner-scoped controls;
+    a generic pending-request answer does not grant tools or execute them.
 
     - ``operation="create"`` — create a new Branch graph from a complete Branch
       spec in ``payload_json`` (stored PRIVATE to your universe).
@@ -1315,11 +1400,15 @@ def write_graph(
     branch you authored. Bounded by the same allowlist + rate limit as run_graph.
 
     Args:
-        target: must be ``branch`` (the only served build target).
-        operation: ``create`` or ``patch``.
+        target: ``branch``, ``automation``, or ``pending_request``.
+        operation: branch create/patch/delete; automation create/pause/resume/delete;
+            pending_request ask.
         payload_json: for create, a complete Branch spec (JSON object); for patch, a
             JSON array of edit ops.
         branch_id: for patch, the id of YOUR branch to edit (required for patch).
+        automation_id: for automation pause/resume/delete, the trigger identifier.
+        expected_revision: current automation revision from a fresh read; required
+            for pause/resume/delete to avoid overwriting a concurrent change.
         name / description: optional metadata folded into a create spec.
         idempotency_key: dedupes a retried create; for patch it only labels the
             request (patch is transactional but not replay-deduplicated).
@@ -1339,10 +1428,16 @@ def write_graph(
                 "hardened."
             ),
         })
-    # Served build surface is BRANCH-ONLY on purpose: automations/connections/
-    # publish carry provider-authority, version, and secret paths that stay off
-    # this surface (build a branch here; everything else via the browser flow).
+    # Each target delegates to its own confined adapter, never broad connector
+    # write_graph. Raw connection secrets and person-only request answers stay out.
     t = (target or "").strip().lower()
+    if t == "automation":
+        return _write_served_automation(
+            operation=operation,
+            automation_id=automation_id,
+            expected_revision=expected_revision,
+            payload_json=payload_json,
+        )
     if t == "pending_request":
         # A deliberate, narrow carve-out in the branch-only confinement. ASKING
         # your user for something writes NO credential and grants nothing: it
@@ -1378,9 +1473,9 @@ def write_graph(
         return json.dumps({
             "error": (
                 "write_graph on the served surface builds workflow SHAPES only: "
-                f"target must be 'branch' or 'pending_request' "
+                f"target must be 'branch', 'automation' or 'pending_request' "
                 f"(got '{target or '(empty)'}'). "
-                "Automations, connections, credentials, agents, and goals are "
+                "Connections, credentials, agents, and goals are "
                 "not built here."
             ),
         })
@@ -1586,6 +1681,26 @@ def _untrusted(source: str, payload: str, *, own: object = None) -> str:
         # notice stays true: they are not another party's content.
         envelope["own"] = own
     return json.dumps(envelope, default=str)
+
+
+def _automation_response(result: dict) -> str:
+    """Preserve projected receipts; another owner's stored text stays data."""
+    import json
+
+    row = result.get("automation")
+    if isinstance(row, dict) and row.get("owner", {}).get("is_you") is not True:
+        return _untrusted("automation", json.dumps(result))
+    rows = result.get("automations")
+    if isinstance(rows, list):
+        own = [r for r in rows if r.get("owner", {}).get("is_you") is True]
+        foreign = [r for r in rows if r.get("owner", {}).get("is_you") is not True]
+        if foreign:
+            return _untrusted(
+                "automations",
+                json.dumps({**result, "automations": foreign, "count": len(foreign)}),
+                own={"automations": own, "count": len(own)},
+            )
+    return json.dumps(result)
 
 
 _ROW_AUTHOR_KEYS = ("author", "author_id")

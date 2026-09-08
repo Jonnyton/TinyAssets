@@ -25,6 +25,8 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
+| **note** | [Served tool capability parity gaps](2026-09-08-served-tool-capability-parity-gaps.md) — source audit finds missing stop/trigger/dependency controls and discovery contradictions; secret custody and person-only approval remain deliberate boundaries | 2026-09-08 |
+| **note** | [App cannot manage the automation attached to its heartbeat](2026-09-08-app-cannot-manage-attached-heartbeat-automation.md) — owner approved cleanup, but the app reports no automation controls; the remaining trigger's stopped state is unconfirmed | 2026-09-08 |
 | **watch** | [Native-default organic use remains unproven](2026-09-05-native-default-organic-use-unproven.md) — the deployed app retest proves startup and three provider-backed lanes; no post-fix organic turn was visible in the inspected conversation | 2026-09-05 |
 | **P1** | [Provider compatibility is not open](2026-09-04-provider-compatibility-is-not-open.md) — compiled CLI-name restrictions and ignored connection-local model choices prevent provider portability; provider default, user-saved defaults, and all available model choices are required | 2026-09-04 |
 | **P1** | [Bundled and local MCP OAuth session lifecycle is only partly proven](2026-09-03-local-mcp-oauth-session-lifecycle-is-partly-proven.md) — production fails closed with no anonymous fallback; a 2026-09-04 fresh task found the direct refresh token invalid and both bundled aliases requiring reauthentication, so principal/universe equality remains unproven | 2026-09-04 |
