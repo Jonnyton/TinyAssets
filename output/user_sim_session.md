@@ -774,3 +774,62 @@ handles and the deployed-SHA containment gate for production revision
 merge `3fc83fc15fc3e7d06310848f5b931ed0cf645c76`. The post-merge focused lifecycle
 suite passed `234 passed, 2 skipped`; the new independent-session and native-backend
 cases passed within `62 passed`, and Ruff passed both changed test files.
+
+## [2026-09-08 20:33 UTC] LEAD DIRECTION app-owned workflow repair
+
+Owner clarified that Codex must not edit workflows directly, but should ask the
+app agent to fix its own issues or identify the blocker, as an ordinary user.
+This authorizes natural repair conversation beyond the exact retest string.
+TAB HYGIENE: one controlled app tab 1346517476; unrelated tabs untouched.
+Asked: Can you fix the remaining issues on your workflow checklist? If you can’t, tell me what’s stopping you.
+Got: verified rendered user message at 13:33 PDT; app is thinking. No operator edit.
+
+## [2026-09-08 20:36 UTC] USER NOTE app-built receiver repair request
+
+App's rendered request says it built branch 25e5ef0dca7a for a five-minute
+receiver, synthetic POST, then deletion. Existing connection extension requested,
+no new key; disclosed UUID-wide delivery/deletion is not confined to its receiver.
+Inspected request details only; no Accept/Deny or private operator change.
+
+## [2026-09-08 20:39 UTC] USER ACTION request narrower receiver access
+
+Sent through the normal request reply: Can you limit the access request to the temporary receiver you create? I don’t want this test to have access to other receivers.
+First draft vanished before sending (panel said "Type something to send");
+refill/immediate retry sent exactly once and queued it. One controlled mission tab.
+
+## [2026-09-08 20:43 UTC] USER RESULT app-owned repair and scoped approval
+
+App's 13:41 PDT response: workspace_busy PASS after its corrected three-second
+probe saw eight conflicts; subsequent run succeeded after holder finished.
+13:42 PDT: app replaced its broad webhook ask with creation-only access, then
+exact-receiver delivery/deletion after the returned ID; cannot withdraw old ask.
+Through the ordinary UI, cleared obsolete broad ask and approved creation-only
+POST webhook.site/token, leaving "don't ask again" unchecked. No new key or
+wildcard delivery/deletion grant. App plans a 24-hour-expiry temporary receiver
+to allow approval time. Both clear and approval rendered as user messages.
+Workflow construction/repair remains the app agent's work, not operator edits.
+
+## [2026-09-08 20:46 UTC] USER RESULT exact temporary delivery and cleanup
+
+App created its receiver (HTTP 201); inspected and approved only POST and DELETE
+for that returned exact ID through the user UI, with no wildcard or new secret.
+13:46 PDT response reports delivery HTTP 200 and exact-receiver deletion HTTP 204,
+no other receivers touched. App says this closes its remaining checklist gap.
+The disposable receiver is intentionally gone; repeat live delivery requires a
+new receiver and exact-ID approval, not reusing this deleted URL.
+
+## [2026-09-08 20:48 UTC] USER ACTION final app-owned assessment
+
+Asked: Is your full workflow checklist passing now?
+Got: exact rendered user message at 13:48 PDT; app thinking. One controlled app
+tab, no operator workflow edits. Source/build review is not substituted for this
+rendered acceptance.
+
+## [2026-09-08 20:48 UTC] MISSION SUMMARY
+
+App explicitly confirms full workflow checklist PASS on latest tests. Final
+two rows verified separately from earlier retest; repo check remains read-only.
+The app authored its own repairs, with user-style conversation and exact scoped
+UI approvals. No private operator workflow edits. Receiver deliberately deleted
+after HTTP 200 delivery, cleanup HTTP 204. New follow-ups: request withdrawal
+and polling draft loss, both recorded separately. One mission tab left open.
