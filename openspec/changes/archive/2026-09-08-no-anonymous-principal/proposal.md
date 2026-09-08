@@ -72,8 +72,9 @@ Codex refutation round. Three PRs, each green on its own:
    fallbacks; transport challenge; named dev principal and probes; the spec
    deltas below.
 2. **Hosted connector continuation.** OAuth-only metadata on every canonical
-   tool plus the runtime linking challenge, with direct and bundled connector
-   acceptance in the same fresh task.
+   tool plus the runtime linking challenge, with direct, ChatGPT and Claude
+   acceptance resolving the same account identity. Cached pre-OAuth connector
+   registrations are retired instead of being treated as identity surfaces.
 3. **Sinks and pulse.** Delete the remaining string gates and author defaults,
    protect `/pulse` with the named canary, and make `grep anonymous tinyassets/`
    empty. Each mechanical family is its own commit on this owned branch.
