@@ -560,6 +560,10 @@ def test_evidence_merges_into_a_callers_terminal_output(monkeypatch, tmp_path):
     chain.fired.append((SINK, "PUT"))
     chain.evidence["write"] = {SINK: {"delivered": True, "verb": "PUT",
                                       "response": {"status": 201, "body": "{}"}}}
+    admission = {"attempts": 4, "lock_conflicts": 3, "retry_sleep_seconds": 0.6}
+    chain.evidence["workspace"] = {"workspace": {
+        "error_kind": "workspace_busy", "workspace_admission": admission,
+    }}
     register_effect_chain(chain)
     runs.update_run_status(
         tmp_path, run_id, status=runs.RUN_STATUS_INTERRUPTED, error="paused",
@@ -568,6 +572,9 @@ def test_evidence_merges_into_a_callers_terminal_output(monkeypatch, tmp_path):
     rec = runs.get_run(tmp_path, run_id)
     assert rec["output"]["child_invocation_receipt_gate"]["status"] == "receipt_waiting"
     assert "write" in rec["output"]["external_write_results"]
+    assert rec["output"]["external_write_results"]["workspace"]["workspace"][
+        "workspace_admission"
+    ] == admission
     assert rec["output"]["failed_after_effects"] == ["write"]
 
 

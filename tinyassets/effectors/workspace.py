@@ -39,6 +39,7 @@ from tinyassets.storage.workspace_authority import (
     workspace_consent_destination,
 )
 from tinyassets.workspace_intents import record_push_intent, settle_push_intent
+from tinyassets.workspace_pool import AdmissionObservation
 
 logger = logging.getLogger(__name__)
 
@@ -773,6 +774,7 @@ def _checkout(
     repo: str,
     execute: Any,
     timeout_seconds: float,
+    admission: AdmissionObservation,
 ) -> dict[str, Any]:
     from tinyassets import workspace_pool
     from tinyassets.workspace_git import populate_workspace_from_bundle
@@ -816,6 +818,7 @@ def _checkout(
             pool_root=scratch_pool_root(base_path),
             universe_root=universe_workspace_root(base_path),
             wait_s=wait_s,
+            observation=admission,
             **_universe_quota_kwargs(storage, base_path),
         )
 
@@ -1046,6 +1049,7 @@ def _create(
     universe_id: str,
     chain: Any,
     timeout_seconds: float,
+    admission: AdmissionObservation,
 ) -> dict[str, Any]:
     """An EMPTY workspace, born from nothing but the universe's own storage.
 
@@ -1129,6 +1133,7 @@ def _create(
             pool_root=scratch_pool_root(base_path),
             universe_root=universe_workspace_root(base_path),
             wait_s=wait_s,
+            observation=admission,
             **_universe_quota_kwargs(storage, base_path),
         )
 
@@ -1603,8 +1608,9 @@ def run_workspace_effector(
     the run's active :class:`EffectChain` and ``execute`` spawns the worker.
     """
     del allowed_state_keys
+    admission = AdmissionObservation()
     try:
-        return _run(
+        result = _run(
             node_id=node_id,
             output_keys=output_keys,
             run_state=run_state,
@@ -1615,12 +1621,18 @@ def run_workspace_effector(
             execute=execute,
             prior_effects=prior_effects,
             timeout_seconds=timeout_seconds,
+            admission=admission,
         )
     except _Refused as refused:
-        return {"error": refused.error, "error_kind": refused.kind, **refused.extra}
+        result = {"error": refused.error, "error_kind": refused.kind, **refused.extra}
     except Exception as exc:  # noqa: BLE001 - never raise from the completion path
         logger.exception("workspace effector crashed for node %s", node_id)
-        return {"error": f"effector crashed: {exc}", "error_kind": "effector_crashed"}
+        result = {"error": f"effector crashed: {exc}", "error_kind": "effector_crashed"}
+    # Include observations even when population fails after a contended admission.
+    # No real attempt (early refusal, dry run, historical result) means unknown.
+    if admission.attempts:
+        result["workspace_admission"] = admission.snapshot()
+    return result
 
 
 def _run(
@@ -1633,6 +1645,7 @@ def _run(
     dry_run: bool | None,
     chain: Any,
     execute: Any,
+    admission: AdmissionObservation,
     prior_effects: dict[str, Any] | None = None,
     timeout_seconds: float = 0.0,
 ) -> dict[str, Any]:
@@ -1688,6 +1701,7 @@ def _run(
             universe_id=universe_id,
             chain=chain,
             timeout_seconds=timeout_seconds,
+            admission=admission,
         )
         evidence["matched_output_key"] = matched_key
         return evidence
@@ -1787,6 +1801,7 @@ def _run(
         evidence = _checkout(
             **{k: v for k, v in common.items() if k != "prior_effects"},
             timeout_seconds=timeout_seconds,
+            admission=admission,
         )
     else:
         evidence = _push(**common)
