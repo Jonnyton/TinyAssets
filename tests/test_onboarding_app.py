@@ -634,9 +634,10 @@ def _run_voice_adapter(tmp_path) -> dict:
     functions = "\n".join(
         _js_function(html, name)
         for name in (
-            "voiceNextState",
-            "voiceNormalize",
-            "browserSpeechConstructor",
+                "voiceNextState",
+                "voiceNormalize",
+                "voiceRecognitionKey",
+                "browserSpeechConstructor",
             "browserSpeechAvailable",
             "browserSpeechCapability",
             "voiceDisclosureKey",
@@ -930,10 +931,17 @@ let connectCalls=[]; function showConnect(asGate,guidance){connectCalls.push({as
   Voice.selectBrowserVoice("voice-choice");
   await Voice.acceptDisclosure();await Promise.resolve();
   const recognition=recognitionInstances[recognitionInstances.length-1];
-  const finalResult=[{transcript:"Hello, same universe"}];finalResult.isFinal=true;
+  const commitBrowserSpeech=()=>timers.slice().reverse().find(timer=>timer.ms===900).fn();
+  const finalResult=[{transcript:"Hello,"}];finalResult.isFinal=true;
   recognition.onresult({resultIndex:0,results:[finalResult]});
-  const duplicateResult=[{transcript:"Hello, same universe"}];duplicateResult.isFinal=true;
+  const duplicateResult=[{transcript:"Hello."}];duplicateResult.isFinal=true;
   recognition.onresult({resultIndex:0,results:[duplicateResult]});
+  const continuedResult=[{transcript:"same universe"}];continuedResult.isFinal=true;
+  recognition.onresult({resultIndex:0,results:[continuedResult]});
+  out.browserEndpointingGrace={turnsBeforeCommit:turns.slice(),
+    recognitionStopsBeforeCommit:recognition.stopped,
+    draft:Voice.browserDraftUtterance,status};
+  commitBrowserSpeech();
   await Voice.browserTurn;
   const trailingEcho=[{transcript:"Exact universe reply"}];trailingEcho.isFinal=true;
   const turnsBeforeTrailingEcho=turns.length;
@@ -956,9 +964,16 @@ let connectCalls=[]; function showConnect(asGate,guidance){connectCalls.push({as
   voiceTurnImpl=()=>new Promise(resolve=>{resolveThinking=resolve;});
   const thinkingResult=[{transcript:"Start a queued thought"}];thinkingResult.isFinal=true;
   recognition.onresult({resultIndex:0,results:[thinkingResult]});
+  commitBrowserSpeech();
   timers.slice().reverse().find(timer=>timer.ms===250).fn();
   const queuedResult=[{transcript:"Add this when ready"}];queuedResult.isFinal=true;
   recognition.onresult({resultIndex:0,results:[queuedResult]});
+  const queuedDuplicate=[{transcript:"Add this when ready."}];queuedDuplicate.isFinal=true;
+  recognition.onresult({resultIndex:0,results:[queuedDuplicate]});
+  const queuedContinuation=[{transcript:"and keep it together"}];queuedContinuation.isFinal=true;
+  recognition.onresult({resultIndex:0,results:[queuedContinuation]});
+  out.browserThinkingFragments={pending:Voice.browserPendingUtterance,
+    lastSegment:Voice.browserPendingLastSegment};
   const firstThinkingTurn=Voice.browserTurn;
   voiceTurnImpl=async()=>"Exact universe reply.";
   resolveThinking("Exact universe reply.");await firstThinkingTurn;
@@ -968,6 +983,7 @@ let connectCalls=[]; function showConnect(asGate,guidance){connectCalls.push({as
   window.speechSynthesis.autoEnd=false;
   const speakingResult=[{transcript:"Please explain the next step"}];speakingResult.isFinal=true;
   recognition.onresult({resultIndex:0,results:[speakingResult]});
+  commitBrowserSpeech();
   await Promise.resolve();await Promise.resolve();await Promise.resolve();
   const restartWhileSpeaking=timers.slice().reverse().find(timer=>timer.ms===250);
   restartWhileSpeaking.fn();
@@ -994,6 +1010,7 @@ let connectCalls=[]; function showConnect(asGate,guidance){connectCalls.push({as
   window.speechSynthesis.autoEnd=false;
   const stoppedResult=[{transcript:"Stop during speech"}];stoppedResult.isFinal=true;
   recognition.onresult({resultIndex:0,results:[stoppedResult]});
+  commitBrowserSpeech();
   await Promise.resolve();await Promise.resolve();await Promise.resolve();
   const stoppedTurn=Voice.browserTurn,cancelsBeforeSpeechStop=speechCancels.length;
   Voice.stop(false);await stoppedTurn;
@@ -1003,6 +1020,7 @@ let connectCalls=[]; function showConnect(asGate,guidance){connectCalls.push({as
   const watchdogRecognition=recognitionInstances[recognitionInstances.length-1];
   const stalledResult=[{transcript:"Speech watchdog"}];stalledResult.isFinal=true;
   watchdogRecognition.onresult({resultIndex:0,results:[stalledResult]});
+  commitBrowserSpeech();
   await Promise.resolve();await Promise.resolve();await Promise.resolve();
   const speechWatchdog=timers.slice().reverse().find(timer=>timer.ms>=30000&&timer.ms<=1800000);
   const stalledTurn=Voice.browserTurn;speechWatchdog.fn();await stalledTurn;
@@ -1011,6 +1029,16 @@ let connectCalls=[]; function showConnect(asGate,guidance){connectCalls.push({as
   out.browserFallbackStop={aborted:watchdogRecognition.aborted,
     speechCancelsOnStop:speechCancels.length-cancelsBeforeStop,
     state:Voice.state};
+  await Voice.requestStart();await Promise.resolve();
+  const draftRecognition=recognitionInstances[recognitionInstances.length-1];
+  const unfinishedResult=[{transcript:"This thought is unfinished"}];unfinishedResult.isFinal=true;
+  draftRecognition.onresult({resultIndex:0,results:[unfinishedResult]});
+  const staleDraftCommit=timers.slice().reverse().find(timer=>timer.ms===900);
+  const turnsBeforeDraftStop=turns.length;
+  Voice.stop(false);staleDraftCommit.fn();
+  out.browserDraftTeardown={state:Voice.state,draft:Voice.browserDraftUtterance,
+    commitTimer:Voice.browserCommitTimer,aborted:draftRecognition.aborted,
+    staleCommitSuppressed:turns.length===turnsBeforeDraftStop};
   console.log(JSON.stringify(out));
 })().catch(e=>{console.error(e&&e.stack||e);process.exit(1);});
 """
@@ -1241,6 +1269,12 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
         "recognitionInstances": 0,
         "sessionFetches": 0,
     }
+    assert out["browserEndpointingGrace"] == {
+        "turnsBeforeCommit": [],
+        "recognitionStopsBeforeCommit": 0,
+        "draft": "Hello, same universe",
+        "status": "Listening... finish your thought.",
+    }
     assert out["browserFallbackTurn"] == {
         "state": "listening",
         "turns": ["Hello, same universe"],
@@ -1261,12 +1295,16 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
             ["voice-choice", "Chosen voice · en-GB"],
         ],
     }
+    assert out["browserThinkingFragments"] == {
+        "pending": "Add this when ready and keep it together",
+        "lastSegment": "and keep it together",
+    }
     assert out["browserThinkingQueue"] == {
         "state": "listening",
         "turns": [
             "Hello, same universe",
             "Start a queued thought",
-            "Add this when ready",
+            "Add this when ready and keep it together",
         ],
         "spoken": [
             "Exact universe reply.",
@@ -1281,7 +1319,7 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
         "turns": [
             "Hello, same universe",
             "Start a queued thought",
-            "Add this when ready",
+            "Add this when ready and keep it together",
             "Please explain the next step",
             "Actually stop and answer this instead",
         ],
@@ -1302,7 +1340,7 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
         "turns": [
             "Hello, same universe",
             "Start a queued thought",
-            "Add this when ready",
+            "Add this when ready and keep it together",
             "Please explain the next step",
             "Actually stop and answer this instead",
             "Stop during speech",
@@ -1328,6 +1366,13 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
         "aborted": 1,
         "speechCancelsOnStop": 1,
         "state": "idle",
+    }
+    assert out["browserDraftTeardown"] == {
+        "state": "idle",
+        "draft": "",
+        "commitTimer": None,
+        "aborted": 1,
+        "staleCommitSuppressed": True,
     }
 
 
