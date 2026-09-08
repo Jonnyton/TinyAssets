@@ -394,3 +394,22 @@ results and passes the 90-test concern-index/OpenSpec checks; it has not been
 pushed while the previous head's required checks run. All runtime fixes remain
 deployed. Exact webhook renewal still needs owner action through ordinary
 controls; no private edits, extra app prompts, or false checklist completion.
+
+### Resumed blocked audit — 2026-09-08
+
+After the owner enabled the new-tab route, the 20:19/20:20 live retest, the
+20:25 source/test audit, and the following rendered re-read all retained the
+same exact-destination HTTP 404 blocker. The latest re-read has no newer app
+message. Paused-state readback is real progress, but neither it nor documentary
+CI can renew that external owner destination. The remaining exhausted-lock
+row has no demonstrated runtime defect; do not force it by changing workflows
+or contention policy. No further supported runtime patch or blind retest is
+justified by these two rows. Mark the goal blocked, not complete, pending owner
+renewal/selection of the destination or materially new app failure evidence.
+
+The final rendered receipts and audit are added to evidence PR #3513 as a
+normal documentation follow-up. Its prior required job 34272460513 was still
+running when this update was prepared; an updated head requires new checks.
+This is not a runtime redeployment or proof that any open checklist row passed.
+Broader provider portability and the remaining missing-tool inventory stay
+explicitly unresolved in their existing concern files, not silently completed.
