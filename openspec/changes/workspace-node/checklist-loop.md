@@ -373,3 +373,24 @@ unknown trigger-state readback, not live retirement or all lifecycle writes.
 Other missing capability findings and broad provider/model selection remain
 open. A dead owner destination and an unexercised exhaustion path are not evidence
 that private workflow edits or a speculative runtime patch would be appropriate.
+
+### 20:25 UTC continuation audit
+
+Previous turn is progress: actual rendered automation state narrowed the open
+finding. Current source recheck of `workspace_pool.admit` and the workspace
+effector confirms bounded wait exhaustion preserves `workspace_busy`; an initial
+refusal first gets a stale-holder sweep, then the node's wait budget. Windows
+`python -m pytest -q tests/test_workspace_pool.py tests/test_workspace_effector.py
+-k 'lock_held_by_another_run or admission_receives_the_effect_nodes_wait_budget or
+observation_preserves_the_uninstrumented_wait_policy'` passed 6 tests, with 209
+deselected. This supports routing, held-lock refusal and differential retry
+policy; it is not Linux or rendered live exhaustion proof. No runtime fix is
+justified by the current missing-exhaustion evidence alone.
+
+Evidence PR #3513 remains open; required CI 34272460513 job 102217194171 was
+authoritatively in progress at 20:24:45 UTC, slow tests succeeded. Watching this
+same job, not restarting it. Local follow-up 83e383cf records the new rendered
+results and passes the 90-test concern-index/OpenSpec checks; it has not been
+pushed while the previous head's required checks run. All runtime fixes remain
+deployed. Exact webhook renewal still needs owner action through ordinary
+controls; no private edits, extra app prompts, or false checklist completion.
