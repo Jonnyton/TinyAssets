@@ -544,3 +544,15 @@ PASS; overlapping workspace smoke PASS. Delivery remains OPEN: destination 404.
 Agent explicitly does not claim queue fairness or the full nine-row checklist.
 Only the seven previously exercised lanes were enumerated; the other two are
 unidentified/unverified, not silently counted as passing. No further prompt sent.
+
+## [2026-09-08 12:47 PDT] USER BUG browser Voice is half-duplex and has no voice choice
+
+Read-only returning-user inspection of the existing signed-in conversation at
+`https://tinyassets.io/mcp/app`. The Sep 5 rendered recap preserves the founder's
+post-trial feedback: the universe was not listening while it replied, and the app
+offered no voice selector. No microphone, message, connection, or account action
+was taken during this inspection.
+
+TAB HYGIENE: one controlled mission tab (1346517456), temporarily navigated from
+Google to the existing signed-in app and restored to Google afterward. Other
+user-owned tabs were not claimed, closed, or changed; no prompt was sent.

@@ -49,6 +49,18 @@ The shared TinyAssets app SHALL expose one Voice control beside the message comp
 - **THEN** the app displays the current state and announces it through an accessible live region
 - **AND** the start/stop control remains keyboard operable
 
+#### Scenario: Browser speech offers the device's speaking voices
+- **WHEN** browser/device speech is the selected transport
+- **THEN** the composer exposes an accessible speaking-voice selector populated from the voices the device reports
+- **AND** the selected voice is remembered on that browser while a missing or removed selection falls back to the system voice
+
+#### Scenario: Browser speech keeps listening during spoken output
+- **GIVEN** browser/device speech is reading a canonical universe reply aloud
+- **WHEN** recognition commits a distinct founder utterance that is not a transcription of the active spoken reply
+- **THEN** the app cancels the remaining synthesized speech and submits the interruption once through canonical `converse`
+- **AND** recognition is kept or restarted while the universe is thinking and speaking so the founder does not have to wait for playback to finish
+- **AND** an utterance committed while `converse` is already thinking is held as one next turn rather than silently discarded or submitted concurrently
+
 #### Scenario: Leaving voice stops capture
 - **WHEN** the user stops voice, signs out, hides the app, unloads the page, or the periodic authority check loses readiness
 - **THEN** all local microphone tracks and recognition stop, queued speech synthesis is cancelled, and the client returns to a non-capturing state
