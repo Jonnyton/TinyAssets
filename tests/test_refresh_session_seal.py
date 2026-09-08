@@ -250,6 +250,19 @@ def test_logout_kills_the_successor_too(monkeypatch, tmp_path):
     assert _records() == []
 
 
+def test_logout_revokes_only_that_independent_session_chain():
+    """One device signing out must not silently sign out another device."""
+    first = session_store.mint("RT-device-one")
+    first_successor = session_store.rotate(first, "RT-device-one-rotated")
+    second = session_store.mint("RT-device-two")
+
+    session_store.drop(first)
+
+    assert session_store.read(first) == ("", "")
+    assert session_store.read(first_successor) == ("", "")
+    assert session_store.read(second) == ("RT-device-two", second)
+
+
 def test_authkit_returning_no_new_token_reuses_the_current_handle_without_writing(
     monkeypatch, tmp_path
 ):

@@ -87,6 +87,29 @@ def test_positive_priority_plaintext_backend_fails_closed() -> None:
         store.set("account", "secret")
 
 
+@pytest.mark.parametrize(
+    ("backend_module", "backend_name"),
+    [
+        ("keyring.backends.Windows", "WinVaultKeyring"),
+        ("keyring.backends.macOS", "Keyring"),
+        ("keyring.backends.SecretService", "Keyring"),
+    ],
+)
+def test_each_supported_platform_native_backend_is_accepted(
+    backend_module: str, backend_name: str
+) -> None:
+    credentials = _credentials_module()
+    keyring = FakeKeyring(
+        backend_module=backend_module,
+        backend_name=backend_name,
+    )
+    store = credentials.NativeCredentialStore(keyring_module=keyring)
+
+    store.set("account", "secret")
+
+    assert store.get("account") == "secret"
+
+
 def test_native_backend_operational_failure_is_fail_closed() -> None:
     credentials = _credentials_module()
     store = credentials.NativeCredentialStore(
