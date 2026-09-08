@@ -60,6 +60,14 @@ The shared TinyAssets app SHALL expose one Voice control beside the message comp
 - **THEN** the app cancels the remaining synthesized speech and submits the interruption once through canonical `converse`
 - **AND** recognition is kept or restarted while the universe is thinking and speaking so the founder does not have to wait for playback to finish
 - **AND** an utterance committed while `converse` is already thinking is held as one next turn rather than silently discarded or submitted concurrently
+- **AND** distinct finalized fragments heard during that thinking window are combined in their original order while an immediately repeated fragment is ignored
+
+#### Scenario: Browser speech tolerates a brief pause within one thought
+- **GIVEN** browser/device recognition finalizes speech fragments before the founder has finished the thought
+- **WHEN** another distinct fragment arrives within the local endpointing grace period
+- **THEN** the app keeps recognition active and joins the fragments in their original order
+- **AND** submits the combined utterance once only after the grace period expires
+- **AND** ignores an immediately repeated final fragment, even when only recognition punctuation differs, rather than duplicating words
 
 #### Scenario: Leaving voice stops capture
 - **WHEN** the user stops voice, signs out, hides the app, unloads the page, or the periodic authority check loses readiness

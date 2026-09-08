@@ -2,8 +2,8 @@
 
 **Filed:** 2026-09-05
 **Verified:** Rendered production app conversation inspected 2026-09-05 03:40 UTC
-through `cua.getTab("1346516692", {browser:"2"})`; messages dated September 4,
-20:27–20:35 PDT. Read-only inspection; no new message or runtime change.
+and speaking-voice selector inspected read-only on 2026-09-08 after deploy
+`3fa0b164a1d8`; no message, microphone, or account action was taken.
 **Severity:** P2
 
 ## Source (verbatim)
@@ -24,8 +24,15 @@ Founder explicitly confirmed hearing the app; multiple transcribed turns receive
 relevant replies. Ordinary post-fix conversation is now observed, resolving the
 previous organic-use freshness watch. This does not prove clean voice usability.
 
-Three reported gaps remain: premature turn ending, inability to interrupt/add
-speech during thinking or replies, and absent or undiscoverable voice selection.
-The app's suggestion that pauses trigger endpointing is a hypothesis, not a
-diagnosis. No audio recording or implementation inspection was performed here.
-Investigate reusable app voice capabilities, not private workflow repairs.
+The visible voice selector and listening-through-thinking/replies behavior shipped
+in `3fa0b164a1d8`; the selector is confirmed in the rendered production app. The
+endpointing follow-up now buffers finalized browser-recognition fragments for a
+900 ms grace period, combines fragments heard while thinking, suppresses repeated
+fragments even when only punctuation differs, and clears pending speech on stop.
+The 92-test onboarding suite and three-round Claude review cover those state
+transitions.
+
+One evidence gap remains: no organic microphone retest has yet confirmed that the
+900 ms pause grace feels correct on the founder's browser/device. Keep this concern
+open only for that live usability proof; implementation inspection and automated
+state tests are complete.

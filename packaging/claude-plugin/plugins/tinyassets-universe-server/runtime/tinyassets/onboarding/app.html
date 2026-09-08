@@ -1181,6 +1181,9 @@
     return row[event]||state;
   }
   function voiceNormalize(text){ return String(text||"").trim().replace(/\s+/g," "); }
+  function voiceRecognitionKey(text){
+    return voiceNormalize(text).toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu," ").trim();
+  }
   function browserSpeechConstructor(){
     return window.SpeechRecognition||window.webkitSpeechRecognition||null;
   }
@@ -1235,9 +1238,12 @@
   }
   const Voice={
     state:"unavailable", pc:null, dc:null, stream:null, audio:null,
-    recognition:null, utterance:null, browserRestartTimer:null, browserTurn:null,
+    recognition:null, utterance:null, browserRestartTimer:null, browserCommitTimer:null,
+    browserTurn:null,
     browserSpeechTimer:null, browserSpeechFinish:null, browserSubmitting:false,
     browserRecognizing:false, browserTurnSerial:0, browserPendingUtterance:"",
+    browserPendingLastSegment:"",
+    browserDraftUtterance:"", browserDraftLastSegment:"",
     browserActiveUtterance:"", browserEchoText:"", browserEchoUntil:0,
     browserVoiceSignature:"",
     capability:null,
@@ -1494,20 +1500,25 @@
           if(result&&result.isFinal!==false&&result[0])transcript+=String(result[0].transcript||"");
         }
         transcript=transcript.trim();if(!transcript)return;
-        const heard=voiceNormalize(transcript).toLocaleLowerCase()
-          .replace(/[^\p{L}\p{N}]+/gu," ").trim();
+        const heard=voiceRecognitionKey(transcript);
         const echoActive=this.state==="speaking"||Date.now()<this.browserEchoUntil;
         if(echoActive&&heard.length>=12&&this.browserEchoText.includes(heard))return;
         if(this.browserSubmitting&&this.state==="thinking"){
-          if(voiceNormalize(transcript).toLocaleLowerCase()===this.browserActiveUtterance)return;
-          this.browserPendingUtterance=transcript;
+          const pendingSegment=voiceNormalize(transcript).trim();
+          const pendingKey=voiceRecognitionKey(pendingSegment);
+          if(!pendingSegment||pendingKey===this.browserActiveUtterance||
+              pendingKey===this.browserPendingLastSegment)return;
+          this.browserPendingLastSegment=pendingKey;
+          this.browserPendingUtterance=[this.browserPendingUtterance,pendingSegment]
+            .filter(Boolean).join(" ");
           this._render("Your universe is thinking — I’ll take that next.");return;
         }
         if(this.browserSubmitting&&this.state!=="speaking")return;
         if(this.state==="speaking"){
           if(!this._interruptBrowserSpeech())return;
+          this._submitBrowserUtterance(transcript,generation);return;
         }
-        this._submitBrowserUtterance(transcript,generation);
+        this._queueBrowserUtterance(transcript,generation);
       };
       recognition.onerror=event=>{
         if(generation!==this.epoch||this.recognition!==recognition)return;
@@ -1525,10 +1536,30 @@
       try{recognition.start();}catch(_error){throw new Error("browser_speech_failed");}
       this._armSessionLimit(Number(CFG.voice&&CFG.voice.max_session_seconds)||1800);
     },
+    _queueBrowserUtterance(transcript,generation){
+      if(generation!==this.epoch||this.browserSubmitting||this.state!=="listening")return;
+      const segment=voiceNormalize(transcript).trim();if(!segment)return;
+      const segmentKey=voiceRecognitionKey(segment);
+      if(segmentKey===this.browserDraftLastSegment)return;
+      this.browserDraftLastSegment=segmentKey;
+      this.browserDraftUtterance=[this.browserDraftUtterance,segment]
+        .filter(Boolean).join(" ");
+      clearTimeout(this.browserCommitTimer);
+      this.browserCommitTimer=setTimeout(()=>{
+        this.browserCommitTimer=null;
+        if(generation!==this.epoch||this.browserSubmitting||this.state!=="listening")return;
+        const message=this.browserDraftUtterance;
+        this.browserDraftUtterance="";this.browserDraftLastSegment="";
+        if(message)this._submitBrowserUtterance(message,generation);
+      },900);
+      this._render("Listening... finish your thought.");
+    },
     _submitBrowserUtterance(transcript,generation){
         if(generation!==this.epoch||this.browserSubmitting)return false;
-        this.browserPendingUtterance="";
-        this.browserActiveUtterance=voiceNormalize(transcript).toLocaleLowerCase();
+        clearTimeout(this.browserCommitTimer);this.browserCommitTimer=null;
+        this.browserDraftUtterance="";this.browserDraftLastSegment="";
+        this.browserPendingUtterance="";this.browserPendingLastSegment="";
+        this.browserActiveUtterance=voiceRecognitionKey(transcript);
         this.browserSubmitting=true;
         const turnSerial=++this.browserTurnSerial;
         try{if(this.recognition)this.recognition.stop();}catch(_e){}
@@ -1546,6 +1577,7 @@
         if(generation===this.epoch&&turnSerial===this.browserTurnSerial){
           this.browserSubmitting=false;
           const pending=this.browserPendingUtterance;this.browserPendingUtterance="";
+          this.browserPendingLastSegment="";
           this.browserActiveUtterance="";
           if(pending&&this.state==="listening")this._submitBrowserUtterance(pending,generation);
         }
@@ -1556,8 +1588,7 @@
       const finish=this.browserSpeechFinish;
       const interrupted=this.utterance&&this.utterance.text;
       this.browserSpeechFinish=null;this.utterance=null;
-      this.browserEchoText=voiceNormalize(interrupted).toLocaleLowerCase()
-        .replace(/[^\p{L}\p{N}]+/gu," ").trim();
+      this.browserEchoText=voiceRecognitionKey(interrupted);
       this.browserEchoUntil=Date.now()+1500;
       clearTimeout(this.browserSpeechTimer);this.browserSpeechTimer=null;
       try{window.speechSynthesis.cancel();}catch(_e){}
@@ -1593,8 +1624,7 @@
           this.browserSpeechTimer=setTimeout(expireSpeech,speechMs);
         };
         const utterance=new window.SpeechSynthesisUtterance(reply);this.utterance=utterance;
-        this.browserEchoText=voiceNormalize(reply).toLocaleLowerCase()
-          .replace(/[^\p{L}\p{N}]+/gu," ").trim();
+        this.browserEchoText=voiceRecognitionKey(reply);
         this.browserEchoUntil=0;
         const selectedVoice=this._browserVoice();
         if(selectedVoice){utterance.voice=selectedVoice;utterance.lang=selectedVoice.lang||
@@ -1805,14 +1835,18 @@
     },
     _teardownTransport(){
       clearTimeout(this.stopTimer);clearTimeout(this.warnTimer);clearTimeout(this.browserRestartTimer);
+      clearTimeout(this.browserCommitTimer);
       const finishSpeech=this.browserSpeechFinish;
       if(finishSpeech)finishSpeech();else clearTimeout(this.browserSpeechTimer);
       clearInterval(this.authorityTimer);
       this.stopTimer=null;this.warnTimer=null;this.browserRestartTimer=null;
+      this.browserCommitTimer=null;
       this.browserSpeechTimer=null;this.browserSpeechFinish=null;this.authorityTimer=null;
       const recognition=this.recognition;this.recognition=null;
       this.browserRecognizing=false;this.browserTurnSerial++;
-      this.browserPendingUtterance="";this.browserActiveUtterance="";
+      this.browserPendingUtterance="";this.browserPendingLastSegment="";
+      this.browserActiveUtterance="";
+      this.browserDraftUtterance="";this.browserDraftLastSegment="";
       this.browserEchoText="";this.browserEchoUntil=0;
       if(recognition){try{recognition.abort();}catch(_e){}}
       if(window.speechSynthesis){try{window.speechSynthesis.cancel();}catch(_e){}}
