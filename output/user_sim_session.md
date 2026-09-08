@@ -619,3 +619,41 @@ TAB HYGIENE: one visible mission tab 1346517456 at tinyassets.io/mcp/app;
 supported driver refuses selection because another Codex browser session owns it.
 Owner asked to release it; unrelated tabs and private state left untouched.
 Not rendered acceptance, first-contact proof, or post-fix organic-use evidence.
+
+## [2026-09-08 20:08 UTC] USER NOTE browser handoff coordination
+
+The holding task is Voice. It confirmed its read-only inspection finished,
+restored the claimed tab to Google and reset its REPL without sending a message
+or changing private state. Both getTab and the documented user.claimTab still
+refused ownership. Browser documentation says unmarked claimed tabs release at
+turn cleanup; that detail was sent back to Voice. No alternative existing app
+tab is visible. Await actual release, then navigate the same tab back to the app
+and verify the existing conversation before the exact prompt. No retest sent.
+
+## [2026-09-08 20:19 UTC] USER ACTION new-tab permission and live retest
+
+Owner explicitly authorized opening a new tab to talk to the app at any time.
+Opened Chrome tab 1346517476 at https://tinyassets.io/mcp/app, verified the same
+saved returning-user conversation through the 01:48 PDT checklist, filled and
+sent exactly: Retest your workflow checklist
+Rendered sent message is timestamped 13:19 PDT; app status says it is thinking.
+Production automation controls were verified deployed as 4a1877f0044a above.
+TAB HYGIENE: one new mission tab marked for handoff; Voice's claimed Google tab
+and all unrelated user tabs untouched. No coaching, approval replay, private
+workflow/automation edit, credential or destination replacement. No fresh-account
+or cross-client acceptance claim. The old tab-ownership blocker is bypassed only
+by the owner's newly authorized ordinary new-tab route, not a forced claim.
+
+## [2026-09-08 20:21 UTC] USER RESULT automation paused-state readback proved
+
+Rendered response timestamp 13:20 PDT reports deploy 4a1877f0044a. Sequential,
+parallel, deliberate Codex-pinned heartbeat, missing-topic preflight,
+workspace/code (generations 32/33), contention recovery (two conflicts then
+successful retry), and repository read-only GET 200 all PASS. Final exhausted
+workspace_busy refusal OPEN; exact configured webhook FAIL HTTP 404.
+App additionally says: "I also confirmed my heartbeat automation is **paused**,
+and its last scheduled run finished with failure. It remains attached, but future
+automatic triggers are paused."
+This is rendered inspection and stopped-future-trigger readback, not proof it
+mutated the trigger during this turn, retired it, or cancelled an active job.
+No additional prompt or private operator write; no organic post-fix-use claim.

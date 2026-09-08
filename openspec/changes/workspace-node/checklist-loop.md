@@ -355,3 +355,21 @@ the tab's ownership, or substitute direct MCP calls for the requested rendered
 test. Next action after access returns: send exactly
 `Retest your workflow checklist`, then read the final response. Goal remains
 active and incomplete; all acceptance rows retain their last qualified states.
+
+## 2026-09-08 20:21 UTC — new-tab permission and automation readback
+
+Owner explicitly permits opening new tabs at any time. Opened Chrome tab
+1346517476 at the existing app URL, verified the same saved conversation, and
+sent exactly `Retest your workflow checklist` at 20:19 UTC. No fresh conversation,
+coaching, private edit, forced tab claim or replay of prior approvals.
+
+Rendered response timestamp 13:20 PDT reports deploy `4a1877f0044a`: sequential,
+parallel, deliberate pinned heartbeat, preflight, workspace/code (generations
+32/33), contention recovery (two conflicts then successful retry), and repository
+read-only GET 200 PASS. Exhausted-wait refusal remains OPEN; exact webhook FAIL
+404. Additionally the app now confirms its automation is paused, future triggers
+are paused, and the last scheduled run failed. It remains attached. This closes
+unknown trigger-state readback, not live retirement or all lifecycle writes.
+Other missing capability findings and broad provider/model selection remain
+open. A dead owner destination and an unexercised exhaustion path are not evidence
+that private workflow edits or a speculative runtime patch would be appropriate.

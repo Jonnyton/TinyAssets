@@ -803,8 +803,8 @@ owner's private workflow/connection without owner authority. This row is complet
 when the rendered app reports one fresh successful delivery to the renewed exact
 destination.
 
-Reverified by rendered app retest at 2026-09-08 08:48 UTC on deploy
-`0e485ba0add1`: the exact delivery still reports destination HTTP 404.
+Reverified by rendered app retest timestamped 2026-09-08 13:20 PDT (20:20 UTC),
+read at 20:21 UTC, on deploy `4a1877f0044a`: exact delivery still reports HTTP 404.
 Seven other rows pass (repository access is read-only); the agent keeps final
 busy-refusal proof open while contention recovery passes. No workflow, connection or destination
 was edited by the platform agent. The founder was asked to restore/choose the

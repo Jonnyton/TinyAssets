@@ -54,7 +54,13 @@ served wrapper now exposes existing owner-scoped list/get/create/pause/resume/
 delete controls, preserving ACL and revisions. This supersedes the code-level
 missing-route finding above, not the unverified private trigger state.
 
-The app tab is held by another Codex browser session, so the exact checklist
-prompt has not yet been sent on this deploy. Retain this concern until rendered
-acceptance can verify the app can inspect/control its own automation. Do not
-automatically replay the earlier approval or edit the private row ourselves.
+At 20:19 UTC the owner-authorized new-tab route opened the same saved app
+conversation, resolving the previous tab-ownership blocker. Sent exactly
+`Retest your workflow checklist`. Its 13:20 PDT response confirms deploy
+`4a1877f0044a` and says the automation is paused, its last scheduled run failed,
+and future triggers are paused. It remains attached. The previous unknown
+stopped-state finding is resolved by rendered readback; do not claim this turn
+performed a pause, retirement, or cancellation. Live lifecycle mutations remain
+unexercised (reviewed real-adapter tests cover the deployed route). Retain this
+qualified follow-up until those controls are independently exercised; do not
+replay the earlier approval or edit the private row ourselves.

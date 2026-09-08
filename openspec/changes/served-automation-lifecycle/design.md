@@ -147,10 +147,14 @@ authenticated public `--assert-handles` canary and protected revision containmen
 at 19:58:53 UTC its receipt reports production `4a1877f0044a`, containing the full
 merged SHA above. Commands ran in authorized CI; no local bearer was printed.
 
-The current app tab is visible in Chrome, but `cua.getTab("1346517456",
-{browser:"2"})` refuses access because another Codex browser session owns it.
-The owner has been asked to release that tab. No checklist message was sent on
-this deployment, no new chat was opened, and no private workflow/automation was
-changed. Rendered control acceptance and post-fix organic use remain unproven.
-The shipped delta is synced into the main user-owned-automations spec; keep this
-change in flight until the exact uncoached app retest and qualified readback.
+The initial existing-tab ownership blocker was resolved by the owner's explicit
+permission to open a new tab. At 20:19 UTC Chrome tab 1346517476 opened the same
+saved app conversation and received only `Retest your workflow checklist`.
+Its rendered 13:20 PDT response confirms deploy `4a1877f0044a`, seven checklist
+passes, exhausted-wait refusal OPEN and exact webhook FAIL 404. It independently
+confirms the heartbeat automation is paused and the last scheduled run failed;
+the automation remains attached. Future-trigger readback is now proven, not
+retirement, a fresh pause mutation or in-flight cancellation. Lifecycle write
+evidence remains the reviewed real-adapter tests, not this live retest. No private
+workflow/automation was edited by Codex, and no organic post-fix use is claimed.
+The shipped delta is synced into the main user-owned-automations spec.
