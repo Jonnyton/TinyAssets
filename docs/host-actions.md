@@ -581,13 +581,13 @@ What remains after the secrets, and who does it (`docs/ops/google-play-launch.md
 | Build the signed AAB | **done** 2026-09-03 — built and signed in the container (`mobile/container/`), no secret needed |
 | Internal-testing release: upload the AAB, roll out | **done** 2026-09-03 11:10 — release `1 (1.0)`, track Active, 3.1 MB |
 | Corrected internal release `2 (1.0.1)` | **done** 2026-09-03 21:42 PT — merged source `bf432f1b2dbe`; signed AAB accepted; Play shows Active and Available to internal testers. |
-| Verify the loop on a real phone (install from the internal-test link, sign in, chat) | **you — this is the live one.** Opt-in on the founder's Google account: https://play.google.com/apps/internaltest/4701716760893982267 |
+| Verify the loop on a real phone (install from the internal-test link, sign in, chat) | **partially done 2026-09-08** — Google Play installed `3 (1.0.2)` on Samsung S24+ / Android 16 and Android reported `com.android.vending` as installer. WorkOS sign-in succeeded. The corrected debug build proved the provider notification/cancel path. Install Play-signed `4 (1.0.3)` and send one review-safe message to finish the row. |
 | Sign in details | **done** 2026-09-03 — Actioned with the dedicated reviewer; not sent for review |
 | Target audience | **done** 2026-09-03 — 18 and over, Actioned; not sent for review |
 | Advertising ID declaration | **done 2026-09-03** — saved No after shipped-artifact, exact-candidate merged-manifest, and dependency verification; actioned but not sent for review |
-| Foreground-service declaration + behavior video | **you** — exact gate below |
+| Foreground-service declaration + behavior video | **recording complete; your submission authorization remains** — the 27.11-second 1080×2340 privacy-redacted candidate has SHA-256 `7b49b48d21ca3a1f57acdce23ed8c5ac0f58b63aab57ea3d4cb5696ed61391f2`. It shows **Connect OpenAI** entering its pending state and `TinyAssets — Finishing your sign-in…` appearing immediately. It has not been published or submitted. |
 | Replace the unsafe uploaded conversation screenshot with staged `01-sign-in.png` | **done 2026-09-03** — live draft saved and both retained filenames verified; not sent for review |
-| Closed test: 12 testers for 14 days, then apply for production access | **you** |
+| Closed test: 12 testers for 14 days, then apply for production access | **you** — Play reported 0 opted-in testers on 2026-09-08. The Alpha draft is configured for all 177 countries/regions and the one-member `Founder devices` list, but still needs corrected bundle `4 (1.0.3)`, the foreground-service declaration, submission, and at least 11 more real testers before the 14-day clock can start. |
 | Promote to Production → submit for review → **Roll out** | you (final click) |
 
 ### Google Play: review and submit the foreground-service declaration
@@ -595,15 +595,17 @@ What remains after the secrets, and who does it (`docs/ops/google-play-launch.md
 The Android bundle declares a `dataSync` foreground service because **Connect
 OpenAI** starts a short-lived local callback listener while subscription OAuth is
 open in the external browser. For apps targeting Android 14+, Play requires a
-foreground-service declaration with the use case, interruption/defer impact, and a
-demonstration video. This is a Console attestation, so the final truth check and
-submission are yours.
+foreground-service declaration. The live form observed 2026-09-08 asks for **Data
+sync → Network processing → Other** and one public video link. This is a Console
+attestation, so the final truth check and submission are yours.
 
 After installing the next candidate from Play:
 
-1. Record one short phone video: tap **Connect OpenAI**, show the persistent
-   notification while the browser is open, return to TinyAssets, then show the
-   notification disappearing. Redact all account identifiers and secrets.
+1. Review the prepared real-phone video. It shows **Connect OpenAI** entering its
+   pending state and the foreground notification appearing immediately; unrelated
+   notifications are masked. Android service state and the return-to-app screenshot
+   separately confirm that cancellation stops the service. If Play requests a longer
+   continuous demonstration, retake it before submitting.
 2. In Play Console, open **App content → Foreground service permissions** and use
    the staged wording and video shot list in
    `docs/ops/android-release-verification.md`.

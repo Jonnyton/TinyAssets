@@ -101,9 +101,10 @@ repeats annually.
 ## 1b. Version and release gates — generated defaults are not a release strategy
 
 `mobile/android-release.json` is the checked-in Android release source of truth. It
-records the next candidate: package `io.tinyassets.app`, version code `3`, version
-name `1.0.2`, min SDK 24, target/compile SDK 36. The existing internal-track artifact
-is code `2`, name `1.0.1`; promoting that exact artifact between tracks needs no rebuild.
+records the next candidate: package `io.tinyassets.app`, version code `4`, version
+name `1.0.3`, min SDK 24, target/compile SDK 36. Play has already consumed code `3`,
+name `1.0.2`; the Alpha draft references that artifact and must be replaced with code
+4 before the immediate-notification fix can reach testers.
 
 Before uploading any new AAB, increase `versionCode`; Play never accepts a code it has
 seen before, even on a test track. A `mobile-v<versionName>` tag must match the file's
@@ -374,10 +375,11 @@ that is expected, not a mis-click.
 ## 8a. Foreground-service declaration — required before production review
 
 The app targets Android 14+ and declares a `dataSync` foreground service for the
-short-lived, user-initiated local OAuth callback listener. Google's current rule
-requires every foreground-service type to be declared in Play Console with a feature
-description, defer/interruption impact, and demonstration video. The earlier claim
-that this type needed no Play declaration was false.
+short-lived, user-initiated local OAuth callback listener. The live Play form observed
+2026-09-08 exposes **Data sync → Network processing → Other** and one required
+**Video link** field; it does not currently expose separate feature-description or
+defer/interruption fields. The earlier claim that this type needed no Play declaration
+was false.
 
 The exact staged copy and video shot list are in
 [`android-release-verification.md`](android-release-verification.md). They are prepared
@@ -533,19 +535,26 @@ Open, with what each actually waits on:
       **Active** and **Available to internal testers**. Its non-blocking warnings were
       21 devices losing support (~0%; 7 phones, 11 tablets, 3 TVs) and no
       deobfuscation file.
-- [ ] **You: open the opt-in link, accept, install, and try the loop** — sign in,
-      connect a provider, send a message. This is the first real-user test and it is
-      the only thing that can find what a compile cannot.
+- [ ] **Finish the Play-signed phone smoke on `4 (1.0.3)`** — Play install and WorkOS
+      sign-in were verified on Samsung S24+ / Android 16 on 2026-09-08. The corrected
+      debug candidate also proved immediate foreground-notification display and clean
+      cancellation. Install code 4 from Play when available, connect a review-safe
+      provider, and send one ordinary message to finish the loop.
 - [x] Dedicated `play-review@tinyassets.io` WorkOS password reviewer; two clean isolated
       sign-ins; Sign in details saved and Actioned; no founder data or provider attached
 - [x] Target audience saved as **18 and over**; Data safety corrected and Actioned
-- [ ] Foreground-service declaration (§8a): confirm the Console row, record the
-      user-initiated OAuth callback video, select **Data sync → Network processing →
-      Other**, add the public redacted video link, then save. No verified video exists yet.
+- [ ] Foreground-service declaration (§8a): the privacy-redacted real-phone video is
+      prepared and frame-reviewed locally (27.11 seconds, 1080×2340, SHA-256
+      `7b49b48d21ca3a1f57acdce23ed8c5ac0f58b63aab57ea3d4cb5696ed61391f2`). Publish it,
+      select **Data sync → Network processing → Other**, add the public link, and save
+      only after founder review. Nothing has been uploaded or submitted yet.
 - [ ] Founder: the four `ANDROID_UPLOAD_*` secrets. Not on the critical path any more —
       the container build below needs none of them — but they turn every future release
       into one `gh workflow run` instead of a manual build.
-- [ ] Closed testing: 12 testers for 14 days, then apply for production access.
+- [ ] Closed testing: replace the Alpha draft's code 3 bundle with corrected code 4,
+      finish the foreground-service declaration, submit the release, add at least 11
+      more real Google-account testers, and maintain 12 continuous opt-ins for 14 days.
+      Play reported 0 opted-in testers on 2026-09-08.
 - [ ] Independent cross-family review of the later voice-native slice. The original
       release review does not cover it; the prepared request and exact retry path are
       in `docs/audits/2026-09-03-android-store-release-claude-review.md`.
