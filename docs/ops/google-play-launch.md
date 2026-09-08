@@ -525,6 +525,9 @@ Done:
       `bf432f1b2dbe`; Play parsed API 24+, target SDK 36. SHA-256:
       `135F006AA5072EF09EABE511800B12EF0ADDBBBDB0753859401F6C566B69EF1E`.
       Published to the existing private internal tester list at 21:42 PT.
+- [x] All four `ANDROID_UPLOAD_*` GitHub secret names present; authenticated
+      repository state rechecked 2026-09-08. The signed release workflow is no longer
+      waiting on keystore setup.
 - [x] Unsafe conversation screenshot removed from the live listing; clean
       `01-sign-in.png` uploaded and saved alongside `02-connect-subscription.png`.
       Both attached filenames were re-opened and verified after the draft save.
@@ -548,9 +551,6 @@ Open, with what each actually waits on:
       `7b49b48d21ca3a1f57acdce23ed8c5ac0f58b63aab57ea3d4cb5696ed61391f2`). Publish it,
       select **Data sync → Network processing → Other**, add the public link, and save
       only after founder review. Nothing has been uploaded or submitted yet.
-- [ ] Founder: the four `ANDROID_UPLOAD_*` secrets. Not on the critical path any more —
-      the container build below needs none of them — but they turn every future release
-      into one `gh workflow run` instead of a manual build.
 - [ ] Closed testing: replace the Alpha draft's code 3 bundle with corrected code 4,
       finish the foreground-service declaration, submit the release, add at least 11
       more real Google-account testers, and maintain 12 continuous opt-ins for 14 days.

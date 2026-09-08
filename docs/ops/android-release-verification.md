@@ -34,7 +34,12 @@ monitoring, and rollback shape.
   user-initiated Connect state and immediate notification. Every decoded frame was
   reviewed after masking the unrelated notification row. It is not uploaded.
 - Play has consumed code 3, so `mobile/android-release.json` reserves corrected
-  candidate `4 (1.0.3)`. The signed AAB, Play upload, and code-4 phone smoke remain.
+  candidate `4 (1.0.3)`. GitHub Actions run `34276126068` at integrated head
+  `ce00f1274a1252bdb0b910d1ec2d5909b01d28d1` passed clean platform generation,
+  release identity/SDK/manifest/artwork verification, and the debug APK build. The
+  downloaded APK is 4,816,457 bytes with SHA-256
+  `90dde05a5745f7952e3099236ebffef131f17eea7586e7d72598837f6fa768b2`. The signed AAB,
+  Play upload, and code-4 phone smoke remain.
 
 Advertising-ID evidence was re-run on the Windows host on 2026-09-03. Downloading the
 baseline from GitHub Actions run `33797592515` reproduced SHA-256

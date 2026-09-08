@@ -534,7 +534,10 @@ ClassInd L).
 access, not internal testing. The shortest path to the app being installable from Play by a
 real person is the upload keystore below, not this section.
 
-### Google Play: add the four upload-keystore secrets (one command)
+### Google Play: upload-keystore secrets — DONE 2026-09-04
+
+Authenticated repository state rechecked 2026-09-08: all four
+`ANDROID_UPLOAD_*` secret names are present. Values remain unreadable by design.
 
 The Play developer account exists (identity verified 2026-08-24) and the upload keystore was
 generated 2026-09-01 into `~/.tinyassets/android/` on your machine. The release workflow
