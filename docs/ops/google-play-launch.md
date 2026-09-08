@@ -102,9 +102,10 @@ repeats annually.
 ## 1b. Version and release gates — generated defaults are not a release strategy
 
 `mobile/android-release.json` is the checked-in Android release source of truth. It
-records the next candidate: package `io.tinyassets.app`, version code `3`, version
-name `1.0.2`, min SDK 24, target/compile SDK 36. The existing internal-track artifact
-is code `2`, name `1.0.1`; promoting that exact artifact between tracks needs no rebuild.
+records the next candidate: package `io.tinyassets.app`, version code `4`, version
+name `1.0.3`, min SDK 24, target/compile SDK 36. Play has already consumed code `3`,
+name `1.0.2`; the Alpha draft currently references that artifact and must be replaced
+with code 4 before the immediate-notification fix can reach testers.
 
 Before uploading any new AAB, increase `versionCode`; Play never accepts a code it has
 seen before, even on a test track. A `mobile-v<versionName>` tag must match the file's
@@ -376,18 +377,21 @@ that is expected, not a mis-click.
 
 The app targets Android 14+ and declares a `dataSync` foreground service for the
 short-lived, user-initiated local OAuth callback listener. Google's current rule
-requires every foreground-service type to be declared in Play Console with a feature
-description, defer/interruption impact, and demonstration video. The earlier claim
-that this type needed no Play declaration was false.
+requires the foreground-service type to be declared in Play Console. The live form
+observed 2026-09-08 exposes **Data sync → Network processing → Other** and one required
+**Video link** field; it does not currently expose separate feature-description or
+defer/interruption text fields. The earlier claim that this type needed no Play
+declaration was false.
 
-The exact staged copy and video shot list are in
+The exact behavior rationale and video shot list are in
 [`android-release-verification.md`](android-release-verification.md). They are prepared
-evidence, not a submitted legal/policy declaration. The founder must review the facts
-and authorize the Console submission.
+evidence for validating and narrating the recording, not text that should be forced
+into fields the current form does not offer. The founder must review the facts and
+authorize the Console submission.
 
 Use this approval packet only after the internal-phone recording matches it:
 
-| Play prompt | Draft answer / evidence |
+| Evidence point | Verified behavior / recording narration |
 |---|---|
 | Foreground-service type | `dataSync` |
 | Feature using it | User-initiated **Connect OpenAI** subscription sign-in. TinyAssets temporarily runs a local loopback callback listener while the external browser completes OAuth; a persistent notification keeps the operation visible. |
@@ -521,6 +525,16 @@ Done:
 - [x] **targetSdk 36** via Capacitor 8 (§1a) — Play rejects anything less for a new app
 - [x] Internal-testing tester list "Founder devices"
 - [x] **Signed AAB built and uploaded** — see "How to build one" below
+- [x] Closed-testing Alpha track prepared 2026-09-08 with library bundle `3 (1.0.2)`,
+      all 177 Play countries/regions, the `Founder devices` email list, and
+      `ops@tinyassets.io` as the feedback channel. Play reports 3 of 4 setup tasks
+      complete; the draft is not submitted or active.
+- [x] Real-phone Play install verified 2026-09-08 on Samsung S24+ / Android 16;
+      Android reports `com.android.vending` as installer for version `3 (1.0.2)`.
+- [x] Foreground-service visibility defect fixed in commit `4e8435bf`, exercised on
+      the same phone, and captured in a privacy-redacted 27.11-second video. The
+      upload candidate is prepared locally but has not been published or submitted.
+- [x] Next corrected candidate reserved as version `4 (1.0.3)`.
 - [x] Unsafe conversation screenshot removed from the live listing; clean
       `01-sign-in.png` uploaded and saved alongside `02-connect-subscription.png`.
       Both attached filenames were re-opened and verified after the draft save.
@@ -539,11 +553,40 @@ Open, with what each actually waits on:
 - [ ] Founder: the four `ANDROID_UPLOAD_*` secrets. Not on the critical path any more —
       the container build below needs none of them — but they turn every future release
       into one `gh workflow run` instead of a manual build.
-- [ ] Closed testing: 12 testers for 14 days, then apply for production access.
+- [ ] Closed testing: build and upload corrected release `4 (1.0.3)`, replace the
+      Alpha draft's `3 (1.0.2)` bundle, finish the foreground-service declaration,
+      submit the release, add 11 more real Google-account testers to the existing one-member
+      list, and reach 12 continuous opt-ins for 14 days; then apply for production
+      access. Play still reported 0 opted-in testers on 2026-09-08.
 - [ ] Independent cross-family review of the later voice-native slice. The original
       release review does not cover it; the prepared request and exact retry path are
       in `docs/audits/2026-09-03-android-store-release-claude-review.md`.
 - [ ] Production roll out (§11) — your final click.
+
+### Closed-test recruitment packet
+
+Recruit **15** people so one or two dropouts do not push the cohort below Google's
+minimum of 12. Prefer a private Google Group over committing or circulating an email
+list. Every tester must use the same Google account for the invitation, Play opt-in,
+and Android install, and must remain opted in continuously for 14 full days. The join
+link will become usable after the Alpha release is approved and active:
+`https://play.google.com/apps/testing/io.tinyassets.app`.
+
+Source checked 2026-09-08: [Google Play's personal-account testing requirements](https://support.google.com/googleplay/android-developer/answer/14151465).
+
+Ready-to-send invitation (send only after the release is active):
+
+> Help test TinyAssets for its Google Play launch. Open the private test link with the
+> Google account you use on your Android phone, choose **Become a tester**, then install
+> TinyAssets from Google Play. Please remain opted in for at least 14 continuous days.
+> During the test, sign in, open Connect, try a normal conversation, and confirm that
+> notifications appear and clear normally. Send bugs or usability feedback to
+> `ops@tinyassets.io`. Please do not enter sensitive personal information while testing.
+
+Keep a private cohort ledger outside the public repository with opt-in timestamps,
+device/Android versions, flows attempted, feedback summaries, and any resulting fixes.
+The production-access application must describe what testers actually did, the feedback
+they actually gave, and what changed; do not pre-fill those answers before the test.
 
 ### How to build a signed AAB with no GitHub secrets
 

@@ -18,6 +18,20 @@ monitoring, and rollback shape.
 | Local signed build | The container path produced the Play-uploaded bundle earlier on 2026-09-03. A fresh re-run in this worktree stopped during `npm ci` with Docker `ENOSPC`, before Android generation; that is a host storage failure, not a passing build | Re-run after Docker storage is recovered |
 | Device behavior | No dated phone install/sign-in/conversation result is recorded | Open; founder action |
 
+## Evidence refresh — 2026-09-08, Play Console + GitHub Actions
+
+| Claim | Evidence | State |
+|---|---|---|
+| Public APK fallback | GitHub Actions run `33915727718` at merged head `d8a48fb2ceda596b5208f21172659074544e5614` configured and verified `io.tinyassets.app` as version `3 (1.0.2)`, SDK 24/36/36, then published `app-debug.apk` to the non-draft `android-latest` release. GitHub reports the 4,816,441-byte asset digest as `sha256:fc71fb15182c8f7d3a81953382d71f8c345260906a3e6ff4f4b3aac258d41621`; the canonical release URL still resolves to the APK asset. | Verified 2026-09-08; direct pre-release download works independently of Play |
+| Closed-testing track | Authenticated Play Console shows the Alpha draft using bundle `3 (1.0.2)`, targeting all 177 Play countries/regions, with `Founder devices` selected and `ops@tinyassets.io` as feedback. Setup is 3 of 4 complete. Preview reports one blocking error: the unsaved `FOREGROUND_SERVICE_DATA_SYNC` declaration requires a demonstration-video link. | Prepared, not submitted or active |
+| App content declarations | Authenticated Play Console shows exactly one item under **Need attention**: Foreground service permissions. Ten declarations are under **Actioned**: Data safety, Target audience and content, Sign in details, Advertising ID, Content ratings, Ads, Health apps, Financial features, Government apps, and Privacy policy. | No second declaration blocker found 2026-09-08 |
+| Production access | Authenticated dashboard reports 0 opted-in closed testers and disables **Apply for production** until at least 12 testers have remained continuously opted in for 14 days. | Open external gate |
+| Pre-launch report | Authenticated Play Console shows no generated report for the internal release and asks for an artifact on the closed-testing track. Its settings correctly defer to the reviewer credentials already supplied under App content. The report should start automatically after the Alpha bundle can be submitted. | Awaiting closed-track submission |
+| Play install on real hardware | Google Play installed `io.tinyassets.app` version `3 (1.0.2)` on a Samsung S24+ running Android 16; Android reported installer package `com.android.vending`. The app launched and authenticated. | Verified 2026-09-08 |
+| Immediate foreground notification | The Play build exposed a real defect: Android registered the foreground-service notification but deferred its visible presentation long enough for fast sign-in to finish. Commit `4e8435bf` sets `Notification.FOREGROUND_SERVICE_IMMEDIATE` on Android 12+, and CI run `34272468350` produced a corrected debug APK. The corrected artifact (SHA-256 `d6d795b62a3304aa73a5455b5342005c141789603deae5d0cd7111ea025ea2f9`) showed `TinyAssets — Finishing your sign-in…` during the pending flow on the same phone; cancellation then stopped `LocalCallbackService` and returned focus to the app. | Fixed and device-verified 2026-09-08; needs Play-signed candidate |
+| Foreground-service video | The upload candidate is a 27.11-second 1080×2340 H.264 recording (104 frames; SHA-256 `7b49b48d21ca3a1f57acdce23ed8c5ac0f58b63aab57ea3d4cb5696ed61391f2`). It shows the Connect action entering its pending state and the immediate TinyAssets notification. Every decoded frame was reviewed after masking the unrelated notification row. | Prepared locally; not uploaded or submitted |
+| Next Play candidate | `mobile/android-release.json` now reserves version `4 (1.0.3)` because Play has already consumed version code 3. | Awaiting signed AAB build and upload |
+
 Advertising-ID evidence was re-run on the Windows host on 2026-09-03. Downloading the
 baseline from GitHub Actions run `33797592515` reproduced SHA-256
 `5baadde6f09c0afcfcc34a0ccdc76613d3744280d7865abe05c6012bc548689e`; Android
@@ -113,9 +127,11 @@ as the workflow artifact.
   must fail the release verifier and force the saved answer to be reconsidered. The
   current change is actioned but has not been sent for review.
 - Foreground service: because the bundle declares a `dataSync` foreground service
-  and targets Android 14+, Google requires a Play Console declaration with a
-  description, interruption/defer impact, and demonstration video. Use this staged
-  evidence, then have the founder review before submission:
+  and targets Android 14+, Google requires a Play Console declaration. The live
+  2026-09-08 form asks for the task category and a demonstration-video link; it does
+  not currently expose separate description or interruption/defer fields. Use the
+  staged rationale below to validate and narrate the recording, then have the founder
+  review before submission:
 
   - Function: When a user explicitly starts OpenAI subscription sign-in, TinyAssets
     temporarily runs a local loopback callback listener while the external browser
