@@ -705,6 +705,18 @@ exact webhook FAIL 404. Automatic heartbeat trigger still not confirmed stopped.
 No extra prompt or private edit. Nine rows are now explicitly enumerated by the
 app, separating recovery from exhausted-wait refusal; full goal remains open.
 
+## [2026-09-08 12:47 PDT] USER BUG browser Voice is half-duplex and has no voice choice
+
+Read-only returning-user inspection of the existing signed-in conversation at
+`https://tinyassets.io/mcp/app`. The Sep 5 rendered recap preserves the founder's
+post-trial feedback: the universe was not listening while it replied, and the app
+offered no voice selector. No microphone, message, connection, or account action
+was taken during this inspection.
+
+TAB HYGIENE: one controlled mission tab (1346517456), temporarily navigated from
+Google to the existing signed-in app and restored to Google afterward. Other
+user-owned tabs were not claimed, closed, or changed; no prompt was sent.
+
 ## [2026-09-08 19:59 UTC] USER NOTE automation deploy, browser ownership blocker
 
 Production 4a1877f0044a passed build 34271720339 and deploy 34271996544,

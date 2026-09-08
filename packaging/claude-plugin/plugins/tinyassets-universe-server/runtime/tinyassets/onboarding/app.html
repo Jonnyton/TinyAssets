@@ -148,6 +148,17 @@
     .field>span{display:block;font-size:.82rem;color:var(--ink-dim);margin-bottom:.35rem}
     textarea,select,input[type=text]{width:100%;background:var(--surface-2);color:var(--ink);border:1px solid var(--line);
       border-radius:10px;padding:.6rem .7rem;font:inherit;resize:vertical}
+    .composer .voice-output-select{align-self:flex-end;width:auto;max-width:9rem;min-width:6.5rem;
+      padding:.55rem .55rem;resize:none}
+    .composer .voice-output-select[hidden]{display:none}
+    @media(max-width:520px){
+      .composer{display:grid;grid-template-columns:auto auto minmax(0,1fr) auto}
+      .composer .voice-output-select{grid-column:1/-1;grid-row:1;width:100%;max-width:none;min-width:0}
+      .composer .btn--attach{grid-column:1;grid-row:2}
+      .composer .btn--voice{grid-column:2;grid-row:2}
+      .composer .composer-input{grid-column:3;grid-row:2;min-width:0}
+      .composer .btn--send{grid-column:4;grid-row:2}
+    }
     .result{background:#0b0c17;border:1px solid var(--line);border-radius:10px;padding:.8rem;
       overflow-x:auto;font-size:.8rem;white-space:pre-wrap}
     .dev-note{color:var(--ink-dim);font-size:.8rem}
@@ -209,6 +220,10 @@
                 title="Attach a file" aria-label="Attach a file">📎</button>
         <button id="btn-voice" class="btn btn--voice" type="button"
                 aria-pressed="false" aria-label="Start voice conversation">Voice</button>
+        <select id="voice-output-select" class="voice-output-select"
+                aria-label="Speaking voice" title="Choose the voice that reads replies" hidden>
+          <option value="">System voice</option>
+        </select>
         <textarea id="composer-input" class="composer-input" rows="1"
                   placeholder="Message your universe" autocomplete="off"></textarea>
         <button id="btn-send" class="btn btn--primary btn--send" type="submit">Send</button>
@@ -1222,6 +1237,9 @@
     state:"unavailable", pc:null, dc:null, stream:null, audio:null,
     recognition:null, utterance:null, browserRestartTimer:null, browserTurn:null,
     browserSpeechTimer:null, browserSpeechFinish:null, browserSubmitting:false,
+    browserRecognizing:false, browserTurnSerial:0, browserPendingUtterance:"",
+    browserActiveUtterance:"", browserEchoText:"", browserEchoUntil:0,
+    browserVoiceSignature:"",
     capability:null,
     stopTimer:null, warnTimer:null, authorityTimer:null,
     disclosureOpen:false, acceptingDisclosure:false,
@@ -1237,6 +1255,7 @@
     },
     _render(detail){
       const btn=$("btn-voice"), active=!(["unavailable","checking","unpowered","incompatible","idle","error"].includes(this.state));
+      const browserMode=!!(this.capability&&this.capability.mode==="browser");
       const canRemediate=this.state==="unpowered"&&
         this.capability&&this.capability.remediation==="existing_connection_surface";
       if(this.state==="unpowered"||this.state==="incompatible"){
@@ -1248,7 +1267,51 @@
       btn.setAttribute("aria-pressed",active?"true":"false");
       btn.setAttribute("aria-label",canRemediate?"Open provider connection for Voice":(active?"Stop voice conversation":"Start voice conversation"));
       btn.textContent=canRemediate?"Voice · Connect":(active?"Stop":"Voice");
+      $("voice-output-select").hidden=!browserMode;
+      if(browserMode)this.refreshBrowserVoices();
       setStatusLine(detail||VOICE_LABELS[this.state]||"");
+    },
+    refreshBrowserVoices(force=false){
+      const select=$("voice-output-select");
+      let voices=[];
+      try{voices=Array.from(window.speechSynthesis.getVoices()||[]);}catch(_e){}
+      const locale=String(navigator.language||document.documentElement.lang||"").toLowerCase();
+      voices=voices.filter(voice=>voice&&voice.voiceURI).sort((left,right)=>{
+        const leftLocale=String(left.lang||"").toLowerCase()===locale?0:1;
+        const rightLocale=String(right.lang||"").toLowerCase()===locale?0:1;
+        return leftLocale-rightLocale||Number(!left.default)-Number(!right.default)||
+          String(left.name||left.voiceURI).localeCompare(String(right.name||right.voiceURI));
+      });
+      let saved="";
+      try{saved=localStorage.getItem("ta_voice_output_voice_v1")||"";}catch(_e){}
+      const current=select.value||saved;
+      const signature=voices.map(voice=>[voice.voiceURI,voice.name,voice.lang,!!voice.default].join("\u0001")).join("\u0002");
+      if(!force&&signature===this.browserVoiceSignature&&select.children.length){
+        select.value=voices.some(voice=>voice.voiceURI===current)?current:"";
+        select.disabled=voices.length===0;return;
+      }
+      this.browserVoiceSignature=signature;
+      select.textContent="";
+      const automatic=document.createElement("option");automatic.value="";
+      automatic.textContent="System voice";select.appendChild(automatic);
+      voices.forEach(voice=>{
+        const option=document.createElement("option");option.value=voice.voiceURI;
+        option.textContent=String(voice.name||voice.voiceURI)+(voice.lang?" · "+voice.lang:"");
+        select.appendChild(option);
+      });
+      select.value=voices.some(voice=>voice.voiceURI===current)?current:"";
+      select.disabled=voices.length===0;
+    },
+    selectBrowserVoice(voiceUri){
+      const uri=String(voiceUri||"");
+      $("voice-output-select").value=uri;
+      try{localStorage.setItem("ta_voice_output_voice_v1",uri);}catch(_e){}
+    },
+    _browserVoice(){
+      const uri=$("voice-output-select").value;
+      if(!uri)return null;
+      try{return Array.from(window.speechSynthesis.getVoices()||[])
+        .find(voice=>voice&&voice.voiceURI===uri)||null;}catch(_e){return null;}
     },
     _event(event,detail){ this.state=voiceNextState(this.state,event); this._render(detail); },
     _accepted(){ try{const key=voiceDisclosureKey(this.capability);return !!key&&localStorage.getItem(key)==="accepted";}catch(_e){return false;} },
@@ -1414,23 +1477,37 @@
       if(typeof Constructor!=="function"||!browserSpeechAvailable())
         throw new Error("browser_speech_unsupported");
       const recognition=new Constructor();this.recognition=recognition;
-      recognition.continuous=false;recognition.interimResults=false;recognition.maxAlternatives=1;
+      recognition.continuous=true;recognition.interimResults=false;recognition.maxAlternatives=1;
       recognition.lang=(navigator.language||document.documentElement.lang||"en-US");
       recognition.onstart=()=>{
         if(generation!==this.epoch||this.recognition!==recognition)return;
-        this.state="listening";this._render();
+        this.browserRecognizing=true;
+        if(this.state!=="thinking"&&this.state!=="speaking"){
+          this.state="listening";this._render();
+        }
       };
       recognition.onresult=event=>{
-        if(generation!==this.epoch||this.recognition!==recognition||this.browserSubmitting)return;
+        if(generation!==this.epoch||this.recognition!==recognition)return;
         let transcript="";
         for(let i=event.resultIndex||0;i<(event.results||[]).length;i++){
           const result=event.results[i];
           if(result&&result.isFinal!==false&&result[0])transcript+=String(result[0].transcript||"");
         }
         transcript=transcript.trim();if(!transcript)return;
-        this.browserSubmitting=true;
-        try{recognition.stop();}catch(_e){}
-        this.browserTurn=this._handleBrowserUtterance(transcript,generation);
+        const heard=voiceNormalize(transcript).toLocaleLowerCase()
+          .replace(/[^\p{L}\p{N}]+/gu," ").trim();
+        const echoActive=this.state==="speaking"||Date.now()<this.browserEchoUntil;
+        if(echoActive&&heard.length>=12&&this.browserEchoText.includes(heard))return;
+        if(this.browserSubmitting&&this.state==="thinking"){
+          if(voiceNormalize(transcript).toLocaleLowerCase()===this.browserActiveUtterance)return;
+          this.browserPendingUtterance=transcript;
+          this._render("Your universe is thinking — I’ll take that next.");return;
+        }
+        if(this.browserSubmitting&&this.state!=="speaking")return;
+        if(this.state==="speaking"){
+          if(!this._interruptBrowserSpeech())return;
+        }
+        this._submitBrowserUtterance(transcript,generation);
       };
       recognition.onerror=event=>{
         if(generation!==this.epoch||this.recognition!==recognition)return;
@@ -1440,21 +1517,53 @@
           ?"voice_permission_denied":"browser_speech_failed"));
       };
       recognition.onend=()=>{
-        if(generation!==this.epoch||this.recognition!==recognition||
-          this.browserSubmitting||this.state==="thinking"||this.state==="speaking")return;
-        this.state="listening";this._render();this._restartBrowser(generation);
+        if(generation!==this.epoch||this.recognition!==recognition)return;
+        this.browserRecognizing=false;
+        if(!["listening","thinking","speaking"].includes(this.state))return;
+        this._restartBrowser(generation);
       };
       try{recognition.start();}catch(_error){throw new Error("browser_speech_failed");}
       this._armSessionLimit(Number(CFG.voice&&CFG.voice.max_session_seconds)||1800);
     },
-    async _handleBrowserUtterance(message,generation){
+    _submitBrowserUtterance(transcript,generation){
+        if(generation!==this.epoch||this.browserSubmitting)return false;
+        this.browserPendingUtterance="";
+        this.browserActiveUtterance=voiceNormalize(transcript).toLocaleLowerCase();
+        this.browserSubmitting=true;
+        const turnSerial=++this.browserTurnSerial;
+        try{if(this.recognition)this.recognition.stop();}catch(_e){}
+        this.browserTurn=this._handleBrowserUtterance(transcript,generation,turnSerial);
+        return true;
+    },
+    async _handleBrowserUtterance(message,generation,turnSerial){
       this.state="thinking";this._render();
       try{
         const reply=await sendVoiceTurn(message);
         if(generation!==this.epoch)return;
         await this._speakBrowser(reply,generation);
       }catch(error){if(generation===this.epoch)this.fail(error);}
-      finally{if(generation===this.epoch)this.browserSubmitting=false;}
+      finally{
+        if(generation===this.epoch&&turnSerial===this.browserTurnSerial){
+          this.browserSubmitting=false;
+          const pending=this.browserPendingUtterance;this.browserPendingUtterance="";
+          this.browserActiveUtterance="";
+          if(pending&&this.state==="listening")this._submitBrowserUtterance(pending,generation);
+        }
+      }
+    },
+    _interruptBrowserSpeech(){
+      if(!this.utterance&&!this.browserSpeechFinish)return false;
+      const finish=this.browserSpeechFinish;
+      const interrupted=this.utterance&&this.utterance.text;
+      this.browserSpeechFinish=null;this.utterance=null;
+      this.browserEchoText=voiceNormalize(interrupted).toLocaleLowerCase()
+        .replace(/[^\p{L}\p{N}]+/gu," ").trim();
+      this.browserEchoUntil=Date.now()+1500;
+      clearTimeout(this.browserSpeechTimer);this.browserSpeechTimer=null;
+      try{window.speechSynthesis.cancel();}catch(_e){}
+      if(finish)finish();
+      this.browserSubmitting=false;this.state="listening";
+      this._render("Listening — reply interrupted.");return true;
     },
     _speakBrowser(reply,generation){
       if(!browserSpeechAvailable())return Promise.reject(new Error("browser_speech_unsupported"));
@@ -1484,7 +1593,13 @@
           this.browserSpeechTimer=setTimeout(expireSpeech,speechMs);
         };
         const utterance=new window.SpeechSynthesisUtterance(reply);this.utterance=utterance;
-        utterance.lang=(navigator.language||document.documentElement.lang||"en-US");
+        this.browserEchoText=voiceNormalize(reply).toLocaleLowerCase()
+          .replace(/[^\p{L}\p{N}]+/gu," ").trim();
+        this.browserEchoUntil=0;
+        const selectedVoice=this._browserVoice();
+        if(selectedVoice){utterance.voice=selectedVoice;utterance.lang=selectedVoice.lang||
+          (navigator.language||document.documentElement.lang||"en-US");}
+        else utterance.lang=(navigator.language||document.documentElement.lang||"en-US");
         utterance.onstart=()=>{if(!settled)armSpeechWatchdog(0);};
         utterance.onboundary=event=>{if(!settled)armSpeechWatchdog(event&&event.charIndex);};
         utterance.onpause=()=>{if(!settled){clearTimeout(this.browserSpeechTimer);
@@ -1493,7 +1608,8 @@
         utterance.onend=()=>{
           if(settled)return;
           if(generation===this.epoch&&this.utterance===utterance){
-            this.utterance=null;this.browserSubmitting=false;this.state="listening";
+            this.utterance=null;this.browserSubmitting=false;
+            this.browserEchoUntil=Date.now()+1500;this.state="listening";
             this._render();this._restartBrowser(generation);
           }
           finish();
@@ -1501,7 +1617,8 @@
         utterance.onerror=()=>{if(settled)return;
           if(this.utterance===utterance)this.utterance=null;
           finish(new Error("browser_speech_failed"));};
-        this.state="speaking";this._render();
+        this.state="speaking";
+        this._render("Speaking — still listening. Say something to interrupt.");
         armSpeechWatchdog(0);
         window.speechSynthesis.cancel();window.speechSynthesis.speak(utterance);
       });
@@ -1509,7 +1626,8 @@
     _restartBrowser(generation){
       clearTimeout(this.browserRestartTimer);
       this.browserRestartTimer=setTimeout(()=>{
-        if(generation!==this.epoch||!this.recognition||this.state!=="listening")return;
+        if(generation!==this.epoch||!this.recognition||this.browserRecognizing||
+          !["listening","thinking","speaking"].includes(this.state))return;
         try{this.recognition.start();}catch(_error){this.fail(new Error("browser_speech_failed"));}
       },250);
     },
@@ -1693,6 +1811,9 @@
       this.stopTimer=null;this.warnTimer=null;this.browserRestartTimer=null;
       this.browserSpeechTimer=null;this.browserSpeechFinish=null;this.authorityTimer=null;
       const recognition=this.recognition;this.recognition=null;
+      this.browserRecognizing=false;this.browserTurnSerial++;
+      this.browserPendingUtterance="";this.browserActiveUtterance="";
+      this.browserEchoText="";this.browserEchoUntil=0;
       if(recognition){try{recognition.abort();}catch(_e){}}
       if(window.speechSynthesis){try{window.speechSynthesis.cancel();}catch(_e){}}
       this.utterance=null;this.browserTurn=null;this.browserSubmitting=false;
@@ -2533,6 +2654,10 @@
   function wire(){
     Voice.init();
     $("btn-voice").addEventListener("click",()=>Voice.requestStart());
+    $("voice-output-select").addEventListener("change",event=>
+      Voice.selectBrowserVoice(event.target.value));
+    if(window.speechSynthesis&&typeof window.speechSynthesis.addEventListener==="function")
+      window.speechSynthesis.addEventListener("voiceschanged",()=>Voice.refreshBrowserVoices(true));
     $("btn-voice-accept").addEventListener("click",()=>Voice.acceptDisclosure());
     $("btn-voice-cancel").addEventListener("click",()=>Voice.cancelDisclosure());
     $("voice-disclosure").addEventListener("keydown",event=>{

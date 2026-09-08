@@ -651,12 +651,17 @@ const timers=[]; function setTimeout(fn,ms){const timer={fn,ms};timers.push(time
 const intervals=[];
 function setInterval(fn,ms){const timer={fn,ms};intervals.push(timer);return timer;}
 function clearTimeout(){} function clearInterval(){}
-class El{constructor(){this.hidden=true;this.disabled=false;this.textContent="";this.attrs={};}
+class El{constructor(){this.hidden=true;this.disabled=false;this._textContent="";this.attrs={};
+this.children=[];this.value="";}
+set textContent(value){this._textContent=String(value);if(value==="")this.children=[];}
+get textContent(){return this._textContent;}
+appendChild(child){this.children.push(child);return child;}
 setAttribute(k,v){this.attrs[k]=v;} removeAttribute(k){delete this.attrs[k];}
 focus(){this.focused=true;} pause(){this.paused=true;}}
 const els={"btn-voice":new El(),"voice-disclosure":new El(),"btn-voice-accept":new El(),
   "voice-service-name":new El(),"voice-privacy-link":new El(),
-  "voice-disclosure-browser":new El(),"voice-disclosure-bridge":new El()};
+  "voice-disclosure-browser":new El(),"voice-disclosure-bridge":new El(),
+  "voice-output-select":new El()};
 const $=id=>els[id]; let status=""; function setStatusLine(v){status=v||"";}
 const document={createElement:()=>new El(),documentElement:{lang:"en-US"}};
 const window={};
@@ -872,7 +877,7 @@ let connectCalls=[]; function showConnect(asGate,guidance){connectCalls.push({as
     livePcClosed:livePc.closed,liveTrackStopped:liveStream.track.stopped};
   sessionResolvers[1]({answer_sdp:"v=0\\r\\n",max_session_seconds:1800});
   await secondConnect;out.connectRace.finalState=Voice.state;
-  const recognitionInstances=[],spoken=[],speechCancels=[];
+  const recognitionInstances=[],spoken=[],spokenVoices=[],utterances=[],speechCancels=[];
   class FakeSpeechRecognition{
     constructor(){this.started=0;this.stopped=0;this.aborted=0;recognitionInstances.push(this);}
     start(){this.started++;if(this.onstart)this.onstart();}
@@ -881,10 +886,17 @@ let connectCalls=[]; function showConnect(asGate,guidance){connectCalls.push({as
   }
   window.webkitSpeechRecognition=FakeSpeechRecognition;
   window.SpeechSynthesisUtterance=class{constructor(text){this.text=text;}};
+  const browserVoices=[
+    {voiceURI:"voice-default",name:"Default voice",lang:"en-US",default:true},
+    {voiceURI:"voice-choice",name:"Chosen voice",lang:"en-GB",default:false}
+  ];
   window.speechSynthesis={
     autoEnd:true,
+    getVoices(){return browserVoices;},
     cancel(){speechCancels.push("cancel");},
     speak(utterance){spoken.push(utterance.text);
+      utterances.push(utterance);
+      spokenVoices.push(utterance.voice&&utterance.voice.voiceURI||"");
       if(this.autoEnd)queueMicrotask(()=>utterance.onend());}
   };
   navigator.language="en-US";
@@ -915,18 +927,69 @@ let connectCalls=[]; function showConnect(asGate,guidance){connectCalls.push({as
     sessionFetches:fetched.slice(fetchesBeforeBrowser).filter(url=>url==="/mcp/app/voice/session").length
   };
   await Voice.requestStart();
+  Voice.selectBrowserVoice("voice-choice");
   await Voice.acceptDisclosure();await Promise.resolve();
   const recognition=recognitionInstances[recognitionInstances.length-1];
   const finalResult=[{transcript:"Hello, same universe"}];finalResult.isFinal=true;
   recognition.onresult({resultIndex:0,results:[finalResult]});
-  const duplicateResult=[{transcript:"Duplicate"}];duplicateResult.isFinal=true;
+  const duplicateResult=[{transcript:"Hello, same universe"}];duplicateResult.isFinal=true;
   recognition.onresult({resultIndex:0,results:[duplicateResult]});
   await Voice.browserTurn;
+  const trailingEcho=[{transcript:"Exact universe reply"}];trailingEcho.isFinal=true;
+  const turnsBeforeTrailingEcho=turns.length;
+  recognition.onresult({resultIndex:0,results:[trailingEcho]});
   out.browserFallbackTurn={
     state:Voice.state,turns:turns.slice(),spoken:spoken.slice(),
+    spokenVoices:spokenVoices.slice(),
+    trailingEchoSuppressed:turns.length===turnsBeforeTrailingEcho,
     recognitionStarts:recognition.started,recognitionStops:recognition.stopped,
     sessionFetches:fetched.slice(fetchesBeforeBrowser).filter(url=>url==="/mcp/app/voice/session").length,
     connectCalls:connectCalls.slice()
+  };
+  out.browserVoiceChoice={
+    hidden:els["voice-output-select"].hidden,
+    selected:els["voice-output-select"].value,
+    options:els["voice-output-select"].children.map(option=>[option.value,option.textContent])
+  };
+  timers.slice().reverse().find(timer=>timer.ms===250).fn();
+  let resolveThinking;
+  voiceTurnImpl=()=>new Promise(resolve=>{resolveThinking=resolve;});
+  const thinkingResult=[{transcript:"Start a queued thought"}];thinkingResult.isFinal=true;
+  recognition.onresult({resultIndex:0,results:[thinkingResult]});
+  timers.slice().reverse().find(timer=>timer.ms===250).fn();
+  const queuedResult=[{transcript:"Add this when ready"}];queuedResult.isFinal=true;
+  recognition.onresult({resultIndex:0,results:[queuedResult]});
+  const firstThinkingTurn=Voice.browserTurn;
+  voiceTurnImpl=async()=>"Exact universe reply.";
+  resolveThinking("Exact universe reply.");await firstThinkingTurn;
+  await Promise.resolve();await Voice.browserTurn;
+  out.browserThinkingQueue={state:Voice.state,turns:turns.slice(),spoken:spoken.slice()};
+  timers.slice().reverse().find(timer=>timer.ms===250).fn();
+  window.speechSynthesis.autoEnd=false;
+  const speakingResult=[{transcript:"Please explain the next step"}];speakingResult.isFinal=true;
+  recognition.onresult({resultIndex:0,results:[speakingResult]});
+  await Promise.resolve();await Promise.resolve();await Promise.resolve();
+  const restartWhileSpeaking=timers.slice().reverse().find(timer=>timer.ms===250);
+  restartWhileSpeaking.fn();
+  const turnsBeforeEcho=turns.length;
+  const echoResult=[{transcript:"Exact universe reply"}];echoResult.isFinal=true;
+  recognition.onresult({resultIndex:0,results:[echoResult]});
+  const echoSuppressed=turns.length===turnsBeforeEcho;
+  const interruptedUtterance=utterances[utterances.length-1];
+  const bargeResult=[{transcript:"Actually stop and answer this instead"}];bargeResult.isFinal=true;
+  recognition.onresult({resultIndex:0,results:[bargeResult]});
+  await Promise.resolve();await Promise.resolve();await Promise.resolve();
+  const replacementTurn=Voice.browserTurn;
+  const replacementUtterance=utterances[utterances.length-1];
+  interruptedUtterance.onend();interruptedUtterance.onerror();
+  const staleCallbackPreserved=Voice.state==="speaking"&&Voice.browserSubmitting&&
+    Voice.utterance===replacementUtterance;
+  replacementUtterance.onend();await replacementTurn;
+  out.browserBargeIn={
+    state:Voice.state,echoSuppressed,staleCallbackPreserved,
+    turns:turns.slice(),spoken:spoken.slice(),
+    recognitionStarts:recognition.started,recognitionStops:recognition.stopped,
+    selectedVoice:spokenVoices[spokenVoices.length-1],status
   };
   window.speechSynthesis.autoEnd=false;
   const stoppedResult=[{transcript:"Stop during speech"}];stoppedResult.isFinal=true;
@@ -1182,15 +1245,74 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
         "state": "listening",
         "turns": ["Hello, same universe"],
         "spoken": ["Exact universe reply."],
+        "spokenVoices": ["voice-choice"],
+        "trailingEchoSuppressed": True,
         "recognitionStarts": 1,
         "recognitionStops": 1,
         "sessionFetches": 0,
         "connectCalls": [],
     }
+    assert out["browserVoiceChoice"] == {
+        "hidden": False,
+        "selected": "voice-choice",
+        "options": [
+            ["", "System voice"],
+            ["voice-default", "Default voice · en-US"],
+            ["voice-choice", "Chosen voice · en-GB"],
+        ],
+    }
+    assert out["browserThinkingQueue"] == {
+        "state": "listening",
+        "turns": [
+            "Hello, same universe",
+            "Start a queued thought",
+            "Add this when ready",
+        ],
+        "spoken": [
+            "Exact universe reply.",
+            "Exact universe reply.",
+            "Exact universe reply.",
+        ],
+    }
+    assert out["browserBargeIn"] == {
+        "state": "listening",
+        "echoSuppressed": True,
+        "staleCallbackPreserved": True,
+        "turns": [
+            "Hello, same universe",
+            "Start a queued thought",
+            "Add this when ready",
+            "Please explain the next step",
+            "Actually stop and answer this instead",
+        ],
+        "spoken": [
+            "Exact universe reply.",
+            "Exact universe reply.",
+            "Exact universe reply.",
+            "Exact universe reply.",
+            "Exact universe reply.",
+        ],
+        "recognitionStarts": 5,
+        "recognitionStops": 5,
+        "selectedVoice": "voice-choice",
+        "status": "Listening...",
+    }
     assert out["browserSpeechWatchdog"] == {
         "state": "error",
-        "turns": ["Hello, same universe", "Stop during speech", "Speech watchdog"],
+        "turns": [
+            "Hello, same universe",
+            "Start a queued thought",
+            "Add this when ready",
+            "Please explain the next step",
+            "Actually stop and answer this instead",
+            "Stop during speech",
+            "Speech watchdog",
+        ],
         "spoken": [
+            "Exact universe reply.",
+            "Exact universe reply.",
+            "Exact universe reply.",
+            "Exact universe reply.",
             "Exact universe reply.",
             "Exact universe reply.",
             "Exact universe reply.",
