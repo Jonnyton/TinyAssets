@@ -45,3 +45,16 @@ The repair must give users reusable, owner-scoped automation controls, not
 delete this private automation through an operator bypass or recreate deleted
 workflows. During this inspection Codex sent no message and changed no live
 workflow, automation, credential, or destination.
+
+## Platform repair deployed, acceptance pending — 2026-09-08 19:59 UTC
+
+PR #3447 deployed as `4a1877f0044a` via build 34271720339 and deploy 34271996544;
+authenticated public canary and protected revision containment passed. The
+served wrapper now exposes existing owner-scoped list/get/create/pause/resume/
+delete controls, preserving ACL and revisions. This supersedes the code-level
+missing-route finding above, not the unverified private trigger state.
+
+The app tab is held by another Codex browser session, so the exact checklist
+prompt has not yet been sent on this deploy. Retain this concern until rendered
+acceptance can verify the app can inspect/control its own automation. Do not
+automatically replay the earlier approval or edit the private row ourselves.

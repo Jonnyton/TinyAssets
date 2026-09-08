@@ -21,6 +21,10 @@ route; absence of a direct tool alone is not proof of a gap.
 
 The confirmed live automation blocker has its own concern:
 [attached heartbeat automation](2026-09-08-app-cannot-manage-attached-heartbeat-automation.md).
+Update 2026-09-08 19:59 UTC: the automation row below describes the audited
+pre-fix surface. Its platform route is now deployed in `4a1877f0044a` (PR #3447);
+live app acceptance is pending browser access. The other inventory rows remain
+unresolved. This does not establish provider portability or all-tool parity.
 Cancellation and legacy schedule controls below are missing from both inspected
 canonical surfaces, not just from the app's narrower wrapper.
 

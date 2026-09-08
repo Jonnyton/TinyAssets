@@ -610,3 +610,12 @@ workspace/code and read-only repo checks also PASS. Retry-exhaustion refusal OPE
 exact webhook FAIL 404. Automatic heartbeat trigger still not confirmed stopped.
 No extra prompt or private edit. Nine rows are now explicitly enumerated by the
 app, separating recovery from exhausted-wait refusal; full goal remains open.
+
+## [2026-09-08 19:59 UTC] USER NOTE automation deploy, browser ownership blocker
+
+Production 4a1877f0044a passed build 34271720339 and deploy 34271996544,
+including authenticated public canary and protected containment. No prompt sent.
+TAB HYGIENE: one visible mission tab 1346517456 at tinyassets.io/mcp/app;
+supported driver refuses selection because another Codex browser session owns it.
+Owner asked to release it; unrelated tabs and private state left untouched.
+Not rendered acceptance, first-contact proof, or post-fix organic-use evidence.

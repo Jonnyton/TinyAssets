@@ -8,6 +8,6 @@
 ## 2. Verification and delivery
 
 - [x] 2.1 Run focused tests, lint, plugin mirror and required CI; obtain unchanged exact-head approval before readying the draft PR
-- [ ] 2.2 Merge and deploy the immutable revision, verifying authenticated public canary and protected revision containment
+- [x] 2.2 Merge and deploy the immutable revision, verifying authenticated public canary and protected revision containment
 - [ ] 2.3 Send only the exact checklist prompt in the existing app, record rendered results and unproven capabilities without private workflow edits
 - [ ] 2.4 Sync shipped behavior and archive on completed delivery, retaining unresolved capability findings separately

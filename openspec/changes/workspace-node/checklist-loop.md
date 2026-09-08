@@ -338,3 +338,20 @@ existing canonical controls. `served-automation-lifecycle` implements that
 general capability in draft PR #3447; live acceptance remains pending. The
 user-requested wider missing-tool inventory is retained in
 `docs/concerns/2026-09-08-served-tool-capability-parity-gaps.md`.
+
+## 2026-09-08 19:59 UTC — automation capabilities deployed, app retest blocked
+
+PR #3447 passed exact-head Claude review and required CI 34270207709 (zero new
+failures; known baseline failures remain). Merged revision
+`4a1877f0044a974585ba0daaacf2d190256bf76e` built in 34271720339 and deployed in
+34271996544. Authenticated public canary and protected containment passed;
+production reported `4a1877f0044a` at 19:58:53 UTC. Platform automation reads and
+create/pause/resume/delete are now available without private workflow repairs.
+
+No retest sent on this deploy: the reopened Chrome app tab 1346517456 is owned
+by another Codex browser session, and the supported driver refuses access.
+Owner was asked to release it. Do not open a replacement conversation, bypass
+the tab's ownership, or substitute direct MCP calls for the requested rendered
+test. Next action after access returns: send exactly
+`Retest your workflow checklist`, then read the final response. Goal remains
+active and incomplete; all acceptance rows retain their last qualified states.

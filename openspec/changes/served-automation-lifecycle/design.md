@@ -134,5 +134,23 @@ is readable and untrusted-enveloped. This narrows the review uncertainty but
 does not prove OAuth, live consumer launch, terminal readback or cancellation.
 
 The ready-for-review event superseded CI 34269667494 (cancelled, not a new test
-failure). Authoritative current required run is 34270207709 on the same approved
-head. PR #3447 is ready with gated squash auto-merge, not yet merged/deployed.
+failure). Required run 34270207709 on the same approved head completed SUCCESS:
+zero new failures, zero stale quarantine entries. Its broad suite had 14,673
+passes, 54 skips, 9 known failures and 2 known collection errors; do not call
+the whole repository suite green. PR #3447 merged as
+`4a1877f0044a974585ba0daaacf2d190256bf76e`.
+
+## Deployment and pending rendered acceptance — 2026-09-08 19:59 UTC
+
+Image build 34271720339 and deployment 34271996544 succeeded. The latter passed
+authenticated public `--assert-handles` canary and protected revision containment;
+at 19:58:53 UTC its receipt reports production `4a1877f0044a`, containing the full
+merged SHA above. Commands ran in authorized CI; no local bearer was printed.
+
+The current app tab is visible in Chrome, but `cua.getTab("1346517456",
+{browser:"2"})` refuses access because another Codex browser session owns it.
+The owner has been asked to release that tab. No checklist message was sent on
+this deployment, no new chat was opened, and no private workflow/automation was
+changed. Rendered control acceptance and post-fix organic use remain unproven.
+The shipped delta is synced into the main user-owned-automations spec; keep this
+change in flight until the exact uncoached app retest and qualified readback.
