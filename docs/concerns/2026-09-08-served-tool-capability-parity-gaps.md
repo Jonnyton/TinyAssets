@@ -21,6 +21,12 @@ route; absence of a direct tool alone is not proof of a gap.
 
 The confirmed live automation blocker has its own concern:
 [attached heartbeat automation](2026-09-08-app-cannot-manage-attached-heartbeat-automation.md).
+Update 2026-09-08 19:59 UTC: the automation row below describes the audited
+pre-fix surface. Its platform route is now deployed in `4a1877f0044a` (PR #3447);
+the exact retest sent at 20:19 UTC through an owner-authorized new tab confirms
+automation inspection and paused-future-trigger readback on that deploy.
+Lifecycle mutations were not exercised by the rendered response. The other inventory rows remain
+unresolved. This does not establish provider portability or all-tool parity.
 Cancellation and legacy schedule controls below are missing from both inspected
 canonical surfaces, not just from the app's narrower wrapper.
 
@@ -42,6 +48,24 @@ canonical surfaces, not just from the app's narrower wrapper.
 This inventory identifies missing user capabilities and dependencies, not a
 blanket authorization to mount every historical extension action. The underlying
 handlers' existence is not proof that every one is safe, current, or sufficient.
+
+## Live addition: withdraw an obsolete agent-authored request
+
+Rendered app response timestamped 2026-09-08 13:42 PDT: after being asked to
+limit its receiver repair access, the agent created a narrower request but
+could not withdraw its obsolete broader one because it has no request-edit or
+cancellation operation. Codex, acting through the normal user UI under the
+owner's clarified delegation, cleared the obsolete request. This is a missing
+authoring lifecycle, distinct from accepting or declining a request as the owner.
+
+Source reverified at the current 9d65ae56-based working tree using `rg`:
+`engine_mcp_server.write_graph target=pending_request` admits `ask` only; the
+canonical `api.pending_requests.answer_request` offers the person's dismissal
+route. Do not expose that broad owner-answer route to the requesting agent.
+A future withdraw/supersede operation needs requester provenance, universe
+confinement, pending-only semantics, revisions and an honest receipt, and must
+not let an agent clear a person-required sticky precondition or manufacture
+approval. This eleventh inventory item is not covered by the earlier review.
 
 ## Already reachable / deliberate boundaries
 

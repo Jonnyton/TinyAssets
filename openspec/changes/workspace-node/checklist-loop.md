@@ -18,6 +18,16 @@ build, repair, or edit its private workflows to manufacture passing probes.
 Continue the exact-prompt loop; its independent checklist is the acceptance
 criterion, not platform-side test results alone.
 
+Founder clarification, 2026-09-08 20:33 UTC: the prohibition applies to Codex
+directly editing private workflows. Users must be able to ask their own app
+agent to make needed changes. Codex is explicitly authorized to converse as
+that user: ask the app to fix its remaining issues or explain what prevents it.
+This supersedes the exact-message-only restriction for diagnostic/repair
+conversation, not the exact post-deploy retest prompt or the prohibition on
+operator-side private edits. Do not infer a host-only destination blocker before
+the app has attempted the ordinary user-authorized repair path. Fix reusable
+platform capabilities when the app surfaces a real missing tool or restriction.
+
 ## Current round
 
 The workspace effect dispatcher did not forward the node timeout into pool
@@ -225,7 +235,7 @@ Workspace `1c34376d6b9b498d` and overlapping `228acaa65de54cc3` completed; the
 agent qualifies contention as smoke evidence, not fairness proof. External run
 `6df9005077324601` still received HTTP 404 for the expired webhook destination.
 The agent explicitly says the full nine-row checklist is NOT cleared and only
-enumerates seven previously exercised lanes. The other two rows remain
+enumerates seven previously exercised lanes. At that read the other two rows were
 unidentified/unverified; do not substitute these six PASS rows for full success.
 
 Next: the existing host-action row for the expired exact delivery destination is
@@ -235,3 +245,222 @@ established merely by that third-party 404. No workflow/connection repair or
 coaching is authorized. Preserve the full acceptance scope and obtain actual
 rendered evidence for the omitted lanes as well. Native-default startup recovery
 is verified; broader provider portability/model choice remains open separately.
+
+## 2026-09-05 03:40 UTC — read-only review of new owner conversation
+
+Rendered app read through `cua.getTab("1346516692", {browser:"2"})`, production
+https://tinyassets.io/mcp/app. No prompt sent or workflow changed.
+
+At 03:33 UTC the app reports another settled retest on 9d361262: sequential,
+parallel, heartbeat, preflight and workspace execution PASS. Both overlapping
+workspace runs completed, but the app explicitly keeps `workspace_busy` OPEN.
+Delivery still fails HTTP 404. Do not convert overlap smoke success into closure
+of the app's broader contention criterion.
+
+At 03:35 UTC the app names `repo/channel-agnostic` as an eighth identifiable
+check, citing a founder statement, but provides no fresh proof for that row in
+the inspected messages. The ninth is still unidentified. Intentional v3 failure
+is not established as that ninth row. Full acceptance remains incomplete.
+
+Ordinary owner voice-test turns at 03:27–03:31 UTC received relevant replies,
+and the owner confirmed hearing audio. This resolves the organic provider-turn
+freshness watch, not all voice usability: the reported voice gaps are recorded
+in `docs/concerns/2026-09-05-voice-conversation-turn-taking-and-choice.md`.
+
+## 2026-09-05 — resumed goal: contention contract revalidation
+
+Previous goal activity is progress: the new owner conversation supplies fresh
+post-deploy use and corrects the identifiable checklist from seven to eight rows.
+Goal resumed after the earlier blocked state; any blocked audit starts afresh.
+
+Read-only release check `gh pr view 2984 --json
+state,mergedAt,headRefOid,statusCheckRollup` confirms the proof-record PR merged
+at 02:42:12 UTC with required and slow tests successful. This is documentation,
+not a new runtime deployment or reason to send another retest.
+
+Windows working-tree verification at HEAD 1ccc399e, with only evidence-doc edits:
+`python -m pytest -q tests/test_workspace_pool.py
+tests/test_workspace_run_wiring.py tests/test_workspace_effector.py
+-k 'bounded_wait or wait_budget or busy or terminal or sweep'`:
+30 passed, 217 deselected, one Starlette deprecation warning. The inspected
+adapter forwards the node wait budget; pool admission retries held job locks
+until that budget expires. The as-built graph-execution-substrate spec explicitly
+permits `workspace_busy` after timeout and promises no FIFO fairness. These tests
+do not prove Linux isolation, queue fairness, or the app's broader acceptance.
+
+No additional runtime defect was established by this bounded revalidation.
+Do not invent a platform patch, alter a workflow, or redefine the app's OPEN row
+as PASS. Delivery still needs owner-controlled destination restoration; the
+eighth row needs fresh evidence and the ninth remains unidentified. Existing
+questions to the founder remain unanswered. Broader provider/model-choice
+requirements remain open in their separate concern; no completion claim.
+
+03:44 UTC resumed-goal audit, second consecutive turn with the same owner-input
+blocker: the rendered app snapshot still ends at 03:35 UTC, with no destination
+restoration or ninth-row identification. No active run is shown; this is not a
+verified wait. The preceding contention checks are supporting evidence but did
+not change the next action, so classify that goal turn as no progress toward
+acceptance. No further blind retest or speculative deployment; goal remains
+active until the strict third-consecutive-blocked audit or new actionable input.
+
+## 2026-09-08 — fresh owner-provided retest and actionable evidence gap
+
+Source: founder pasted the app's September 8 00:54 PDT response; not a new browser
+read by this task. Reported deploy 9d361262, sequential/parallel/heartbeat/preflight
+and workspace+code PASS, repo/channel-agnostic PASS read-only (GitHub GET 200),
+workspace contention OPEN despite both runs completing (generations 28/29), and
+webhook delivery HTTP 404. Defaulted sequential input is valid; the missing-input
+test used a branch without a topic default. No full checklist completion claimed.
+
+The new read-only repo proof supersedes the earlier absent eighth-row evidence
+for that narrow operation only. The old nine-row reference is not reconstructed
+or silently redefined by this eight-row report. Delivery remains owner-controlled.
+
+Further code inspection establishes a safe next platform action: create/checkout
+receipts expose lease generations but no admission attempts, lock conflicts or
+retry sleep. Users cannot infer internal contention from generations. Work is
+tracked in `openspec/changes/archive/2026-09-08-workspace-admission-evidence/`, on its matching Codex
+branch. Add only factual evidence, preserving policy and private workflows; the
+app independently evaluates acceptance. This new finding interrupts the blocked
+audit: meaningful implementation progress is possible without destination access.
+
+## 2026-09-08 08:48 UTC — receipt deployment and fresh rendered retest
+
+PR #3442 merged as `0e485ba0add1b852d712b4c5d349e542a4131268`;
+image build 34205838812 and deploy 34206123316 succeeded. The deployment ran
+authenticated public `--assert-handles` canary and protected SHA containment.
+Required CI 34204412801 had no new failures; its four focused Linux files had
+262 passes and 2 skips (the broader repository suite retains known failures).
+
+Sent only `Retest your workflow checklist` in the existing rendered app at
+08:46 UTC. Its 08:48 response reported the deployed revision and nine explicit
+rows: sequential PASS, parallel PASS, heartbeat PASS, preflight PASS,
+workspace+code PASS (generations 30/31), contention recovery PASS (two observed
+lock conflicts followed by completion), final `workspace_busy` refusal OPEN,
+exact webhook FAIL 404, and repository/channel check PASS read-only GET 200.
+This resolves the earlier unidentified ninth-row ambiguity: the app now lists
+recovery and final refusal separately. No full completion or arbitrary-provider
+claim follows. No private workflow, trigger, credential or destination edits.
+
+The app additionally still cannot confirm its automatic heartbeat trigger is
+stopped. Source audit verified the served automation route was absent despite
+existing canonical controls. `served-automation-lifecycle` implements that
+general capability in draft PR #3447; live acceptance remains pending. The
+user-requested wider missing-tool inventory is retained in
+`docs/concerns/2026-09-08-served-tool-capability-parity-gaps.md`.
+
+## 2026-09-08 19:59 UTC — automation capabilities deployed, app retest blocked
+
+PR #3447 passed exact-head Claude review and required CI 34270207709 (zero new
+failures; known baseline failures remain). Merged revision
+`4a1877f0044a974585ba0daaacf2d190256bf76e` built in 34271720339 and deployed in
+34271996544. Authenticated public canary and protected containment passed;
+production reported `4a1877f0044a` at 19:58:53 UTC. Platform automation reads and
+create/pause/resume/delete are now available without private workflow repairs.
+
+No retest sent on this deploy: the reopened Chrome app tab 1346517456 is owned
+by another Codex browser session, and the supported driver refuses access.
+Owner was asked to release it. Do not open a replacement conversation, bypass
+the tab's ownership, or substitute direct MCP calls for the requested rendered
+test. Next action after access returns: send exactly
+`Retest your workflow checklist`, then read the final response. Goal remains
+active and incomplete; all acceptance rows retain their last qualified states.
+
+## 2026-09-08 20:21 UTC — new-tab permission and automation readback
+
+Owner explicitly permits opening new tabs at any time. Opened Chrome tab
+1346517476 at the existing app URL, verified the same saved conversation, and
+sent exactly `Retest your workflow checklist` at 20:19 UTC. No fresh conversation,
+coaching, private edit, forced tab claim or replay of prior approvals.
+
+Rendered response timestamp 13:20 PDT reports deploy `4a1877f0044a`: sequential,
+parallel, deliberate pinned heartbeat, preflight, workspace/code (generations
+32/33), contention recovery (two conflicts then successful retry), and repository
+read-only GET 200 PASS. Exhausted-wait refusal remains OPEN; exact webhook FAIL
+404. Additionally the app now confirms its automation is paused, future triggers
+are paused, and the last scheduled run failed. It remains attached. This closes
+unknown trigger-state readback, not live retirement or all lifecycle writes.
+Other missing capability findings and broad provider/model selection remain
+open. A dead owner destination and an unexercised exhaustion path are not evidence
+that private workflow edits or a speculative runtime patch would be appropriate.
+
+### 20:25 UTC continuation audit
+
+Previous turn is progress: actual rendered automation state narrowed the open
+finding. Current source recheck of `workspace_pool.admit` and the workspace
+effector confirms bounded wait exhaustion preserves `workspace_busy`; an initial
+refusal first gets a stale-holder sweep, then the node's wait budget. Windows
+`python -m pytest -q tests/test_workspace_pool.py tests/test_workspace_effector.py
+-k 'lock_held_by_another_run or admission_receives_the_effect_nodes_wait_budget or
+observation_preserves_the_uninstrumented_wait_policy'` passed 6 tests, with 209
+deselected. This supports routing, held-lock refusal and differential retry
+policy; it is not Linux or rendered live exhaustion proof. No runtime fix is
+justified by the current missing-exhaustion evidence alone.
+
+Evidence PR #3513 remains open; required CI 34272460513 job 102217194171 was
+authoritatively in progress at 20:24:45 UTC, slow tests succeeded. Watching this
+same job, not restarting it. Local follow-up 83e383cf records the new rendered
+results and passes the 90-test concern-index/OpenSpec checks; it has not been
+pushed while the previous head's required checks run. All runtime fixes remain
+deployed. Exact webhook renewal still needs owner action through ordinary
+controls; no private edits, extra app prompts, or false checklist completion.
+
+### Resumed blocked audit — 2026-09-08
+
+After the owner enabled the new-tab route, the 20:19/20:20 live retest, the
+20:25 source/test audit, and the following rendered re-read all retained the
+same exact-destination HTTP 404 blocker. The latest re-read has no newer app
+message. Paused-state readback is real progress, but neither it nor documentary
+CI can renew that external owner destination. The remaining exhausted-lock
+row has no demonstrated runtime defect; do not force it by changing workflows
+or contention policy. No further supported runtime patch or blind retest is
+justified by these two rows. Mark the goal blocked, not complete, pending owner
+renewal/selection of the destination or materially new app failure evidence.
+
+The final rendered receipts and audit are added to evidence PR #3513 as a
+normal documentation follow-up. Its prior required job 34272460513 was still
+running when this update was prepared; an updated head requires new checks.
+This is not a runtime redeployment or proof that any open checklist row passed.
+Broader provider portability and the remaining missing-tool inventory stay
+explicitly unresolved in their existing concern files, not silently completed.
+
+## 2026-09-08 — clarified user conversation repairs the evidence gap
+
+The earlier host-only blocker conclusion was premature under the owner's
+clarified delegation above. Sent the ordinary repair request at 20:33 UTC.
+The app's 13:41 PDT response reports its corrected three-second workspace probe
+exhausted after eight conflicts and returned workspace_busy, then a later run
+succeeded. It independently repaired this checklist evidence gap without a
+platform change or operator workflow edit.
+
+The app also built a temporary receiver lifecycle test, initially requesting
+broad UUID endpoint access. Asked through the request's reply control for access
+limited to its own receiver. Its 13:42 response narrows to creation-only, then
+exact receiver delivery/deletion after creation. Through the ordinary UI, cleared
+the obsolete broad request and approved only POST webhook.site/token; no new
+key, wildcard receiver grant or "don't ask again". Receiver creation is now
+the app's next action, not a user manual-renewal prerequisite. Webhook success
+remains unproven until the app runs and reports it.
+
+This interaction found two real platform gaps: periodic request rendering drops
+an in-progress reply (dedicated concern and independent shape review underway),
+and the app cannot withdraw its own obsolete request (capability inventory row
+eleven). Scope/custody remain enforced; user-facing request approvals do not
+authorize broad operator writes to private state.
+
+## 2026-09-08 20:48 UTC — full checklist accepted by the app
+
+The app created its receiver (201), then ran its own exact-ID delivery and
+cleanup after scoped user-UI approval (200 and 204). Asked for its final
+assessment; at 13:48 PDT it explicitly confirmed its full workflow checklist
+passes on its latest tests. It correctly qualified that the last two checks
+were verified separately from the earlier retest and repository proof is read-only.
+All nine original checklist rows now have rendered PASS evidence. The former
+manual webhook-renewal host action is resolved and removed, not left stale.
+Detailed requirement/evidence map:
+`docs/reviews/2026-09-08-workflow-checklist-live-acceptance.md`.
+
+The deployment/retest checklist goal is achieved on this evidence, not on unit
+tests or invented provider-general claims. Broader provider/model-selection
+requirements and newly discovered request lifecycle/UI defects remain explicit
+follow-ups; no assertion that every conceivable workflow or tool is complete.

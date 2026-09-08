@@ -788,23 +788,3 @@ the only one that was never a code problem.
 to be 201, and `x-access-level` to read `read-write`.
 
 ---
-
-### Refresh the disposable webhook checklist destination
-
-**The smallest ask:** replace the expired `webhook.site` token/path used by the
-owner-controlled checklist workflow, or approve another non-destructive exact
-destination, then ask the bound universe to rerun that delivery proof. Keep the
-destination secret out of the repository and out of copied evidence.
-
-**Why it is a host action:** the platform reached the configured far side on
-2026-09-04, but that service returned HTTP `404` because the saved destination no
-longer exists. TinyAssets cannot renew a third-party destination or alter the
-owner's private workflow/connection without owner authority. This row is complete
-when the rendered app reports one fresh successful delivery to the renewed exact
-destination.
-
-Reverified 2026-09-05 02:17 UTC in the existing rendered app conversation on
-deploy `9d361262`: six other exercised lanes passed, while the exact delivery
-probe still received destination HTTP 404. No workflow, connection or destination
-was edited by the platform agent. The founder was asked to restore/choose the
-destination through ordinary owner controls; no credentials requested in chat.
