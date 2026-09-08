@@ -89,6 +89,7 @@ def test_android_release_config_matches_every_source_package_identity() -> None:
     assert "startup.send(STARTUP_OK" in service
     assert "startup.send(STARTUP_FAILED" in service
     assert 'Log.e("TinyAssetsSignin"' in service
+    assert "Notification.FOREGROUND_SERVICE_IMMEDIATE" in service
 
     voice = (MOBILE / "native/android/VoiceWebChromeClient.java").read_text(encoding="utf-8")
     assert 'TRUSTED_SCHEME = "https"' in voice
