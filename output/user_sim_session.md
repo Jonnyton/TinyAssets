@@ -544,3 +544,69 @@ PASS; overlapping workspace smoke PASS. Delivery remains OPEN: destination 404.
 Agent explicitly does not claim queue fairness or the full nine-row checklist.
 Only the seven previously exercised lanes were enumerated; the other two are
 unidentified/unverified, not silently counted as passing. No further prompt sent.
+
+## [2026-09-05 03:40 UTC] READ ONLY recent owner messages
+
+Method: rendered `cua.getTab("1346516692", {browser:"2"})` app conversation.
+No prompt sent. Owner voice-test messages at 03:27–03:31 UTC received relevant
+replies; owner confirmed hearing speech. Organic post-fix provider conversation
+is now observed. Voice cutoffs, no interruption during replies, and no apparent
+voice choice remain reported usability defects, recorded in concerns.
+
+App's 03:33 UTC retest reports five PASS lanes, both overlapping workspace runs
+completed but contention still OPEN, external delivery HTTP 404. At 03:35 UTC it
+identifies an eighth `repo/channel-agnostic` check without fresh proof and cannot
+name the ninth. No full-checklist success claim. No workflow or credential edit.
+
+## [2026-09-08] READ ONLY messages after the 00:54 PDT checklist
+
+Method: rendered `cua.getTab("1346517271", {browser:"2"})` at
+https://tinyassets.io/mcp/app, existing returning-user conversation. Read
+messages through 01:10 PDT. No prompt sent; no live state changed by Codex.
+
+01:01 PDT: Universe reports posting the requested patch update to X:
+https://x.com/TinyAssets/status/2097233834039472410. This is a reported fresh
+external write, not proof that the stale exact webhook destination succeeds.
+
+01:04 PDT: Universe describes the current heartbeat as a timestamp-only probe,
+not health checks or work advancement, and cannot verify schedule control.
+01:07–01:10 PDT: owner requests deletion of unused heartbeats and approves
+removal of the blocking automation. Universe reports deleting two older
+heartbeat workers and its subconscious loop, but cannot remove automation
+`d25a356811d0405c8bc92ebc9601c68f` attached to the remaining heartbeat. Approval
+was recorded without exposing management controls. Trigger status remains
+unknown; branch deletion itself is available. Recorded as a new concern.
+
+Do not recreate owner-deleted checklist probes or bypass private automation
+state to manufacture success. The current request was read-only.
+
+TAB HYGIENE: one controlled existing mission tab; unrelated user tabs untouched.
+
+## [2026-09-08 08:28 UTC] PREFLIGHT next deployed checklist retest
+
+Existing Chrome mission tab 1346517271 remains the visible returning-user app
+conversation at https://tinyassets.io/mcp/app. Composer enabled; voice off;
+latest rendered message remains 01:10 PDT. No first-contact or anonymous claim.
+User explicitly requires this existing conversation and exactly
+`Retest your workflow checklist`, overriding generic new/incognito-chat and
+additional-probe guidance. No prompt sent yet: PR #3442 is awaiting Linux CI
+and deployment. TAB HYGIENE: one mission tab; unrelated user tabs untouched.
+
+## [2026-09-08 08:46 UTC] USER ACTION deployed workspace-evidence retest
+
+Asked exactly: Retest your workflow checklist
+Got: full text rendered verbatim at 01:46 PDT; app is thinking. Production
+0e485ba0 passed image build 34205838812 and deploy 34206123316, including
+authenticated public canary and protected revision containment.
+TAB HYGIENE: one controlled mission tab 1346517271 in the existing app;
+unrelated user tabs untouched. No workflow, automation, credential or destination
+edited by Codex; no extra coaching or approval replay.
+
+## [2026-09-08 08:48 UTC] USER RESULT contention recovery proved live
+
+App reports deploy 0e485ba0: contention recovery PASS, second run observed two
+lock conflicts, retried and completed. Sequential, parallel, heartbeat, preflight,
+workspace/code and read-only repo checks also PASS. Retry-exhaustion refusal OPEN;
+exact webhook FAIL 404. Automatic heartbeat trigger still not confirmed stopped.
+No extra prompt or private edit. Nine rows are now explicitly enumerated by the
+app, separating recovery from exhausted-wait refusal; full goal remains open.

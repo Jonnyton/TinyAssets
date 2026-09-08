@@ -31,7 +31,9 @@ the existing cooperative cancellation contract or claiming all checklist rows pa
 
 2. Add `target=automation` with create/pause/resume/delete to served `write_graph`,
    with explicit automation ID and expected revision. Reuse the existing adapter
-   with narrow write capability, not the broad connector dispatcher. Preserve
+   with a write-context identity, not the broad connector dispatcher. The
+   adapter enforces authentication and resource ACL, not the capability tuple
+   itself. Preserve
    current owner/admin, revision CAS, retired-record and creation preflight checks.
    Unknown operations refuse before dispatch. Bound payload size and malformed
    JSON/type handling remain structured. No hidden fallback to another operation.
@@ -105,3 +107,32 @@ retirement dependency removal, stopped-provider controls, payload refusals, and
 the actual FastMCP tool schema. Foreign-owner projected text is wrapped as data.
 The operation allowlist is explicit: future connector actions are not exposed
 automatically. Documentation and the reviewed operation set are tested together.
+
+Initial Linux CI run 34207195677 on runtime commit `31b696d5` exercised all
+six focused files: **187 passed, 0 skipped** (JUnit artifact 10048762141),
+including all 19 new lifecycle tests. The overall required gate correctly failed
+for one new documentation-index failure: this PR's two concern reports lacked
+committed README links. Commit `25d844ec` adds those links without changing
+runtime or tests; required CI 34269667494 is rerunning. Do not treat the initial
+focused passes as an overall green CI result. The first exact-head reviewer
+process disappeared before delivering a verdict (session 24e251c9); a fresh
+review is running on corrected head `25d844ecfc99896785d24c10379cf28a86298ba9`.
+
+Exact-head Claude review completed (wrapper exit 0, 281 seconds) and APPROVED
+`25d844ecfc99896785d24c10379cf28a86298ba9` with no pre-live blockers. Reviewer
+independently ran all 19 new tests. Summary and qualified post-live findings:
+`docs/reviews/2026-09-08-served-automation-exact-head-claude.md`. The write-context
+wording above is corrected per the reviewer: ACL, not identity capabilities,
+is the enforced authorization boundary. Consumer-run readback remains to verify.
+
+Readback follow-up: `python -m pytest -q
+output/test_served_automation_run_readback.py` on 2026-09-08 passed (1 test) after
+explicitly naming the synthetic local dev-auth principal. It creates only a
+temporary queued run with the consumer's `universe:<uid>` actor, then calls the
+real served `read_graph` and adapter under the bound owner; the queued result
+is readable and untrusted-enveloped. This narrows the review uncertainty but
+does not prove OAuth, live consumer launch, terminal readback or cancellation.
+
+The ready-for-review event superseded CI 34269667494 (cancelled, not a new test
+failure). Authoritative current required run is 34270207709 on the same approved
+head. PR #3447 is ready with gated squash auto-merge, not yet merged/deployed.
