@@ -1976,6 +1976,95 @@ def test_a_lock_held_by_another_run_is_workspace_busy_not_a_quota_error(
         execute=FakeWorker(),
     )
     assert second["error_kind"] == "workspace_busy"
+    assert second["workspace_admission"] == {
+        "attempts": 2, "lock_conflicts": 2, "retry_sleep_seconds": 0.0,
+    }
+
+
+@pytest.mark.parametrize("op", ["create", "checkout"])
+def test_admission_evidence_survives_a_real_lock_and_outbox_release(
+    tmp_path, chain, fs_spy, no_real_git, monkeypatch, op,
+):
+    import sqlite3
+    import threading
+
+    from tinyassets import runs
+    from tinyassets import workspace_pool as wp
+    from tinyassets.workspace_fs import RealPoolFilesystem
+
+    _root, universe_dir = _setup(tmp_path)
+    packet = _packet(op=op)
+    first = _run(tmp_path, packet, universe_dir=universe_dir, chain=chain)
+    assert first.get("error_kind") is None, first
+    assert first["workspace_admission"] == {
+        "attempts": 1, "lock_conflicts": 0, "retry_sleep_seconds": 0.0,
+    }
+    sleeping = threading.Event()
+    released = threading.Event()
+    real_admit = wp.admit
+
+    def coordinated_sleep(_seconds):
+        sleeping.set()
+        assert released.wait(5), "holder was not released"
+
+    def observed_admit(*args, **kwargs):
+        # Real admission and real lock rows; only coordinate the retry sleep.
+        return real_admit(*args, **kwargs, sleep=coordinated_sleep)
+
+    monkeypatch.setattr(wp, "admit", observed_admit)
+    monkeypatch.setattr(runs, "_workspace_sweep_once", lambda *args, **kwargs: 0)
+    other = EffectChain(run_id="run-2", base_path=str(tmp_path), universe_id=UNIVERSE)
+    results = []
+
+    def contender():
+        results.append(run_workspace_effector(
+            node_id="n2", output_keys=["ws"], run_state={"ws": packet},
+            base_path=universe_dir, run_id="run-2", chain=other,
+            execute=FakeWorker(), timeout_seconds=10,
+        ))
+
+    thread = threading.Thread(target=contender)
+    thread.start()
+    try:
+        assert sleeping.wait(5), "contender never reached the lock wait"
+        db = workspace_pool_db(universe_dir)
+        # Exercise the real durable release-only outbox path. Filesystem cleanup
+        # is independently covered; neither admission is mocked here.
+        with sqlite3.connect(db) as conn:
+            wp.enqueue_terminal(conn, run_id="run-1", universe_id=UNIVERSE, lease=None)
+        entry = wp.claim_next(db, claimant="test-release")
+        assert entry is not None
+        wp.process_entry(db, entry, fs=RealPoolFilesystem())
+    finally:
+        released.set()
+        thread.join(10)
+    assert not thread.is_alive()
+    assert len(results) == 1
+    result = results[0]
+    assert result.get("error_kind") is None, result
+    evidence = result["workspace_admission"]
+    assert evidence["attempts"] >= 3
+    assert evidence["lock_conflicts"] >= 2
+    assert evidence["retry_sleep_seconds"] > 0
+    assert set(evidence) == {"attempts", "lock_conflicts", "retry_sleep_seconds"}
+
+
+def test_post_admission_failure_keeps_observations(tmp_path, chain, fs_spy, no_real_git):
+    _root, universe_dir = _setup(tmp_path)
+    result = _run(
+        tmp_path, _packet(), universe_dir=universe_dir, chain=chain,
+        worker=FakeWorker(answer={"ok": False, "stderr_class": "checkout_failed"}),
+    )
+    assert result["error_kind"] == "workspace_checkout_failed", result
+    assert result["workspace_admission"]["attempts"] == 1
+
+
+def test_pre_admission_refusal_does_not_invent_observations(tmp_path, chain):
+    _root, universe_dir = _setup(tmp_path)
+    result = _run(tmp_path, {"sink": EXTERNAL_WRITE_SINK_WORKSPACE, "op": "invalid"},
+                  universe_dir=universe_dir, chain=chain)
+    assert result["error_kind"] == "invalid_packet"
+    assert "workspace_admission" not in result
 
 
 @pytest.mark.parametrize(

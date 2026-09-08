@@ -130,6 +130,26 @@ class WorkspacePoolRefused(Exception):
         self.detail = detail
 
 
+@dataclass
+class AdmissionObservation:
+    """Facts about one operation, never a holder identity or a fairness claim.
+
+    A caller may share this across its initial probe and reconciliation retry.
+    It is not lease storage: historical leases have no inferred observations.
+    """
+
+    attempts: int = 0
+    lock_conflicts: int = 0
+    retry_sleep_seconds: float = 0.0
+
+    def snapshot(self) -> dict[str, int | float]:
+        return {
+            "attempts": self.attempts,
+            "lock_conflicts": self.lock_conflicts,
+            "retry_sleep_seconds": self.retry_sleep_seconds,
+        }
+
+
 @dataclass(frozen=True)
 class Lease:
     """One admitted workspace, scratch or permanent. ``path`` is computed, never
@@ -522,6 +542,8 @@ def admit(
     process_started_at: float | None = None,
     wait_s: float = 0.0,
     sleep: Callable[[float], None] = time.sleep,
+    observation: AdmissionObservation | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> Lease:
     """Admit one workspace job in ONE ``BEGIN IMMEDIATE`` transaction.
 
@@ -722,8 +744,12 @@ def admit(
 
     while True:
         try:
+            if observation is not None:
+                observation.attempts += 1
             return _attempt()
         except WorkspacePoolRefused as refusal:
+            if observation is not None and refusal.code == REFUSED_BUSY:
+                observation.lock_conflicts += 1
             # Only the job lock is worth waiting on: it is held by a run
             # that will finish. A quota or a full pool is not going to
             # change inside a node's timeout, and sleeping on it would turn
@@ -731,7 +757,16 @@ def admit(
             remaining = deadline - float(now())
             if refusal.code != REFUSED_BUSY or remaining <= 0:
                 raise
-            sleep(min(LOCK_POLL_S, remaining))
+            if observation is None:
+                sleep(min(LOCK_POLL_S, remaining))
+            else:
+                sleep_started = monotonic()
+                try:
+                    sleep(min(LOCK_POLL_S, remaining))
+                finally:
+                    observation.retry_sleep_seconds += max(
+                        0.0, monotonic() - sleep_started
+                    )
 
 
 def reconcile_bytes(

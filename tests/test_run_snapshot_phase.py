@@ -80,6 +80,23 @@ def test_a_finished_run_carries_no_phase(monkeypatch):
     assert "phase" not in snap and "suggested_action" not in snap
 
 
+def test_workspace_admission_evidence_is_readable_without_backfilling_old_runs(monkeypatch):
+    _stub_branch(monkeypatch, effects=["workspace"])
+    admission = {"attempts": 3, "lock_conflicts": 2, "retry_sleep_seconds": 0.5}
+    results = {"checkout": {"workspace": {"workspace_admission": admission}}}
+    snapshot = runs_api._compose_run_snapshot(
+        _record("completed", output={"external_write_results": results}), _events(),
+    )
+    assert snapshot["external_write_results"] == results
+    old = {"checkout": {"workspace": {"lease_generation": 1}}}
+    historical = runs_api._compose_run_snapshot(
+        _record("completed", output={"external_write_results": old}), _events(),
+    )
+    assert "workspace_admission" not in (
+        historical["external_write_results"]["checkout"]["workspace"]
+    )
+
+
 def test_a_completed_run_whose_effect_failed_is_the_universes_to_fix(monkeypatch):
     """Live 2026-08-30: an effect that was refused (404 on a deleted branch,
     422, a packet field) completes the run with `error` set; the snapshot

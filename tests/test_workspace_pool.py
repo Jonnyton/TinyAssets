@@ -1050,6 +1050,83 @@ def test_a_scratch_lease_is_not_counted_against_a_universe_quota(
 # --------------------------------------------------------------------------
 
 
+def test_admission_observation_is_a_snapshot_not_lease_state(db: Path, roots: Roots):
+    observation = wp.AdmissionObservation()
+    lease = admit_scratch(db, roots, observation=observation)
+    snapshot = observation.snapshot()
+    assert snapshot == {"attempts": 1, "lock_conflicts": 0, "retry_sleep_seconds": 0.0}
+    observation.attempts += 1
+    assert snapshot["attempts"] == 1
+    assert wp.get_lease(db, lease.lease_id) == lease
+    assert not hasattr(lease, "workspace_admission")
+
+
+def test_validation_before_a_transaction_has_no_observation(db: Path, roots: Roots):
+    observation = wp.AdmissionObservation()
+    with pytest.raises(ValueError, match="run_id"):
+        admit_scratch(db, roots, run_id="", observation=observation)
+    assert observation.attempts == 0
+
+
+@pytest.mark.parametrize("release", [False, True])
+def test_observation_preserves_the_uninstrumented_wait_policy(db: Path, roots: Roots, release):
+    outcomes = []
+    for observed in (False, True):
+        case_db = db.with_name(f"observed-{observed}.db")
+        clock = [1_000_000.0]
+        lease = admit_scratch(case_db, roots, lease_id_factory=_ids("lease1"))
+        with terminal_txn(case_db) as conn:
+            wp.enqueue_terminal(conn, run_id="run-1", universe_id="u1", lease=lease)
+        entry = wp.claim_next(case_db, claimant="test")
+        sleeps = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            clock[0] += seconds
+            if release and len(sleeps) == 2:
+                wp.process_entry(case_db, entry, fs=FakeFs(present=(lease.path,)))
+
+        observation = wp.AdmissionObservation() if observed else None
+        try:
+            admit_scratch(
+                case_db, roots, run_id="run-2", lease_id_factory=_ids("lease2"),
+                wait_s=1.2, now=lambda: clock[0], monotonic=lambda: clock[0],
+                sleep=sleep, observation=observation, process_started_at=clock[0] - 1,
+            )
+            outcome = "admitted"
+        except wp.WorkspacePoolRefused as exc:
+            outcome = exc.code
+        outcomes.append((outcome, sleeps))
+        if observation is not None:
+            assert observation.attempts == (3 if release else 4)
+            assert observation.lock_conflicts == (2 if release else 4)
+            assert observation.retry_sleep_seconds == pytest.approx(1.0 if release else 1.2)
+    assert outcomes[0] == outcomes[1]
+    assert outcomes[0][0] == ("admitted" if release else wp.REFUSED_BUSY)
+
+
+def test_quota_after_conflict_preserves_both_facts(db: Path, roots: Roots):
+    clock = [time.time()]
+    admit_scratch(db, roots)
+    observation = wp.AdmissionObservation()
+
+    def sleep(seconds):
+        clock[0] += seconds
+        with sqlite3.connect(db) as conn:
+            conn.execute("UPDATE workspace_ledger SET amount=2 WHERE kind=?", (wp.KIND_JOBS,))
+
+    with pytest.raises(wp.WorkspacePoolRefused) as exc:
+        admit_scratch(
+            db, roots, run_id="run-2", jobs_per_hour=2, wait_s=10,
+            sleep=sleep, now=lambda: clock[0], monotonic=lambda: clock[0],
+            observation=observation,
+        )
+    assert exc.value.code == wp.REFUSED_QUOTA
+    assert observation.snapshot() == {
+        "attempts": 2, "lock_conflicts": 1, "retry_sleep_seconds": 0.5,
+    }
+
+
 def test_without_a_wait_a_held_lock_refuses_at_once(db: Path, roots: Roots) -> None:
     admit_scratch(db, roots, lease_id_factory=_ids("lease1"))
     slept: list[float] = []
