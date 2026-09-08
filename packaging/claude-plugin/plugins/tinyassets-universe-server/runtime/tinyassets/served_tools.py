@@ -69,6 +69,12 @@ from __future__ import annotations
 #:       field types validated; author-gated + transactional patch_branch. Codex ADAPT
 #:       (PR #2518) closed. Residuals tracked (same as create): author-scoped not
 #:       universe-scoped, and no expected-version CAS (concurrency harden gate).
+#:   read_graph / write_graph automation — inspect and control the owner's
+#:       recurring work via the SAME owner-scoped adapter as the connector.
+#:       Graph and actor are pinned; existing owner/admin, revision CAS and
+#:       creation checks remain. Create is admission-limited; pause/delete do
+#:       not require available execution budget. No provider rebind or secret
+#:       deposit, and stopping a trigger does not attest a running job stopped.
 #:
 #:   source_channel — APPROVE an outbound channel for your own universe (the consent
 #:       half of "add a channel via the channel-agnostic node"). Owner-gated
@@ -79,7 +85,8 @@ from __future__ import annotations
 #:       form / connect_http, which is deliberately NOT here). SINK CONSENT ONLY:
 #:       channel_type=="source_code" is refused (that approval sets approved_source_hash,
 #:       the provenance the create-only write_graph strips — keeping it off this
-#:       surface keeps a served build from attesting its own code). action=approve only; set_policy/get_policy
+#:       surface keeps a served build from attesting its own code). action=approve only;
+#:       set_policy/get_policy
 #:       and the raw-secret connect_http stay off-surface. Gated to the same u-tiny run
 #:       allowlist; the outbound call also needs TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED.
 #:
@@ -109,3 +116,7 @@ SERVED_ENGINE_MCP_TOOLS: tuple[str, ...] = (
     "connect_compute",
     "source_channel",
 )
+
+# Explicit reviewed authority boundary. A future connector write action must not
+# become agent-callable merely because it is added to the canonical adapter.
+SERVED_AUTOMATION_WRITE_OPERATIONS = frozenset({"create", "pause", "resume", "delete"})
