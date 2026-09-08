@@ -8,9 +8,10 @@ land together.
 
 Extended under the founder-approved ownership takeover on 2026-09-03. The
 completed three review records remain preserved and no fourth review is
-opened. New live evidence showed that the direct configured MCP connection and
-the bundled `codex_apps` connector are separate credential planes, so this
-change now includes the hosted connector's metadata + runtime linking contract.
+opened. New live evidence showed that MCP hosts own separate credential planes,
+so this change includes the hosted connector's metadata + runtime linking
+contract and requires direct, ChatGPT and Claude sessions for one account to
+converge on one principal and home universe.
 
 ## D1. Identity is present or the request is refused
 
@@ -212,7 +213,7 @@ be a separate green PR for: `_app_identity_required`,
 `_bind_founder_identity`, `runs.actor` defaults and callers, and the
 Source-event propagation; those are in PR 1.
 **Continuation 2:** hosted connector metadata + runtime linking challenge and
-the corrected direct/bundled acceptance matrix.
+the corrected direct/ChatGPT/Claude account-convergence matrix.
 **Continuation 3:** the remaining string gates and author defaults, protected
 canary pulse, and the `grep anonymous tinyassets/` zero-line test.
 **Continuation 4:** spec sync, environment-variable catalog, Hard Rules 11 and

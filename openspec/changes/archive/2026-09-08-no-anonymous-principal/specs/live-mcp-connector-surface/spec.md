@@ -49,6 +49,23 @@ the identical value.
 - **THEN** the response is the same 401 challenge, not the discovery page
 - **AND** the discovery documents at `/mcp/.well-known/*` stay public, so a client can still find the authorization server
 
+### Requirement: Authenticated identity is stable across MCP hosts
+
+The account identity resolved from OAuth SHALL be independent of the MCP host
+and OAuth client registration. A user authenticating the same account through
+ChatGPT, Claude, a local agent, or another MCP host SHALL resolve to the same
+principal and home universe. A cached registration that predates OAuth SHALL
+not receive tool data; the host MUST reconnect through the current OAuth
+metadata.
+
+#### Scenario: one account connects from ChatGPT and Claude
+- **WHEN** the same account completes OAuth in ChatGPT and Claude
+- **THEN** authenticated status from both hosts reports the same principal fingerprint and home universe
+
+#### Scenario: a cached host credential cannot refresh
+- **WHEN** a host presents no valid bearer because its cached registration or refresh credential is stale
+- **THEN** the request receives the OAuth linking challenge before any tool handler runs or returns tool data
+
 ### Requirement: Release reads use the named canary principal
 
 `GET /mcp/pulse` SHALL require a valid user bearer or the canary bearer and SHALL return exactly

@@ -66,13 +66,13 @@ and lands as small, independently tested commits.
   quarantined. `tests/test_no_anonymous_principal.py` is the change's own
   file. Codex design round 3 landed; code review rounds (<=3) next, verdicts
   in the PR.
-- [ ] 12. Continuation + live acceptance:
+- [x] 12. Continuation + live acceptance:
   - reconcile the later-head `get_status.daemon` test shape;
   - add OAuth-only `securitySchemes` to every canonical tool and a bounded
     `_meta["mcp/www_authenticate"]` runtime challenge that never dispatches;
-  - prove the corrected matrix: direct `workflow-live` and both bundled
-    connector aliases resolve the same principal/universe, or prompt linking
-    before returning any tool data;
+  - prove the corrected matrix: direct OAuth, ChatGPT and Claude resolve the
+    same account principal/universe; retire cached pre-OAuth registrations,
+    which must prompt linking before returning any tool data;
   - protect `/mcp/pulse` with the canary bearer and remove unsigned website
     callers and the cutover fallback;
   - delete remaining anonymous sinks/defaults and make
@@ -80,4 +80,8 @@ and lands as small, independently tested commits.
   - keep main specs synced to the shipped server contract; because that sync
     landed before acceptance, archive with `--skip-specs` only after the bearer
     canary, deployed-sha gate, and rendered connector acceptance are green on
-    the deployed commit.
+    the deployed commit. Verified 2026-09-08: deploy run `34271996544` passed
+    the authenticated canary and deployed-SHA containment for `4a1877f0`;
+    direct OAuth, rendered ChatGPT and rendered Claude returned the same
+    principal fingerprint and home universe; the obsolete no-auth ChatGPT
+    registration was disconnected.

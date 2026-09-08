@@ -751,3 +751,26 @@ automatic triggers are paused."
 This is rendered inspection and stopped-future-trigger readback, not proof it
 mutated the trigger during this turn, retired it, or cancelled an active job.
 No additional prompt or private operator write; no organic post-fix-use claim.
+
+## [2026-09-08 14:08 PDT] NO-ANONYMOUS CLOSEOUT PASS
+
+Direct OAuth, rendered ChatGPT, and rendered Claude status calls for the same
+signed-in account all returned bearer present, principal fingerprint
+`v1:d3e33d2bce691331f667d35669d6ae205f51c5c50f4f3ce8e8092f27ba40d2b5`, and
+home universe `u-01kxm1vszd8hwp7em418asq8h9`. No universe content was read or
+changed during this acceptance pass.
+
+ChatGPT's active `TinyAssets OAuth` registration reports OAuth in use with the
+required `openid`, `profile`, `email`, and `offline_access` scopes. The obsolete
+pre-OAuth `TinyAssets` registration was disconnected after the founder's prior
+reconnect approval; the remaining OAuth registration stayed installed. The
+current Codex task's frozen bundled wrappers still fail closed and return no
+tool data; a stale host credential is a reconnect condition, not an identity
+surface.
+
+Deploy run `34271996544` passed the authenticated public canary with canonical
+handles and the deployed-SHA containment gate for production revision
+`4a1877f0044a974585ba0daaacf2d190256bf76e`, which contains the no-anonymous
+merge `3fc83fc15fc3e7d06310848f5b931ed0cf645c76`. The post-merge focused lifecycle
+suite passed `234 passed, 2 skipped`; the new independent-session and native-backend
+cases passed within `62 passed`, and Ruff passed both changed test files.
