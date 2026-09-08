@@ -49,6 +49,24 @@ This inventory identifies missing user capabilities and dependencies, not a
 blanket authorization to mount every historical extension action. The underlying
 handlers' existence is not proof that every one is safe, current, or sufficient.
 
+## Live addition: withdraw an obsolete agent-authored request
+
+Rendered app response timestamped 2026-09-08 13:42 PDT: after being asked to
+limit its receiver repair access, the agent created a narrower request but
+could not withdraw its obsolete broader one because it has no request-edit or
+cancellation operation. Codex, acting through the normal user UI under the
+owner's clarified delegation, cleared the obsolete request. This is a missing
+authoring lifecycle, distinct from accepting or declining a request as the owner.
+
+Source reverified at the current 9d65ae56-based working tree using `rg`:
+`engine_mcp_server.write_graph target=pending_request` admits `ask` only; the
+canonical `api.pending_requests.answer_request` offers the person's dismissal
+route. Do not expose that broad owner-answer route to the requesting agent.
+A future withdraw/supersede operation needs requester provenance, universe
+confinement, pending-only semantics, revisions and an honest receipt, and must
+not let an agent clear a person-required sticky precondition or manufacture
+approval. This eleventh inventory item is not covered by the earlier review.
+
 ## Already reachable / deliberate boundaries
 
 - Branch create/patch/delete, run start/read, own brain, commons shape reads,

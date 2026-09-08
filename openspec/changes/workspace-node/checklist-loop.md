@@ -18,6 +18,16 @@ build, repair, or edit its private workflows to manufacture passing probes.
 Continue the exact-prompt loop; its independent checklist is the acceptance
 criterion, not platform-side test results alone.
 
+Founder clarification, 2026-09-08 20:33 UTC: the prohibition applies to Codex
+directly editing private workflows. Users must be able to ask their own app
+agent to make needed changes. Codex is explicitly authorized to converse as
+that user: ask the app to fix its remaining issues or explain what prevents it.
+This supersedes the exact-message-only restriction for diagnostic/repair
+conversation, not the exact post-deploy retest prompt or the prohibition on
+operator-side private edits. Do not infer a host-only destination blocker before
+the app has attempted the ordinary user-authorized repair path. Fix reusable
+platform capabilities when the app surfaces a real missing tool or restriction.
+
 ## Current round
 
 The workspace effect dispatcher did not forward the node timeout into pool
@@ -413,3 +423,44 @@ running when this update was prepared; an updated head requires new checks.
 This is not a runtime redeployment or proof that any open checklist row passed.
 Broader provider portability and the remaining missing-tool inventory stay
 explicitly unresolved in their existing concern files, not silently completed.
+
+## 2026-09-08 — clarified user conversation repairs the evidence gap
+
+The earlier host-only blocker conclusion was premature under the owner's
+clarified delegation above. Sent the ordinary repair request at 20:33 UTC.
+The app's 13:41 PDT response reports its corrected three-second workspace probe
+exhausted after eight conflicts and returned workspace_busy, then a later run
+succeeded. It independently repaired this checklist evidence gap without a
+platform change or operator workflow edit.
+
+The app also built a temporary receiver lifecycle test, initially requesting
+broad UUID endpoint access. Asked through the request's reply control for access
+limited to its own receiver. Its 13:42 response narrows to creation-only, then
+exact receiver delivery/deletion after creation. Through the ordinary UI, cleared
+the obsolete broad request and approved only POST webhook.site/token; no new
+key, wildcard receiver grant or "don't ask again". Receiver creation is now
+the app's next action, not a user manual-renewal prerequisite. Webhook success
+remains unproven until the app runs and reports it.
+
+This interaction found two real platform gaps: periodic request rendering drops
+an in-progress reply (dedicated concern and independent shape review underway),
+and the app cannot withdraw its own obsolete request (capability inventory row
+eleven). Scope/custody remain enforced; user-facing request approvals do not
+authorize broad operator writes to private state.
+
+## 2026-09-08 20:48 UTC — full checklist accepted by the app
+
+The app created its receiver (201), then ran its own exact-ID delivery and
+cleanup after scoped user-UI approval (200 and 204). Asked for its final
+assessment; at 13:48 PDT it explicitly confirmed its full workflow checklist
+passes on its latest tests. It correctly qualified that the last two checks
+were verified separately from the earlier retest and repository proof is read-only.
+All nine original checklist rows now have rendered PASS evidence. The former
+manual webhook-renewal host action is resolved and removed, not left stale.
+Detailed requirement/evidence map:
+`docs/reviews/2026-09-08-workflow-checklist-live-acceptance.md`.
+
+The deployment/retest checklist goal is achieved on this evidence, not on unit
+tests or invented provider-general claims. Broader provider/model-selection
+requirements and newly discovered request lifecycle/UI defects remain explicit
+follow-ups; no assertion that every conceivable workflow or tool is complete.
