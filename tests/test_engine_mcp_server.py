@@ -1259,11 +1259,13 @@ def test_served_allowlists_do_not_drift():
     assert "run_graph" in SERVED_ENGINE_MCP_TOOLS
 
 
-def test_served_write_graph_branch_only(monkeypatch):
-    """Served write_graph builds workflow SHAPES only: target must be 'branch'.
-    automation/connection/agent/goal/request/universe are refused BEFORE any write,
-    so a credential/connection deposit or provider-authority action can never
-    happen through a served turn. A branch create reaches build_branch."""
+def test_served_write_graph_refuses_unmounted_targets(monkeypatch):
+    """Adding automation controls must not open the broad connector dispatcher.
+
+    Connection/agent/goal/request/universe remain unavailable here. Branch create
+    reaches build_branch; automation's separate owner adapter is tested in
+    test_served_automation_lifecycle.py.
+    """
     import tinyassets.api.extensions as ext
     import tinyassets.engine_mcp_http as http
     from tinyassets import engine_mcp_server as s
@@ -1280,7 +1282,7 @@ def test_served_write_graph_branch_only(monkeypatch):
 
     monkeypatch.setattr(ext, "_extensions_impl", _fake)
 
-    for bad in ("automation", "connection", "agent", "goal", "request", "universe"):
+    for bad in ("connection", "agent", "goal", "request", "universe"):
         out = json.loads(s.write_graph(target=bad, operation="create"))
         assert "must be 'branch'" in out.get("error", ""), bad
     assert captured["n"] == 0, "a non-branch target must never reach the write impl"
