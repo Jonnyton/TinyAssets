@@ -47,6 +47,8 @@ This record therefore does **not** claim independent approval.
 - `openspec validate realtime-voice-conversation --type spec --strict
   --no-interactive` — passed.
 
-The implementation is tested and reviewable, but landing remains a founder
-decision because the final cross-family gate did not produce an approval.
+## Founder decision
 
+On 2026-09-08 the founder asked what the blocker was and directed “proceed,”
+explicitly accepting the recorded final-review gap. This resolves the concern;
+merge and deployment may proceed subject to the executable quality gates.

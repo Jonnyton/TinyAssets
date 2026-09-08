@@ -25,7 +25,6 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
-| **P2** | [Browser Voice follow-up is fixed locally but lacks final review approval](2026-09-08-browser-voice-followup-review-gap.md) — the founder's post-trial barge-in and voice-selector complaints are covered by a green candidate, but the final Claude review returned `ADAPT` without a finding and the three-round cap forbids another pass | 2026-09-08 |
 | **note** | [Served tool capability parity gaps](2026-09-08-served-tool-capability-parity-gaps.md) — source audit finds missing stop/trigger/dependency controls and discovery contradictions; secret custody and person-only approval remain deliberate boundaries | 2026-09-08 |
 | **note** | [App cannot manage the automation attached to its heartbeat](2026-09-08-app-cannot-manage-attached-heartbeat-automation.md) — owner approved cleanup, but the app reports no automation controls; the remaining trigger's stopped state is unconfirmed | 2026-09-08 |
 | **watch** | [Native-default organic use remains unproven](2026-09-05-native-default-organic-use-unproven.md) — the deployed app retest proves startup and three provider-backed lanes; no post-fix organic turn was visible in the inspected conversation | 2026-09-05 |
