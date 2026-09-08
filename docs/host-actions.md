@@ -803,8 +803,9 @@ owner's private workflow/connection without owner authority. This row is complet
 when the rendered app reports one fresh successful delivery to the renewed exact
 destination.
 
-Reverified 2026-09-05 02:17 UTC in the existing rendered app conversation on
-deploy `9d361262`: six other exercised lanes passed, while the exact delivery
-probe still received destination HTTP 404. No workflow, connection or destination
+Reverified by rendered app retest at 2026-09-08 08:48 UTC on deploy
+`0e485ba0add1`: the exact delivery still reports destination HTTP 404.
+Seven other rows pass (repository access is read-only); the agent keeps final
+busy-refusal proof open while contention recovery passes. No workflow, connection or destination
 was edited by the platform agent. The founder was asked to restore/choose the
 destination through ordinary owner controls; no credentials requested in chat.
