@@ -8,6 +8,8 @@
 **Reconciled again:** 2026-09-04 from a fresh Codex delegated task against
 production deploy run `33913895044`, serving
 `b1ec544cbcbc5368d1394658d57275542db56fe4`.
+**Re-verified:** 2026-09-08 from Codex desktop/CLI and a visible ChatGPT Work
+conversation against production release `0e485ba0add1b852d712b4c5d349e542a4131268`.
 **Severity:** P1 — production refuses anonymous access, but expired local and
 bundled connector sessions do not yet recover into a successful authenticated
 tool call.
@@ -81,6 +83,39 @@ reauthentication across the direct and bundled credential planes is now the
 single smallest boundary before one fresh task can compare their read-only
 status results.
 
+## 2026-09-08 sign-in and rendered-client retest
+
+The direct `workflow-live` OAuth login completed successfully. Two independent
+read-only `get_status` calls — one from a fresh `codex exec` session and one from
+the desktop task's direct MCP tool — returned the same evidence:
+
+- `request_identity.bearer_present=true`
+- `principal_fingerprint=v1:d3e33d2bce691331f667d35669d6ae205f51c5c50f4f3ce8e8092f27ba40d2b5`
+- `universe_id=u-01kxm1vszd8hwp7em418asq8h9`
+
+The bundled `TinyAssets` and `Workflow` aliases still failed with internal
+errors. A visible ChatGPT Work conversation then invoked only the installed
+TinyAssets development plugin's `get_status`; the rendered answer contained
+null for all three requested identity fields. Its rendered management detail
+explains the mismatch: `Authorization supported None` and `Authorization used
+None`. The menu exposes Disconnect/Delete but no sign-in action. No connector
+was removed, recreated, or edited, and no universe content was read or changed.
+
+The smallest remaining boundary is therefore no longer direct-client OAuth.
+The ChatGPT development-plugin registration must advertise and use OAuth (or be
+replaced by the intended OAuth-enabled registration), after which the bundled
+aliases and rendered ChatGPT/Claude clients must be rechecked for the same
+fingerprint and universe.
+
+The founder then approved disconnect/reconnect. On 2026-09-08 the existing app
+was disconnected, reinstalled, connected, and refreshed; its immutable detail
+still reported `Authorization supported None` and no OAuth handoff occurred.
+ChatGPT's new personal-app form did successfully discover the canonical server's
+OAuth metadata using DCR, including the AuthKit authorization, token, and
+registration endpoints plus `openid profile email offline_access`. A replacement
+OAuth registration is therefore technically available, but creating the second
+persistent connector remains a separately confirmed account mutation.
+
 ## Remaining acceptance
 
 The active `openspec/changes/no-anonymous-principal` task 12 stays unchecked and
@@ -96,3 +131,31 @@ storage, rotated refresh-token persistence, server-side logout/revocation,
 independent concurrent-session revocation, and cross-platform behavior. An
 expired credential that fails closed is secure, but it is not a complete
 reconnect experience.
+
+## 2026-09-08 ChatGPT OAuth registration proof
+
+After exact founder approval, the prepared `TinyAssets OAuth` personal plugin was
+created using DCR and the discovered AuthKit OAuth endpoints. Its rendered detail
+reports the founder account email, `Authorization supported OAuth`, and
+`Authorization used OAuth`. A fresh visible ChatGPT Work conversation attached
+that plugin and made one read-only identity request. The rendered answer reported
+signed in, fingerprint
+`v1:d3e33d2bce691331f667d35669d6ae205f51c5c50f4f3ce8e8092f27ba40d2b5`, and
+universe `u-01kxm1vszd8hwp7em418asq8h9`, matching both direct OAuth status reads.
+
+The corresponding fresh Claude.ai Incognito conversation initially found the
+installed `TinyAssets` connector but rendered `Connect` and returned no tool data.
+The founder approved that separate connection and made the intended invariant
+explicit: one user must resolve to the same universe regardless of Claude or
+ChatGPT. After the user completed AuthKit authentication, Claude's rendered
+read-only status reported bearer present, the same fingerprint
+`v1:d3e33d2bce691331f667d35669d6ae205f51c5c50f4f3ce8e8092f27ba40d2b5`, and the
+same universe `u-01kxm1vszd8hwp7em418asq8h9`.
+
+Rendered ChatGPT/Claude identity convergence is therefore proven. A supporting
+unsigned `initialize` probe returned HTTP 401 with the canonical Bearer challenge,
+while the Claude host profile had 28 AuthKit/WorkOS/TinyAssets cookies; there is
+no anonymous-client inference in this result. The concern remains open only for
+the broader credential lifecycle evidence listed above and the broken bundled
+Codex aliases: `TinyAssets` resolves to an unknown tool while `Workflow` requests
+reauthentication because token refresh is unsupported.

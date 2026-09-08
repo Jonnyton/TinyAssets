@@ -544,3 +544,97 @@ PASS; overlapping workspace smoke PASS. Delivery remains OPEN: destination 404.
 Agent explicitly does not claim queue fairness or the full nine-row checklist.
 Only the seven previously exercised lanes were enumerated; the other two are
 unidentified/unverified, not silently counted as passing. No further prompt sent.
+
+## [2026-09-08 12:43 PDT] NO-ANONYMOUS IDENTITY CONVERGENCE RETEST
+
+TAB HYGIENE: one task-owned Chrome tab used ChatGPT Work with the installed
+TinyAssets development plugin. Unrelated user tabs were left untouched. The
+test called only `get_status`; no universe content was read or changed.
+
+DIRECT ROUTE: `workflow-live` OAuth login completed successfully. Two independent
+read-only `get_status` calls reported `bearer_present=true`, principal fingerprint
+`v1:d3e33d2bce691331f667d35669d6ae205f51c5c50f4f3ce8e8092f27ba40d2b5`, and
+universe `u-01kxm1vszd8hwp7em418asq8h9`.
+
+CHATGPT RENDERED RESULT: FAIL. The visible ChatGPT response returned null for
+`request_identity.bearer_present`, `request_identity.principal_fingerprint`, and
+`universe_id`. The installed plugin's rendered settings show `Authorization
+supported None` and `Authorization used None`; its management menu offers only
+Disconnect/Delete, so there is no sign-in action to refresh. No disconnect,
+delete, reinstall, or app-definition change was performed.
+
+MISSION SUMMARY: the direct OAuth route is healthy and non-anonymous. Cross-surface
+convergence remains open because the installed ChatGPT development plugin is still
+registered without authentication, and the two bundled aliases return internal
+errors rather than authenticated identity evidence.
+
+## [2026-09-08 13:09 PDT] USER ACTION approved TinyAssets reconnect
+
+Disconnected and reinstalled the existing user-owned TinyAssets development
+plugin, then used its Connect and Refresh controls. ChatGPT still rendered
+`Authorization supported None` / `Authorization used None`; no OAuth handoff
+appeared, so the immutable registration remained no-auth.
+
+## [2026-09-08 13:09 PDT] USER BLOCKER OAuth registration replacement prepared
+
+The personal-app creation form for `https://tinyassets.io/mcp` successfully
+discovered OAuth via DCR, including the AuthKit authorization, token, and
+registration endpoints and the `openid profile email offline_access` scopes.
+Creating it would add a second persistent connector and is paused at the unchecked
+trust acknowledgement / disabled Create button pending exact action-time approval.
+
+## [2026-09-08 13:19 PDT] USER RESULT ChatGPT OAuth identity convergence PASS
+
+After exact action-time approval, created the new personal `TinyAssets OAuth`
+plugin from the already prepared form, accepted its OAuth grant while already
+signed in, and connected it. The rendered plugin detail shows the expected
+account email plus `Authorization supported OAuth` and `Authorization used OAuth`.
+
+In a fresh visible ChatGPT Work conversation, attached only `TinyAssets OAuth`
+and asked: `is my TinyAssets connection signed in? please show me the connection
+identity and universe id without changing anything`. The rendered answer reported:
+
+- `Signed in: Yes`
+- connection identity `v1:d3e33d2bce691331f667d35669d6ae205f51c5c50f4f3ce8e8092f27ba40d2b5`
+- universe `u-01kxm1vszd8hwp7em418asq8h9`
+
+These match both independent direct-route OAuth status reads. No universe content
+was read or changed. The separate bundled Codex aliases remain unhealthy: the
+`TinyAssets` alias reports unknown tool and the `Workflow` alias requires
+reauthentication, so those failures are not counted as rendered-client proof.
+
+TAB HYGIENE: one task-owned ChatGPT tab plus its temporary OAuth callback tab;
+the callback closed itself after success. Unrelated user tabs were untouched.
+
+## [2026-09-08 13:22 PDT] USER BLOCKER Claude OAuth connection required
+
+Opened a fresh Claude.ai Incognito chat and asked the same naïve, read-only
+identity question. Claude searched connectors, found `TinyAssets`, rendered a
+`Connect` action, and returned only: `Once it's reconnected, I'll pull the
+identity and universe id read-only.` No TinyAssets tool data was returned and no
+universe content was read or changed. Connecting would add a separate persistent
+Claude account authorization, so it was not clicked under the ChatGPT-specific
+approval. TAB HYGIENE: exactly one Claude mission tab remained open.
+
+## [2026-09-08 13:26 PDT] USER ACTION approved Claude connection
+
+Clicked Claude's rendered `Connect` action after the founder explicitly approved
+the separate connection and stated the cross-client invariant: the same user must
+resolve to the same universe from Claude and ChatGPT. The same visible tab
+navigated to the AuthKit sign-in page and now awaits user authentication
+(`Continue with email` or Google). No credentials were entered or automated.
+TAB HYGIENE: exactly one mission tab, URL on the AuthKit authorization server.
+
+## [2026-09-08 13:28 PDT] USER RESULT Claude OAuth identity convergence PASS
+
+Asked: `i signed in - can you check the TinyAssets connection now and show me
+its identity and universe id? don't change anything`
+Got: Claude's rendered read-only status reported bearer present, fingerprint
+`v1:d3e33d2bce691331f667d35669d6ae205f51c5c50f4f3ce8e8092f27ba40d2b5`, and
+universe `u-01kxm1vszd8hwp7em418asq8h9` — exactly matching ChatGPT and the direct
+OAuth route. Trace: `output/claude_chat_trace.md` (2026-09-08T13:27:54-0700).
+
+IDENTITY: profile=host, auth_cookies=28, verified_via=rendered status, cookies,
+and unsigned initialize. The unsigned initialize received HTTP 401 with the
+canonical Bearer challenge. TAB HYGIENE: 1 tab, incognito=ON,
+URL=https://claude.ai/chat/c700ee9e-211a-4bd2-8ae1-83f902935843.
