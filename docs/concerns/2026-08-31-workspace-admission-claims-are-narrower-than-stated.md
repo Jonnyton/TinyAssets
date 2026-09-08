@@ -81,6 +81,31 @@ can host.
 
 ## How to work this
 
+### 2026-09-08 review note: holder identity in busy details
+
+Independent Claude admission-evidence shape review reported: "The existing busy
+refusal detail already discloses the holding run's id, and for the host slot that
+can be another universe's run." `_acquire_lock` still includes `held by run` in
+its detail; the adapter passes it through. The string is verified, but the
+cross-universe claim is **conditional/unverified**: production adapters use each
+universe's runs database. Establish shared-database reachability before calling
+this a cross-user disclosure or changing the contract. No new identity fields
+are added by `workspace-admission-evidence`.
+
+### 2026-09-08 receipt follow-up
+
+The additive observation slice is deployed as `0e485ba0add1` (PR #3442).
+Rendered app retest at 08:48 UTC independently marked contention recovery PASS
+from two conflicts followed by successful retry. Retry exhaustion remains OPEN;
+no post-fix organic receipt use is visible in that conversation. This is not
+proof of fairness or closure of the older admission findings above. Independent
+exact-head review also suggested a direct effector test with a real reconciliation
+sweep clearing a stale holder (2 attempts, 1 conflict, no sleep); the shipped
+coordinated lock-release tests stub that sweep. This is nonblocking test debt,
+not a demonstrated runtime failure. Review:
+`docs/reviews/2026-09-08-workspace-admission-exact-head-claude.md`.
+
+
 Do **not** open another review round on the same code — that cap exists for a
 reason and this is round one of three. Take these in order 2, 4, 1, 3: the disk
 bound is the one that can take the host down, and the re-dispatch one is the one

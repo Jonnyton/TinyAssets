@@ -544,3 +544,116 @@ PASS; overlapping workspace smoke PASS. Delivery remains OPEN: destination 404.
 Agent explicitly does not claim queue fairness or the full nine-row checklist.
 Only the seven previously exercised lanes were enumerated; the other two are
 unidentified/unverified, not silently counted as passing. No further prompt sent.
+
+## [2026-09-05 03:40 UTC] READ ONLY recent owner messages
+
+Method: rendered `cua.getTab("1346516692", {browser:"2"})` app conversation.
+No prompt sent. Owner voice-test messages at 03:27–03:31 UTC received relevant
+replies; owner confirmed hearing speech. Organic post-fix provider conversation
+is now observed. Voice cutoffs, no interruption during replies, and no apparent
+voice choice remain reported usability defects, recorded in concerns.
+
+App's 03:33 UTC retest reports five PASS lanes, both overlapping workspace runs
+completed but contention still OPEN, external delivery HTTP 404. At 03:35 UTC it
+identifies an eighth `repo/channel-agnostic` check without fresh proof and cannot
+name the ninth. No full-checklist success claim. No workflow or credential edit.
+
+## [2026-09-08] READ ONLY messages after the 00:54 PDT checklist
+
+Method: rendered `cua.getTab("1346517271", {browser:"2"})` at
+https://tinyassets.io/mcp/app, existing returning-user conversation. Read
+messages through 01:10 PDT. No prompt sent; no live state changed by Codex.
+
+01:01 PDT: Universe reports posting the requested patch update to X:
+https://x.com/TinyAssets/status/2097233834039472410. This is a reported fresh
+external write, not proof that the stale exact webhook destination succeeds.
+
+01:04 PDT: Universe describes the current heartbeat as a timestamp-only probe,
+not health checks or work advancement, and cannot verify schedule control.
+01:07–01:10 PDT: owner requests deletion of unused heartbeats and approves
+removal of the blocking automation. Universe reports deleting two older
+heartbeat workers and its subconscious loop, but cannot remove automation
+`d25a356811d0405c8bc92ebc9601c68f` attached to the remaining heartbeat. Approval
+was recorded without exposing management controls. Trigger status remains
+unknown; branch deletion itself is available. Recorded as a new concern.
+
+Do not recreate owner-deleted checklist probes or bypass private automation
+state to manufacture success. The current request was read-only.
+
+TAB HYGIENE: one controlled existing mission tab; unrelated user tabs untouched.
+
+## [2026-09-08 08:28 UTC] PREFLIGHT next deployed checklist retest
+
+Existing Chrome mission tab 1346517271 remains the visible returning-user app
+conversation at https://tinyassets.io/mcp/app. Composer enabled; voice off;
+latest rendered message remains 01:10 PDT. No first-contact or anonymous claim.
+User explicitly requires this existing conversation and exactly
+`Retest your workflow checklist`, overriding generic new/incognito-chat and
+additional-probe guidance. No prompt sent yet: PR #3442 is awaiting Linux CI
+and deployment. TAB HYGIENE: one mission tab; unrelated user tabs untouched.
+
+## [2026-09-08 08:46 UTC] USER ACTION deployed workspace-evidence retest
+
+Asked exactly: Retest your workflow checklist
+Got: full text rendered verbatim at 01:46 PDT; app is thinking. Production
+0e485ba0 passed image build 34205838812 and deploy 34206123316, including
+authenticated public canary and protected revision containment.
+TAB HYGIENE: one controlled mission tab 1346517271 in the existing app;
+unrelated user tabs untouched. No workflow, automation, credential or destination
+edited by Codex; no extra coaching or approval replay.
+
+## [2026-09-08 08:48 UTC] USER RESULT contention recovery proved live
+
+App reports deploy 0e485ba0: contention recovery PASS, second run observed two
+lock conflicts, retried and completed. Sequential, parallel, heartbeat, preflight,
+workspace/code and read-only repo checks also PASS. Retry-exhaustion refusal OPEN;
+exact webhook FAIL 404. Automatic heartbeat trigger still not confirmed stopped.
+No extra prompt or private edit. Nine rows are now explicitly enumerated by the
+app, separating recovery from exhausted-wait refusal; full goal remains open.
+
+## [2026-09-08 19:59 UTC] USER NOTE automation deploy, browser ownership blocker
+
+Production 4a1877f0044a passed build 34271720339 and deploy 34271996544,
+including authenticated public canary and protected containment. No prompt sent.
+TAB HYGIENE: one visible mission tab 1346517456 at tinyassets.io/mcp/app;
+supported driver refuses selection because another Codex browser session owns it.
+Owner asked to release it; unrelated tabs and private state left untouched.
+Not rendered acceptance, first-contact proof, or post-fix organic-use evidence.
+
+## [2026-09-08 20:08 UTC] USER NOTE browser handoff coordination
+
+The holding task is Voice. It confirmed its read-only inspection finished,
+restored the claimed tab to Google and reset its REPL without sending a message
+or changing private state. Both getTab and the documented user.claimTab still
+refused ownership. Browser documentation says unmarked claimed tabs release at
+turn cleanup; that detail was sent back to Voice. No alternative existing app
+tab is visible. Await actual release, then navigate the same tab back to the app
+and verify the existing conversation before the exact prompt. No retest sent.
+
+## [2026-09-08 20:19 UTC] USER ACTION new-tab permission and live retest
+
+Owner explicitly authorized opening a new tab to talk to the app at any time.
+Opened Chrome tab 1346517476 at https://tinyassets.io/mcp/app, verified the same
+saved returning-user conversation through the 01:48 PDT checklist, filled and
+sent exactly: Retest your workflow checklist
+Rendered sent message is timestamped 13:19 PDT; app status says it is thinking.
+Production automation controls were verified deployed as 4a1877f0044a above.
+TAB HYGIENE: one new mission tab marked for handoff; Voice's claimed Google tab
+and all unrelated user tabs untouched. No coaching, approval replay, private
+workflow/automation edit, credential or destination replacement. No fresh-account
+or cross-client acceptance claim. The old tab-ownership blocker is bypassed only
+by the owner's newly authorized ordinary new-tab route, not a forced claim.
+
+## [2026-09-08 20:21 UTC] USER RESULT automation paused-state readback proved
+
+Rendered response timestamp 13:20 PDT reports deploy 4a1877f0044a. Sequential,
+parallel, deliberate Codex-pinned heartbeat, missing-topic preflight,
+workspace/code (generations 32/33), contention recovery (two conflicts then
+successful retry), and repository read-only GET 200 all PASS. Final exhausted
+workspace_busy refusal OPEN; exact configured webhook FAIL HTTP 404.
+App additionally says: "I also confirmed my heartbeat automation is **paused**,
+and its last scheduled run finished with failure. It remains attached, but future
+automatic triggers are paused."
+This is rendered inspection and stopped-future-trigger readback, not proof it
+mutated the trigger during this turn, retired it, or cancelled an active job.
+No additional prompt or private operator write; no organic post-fix-use claim.
