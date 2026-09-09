@@ -63,7 +63,7 @@ def _single_host(view: Any) -> str:
 
 
 def _declared_path(view: Any) -> str:
-    """The connection's single concrete request path, or "" if it declares none.
+    """The connection's single concrete POST path, or "" if it declares none.
 
     The user's own endpoint URL is what they granted, so it is what we must call.
     Before this, the grant carried the user's path (``/custom/chat``) while the
@@ -71,14 +71,16 @@ def _declared_path(view: Any) -> str:
     the broker refused the mismatch — every endpoint whose path was not the
     canonical one was registerable but could never serve.
 
-    A template (one containing a ``{`` placeholder) is not a concrete path, and a
-    connection declaring several is ambiguous; both fall back to the protocol
-    path rather than guessing.
+    Read-only catalogue/account paths are not inference destinations and must
+    not make a custom POST path ambiguous. A template (one containing a ``{``
+    placeholder) is not concrete, and several POST paths remain ambiguous; both
+    fall back to the protocol path, which the broker must still authorize.
     """
     paths = {
         str(getattr(ep, "path_template", "") or "")
         for ep in getattr(view, "allowed_endpoints", ()) or ()
-        if str(getattr(ep, "path_template", "") or "")
+        if "POST" in (getattr(ep, "methods", ()) or ())
+        and str(getattr(ep, "path_template", "") or "")
     }
     if len(paths) != 1:
         return ""
