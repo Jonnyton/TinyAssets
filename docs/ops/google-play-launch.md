@@ -528,6 +528,11 @@ Done:
 - [x] All four `ANDROID_UPLOAD_*` GitHub secret names present; authenticated
       repository state rechecked 2026-09-08. The signed release workflow is no longer
       waiting on keystore setup.
+- [x] **Signed Play candidate `4 (1.0.3)` built from merged `main` and uploaded to
+      Play's artifact library** — PR #3545 merged as `ea3f1092`; workflow run
+      `34297030257` passed ancestry, build, manifest, signature, and artifact gates.
+      Downloaded AAB SHA-256:
+      `d647d073ae62088c8dba0795b883d4449b31c5ab3eb37f2304adde949e352cc3`.
 - [x] Unsafe conversation screenshot removed from the live listing; clean
       `01-sign-in.png` uploaded and saved alongside `02-connect-subscription.png`.
       Both attached filenames were re-opened and verified after the draft save.
@@ -547,11 +552,13 @@ Open, with what each actually waits on:
       sign-ins; Sign in details saved and Actioned; no founder data or provider attached
 - [x] Target audience saved as **18 and over**; Data safety corrected and Actioned
 - [ ] Foreground-service declaration (§8a): the privacy-redacted real-phone video is
-      prepared and frame-reviewed locally (27.11 seconds, 1080×2340, SHA-256
-      `7b49b48d21ca3a1f57acdce23ed8c5ac0f58b63aab57ea3d4cb5696ed61391f2`). Publish it,
-      select **Data sync → Network processing → Other**, add the public link, and save
-      only after founder review. Nothing has been uploaded or submitted yet.
-- [ ] Closed testing: replace the Alpha draft's code 3 bundle with corrected code 4,
+      published and frame-reviewed (27.11 seconds, 1080×2340, SHA-256
+      `7b49b48d21ca3a1f57acdce23ed8c5ac0f58b63aab57ea3d4cb5696ed61391f2`) at
+      `https://github.com/Jonnyton/TinyAssets/releases/download/android-latest/tinyassets-fgs-play-evidence-final.mp4`.
+      The live form is prepared with **Data sync → Network processing → Other** and
+      that link; its final Save still awaits action-time confirmation.
+- [ ] Closed testing: code 4 is in Play's artifact library and prepared in the Alpha
+      edit form alongside code 3. Remove code 3, save code 4 as the sole draft bundle,
       finish the foreground-service declaration, submit the release, add at least 11
       more real Google-account testers, and maintain 12 continuous opt-ins for 14 days.
       Play reported 0 opted-in testers on 2026-09-08.

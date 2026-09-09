@@ -12,7 +12,7 @@ monitoring, and rollback shape.
 | Generated app identity and SDK | Main run `33797592515`, commit `8b8e8a59`; downloaded `app-debug.apk` SHA-256 `5baadde6f09c0afcfcc34a0ccdc76613d3744280d7865abe05c6012bc548689e`; Android build-tools 36 `aapt dump badging` reports `io.tinyassets.app`, version `1 (1.0)`, min SDK 24, target/compile SDK 36 | Verified |
 | Compiled permissions | Baseline APK `5baadde6...` declares Internet and foreground-service permissions but no microphone. The next candidate intentionally adds `RECORD_AUDIO` together with the native safeguards below; it still declares no camera, location, contacts, storage, advertising-id, SMS, or call-log permission | Baseline verified; candidate CI + device proof required |
 | Internal testing release | Repository handoff records Play release `1 (1.0)`, 3.1 MB, published 2026-09-03 11:10 and available to invited testers at the recorded opt-in link | Store receipt recorded; authenticated Console re-check unavailable because the browser automation bridge timed out twice on 2026-09-03 |
-| Release CI | Draft PR run `33816154684`, merge head `9ef0c693`, succeeded on GitHub's Ubuntu runner on 2026-09-03: clean generation, voice-native Java compilation, release configuration/verification, `lintRelease bundleRelease`, real merged-manifest verification, and bundle location all passed. The ancestry/signing/upload steps were skipped on the PR by design. No green signed release-workflow run exists yet | Unsigned candidate verified; authorized signed run remains open |
+| Release CI | PR #3545 merged as `ea3f1092a4f90f3e737be89c606140e7ea9d64a5` after every required check passed. Workflow-dispatch run `34297030257` then built and signed code `4 (1.0.3)` from that exact `main` commit, verified main ancestry, release identity/SDK/manifest/artwork, bundle signature, and uploaded the artifact on 2026-09-08. Downloaded AAB SHA-256: `d647d073ae62088c8dba0795b883d4449b31c5ab3eb37f2304adde949e352cc3`. | Signed Play candidate verified |
 | Clean native generation | From a worktree with no generated `mobile/android/`, `npm ci --ignore-scripts --no-audit --no-fund`, `cap add android`, `cap sync android`, scheme/icon installation, release configuration, and `verify_android_release.py` completed on Windows on 2026-09-03 | Verified; full Gradle build remains a CI gate |
 | Final Wolf Moon Seal artwork | `verify_android_release.py --artwork-only` passed for the reconciled logo commit `688b5cff`: mobile icon/splash, all Android density outputs, and the 512×512 Play icon. That commit is an ancestor of candidate merge head `9ef0c693` | Verified and reconciled |
 | Local signed build | The container path produced the Play-uploaded bundle earlier on 2026-09-03. A fresh re-run in this worktree stopped during `npm ci` with Docker `ENOSPC`, before Android generation; that is a host storage failure, not a passing build | Re-run after Docker storage is recovered |
@@ -32,14 +32,20 @@ monitoring, and rollback shape.
 - The 27.11-second 1080×2340 H.264 Play-video candidate contains 104 frames and has
   SHA-256 `7b49b48d21ca3a1f57acdce23ed8c5ac0f58b63aab57ea3d4cb5696ed61391f2`. It shows the
   user-initiated Connect state and immediate notification. Every decoded frame was
-  reviewed after masking the unrelated notification row. It is not uploaded.
+  reviewed after masking the unrelated notification row. It is publicly available at
+  `https://github.com/Jonnyton/TinyAssets/releases/download/android-latest/tinyassets-fgs-play-evidence-final.mp4`;
+  the anonymous download and release-asset digest were rechecked on 2026-09-08.
 - Play has consumed code 3, so `mobile/android-release.json` reserves corrected
   candidate `4 (1.0.3)`. GitHub Actions run `34276126068` at integrated head
   `ce00f1274a1252bdb0b910d1ec2d5909b01d28d1` passed clean platform generation,
   release identity/SDK/manifest/artwork verification, and the debug APK build. The
   downloaded APK is 4,816,457 bytes with SHA-256
-  `90dde05a5745f7952e3099236ebffef131f17eea7586e7d72598837f6fa768b2`. The signed AAB,
-  Play upload, and code-4 phone smoke remain.
+  `90dde05a5745f7952e3099236ebffef131f17eea7586e7d72598837f6fa768b2`. PR #3545 merged
+  as `ea3f1092a4f90f3e737be89c606140e7ea9d64a5`; signed workflow run `34297030257`
+  produced a 3,685,314-byte AAB with SHA-256
+  `d647d073ae62088c8dba0795b883d4449b31c5ab3eb37f2304adde949e352cc3`. Play accepted
+  code 4 into the artifact library on 2026-09-08. Saving it as the sole Alpha bundle,
+  submitting the declaration/release, and the code-4 phone smoke remain.
 
 Advertising-ID evidence was re-run on the Windows host on 2026-09-03. Downloading the
 baseline from GitHub Actions run `33797592515` reproduced SHA-256
