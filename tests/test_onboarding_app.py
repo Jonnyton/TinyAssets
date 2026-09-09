@@ -1645,6 +1645,7 @@ __APP_FUNCTIONS__
   }else if(SCENARIO.kind==="restore"){
     if(SCENARIO.pending) localStorage.setItem(INFLIGHT_KEY, JSON.stringify({
       message:SCENARIO.pending, display:SCENARIO.pending,
+      inputMethod:SCENARIO.pendingInputMethod,
       ts: Date.now()-(SCENARIO.pendingAgeS||0)*1000}));
     if(SCENARIO.queued) localStorage.setItem(QUEUE_KEY, JSON.stringify(SCENARIO.queued));
     if(SCENARIO.draftBeforeRestore) els["composer-input"].value=SCENARIO.draftBeforeRestore;
@@ -1831,6 +1832,21 @@ def test_restored_turn_without_input_provenance_is_unknown(tmp_path):
     )
 
     assert out["converseMethods"] == ["unknown"]
+
+
+def test_restored_turn_preserves_recorded_spoken_provenance(tmp_path):
+    out = _run_app(
+        tmp_path,
+        {
+            "kind": "restore",
+            "pending": "spoken unconfirmed turn",
+            "pendingInputMethod": "spoken",
+            "clickAfterRestore": "Send it again",
+            "payload": {"reply": "ok"},
+        },
+    )
+
+    assert out["converseMethods"] == ["spoken"]
 
 
 def test_a_served_error_keeps_the_message_resendable_with_the_servers_sentence(tmp_path):

@@ -38,3 +38,16 @@ preserve.
 
 Round 2 reviews the resulting commit. Its exact-head verdict is recorded in the
 pull request so adding the verdict cannot itself invalidate the reviewed SHA.
+
+## Round 2 verdict and final refinements
+
+**APPROVE.** The reviewer found no blocking defect and confirmed all seven
+contract and behavior questions. Two low-severity precision gaps were improved
+before landing:
+
+- The `app_action` fact no longer claims that the founder typed none of a line
+  that may quote values or notes entered through the selected app control.
+- A browser-harness test now proves that a restored unconfirmed turn with
+  recorded `spoken` provenance keeps that label across reload and resend.
+
+The pull request records the final exact-head review after these refinements.

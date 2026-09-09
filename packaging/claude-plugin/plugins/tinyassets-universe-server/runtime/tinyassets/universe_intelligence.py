@@ -909,8 +909,9 @@ def _turn_input_method_context(input_method: str) -> str:
         "typed": "The founder typed this specific message in the calling client.",
         "spoken": "The founder spoke this specific message in the calling client.",
         "app_action": (
-            "The calling client created this specific message from an app action "
-            "the founder selected; the founder did not type or speak the line."
+            "The calling client composed this specific message from an app action "
+            "the founder selected. Any quoted values or notes inside it were entered "
+            "through that app control rather than submitted as a typed or spoken chat turn."
         ),
         "unknown": (
             "The calling client did not report whether the founder typed or spoke "
