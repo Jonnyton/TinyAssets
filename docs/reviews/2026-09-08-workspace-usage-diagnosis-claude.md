@@ -47,6 +47,14 @@ suggested push moves no new dependency bytes; that is not accepted literally—a
 push transports a bundle. Cleanup and network writes need distinct measured-cost
 treatment, not a blanket zero-cost classification.
 
+Post-review source/synthetic verification also qualifies "HTTP dispatch budget":
+`dispatch_node_effects` counts every node with effects, including workspace,
+once before iterating its sinks. The generic byte meter counts only delivered
+results, so ordinary workspace transfer bytes remain separate. The incident
+report carries the exact synthetic probe command and result. Thus the review's
+three-budget-family conclusion holds, but the families overlap more than its
+HTTP-only shorthand implies.
+
 ## Acceptance boundary
 
 Owner subsequently reiterated that Patches remains open. New rendered

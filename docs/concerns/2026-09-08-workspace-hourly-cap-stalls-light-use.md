@@ -88,7 +88,7 @@ separating actual consumption, reservations, throughput, and retained storage.
 | Default lease reservation / pool cap constants | 4 GiB / 20 GiB | Source defaults, not proof of a host-global disk bound |
 | Permanent workspace storage | 16 GiB per universe | `_universe_quota_kwargs` supplies a hard-coded filesystem-measured quota, not a wired commercial tier |
 | General write-run / total admission limits | 300 / 900 per universe per rolling hour | Current engine caller constants; internal engine-write share derives as 600 |
-| HTTP effect dispatches / bytes | 5,000 / 2 GiB per universe per rolling hour | A third live activity-budget family, in the engine admissions DB; separate from workspace bytes |
+| Effect-node dispatches / delivered-result bytes | 5,000 / 2 GiB per universe per rolling hour | A third activity-budget family in the engine admissions DB; workspace nodes consume its dispatch counter too, while workspace transfer bytes remain separate |
 | Provider binding token / cost ceilings | 4,000,000 / 400,000,000 microunits | Separate provider authority capacity, not workspace starts or upstream entitlement |
 
 PR #2770 raised the general limits to 300/900 and several other per-user caps,
@@ -96,7 +96,7 @@ but did not edit `tinyassets/workspace_pool.py`. The separate
 `raise-served-concurrency-budget` change raised provider ceilings. Both increases
 are present in deployed source; neither lifts the ten-workspace-jobs gate.
 
-The HTTP budget implementation already landed in PR #2731 (`98b48964`);
+The generic effect budget implementation already landed in PR #2731 (`98b48964`);
 `run-usage-budgets`' unchecked task file is stale completion bookkeeping, not an
 unbuilt implementation. The hourly dispatch/byte values were independently
 confirmed in deployed source too. The separate `usage_policy` / `usage_ledger`
@@ -109,6 +109,18 @@ Push and discard each also reserve one workspace job (`_reserve_operation` in
 checkout/push/discard sequence spends three jobs; even zero-byte discard can hit
 the starts cap. `ledger_usage` currently has no production caller, so the agent
 learns about the bound from a refusal rather than an accessible usage snapshot.
+
+Further source verification corrects the common description of the third
+budget as HTTP-only: `dispatch_node_effects` consults and increments its counter
+once per node with effects, before iterating sinks. It does not exempt workspace
+nodes. `_bytes_moved` sums only results marked `delivered=True`; workspace results
+do not report that field, so their transfer bytes are not charged there. A node
+with several sinks is one generic dispatch, not one charge per network request.
+Synthetic, non-production proof on Windows: `python -m pytest -q
+output/test_workspace_dispatch_accounting_probe.py` => 1 passed (September 9
+UTC); a fake workspace adapter left generic window usage `(1, 0)`. No private
+branch, workflow or live workspace was created. The interpretation is important
+for consolidation: one physical operation can already cross two count gates.
 
 `tinyassets/engine_admissions.py`'s introductory 20/60/40 numbers and portions of
 `openspec/specs/engine-run-admissions/spec.md` still describe older values. Do not
