@@ -66,6 +66,7 @@ class Model:
     context_tokens: int | None = None
     pricing: Pricing = Pricing()
     scores: Scores | None = None
+    output_modalities: frozenset[str] = frozenset({"text"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +125,7 @@ class Interaction:
     modalities: frozenset[str]
     charge_components: frozenset[str]
     min_context: int | None = None
+    output_modalities: frozenset[str] = frozenset({"text"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +188,8 @@ def _ineligibility(
     if interaction.needs_tools and model.tools is not True:
         return ("capability_unknown" if model.tools is None else "capability_unsupported"), ""
     if not interaction.modalities <= model.modalities:
+        return "capability_unsupported", ""
+    if not interaction.output_modalities <= model.output_modalities:
         return "capability_unsupported", ""
     if interaction.min_context is not None:
         if model.context_tokens is None:
