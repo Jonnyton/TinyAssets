@@ -845,3 +845,13 @@ The app authored its own repairs, with user-style conversation and exact scoped
 UI approvals. No private operator workflow edits. Receiver deliberately deleted
 after HTTP 200 delivery, cleanup HTTP 204. New follow-ups: request withdrawal
 and polling draft loss, both recorded separately. One mission tab left open.
+
+## [2026-09-08 19:37 PDT] USER NOTE read-only workspace-fix preparation
+
+Re-read authenticated rendered app tab 1346517504 through the visible Chrome
+route. Latest conversation remains 18:07 PDT: the agent stopped after its
+report and is not doing background work. Its historical failure is not proven
+current; workspace/tooling limits stopped the investigation. No prompt sent.
+TAB HYGIENE: one controlled mission tab; unrelated owner/other-task tabs left
+untouched. Commander requested no duplicate retest while the platform fix is in
+review/CI. This is existing-owner webapp continuation, not first-contact proof.

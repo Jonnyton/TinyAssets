@@ -10,7 +10,7 @@
 
 ## 3. Ship and prove
 
-- [ ] 3.1 Run focused Windows and Linux-oracle tests, rebuild plugin parity, obtain independent exact-head review and required CI, then deploy with authenticated canary and SHA containment.
+- [x] 3.1 Run focused Windows and Linux-oracle tests, rebuild plugin parity, obtain independent exact-head review and required CI, then deploy with authenticated canary and SHA containment.
 - [ ] 3.2 Coordinate rendered app-owned continuation/acceptance, record exact scope and organic follow-up, sync shipped specs and archive this bounded correction; keep wider Patches open for remaining platform issues and owner acceptance.
 
 Local evidence (2026-09-08, Windows, uncommitted candidate):
@@ -28,3 +28,15 @@ checks out the selected ref on Ubuntu/Python 3.11 and uploads JUnit. Use pinned
 baseline and candidate refs, verify the executed SHAs and compare relevant
 test outcomes/skips. Required PR CI remains an additional landing gate. This is
 Linux evidence for this change, not a claim that sandbox-jail tests ran.
+
+Delivery evidence: [bounded proof record](../../../docs/reviews/2026-09-08-workspace-resource-policy-proof.md).
+Linux PR checkout 18443d16050715cfa352e4b04b89704d509909cc has the identical
+complete tree to approved head 79a4f765; its relevant suite passed 400 tests
+with two unchanged Windows-only skips. Deploy 34305023434 passed both
+authenticated gates for merge 0eb1388f at 2026-09-09 02:55 UTC.
+
+Task 3.2 is intentionally still open. Shipped specs are synchronized, but the
+owner retains live testing and acceptance. Commander explicitly relayed that no
+new app test message or workflow run is authorized without a fresh user request.
+Do not archive this as fully accepted or treat technical readiness as completion
+of broader Patches. No post-fix organic-use proof has been observed.

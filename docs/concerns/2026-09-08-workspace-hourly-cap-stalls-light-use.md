@@ -1,4 +1,13 @@
-# An independent workspace hourly cap still stalls light use
+# Workspace hourly-cap correction awaits owner acceptance
+
+**Current state (2026-09-09 02:55 UTC):** the duplicate ten-start refusal is
+removed in deployed merge `0eb1388f`; authenticated public canary and protected
+revision containment passed in deploy 34305023434. The owner-facing usage
+projection is also shipped. [Release evidence](../reviews/2026-09-08-workspace-resource-policy-proof.md).
+This concern remains open for owner-held rendered acceptance and the broader
+consumption-policy gaps below. Historical values and diagnosis below describe
+the pre-fix deploy, not current configuration. Do not send the app another test
+message or run workflows without a fresh explicit user request.
 
 **Filed:** 2026-09-08 (America/Los_Angeles).
 **Verified:** 2026-09-09 UTC, production receipt
@@ -171,8 +180,11 @@ universe's ledger or give it a private exception. Raising ten to another isolate
 literal would leave the same fragmentation and is not the requested end state.
 
 The bounded correction is tracked in `consolidate-platform-resource-policy`,
-draft PR #3560; it removes both starts-count refusals while preserving resource
-guards and adding scoped observations. It is not yet deployed or accepted.
+merged PR #3560; it removes both starts-count refusals while preserving resource
+guards and adding scoped observations. It is deployed, but not yet accepted
+through owner-held rendered testing. Shipped specs now describe the correction
+and the actual 300/900/600 admission values; the older citations above are
+historical diagnosis evidence.
 The already-landed `run-usage-budgets` records were verified, synced and archived
 under `openspec/changes/archive/2026-09-08-run-usage-budgets/`. A new
 accounting scope, authority surface, or storage migration needs proposal/design
