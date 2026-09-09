@@ -906,3 +906,12 @@ Rendered user message: Approved: "Finish my fresh webhook checklist retest";
 app remains thinking with one waiting continuation. Two AX-index clicks found
 detached nodes as the card refreshed; screenshot-grounded clicks opened and
 accepted it once. No operator workflow construction or repair.
+
+## [2026-09-09 06:31 UTC] USER RESULT four gaps closed, cancellation display open
+
+23:30 PDT: app explicitly says workflow editing, output readback, explicit
+discard and failed-node status are fixed. Cancellation works, but the cancelled
+run's code node still says running. 23:31 PDT: exact fresh webhook delivery200,
+receiver deletion204, workflow deleted, run complete; all nine checklist checks
+pass. No test work remains running. Do not count all-five closure: cancellation
+display is a fresh platform follow-up. No additional/coaching prompt sent.

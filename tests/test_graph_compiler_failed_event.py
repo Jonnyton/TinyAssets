@@ -381,3 +381,96 @@ def test_build_node_status_map_failed_priority_beats_running():
     ]
     result = build_node_status_map(events, declared)
     assert result[0]["status"] == NODE_STATUS_FAILED
+
+
+def test_cancelled_node_is_terminal_without_relabeling_other_nodes():
+    events = [
+        {"node_id": "finished", "status": "ran"},
+        {"node_id": "stopped", "status": "running"},
+        {"node_id": "stopped", "status": "cancelled"},
+        {"node_id": "stopped", "status": "running"},
+        {"node_id": "parallel", "status": "running"},
+    ]
+    statuses = build_node_status_map(events, ["finished", "stopped", "parallel", "unstarted"])
+    assert {row["node_id"]: row["status"] for row in statuses} == {
+        "finished": "ran", "stopped": "cancelled", "parallel": "running", "unstarted": "pending",
+    }
+
+
+def test_between_node_cancel_preserves_the_completed_node(tmp_path, monkeypatch):
+    """A successful result is observed before the inter-node cancellation checkpoint."""
+    import threading
+
+    from tinyassets import runs
+
+    stop = threading.Event()
+    monkeypatch.setattr(runs, "is_cancel_requested", lambda *args: stop.is_set())
+
+    def finish_then_cancel(prompt, system, *, role):
+        stop.set()
+        return "finished before cancellation was observed"
+
+    outcome = execute_branch(
+        tmp_path, branch=_simple_branch(), inputs={"x": "test"}, actor="tester",
+        provider_call=finish_then_cancel,
+    )
+    assert outcome.status == "cancelled"
+    events = list_events(tmp_path, outcome.run_id, since_step=-1)
+    statuses = build_node_status_map(events, ["step1"])
+    assert {row["node_id"]: row["status"] for row in statuses}["step1"] == "ran"
+
+
+@pytest.mark.parametrize("terminal_phase", ["cancelled", "ran"])
+def test_resume_translator_records_observed_terminal_before_cancel(
+    tmp_path, monkeypatch, terminal_phase,
+):
+    """Drive the resume event translator with a saved run, without faking child-stop proof."""
+    from types import SimpleNamespace
+
+    from tinyassets import runs
+    from tinyassets.graph_compiler import NodeCancelledError
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    branch = _simple_branch()
+    rid = runs.create_run(tmp_path, branch_def_id=branch.branch_def_id,
+                          thread_id="resume-cancel", inputs={"x": "test"}, actor="tester")
+
+    def compile_events(branch, *, event_sink, **kwargs):
+        def invoke(*args, **kwargs):
+            event_sink("step1", phase="starting")
+            runs.request_cancel(tmp_path, rid)
+            event_sink("step1", phase=terminal_phase)
+            if terminal_phase == "cancelled":
+                raise NodeCancelledError("actually stopped", node_id="step1")
+            return {}
+        return SimpleNamespace(graph=SimpleNamespace(
+            compile=lambda **kwargs: SimpleNamespace(invoke=invoke),
+        ))
+
+    monkeypatch.setattr(runs, "compile_branch", compile_events)
+    outcome = runs._invoke_graph_resume(tmp_path, run_id=rid, branch=branch,
+                                        thread_id="resume-cancel", provider_call=None)
+    assert outcome.status == "cancelled", outcome.error
+    statuses = build_node_status_map(list_events(tmp_path, rid, since_step=-1), ["step1"])
+    assert statuses == [{"node_id": "step1", "status": terminal_phase}]
+
+
+@pytest.mark.parametrize("graph_id", ["step1", "actual_instance"])
+def test_cancelled_diagram_uses_graph_instance_and_terminal_class(tmp_path, monkeypatch, graph_id):
+    from tinyassets import daemon_server
+    from tinyassets.api import runs as api_runs
+
+    branch = _simple_branch()
+    branch.graph_nodes[0].id = graph_id
+    branch.entry_point = graph_id
+    branch.edges = [EdgeDefinition(from_node="START", to_node=graph_id),
+                    EdgeDefinition(from_node=graph_id, to_node="END")]
+    monkeypatch.setattr(api_runs, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(daemon_server, "get_branch_definition",
+                        lambda *args, **kwargs: branch.to_dict())
+    diagram = api_runs._run_mermaid_from_events(branch.branch_def_id, [
+        {"node_id": graph_id, "status": "cancelled"},
+    ])
+    assert f"class {graph_id} cancelled" in diagram
+    assert "classDef cancelled" in diagram
+    assert f'{graph_id}["Step1"]' in diagram

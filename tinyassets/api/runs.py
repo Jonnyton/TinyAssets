@@ -314,7 +314,7 @@ def _run_mermaid_from_events(
 ) -> str:
     """Render a status-colored mermaid flowchart for a run snapshot.
 
-    Colors: ran=green, running=amber, failed=red, pending=grey. The caller
+    Colors: ran=green, running=amber, failed=red, cancelled=blue, pending=grey. The caller
     embeds this in the `summary` markdown and as a top-level field so
     Claude.ai auto-renders.
     """
@@ -339,9 +339,17 @@ def _run_mermaid_from_events(
     lines.append('    START(["START"])')
     lines.append('    END(["END"])')
 
-    for node in branch.node_defs:
-        nid = _mermaid_node_id(node.node_id)
-        label = _mermaid_label(node.display_name or node.node_id)
+    definitions = {node.node_id: node for node in branch.node_defs}
+    if branch.graph_nodes:
+        diagram_nodes = [
+            (ref.id, definitions.get(ref.node_def_id or ref.id))
+            for ref in branch.graph_nodes
+        ]
+    else:
+        diagram_nodes = [(node.node_id, node) for node in branch.node_defs]
+    for graph_id, node in diagram_nodes:
+        nid = _mermaid_node_id(graph_id)
+        label = _mermaid_label((node.display_name if node else "") or graph_id)
         lines.append(f'    {nid}["{label}"]')
 
     for edge in branch.edges:
@@ -354,11 +362,12 @@ def _run_mermaid_from_events(
         "ran": "ran",
         "running": "running",
         "failed": "failed",
+        "cancelled": "cancelled",
         "pending": "pending",
     }
-    for node in branch.node_defs:
-        nid = _mermaid_node_id(node.node_id)
-        st = status_by_id.get(node.node_id, "pending")
+    for graph_id, _node in diagram_nodes:
+        nid = _mermaid_node_id(graph_id)
+        st = status_by_id.get(graph_id, "pending")
         cls = status_classes.get(st, "pending")
         lines.append(f"    class {nid} {cls}")
 
@@ -366,6 +375,7 @@ def _run_mermaid_from_events(
         "    classDef ran fill:#d4edda,stroke:#28a745,stroke-width:2px",
         "    classDef running fill:#fff3cd,stroke:#ffc107,stroke-width:2px",
         "    classDef failed fill:#f8d7da,stroke:#dc3545,stroke-width:2px",
+        "    classDef cancelled fill:#dbeafe,stroke:#2563eb,stroke-width:2px",
         "    classDef pending fill:#e9ecef,stroke:#6c757d,stroke-width:1px",
     ])
 

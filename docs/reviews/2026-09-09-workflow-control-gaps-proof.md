@@ -1,4 +1,4 @@
-# Workflow controls: deployed technical proof, app retest pending
+# Workflow controls: live retest, one remaining terminal-state issue
 
 September 9, 2026 UTC / September 8 PDT. Implementation PR #3591; reviewed head
 436f72b8370e6cfbff00184b5f0a0a63f75dc0df; merged and deployed revision
@@ -43,16 +43,27 @@ https://github.com/Jonnyton/TinyAssets/actions/runs/34318999188.
 Rollback is a reviewed revert/redeploy of the implementation, with no migration
 or deletion of user workflows/runs.
 
-## Rendered acceptance remains open
+## Rendered acceptance: four closed, cancelled-node display remains open
 
 Sent exactly `Retest your workflow checklist` through the existing signed-in
 https://tinyassets.io/mcp/app conversation. Verified full rendered user message
-at Sep 8 23:27 PDT; app is thinking. No acceptance result yet. One controlled
-mission tab, no operator workflow edit, new grant or coaching prompt.
+at Sep 8 23:27 PDT. At 23:30 PDT the app explicitly reported:
+
+> Fixed: workflow editing, output readback, explicit workspace discard, and failed-node status.
+> Cancellation works, but a cancelled run still displays its code node as running.
+
+The app built its own temporary receiver and workflow. Through ordinary UI we
+approved only POST delivery and DELETE cleanup for its exact receiver, retaining
+the existing vault key and leaving the persistent-approval checkbox unchecked.
+At 23:31 PDT the app reported delivery HTTP 200, cleanup HTTP 204, deleted its
+temporary workflow, and all nine checklist rows passed. Its stated remaining
+issue is the cancelled code node still appearing running. All-five completion
+therefore remains unproven and requires a platform follow-up/redeploy/retest.
+One controlled mission tab; no operator workflow edit or coaching prompt.
 Log: output/user_sim_session.md. This is existing-owner webapp continuation,
 not first-contact or cross-client compatibility proof.
 
-No post-fix organic user exercise of these five controls is visible yet. Keep
+No post-fix organic user exercise beyond this directed retest is visible yet. Keep
 docs/concerns/2026-09-08-app-read-write-sweep-gaps.md and the change acceptance
 tasks open until rendered evidence establishes closure. The broader concurrency,
 activity and retained-space limit simplification remains unfinished regardless

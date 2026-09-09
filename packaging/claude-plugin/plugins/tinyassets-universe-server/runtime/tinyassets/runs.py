@@ -68,6 +68,7 @@ NODE_STATUS_PENDING = "pending"
 NODE_STATUS_RUNNING = "running"
 NODE_STATUS_RAN = "ran"
 NODE_STATUS_FAILED = "failed"
+NODE_STATUS_CANCELLED = "cancelled"
 
 
 class RunCancelledError(Exception):
@@ -3489,20 +3490,18 @@ def _invoke_graph(
             ))
             return
 
-        if phase == "failed":
+        if phase in {"failed", "cancelled"}:
             record_event(base_path, RunStepEvent(
                 run_id=run_id,
                 step_index=step + _PENDING_OFFSET,
                 node_id=node_id,
-                status=NODE_STATUS_FAILED,
+                status=NODE_STATUS_CANCELLED if phase == "cancelled" else NODE_STATUS_FAILED,
                 started_at=_now(),
                 finished_at=_now(),
                 detail=detail,
             ))
             return
 
-        if is_cancel_requested(base_path, run_id):
-            raise RunCancelledError(f"Run {run_id} cancelled between nodes.")
         served = detail.get("provider_served")
         if served:
             provider_tracker["last"] = str(served)
@@ -3527,6 +3526,10 @@ def _invoke_graph(
             finished_at=_now(),
             detail=detail,
         ))
+        # The node completed before this cooperative checkpoint. Preserve that
+        # observation even when cancellation stops the graph's next step.
+        if is_cancel_requested(base_path, run_id):
+            raise RunCancelledError(f"Run {run_id} cancelled between nodes.")
         _emit_node_status(node_id, NODE_STATUS_RAN)
 
         # Phase 2 design_used emit (Task #75) — credit the NodeDefinition's
@@ -5173,20 +5176,18 @@ def _invoke_graph_resume(
             ))
             return
 
-        if phase == "failed":
+        if phase in {"failed", "cancelled"}:
             record_event(base_path, RunStepEvent(
                 run_id=run_id,
                 step_index=step + _PENDING_OFFSET,
                 node_id=node_id,
-                status=NODE_STATUS_FAILED,
+                status=NODE_STATUS_CANCELLED if phase == "cancelled" else NODE_STATUS_FAILED,
                 started_at=_now(),
                 finished_at=_now(),
                 detail=detail,
             ))
             return
 
-        if is_cancel_requested(base_path, run_id):
-            raise RunCancelledError(f"Run {run_id} cancelled during resume.")
         record_event(base_path, RunStepEvent(
             run_id=run_id,
             step_index=step + _PENDING_OFFSET,
@@ -5196,6 +5197,8 @@ def _invoke_graph_resume(
             finished_at=_now(),
             detail=detail,
         ))
+        if is_cancel_requested(base_path, run_id):
+            raise RunCancelledError(f"Run {run_id} cancelled during resume.")
 
     from tinyassets.effectors import EffectChain, register_effect_chain
 
@@ -5420,12 +5423,13 @@ def build_node_status_map(
         statuses.setdefault(node_id, NODE_STATUS_PENDING)
         current = statuses[node_id]
         incoming = ev.get("status", NODE_STATUS_PENDING)
-        # ran/failed trump running which trumps pending
+        # Observed terminal states trump running, which trumps pending.
         priority = {
             NODE_STATUS_PENDING: 0,
             NODE_STATUS_RUNNING: 1,
             NODE_STATUS_RAN: 2,
             NODE_STATUS_FAILED: 2,
+            NODE_STATUS_CANCELLED: 2,
         }
         if priority.get(incoming, 0) >= priority.get(current, 0):
             statuses[node_id] = incoming

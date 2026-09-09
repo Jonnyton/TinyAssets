@@ -1,4 +1,23 @@
-# Cancel is advisory, and the run timeout is quietly doing cancellation's job
+# Cancellation lifecycle: original advisory finding and remaining proof
+
+## Current evidence: September 9, 2026 UTC
+
+The original "sandbox never hears cancellation" premise below is no longer
+current. Deployed 0082695793278fabf520c9bf2a8fa2694c4a2823 exposes owner cancellation,
+and the Sep 8 23:30-23:31 PDT rendered app retest confirms cancellation works.
+The local real-child test also observes the child exited before terminal readback;
+queued cancellation starts no child. Fresh app finding: its stopped code node
+still displays running. That state-reporting fix is in the active
+close-workflow-control-gaps change, not a reason to assume cancellation is still
+only advisory. Evidence: docs/reviews/2026-09-09-workflow-control-gaps-proof.md.
+
+Keep remaining proof precise: this directed app reply and local Windows child
+check are not standalone proof of every Linux jail descendant and lease-release
+case described below. Do not remove time/resource safeguards by assuming that
+broader lifecycle evidence exists. The historical source line numbers below
+describe the August 31 finding and must not be reused as current code anchors.
+
+## Historical finding: August 31, 2026
 
 **Found 2026-08-31**, following the founder's statement that a borrowed
 workflow is bounded by the owner being able to stop it:

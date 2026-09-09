@@ -548,6 +548,12 @@ universe and enforce the existing record ACL before content or mutation.
 - **WHEN** the selected run is already terminal
 - **THEN** the actual terminal status is returned without a new cancellation record or false cancelled claim
 
+#### Scenario: Cancel stops an executing code node
+- **WHEN** the sandbox reports that an executing code node was cancelled
+- **THEN** its graph-instance node event and status are terminal cancelled, not running or failed
+- **AND** completed siblings remain completed and nodes that never started are not falsely reported as executed or cancelled
+- **AND** initial execution, resumed execution and status diagrams preserve that observed terminal state
+
 #### Scenario: Cancellation is an owner control
 - **WHEN** a caller with write capability cancels a run in a universe where it has write access
 - **THEN** cancellation does not require platform-admin or costly capability
