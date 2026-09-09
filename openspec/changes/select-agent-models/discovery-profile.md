@@ -63,6 +63,19 @@ destinations and compare profile plus current authority after the reads, before
 publishing a snapshot. Initially fetch fresh rather than adding another durable
 cache store. Carry source URLs, fetch time and a digest of the profile/current
 connection authority into the snapshot; recheck at actual model authorization.
+Read grant/resource/profile in one SQLite snapshot and verify the definition
+before and after transport. Reuse the existing secret-free grant-identity digest
+for credential-reference lineage; never read or hash credential material. This
+records connection identity, not independent account-capacity evidence.
+
+The pure policy's historical connection_id field is an opaque selector-source
+key, not necessarily a raw HTTP ledger id (CLI sources have no such id). Use the
+exact provider reference, api_key_http:<definition_id>, for that key so several
+accepted definitions sharing physical custody cannot combine bindings or model
+permissions. Keep the physical connection/grant separately in source provenance;
+profile sharing does not merge assignment members. This matches provider-keyed
+manifest authority while preserving legacy definition identity and opaque model
+IDs. Snapshot output stays advisory and cannot grant inference by construction.
 Never mark arbitrary same-schema JSON as verified account-filtered availability.
 The protocol adapter pins /api/v1/models/user and owns account-filtered semantics;
 the host remains the owner's explicitly granted choice. A global /models path,
@@ -105,11 +118,14 @@ is implemented; do not advertise HTTP full-agent readiness from catalogue tools.
   model validator and approved cost/capability limits. Prove actual execution,
   UI and rendered app behavior later; these unit fixtures are not that proof.
 
-Implementation now follows this adapted design;40 new profile cases and279
-combined Windows/Ubuntu checks pass. Profile-bound refresh and actual selection
-remain unfinished. Evidence: docs/reviews/2026-09-09-discovery-profile-publication-proof.md.
+Profile publication now follows this adapted design and received independent
+APPROVE atc8d0dbab. Profile-bound refresh/snapshot provenance and per-event-loop
+single-flight are also implemented locally, with no app consumer yet. Combined
+tests pass301 Windows/Ubuntu, no skips. Actual selection remains unfinished.
+Evidence: docs/reviews/2026-09-09-discovery-snapshot-proof.md and the publication
+proof/review artifacts it links.
 
 Review: docs/reviews/2026-09-09-model-discovery-review.md. Internal transport and
-decoders APPROVED at4e21c3d5; publication still needs independent implementation
-evidence before landing. Actual account pricing may contain
+decoders APPROVED at4e21c3d5; publication APPROVED atc8d0dbab. Snapshot/selection
+integration still needs independent review before landing. Actual account pricing may contain
 additional charge components; do not claim automatic eligibility from fixtures.

@@ -1885,6 +1885,8 @@ def _validate_model_discovery_capability(
         raise ValueError("discovery descriptor fields are invalid")
     protocol = descriptor["protocol"]
     contract = discovery_protocol(protocol)
+    if "benchmark_url" in descriptor and not isinstance(descriptor["benchmark_url"], str):
+        raise ValueError("discovery benchmark_url must be a string when provided")
     catalogue_url = _capability_https_url("catalogue_url", descriptor["catalogue_url"])
     benchmark_url = _capability_https_url(
         "benchmark_url", descriptor.get("benchmark_url"), optional=True

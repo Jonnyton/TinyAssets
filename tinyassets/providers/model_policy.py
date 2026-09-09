@@ -17,7 +17,7 @@ SourceKind = Literal["subscription", "local", "http"]
 
 @dataclass(frozen=True, slots=True)
 class ModelRef:
-    connection_id: str
+    connection_id: str  # Opaque selector source (exact provider ref), not an HTTP ledger id.
     model_id: str  # Opaque; empty may represent the connection's native default.
 
 
@@ -71,7 +71,7 @@ class Model:
 
 @dataclass(frozen=True, slots=True)
 class ConnectionModels:
-    connection_id: str
+    connection_id: str  # Preserve separate accepted bindings even when physical custody is shared.
     provider_scope: str  # Trusted adapter scope, not remote model metadata.
     source_kind: SourceKind
     freshness: Freshness

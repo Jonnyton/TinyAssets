@@ -341,3 +341,31 @@ def test_existing_write_graph_operation_routes_unpowered_discovery(rig):
     )
     assert response["status"] == "configured"
     assert rig.ledger.get_connection_capability("conn-models", "model_discovery")
+
+
+@pytest.mark.parametrize("value", [None, [], 42])
+def test_malformed_optional_benchmark_is_not_silently_discarded(rig, value):
+    with pytest.raises(ValueError, match="benchmark_url must be a string"):
+        rig.publish(descriptor=DESCRIPTOR | {"benchmark_url": value})
+
+
+def test_profile_publication_preserves_full_channel_semantics(rig):
+    with rig.ledger._connect() as raw:
+        raw.execute(
+            "UPDATE outbound_connections SET access_mode = 'full', scopes_json = '[\"POST\"]'"
+        )
+    assert rig.publish().catalogue_url == CATALOGUE
+
+
+def test_path_permission_alone_does_not_grant_catalogue_query(rig):
+    with rig.ledger._connect() as raw:
+        endpoints = json.loads(
+            raw.execute("SELECT allowed_endpoints_json FROM outbound_connections").fetchone()[0]
+        )
+        for key in ("allowed_query", "required_query", "query_patterns"):
+            endpoints[0].pop(key, None)
+        raw.execute(
+            "UPDATE outbound_connections SET allowed_endpoints_json = ?", (json.dumps(endpoints),)
+        )
+    with pytest.raises(SsrfValidationError):
+        rig.publish()

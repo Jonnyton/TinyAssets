@@ -1,9 +1,13 @@
 # Candidate authority integration: verified constraints and decision gate
 
 September9, source checkout939931a9ff0516e28b7d64ad340cafd023f57401.
-Candidate membership remains pre-build design work, not a shipped claim.
-The shared-validator prerequisite is implemented at fc617195, under independent
-review; it changes no accepted provider or authority/storage contract.
+The dated inventory below records the pre-build investigation, not current stage.
+Shared validation and launch accounting are now independently APPROVED; manifest
+storage/publication are implemented with the review's ordering bug corrected.
+Discovery transport and profile publication are independently APPROVED; fresh
+snapshots are locally tested. All selection foundations remain undeployed and v2
+execution stays held pending per-attempt model/cost validation. Current details:
+connection-model-authority.md, discovery-profile.md and their proof/review files.
 
 ## Reverified constraints
 

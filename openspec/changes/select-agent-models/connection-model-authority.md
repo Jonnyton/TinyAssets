@@ -9,9 +9,10 @@ now regression-tested and corrected. There is no app/MCP activation and
 manifest-backed execution remains held pending actual model validation. Discovery,
 policy and tool continuation are still unfinished; no live account-access claim.
 
-The internal discovery transport and pure protocol decoders are locally tested.
-The proposed existing-capability metadata extension is in discovery-profile.md;
-its publication and live account-filtered evidence remain pre-build gates.
+The discovery transport/decoders and existing-capability metadata publication
+are locally tested and independently APPROVED; see discovery-profile.md. Fresh
+profile-bound snapshots are implemented and tested but have no app consumer.
+Actual per-attempt model/cost validation and live account evidence remain gates.
 
 ## Why candidate identity cannot be a compiled model list
 
