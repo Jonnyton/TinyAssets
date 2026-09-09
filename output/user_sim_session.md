@@ -868,3 +868,19 @@ already-completed webhook cleanup rather than another run. Report saved in
 docs/concerns/2026-09-08-app-read-write-sweep-gaps.md; no independent reproduction
 or deployed SHA claimed. No prompt, workflow operation, or approval sent.
 Existing-owner continuation; unrelated tabs untouched.
+
+## [2026-09-09 06:24 UTC] LEAD DIRECTION five-gap post-deploy retest
+
+Owner explicitly added all five gaps to the active limit-simplification goal and
+requires the app agent's message that they are closed. After verified deployment,
+send exactly: Retest your workflow checklist. For private workflow repair, ask
+the agent ordinarily to fix it or name its blocker; no operator workflow edits.
+
+## [2026-09-09 06:24 UTC] USER NOTE retest preflight, no prompt yet
+
+TAB HYGIENE: one controlled mission tab 1346517638 at https://tinyassets.io/mcp/app;
+owner/other-task tabs remain untouched. CUA rendered view shows the signed-in
+owner conversation and composer, still ending with Sep 8 21:39 five-gap report.
+Existing-owner webapp continuation per explicit owner direction, not Claude
+incognito, first-contact or cross-client compatibility proof. PR #3591 merged;
+image build 34318730934 is running. No prompt, approval or workflow edit sent.

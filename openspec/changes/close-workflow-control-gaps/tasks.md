@@ -13,7 +13,7 @@
 
 ## 3. Verify and deliver
 
-- [ ] 3.1 Pass focused Windows and Linux baseline/candidate comparisons, lint, mirror parity and exact-head independent review.
+- [x] 3.1 Pass focused Windows and Linux baseline/candidate comparisons, lint, mirror parity and exact-head independent review.
 - [ ] 3.2 Merge through normal CI guards, deploy and pass authenticated canary plus deployed-SHA containment.
 - [ ] 3.3 Send the exact ordinary retest prompt and obtain the webapp agent's explicit message that all five gaps are closed; fix and redeploy if it finds a blocker.
 - [ ] 3.4 Sync shipped specs, record rendered/organic evidence and archive this completed delivery slice while preserving unfinished broader limits work.

@@ -1,6 +1,30 @@
 # Review and reproduction state
 
-## Current candidate: five platform gaps implemented locally
+## Current state: implementation merged, live acceptance pending
+
+September 9, 2026 UTC. PR #3591 merged as
+0082695793278fabf520c9bf2a8fa2694c4a2823 after exact-head Claude APPROVE for
+436f72b8370e6cfbff00184b5f0a0a63f75dc0df (exit 0, 157 seconds). Follow-up runtime
+and mirror were byte-identical to the earlier fully reviewed 41df8819.
+Receipt: https://github.com/Jonnyton/TinyAssets/pull/3591#issuecomment-5596798037.
+
+Linux Tests 34317601056 passed required-tests in 14m13s and slow-tests in 1m30s.
+Actual checkout e570f22e7f2eef65299849b76fb2dd3e7f80e554 merges reviewed head
+436f72b8 with 87c520e9. Fetched that exact commit; `git diff --exit-code
+436f72b8 e570f22e -- tinyassets packaging tests` is empty. Only three unrelated
+Play-release documents differ across the full tree. Focused JUnit set comparison:
+441 passes, two Windows-only skips versus baseline 390+2. No new failures and
+no formerly passing focused cases missing/nonpassing. Full required artifact:
+14816 passes, 54 skips, nine failures and two collection errors, with all errors/
+failures identical to existing baseline cases. Passing required gate is not a
+claim that every repository test passes; heavy files remain untested on this PR.
+Receipt: https://github.com/Jonnyton/TinyAssets/pull/3591#issuecomment-5596933164.
+
+Image build 34318730934 is running. Deployment, authenticated canary/SHA and the
+rendered app confirmation are still pending. The following sections preserve
+dated implementation history, not current release status.
+
+## Historical candidate: five platform gaps implemented locally
 
 ### First exact-head review and Linux CI feedback
 
