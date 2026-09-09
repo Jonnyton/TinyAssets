@@ -91,7 +91,9 @@ class AppStoreConnect:
             ) from None
 
 
-def save_review_account(client: AppStoreConnect, values: Mapping[str, str]) -> tuple[str, str]:
+def _review_detail(
+    client: AppStoreConnect, values: Mapping[str, str]
+) -> tuple[str, dict[str, Any] | None]:
     query = urllib.parse.urlencode(
         {"filter[platform]": "IOS", "filter[versionString]": values["VERSION"]}
     )
@@ -110,6 +112,39 @@ def save_review_account(client: AppStoreConnect, values: Mapping[str, str]) -> t
         not_found_ok=True,
     )
     review = None if review_response is None else review_response["data"]
+    return version_id, review
+
+
+def verify_review_account(
+    client: AppStoreConnect, values: Mapping[str, str]
+) -> tuple[str, str]:
+    version_id, review = _review_detail(client, values)
+    if review is None:
+        raise SystemExit("App Store Connect has no App Review detail for this version")
+    attributes = review.get("attributes", {})
+    if attributes.get("demoAccountName") != values["REVIEW_USERNAME"]:
+        raise SystemExit("App Store Connect has not retained the reviewer username")
+    if attributes.get("demoAccountPassword") != values["REVIEW_PASSWORD"]:
+        raise SystemExit("App Store Connect has not retained the reviewer password")
+    if attributes.get("demoAccountRequired") is not True:
+        raise SystemExit("App Store Connect has not marked the reviewer account as required")
+    contact_names = (
+        "contactFirstName",
+        "contactLastName",
+        "contactEmail",
+        "contactPhone",
+    )
+    missing_contacts = [name for name in contact_names if not attributes.get(name)]
+    if missing_contacts:
+        raise SystemExit(
+            "App Store Connect is missing required reviewer contact fields: "
+            + ", ".join(missing_contacts)
+        )
+    return version_id, review["id"]
+
+
+def save_review_account(client: AppStoreConnect, values: Mapping[str, str]) -> tuple[str, str]:
+    version_id, review = _review_detail(client, values)
     attributes = {
         "demoAccountName": values["REVIEW_USERNAME"],
         "demoAccountPassword": values["REVIEW_PASSWORD"],
@@ -149,6 +184,8 @@ def save_review_account(client: AppStoreConnect, values: Mapping[str, str]) -> t
     saved_attributes = saved.get("attributes", {})
     if saved_attributes.get("demoAccountName") != values["REVIEW_USERNAME"]:
         raise SystemExit("App Store Connect did not retain the reviewer username")
+    if saved_attributes.get("demoAccountPassword") != values["REVIEW_PASSWORD"]:
+        raise SystemExit("App Store Connect did not retain the reviewer password")
     if saved_attributes.get("demoAccountRequired") is not True:
         raise SystemExit("App Store Connect did not mark the reviewer account as required")
     return version_id, saved["id"]
@@ -157,6 +194,17 @@ def save_review_account(client: AppStoreConnect, values: Mapping[str, str]) -> t
 def main() -> None:
     values = _required_environment(os.environ)
     client = AppStoreConnect(_token(values))
+    verify_only = os.environ.get("VERIFY_ONLY", "true").strip().lower()
+    if verify_only in {"1", "true", "yes"}:
+        version_id, review_detail_id = verify_review_account(client, values)
+        print(
+            "Verified retained App Review account and contact for "
+            f"app={values['APP_ID']} version={values['VERSION']} "
+            f"version_id={version_id} review_detail_id={review_detail_id}"
+        )
+        return
+    if verify_only not in {"0", "false", "no"}:
+        raise SystemExit("VERIFY_ONLY must be true/false, yes/no, or 1/0")
     version_id, review_detail_id = save_review_account(client, values)
     print(
         "Saved App Review account for "

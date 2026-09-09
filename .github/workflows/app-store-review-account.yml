@@ -13,6 +13,11 @@ on:
         required: true
         default: "1.0"
         type: string
+      verify_only:
+        description: Read and verify retained details without changing App Store Connect
+        required: true
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -47,6 +52,7 @@ jobs:
           REVIEW_PASSWORD: ${{ secrets.APP_STORE_REVIEW_PASSWORD }}
           APP_ID: ${{ inputs.app_id }}
           VERSION: ${{ inputs.version }}
+          VERIFY_ONLY: ${{ inputs.verify_only }}
         run: |
           set -euo pipefail
           python scripts/app_store_review_account.py
