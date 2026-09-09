@@ -1230,7 +1230,7 @@ def _push(
     host: str,
     repo: str,
     execute: Any,
-    prior_effects: dict[str, Any] | None = None,
+    ancestors: set[str] | None = None,
 ) -> dict[str, Any]:
     commit_sha = _str_field(packet, "commit_sha")
     slug = _str_field(packet, "branch_slug")
@@ -1238,7 +1238,7 @@ def _push(
         raise _Refused("invalid_packet", "packet.commit_sha is required for a push")
     if not _SLUG_RE.match(slug) or ".." in slug or slug.endswith(".lock"):
         raise _Refused("invalid_packet", "packet.branch_slug must be a single path-safe segment")
-    mount = _resolve_mount(chain, packet, node_id, prior_effects=prior_effects)
+    mount = _resolve_mount(chain, packet, node_id, ancestors=ancestors)
     # The DESTINATION and the AUTHORITY come from the capability, never from
     # the packet: the checkout is what was consented to, and a packet naming a
     # different repository is a packet trying to reuse this credential
@@ -1349,11 +1349,11 @@ def _discard(
     run_id: str,
     universe_id: str,
     chain: Any,
-    prior_effects: dict[str, Any] | None = None,
+    ancestors: set[str] | None = None,
 ) -> dict[str, Any]:
     from tinyassets import workspace_pool
 
-    mount = _resolve_mount(chain, packet, node_id, prior_effects=prior_effects)
+    mount = _resolve_mount(chain, packet, node_id, ancestors=ancestors)
     _require_packet_agrees_with_mount(packet, mount)
     # A discard holds no lease reservation of its own once it starts, so the
     # hourly ledger sees it here -- before anything is mutated.
@@ -1502,7 +1502,7 @@ def _resolve_mount(
     packet: dict[str, Any],
     node_id: str,
     *,
-    prior_effects: dict[str, Any] | None = None,
+    ancestors: set[str] | None = None,
 ) -> Any:
     """The workspace a push/discard names, through the run's effect chain ONLY.
 
@@ -1511,8 +1511,8 @@ def _resolve_mount(
 
     And it must be an ANCESTOR. The chain is run-global, so without this a node
     on a parallel branch could name a workspace it has no graph relationship
-    to; ``prior_effects`` is already the ancestor-scoped view the dispatcher
-    hands every adapter (``None`` means no ancestry is known -- legacy
+    to; ``ancestors`` is the compiler's graph relation, not the subset of
+    ancestors that produced HTTP results (``None`` means no ancestry is known -- legacy
     post-run dispatch -- and is not treated as a refusal).
     """
     target = _str_field(packet, "workspace")
@@ -1528,7 +1528,7 @@ def _resolve_mount(
             "no_matching_packet",
             f"node '{node_id}' names workspace '{target}', which this run does not hold",
         )
-    if prior_effects is not None and target not in prior_effects:
+    if ancestors is not None and target not in ancestors:
         raise _Refused(
             "no_matching_packet",
             f"node '{node_id}' names workspace '{target}', which is not one of its "
@@ -1597,7 +1597,7 @@ def run_workspace_effector(
     run_id: str = "",
     dry_run: bool | None = None,
     allowed_state_keys: list[str] | set[str] | None = None,
-    prior_effects: dict[str, Any] | None = None,
+    ancestors: set[str] | None = None,
     chain: Any = None,
     execute: Any = None,
     timeout_seconds: float = 0.0,
@@ -1619,7 +1619,7 @@ def run_workspace_effector(
             dry_run=dry_run,
             chain=chain,
             execute=execute,
-            prior_effects=prior_effects,
+            ancestors=ancestors,
             timeout_seconds=timeout_seconds,
             admission=admission,
         )
@@ -1646,7 +1646,7 @@ def _run(
     chain: Any,
     execute: Any,
     admission: AdmissionObservation,
-    prior_effects: dict[str, Any] | None = None,
+    ancestors: set[str] | None = None,
     timeout_seconds: float = 0.0,
 ) -> dict[str, Any]:
     matched_key, packet = _find_packet(output_keys=output_keys, run_state=run_state)
@@ -1716,7 +1716,7 @@ def _run(
             run_id=run_id,
             universe_id=universe_id,
             chain=chain,
-            prior_effects=prior_effects,
+            ancestors=ancestors,
         )
 
     if op == "push":
@@ -1724,7 +1724,7 @@ def _run(
         # is refused HERE -- before the connection and scope gates, which would
         # otherwise report the contradiction as "scope not granted" and send
         # the reader looking for a missing grant that is not the problem.
-        early = _resolve_mount(chain, packet, node_id, prior_effects=prior_effects)
+        early = _resolve_mount(chain, packet, node_id, ancestors=ancestors)
         _require_packet_agrees_with_mount(packet, early)
         # A CREATED workspace carries no host and no repository, because no
         # remote was ever contacted to make it. Falling through would let the
@@ -1795,11 +1795,11 @@ def _run(
         "host": host,
         "repo": repo,
         "execute": execute,
-        "prior_effects": prior_effects,
+        "ancestors": ancestors,
     }
     if op == "checkout":
         evidence = _checkout(
-            **{k: v for k, v in common.items() if k != "prior_effects"},
+            **{k: v for k, v in common.items() if k != "ancestors"},
             timeout_seconds=timeout_seconds,
             admission=admission,
         )

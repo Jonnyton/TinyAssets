@@ -1328,6 +1328,66 @@ def test_a_created_workspace_can_be_discarded(
     assert chain.workspace_mount_or_none("n0") is None
 
 
+@pytest.mark.parametrize("is_ancestor", [True, False])
+def test_discard_uses_graph_ancestry_through_real_dispatch(
+    tmp_path: Path, fs_spy, monkeypatch: pytest.MonkeyPatch, is_ancestor: bool,
+) -> None:
+    """Workspace ancestry must not require a fabricated HTTP response entry."""
+    from types import SimpleNamespace
+
+    from tinyassets.effectors import (
+        EffectFailedError,
+        dispatch_node_effects,
+        forget_effect_chain,
+        register_effect_chain,
+    )
+
+    _root, universe_dir = _empty_universe(tmp_path)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(_root))
+    live_chain = EffectChain(
+        run_id="dispatch-discard", base_path=str(universe_dir), universe_id=UNIVERSE,
+    )
+    register_effect_chain(live_chain)
+    node = SimpleNamespace(
+        node_id="shared-definition", effects=[EXTERNAL_WRITE_SINK_WORKSPACE],
+        input_keys=[], output_keys=["ws"], timeout_seconds=0.0,
+    )
+    try:
+        created = dispatch_node_effects(
+            live_chain, node, {"ws": _create_packet()},
+            ancestors=set(), node_key="create-instance",
+        )
+        assert created[EXTERNAL_WRITE_SINK_WORKSPACE]["op"] == "create"
+        assert live_chain.workspace_mount_or_none("create-instance") is not None
+        assert live_chain.results == {}, "workspace creation is not an HTTP response"
+        packet = {
+            "sink": EXTERNAL_WRITE_SINK_WORKSPACE, "op": "discard",
+            "workspace": "create-instance",
+        }
+        ancestors = {"create-instance"} if is_ancestor else {"parallel-sibling"}
+        if not is_ancestor:
+            with pytest.raises(EffectFailedError, match="graph ancestors"):
+                dispatch_node_effects(
+                    live_chain, node, {"ws": packet}, ancestors=ancestors,
+                    node_key="discard-instance",
+                )
+            assert live_chain.workspace_mount_or_none("create-instance") is not None
+        else:
+            result = dispatch_node_effects(
+                live_chain, node, {"ws": packet}, ancestors=ancestors,
+                node_key="discard-instance",
+            )
+            assert result[EXTERNAL_WRITE_SINK_WORKSPACE]["op"] == "discard"
+            assert live_chain.workspace_mount_or_none("create-instance") is None
+            assert any(
+                row["action"] == "wipe_scratch"
+                for row in _outbox_rows(workspace_pool_db(universe_dir))
+            )
+    finally:
+        live_chain.settle()
+        forget_effect_chain(live_chain.run_id)
+
+
 def test_a_permanent_create_needs_a_name_and_uses_its_own_key_namespace(
     tmp_path: Path, chain: EffectChain, fs_spy
 ) -> None:
@@ -2405,7 +2465,7 @@ def test_a_workspace_from_a_non_ancestor_node_is_not_reachable(
         run_id="run-1",
         chain=chain,
         execute=worker,
-        prior_effects={"someone-else": {}},  # n0 is NOT an ancestor
+        ancestors={"someone-else"},  # n0 is NOT an ancestor
     )
     assert result["error_kind"] == "no_matching_packet"
     assert "graph ancestors" in result["error"]
@@ -2428,7 +2488,7 @@ def test_an_ancestor_workspace_is_reachable(
         run_id="run-1",
         chain=chain,
         execute=FakeWorker({"ok": True, "bytes": 4, "resolved_sha": SHA}),
-        prior_effects={"n0": {}},
+        ancestors={"n0"},
     )
     assert result.get("error_kind") is None, result
     assert result["op"] == "push"

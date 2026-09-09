@@ -6135,7 +6135,8 @@ def list_recent_runs(
         elif failure_class == "code_node_failed":
             suggested_action = (
                 "Your code node raised or exited non-zero; the error carries its stderr "
-                "tail. Fix run() in that node with write_graph (op=patch_node) and run again."
+                "tail. Fix run() in that node with write_graph "
+                "(operation=patch, payload op=update_node) and run again."
             )
         elif failure_class == "sandbox_unavailable":
             suggested_action = "Enable unprivileged user namespaces or run on a bwrap-capable host."

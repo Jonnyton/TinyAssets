@@ -561,7 +561,7 @@ def _classify_run_error(exc: Exception, bid: str) -> dict[str, Any]:
             exc, "code_node_failed",
             "Your code node was refused at compile; the message says why "
             "(disallowed pattern, size, or syntax). Fix the node's source_code "
-            "with write_graph (op=patch_node) and run again.",
+            "with write_graph (operation=patch, payload op=update_node) and run again.",
         )
     if "concurrent" in msg or "conflict" in msg or "modified" in msg or "stale" in msg:
         return _failure_payload(
@@ -635,7 +635,8 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
         return (
             "code_node_failed",
             "Your code node raised or exited non-zero; the error carries its stderr tail. "
-            "Fix run() in that node with write_graph (op=patch_node) and run again.",
+            "Fix run() in that node with write_graph "
+            "(operation=patch, payload op=update_node) and run again.",
         )
     if "timed out" in msg or "timeout" in msg:
         return (
@@ -692,7 +693,7 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
             "code_node_failed",
             "Your code node was refused at compile; the message says why (disallowed "
             "pattern, size, or syntax). Fix the node's source_code with write_graph "
-            "(op=patch_node) and run again.",
+            "(operation=patch, payload op=update_node) and run again.",
         )
     if "permission denied" in msg:
         return (

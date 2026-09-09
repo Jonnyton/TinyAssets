@@ -2199,7 +2199,9 @@ def _build_source_code_node(
             message = f"code node '{node.node_id}' failed: {error}"
             if stderr_tail.strip():
                 message += f" | stderr: {stderr_tail.strip()[-600:]}"
-            raise CodeNodeError(message, node_id=node.node_id, stderr_tail=stderr_tail)
+            failure = CodeNodeError(message, node_id=node.node_id, stderr_tail=stderr_tail)
+            _emit_failed_event(event_sink, node.node_id, failure)
+            raise failure
         output = dict(result.output_state or {})
         # The return passes through exactly as the in-process node's did:
         # the single-merge-writer guard wrapping this function sees every key
@@ -3289,6 +3291,18 @@ def _build_node(
     effect wrapper - the guard MUST see the delta before any effect fires
     (Codex round 2, P0). ``ancestors`` is the set of graph node ids this node
     may reference; ``graph_node_id`` keys its effects on the run's chain."""
+    if event_sink is not None and graph_node_id and graph_node_id != node.node_id:
+        definition_event_sink = event_sink
+
+        def graph_event_sink(node_id: str, **detail: Any) -> None:
+            # One definition can back several graph nodes. Starting and terminal
+            # events must address the instance the graph actually scheduled.
+            definition_event_sink(
+                node_id=graph_node_id if node_id == node.node_id else node_id,
+                **detail,
+            )
+
+        event_sink = graph_event_sink
     inner = _build_node_inner(
         node,
         provider_call=provider_call,

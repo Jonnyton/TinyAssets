@@ -51,6 +51,22 @@ def test_patch_requires_branch_id(monkeypatch):
     assert seen == {}
 
 
+def test_unknown_edit_operation_teaches_a_reachable_payload(monkeypatch):
+    """Failure guidance must not send the agent back to the refused spelling."""
+    import re
+
+    s = _bind(monkeypatch)
+    seen = _capture(monkeypatch)
+    refused = _patch(s, [{"op": "patch_node", "node_id": "n1", "source_code": "x"}])
+    assert seen == {}
+    example = json.loads(re.search(r'\{"op":"update_node".*?\}', refused["error"])[0])
+    example["node_id"] = "n1"
+    example["source_code"] = "def run(state):\n    return {'out': 'edited'}\n"
+    accepted = _patch(s, [example])
+    assert accepted["ok"] is True
+    assert json.loads(seen["changes_json"]) == [example]
+
+
 def test_patch_refused_off_allowlist(monkeypatch):
     s = _bind(monkeypatch, allow=("u-other",))
     seen = _capture(monkeypatch)

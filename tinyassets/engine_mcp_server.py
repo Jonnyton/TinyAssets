@@ -932,7 +932,9 @@ def _sanitize_served_patch_changes(changes: object) -> str:
         else:
             raise ValueError(
                 f"patch op '{kind or '(empty)'}' is not allowed on the served edit "
-                "surface"
+                'surface. To edit node content, use {"op":"update_node",'
+                '"node_id":"<node definition id>","source_code":"<replacement code>"} '
+                'inside the payload_json array with target="branch", operation="patch".'
             )
     return json.dumps(changes, separators=(",", ":"))
 
@@ -1328,7 +1330,8 @@ def write_graph(
     packet or a far-side error >= 400 FAILS the node and the run (later nodes
     never run) unless the packet declares ``"accept_statuses": [404]`` for a
     probe. A failing code node reports ``code_node_failed`` with its stderr -
-    fix ``run()`` with ``op=patch_node`` and run again. Code runs only in the
+    fix ``run()`` with ``operation=patch`` and payload ``op=update_node``, then run again.
+    Code runs only in the
     universe that authored it: a public branch's code must be remixed
     (``fork_from``) before it runs as yours. Stdlib only (``json re base64
     difflib textwrap html csv datetime math`` ...); 512 MiB, the node's
