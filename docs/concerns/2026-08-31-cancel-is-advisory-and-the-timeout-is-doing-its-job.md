@@ -25,6 +25,32 @@ Preserve it for targeted reproduction; do not infer that the app exercised it.
 Historical cancelled-run records are intentionally not rewritten by the fix.
 Review: https://github.com/Jonnyton/TinyAssets/pull/3599#issuecomment-5597507666.
 
+### Provider descendants: reproduced September 9, 2026 07:38 UTC
+
+This is a separate execution boundary from the code-node/jail cancellation fixed
+by #3599 (now deployed; authenticated gates are in the proof record above).
+On Windows/Python 3.14, `python -m output.probe-provider-descendant-lifetime`
+(local diagnostic) ran the real `ClaudeProvider.complete` / `_read_stream`
+cleanup inside the real `provider_slot_async`, substituting a harmless Python
+command for the CLI and excluding provider credentials and engine configuration.
+The fixture spawned one child which answered over a private loopback socket.
+
+Observed output: `slot_live_before_cancel=1`, `slot_live_after_cancel=0`,
+`descendant_answered_after_cancel=true`, followed by
+`fixture_descendant_exited=true` during diagnostic cleanup. No LLM, external
+service, production workflow or credential was used. Two earlier fixture attempts
+timed out because the diagnostic's case-sensitive environment filter omitted
+Windows `SYSTEMROOT`; those attempts are not product evidence. The corrected
+case-insensitive environment filter produced the successful reproduction.
+
+Current source: `tinyassets/providers/claude_provider.py::_terminate` and
+`_read_stream` signal/reap the direct process, not its descendants;
+`tinyassets/provider_admission.py::provider_slot_async` releases when its caller
+unwinds. A shared kernel slot alone would still announce free capacity before
+this execution tree ends. The replacement needs an execution-lifetime owner as
+well as cross-process exclusion. This is not proof of the Linux sandbox path,
+actual vendor CLI behavior, or remote provider-side termination.
+
 ## Historical finding: August 31, 2026
 
 **Found 2026-08-31**, following the founder's statement that a borrowed

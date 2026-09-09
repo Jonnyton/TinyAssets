@@ -58,3 +58,81 @@ No provider CLI, production work, workflow, credential or external request was
 launched. This converts the process-local counter premise from source inference
 to an executable local reproduction; it does not establish live host topology,
 descendant containment, a replacement design, or shared-capacity enforcement.
+
+## Execution-lifetime follow-up: September 9, 2026 07:38 UTC
+
+The main agent reproduced early release with the actual Claude adapter's
+cancellation cleanup, a synthetic Python CLI, and the actual admission context
+on Windows/Python 3.14. Command: `python -m
+output.probe-provider-descendant-lifetime` (local diagnostic, no real provider).
+The slot moved from live=1 to live=0 on cancellation while the fixture descendant
+still answered a private loopback ping. Diagnostic cleanup then observed that
+descendant exit. Full scope and unsuccessful fixture-initialization attempts are
+recorded in `docs/concerns/2026-08-31-cancel-is-advisory-and-the-timeout-is-doing-its-job.md`.
+
+This changes the next implementation decision: replacing `_live` with kernel
+locks alone cannot satisfy the stated physical-lifetime contract. Do not ship
+that as shared physical capacity or remove another guard on its strength.
+The independent lifecycle follow-up is investigating the smallest reusable
+execution owner; its pending output is not an approval.
+
+Additional source mapping (same unchanged runtime; not live topology evidence):
+
+- `storage.data_dir` resolves a platform default independent of CWD when the
+  environment variable is absent. A proposed slot namespace must call it rather
+  than implement its own fallback.
+- `engine_mcp_http._EngineServer.start` copies the parent environment and sets
+  the selected data root explicitly. Its child therefore inherits the configured
+  provider limits today; its module-local counter is nevertheless independent.
+- Claude's stdio engine configuration forwards an explicitly set data-root env;
+  its route-file lookup and Codex's route-file lookup still use `.` when the env
+  is absent. That route lookup is not evidence of a canonical shared root and
+  must not be copied into the capacity resolver.
+- Three router admission contexts wrap `provider.complete` without checking the
+  provider class. These contexts also cover HTTP/local-server calls; a process
+  count description is not sufficient for every registered execution class.
+- `singleton_lock.release_singleton_lock` unlinks its lock path. Do not reuse
+  that release helper for stable slot identities: release/reacquisition must not
+  create multiple inodes representing the same slot.
+
+PLAN.md was freshly read in full before this next-boundary design work. No PLAN,
+quota, schema, provider authority or production state has changed here.
+
+### Independent lifecycle follow-up and disposition
+
+Command: `python scripts/peer_agent.py claude --out
+output/provider-capacity-lifecycle-review.md --prompt-file
+output/provider-capacity-lifecycle-brief.md --timeout 420`. Completed exit 0 in
+284 seconds on September 9, 2026. The wrapper's final text was a stop-hook
+acknowledgment; the substantive review was recovered from the same session,
+`a7185f56-4f27-4f0a-bed8-00bda6e1a2c2`. No second dispatch or implementation
+was performed. Unrelated dispatch summaries in the stop-hook output are not
+evidence for this lane.
+
+The reviewer returned **ADAPT**. It agreed that the current direct-process
+cleanup does not own every descendant, identified the three class-neutral router
+admission contexts and the persistent engine child's independent counter, and
+recommended count-based kernel slots under an admission mutex. Counting occupied
+slots across all existing indices, rather than restricting admission to low
+indices, preserves drain-after-limit-lowering behavior. Shared occupancy and
+process-local duration/admission samples must be labelled separately.
+
+The main agent accepts that exclusion/drain design, but **does not accept the
+recommended release scope as implementation approval**:
+
+- The reviewer explicitly limits descriptor-handoff coverage to descendants that
+  retain the descriptor, not the whole execution tree. Its assertion about typical
+  Node/Rust inheritance is not a proof for arbitrary connected CLIs.
+- The suggested Windows parent-death xfail and documented desktop gap do not meet
+  this goal. Do not quarantine the missing behavior or ask the owner to accept a
+  weaker platform merely to ship the counter replacement.
+- Existing Codex bubblewrap arguments are conditional on the sandbox configuration
+  and capability check, not proof that every detected/registered CLI runs inside
+  them. Source arguments alone are not a parent-death/reap ordering proof.
+- The proposed exclusion of HTTP providers from a CLI-sized bound needs a real
+  connection/dispatch boundary before it replaces a guard. A provider-name or
+  class-name exception is not the native-unit policy requested by the owner.
+
+The next implementation contract is recorded in the parent change's
+`shared-provider-capacity-design.md`. This review is the second design round;
+do not restart an unlimited review loop or call it APPROVE.
