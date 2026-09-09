@@ -16,7 +16,7 @@ credential-blind transport. The protocol contract owns its model/benchmark
 decoders; the generic refresh coordinator knows no vendor response shape or
 model names. It alone supplies account-filtered provenance after a successful
 profile-bound read. Remote flags cannot upgrade tool support or assert an account
-identity. HTTP executor_tools remains false, actual_account_id remains unknown,
+identity. HTTP executor_tools remains false, authenticated_account_id remains unknown,
 and no legacy model string becomes an automatic preference.
 
 The policy's historical connection_id field is an opaque selector key. Snapshot
