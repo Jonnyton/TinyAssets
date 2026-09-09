@@ -1,4 +1,4 @@
-# Mobile launch handoff — where this stands, 2026-09-03
+# Mobile launch handoff — where this stands, 2026-09-09
 
 Written so a new session can pick this up cold. The goal is unchanged: **users able
 to download the app from Google Play and the Apple App Store.**
@@ -12,12 +12,10 @@ Runbooks stay where they are — `docs/ops/google-play-launch.md` and
 ## The one-line status
 
 **Google Play: installable today, but only by invited testers.** Public availability
-is at minimum 14 days away and needs 12 real people. **Apple: the App Store record,
-metadata, unpublished privacy draft, signing/profile/API credentials, verified signed
-IPA, and both required screenshots are staged; legal/privacy attestations, one contact
-disclosure authorization, device proof, and review remain.** The authoritative phone
-number already exists in the founder's local candidate profile; it must not be copied
-into this repository or sent to Apple without explicit action-time authorization.
+is at minimum 14 days away and needs 12 real people. **Apple: TinyAssets iOS 1.0,
+build 3, was submitted on 2026-09-09 and is Waiting for Review.** The United States
+is enabled within 148 non-EU storefronts; the privacy notice and Apple privacy
+practices are published; reviewer access is verified; release remains manual.
 
 ---
 
@@ -107,6 +105,12 @@ release into one `gh workflow run` — but nothing waits on it.
 
 ## Apple App Store
 
+**Current checkpoint (2026-09-09 02:32 PDT):** Apple accepted submission
+`5c6e4844-2ca2-438c-8aec-a189efb0ebb2` for iOS 1.0 / build 1.0.0 (3).
+App Store Connect shows **Waiting for Review**. On approval, select **Release This
+Version** and verify that the United States product page offers the install.
+Receipt: `docs/audits/2026-09-09-ios-app-review-submission-receipt.md`.
+
 **Apple Developer Program membership is active.** Checked 2026-09-03, not inferred from
 the purchase receipt: the signed-in portal exposes App Store Connect and Certificates,
 IDs & Profiles, and shows a Team ID plus a 2027 renewal date. The Apple Developer Program
@@ -116,16 +120,16 @@ explicit App ID
 Developer browser: the Identifiers list showed `TinyAssets iOS` and the exact bundle ID.
 The founder accepted App Store Connect Terms of Service V100 (last updated 04 June
 2018) on 2026-09-03. The TinyAssets App Store Connect record now exists (Apple ID
-`6808434444`), with iOS 1.0 in **Prepare for Submission**. Product metadata and
-manual release are saved; the four-type privacy draft is configured but unpublished,
-with legal-policy URLs blank. An empty `Internal` TestFlight group exists with automatic
+`6808434444`), with iOS 1.0 now **Waiting for Review**. Product metadata and
+manual release are saved; the four-type privacy disclosure and live policy URL are
+published. An empty `Internal` TestFlight group exists with automatic
 distribution off, 0 testers, and 0 builds. An Apple Distribution certificate/private
 key, matching App Store profile, and Developer-role CI upload key now exist; all six
 required values are protected GitHub environment secrets. Signed IPA 1.0.0 (1) is
 verified. Apple's upload rejected build 2 only because the runner defaulted to Xcode
 16.4/iOS 18.5 while iOS SDK 26 is mandatory; exact reviewed revision `6ccb3d24`
-selects Xcode 26.3 and has a Claude Opus **AGREE** receipt. The exact remaining values and confirmation boundaries are in
-`docs/ops/app-store-submission-packet.md`.
+selects Xcode 26.3 and has a Claude Opus **AGREE** receipt. The submission and
+remaining release step are in `docs/ops/app-store-submission-packet.md`.
 
 What is ready, stated precisely — the gap here is wider than "just enrol":
 
@@ -145,18 +149,17 @@ What is ready, stated precisely — the gap here is wider than "just enrol":
   IPA artifact by default and an explicit opt-in App Store Connect/TestFlight upload.
   It never submits for App Review. The build installs the committed TinyAssets icon and
   splash instead of Capacitor's placeholders.
-- `app-store-launch.md` still has real iPhone screenshots outstanding. The existing
-  1080×1920 Play captures are not valid Apple screenshot dimensions and must not be
-  dressed up as native iPhone captures.
+- Required iPhone and iPad App Store screenshots were captured from Build 3's
+  exact source, validated, visually inspected, and saved in App Store Connect.
 - **A Mac is still not needed** — both iOS workflows run on `macos-15` CI runners.
 - **App Review risk remains:** the installed shell loads the remotely served client.
   Apple's current Guideline 4.2 may treat that as a repackaged website even though the
   product has real utility and native OAuth return. The evidence and pre-submission
   decision are recorded in
   `docs/concerns/2026-09-03-ios-web-wrapper-app-review-risk.md`.
-- **Privacy publication is not ready:** the public policy URL is reachable, but it
-  still says Draft v0 pending counsel and its deployed copy omits iOS. PR #2798
-  stages the iOS wording only; the final legal approval and post-deploy proof remain.
+- **Privacy is published:** PR #3616 separated the published privacy v1.0 status
+  from the unrelated draft terms, deployment run `34334601760` published it, and
+  App Store Connect shows the four declared data types as published.
 
 Local evidence, Windows checkout, 2026-09-03:
 

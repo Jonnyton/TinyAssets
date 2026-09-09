@@ -267,19 +267,22 @@ def test_app_store_metadata_packet_meets_apple_field_constraints() -> None:
     assert not {"openai", "claude"} & {keyword.casefold() for keyword in keywords}
 
     assert field("Support URL") == "https://tinyassets.io/legal#contact"
-    assert field("Privacy Policy URL") == "https://tinyassets.io/legal#app-data"
+    assert field("Privacy Policy URL") == "https://tinyassets.io/legal/#privacy"
     assert field("User Privacy Choices URL") == "https://tinyassets.io/account"
     assert "| User access | Full Access for the existing Account Holder" in packet
     assert "no additional user is selected" in packet
-    assert "| App Store Connect record | Created and verified 2026-09-03" in packet
+    assert "| App Store Connect record | Apple ID `6808434444`" in packet
+    assert "**Waiting for Review** as of 2026-09-09" in packet
     assert "Apple ID `6808434444`" in packet
     assert (
         "| TestFlight | Internal group `Internal`; manual distribution for Xcode builds; "
         "Build 3 attached; 0 testers and no invitations sent |" in packet
     )
-    assert "all four saved draft entries use App Functionality only" in packet
+    assert "all\nfour entries use App Functionality only" in packet
     assert "App Functionality; Account Management" not in packet
-    assert "it is not published and its legal-policy URLs" in packet
+    assert "it is not published and its legal-policy URLs" not in packet
+    assert "148 non-EU storefronts enabled, including the United States" in packet
+    assert "`5c6e4844-2ca2-438c-8aec-a189efb0ebb2`" in packet
     assert "2048-bit\n   Apple Distribution certificate/private-key pair" in packet
     assert "`TinyAssets App Store 2026` App Store\n   profile binds `io.tinyassets.app`" in packet
     assert "App Store Connect API access has not been" not in packet

@@ -325,14 +325,13 @@ None of it can produce an installable app without account-owned signing material
    signed-in Apple Developer browser at `/account/resources/identifiers/list`: the
    Identifiers table shows `TinyAssets iOS` / `io.tinyassets.app`. App Store Connect
    Terms of Service V100 (last updated 04 June 2018) was accepted by the founder.
-   The founder then confirmed record creation. Apple ID `6808434444`; iOS 1.0 is
-   **Prepare for Submission**. Product metadata and manual release are saved, the
-   four-type privacy draft is configured but unpublished. Build 3 is attached to
+   The founder then confirmed record creation. Apple ID `6808434444`. Product
+   metadata and manual release are saved. Build 3 is attached to
    the `Internal` TestFlight group, selected for App Store Version 1.0, and its
    en-US **What to Test** and beta app description are saved. The group has manual
    Xcode-build distribution, 0 testers, and no invitations sent. The free price
-   schedule is confirmed for all 175 displayed countries or regions; availability
-   remains unset.
+   schedule is confirmed; current submission and availability state is recorded
+   in items 10–12 below.
 4. **Complete — signing, profile, and CI upload credentials (2026-09-03).** The active
    Apple Distribution certificate expires 2027-09-03 and is paired with an exportable
    private key. The active `TinyAssets App Store 2026` profile is App Store type for
@@ -369,35 +368,34 @@ None of it can produce an installable app without account-owned signing material
    visually inspected and uploaded. App Store Connect shows `1 of 10 Screenshots`
    in each required set after reload. Receipt:
    `docs/audits/2026-09-03-ios-app-store-screenshot-preflight-receipt.md`.
-9. **Prepared — reviewer identity (2026-09-03).** The dedicated
-   `play-review@tinyassets.io` identity and its saved Google Play password were
-   recovered directly from Play's `Play Reviewer` record and accepted by Apple's
-   fields without entering the secret in this repository. Known contact name/email
-   are Jonathan Farnsworth / `jonathan.m.farnsworth@gmail.com`. The founder's local
-   candidate profile at
-   `C:\Users\Jonathan\Projects\Job Search\.claude\skills\job-application-assistant\01-candidate-profile.md`
-   contains the authoritative phone number; do not duplicate it in this repository.
-   Explicit action-time authorization is still required before transmitting that
-   number to App Store Connect. Apple will not persist this page until the whole
-   contact block is complete.
-10. Counsel/founder must complete Content Rights: TinyAssets accesses third-party
-   content, while Apple's truthful **Yes** answer also attests necessary rights in
-   every region. That legal fact was not inferred; the modal was cancelled.
-11. Complete the remaining truthful console declarations. Before the final
-   Submit for Review decision, choose whether to accept the documented Guideline 4.2 wrapper
-   risk or first add and prove a meaningful iPhone-native interaction.
-12. If realtime voice is enabled in the candidate, review the final **Audio Data** and
-   **Other User Content** declarations against the provider retention configuration and
-   require physical-iPhone proof that capture stops on background/end before submission.
+9. **Complete — reviewer identity and contact block (2026-09-09).** The dedicated
+   `play-review@tinyassets.io` password was rotated in WorkOS, saved in Windows
+   Credential Manager and the protected `app-store` environment, then verified by
+   protected run `34330379943`. Apple retained the matching sign-in requirement,
+   reviewer username/password, and all four contact fields. No password or phone value
+   is stored in this repository.
+10. **Complete — US-first availability and DSA declaration (2026-09-09).** The 27 EU
+   storefronts are **Not Available**, automatic future-country availability is off,
+   and the United States remains **Available on App Release** within 148 enabled
+   storefronts. TinyAssets' app-specific DSA status is saved as non-trader for this
+   non-EU initial release.
+11. **Complete — live privacy publication (2026-09-09).** PR #3616 landed as
+   `caccc05c`; Pages deployment run `34334601760` succeeded; the live
+   `https://tinyassets.io/legal/#privacy` page was reloaded and verified; and App
+   Store Connect published the four-type privacy disclosure. Review receipt:
+   `docs/audits/2026-09-09-ios-privacy-publication-review.md`.
+12. **Submitted — Apple App Review (2026-09-09 02:32 PDT).** TinyAssets iOS 1.0,
+   build 1.0.0 (3), is **Waiting for Review**. Submission ID
+   `5c6e4844-2ca2-438c-8aec-a189efb0ebb2`; release remains manual. On approval,
+   select **Release This Version** and verify the United States product page can
+   install the app. Receipt:
+   `docs/audits/2026-09-09-ios-app-review-submission-receipt.md`.
 
-**Apple preflight evidence (2026-09-03):** after both required screenshots persisted,
-**Add for Review** returned **Unable to Add for Review** and created no submission.
-The screenshot blockers are gone. The exact unresolved requirements are Content
-Rights, Privacy Policy URL plus Admin-provided privacy practices, reviewer
-username/password, and reviewer first name, last name, email, and `+` country-code
-phone number. The reviewer credentials and contact values are known; transmitting the
-existing profile phone number to Apple still requires explicit action-time
-authorization. Version 1.0 remains **Prepare for Submission** with manual release.
+**Apple preflight evidence (2026-09-09):** **Add for Review** succeeded after
+Content Rights, published privacy information, screenshots, reviewer credentials and
+contact details, storefront availability, and DSA status were complete. **Submit for
+Review** then succeeded and App Store Connect reloaded to **Waiting for Review**.
+No Apple-controlled action remains until review completes.
 
 ### Google Play: start the 12-tester closed test — this is the 14-day clock
 

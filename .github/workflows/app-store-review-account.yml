@@ -18,6 +18,16 @@ on:
         required: true
         default: true
         type: boolean
+      submission_id:
+        description: App Store Connect review submission ID to monitor
+        required: true
+        default: "5c6e4844-2ca2-438c-8aec-a189efb0ebb2"
+        type: string
+      release_if_approved:
+        description: Release immediately if Apple reports Pending Developer Release
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -56,3 +66,16 @@ jobs:
         run: |
           set -euo pipefail
           python scripts/app_store_review_account.py
+
+      - name: Check App Store status and release if approved
+        env:
+          API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          API_KEY_B64: ${{ secrets.APP_STORE_CONNECT_API_KEY_B64 }}
+          APP_ID: ${{ inputs.app_id }}
+          VERSION: ${{ inputs.version }}
+          SUBMISSION_ID: ${{ inputs.submission_id }}
+          RELEASE_IF_APPROVED: ${{ inputs.release_if_approved }}
+        run: |
+          set -euo pipefail
+          python scripts/app_store_release.py
