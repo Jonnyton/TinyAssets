@@ -868,3 +868,50 @@ already-completed webhook cleanup rather than another run. Report saved in
 docs/concerns/2026-09-08-app-read-write-sweep-gaps.md; no independent reproduction
 or deployed SHA claimed. No prompt, workflow operation, or approval sent.
 Existing-owner continuation; unrelated tabs untouched.
+
+## [2026-09-09 06:24 UTC] LEAD DIRECTION five-gap post-deploy retest
+
+Owner explicitly added all five gaps to the active limit-simplification goal and
+requires the app agent's message that they are closed. After verified deployment,
+send exactly: Retest your workflow checklist. For private workflow repair, ask
+the agent ordinarily to fix it or name its blocker; no operator workflow edits.
+
+## [2026-09-09 06:24 UTC] USER NOTE retest preflight, no prompt yet
+
+TAB HYGIENE: one controlled mission tab 1346517638 at https://tinyassets.io/mcp/app;
+owner/other-task tabs remain untouched. CUA rendered view shows the signed-in
+owner conversation and composer, still ending with Sep 8 21:39 five-gap report.
+Existing-owner webapp continuation per explicit owner direction, not Claude
+incognito, first-contact or cross-client compatibility proof. PR #3591 merged;
+image build 34318730934 is running. No prompt, approval or workflow edit sent.
+
+## [2026-09-09 06:27 UTC] USER ACTION deployed five-gap retest
+
+TAB HYGIENE: selected-browser inventory contains one mission tab1346517638.
+Reloaded the same saved conversation after deploy; it also loaded owner messages
+at23:09/23:15 PDT about marketing. Earlier unrefreshed view was stale, not proof
+that no newer messages existed. No active reply or draft was interrupted.
+Asked: Retest your workflow checklist
+Got: exact rendered user message at Sep8 23:27 PDT; app is thinking. Deploy
+34318999188 passed authenticated handle canary and protected SHA containment for
+0082695793278fabf520c9bf2a8fa2694c4a2823. No operator workflow edit or new grant.
+
+## [2026-09-09 06:30 UTC] USER ACTION exact temporary webhook approval
+
+App built its own disposable receiver and requested only POST to that exact
+receiver plus DELETE of its exact token, using existing webhook:test vault key.
+Inspected the rendered details and approved through the normal UI with the
+"Don't ask me this again" box unchecked. No wildcard destination or new key.
+Rendered user message: Approved: "Finish my fresh webhook checklist retest";
+app remains thinking with one waiting continuation. Two AX-index clicks found
+detached nodes as the card refreshed; screenshot-grounded clicks opened and
+accepted it once. No operator workflow construction or repair.
+
+## [2026-09-09 06:31 UTC] USER RESULT four gaps closed, cancellation display open
+
+23:30 PDT: app explicitly says workflow editing, output readback, explicit
+discard and failed-node status are fixed. Cancellation works, but the cancelled
+run's code node still says running. 23:31 PDT: exact fresh webhook delivery200,
+receiver deletion204, workflow deleted, run complete; all nine checklist checks
+pass. No test work remains running. Do not count all-five closure: cancellation
+display is a fresh platform follow-up. No additional/coaching prompt sent.

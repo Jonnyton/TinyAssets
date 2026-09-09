@@ -153,6 +153,14 @@ def test_cancel_rejects_ambiguous_arguments_before_admission(controls, kwargs):
 
 @pytest.mark.parametrize("queued", [True, False])
 def test_exposed_cancel_reaches_real_executor_and_child(controls, monkeypatch, queued):
+    _exercise_exposed_cancel(controls, monkeypatch, queued=queued)
+
+
+def test_cancel_preserves_completed_and_unstarted_nodes(controls, monkeypatch):
+    _exercise_exposed_cancel(controls, monkeypatch, queued=False, with_neighbors=True)
+
+
+def _exercise_exposed_cancel(controls, monkeypatch, *, queued, with_neighbors=False):
     import subprocess
     import threading
     from concurrent.futures import ThreadPoolExecutor
@@ -171,7 +179,8 @@ def test_exposed_cancel_reaches_real_executor_and_child(controls, monkeypatch, q
     def observe_child(*args, **kwargs):
         proc = real_popen(*args, **kwargs)
         child_processes.append(proc)
-        started.set()
+        if len(child_processes) >= (2 if with_neighbors else 1):
+            started.set()
         return proc
 
     def local_test_sandbox(**kwargs):
@@ -192,11 +201,27 @@ def test_exposed_cancel_reaches_real_executor_and_child(controls, monkeypatch, q
     branch.edges = [EdgeDefinition(from_node="START", to_node="instance"),
                     EdgeDefinition(from_node="instance", to_node="END")]
     branch.state_schema = [{"name": "r", "type": "int"}]
+    if with_neighbors:
+        branch.entry_point = "before"
+        for name in ("before", "after"):
+            field = f"{name}_out"
+            branch.node_defs.append(NodeDefinition(
+                node_id=f"{name}-definition", display_name=name, output_keys=[field],
+                source_code=f"def run(state):\n    return {{{field!r}: 1}}\n",
+            ))
+            branch.graph_nodes.append(GraphNodeRef(id=name, node_def_id=f"{name}-definition"))
+            branch.state_schema.append({"name": field, "type": "int"})
+        branch.edges = [
+            EdgeDefinition(from_node="START", to_node="before"),
+            EdgeDefinition(from_node="before", to_node="instance"),
+            EdgeDefinition(from_node="instance", to_node="after"),
+            EdgeDefinition(from_node="after", to_node="END"),
+        ]
     outcome = None
     try:
         outcome = runs.execute_branch_async(base, branch=branch, inputs={}, actor="universe:ours")
         if not queued:
-            assert started.wait(10), runs.get_run(base, outcome.run_id)
+            assert started.wait(10), runs.get_run(base, outcome.run_id).get("error")
         ack = content(served.run_graph(operation="cancel", run_id=outcome.run_id))
         assert ack["cancel_requested"] is True
         release_queue.set()
@@ -208,6 +233,15 @@ def test_exposed_cancel_reaches_real_executor_and_child(controls, monkeypatch, q
             assert not child_processes, "queued cancellation launched a child anyway"
         else:
             assert child_processes and all(proc.poll() is not None for proc in child_processes)
+            by_node = {node["node_id"]: node["status"] for node in snapshot["node_statuses"]}
+            assert by_node["instance"] == "cancelled", snapshot
+            cancelled = [event for event in runs.list_events(base, outcome.run_id, since_step=-1)
+                         if event["status"] == "cancelled"]
+            assert [event["node_id"] for event in cancelled] == ["instance"]
+            assert cancelled[0]["detail"]["error_type"] == "NodeCancelledError"
+            if with_neighbors:
+                assert by_node["before"] == "ran"
+                assert by_node["after"] == "pending"
     finally:
         release_queue.set()
         if outcome is not None:

@@ -1,6 +1,71 @@
 # Review and reproduction state
 
-## Current candidate: five platform gaps implemented locally
+## Current state: four gaps accepted live, cancellation display follow-up
+
+At Sep 8 23:30-23:31 PDT, the app confirmed editing, exact output, discard and
+failed-node status fixed. It confirmed cancellation works and all nine older
+checklist checks passed, including fresh webhook200/204 and cleanup. It still
+reports cancelled code nodes as running; all-five closure therefore remains open.
+
+Follow-up shape/basic-safety review: Claude APPROVE, exit0 after219seconds,
+docs/reviews/2026-09-09-cancel-node-state-shape-review.md. Source confirms sandbox
+cancellation has no terminal node event, both translators lack that phase, fold
+priorities reject it, and diagrams lack its class/use definition IDs. It also
+confirms between-node cancellation occurs before recording an actually completed
+node. No stored-status constraint or migration is required.
+
+Red tests reproduced actual child stopped/run cancelled/node running, fold
+priority, diagram identity/class, both resume terminal phases, and initial
+between-node completion. Initial resume test used an unsupported requested_by
+keyword; corrected before its substantive red. The real predecessor/successor
+fixture initially collided state-field names with node IDs; corrected to *_out
+fields without changing validation. It now passes real A-ran/B-cancelled/C-pending
+and verifies NodeCancelledError event provenance under graph-instance identity.
+
+Follow-up candidate emits only an observed cancelled phase, records it through
+both translators, gives it terminal fold priority, and colors actual graph IDs.
+The cooperative checkpoint remains, after persisting the node's real ran event.
+No authority, launch, kill, cleanup, timeout or resource policy change. Resume
+coverage is the actual saved-row event translator driven by an injected compiled
+graph, not a new full resumed-jail child-stop proof. The initial real-child path
+is exercised. Windows/Python 3.14 candidate:233 passed, one platform skip;
+pinned unchanged deployed00826957:226 passed, the same skip. Exact testcase
+identity/outcome comparison finds seven added passes and no lost/changed base
+cases. Command on both trees:
+`python -m pytest -q tests/test_graph_run_controls.py tests/test_graph_compiler_failed_event.py tests/test_graph_compiler_provider_chain_propagation.py tests/test_resume_run.py tests/test_branch_runner.py tests/test_api_runs.py tests/test_cancel_reaches_the_running_child.py tests/test_queue_cancel_cooperative.py tests/test_node_timeout.py tests/test_graph_compiler_empty_response.py tests/test_runs_schema_migration.py --tb=short --junitxml=output/workflow-cancel-wide-head.xml`
+Baseline used the same selection with an absolute output path to
+workflow-cancel-wide-base.xml from a detached temporary worktree at00826957.
+Ruff, mirror/import and strict OpenSpec checks pass. Exact-head review,
+Linux/CI, deployment and the next rendered retest remain required.
+
+## First deployed round
+
+September 9, 2026 UTC. PR #3591 merged as
+0082695793278fabf520c9bf2a8fa2694c4a2823 after exact-head Claude APPROVE for
+436f72b8370e6cfbff00184b5f0a0a63f75dc0df (exit 0, 157 seconds). Follow-up runtime
+and mirror were byte-identical to the earlier fully reviewed 41df8819.
+Receipt: https://github.com/Jonnyton/TinyAssets/pull/3591#issuecomment-5596798037.
+
+Linux Tests 34317601056 passed required-tests in 14m13s and slow-tests in 1m30s.
+Actual checkout e570f22e7f2eef65299849b76fb2dd3e7f80e554 merges reviewed head
+436f72b8 with 87c520e9. Fetched that exact commit; `git diff --exit-code
+436f72b8 e570f22e -- tinyassets packaging tests` is empty. Only three unrelated
+Play-release documents differ across the full tree. Focused JUnit set comparison:
+441 passes, two Windows-only skips versus baseline 390+2. No new failures and
+no formerly passing focused cases missing/nonpassing. Full required artifact:
+14816 passes, 54 skips, nine failures and two collection errors, with all errors/
+failures identical to existing baseline cases. Passing required gate is not a
+claim that every repository test passes; heavy files remain untested on this PR.
+Receipt: https://github.com/Jonnyton/TinyAssets/pull/3591#issuecomment-5596933164.
+
+Image build34318730934 passed and deploy34318999188 succeeded at06:26 UTC.
+Authenticated public handle canary passed; protected SHA check at06:26:34Z
+reported SHIPPED for0082695793278fabf520c9bf2a8fa2694c4a2823. Exact ordinary app
+prompt sent and read back at23:27 PDT: Retest your workflow checklist. The app
+is thinking; rendered all-five closure is still pending. The following sections
+preserve dated implementation history, not current release status.
+
+## Historical candidate: five platform gaps implemented locally
 
 ### First exact-head review and Linux CI feedback
 

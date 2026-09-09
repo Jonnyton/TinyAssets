@@ -35,17 +35,23 @@ first-draft MVP the pre-live bar is shape + basic-safety, and deep hardening
 follows live user testing.
 
 **`main` enforces a behavioural test gate (live 2026-08-03).** Required contexts
-are `policy`, `Diff scope declared`, and `required-tests`, with `strict` on. So:
-a PR merges only if `required-tests` is green, and only while up to date with
-`main`. `required-tests` fails on any test failure not already listed in
+were originally `policy`, `Diff scope declared`, and `required-tests`, with
+`strict` on. Reverified September 9, 2026 UTC via
+`gh api repos/Jonnyton/TinyAssets/branches/main/protection/required_status_checks`:
+the current required contexts are `Diff scope declared`, `required-tests`,
+`invariants`, and `slow-tests`, with `strict: false`. Do not infer a mandatory
+branch refresh from the historical strict setting; inspect current merge
+eligibility and the actual tested checkout. This observation changes no policy.
+`required-tests` fails on any test failure not already listed in
 `.github/known-failing-tests.txt` — that ledger is a one-way ratchet, so adding
 a line to excuse a test you broke is a visible, reviewable edit on a
 scope-guarded path. It runs a ~5-minute subset; the excluded heavy files run in
 the non-required `heavy-tests` job on a best-effort schedule -- which is RED
 at baseline (107 unquarantined failures as of 2026-08-27), so a failure there
-is compared against the previous run, not read as a regression. Two consequences
-worth knowing before you plan work: falling behind `main` costs a re-run, and
-updating a drain PR's branch invalidates any exact-head review receipt.
+is compared against the previous run, not read as a regression. Updating a drain
+PR's branch invalidates any exact-head review receipt and triggers a new test
+run; a future restoration of strict protection would also require it to be
+up to date with `main`.
 Details and rollback: `docs/decisions/ADR-003-required-test-aggregator.md`.
 
 **Review-provider limit fallback.** Opposite-provider review is first choice.

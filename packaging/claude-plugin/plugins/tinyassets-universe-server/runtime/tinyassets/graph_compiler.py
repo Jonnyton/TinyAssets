@@ -458,7 +458,18 @@ def _emit_failed_event(
     node_id: str,
     exc: BaseException,
 ) -> None:
-    """Emit a terminal failed event before re-raising CompilerError.
+    """Preserve the existing failure-emission entry point."""
+    _emit_terminal_event(event_sink, node_id, exc, phase="failed")
+
+
+def _emit_terminal_event(
+    event_sink: Callable[..., None] | None,
+    node_id: str,
+    exc: BaseException,
+    *,
+    phase: str,
+) -> None:
+    """Emit an observed failure/cancellation before propagating its exception.
 
     FEAT-006: when the underlying exception carries ``chain_state``
     (an ``AllProvidersExhaustedError``), forward it as a structured
@@ -471,7 +482,7 @@ def _emit_failed_event(
     chain_state = getattr(exc, "chain_state", None)
     kwargs: dict[str, Any] = {
         "node_id": node_id,
-        "phase": "failed",
+        "phase": phase,
         "error": str(exc),
         "error_type": type(exc).__name__,
     }
@@ -485,18 +496,18 @@ def _emit_failed_event(
         try:
             event_sink(
                 node_id=node_id,
-                phase="failed",
+                phase=phase,
                 error=str(exc),
                 error_type=type(exc).__name__,
             )
         except Exception as sink_exc:  # noqa: BLE001
             if _is_cancel_exception(sink_exc):
                 raise
-            logger.exception("event_sink raised in %s (failed)", node_id)
+            logger.exception("event_sink raised in %s (%s)", node_id, phase)
     except Exception as sink_exc:  # noqa: BLE001
         if _is_cancel_exception(sink_exc):
             raise
-        logger.exception("event_sink raised in %s (failed)", node_id)
+        logger.exception("event_sink raised in %s (%s)", node_id, phase)
 
 
 def _wrap_provider_failure(node_id: str, exc: BaseException) -> "CompilerError":
@@ -2186,10 +2197,12 @@ def _build_source_code_node(
             if getattr(result, "cancelled", False):
                 # Checked FIRST: a cancelled node is not a failed one, and the
                 # owner's stop must not be reported as their workflow breaking.
-                raise NodeCancelledError(
+                cancellation = NodeCancelledError(
                     f"Node '{node.node_id}' (code): {error}",
                     node_id=node.node_id,
                 )
+                _emit_terminal_event(event_sink, node.node_id, cancellation, phase="cancelled")
+                raise cancellation
             if getattr(result, "workspace_timeout", False):
                 raise WorkspaceCommandTimeout(
                     f"Node '{node.node_id}' (code): {error}",

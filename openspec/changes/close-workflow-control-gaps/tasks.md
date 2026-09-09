@@ -10,6 +10,7 @@
 - [x] 2.3 Expose exact, bounded owned-run output reading through existing graph handles.
 - [x] 2.4 Record failed code-node identity and terminal state without mislabeling parallel siblings.
 - [x] 2.5 Expose scoped queued/running cancellation with accurate pending and terminal readback.
+- [x] 2.6 Close the live-retest follow-up: record the actually cancelled code node as terminal without relabeling completed or unstarted siblings.
 
 ## 3. Verify and deliver
 
@@ -17,3 +18,6 @@
 - [ ] 3.2 Merge through normal CI guards, deploy and pass authenticated canary plus deployed-SHA containment.
 - [ ] 3.3 Send the exact ordinary retest prompt and obtain the webapp agent's explicit message that all five gaps are closed; fix and redeploy if it finds a blocker.
 - [ ] 3.4 Sync shipped specs, record rendered/organic evidence and archive this completed delivery slice while preserving unfinished broader limits work.
+
+Gates 3.1/3.2 passed for the first deployed round; reopened for the cancelled-node
+follow-up found by the live retest. Prior proofs remain in REVIEW.md.

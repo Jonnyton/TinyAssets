@@ -9,11 +9,18 @@ This extends, rather than replaces or narrows, the active objective:
 end state remains defined in `consolidation-decision.md`; shipping one removed
 cap is not completion. The five gaps reported at 21:39 PDT are now in scope:
 
-- [ ] Documented workflow node editing works through the app agent's exposed tools.
-- [ ] Explicit workspace discard works without the reported false ancestry refusal.
-- [ ] Completed runs expose ordinary returned values and generated text to the agent.
-- [ ] Failed runs report failed code-node state accurately, not still running.
+- [x] Documented workflow node editing works through the app agent's exposed tools.
+- [x] Explicit workspace discard works without the reported false ancestry refusal.
+- [x] Completed runs expose ordinary returned values and generated text to the agent.
+- [x] Failed runs report failed code-node state accurately, not still running.
 - [ ] The agent can cancel queued/running workflows through an exposed control.
+
+September 8, 2026 23:30-23:31 PDT rendered retest on deployed 008269579327:
+the app explicitly confirmed the first four fixes and working cancellation, but
+still reports a cancelled run's code node as running. Keep cancellation closure
+open until that follow-up is fixed and the app says the gaps are closed. Fresh
+webhook delivery/cleanup also passed (HTTP 200/204); all nine older checklist
+checks passed. Evidence: docs/reviews/2026-09-09-workflow-control-gaps-proof.md.
 
 Source and reproduction status:
 `docs/concerns/2026-09-08-app-read-write-sweep-gaps.md`.

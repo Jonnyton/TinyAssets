@@ -30,6 +30,18 @@ webhook test was already complete; it is not evidence of another fresh run.
 
 ## Follow-up boundary
 
+September 9, 2026 06:27 UTC: platform fixes deployed as
+0082695793278fabf520c9bf2a8fa2694c4a2823, authenticated canary/SHA passed.
+Exact retest prompt sent through the same app conversation. At23:30 PDT the app
+confirmed editing, output readback, discard and failed-node state fixed; cancel
+stops the run but leaves its code node displayed as running. At23:31 PDT it
+confirmed fresh webhook200/204 and all nine older checklist rows passing.
+Technical evidence: docs/reviews/2026-09-09-workflow-control-gaps-proof.md.
+Keep this concern open for the cancelled-node terminal-state follow-up until
+the agent confirms all five gaps closed. Source, tests and deployment do not
+replace that acceptance. No organic post-fix use beyond this directed retest
+has been observed yet.
+
 The owner explicitly added closing all five gaps to the active limits goal on
 September 8 PDT and made the webapp agent's message confirming closure the
 completion criterion. Durable combined scope:

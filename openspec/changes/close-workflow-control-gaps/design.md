@@ -106,6 +106,27 @@ policy changes or completion claims for unfinished resource consolidation.
 
 ## Migration and proof
 
+### Post-live cancellation display follow-up
+
+The September 8 23:30-23:31 PDT retest on deploy008269579327 confirms the first
+four gaps fixed and cancellation physically working, but the stopped code node
+still displays running. Strengthening the existing real-child test reproduces
+this locally: one failed (running != cancelled), one queued-control pass.
+The compiler raises NodeCancelledError without a terminal event; both runner
+event translators and the status fold currently know only failed/ran terminals.
+
+Record a distinct cancelled event only when the code sandbox actually reports
+cancellation. Preserve original exception, graph-instance identity, completed
+siblings and unstarted pending nodes. Both initial and resume translators must
+persist this phase; the shared status fold must treat it as terminal. Do not
+blanket-relabel every node merely because the run became cancelled, fabricate
+failure, mutate old history on read, or change stop/cleanup/authority mechanics.
+The diagram consumer must not map a known cancelled state to running/pending.
+Check its graph-instance identities while verifying that affected readback.
+Use the existing event row/string storage, not a schema migration or new tool.
+Confirm shape/basic-safety independently and verify tests + Linux before the
+next deployed exact-message retest. Broader resource-policy work stays open.
+
 No stored-data migration. API additions retain current start defaults. Shape and
 basic-safety review precedes runtime edits; focused baseline/red/candidate tests,
 Linux oracle/CI and exact-head review precede normal guarded merge. Mirror build,
