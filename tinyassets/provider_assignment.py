@@ -17,9 +17,16 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from tinyassets.provider_assignment_manifest import (
+    AssignmentCandidate,
+    ensure_manifest_schema,
+    load_candidates,
+    manifest_digest,
+    store_candidates,
+)
 from tinyassets.storage import db_path
 
 logger = logging.getLogger(__name__)
@@ -44,6 +51,8 @@ class ProviderAssignment:
     credential_reference_digest: str
     assignment_digest: str
     updated_at: str
+    manifest_digest: str = ""
+    candidates: tuple[AssignmentCandidate, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -970,6 +979,12 @@ def ensure_provider_assignment_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(provider_assignments)")}
+    if "manifest_digest" not in columns:
+        conn.execute(
+            "ALTER TABLE provider_assignments ADD COLUMN manifest_digest TEXT NOT NULL DEFAULT ''"
+        )
+    ensure_manifest_schema(conn)
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_provider_assignment_owner
@@ -988,6 +1003,7 @@ def provider_assignment_digest(
     credential_reference_id: str,
     credential_reference_generation: int,
     credential_reference_digest: str,
+    manifest_digest: str = "",
 ) -> str:
     payload = {
         "binding_id": binding_id,
@@ -1000,6 +1016,9 @@ def provider_assignment_digest(
         "schema_version": 1,
         "universe_id": universe_id,
     }
+    if manifest_digest:
+        payload["schema_version"] = 2
+        payload["manifest_digest"] = manifest_digest
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -1020,6 +1039,7 @@ def _assignment_from_row(row: sqlite3.Row | tuple[object, ...]) -> ProviderAssig
         credential_reference_digest=str(values[10]),
         assignment_digest=str(values[11]),
         updated_at=str(values[12]),
+        manifest_digest=str(values[13]),
     )
     expected = provider_assignment_digest(
         owner_user_id=assignment.owner_user_id,
@@ -1030,9 +1050,42 @@ def _assignment_from_row(row: sqlite3.Row | tuple[object, ...]) -> ProviderAssig
         credential_reference_id=assignment.credential_reference_id,
         credential_reference_generation=assignment.credential_reference_generation,
         credential_reference_digest=assignment.credential_reference_digest,
+        manifest_digest=assignment.manifest_digest,
     )
     if assignment.assignment_digest != expected:
         raise RuntimeError("provider assignment digest is invalid")
+    return assignment
+
+
+def _validate_assignment_manifest(assignment: ProviderAssignment) -> None:
+    if not assignment.manifest_digest:
+        if assignment.candidates:
+            raise ValueError("legacy assignment cannot contain candidates")
+        return
+    expected = manifest_digest(assignment.provider, assignment.candidates)
+    if expected != assignment.manifest_digest:
+        raise ValueError("provider assignment manifest digest is invalid")
+    anchor = next(c for c in assignment.candidates if c.provider == assignment.provider)
+    for name in (
+        "provider", "binding_id", "binding_generation", "binding_digest",
+        "credential_reference_id", "credential_reference_generation", "credential_reference_digest",
+    ):
+        if getattr(anchor, name) != getattr(assignment, name):
+            raise ValueError("provider assignment anchor does not match its candidate")
+
+
+def _load_assignment_manifest(
+    conn: sqlite3.Connection, assignment: ProviderAssignment,
+) -> ProviderAssignment:
+    if not assignment.manifest_digest:
+        return assignment  # Old child rows never grant authority to a legacy root.
+    try:
+        assignment = replace(assignment, candidates=load_candidates(
+            conn, assignment.universe_id, assignment.generation,
+        ))
+        _validate_assignment_manifest(assignment)
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError("provider assignment manifest is invalid") from exc
     return assignment
 
 
@@ -1047,12 +1100,12 @@ def load_provider_assignment_in_transaction(
         SELECT universe_id, owner_user_id, state, generation, provider,
                binding_id, binding_generation, binding_digest,
                credential_reference_id, credential_reference_generation,
-               credential_reference_digest, assignment_digest, updated_at
+               credential_reference_digest, assignment_digest, updated_at, manifest_digest
           FROM provider_assignments WHERE universe_id = ?
         """,
         (universe_id.strip(),),
     ).fetchone()
-    return _assignment_from_row(row) if row is not None else None
+    return _load_assignment_manifest(conn, _assignment_from_row(row)) if row is not None else None
 
 
 def store_provider_assignment_in_transaction(
@@ -1070,9 +1123,11 @@ def store_provider_assignment_in_transaction(
         credential_reference_id=assignment.credential_reference_id,
         credential_reference_generation=assignment.credential_reference_generation,
         credential_reference_digest=assignment.credential_reference_digest,
+        manifest_digest=assignment.manifest_digest,
     )
     if assignment.assignment_digest != expected:
         raise ValueError("provider assignment digest is invalid")
+    _validate_assignment_manifest(assignment)
     ensure_provider_assignment_schema(conn)
     conn.execute(
         """
@@ -1080,8 +1135,8 @@ def store_provider_assignment_in_transaction(
             universe_id, owner_user_id, state, generation, provider,
             binding_id, binding_generation, binding_digest,
             credential_reference_id, credential_reference_generation,
-            credential_reference_digest, assignment_digest, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            credential_reference_digest, assignment_digest, updated_at, manifest_digest
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(universe_id) DO UPDATE SET
             owner_user_id = excluded.owner_user_id,
             state = excluded.state,
@@ -1094,7 +1149,8 @@ def store_provider_assignment_in_transaction(
             credential_reference_generation = excluded.credential_reference_generation,
             credential_reference_digest = excluded.credential_reference_digest,
             assignment_digest = excluded.assignment_digest,
-            updated_at = excluded.updated_at
+            updated_at = excluded.updated_at,
+            manifest_digest = excluded.manifest_digest
         """,
         (
             assignment.universe_id,
@@ -1110,8 +1166,11 @@ def store_provider_assignment_in_transaction(
             assignment.credential_reference_digest,
             assignment.assignment_digest,
             assignment.updated_at,
+            assignment.manifest_digest,
         ),
     )
+    if assignment.manifest_digest:
+        store_candidates(conn, assignment.universe_id, assignment.generation, assignment.candidates)
 
 
 def load_provider_assignment(
@@ -1122,19 +1181,10 @@ def load_provider_assignment(
     conn = sqlite3.connect(db_path(base_path))
     try:
         ensure_provider_assignment_schema(conn)
-        row = conn.execute(
-            """
-            SELECT universe_id, owner_user_id, state, generation, provider,
-                   binding_id, binding_generation, binding_digest,
-                   credential_reference_id, credential_reference_generation,
-                   credential_reference_digest, assignment_digest, updated_at
-              FROM provider_assignments WHERE universe_id = ?
-            """,
-            (universe_id.strip(),),
-        ).fetchone()
+        conn.execute("BEGIN")  # Root and children must come from one read snapshot.
+        return load_provider_assignment_in_transaction(conn, universe_id=universe_id)
     finally:
         conn.close()
-    return _assignment_from_row(row) if row is not None else None
 
 
 @contextmanager

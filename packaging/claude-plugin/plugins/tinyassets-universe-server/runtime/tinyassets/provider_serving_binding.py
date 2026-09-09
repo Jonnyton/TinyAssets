@@ -638,6 +638,10 @@ def _current_serving_authority(
         conn,
         universe_id=universe_id,
     )
+    if assignment is not None and assignment.manifest_digest:
+        # The storage seam may be built before per-attempt model/cost validation.
+        # Never reinterpret a new manifest as legacy single-provider authority.
+        raise PermissionError("model selection authority is not active")
     provider_ref = agent["configuration"].get("provider_ref")
     if (
         assignment is None

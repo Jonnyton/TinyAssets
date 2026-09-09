@@ -29,4 +29,7 @@ Verification on the September 9 feature working tree:
 Tests prove finite launch accounting, not traversal of three distinct providers:
 the six-launch case uses one recording provider and the same request carrier.
 Real ordered candidate routing and safe tool continuation are still unfinished.
-Exact-head independent code review and production verification remain outstanding.
+Exact-head Claude implementation review APPROVED d38d150a on September 9, 2026,
+reproducing all four launch-accounting tests. See the adjacent review artifact.
+The reviewer retained the documented rolling-window cost as a nonblocking concern.
+Production verification remains outstanding; this slice is not activated routing.
