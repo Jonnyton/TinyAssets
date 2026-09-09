@@ -9,6 +9,12 @@ consumption-policy gaps below. Historical values and diagnosis below describe
 the pre-fix deploy, not current configuration. Do not send the app another test
 message or run workflows without a fresh explicit user request.
 
+**Storage follow-through (03:42 UTC):** scoped retained-file observations shipped
+as `cb74e216`, with authenticated deploy proof. [Evidence](../reviews/2026-09-08-attributable-storage-proof.md).
+The original measurement recommendation below is implemented, not fresh queued
+work. It adds measured local/lease-attributed footprint, not full storage
+attribution, new quota policy or rendered acceptance. Those remaining gaps stay open.
+
 **Filed:** 2026-09-08 (America/Los_Angeles).
 **Verified:** 2026-09-09 UTC, production receipt
 `49dc655fdb11e58d7e6682f7b41e111d042cf246`, deployed 2026-09-08T22:31:43Z;
@@ -307,9 +313,12 @@ cross-universe account pooling and a new capacity entitlement would require an
 explicit policy decision; none is needed or implicitly authorized now. Do not
 ask the founder to choose numbers before measuring their actual scope.
 
-**Current action:** the source/coverage assessment is complete; Commander then
-authorized its bounded implementation. `observe-attributable-storage` owns the
-proposal/design and accepted pre-build review adaptations on the separate
-`codex/attributable-storage` branch. PR #3565's original checks passed and it
-merged without modification. No new app prompt is authorized. The new slice is
-not yet deployed; wider simplification and owner acceptance remain OPEN.
+**Current action:** the source/coverage assessment's bounded measurement slice
+shipped in PR #3568 as cb74e216, with Linux and independent approval plus
+authenticated deploy proof. `observe-attributable-storage` retains owner-held
+acceptance only. PR #3565's original checks passed and it merged without
+modification. No new app prompt is authorized. Shared-root attribution,
+write-time disk containment, true shared-host concurrency and consolidation of
+the differing activity units remain unresolved; do not replay this implemented
+sampler recommendation as new work. Wider simplification and owner acceptance
+remain OPEN.
