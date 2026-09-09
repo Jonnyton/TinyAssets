@@ -49,9 +49,10 @@ monitoring, and rollback shape.
   draft's sole bundle. The preview confirms version `4 (1.0.3)`, API 24+, target SDK
   36, 3.16 MB new-install size, and the intended notes. Its only validation item is
   the non-blocking missing-deobfuscation-file warning. On 2026-09-08 the preview was
-  saved into Publishing overview and Google's automated quick checks passed. The
-  Console now reports that all 15 launch changes can be sent for review. Review
-  submission and the code-4 phone smoke remain.
+  saved into Publishing overview and Google's automated quick checks passed. On
+  2026-09-08 the verified reviewer credential was saved and all 15 launch changes
+  were submitted. Play now reports **Changes in review** while its final quick checks
+  run. The code-4 phone smoke and Google's review decision remain.
 
 Advertising-ID evidence was re-run on the Windows host on 2026-09-03. Downloading the
 baseline from GitHub Actions run `33797592515` reproduced SHA-256
@@ -137,9 +138,9 @@ as the workflow artifact.
 - App access: **done 2026-09-03.** The dedicated WorkOS password reviewer completed two
   clean isolated sign-ins, and Play Sign in details is Actioned with the observed
   **Skip for now** path. No founder data or provider credential is attached.
-- Target audience and Data safety: **Actioned 2026-09-03, not sent for review.** Target
-  age is 18 and over. Data safety matches the verified SDK/data-flow evidence and lists
-  both password and OAuth account creation.
+- Target audience and Data safety: **Actioned 2026-09-03; submitted 2026-09-08.**
+  Target age is 18 and over. Data safety matches the verified SDK/data-flow evidence
+  and lists both password and OAuth account creation.
 - Advertising ID: the live Console declaration was saved as **No** on 2026-09-03 after
   shipped-artifact and exact-candidate verification. Keep that answer only for a
   candidate whose merged manifest passes this repository's permission allowlist.
