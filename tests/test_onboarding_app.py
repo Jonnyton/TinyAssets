@@ -178,12 +178,15 @@ def test_voice_csp_and_disclosure_are_dark_until_all_flags(monkeypatch):
     assert "Voice needs a compatible connection" not in html
     assert 'id="voice-unlock"' not in html
     assert "Speech input is not supported in this browser or device" in html
+    assert 'id="status-line"' in html and 'aria-label="Conversation status"' in html
+    assert 'id="voice-status-line"' in html and 'aria-label="Voice status"' in html
 
 
 def test_voice_client_keeps_converse_as_the_only_writer():
     html, _csp = onboarding.render_app_html()
     assert 'event.name!=="converse"' in html
-    assert "const payload=await MCP.converse(message);" in html
+    assert "const payload=await MCP.converse(message,Voice.isActive());" in html
+    assert "{message,voice_active:!!voiceActive}" in html
     assert 'this._send({type:"tool_result",call_id:callId,output:reply});' in html
     assert 'this._send({type:"speak",call_id:callId,source:"tool_result",verbatim:true});' in html
     assert "body:JSON.stringify({offer_sdp:offerSdp})" in html
@@ -659,11 +662,14 @@ get textContent(){return this._textContent;}
 appendChild(child){this.children.push(child);return child;}
 setAttribute(k,v){this.attrs[k]=v;} removeAttribute(k){delete this.attrs[k];}
 focus(){this.focused=true;} pause(){this.paused=true;}}
-const els={"btn-voice":new El(),"voice-disclosure":new El(),"btn-voice-accept":new El(),
+const els={"btn-voice":new El(),"btn-send":new El(),
+  "voice-disclosure":new El(),"btn-voice-accept":new El(),
   "voice-service-name":new El(),"voice-privacy-link":new El(),
   "voice-disclosure-browser":new El(),"voice-disclosure-bridge":new El(),
   "voice-output-select":new El()};
-const $=id=>els[id]; let status=""; function setStatusLine(v){status=v||"";}
+const $=id=>els[id]; let status="",conversationStatus="",turnStartedAt=0;
+function setStatusLine(v){conversationStatus=v||"";}
+function setVoiceStatusLine(v){status=v||"";}
 const document={createElement:()=>new El(),documentElement:{lang:"en-US"}};
 const window={};
 let mediaRequests=0;
@@ -1039,6 +1045,17 @@ let connectCalls=[]; function showConnect(asGate,guidance){connectCalls.push({as
   out.browserDraftTeardown={state:Voice.state,draft:Voice.browserDraftUtterance,
     commitTimer:Voice.browserCommitTimer,aborted:draftRecognition.aborted,
     staleCommitSuppressed:turns.length===turnsBeforeDraftStop};
+  Voice.capability={available:true,state:"ready",mode:"browser"};
+  conversationStatus="Your universe is thinking...";
+  Voice.state="listening";Voice._render();
+  out.statusIndependence={conversationStatus,voiceStatus:status,active:Voice.isActive()};
+  els["btn-send"].disabled=true;turnStartedAt=123;
+  Voice.stop(true);
+  out.stopDuringPending={conversationStatus,voiceStatus:status,state:Voice.state,
+    active:Voice.isActive()};
+  els["btn-send"].disabled=false;turnStartedAt=0;conversationStatus="";
+  Voice.conversationSettled(true);
+  out.pendingSettled={conversationStatus,voiceStatus:status};
   console.log(JSON.stringify(out));
 })().catch(e=>{console.error(e&&e.stack||e);process.exit(1);});
 """
@@ -1151,7 +1168,7 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
         "disabled": False,
         "mediaRequests": 0,
         "connectCalls": [],
-        "status": "Voice ready.",
+        "status": "Voice is off. Start it when you want to talk.",
         "disclosureShown": True,
     }
     assert out["authorityDeadline"] == {
@@ -1374,6 +1391,24 @@ def test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown(tmp_pa
         "aborted": 1,
         "staleCommitSuppressed": True,
     }
+    assert out["statusIndependence"] == {
+        "conversationStatus": "Your universe is thinking...",
+        "voiceStatus": "Listening...",
+        "active": True,
+    }
+    assert out["stopDuringPending"] == {
+        "conversationStatus": "Your universe is thinking...",
+        "voiceStatus": (
+            "Voice is off. Your universe is still thinking; its text reply will "
+            "still appear here, but it will not be spoken."
+        ),
+        "state": "idle",
+        "active": False,
+    }
+    assert out["pendingSettled"] == {
+        "conversationStatus": "",
+        "voiceStatus": "Voice is off. The pending text reply arrived and was not spoken.",
+    }
 
 
 def test_message_timestamps_use_viewer_timezone_and_preserve_the_instant(
@@ -1474,6 +1509,7 @@ const els={
   "thread":new El("div"), "status-line":new El("div"),
 };
 const $=id=>els[id];
+const Voice={isActive:()=>false,conversationSettled:()=>{}};
 const messages=[];
 function appendMessage(role,text,extra){
   if(role!=="system") messages.push({role,text});
