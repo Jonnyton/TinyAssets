@@ -607,3 +607,144 @@ def test_bare_substring_tells_do_not(detail):
         )],
     )
     assert "reconnect" not in _served_failure_notice(exc).lower(), detail
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-05: the same defect, the other way round.
+#
+# On 2026-09-01 the notice said "quota" when the cause was a platform bug. On
+# 2026-09-05 it said "NOT a usage or billing limit" when the cause was, exactly
+# and only, a usage limit -- codex's own words were "You've hit your usage
+# limit". Same rule broken from the opposite side: a confident wrong answer.
+#
+# The hole was in `classify_unavailable`. It could return `auth_invalid` or
+# `endpoint_unreachable` and nothing else, so a quota message -- which carries
+# no auth tell -- could only land in the bucket `_attempt_class` refuses to
+# promote. The most likely failure a BYO subscription has was the one cause the
+# chain could not express.
+# ---------------------------------------------------------------------------
+
+#: Verbatim from the production daemon log, 2026-09-05, universe
+#: u-01kxm1vszd8hwp7em418asq8h9 (redacted mid-string by the recorder exactly as
+#: shown). This is what the provider layer actually raised.
+_THE_LIVE_QUOTA_DETAIL = (
+    "codex exec returned exit code 1 quickly -- likely unavailable: You've hit "
+    "your usage limit. Visit ht ... hatgpt.com/codex/settings/usage to purchase "
+    "more credits or try again at Sep 7th, 2026 2:29 AM."
+)
+
+
+def test_the_live_quota_failure_is_classified_from_the_providers_own_words():
+    """Drives the REAL classifier, not a hand-set skip_class.
+
+    Setting `skip_class="quota_or_cooldown"` by hand would pass against the
+    unfixed tree -- the notice table is only half the fix. The bug was that
+    nothing ever PRODUCED that class from this text.
+    """
+    from tinyassets.exceptions import ProviderUnavailableError
+    from tinyassets.providers.diagnostics import classify_unavailable
+
+    assert classify_unavailable(
+        ProviderUnavailableError(_THE_LIVE_QUOTA_DETAIL)
+    ) == "quota_or_cooldown"
+
+
+def test_the_exact_notice_the_founder_saw_on_2026_09_05_can_never_return():
+    """End to end: the raw provider error -> classifier -> attempt -> notice.
+
+    The founder was told "it is not a usage or billing limit" by a turn that
+    failed for a usage limit, while his subscription sat locked out until
+    Sep 7. He acted on it -- he reported it as an unexplained outage.
+    """
+    from tinyassets.exceptions import ProviderUnavailableError
+    from tinyassets.providers.diagnostics import (
+        ProviderAttemptDiagnostic,
+        classify_unavailable,
+    )
+
+    raised = ProviderUnavailableError(_THE_LIVE_QUOTA_DETAIL)
+    exc = AllProvidersExhaustedError(
+        "Served provider 'codex' exhausted; universe authority forbids fallback widening.",
+        attempts=[ProviderAttemptDiagnostic(
+            provider="codex",
+            status="failed",
+            skip_class=classify_unavailable(raised),
+            detail=_THE_LIVE_QUOTA_DETAIL,
+        )],
+    )
+
+    notice = _served_failure_notice(exc)
+    lowered = notice.lower()
+    assert "usage limit" in lowered, notice
+    assert "could not identify" not in lowered, notice
+    # The sentence that was actively false.
+    assert "not a usage or billing limit" not in lowered, notice
+    assert "exhausted" not in lowered, notice
+    # It must name a way out that actually works against a multi-day reset.
+    assert "different model" in lowered, notice
+
+
+def test_a_quota_message_carrying_an_auth_word_is_still_quota():
+    """Ordering matters. "token"/"401" are incidental in plenty of quota
+    messages, and the auth branch matches them bare -- so testing auth first
+    sends an owner whose meter ran out to rotate a credential that is fine."""
+    from tinyassets.exceptions import ProviderUnavailableError
+    from tinyassets.providers.diagnostics import classify_unavailable
+
+    for detail in (
+        "429 Too Many Requests: token quota exceeded for this account",
+        "401: your account is out of credits; purchase more credits to continue",
+        "rate limit reached; your auth is fine, wait and retry",
+    ):
+        assert classify_unavailable(
+            ProviderUnavailableError(detail)
+        ) == "quota_or_cooldown", detail
+
+
+def test_a_real_network_failure_is_still_endpoint_unreachable():
+    """The new branch must not swallow the bucket it sits in front of."""
+    from tinyassets.exceptions import ProviderUnavailableError
+    from tinyassets.providers.diagnostics import classify_unavailable
+
+    for detail in (
+        "connection refused",
+        "codex exec returned exit code 1 quickly -- likely unavailable: ",
+        "getaddrinfo failed: name or service not known",
+    ):
+        assert classify_unavailable(
+            ProviderUnavailableError(detail)
+        ) == "endpoint_unreachable", detail
+
+
+def test_a_credential_failure_is_still_auth_invalid():
+    """And neither may it swallow the auth bucket.
+
+    Only details that carry one of `classify_unavailable`'s own auth tells.
+    "Not logged in. Run `codex login`." deliberately is NOT one of them: the
+    classifier has never matched it (it reaches the owner through
+    `_AUTH_EVIDENCE_TELLS` at the promotion layer instead), and asserting it
+    here would be pinning a behaviour that does not exist.
+    """
+    from tinyassets.exceptions import ProviderUnavailableError
+    from tinyassets.providers.diagnostics import classify_unavailable
+
+    for detail in (
+        "401 unauthorized",
+        "your access token could not be refreshed",
+        "no_credentials: subscription auth bundle missing",
+    ):
+        assert classify_unavailable(
+            ProviderUnavailableError(detail)
+        ) == "auth_invalid", detail
+
+
+def test_the_unknown_branch_states_only_what_it_can_stand_behind():
+    """The honest-unknown sentence asserted "it is not a usage or billing
+    limit" -- in the ONE branch defined by having found no evidence of any
+    cause. It may say the provider did not report one; it may not rule one
+    out."""
+    notice = _served_failure_notice(_Failure(_THE_MESSAGE, "provider_unavailable"))
+    lowered = notice.lower()
+    assert "could not identify" in lowered, notice
+    assert "it is not a usage or billing limit" not in lowered, notice
+    assert "did not report a usage or billing limit" in lowered, notice
