@@ -79,6 +79,11 @@ class AutomationContextTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "previous_run_missing"):
             self.resolve()
 
+    def test_attempt_without_retained_run_cannot_restart_blindly(self):
+        self.auto.last_due_at = "2026-09-09T00:00:00Z"
+        with self.assertRaisesRegex(ValueError, "previous_run_missing"):
+            self.resolve()
+
     def test_nonterminal_prior_run_rejected(self):
         self.auto.last_run_id = "r1"
         with self.assertRaisesRegex(ValueError, "not_terminal"):

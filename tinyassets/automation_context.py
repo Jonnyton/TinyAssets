@@ -94,6 +94,9 @@ def resolve_automation_inputs(
     if not root.is_dir():
         raise ValueError("automation_context_universe_missing")
 
+    # An attempted tick without a retained run must not look like first use.
+    if not automation.last_run_id and getattr(automation, "last_due_at", ""):
+        raise ValueError("automation_context_previous_run_missing")
     previous = None
     if automation.last_run_id:
         if get_run is None:
