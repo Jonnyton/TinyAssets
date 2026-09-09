@@ -27,4 +27,3 @@ new databases, record mutations, quota changes or file-content reads.
 #### Scenario: Measurements do not create a scan stampede
 - **WHEN** simultaneous status requests arrive
 - **THEN** same-scope work shares one bounded scan and distinct-scope concurrency is bounded without changing user-work quotas
-
