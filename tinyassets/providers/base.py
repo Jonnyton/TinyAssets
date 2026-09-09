@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     from tinyassets.config import UniverseConfig
     from tinyassets.provider_assignment import ServedProviderAuthority
     from tinyassets.provider_work_authority import ProviderInvocationCarrier
+    from tinyassets.providers.model_policy import ModelRef
+    from tinyassets.providers.model_selection import SelectedModel
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +117,8 @@ class UniverseContext:
     provider_invocation: "ProviderInvocationCarrier | None" = None
     provider_request: "ProviderRequestCarrier | None" = None
     served_provider: "ServedProviderAuthority | None" = None
+    model_selection: ModelRef | None = None
+    """Requested candidate, not authority; revalidated by the serving boundary."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +221,13 @@ class ModelConfig:
     )
     """Internal per-launch credential snapshot. Served adapters must use this
     immutable copy instead of resolving mutable vault paths at use time."""
+
+    selected_model: SelectedModel | None = None
+    """Router-owned selection from current serving authority, never caller policy.
+
+    None preserves legacy model semantics. The router always overwrites caller
+    input, including clearing it for calls without selected-model authority.
+    """
 
     def stream_timeout_profile(self) -> StreamTimeoutProfile:
         """Resolve the idle-watchdog profile, filling ``None`` knobs with the

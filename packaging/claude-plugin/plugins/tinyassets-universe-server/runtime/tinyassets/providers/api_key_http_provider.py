@@ -180,13 +180,29 @@ class ApiKeyHttpProvider(BaseProvider):
             raise ProviderUnavailableError("compute connection resource is absent")
         host = _single_host(view)
 
+        selection = getattr(config, "selected_model", None)
+        if selection is not None:
+            from tinyassets.providers.discovery_protocols import discovery_protocol
+
+            contract = discovery_protocol(selection.discovery_protocol)
+            if (
+                selection.provider != self.name
+                or contract.inference_protocol != self._definition.protocol
+            ):
+                raise ProviderUnavailableError("selected model does not match the compute source")
+            if config.engine_mcp_enabled:
+                raise ProviderUnavailableError(
+                    "selected HTTP agent tool execution is not implemented yet"
+                )
         protocol_path, body = self._encode(
             prompt=prompt,
             system=system,
-            model=self.model,
+            model=self.model if selection is None else selection.model_id,
             temperature=getattr(config, "temperature", None),
             max_tokens=getattr(config, "max_tokens", None),
         )
+        if selection is not None:
+            body = contract.constrain_inference(body, selection.cost_caps)
         # The path the user granted wins over the protocol's canonical one: the
         # broker allowlists what they registered, so calling anything else is a
         # guaranteed refusal. The encoder still owns the BODY shape.

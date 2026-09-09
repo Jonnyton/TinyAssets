@@ -5,8 +5,10 @@ The dated inventory below records the pre-build investigation, not current stage
 Shared validation and launch accounting are now independently APPROVED; manifest
 storage/publication are implemented with the review's ordering bug corrected.
 Discovery transport and profile publication are independently APPROVED; fresh
-snapshots are locally tested. All selection foundations remain undeployed and v2
-execution stays held pending per-attempt model/cost validation. Current details:
+snapshots are locally tested. Selected HTTP text execution now integrates fresh
+member/model/cost validation and budget projection, with local regression tests.
+All selection work remains undeployed; unselected v2 readiness, full-agent tools,
+CLI/local selection, async ingress and UI are unfinished. Current details:
 connection-model-authority.md, discovery-profile.md and their proof/review files.
 
 ## Reverified constraints

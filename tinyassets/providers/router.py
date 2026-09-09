@@ -149,6 +149,12 @@ def _effective_universe_provider_ceiling(
             for provider in requester_config.allowed_providers
             if str(provider).strip()
         ]
+    elif getattr(universe_context.served_provider, "selected_model", None) is not None:
+        # The exact candidate was accepted by the owner and revalidated against
+        # the current manifest. The legacy preferred_writer structural anchor
+        # is not a separate ceiling on that membership. Explicit allowlists above
+        # still win, including an explicitly empty list.
+        ceiling = [universe_context.served_provider.provider]
     else:
         ceiling = list(dict.fromkeys(
             provider
@@ -507,6 +513,9 @@ class ProviderRouter:
                 request_carrier=universe_context.provider_request,
                 role=role,
                 operation=operation,
+                **({} if universe_context.model_selection is None else {
+                    "model_selection": universe_context.model_selection,
+                }),
             ) as authority:
                 authorized_context = replace(
                     universe_context,
@@ -599,6 +608,15 @@ class ProviderRouter:
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
         cfg = config or _default_config(resolved_config)
+        # Selection is a validated per-attempt fact, never an ordinary caller's
+        # ModelConfig preference. Preserve legacy calls by clearing any injected
+        # selection when there is no selected-model serving authority.
+        cfg = replace(cfg, selected_model=getattr(served_authority, "selected_model", None))
+        if cfg.selected_model is not None:
+            if cfg.selected_model.provider != served_authority.provider:
+                raise PermissionError("selected model does not match serving authority")
+            if cfg.engine_mcp_enabled:
+                raise PermissionError("selected HTTP agent tool execution is not implemented yet")
         if served_authority is not None:
             if (
                 operation != served_authority.operation
@@ -614,12 +632,13 @@ class ProviderRouter:
                 # ceiling — otherwise the first turn reserves the entire budget
                 # and the second concurrent turn bricks (Codex 2026-08-22). Cap
                 # to the ceiling so a small binding still validates.
-                cfg = replace(
-                    cfg,
-                    max_tokens=min(
-                        served_authority.max_tokens, _SERVED_PER_CALL_MAX_TOKENS
-                    ),
-                )
+                output_limit = min(served_authority.max_tokens, _SERVED_PER_CALL_MAX_TOKENS)
+                if cfg.selected_model is not None:
+                    input_size = len((f"{system}\n\n{prompt}" if system else prompt).encode())
+                    output_limit = min(output_limit, cfg.selected_model.context_tokens - input_size)
+                    if output_limit < 1:
+                        raise PermissionError("selected model cannot fit this inference context")
+                cfg = replace(cfg, max_tokens=output_limit)
             elif (
                 isinstance(cfg.max_tokens, bool)
                 or not isinstance(cfg.max_tokens, int)
@@ -649,6 +668,16 @@ class ProviderRouter:
             chain = [invocation_carrier.provider]
         else:
             chain = FALLBACK_CHAINS.get(role, FALLBACK_CHAINS["writer"])
+
+        if cfg.selected_model is not None:
+            # Match the existing conservative input reservation measure. The
+            # selected catalogue's context limit is not a permission to truncate.
+            required_context = len((f"{system}\n\n{prompt}" if system else prompt).encode())
+            if (
+                cfg.max_tokens is None
+                or required_context + cfg.max_tokens > cfg.selected_model.context_tokens
+            ):
+                raise PermissionError("selected model cannot fit this inference context")
 
         # Hard pin: TINYASSETS_PIN_WRITER narrows the writer chain to a
         # single provider for this call. No fallback — if the pinned

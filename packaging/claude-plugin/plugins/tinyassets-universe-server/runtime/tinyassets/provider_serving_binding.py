@@ -765,6 +765,15 @@ def bind_serving_provider(
                     generation=generation,
                     provider=selected,
                     binding=binding_projection,
+                    **({} if model_access is None else {"candidate_bindings": {
+                        member.provider: {
+                            "binding_id": member.binding_id,
+                            "generation": member.binding_generation,
+                            "binding_digest": member.binding_digest,
+                            "assignment_digest": ready.assignment_digest,
+                        }
+                        for member in ready_members
+                    }}),
                 )
                 conn.commit()
         except Exception:
@@ -828,6 +837,28 @@ def _current_serving_authority(
         owner_user_id=owner_user_id,
         universe_id=universe_id,
         assignment=assignment,
+    )
+
+
+def _current_selected_member_authority(
+    conn, *, store: SQLiteProviderWorkAuthorityStore, universe_dir: Path,
+    base_path: Path, owner_user_id: str, universe_id: str,
+    agent: dict[str, object], provider: str,
+) -> tuple[ProviderAssignment, object, LLMCredentialCustodyReference]:
+    """Current accepted member, still requiring selected-model validation."""
+    assignment = load_provider_assignment_in_transaction(conn, universe_id=universe_id)
+    if (
+        assignment is None or not assignment.manifest_digest
+        or agent["configuration"].get("provider_ref") != assignment.binding_id
+    ):
+        raise PermissionError("model selection requires the current accepted assignment")
+    member = next((m for m in assignment.candidates if m.provider == provider), None)
+    if member is None:
+        raise PermissionError("provider is not in the current assignment")
+    return _current_bound_member_authority(
+        conn, store=store, universe_dir=universe_dir, base_path=base_path,
+        owner_user_id=owner_user_id, universe_id=universe_id,
+        assignment=assignment, member=member,
     )
 
 

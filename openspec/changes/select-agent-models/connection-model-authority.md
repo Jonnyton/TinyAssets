@@ -5,14 +5,35 @@ for pre-build review. No new top-level MCP action, custody mechanism or provider
 SDK. The request launch allowance, additive manifest storage and multi-member
 publication are now implemented locally with focused Windows/Ubuntu evidence;
 publication implementation review returned ADAPT with one ordering/equality bug,
-now regression-tested and corrected. There is no app/MCP activation and
-manifest-backed execution remains held pending actual model validation. Discovery,
-policy and tool continuation are still unfinished; no live account-access claim.
+now regression-tested and corrected. There is no app/MCP activation. Selected
+HTTP text calls now validate an accepted member, refreshed catalogue, cost bounds
+and source/agent freshness through the real router/executor. Unselected v2
+execution and full-agent HTTP tools remain held. Policy, CLI/local selection and
+tool continuation are still unfinished; no live account-access claim.
 
 The discovery transport/decoders and existing-capability metadata publication
 are locally tested and independently APPROVED; see discovery-profile.md. Fresh
 profile-bound snapshots are implemented and tested but have no app consumer.
-Actual per-attempt model/cost validation and live account evidence remain gates.
+Per-attempt HTTP text selection is locally integrated and tested; independent
+implementation review and live account evidence remain gates. General readiness
+and all production readers must be updated before activating the new policy.
+
+September9 execution integration: request-local ModelRef is not authority. The
+router overwrites ModelConfig.selected_model from freshly validated serving
+facts. Current membership/custody is checked before and after discovery without
+holding a SQLite read transaction over network IO; source age, profile and agent
+are checked again after slot admission. Revoked anchors do not block independent
+accepted members; budget reservation and non-authorizing config projection now
+recognize each accepted binding. Explicit allowlists still narrow membership.
+The protocol boundary applies request-side price ceilings, with downward-only
+float conversion, and selected cost bounds constrain reservation. Unknown actual
+cost remains unknown in response receipts and conservative in accounting.
+
+Remaining integration constraint: the current synchronous serving context enters
+the synchronous discovery path, as the existing HTTP executor also uses blocking
+broker IO. Move these reads off the event loop during async ingress/tool-loop
+integration without transferring thread-owned admission locks or trusting caller-
+supplied catalogue data. This implementation is not ready for app activation.
 
 ## Why candidate identity cannot be a compiled model list
 

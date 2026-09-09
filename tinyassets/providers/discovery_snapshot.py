@@ -207,6 +207,22 @@ def refresh_model_discovery(
 _INFLIGHT: dict[tuple[asyncio.AbstractEventLoop, str, str, str, str], asyncio.Task] = {}
 
 
+def assert_discovery_snapshot_current(snapshot: DiscoverySnapshot) -> None:
+    """Recheck trusted refresh output at dispatch; this does not issue authority."""
+    now = _now()
+    if (
+        now < snapshot.completed_at or now - snapshot.observed_at > timedelta(minutes=5)
+        or snapshot.models.freshness != "fresh"
+    ):
+        raise ProviderUnavailableError("model discovery is no longer fresh")
+    current = _context(
+        _base_path(), snapshot.owner_id, snapshot.universe_id,
+        snapshot.provider.removeprefix("api_key_http:"),
+    )
+    if current.digest != snapshot.source_digest:
+        raise ProviderUnavailableError("model discovery context changed before launch")
+
+
 async def refresh_model_discovery_async(
     *, owner_user_id: str, universe_id: str, definition_id: str
 ) -> DiscoverySnapshot:

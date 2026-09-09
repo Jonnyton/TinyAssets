@@ -19,6 +19,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tinyassets.providers.model_policy import ModelRef
+    from tinyassets.providers.model_selection import SelectedModel
 
 from tinyassets.provider_assignment_manifest import (
     AssignmentCandidate,
@@ -93,6 +98,7 @@ class ServedProviderAuthority:
     before_provider_launch: object | None = field(
         default=None, repr=False, compare=False
     )
+    selected_model: SelectedModel | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -460,9 +466,32 @@ def reserve_served_provider_budget(
                 and binding.generation == authority.binding_generation
                 and binding.binding_digest == authority.binding_digest
             )
+        elif assignment is not None and assignment.manifest_digest:
+            member = next(
+                (m for m in assignment.candidates if m.provider == authority.provider), None
+            )
+            binding_matches_assignment = (
+                authority.operation == "converse"
+                and authority.selected_model is not None
+                and authority.selected_model.provider == authority.provider
+                and member is not None
+                and member.binding_id == authority.binding_id
+                and member.binding_generation == authority.binding_generation
+                and member.binding_digest == authority.binding_digest
+                and binding is not None
+                and binding.assignment_generation == assignment.generation
+                and binding.assignment_digest == assignment.assignment_digest
+                and member.credential_reference_id == authority.credential_reference_id
+                and (
+                    member.credential_reference_generation
+                    == authority.credential_reference_generation
+                )
+                and member.credential_reference_digest == authority.credential_reference_digest
+            )
         else:
             binding_matches_assignment = (
                 assignment is not None
+                and authority.selected_model is None
                 and assignment.binding_id == authority.binding_id
                 and assignment.binding_generation == authority.binding_generation
                 and assignment.binding_digest == authority.binding_digest
@@ -586,11 +615,21 @@ def reserve_served_provider_budget(
             remaining_tokens - estimated_input_tokens,
             affordable_total_tokens - estimated_input_tokens,
         )
+        if authority.selected_model is not None:
+            selected_affordable = authority.selected_model.affordable_output(remaining_cost)
+            if selected_affordable is not None:
+                output_tokens = min(output_tokens, selected_affordable)
         if output_tokens < 1:
             conn.rollback()
             raise ProviderAuthorityHeldError(held)
         reserved_total = estimated_input_tokens + output_tokens
         reserved_cost = reserved_total * _SERVED_COST_MICROUNITS_PER_TOKEN
+        if authority.selected_model is not None:
+            # Keep the legacy conservative accounting floor, but never reserve
+            # less than the selected HTTP request can cost at its accepted caps.
+            reserved_cost = max(
+                reserved_cost, authority.selected_model.cost_upper_bound(output_tokens)
+            )
         # Per-call lease deadline: this call's OWN worst-case healthy duration.
         # The reconciler settles a row only past this, so it never reclaims a live
         # call even under an unbounded configured timeout (Codex re-review #4).
@@ -665,6 +704,12 @@ def finalize_served_provider_budget(
         and cost_microunits >= 0
         else actual_total * _SERVED_COST_MICROUNITS_PER_TOKEN
     )
+    if authority.selected_model is not None and (
+        type(cost_microunits) is not int or cost_microunits < 0
+    ):
+        # No reported cost is not a zero-cost receipt. Retain the conservative
+        # full reservation estimate; ProviderResponse still reports unknown.
+        measured_cost = max(measured_cost, reservation.reserved_cost_microunits)
     exceeded = (
         actual_total > reservation.reserved_total_tokens
         or measured_cost > reservation.reserved_cost_microunits
@@ -1195,6 +1240,7 @@ def authorize_served_provider_call(
     request_carrier: object,
     role: str,
     operation: str,
+    model_selection: ModelRef | None = None,
 ) -> Iterator[ServedProviderAuthority]:
     """Fence selection + request + binding + custody immediately before launch."""
 
@@ -1205,7 +1251,10 @@ def authorize_served_provider_call(
     )
     from tinyassets.custom_agents import get_binding
     from tinyassets.exceptions import ProviderAuthorityHeldError
-    from tinyassets.provider_serving_binding import _current_serving_authority
+    from tinyassets.provider_serving_binding import (
+        _current_selected_member_authority,
+        _current_serving_authority,
+    )
     from tinyassets.storage.provider_work_authority import (
         SQLiteProviderWorkAuthorityStore,
     )
@@ -1269,9 +1318,54 @@ def authorize_served_provider_call(
                 raise PermissionError("agent binding is not current serving authority")
 
             store = SQLiteProviderWorkAuthorityStore(base_path)
+            selected_model = None
+            selection_recheck = None
+            selected_chain = None
+            if model_selection is not None:
+                from tinyassets.providers.model_policy import ModelRef
+                from tinyassets.providers.model_selection import prepare_selected_model
+
+                if not isinstance(model_selection, ModelRef):
+                    raise PermissionError("invalid model selection")
+                with store.connection() as selection_conn:
+                    selection_conn.execute("BEGIN")
+                    selected_chain = _current_selected_member_authority(
+                        selection_conn, store=store, universe_dir=universe,
+                        base_path=Path(base_path), owner_user_id=capability.principal_id,
+                        universe_id=uid, agent=agent, provider=model_selection.connection_id,
+                    )
+                selected_assignment = selected_chain[0]
+                member = next(
+                    m for m in selected_assignment.candidates
+                    if m.provider == model_selection.connection_id
+                )
+                # Do not hold a SQLite read transaction over network IO. The
+                # assignment admission fence remains held, and all facts are
+                # checked again below after discovery and immediately at launch.
+                selected_model, selection_recheck = prepare_selected_model(
+                    base_path=Path(base_path),
+                    owner_user_id=capability.principal_id, universe_id=uid,
+                    provider=member.provider, model_id=model_selection.model_id,
+                    access=member.access,
+                )
+                if get_binding(
+                    base_path, universe_id=uid, binding_id=carrier_binding_id
+                ) != agent:
+                    raise PermissionError("agent binding changed during model discovery")
+
+            def before_selected_launch() -> None:
+                selection_recheck()
+                if get_binding(
+                    base_path, universe_id=uid, binding_id=carrier_binding_id
+                ) != agent:
+                    raise PermissionError("agent binding changed before model launch")
             with store.connection() as conn:
                 conn.execute("BEGIN")
-                assignment, provider_binding, custody = _current_serving_authority(
+                resolver = (
+                    _current_serving_authority if model_selection is None
+                    else _current_selected_member_authority
+                )
+                assignment, provider_binding, custody = resolver(
                     conn,
                     store=store,
                     universe_dir=universe,
@@ -1279,11 +1373,22 @@ def authorize_served_provider_call(
                     owner_user_id=capability.principal_id,
                     universe_id=uid,
                     agent=agent,
+                    **({} if model_selection is None else {
+                        "provider": model_selection.connection_id,
+                    }),
                 )
-                if _is_open_provider(assignment.provider):
+                if selected_chain is not None and selected_chain != (
+                    assignment, provider_binding, custody,
+                ):
+                    raise PermissionError("selected provider authority changed during discovery")
+                provider = (
+                    assignment.provider if model_selection is None
+                    else model_selection.connection_id
+                )
+                if _is_open_provider(provider):
                     authority = ServedProviderAuthority(
                         authority_kind="connection_grant",
-                        provider=assignment.provider,
+                        provider=provider,
                         max_invocations=provider_binding.max_invocations,
                         request_max_invocations=_SERVED_REQUEST_MAX_INVOCATIONS,
                         max_tokens=provider_binding.max_tokens,
@@ -1301,10 +1406,14 @@ def authorize_served_provider_call(
                         credential_service="http",
                         credential_snapshot_dir=None,
                         request_capability=capability,
+                        selected_model=selected_model,
+                        before_provider_launch=(
+                            before_selected_launch if selection_recheck is not None else None
+                        ),
                     )
                 else:
                     service = {"codex": "codex", "claude-code": "claude"}.get(
-                        assignment.provider
+                        provider
                     )
                     if service is None:
                         raise PermissionError("provider is not supported for serving")
@@ -1314,7 +1423,7 @@ def authorize_served_provider_call(
                     )
                     authority = ServedProviderAuthority(
                         authority_kind="subscription_snapshot",
-                        provider=assignment.provider,
+                        provider=provider,
                         max_invocations=provider_binding.max_invocations,
                         request_max_invocations=_SERVED_REQUEST_MAX_INVOCATIONS,
                         max_tokens=provider_binding.max_tokens,

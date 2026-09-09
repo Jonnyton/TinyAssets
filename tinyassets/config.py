@@ -253,6 +253,7 @@ def write_provider_assignment_projection(
     generation: int,
     provider: str = "",
     binding: dict[str, Any] | None = None,
+    candidate_bindings: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     """Strictly publish the non-authorizing requester-local config projection.
 
@@ -272,6 +273,8 @@ def write_provider_assignment_projection(
     if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0:
         raise ValueError("provider assignment generation is invalid")
     selected = provider.strip()
+    if candidate_bindings is not None and normalized_state != "ready":
+        raise ValueError("candidate projections require a ready assignment")
     if normalized_state == "ready":
         # A ready assignment names exactly one provider: a subscription-CLI provider
         # (claude-code/codex) OR a registered open compute provider
@@ -285,6 +288,20 @@ def write_provider_assignment_projection(
             raise ValueError("ready assignment requires a binding projection")
         allowed = [selected]
         bindings = {selected: dict(binding)}
+        if candidate_bindings is not None:
+            if (
+                not isinstance(candidate_bindings, dict)
+                or candidate_bindings.get(selected) != binding
+                or any(
+                    not isinstance(name, str)
+                    or not (name in {"claude-code", "codex"} or name.startswith("api_key_http:"))
+                    or not isinstance(value, dict) or not value.get("binding_id")
+                    for name, value in candidate_bindings.items()
+                )
+            ):
+                raise ValueError("invalid accepted candidate projections")
+            allowed = sorted(candidate_bindings)
+            bindings = {name: dict(candidate_bindings[name]) for name in allowed}
         preferred = selected
         engine_source = "requester_local"
     else:
