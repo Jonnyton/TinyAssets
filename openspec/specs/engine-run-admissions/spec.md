@@ -14,11 +14,12 @@ atomically at admission time, with schema inspection and migration inside
 the same immediate transaction. The engine SHALL admit every durable engine
 write (`write_graph`, remix, brain write) through the same ledger as kind
 `engine`. The engine SHALL refuse a run admission when the universe's
-`write` admissions in the window have reached the write cap (20 per 3600 s)
-OR its admissions of any kind have reached the total cap (60 per 3600 s);
+`write` admissions in the window have reached the write cap (300 per 3600 s)
+OR its admissions of any kind have reached the total cap (900 per 3600 s);
 it SHALL refuse an `engine` admission when the universe's `engine`
-admissions in the window have reached the engine cap (40 per 3600 s, two
-thirds of the total, so runs always keep at least 20) OR the total cap; and
+admissions in the window have reached the engine cap (600 per 3600 s, two
+thirds of the total, so engine mutations alone leave room for 300 run admissions)
+OR the total cap; and
 SHALL say which cap refused. An `engine` row SHALL never be bound to a run
 or reclassified. A refusal caused by an unusable or untrusted ledger SHALL
 say so and SHALL NOT be reported as a quota. Rows outside the window SHALL
@@ -73,7 +74,7 @@ requirement are unchanged.
 
 #### Scenario: A loop of read-only runs is still bounded
 
-- **WHEN** a universe has 60 admissions of any kind in the rolling hour
+- **WHEN** a universe has 900 admissions of any kind in the rolling hour
 - **THEN** the next engine run is refused even if no write budget was spent
 
 #### Scenario: Two first touches of a legacy ledger cannot both pass
@@ -135,14 +136,14 @@ requirement are unchanged.
 
 - **WHEN** a universe's engine has made 30 `write_graph` calls in the rolling
   hour and then runs a job that writes externally
-- **THEN** the job's writes are admitted against an untouched 20-write budget
+- **THEN** the job's writes are admitted against an untouched 300-write budget
 
 #### Scenario: A burst of engine writes cannot starve runs
 
-- **WHEN** a universe's engine has made 40 `write_graph` calls in the rolling
+- **WHEN** a universe's engine has made 600 `write_graph` calls in the rolling
   hour (failed validations included - they charged their admission)
-- **THEN** the 41st is refused by the engine cap while runs are still admitted
-  until 60 admissions of any kind exist
+- **THEN** the 601st is refused by the engine cap while runs are still admitted
+  until 900 admissions of any kind exist
 
 #### Scenario: A read that arrived first does not hide a write
 - **WHEN** a terminal status settles `read` while an adapter is still running and that adapter then delivers a PUT
@@ -169,35 +170,48 @@ a read. All other clauses of this requirement are unchanged.
 
 ### Requirement: Workspace jobs are admitted and settled through their own ledger kind with the maximum charge reserved before the wire
 
-The engine SHALL admit every `workspace` operation (`checkout`, `push`, `discard`, provisioning) as kind `workspace` in the per-universe rolling ledger, bounded by jobs per hour (default 10) and bytes per hour (default 20 GiB), both tier-raisable, SHALL reserve the operation's maximum byte charge in the admission transaction before any network activity — the lease bound for a checkout, the bounded bundle size for a push, the cache cap for provisioning — SHALL reconcile the reservation downward to measured bytes afterwards, keeping the maximum for an unknown or interrupted transfer, and SHALL name the exhausted bound in a refusal.
-Workspace git transfers and provisioning downloads SHALL be charged to this
-ledger and SHALL NOT be charged to the HTTP usage budgets of change
-`run-usage-budgets` (500 dispatches / 256 MiB per root run, 5,000 / 2 GiB per
-universe-hour), which bound `authenticated_external_call` only.
+The engine SHALL reserve the runtime-controlled maximum transport byte charge
+before workspace network activity, keeping existing per-universe rolling-byte,
+lease, pool, retained-storage and lock checks. It SHALL reconcile downward only
+from trustworthy measurement, retaining the maximum for an unknown or interrupted
+transfer. Workspace job-count rows SHALL remain observations and SHALL NOT
+independently refuse work based on jobs per hour. No caller-supplied packet
+ceiling SHALL decide quota consumption.
 
-A `push` and a `discard` hold no lease, so nothing else accounts for them: each
-SHALL reserve its own maximum charge against this ledger under a DETERMINISTIC
-operation id derived from the run, the node and the operation, so a retried push
-charges the hour once rather than once per attempt, and SHALL reconcile downward
-to measured bytes afterwards. The maximum SHALL come from the runtime's own
-bound and never from the packet: a caller-supplied ceiling would let a packet
-choose how much of its universe's hour it spends.
+Push and discard SHALL preserve their deterministic operation identity and
+idempotent reservations. A zero-byte discard SHALL NOT be refused merely because
+earlier workspace starts exhausted the retired jobs count. Generic execution and
+effect admission remain separate existing controls. Workspace transfer bytes
+SHALL remain separate from generic delivered-result byte accounting; workspace
+effect nodes still consume the generic effect-node dispatch count.
 
-#### Scenario: a retried push does not charge the hour twice
-- **WHEN** a push is retried after a transport failure within the same run and node
-- **THEN** both attempts reserve under the same operation id and the hour is charged once, reconciled to the bytes that actually moved
+#### Scenario: More than ten light operations
+- **WHEN** eleven authorized workspace operations have sufficient actual resource capacity
+- **THEN** the eleventh is admitted without an independent jobs-per-hour refusal and the observational count records eleven
 
-#### Scenario: the hourly workspace bytes are exhausted
-- **WHEN** a universe's checkouts in the rolling hour have reserved 20 GiB
-- **THEN** the next `checkout` is refused as `workspace_quota_exceeded`, naming the bytes bound and when it clears, before any bytes move
+#### Scenario: A retried push does not duplicate its reservation
+- **WHEN** the same identified push reservation is requested again
+- **THEN** its existing reservation is returned without adding another workspace job/byte record
 
-#### Scenario: two concurrent checkouts cannot together cross the hourly bound
-- **WHEN** two checkouts are admitted concurrently with 5 GiB of the hourly bytes left and 4 GiB lease bounds
-- **THEN** exactly one reserves and the other is refused; a crash before reconciliation leaves the first's full reservation charged
+#### Scenario: The hourly workspace bytes are exhausted
+- **WHEN** a new checkout's runtime-controlled reservation would exceed the existing transfer window
+- **THEN** it is refused before transport with workspace_quota_exceeded and the actual byte constraint
+
+#### Scenario: Two checkouts compete for remaining bytes
+- **WHEN** two checkouts concurrently request more combined bytes than remain
+- **THEN** only a fitting reservation commits and the other is refused atomically
+
+#### Scenario: Cleanup after ten starts
+- **WHEN** more than ten jobs are recorded and an authorized zero-byte discard is requested
+- **THEN** the observational jobs total does not block cleanup
+
+#### Scenario: Unknown transfer remains conservative
+- **WHEN** checkout fails and no trustworthy transfer measurement exists
+- **THEN** its existing maximum byte reservation remains; a deleted or small local tree is not proof of zero transferred bytes
 
 #### Scenario: a large checkout is not an HTTP budget event
 - **WHEN** a run checks out a 3 GiB repository
-- **THEN** the run's HTTP byte budget is unchanged and the workspace ledger records the bytes
+- **THEN** the run's generic delivered-result byte budget is unchanged and the workspace ledger records the bytes, while the node still consumes one generic effect dispatch
 
 ### Requirement: Unresolved required inputs are refused before run admission
 The engine SHALL preflight the exact authorized Branch target before creating or

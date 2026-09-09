@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Authorized status explains platform resource observations
-Existing authenticated status SHALL offer authorized universe-scoped resource
+Existing authenticated status SHALL offer existing ACL admins universe-scoped resource
 observations with timestamp, actual activity scope and limits, workspace
 allocation/transport/storage distinctions, and explicit availability. Reads
 SHALL NOT create databases, migrate schemas, reconcile usage or mutate records.
@@ -10,7 +10,7 @@ reads SHALL preserve locking and visibility of committed WAL transactions.
 No new handle or authority SHALL be introduced.
 
 #### Scenario: Owner asks about usage
-- **WHEN** the app's pinned agent reads status for its authorized universe
+- **WHEN** the app's pinned agent reads status with its owner's existing admin authority for the universe
 - **THEN** it receives observed usage and actual policy scope without needing operator database access
 
 #### Scenario: Meter is missing or unreadable

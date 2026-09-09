@@ -25,7 +25,8 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
-| **P1** | [Workspace hourly cap stalls light use](2026-09-08-workspace-hourly-cap-stalls-light-use.md) — ten real admitted jobs exhausted a separate hard-coded rolling-hour cap despite all leases being released; earlier run/provider increases shipped but did not lift it; founder directs simpler activity/storage accounting | 2026-09-08 |
+| **note** | [Intermittent missing provider receipt in Linux load proof](2026-09-08-provider-receipt-intermittent-load-failure.md) — the fresh-process claim test intermittently raises a missing-receipt error on unchanged pre-patch source; live impact and root cause remain unproven | 2026-09-08 |
+| **P1** | [Workspace cap correction awaits owner acceptance](2026-09-08-workspace-hourly-cap-stalls-light-use.md) — duplicate ten-start gate removed and scoped usage shipped with authenticated deploy proof; owner-held rendered acceptance and broader consumption-policy simplification remain open | 2026-09-08 |
 | **P1** | [Scheduled uptime probes remain red](2026-09-08-scheduled-uptime-probes-remain-red.md) — handshake/tool/wiki pass, but supervisor liveness, revert evidence and browser probe fail; determine current contracts before inferring an outage or restarting | 2026-09-08 |
 | **note** | [Served tool capability parity gaps](2026-09-08-served-tool-capability-parity-gaps.md) — source audit finds missing stop/trigger/dependency controls and discovery contradictions; secret custody and person-only approval remain deliberate boundaries | 2026-09-08 |
 | **P1** | [Request rail refresh erases drafts](2026-09-08-request-rail-refresh-erases-drafts.md) — polling rebuilds active fields; a visible reply vanished before Send reply, blocking ordinary user interaction | 2026-09-08 |

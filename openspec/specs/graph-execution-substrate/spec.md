@@ -983,3 +983,18 @@ immutable-version targets.
 #### Scenario: Falsey supplied values count as present
 - **WHEN** `inputs_json` explicitly supplies a required key with a falsey JSON value
 - **THEN** preflight treats the key as supplied and leaves value interpretation to existing runtime behavior
+
+### Requirement: Workspace resource observations distinguish allocation and transfer
+Resource observations SHALL distinguish observational workspace starts, current
+lease allocations, retained workspace bytes and rolling transport reservations.
+They SHALL NOT change admission, locks, outbox ownership or authorization.
+Unavailable measurements SHALL remain unknown, and a universe-local lock
+observation SHALL NOT claim host-global exclusion.
+
+#### Scenario: Released lease remains in a rolling window
+- **WHEN** a lease is released but its job/byte observations remain within the hour
+- **THEN** live allocation and historical consumption are reported separately
+
+#### Scenario: Broader universe storage is not measured
+- **WHEN** only retained workspace bytes are available
+- **THEN** evidence labels that coverage rather than claiming total universe storage

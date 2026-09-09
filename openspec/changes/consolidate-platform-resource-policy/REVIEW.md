@@ -35,11 +35,12 @@ final text. Verdict: **ADAPT**. This is shape review, not approval of subsequent
 - **DISAGREE_CONCERN:** host-global semaphores and total-storage enforcement need
   separate shape/authority review; neither is implemented by a usage projection.
 
-## Remaining gate
+## Gate history
 
-The revised implementation needs focused tests, Linux evidence, independent
-exact-head code review, required CI, deployment receipt and coordinated rendered
-app-owned continuation. Patches and owner acceptance remain open.
+The shape review required focused tests, Linux evidence, independent exact-head
+code review, required CI, deployment receipt and coordinated rendered app-owned
+continuation. Engineering gates have since passed (below); Patches and owner
+acceptance remain open.
 
 ## Code review round 1 — ADAPT
 
@@ -78,4 +79,16 @@ remains open, not silently reconciled from retained-tree size. Remaining stale
 as-built quota text will be synced with deployment, not prematurely represented
 as shipped.
 
-Round 2 must review the corrected exact code head before landing.
+## Code review round 2 — APPROVE
+
+Independent Claude review of exact head
+`79a4f7650f1c3307af76ecb522819b0c3212a9b7` completed in 344 seconds:
+`python scripts/peer_agent.py claude --out output/resource-policy-code-review-round2-claude.md --prompt-file output/resource-policy-code-review-round2-brief.md --timeout 480`.
+The peer found no introduced blocking issue and independently checked the
+quiescent/live WAL behavior, read-only SQL restrictions and ACL-race regression.
+[Full review and disposition](https://github.com/Jonnyton/TinyAssets/pull/3560#issuecomment-5594942162).
+
+Required Linux CI tested an identical full tree; deployment, public canary and
+protected revision containment passed for merge `0eb1388f` on September 9 UTC.
+[Exact evidence](../../../docs/reviews/2026-09-08-workspace-resource-policy-proof.md).
+Rendered acceptance remains owner-held, not inferred from these gates.
