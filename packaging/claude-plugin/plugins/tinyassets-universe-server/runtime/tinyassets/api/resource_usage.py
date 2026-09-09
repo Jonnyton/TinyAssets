@@ -15,6 +15,7 @@ from pathlib import Path
 
 from tinyassets import engine_admissions as ea
 from tinyassets import workspace_pool as wp
+from tinyassets.api import storage_observations
 
 
 def _utc(stamp: float | None) -> str | None:
@@ -165,6 +166,7 @@ def for_authorized_status(root: Path, uid: str, *, now: float | None = None) -> 
         "workspace": _workspace(udir, uid, stamp),
         "retained_storage": {
             "availability": "unavailable", "reason": "total_storage_not_measured",
+            "footprint": storage_observations.observe(root, uid, readonly=_readonly),
         },
         "caveats": [
             "Independent snapshots, not authority to start work.",

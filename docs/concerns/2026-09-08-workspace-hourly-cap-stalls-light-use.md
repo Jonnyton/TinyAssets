@@ -203,3 +203,113 @@ deployed-SHA/canary evidence, and an ordinary rendered app conversation. Do not
 substitute locally repaired workflows or duplicate checklist prompts for proof.
 
 Independent diagnosis review: [Claude review and disposition](../reviews/2026-09-08-workspace-usage-diagnosis-claude.md).
+
+## Post-3560 gap assessment and next slice
+
+**2026-09-08 PDT / September 9 UTC, source assessment at `ad198c37`.** Runtime
+source is the deployed `0eb1388f` tree. Read-only repository inspection only;
+no new live workload, provider call, user-workflow edit or deployment. Commands:
+`python scripts/docview.py lines <source> --start <line> --end <line>` and scoped
+`rg -n` searches over the source symbols below. This is not a new load test.
+The existing independent shape/code reviews remain the starting point, not a
+reason to repeat review of the already shipped code.
+
+### What prevents the simple system
+
+| User-facing dimension | Existing truth to reuse | Remaining gap / safe disposition |
+|---|---|---|
+| Work happening now | Workspace leases/locks; provider admission condition/counter | Workspace `SCOPE_HOST` is in each universe's `.runs.db`, while scratch directories share a parent. Same-run locks are reentrant. Provider slots are process-local and reserve child-call headroom. Neither is a proven single host-wide, per-user concurrency allowance. Keep these safeguards; do not sum leases and provider processes into an invented concurrency number. |
+| Activity over time | Root `admissions` and `dispatch_budget`; universe `workspace_ledger` | Admissions count runs and engine mutations; generic effects count nodes, not sinks or gestures. Workspace jobs are now observations only. The status projection does not yet show the generic effect window. Keep distinct units visible before selecting one activity policy; a combined number would double-count some work and miss other work. |
+| Stored data | Permanent workspace tree; universe files; scratch lease ownership; existing host storage report | No complete, attributable retained-storage observation. Workspace `measured_bytes` is transport evidence and can be stale after code writes. A directory total alone omits owned scratch and shared-root records while mixing provider runtime/cache with user data. |
+| Internal dependency safety | Transport reservations, process/memory bounds, pool/storage checks, provider-work authority | These protect different resources. They may appear under the three understandable headings, but cannot be removed merely to leave three constants. Unknown transferred bytes remain reserved; upstream entitlement is not a platform allowance. |
+
+Fresh source anchors (symbol names are the durable locator):
+
+- `effectors/workspace.py::_pool_db` (758) delegates to `runs_db_path(base_path)`;
+  `scratch_pool_root` (216) uses the shared parent. `workspace_pool::_acquire_lock`
+  (489) is run-reentrant; `admit` acquires both scopes in the passed database.
+  A real multi-process/within-run capacity proof remains missing, not assumed.
+- `provider_admission::_effective_limit` (142) and `_try_acquire` (154) use
+  in-memory state and nested headroom. Its introduction's old 2 GB/no-cgroup
+  measurements are historical, not current sizing evidence; the prior live
+  diagnosis found an 8 GB host and a 4 GiB daemon cgroup.
+- `effectors/__init__.py::_budget_refusal` (332) checks per-run and hourly
+  budgets; `dispatch_node_effects` charges once after a node's effects (793).
+  `engine_admissions::dispatch_window_usage` (436) fails open on unreadable
+  accounting. It must not become an admission authority by relabeling it.
+- `effectors/workspace.py::_universe_used_bytes` (995) measures only permanent
+  workspaces, ignores individual filesystem errors and is unbounded; it is not
+  an honest complete-status reader. `workspace_pool::reconcile_bytes` (763)
+  records transport measurement, not current retained size.
+- `storage::inspect_storage_utilization` (650) already has TTL/single-flight
+  reuse, but returns host-wide subsystem paths and totals. `path_size_bytes`
+  (595) suppresses failures and follows file targets. Do not expose this report
+  to an owner or reuse its result as their exact storage allowance.
+- `providers/base.py::_provider_child_runtime_env` (461) creates a universe-local
+  `.runtime/provider-child/<provider>` tree. Count it separately, not as evidence
+  the user authored that data. `usage_policy.py` still cites a deleted August 28
+  duplication concern; the historical 515 MB / 99% figures are not reverified
+  here and must not be used to choose present quotas.
+- `usage_policy::enforcement_enabled` (194) remains default-off in source and
+  documents non-atomic settlement and an unmetered sink. Its tier storage numbers
+  are configuration, not evidence of live total-storage enforcement. Do not
+  switch it on as a consolidation shortcut.
+
+### Which controls can be consolidated safely
+
+The duplicate workspace jobs refusal was the proven removable gate and is gone.
+Current admission constants/formula already have one source after PR #3560.
+Next, the *explanation* of activity can reuse `admissions` plus `dispatch_budget`
+without a second meter; preserve their separate names, windows and units.
+Do not yet delete write/engine subcaps (fairness/abuse policy), per-run versus
+hourly effect guards (different horizons), or transport versus retained-storage
+checks (different resources). No further refusal is proven redundant by this
+assessment. Removing one requires an executable same-scope counterexample and
+proof that the surviving authority covers every reachable path.
+
+### Smallest next implementable slice: attributable storage observations
+
+Build one bounded, read-only filesystem-metadata sampler beneath the existing
+authorized resource-status seam. Reuse canonical paths, the current admin gate,
+existing workspace lease ownership and the existing TTL/single-flight pattern.
+No new ledger, stored counter, schema migration, quota reset or PLAN change.
+
+1. Report a complete-or-partial **universe-local logical file footprint** with
+   separate permanent-workspace, provider-runtime and other-universe-file buckets.
+   Include SQLite sidecars. Label bytes as logical file size, not allocated disk,
+   billable user content or complete platform-attributed storage.
+2. Attribute shared scratch/quarantine only through that universe's existing
+   lease rows and validated canonical paths. Never infer ownership from an
+   arbitrary database path, follow symlinks/reparse points, or reveal paths/IDs.
+   Missing, changing, unreadable or time/entry-bounded walks return explicit
+   partial/unavailable coverage, not zero. Deduplicate hard links within the
+   measured scope; do not promise an atomic snapshot of a live filesystem.
+3. Keep shared-root database overhead, unattributed scratch/staging and unknown
+   runtime attribution explicit exclusions. Root `.runs.db` and `.tinyassets.db`
+   contain cross-universe state: file sizes cannot be assigned per owner from row
+   counts. These gaps keep **total attributed storage unavailable**, even when
+   the measured local footprint is useful. Never scan other owners to fill it.
+4. Synthetic tests first: own versus foreign roots/leases, live WAL, hard links,
+   symlink/junction escape and replacement, permission errors, disappearing files,
+   traversal bounds, stale cache and concurrent callers. Assert no content reads,
+   no state mutations and no authorization leakage. Linux proof and independent
+   shape review gate public wiring; owner-held rendered testing gates acceptance.
+
+This produces the missing trustworthy measurement foundation, not a renamed
+transfer counter or another new refusal. Aggregate write-time disk containment
+and genuine shared-host concurrency remain separate prerequisites before relaxing
+their existing protections. The existing workspace-admission concern owns those
+findings; no new hardening workstream is opened here.
+
+**Decision boundary:** no founder answer is needed to build/verify this bounded
+observation design. Commercial thresholds, charging platform runtime to owners,
+cross-universe account pooling and a new capacity entitlement would require an
+explicit policy decision; none is needed or implicitly authorized now. Do not
+ask the founder to choose numbers before measuring their actual scope.
+
+**Current action:** the source/coverage assessment is complete; Commander then
+authorized its bounded implementation. `observe-attributable-storage` owns the
+proposal/design and accepted pre-build review adaptations on the separate
+`codex/attributable-storage` branch. PR #3565's original checks passed and it
+merged without modification. No new app prompt is authorized. The new slice is
+not yet deployed; wider simplification and owner acceptance remain OPEN.
