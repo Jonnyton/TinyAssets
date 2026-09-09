@@ -7,7 +7,7 @@ import styles from "./page.module.css";
 export const metadata: Metadata = {
   title: "Legal — TinyAssets",
   description:
-    "License, terms, privacy, and token disclosures for TinyAssets, test tiny, and the Destiny (tiny) reference.",
+    "The published TinyAssets privacy notice, license, draft terms, and token disclosures.",
   alternates: { canonical: "https://tinyassets.io/legal" },
 };
 
@@ -32,7 +32,7 @@ export default function LegalPage() {
           <h1>Legal.</h1>
           <p className="status">{legal.review_status}</p>
           <p className="reviewed">
-            Effective 2026-04-29 · last copy review 2026-06-10 · still Draft v0 — a real legal pass is pending and this page says so honestly.
+            Privacy notice effective {legal.privacy_effective_date} · operational data handling last verified 2026-09-09. Terms and token disclosures below remain Draft v0 pending legal review.
           </p>
           <p className="lead">
             TinyAssets is open-source software under MIT. Public goal content is CC0-1.0. Current TinyAssets settlement testing uses{" "}
