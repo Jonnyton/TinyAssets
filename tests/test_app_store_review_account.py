@@ -30,6 +30,7 @@ class FakeClient:
                 "id": "review-id",
                 "attributes": {
                     "demoAccountName": attributes["demoAccountName"],
+                    "demoAccountPassword": attributes["demoAccountPassword"],
                     "demoAccountRequired": attributes["demoAccountRequired"],
                 },
             }
@@ -75,6 +76,126 @@ def test_missing_review_detail_is_created_for_the_selected_version(values):
         "type": "appStoreVersions",
         "id": "version-id",
     }
+
+
+def test_verify_review_account_accepts_retained_account_and_contact(values):
+    client = FakeClient(
+        {
+            "id": "review-id",
+            "attributes": {
+                "demoAccountName": "review@example.com",
+                "demoAccountPassword": "not-logged",
+                "demoAccountRequired": True,
+                "contactFirstName": "Review",
+                "contactLastName": "Contact",
+                "contactEmail": "contact@example.com",
+                "contactPhone": "+15555550123",
+            },
+        }
+    )
+
+    assert module.verify_review_account(client, values) == ("version-id", "review-id")
+    assert all(call[0] == "GET" for call in client.calls)
+
+
+@pytest.mark.parametrize(
+    "attributes, message",
+    [
+        (None, "has no App Review detail"),
+        ({}, "has not retained the reviewer username"),
+        (
+            {
+                "demoAccountName": "review@example.com",
+                "demoAccountPassword": "wrong",
+            },
+            "has not retained the reviewer password",
+        ),
+        (
+            {
+                "demoAccountName": "review@example.com",
+                "demoAccountPassword": "not-logged",
+                "demoAccountRequired": False,
+            },
+            "has not marked the reviewer account as required",
+        ),
+        (
+            {
+                "demoAccountName": "review@example.com",
+                "demoAccountPassword": "not-logged",
+                "demoAccountRequired": True,
+            },
+            "missing required reviewer contact fields",
+        ),
+    ],
+)
+def test_verify_review_account_fails_closed(values, attributes, message):
+    review = None if attributes is None else {"id": "review-id", "attributes": attributes}
+    client = FakeClient(review)
+
+    with pytest.raises(SystemExit, match=message):
+        module.verify_review_account(client, values)
+
+
+@pytest.mark.parametrize("verify_only", [None, "true", "yes", "1"])
+def test_main_verify_mode_never_calls_save(monkeypatch, values, verify_only):
+    client = FakeClient(
+        {
+            "id": "review-id",
+            "attributes": {
+                "demoAccountName": "review@example.com",
+                "demoAccountPassword": "not-logged",
+                "demoAccountRequired": True,
+                "contactFirstName": "Review",
+                "contactLastName": "Contact",
+                "contactEmail": "contact@example.com",
+                "contactPhone": "+15555550123",
+            },
+        }
+    )
+    environment = {
+        "API_KEY_ID": "key",
+        "API_ISSUER_ID": "issuer",
+        "API_KEY_B64": "encoded",
+        **values,
+    }
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    if verify_only is None:
+        monkeypatch.delenv("VERIFY_ONLY", raising=False)
+    else:
+        monkeypatch.setenv("VERIFY_ONLY", verify_only)
+    monkeypatch.setattr(module, "_token", lambda supplied: "token")
+    monkeypatch.setattr(module, "AppStoreConnect", lambda token: client)
+    save_called = False
+
+    def unexpected_save(*args):
+        nonlocal save_called
+        save_called = True
+        raise AssertionError("verify mode entered the write path")
+
+    monkeypatch.setattr(module, "save_review_account", unexpected_save)
+
+    module.main()
+
+    assert save_called is False
+    assert all(call[0] == "GET" for call in client.calls)
+
+
+def test_main_rejects_unknown_verify_only_value(monkeypatch, values):
+    environment = {
+        "API_KEY_ID": "key",
+        "API_ISSUER_ID": "issuer",
+        "API_KEY_B64": "encoded",
+        **values,
+        "VERIFY_ONLY": "typo",
+    }
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(module, "_token", lambda supplied: "token")
+    monkeypatch.setattr(module, "AppStoreConnect", lambda token: object())
+
+    with pytest.raises(SystemExit, match="VERIFY_ONLY must be"):
+        module.main()
 
 
 def test_ambiguous_version_fails_closed(values):
