@@ -59,5 +59,8 @@ Ubuntu engine (29.1.3 linux), not the failed Windows Desktop engine. Initial
 oracle invocation could not follow the Windows absolute worktree gitdir; setting
 process-local GIT_DIR to the existing admin directory's /mnt/c equivalent and
 GIT_WORK_TREE to the feature checkout resolved that without changing git files.
-It printed exact9e19a7b8 then began building the normal oracle image. Result
-pending; no push/landing claim. Neither Docker Desktop data nor settings changed.
+It printed exact9e19a7b8 then exposed two test-bootstrap defects, now corrected:
+classic-builder heredoc dependency loss and copied host uid/gid. Actual oracle
+then passed454/1skip in19.19s on Python3.11.16/Git2.47.3/bubblewrap0.12.0. See
+2026-09-09-linux-oracle-wsl-proof.md for command, fixes and provenance. No
+push/landing claim. Neither Docker Desktop data nor settings changed.
