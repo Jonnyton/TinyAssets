@@ -40,7 +40,10 @@ change lock policy, or claim all storage/host safety gaps are solved.
    escaped paths, bound SQLite waits, and report missing/unreadable/legacy schema
    as unavailable rather than zero. Do not reuse `ledger_usage` or
    `dispatch_window_usage` directly: the former creates schema and the latter
-   reports unreadable usage as zero.
+   reports unreadable usage as zero. Normal SQLite locking may create WAL/SHM
+   coordination sidecars; that is not a database/schema/record mutation. Do not
+   switch to immutable reads based on a missing WAL: a concurrent writer can
+   create it after that check, including an ownership revocation.
 
 4. Attach private usage only after the existing universe authorization in the
    canonical status projection. Existing engine `get_status` already passes its

@@ -147,15 +147,74 @@ def test_symlinked_database_is_not_read(meters, name):
         assert result[category]["availability"] == "unavailable"
 
 
-def test_missing_wal_sidecars_are_not_created(meters):
+def test_quiescent_wal_is_read_without_mutating_records(meters):
     path = meters / ea.LEDGER_NAME
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.close()
-    before = snapshot(meters)
+    before = path.read_bytes()
     result = usage.for_authorized_status(meters, UID, now=NOW)
+    assert result["activity"]["total"] == 3
+    assert path.read_bytes() == before
+
+
+def test_production_connection_factories_leave_readable_quiescent_stores(tmp_path, monkeypatch):
+    from tinyassets import runs, storage
+
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: "owner")
+    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
+    with storage._connect(tmp_path) as conn:
+        conn.execute("CREATE TABLE universe_acl (universe_id,actor_id,permission)")
+        conn.execute("INSERT INTO universe_acl VALUES (?,?,?)", (UID, "owner", "admin"))
+    with runs._connect(tmp_path / UID) as conn:
+        wp.ensure_schema(conn)
+    databases = (tmp_path / DB_FILENAME, tmp_path / UID / ".runs.db")
+    before = {db: db.read_bytes() for db in databases}
+    for db in databases:
+        assert before[db][18:20] == b"\x02\x02"
+        assert not db.with_name(db.name + "-wal").exists()
+        assert not db.with_name(db.name + "-shm").exists()
+    result = usage.for_authorized_status(tmp_path, UID, now=NOW)
+    assert result is not None
+    assert result["workspace"]["availability"] == "observed"
+    assert result["workspace"]["jobs_observed"] == 0
     assert result["activity"]["availability"] == "unavailable"
-    assert snapshot(meters) == before
+    assert {db: db.read_bytes() for db in databases} == before
+
+
+def test_reader_does_not_write_schema_or_records(meters):
+    with usage._readonly(meters / DB_FILENAME) as conn:
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute("UPDATE universe_acl SET permission='read'")
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute("CREATE TABLE status_created_this (value)")
+
+
+def test_acl_change_committed_before_read_is_not_ignored(meters, monkeypatch):
+    """A writer may create a WAL after the path checks but before the query."""
+    path = meters / DB_FILENAME
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.close()
+    original = usage.sqlite3.connect
+    held = []
+
+    def connect_after_revocation(database, *args, **kwargs):
+        if str(database).startswith(path.as_uri()):
+            writer = original(path)
+            writer.execute("PRAGMA wal_autocheckpoint=0")
+            writer.execute("UPDATE universe_acl SET permission='read'")
+            writer.commit()
+            held.append(writer)
+        assert "immutable" not in str(database)
+        return original(database, *args, **kwargs)
+
+    monkeypatch.setattr(usage.sqlite3, "connect", connect_after_revocation)
+    try:
+        assert usage.for_authorized_status(meters, UID, now=NOW) is None
+    finally:
+        for writer in held:
+            writer.close()
 
 
 def test_live_wal_snapshot_includes_uncheckpointed_committed_rows(meters):

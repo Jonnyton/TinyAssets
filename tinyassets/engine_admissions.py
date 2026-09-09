@@ -66,6 +66,13 @@ LEDGER_NAME = ".engine_run_admissions.db"
 RUN_WRITE_LIMIT = 300
 RUN_TOTAL_LIMIT = 900
 RUN_WINDOW_SECONDS = 3600
+
+
+def engine_mutation_limit(total_max: int) -> int:
+    """The existing engine-write share of a total admission budget."""
+    return max(1, (total_max * 2) // 3)
+
+
 KIND_WRITE = "write"
 KIND_READ = "read"
 # An engine write (write_graph, remix, brain): a durable, reversible mutation
@@ -184,7 +191,7 @@ def admit_detail(
     older than the window are pruned on each admission.
     """
     if engine_max is None:
-        engine_max = max(1, (total_max * 2) // 3)
+        engine_max = engine_mutation_limit(total_max)
     if kind not in (KIND_WRITE, KIND_ENGINE):
         raise ValueError(f"admission kind must be write or engine, not {kind!r}")
     db = db or ledger_path()

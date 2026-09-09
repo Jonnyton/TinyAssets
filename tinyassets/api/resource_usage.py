@@ -7,6 +7,7 @@ Each database is a separate read snapshot; these observations cannot admit work.
 from __future__ import annotations
 
 import contextlib
+import logging
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -28,14 +29,10 @@ def _readonly(db: Path):
         path.is_symlink() for path in (db, Path(str(db) + "-wal"), Path(str(db) + "-shm"))
     ):
         raise OSError("meter unavailable")
-    # A read-only SQLite connection may create WAL sidecars. Never bootstrap
-    # them from status; do not use immutable=1, which would ignore live WAL.
-    with db.open("rb") as source:
-        header = source.read(20)
-    if header[18:20] == b"\x02\x02" and not all(
-        Path(str(db) + suffix).is_file() for suffix in ("-wal", "-shm")
-    ):
-        raise OSError("live WAL snapshot unavailable")
+    # SQLite may create coordination sidecars for a quiescent WAL database.
+    # Keep normal locking/change detection: a missing WAL now is not proof the
+    # database stays immutable while we read it (especially the ownership ACL).
+    # mode=ro/query_only forbid database/schema/record writes, not SQLite locks.
     conn = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=0.2)
     try:
         conn.execute("PRAGMA query_only=ON")
@@ -56,7 +53,7 @@ def _activity(root: Path, uid: str, now: float) -> dict:
         "limits": {
             "total": ea.RUN_TOTAL_LIMIT,
             "write_runs": ea.RUN_WRITE_LIMIT,
-            "engine_mutations": max(1, ea.RUN_TOTAL_LIMIT * 2 // 3),
+            "engine_mutations": ea.engine_mutation_limit(ea.RUN_TOTAL_LIMIT),
         },
     }
     try:
@@ -157,6 +154,9 @@ def for_authorized_status(root: Path, uid: str, *, now: float | None = None) -> 
         if grant is None or grant[0] != "admin":
             return None
     except (OSError, ValueError, sqlite3.Error):
+        logging.getLogger(__name__).warning(
+            "Resource usage unavailable: ownership store could not be read",
+        )
         return None
     stamp = time.time() if now is None else now
     return {

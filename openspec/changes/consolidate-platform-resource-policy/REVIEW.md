@@ -40,3 +40,42 @@ final text. Verdict: **ADAPT**. This is shape review, not approval of subsequent
 The revised implementation needs focused tests, Linux evidence, independent
 exact-head code review, required CI, deployment receipt and coordinated rendered
 app-owned continuation. Patches and owner acceptance remain open.
+
+## Code review round 1 — ADAPT
+
+2026-09-08, Claude independent review of committed head
+`7da49d00ce57d289bc291437b7afe42e0adf482c` against `f1ea4750`:
+`python scripts/peer_agent.py claude --out output/resource-policy-code-review-claude.md --prompt-file output/resource-policy-code-review-brief.md --timeout 600`.
+Completed in 598 seconds. Substantive response recovered from the invocation's
+session transcript; the wrapper retained its closing ADAPT verdict.
+
+**Confirmed blocker:** the new reader refused quiescent WAL-mode stores without
+sidecars, suppressing valid admin usage. Production connection factories close
+their connections; the earlier integration fixture masked that normal state.
+The workspace jobs-gate removal, retained safeguards, privacy boundary, units,
+plugin parity and bookkeeping correction otherwise received AGREE.
+
+**Correction:** use SQLite's ordinary read-only, query-only connection for both
+quiescent and live WAL databases. It may create normal coordination sidecars,
+but cannot create a missing database, change schema or mutate records. Added
+production-factory quiescent tests, prohibited SQL-write tests and a concurrent
+ACL-revocation test. Unreadable ACL checks now emit a sanitized warning.
+
+**DISAGREE_EVIDENCE with the suggested immutable workaround:** a missing WAL
+before connection does not establish immutability for the duration of a read;
+a writer can start immediately after the check. SQLite's
+[URI documentation](https://www.sqlite.org/uri.html) warns that immutable reads
+disable locking/change detection and can return incorrect results if the file
+changes. Its [WAL documentation](https://www.sqlite.org/wal.html) permits normal
+read-only WAL access with coordination sidecars. Do not risk stale ACL reads to
+avoid those internal lock files. This is an explicit clarification of the
+read-only contract, not permission to write user data or bootstrap schemas.
+
+The nonblocking duplicate engine-subcap formula is now shared by enforcement,
+status and refusal wording. Five unknown 4 GiB failed checkouts can still consume
+the existing 20 GiB transfer window; that pre-existing conservative accounting
+remains open, not silently reconciled from retained-tree size. Remaining stale
+as-built quota text will be synced with deployment, not prematurely represented
+as shipped.
+
+Round 2 must review the corrected exact code head before landing.

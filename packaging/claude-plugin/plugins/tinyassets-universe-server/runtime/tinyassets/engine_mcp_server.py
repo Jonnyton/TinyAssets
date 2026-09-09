@@ -158,7 +158,7 @@ def _engine_refusal(prefix: str, refused_by) -> str:
     if refused_by == "total":
         bound = f"max {_RUN_GRAPH_TOTAL_MAX} runs of any kind"
     elif refused_by == "engine":
-        bound = f"max {(_RUN_GRAPH_TOTAL_MAX * 2) // 3} engine writes"
+        bound = f"max {engine_admissions.engine_mutation_limit(_RUN_GRAPH_TOTAL_MAX)} engine writes"
     else:
         bound = f"max {_RUN_GRAPH_RATE_MAX} runs that write"
     return _json.dumps({

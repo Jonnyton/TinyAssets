@@ -4,8 +4,10 @@
 Existing authenticated status SHALL offer authorized universe-scoped resource
 observations with timestamp, actual activity scope and limits, workspace
 allocation/transport/storage distinctions, and explicit availability. Reads
-SHALL create, migrate, reconcile and change nothing. No new handle or authority
-SHALL be introduced.
+SHALL NOT create databases, migrate schemas, reconcile usage or mutate records.
+SQLite's normal coordination sidecars MAY be created by read-only connections;
+reads SHALL preserve locking and visibility of committed WAL transactions.
+No new handle or authority SHALL be introduced.
 
 #### Scenario: Owner asks about usage
 - **WHEN** the app's pinned agent reads status for its authorized universe

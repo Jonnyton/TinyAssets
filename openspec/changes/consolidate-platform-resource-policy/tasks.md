@@ -15,7 +15,9 @@
 
 Local evidence (2026-09-08, Windows, uncommitted candidate):
 `python -m pytest -q tests/test_workspace_pool.py tests/test_workspace_effector.py tests/test_run_usage_budgets.py tests/test_engine_mcp_hardening.py tests/test_engine_mcp_server.py tests/test_resource_usage_status.py tests/test_api_status.py tests/test_get_status_primitive.py`
-reported 390 passed, 9 skipped. This does not satisfy the Linux gate.
+reported 390 passed, 9 skipped initially; after the round-1 WAL correction and
+three added regressions it reported 393 passed, 9 skipped. This does not satisfy
+the Linux gate.
 
 The local oracle could not start because Docker Desktop crashed initializing its
 inference socket, before any test execution. Commander authorized the existing
