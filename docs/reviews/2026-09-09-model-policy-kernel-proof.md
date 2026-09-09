@@ -27,7 +27,11 @@ artifact. Exact code review80925 completed (exit0,281s), verdict ADAPT against
 adaptation are in 2026-09-09-model-policy-code-review.md. Six new regression
 cases failed before correction; all40 policy tests and15 mirror tests now pass
 on Windows (55 total,4.08s). Updated Ruff/plugin/import checks pass. Supplemental
-Linux after adaptation and adapted-head review remain outstanding. No PR or
+Ubuntu3.11.15 after adaptation passed the same55 tests,no skips,10.95s,temporary
+root /tmp/tiny-receiver-proof.yqE58v. After merging the deployed HTTP receipt fix
+into this branch, the combined policy/HTTP/agent-call/mirror group passed99 tests
+on Windows in9.00s. Adapted-head kernel review remains outstanding; the separate
+candidate-authority design review returned ADAPT, not runtime approval. No PR or
 runtime activation exists for this kernel.
 
 Separate prerequisite task1.2 is complete: HTTP receipt PR3680 passed exact-head
