@@ -41,6 +41,8 @@ import os
 
 from fastmcp import FastMCP
 
+from tinyassets import engine_admissions
+
 # The founder + universe this engine turn is bound to. Read once at startup; the
 # daemon writes them into the server subprocess env via _engine_mcp_flags.
 _ACTOR_ID = (os.environ.get("TINYASSETS_ENGINE_ACTOR_ID") or "").strip()
@@ -74,14 +76,14 @@ _REMIX_CAPABILITIES = ("read", "list", "write", "costly")
 #: safety property: the only platform invariant is not affecting OTHER users,
 #: and every one of these runs on the owner's own subscription. Cross-user
 #: capacity (provider slots, memory) is bounded elsewhere.
-_RUN_GRAPH_RATE_WINDOW_S = 3600
-_RUN_GRAPH_RATE_MAX = 300
+_RUN_GRAPH_RATE_WINDOW_S = engine_admissions.RUN_WINDOW_SECONDS
+_RUN_GRAPH_RATE_MAX = engine_admissions.RUN_WRITE_LIMIT
 # Runs of ANY kind (reads included) per window. Reads are reclassified off the
 # write budget once they prove they wrote nothing (tinyassets.engine_admissions),
 # but a loop of read-only runs is still bounded here: run_graph returns as soon
 # as the run is QUEUED, so this is what bounds compute on the owner's
 # subscription. Engine writes (write_graph, remix, brain) get two thirds of it.
-_RUN_GRAPH_TOTAL_MAX = 900
+_RUN_GRAPH_TOTAL_MAX = engine_admissions.RUN_TOTAL_LIMIT
 
 
 def _bearer_ok(authorization_header, secret) -> bool:

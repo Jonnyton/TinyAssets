@@ -62,6 +62,10 @@ from pathlib import Path
 from typing import NamedTuple
 
 LEDGER_NAME = ".engine_run_admissions.db"
+# Shared by enforcement and read-only status; one source for the deployed policy.
+RUN_WRITE_LIMIT = 300
+RUN_TOTAL_LIMIT = 900
+RUN_WINDOW_SECONDS = 3600
 KIND_WRITE = "write"
 KIND_READ = "read"
 # An engine write (write_graph, remix, brain): a durable, reversible mutation

@@ -449,38 +449,47 @@ def test_a_lock_held_by_another_run_is_not_released_by_this_entry(
 # --------------------------------------------------------------------------
 
 
-def test_the_hourly_jobs_bound_is_named_in_the_refusal(db: Path, roots: Roots) -> None:
+def test_more_than_ten_released_jobs_are_observations_not_a_second_starts_cap(
+    db: Path, roots: Roots,
+) -> None:
     clock = [1_000_000.0]
-    for index in range(2):
-        admit_scratch(
+    for index in range(11):
+        run_id = f"run-{index}"
+        lease = admit_scratch(
             db,
             roots,
-            jobs_per_hour=2,
+            run_id=run_id,
             lease_id_factory=_ids(f"lease{index}"),
             now=lambda: clock[0],
         )
-    with pytest.raises(wp.WorkspacePoolRefused) as exc:
-        admit_scratch(
-            db,
-            roots,
-            jobs_per_hour=2,
-            lease_id_factory=_ids("lease9"),
-            now=lambda: clock[0],
-        )
-    assert exc.value.code == wp.REFUSED_QUOTA
-    assert "jobs per hour (2)" in exc.value.detail
-    assert f"clears_at={clock[0] + wp.WINDOW_S}" in exc.value.detail
+        with terminal_txn(db) as conn:
+            wp.enqueue_terminal(conn, run_id=run_id, universe_id="u1", lease=lease)
+        entry = wp.claim_next(db, claimant="test")
+        assert entry is not None
+        wp.process_entry(db, entry, fs=FakeFs(present=(lease.path,)))
+        assert lock_rows(db) == []
 
     usage = wp.ledger_usage(db, "u1", now=lambda: clock[0])
-    assert usage.jobs == 2
+    assert usage.jobs == 11
+    assert usage.bytes == 11 * GIB
     assert usage.clears_at == clock[0] + wp.WINDOW_S
+
+
+def test_more_than_ten_zero_byte_operations_remain_releasable(db: Path) -> None:
+    for index in range(11):
+        assert wp.reserve_operation_bytes(
+            db, universe_id="u1", run_id="run-1",
+            operation_id=f"discard-{index}", max_bytes=0,
+        ) == 0
+    assert wp.ledger_usage(db, "u1").jobs == 11
+    assert wp.ledger_usage(db, "u1").bytes == 0
 
 
 def test_charges_outside_the_window_do_not_count(db: Path, roots: Roots) -> None:
     clock = [1_000_000.0]
-    admit_scratch(db, roots, jobs_per_hour=1, lease_id_factory=_ids("lease1"), now=lambda: clock[0])
+    admit_scratch(db, roots, lease_id_factory=_ids("lease1"), now=lambda: clock[0])
     later = clock[0] + wp.WINDOW_S + 1
-    admit_scratch(db, roots, jobs_per_hour=1, lease_id_factory=_ids("lease2"), now=lambda: later)
+    admit_scratch(db, roots, lease_id_factory=_ids("lease2"), now=lambda: later)
     assert wp.ledger_usage(db, "u1", now=lambda: later).jobs == 1
 
 
@@ -563,7 +572,7 @@ def test_a_refused_admission_writes_nothing(db: Path, roots: Roots) -> None:
         rows(db, "SELECT rowid FROM workspace_ledger"),
     )
     with pytest.raises(wp.WorkspacePoolRefused):
-        admit_scratch(db, roots, jobs_per_hour=1, lease_id_factory=_ids("lease2"))
+        admit_scratch(db, roots, bytes_per_hour=GIB, lease_id_factory=_ids("lease2"))
     after = (
         rows(db, "SELECT lease_id FROM workspace_leases"),
         lock_rows(db),
@@ -1113,11 +1122,13 @@ def test_quota_after_conflict_preserves_both_facts(db: Path, roots: Roots):
     def sleep(seconds):
         clock[0] += seconds
         with sqlite3.connect(db) as conn:
-            conn.execute("UPDATE workspace_ledger SET amount=2 WHERE kind=?", (wp.KIND_JOBS,))
+            conn.execute(
+                "UPDATE workspace_ledger SET amount=? WHERE kind=?", (2 * GIB, wp.KIND_BYTES),
+            )
 
     with pytest.raises(wp.WorkspacePoolRefused) as exc:
         admit_scratch(
-            db, roots, run_id="run-2", jobs_per_hour=2, wait_s=10,
+            db, roots, run_id="run-2", bytes_per_hour=2 * GIB, wait_s=10,
             sleep=sleep, now=lambda: clock[0], monotonic=lambda: clock[0],
             observation=observation,
         )
@@ -1209,7 +1220,7 @@ def test_a_quota_refusal_is_never_waited_on(db: Path, roots: Roots) -> None:
         admit_scratch(
             db,
             roots,
-            jobs_per_hour=0,
+            bytes_per_hour=0,
             wait_s=30.0,
             sleep=slept.append,
             lease_id_factory=_ids("lease1"),
