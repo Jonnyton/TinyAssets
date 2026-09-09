@@ -494,9 +494,10 @@ Play Console now shows **Sign in details** under Actioned, last edited 2026-09-0
 the `Play Reviewer` credentials and observed instructions: sign in with Email + Password,
 then choose **Skip for now** on the Connect screen to enter the empty reviewer universe.
 No organization, integrations, connected accounts, or founder data are attached. The
-optional Google/trusted-partner device feedback switch is off. The credential was saved
-as a draft only; it was not sent for review. The actual password exists only in Play's
-credential field and is intentionally absent from this repository.
+optional Google/trusted-partner device feedback switch is off. The verified rotated
+credential was saved and submitted for review on 2026-09-08. The actual password exists
+only in Windows Credential Manager and Play's credential field and is intentionally
+absent from this repository.
 
 The mistaken `simkalholdingsllc+tinyassets-play-review@gmail.com` WorkOS user was
 permanently deleted only after the correct alias, delivery path, two sign-ins, and Play
@@ -510,9 +511,10 @@ user; do not attach a founder/personal provider credential. Re-check the saved c
 immediately before every submitted build. Google's reviewer-access requirements are at
 <https://support.google.com/googleplay/android-developer/answer/15748846>.
 
-**What it gated:** Sign in details, Target audience (**18 and over**), and Data safety
-are now Actioned and waiting in Publishing overview; nothing was sent for review.
-Data safety was corrected to list both password and OAuth account creation. Content
+**What it gated:** Sign in details, Target audience (**18 and over**), Data safety,
+and the foreground-service declaration were submitted with the 15-change review batch
+on 2026-09-08. Play's final quick checks completed and the Console now says **Your
+changes are now in review**. Data safety lists both password and OAuth account creation. Content
 rating remains complete (IARC, submitted 2026-09-02, Everyone / PEGI 3 / USK 0 /
 ClassInd L).
 
@@ -566,18 +568,18 @@ What remains after the secrets, and who does it (`docs/ops/google-play-launch.md
 | Play Console: app created, declarations accepted | **done** 2026-09-02 |
 | Store listing, graphics, privacy URL, Ads/Government/Financial/Health | **done** |
 | Content rating (IARC) | **done** 2026-09-02 — Everyone / PEGI 3 |
-| Data safety | **done** 2026-09-03 — Actioned with password + OAuth account creation; not sent for review |
+| Data safety | **done** 2026-09-03; submitted for review with the 15-change batch on 2026-09-08 |
 | Internal-testing tester list | **done** — "Founder devices" attached to the track |
 | Build the signed AAB | **done** 2026-09-08 — merged source `ea3f1092`; GitHub workflow run `34297030257` built and signed code `4 (1.0.3)`. Downloaded AAB SHA-256: `d647d073ae62088c8dba0795b883d4449b31c5ab3eb37f2304adde949e352cc3`. |
 | Internal-testing release: upload the AAB, roll out | **done** 2026-09-03 11:10 — release `1 (1.0)`, track Active, 3.1 MB |
 | Corrected internal release `2 (1.0.1)` | **done** 2026-09-03 21:42 PT — merged source `bf432f1b2dbe`; signed AAB accepted; Play shows Active and Available to internal testers. |
 | Verify the loop on a real phone (install from the internal-test link, sign in, chat) | **partially done 2026-09-08** — Google Play installed `3 (1.0.2)` on Samsung S24+ / Android 16 and Android reported `com.android.vending` as installer. WorkOS sign-in succeeded. The corrected debug build proved the provider notification/cancel path. Install Play-signed `4 (1.0.3)` and send one review-safe message to finish the row. |
-| Sign in details | **action required** — the dedicated reviewer account and rotated 40-character password were verified end-to-end, but a fresh 2026-09-08 Console read shows the saved Play record still has the prior 37-character password. The verified replacement is staged in the task-owned Play Reviewer form; click **Add**, then the page-level **Save**, without changing or exposing the credential. Do this before submitting the 15 launch changes for review. |
-| Target audience | **done** 2026-09-03 — 18 and over, Actioned; not sent for review |
-| Advertising ID declaration | **done 2026-09-03** — saved No after shipped-artifact, exact-candidate merged-manifest, and dependency verification; actioned but not sent for review |
-| Foreground-service declaration + behavior video | **done; saved 2026-09-08, not yet sent for review** — the 27.11-second 1080×2340 privacy-redacted candidate has SHA-256 `7b49b48d21ca3a1f57acdce23ed8c5ac0f58b63aab57ea3d4cb5696ed61391f2`. Public URL: `https://github.com/Jonnyton/TinyAssets/releases/download/android-latest/tinyassets-fgs-play-evidence-final.mp4`. Play accepted **Data sync → Network processing → Other** with this link; App content now reports no declarations needing attention. |
-| Replace the unsafe uploaded conversation screenshot with staged `01-sign-in.png` | **done 2026-09-03** — live draft saved and both retained filenames verified; not sent for review |
-| Closed test: 12 testers for 14 days, then apply for production access | **you** — Play reported 0 opted-in testers on 2026-09-08. The Alpha release is configured for all 177 countries/regions and the one-member `Founder devices` list. Code 3 was removed; signed code `4 (1.0.3)` is the sole bundle. Its preview was saved into Publishing overview on 2026-09-08, and Google's automated quick checks passed with all 15 launch changes ready to submit for review. Review submission and recruiting at least 11 more real testers remain before the 14-day clock can start. |
+| Sign in details | **done 2026-09-08** — the dedicated reviewer account and rotated 40-character password were verified end-to-end, transferred directly from Windows Credential Manager, and saved in Play without exposing or persisting the value. |
+| Target audience | **done** 2026-09-03 — 18 and over; submitted for review 2026-09-08 |
+| Advertising ID declaration | **done 2026-09-03** — saved No after shipped-artifact, exact-candidate merged-manifest, and dependency verification; submitted for review 2026-09-08 |
+| Foreground-service declaration + behavior video | **done; submitted 2026-09-08** — the 27.11-second 1080×2340 privacy-redacted candidate has SHA-256 `7b49b48d21ca3a1f57acdce23ed8c5ac0f58b63aab57ea3d4cb5696ed61391f2`. Public URL: `https://github.com/Jonnyton/TinyAssets/releases/download/android-latest/tinyassets-fgs-play-evidence-final.mp4`. Play accepted **Data sync → Network processing → Other** with this link; App content reports no declarations needing attention. |
+| Replace the unsafe uploaded conversation screenshot with staged `01-sign-in.png` | **done 2026-09-03** — live draft saved and both retained filenames verified; submitted for review 2026-09-08 |
+| Closed test: 12 testers for 14 days, then apply for production access | **you** — Play reported 0 opted-in testers on 2026-09-08. The Alpha release is configured for all 177 countries/regions and the one-member `Founder devices` list. Code 3 was removed; signed code `4 (1.0.3)` is the sole bundle. The verified reviewer credential and all 15 launch changes were submitted on 2026-09-08; Play's final quick checks completed and the Console says **Your changes are now in review**. Until approval, the opt-in page reports that no testing version has been published; Play also says open testing is unavailable until production access. After approval, the founder account must opt in and at least 11 more real Google-account testers must be recruited before the 14-day clock can start. |
 | Promote to Production → submit for review → **Roll out** | you (final click) |
 
 ### Google Play: review and submit the foreground-service declaration
