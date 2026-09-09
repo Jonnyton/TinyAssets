@@ -86,7 +86,9 @@ class AppStoreConnect:
                 return None
             # A validation response could contain submitted field values. Never
             # copy an App Store Connect response body into CI logs.
-            raise SystemExit(f"App Store Connect API returned HTTP {exc.code}") from None
+            raise SystemExit(
+                f"App Store Connect API returned HTTP {exc.code} for {method} {path}"
+            ) from None
 
 
 def save_review_account(client: AppStoreConnect, values: Mapping[str, str]) -> tuple[str, str]:
