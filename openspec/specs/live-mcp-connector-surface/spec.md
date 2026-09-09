@@ -462,6 +462,9 @@ SHALL NOT create databases, migrate schemas, reconcile usage or mutate records.
 SQLite's normal coordination sidecars MAY be created by read-only connections;
 reads SHALL preserve locking and visibility of committed WAL transactions.
 No new handle or authority SHALL be introduced.
+Activity SHALL retain observed engine-mutation counts, but its limits SHALL name
+only the enforced total (900) and write-run (300) admission ceilings per rolling
+3600 seconds, without the retired `engine_mutations` category ceiling.
 
 #### Scenario: Owner asks about usage
 - **WHEN** the app's pinned agent reads status with its owner's existing admin authority for the universe
@@ -478,6 +481,10 @@ No new handle or authority SHALL be introduced.
 #### Scenario: The oldest charge is about to expire
 - **WHEN** status reports a rolling-window expiration
 - **THEN** it gives a UTC next-charge-expiration instant and does not guarantee enough capacity for an unspecified future request
+
+#### Scenario: Engine usage is observed without a separate allowance
+- **WHEN** authorized status reports engine mutations
+- **THEN** activity contains their count and includes them in total, but `activity.limits` contains only `total` and `write_runs`
 
 ### Requirement: Storage observations distinguish measurable footprint from complete attribution
 Existing admin-only resource status SHALL report bounded metadata-only logical

@@ -39,4 +39,12 @@ Task 3.2 is intentionally still open. Shipped specs are synchronized, but the
 owner retains live testing and acceptance. Commander explicitly relayed that no
 new app test message or workflow run is authorized without a fresh user request.
 Do not archive this as fully accepted or treat technical readiness as completion
-of broader Patches. No post-fix organic-use proof has been observed.
+of broader Patches.
+
+Update September 8, 21:51 PDT: the rendered app's 21:39 report now supplies
+organic owner-initiated evidence of 12 workspace starts without the old limit
+and contention/recovery success. It also reports explicit discard failure and
+four other gaps, so complete cleanup/whole-goal acceptance is not established.
+The newer owner directive in `goal-completion-contract.md` adds all five gaps
+and authorizes the ordinary retest loop, with explicit agent confirmation as
+the completion gate. No extra test was sent during the read-only inspection.

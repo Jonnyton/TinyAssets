@@ -30,6 +30,11 @@ webhook test was already complete; it is not evidence of another fresh run.
 
 ## Follow-up boundary
 
+The owner explicitly added closing all five gaps to the active limits goal on
+September 8 PDT and made the webapp agent's message confirming closure the
+completion criterion. Durable combined scope:
+`openspec/changes/consolidate-platform-resource-policy/goal-completion-contract.md`.
+
 Reproduce and fix the platform capability or discovery/response contract, not
 the owner's private workflows. Check existing primitives before proposing new
 public actions. Cancellation exposure overlaps the existing

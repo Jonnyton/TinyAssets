@@ -70,6 +70,23 @@ to the shipped implementation without representing that task as complete.
 
 ## Remaining limits
 
+### Organic owner continuation, 21:39 PDT
+
+Read September 8 at 21:51 PDT through the rendered existing-owner app conversation
+(`cua.getTab('1346517638', { browser: '2' })`). Following the owner's own 21:29
+test request, the agent reports all nine checklist checks passed and **12
+workspace starts without the old ten-start limit**, with contention/recovery
+working. This is post-fix owner-initiated use, not a coding-agent load test.
+The message does not identify a SHA or run IDs. The agent also reports five
+distinct gaps, including explicit discard, so it is not a blanket cleanup or
+whole-goal acceptance. See the [reported gaps](../concerns/2026-09-08-app-read-write-sweep-gaps.md).
+
+The owner's subsequent goal extension explicitly requires closing those five
+gaps and the webapp agent messaging that they are closed. Ordinary retest
+conversation is now authorized again; keep one owner for the loop. The preceding
+no-prompt boundary remains historical evidence of the original handoff, not a
+current restriction overriding the newer user direction.
+
 Unknown failed transfers still retain conservative byte reservations. Aggregate
 retained-storage accounting, host-global capacity, other policy consolidation,
 tool parity and owner acceptance remain open. Passing this bounded correction

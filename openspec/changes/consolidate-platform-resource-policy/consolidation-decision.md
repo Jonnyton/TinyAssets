@@ -1,5 +1,12 @@
 # Decision-ready consolidation recommendation
 
+Current completion scope is extended by the September 8 owner directive in
+[goal-completion-contract.md](goal-completion-contract.md): full deployed limits
+simplification plus five app-reported capability gaps, with explicit rendered
+webapp-agent confirmation that the gaps are closed. The historical design-only
+statements below describe the recommendation stage, not a withdrawal of the
+owner's subsequent implementation/deployment authorization.
+
 2026-09-08 PDT / September 9 UTC. **Design only; not approved runtime policy.**
 The workspace-start cap removal and storage sampler are shipped. Neither is the
 requested end state. This pass changes no code, PLAN, ledger, threshold, workflow,

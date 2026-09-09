@@ -94,7 +94,7 @@ the existing spec, not evidence that 4 GiB was actually transferred or retained.
 It did **not** cause this jobs-per-hour refusal, but must be considered when
 separating actual consumption, reservations, throughput, and retained storage.
 
-## Deployed values versus prior increases
+## Historical diagnosis values versus prior increases
 
 | Control | Confirmed deployed value | Meaning |
 |---|---|---|
@@ -102,7 +102,7 @@ separating actual consumption, reservations, throughput, and retained storage.
 | Workspace hourly bytes | 20 GiB / universe / rolling hour | Reservations settled to measurement when known; not total retained storage |
 | Default lease reservation / pool cap constants | 4 GiB / 20 GiB | Source defaults, not proof of a host-global disk bound |
 | Permanent workspace storage | 16 GiB per universe | `_universe_quota_kwargs` supplies a hard-coded filesystem-measured quota, not a wired commercial tier |
-| General write-run / total admission limits | 300 / 900 per universe per rolling hour | Current engine caller constants; internal engine-write share derives as 600 |
+| General write-run / total admission limits | 300 / 900 per universe per rolling hour | At diagnosis, the internal engine-write share derived as 600; #3577 removes that separate share while retaining 300/900 |
 | Effect-node dispatches / delivered-result bytes | 5,000 / 2 GiB per universe per rolling hour | A third activity-budget family in the engine admissions DB; workspace nodes consume its dispatch counter too, while workspace transfer bytes remain separate |
 | Provider binding token / cost ceilings | 4,000,000 / 400,000,000 microunits | Separate provider authority capacity, not workspace starts or upstream entitlement |
 
@@ -187,10 +187,12 @@ literal would leave the same fragmentation and is not the requested end state.
 
 The bounded correction is tracked in `consolidate-platform-resource-policy`,
 merged PR #3560; it removes both starts-count refusals while preserving resource
-guards and adding scoped observations. It is deployed, but not yet accepted
-through owner-held rendered testing. Shipped specs now describe the correction
-and the actual 300/900/600 admission values; the older citations above are
-historical diagnosis evidence.
+guards and adding scoped observations. It is deployed. The owner's 21:39 PDT
+app report confirms 12 workspace starts and contention/recovery success, but
+also reports explicit discard failure; complete cleanup acceptance remains open.
+Shipped specifications are being synchronized with #3577's engine-share removal:
+300 write admissions / 900 total, no separate 600 engine ceiling. The table above
+is historical diagnosis evidence, not a claim that retired gates remain current.
 The already-landed `run-usage-budgets` records were verified, synced and archived
 under `openspec/changes/archive/2026-09-08-run-usage-budgets/`. A new
 accounting scope, authority surface, or storage migration needs proposal/design

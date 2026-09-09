@@ -16,10 +16,8 @@ write (`write_graph`, remix, brain write) through the same ledger as kind
 `engine`. The engine SHALL refuse a run admission when the universe's
 `write` admissions in the window have reached the write cap (300 per 3600 s)
 OR its admissions of any kind have reached the total cap (900 per 3600 s);
-it SHALL refuse an `engine` admission when the universe's `engine`
-admissions in the window have reached the engine cap (600 per 3600 s, two
-thirds of the total, so engine mutations alone leave room for 300 run admissions)
-OR the total cap; and
+it SHALL refuse an `engine` admission at the total cap without a separate
+engine-mutation ceiling or a reserved share for the same universe's runs; and
 SHALL say which cap refused. An `engine` row SHALL never be bound to a run
 or reclassified. A refusal caused by an unusable or untrusted ledger SHALL
 say so and SHALL NOT be reported as a quota. Rows outside the window SHALL
@@ -138,12 +136,22 @@ requirement are unchanged.
   hour and then runs a job that writes externally
 - **THEN** the job's writes are admitted against an untouched 300-write budget
 
-#### Scenario: A burst of engine writes cannot starve runs
+#### Scenario: Engine mutations can use the owner's total allowance
 
-- **WHEN** a universe's engine has made 600 `write_graph` calls in the rolling
-  hour (failed validations included - they charged their admission)
-- **THEN** the 601st is refused by the engine cap while runs are still admitted
-  until 900 admissions of any kind exist
+- **WHEN** a universe has 600 engine edits in its rolling hour and no other admissions
+- **THEN** edit 601 is admitted, and engine edits can fill the existing total of 900
+- **AND** the next admission of either kind refuses at the total cap, while another universe remains independent
+
+#### Scenario: Mixed kinds compete atomically for the total
+
+- **WHEN** engine edits and run submissions race for the final total admission with write capacity remaining
+- **THEN** exactly one receives a recorded ticket and all others refuse at the total cap
+
+#### Scenario: Edit usage does not permanently pause an automation
+
+- **WHEN** engine edits exhaust the total allowance and a scheduled run becomes due
+- **THEN** that period records `run_rate_limited` without launching or pausing the automation
+- **AND** a later due period can be admitted after the old charges expire
 
 #### Scenario: A read that arrived first does not hide a write
 - **WHEN** a terminal status settles `read` while an adapter is still running and that adapter then delivers a PUT
