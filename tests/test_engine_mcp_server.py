@@ -291,12 +291,13 @@ def test_remix_shape_admission_fails_closed(monkeypatch):
     _bind_ids(monkeypatch, graph="u-9")
     monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
     seen = {}
-    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: seen.update(kw) or False)
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: seen.update(kw) or
+                        s.engine_admissions.Admission(None, "ledger"))
     calls = {"n": 0}
     monkeypatch.setattr(us, "write_graph", lambda **kw: (calls.update(n=1), "{}")[1])
     out = json.loads(s.remix_shape(fork_from="v-1", name="mine"))
     assert seen.get("fail_closed") is True
-    assert "rate limit" in out.get("error", "")
+    assert "ledger is unavailable" in out.get("error", "")
     assert calls["n"] == 0
 
 
@@ -307,7 +308,8 @@ def test_remix_shape_rate_limited(monkeypatch):
 
     _bind_ids(monkeypatch, graph="u-9")
     monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
-    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: False)  # over the cap
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw:
+                        s.engine_admissions.Admission(None, "total"))
     calls = {"n": 0}
     monkeypatch.setattr(us, "write_graph", lambda **kw: (calls.update(n=1), "{}")[1])
     out = json.loads(s.remix_shape(fork_from="v-1", name="mine"))
@@ -357,20 +359,22 @@ def test_run_graph_names_the_cap_that_refused(monkeypatch, tmp_path):
     monkeypatch.setattr(s, "_engine_run_admit",
                         lambda **kw: adm.Admission(None, adm.REFUSED_BY_TOTAL))
     out = json.loads(s.run_graph(branch_def_id="b1"))
-    assert f"max {s._RUN_GRAPH_TOTAL_MAX} runs of any kind" in out["error"]
+    assert f"max {s._RUN_GRAPH_TOTAL_MAX} admissions" in out["error"]
     monkeypatch.setattr(s, "_engine_run_admit",
                         lambda **kw: adm.Admission(None, adm.REFUSED_BY_WRITE))
     out = json.loads(s.run_graph(branch_def_id="b1"))
     assert f"max {s._RUN_GRAPH_RATE_MAX} runs that write" in out["error"]
     # a bare False from an old-style double still means refused
     monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: False)
-    assert "rate limit" in json.loads(s.run_graph(branch_def_id="b1"))["error"]
+    assert "reason is unavailable" in json.loads(s.run_graph(branch_def_id="b1"))["error"]
     # the write surfaces name the cap the same way (Codex round 3)
     total_text = s._engine_refusal("write_graph", "total")
-    assert f"max {s._RUN_GRAPH_TOTAL_MAX} runs of any kind" in total_text
+    assert f"max {s._RUN_GRAPH_TOTAL_MAX} admissions" in total_text
     write_text = s._engine_refusal("engine write", "write")
     assert f"max {s._RUN_GRAPH_RATE_MAX} runs that write" in write_text
-    assert "engine writes" in s._engine_refusal("write_graph", "engine")
+    for reason in (None, "engine", "unknown"):
+        text = s._engine_refusal("write_graph", reason)
+        assert "reason is unavailable" in text and "max" not in text
     ledger_text = s._engine_refusal("write_graph", "ledger")
     assert "not admitted" in ledger_text and "max" not in ledger_text     # not a quota
 
@@ -649,10 +653,11 @@ def test_write_brain_admission_fails_closed(monkeypatch, tmp_path):
 
     _seed_brain_universe(monkeypatch, tmp_path)
     seen = {}
-    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: seen.update(kw) or False)
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: seen.update(kw) or
+                        s.engine_admissions.Admission(None, "ledger"))
     out = json.loads(s.write_brain(name="Aria"))
     assert seen.get("fail_closed") is True
-    assert "rate limit" in out.get("error", "")
+    assert "ledger is unavailable" in out.get("error", "")
 
 
 def test_read_brain_fails_closed_unbound(monkeypatch):
@@ -1698,13 +1703,14 @@ def test_served_write_graph_admission_fails_closed(monkeypatch):
     _bind_ids(monkeypatch, graph="u-9")
     monkeypatch.setattr(http, "run_graph_allowlist", lambda: frozenset({"u-9"}))
     seen = {}
-    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: seen.update(kw) or False)
+    monkeypatch.setattr(s, "_engine_run_admit", lambda **kw: seen.update(kw) or
+                        s.engine_admissions.Admission(None, "ledger"))
     calls = {"n": 0}
     monkeypatch.setattr(ext, "_extensions_impl", lambda **kw: (calls.update(n=1), "{}")[1])
     out = json.loads(s.write_graph(target="branch", operation="create", payload_json="{}"))
     assert seen.get("fail_closed") is True
     assert seen.get("kind") == "engine"                  # never the external-effect budget
-    assert "rate limit" in out.get("error", "").lower()
+    assert "ledger is unavailable" in out.get("error", "").lower()
     assert calls["n"] == 0
 
 

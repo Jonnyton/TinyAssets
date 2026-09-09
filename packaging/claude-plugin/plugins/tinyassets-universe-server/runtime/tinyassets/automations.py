@@ -1330,7 +1330,7 @@ def run_due_automation(
             _record_refusal(base, automation, blocked, moment, consumer_id)
             return blocked
 
-        # The same rolling 20/hour engine budget a foreground `run_graph` pays
+        # The same rolling write/total admission bounds a foreground `run_graph` pays
         # (Codex ADAPT §7). Counted against THIS universe, so one owner's
         # cadence cannot exhaust another's. A refusal is NOT a pause: the
         # budget refills, so the next period simply tries again.

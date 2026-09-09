@@ -54,7 +54,6 @@ def _activity(root: Path, uid: str, now: float) -> dict:
         "limits": {
             "total": ea.RUN_TOTAL_LIMIT,
             "write_runs": ea.RUN_WRITE_LIMIT,
-            "engine_mutations": ea.engine_mutation_limit(ea.RUN_TOTAL_LIMIT),
         },
     }
     try:

@@ -82,7 +82,7 @@ _RUN_GRAPH_RATE_MAX = engine_admissions.RUN_WRITE_LIMIT
 # write budget once they prove they wrote nothing (tinyassets.engine_admissions),
 # but a loop of read-only runs is still bounded here: run_graph returns as soon
 # as the run is QUEUED, so this is what bounds compute on the owner's
-# subscription. Engine writes (write_graph, remix, brain) get two thirds of it.
+# subscription. Engine writes share this total without a category reservation.
 _RUN_GRAPH_TOTAL_MAX = engine_admissions.RUN_TOTAL_LIMIT
 
 
@@ -109,7 +109,7 @@ def _engine_run_admit(
     """Atomically admit one engine-triggered run/write under the rolling caps, or refuse.
 
     The ledger and the count rule live in ``tinyassets.engine_admissions``:
-    every admission is charged as a WRITE against ``_RUN_GRAPH_RATE_MAX`` (Codex
+    every run admission is charged as a WRITE against ``_RUN_GRAPH_RATE_MAX`` (Codex
     gate #5, the effect-spam bound), atomically (``BEGIN IMMEDIATE`` count-and-
     insert, closing the TOCTOU race); a run that then proves it only READ is
     reclassified by the effect dispatcher and stops counting against writes,
@@ -156,11 +156,18 @@ def _engine_refusal(prefix: str, refused_by) -> str:
             ),
         })
     if refused_by == "total":
-        bound = f"max {_RUN_GRAPH_TOTAL_MAX} runs of any kind"
-    elif refused_by == "engine":
-        bound = f"max {engine_admissions.engine_mutation_limit(_RUN_GRAPH_TOTAL_MAX)} engine writes"
-    else:
+        bound = f"max {_RUN_GRAPH_TOTAL_MAX} admissions (runs and engine edits)"
+    elif refused_by == "write":
         bound = f"max {_RUN_GRAPH_RATE_MAX} runs that write"
+    else:
+        # No cap is known: do not invent a write-budget diagnosis. None is
+        # possible for legacy boolean doubles, but real admissions name a cause.
+        return _json.dumps({
+            "error": (
+                f"{prefix} refused: the admission refusal reason is unavailable; "
+                "try again shortly."
+            ),
+        })
     return _json.dumps({
         "error": (
             f"{prefix} rate limit reached ({bound} per "

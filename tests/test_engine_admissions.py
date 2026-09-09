@@ -297,30 +297,24 @@ def test_engine_writes_spend_the_total_but_never_the_write_budget(tmp_path):
     for _ in range(W):
         assert adm.admit_detail("u-tiny", **kw).ticket is not None
     assert adm.admit_detail("u-tiny", **kw) == adm.Admission(None, adm.REFUSED_BY_WRITE)
-    # ...and engine writes have their own bound (two thirds of the total = 40):
-    # 30 + 10 more, then refused by `engine`, leaving 60 - 50 = 10 for runs
+    # ...and engine writes can fill the remainder of the same total allowance.
     for _ in range(10):
         assert adm.admit_detail("u-tiny", kind=adm.KIND_ENGINE, **kw).ticket is not None
     refused = adm.admit_detail("u-tiny", kind=adm.KIND_ENGINE, **kw)
-    assert refused == adm.Admission(None, adm.REFUSED_BY_ENGINE)
+    assert refused == adm.Admission(None, adm.REFUSED_BY_TOTAL)
     with pytest.raises(ValueError):
         adm.admit_detail("u-tiny", kind="read", **kw)
 
 
-def test_a_burst_of_engine_writes_cannot_take_the_budget_from_runs(tmp_path):
-    """Codex on this change (P1): 60 failed write_graph calls used to spend the
-    whole total, so the next ordinary run was refused. With the engine bound
-    at 40, runs always keep at least 20 of the 60."""
+def test_engine_writes_can_fill_the_total_allowance(tmp_path):
+    """The owner chooses their mix: no share is reserved for their own runs."""
     db = tmp_path / adm.LEDGER_NAME
     kw = dict(write_max=W, total_max=T, window_s=WIN, db=db)
     engine = [adm.admit_detail("u-tiny", kind=adm.KIND_ENGINE, **kw) for _ in range(70)]
-    assert sum(1 for a in engine if a.ticket is not None) == 40
-    assert engine[-1] == adm.Admission(None, adm.REFUSED_BY_ENGINE)
+    assert sum(1 for a in engine if a.ticket is not None) == T
+    assert engine[-1] == adm.Admission(None, adm.REFUSED_BY_TOTAL)
     runs = [adm.admit_detail("u-tiny", **kw) for _ in range(25)]
-    assert sum(1 for a in runs if a.ticket is not None) == 20              # 40 + 20 = 60
-    # the 21st run meets both caps at once; the write cap is named first
-    assert runs[-1].ticket is None
-    assert runs[-1].refused_by in (adm.REFUSED_BY_WRITE, adm.REFUSED_BY_TOTAL)
+    assert all(a == adm.Admission(None, adm.REFUSED_BY_TOTAL) for a in runs)
 
 
 def test_an_engine_row_can_never_be_bound_or_become_a_read(tmp_path):

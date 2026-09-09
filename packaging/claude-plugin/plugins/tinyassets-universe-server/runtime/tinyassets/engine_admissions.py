@@ -15,7 +15,7 @@ external effect at all) is not the injection case the cap exists for.
 The count rule, in one place:
 
 * Every engine-triggered run and every scheduled automation run is admitted
-  as kind ``write`` and counts against ``write_max`` (20 per rolling hour).
+  as kind ``write`` and counts against ``write_max`` (300 per rolling hour).
   Nothing is trusted about the run before it runs - the packet an effect
   fires is model-authored at run time, so a branch cannot be classified as
   read-only up front. An engine write (write_graph, remix, brain) is admitted
@@ -35,13 +35,12 @@ The count rule, in one place:
   it (Codex round 3). A settlement that arrives BEFORE the bind (a fast run)
   is kept in ``settlements`` and applied when the bind happens (Codex
   round 2).
-* ``read`` rows still count toward ``total_max`` (60 per rolling hour - a
+* ``read`` rows still count toward ``total_max`` (900 per rolling hour - a
   run_graph call returns as soon as the run is queued, so this is what bounds
   compute on the owner's subscription), so a loop of read-only runs is
-  bounded too, just not by the write budget. ``engine`` rows have their own
-  bound (40, two thirds of the total) so a burst of engine writes - failed
-  ones included; a refused validation still charged its admission - cannot
-  take the whole budget from runs.
+  bounded too, just not by the write budget. ``engine`` rows count against
+  that same total without a separate category ceiling. Failed engine writes
+  still charge their admission; the owner chooses the mix within their total.
 
 The ledger is ``<data_dir>/.engine_run_admissions.db`` (the canonical
 resolver, never the CWD) and is NOT the shared runs table (which would
@@ -68,11 +67,6 @@ RUN_TOTAL_LIMIT = 900
 RUN_WINDOW_SECONDS = 3600
 
 
-def engine_mutation_limit(total_max: int) -> int:
-    """The existing engine-write share of a total admission budget."""
-    return max(1, (total_max * 2) // 3)
-
-
 KIND_WRITE = "write"
 KIND_READ = "read"
 # An engine write (write_graph, remix, brain): a durable, reversible mutation
@@ -87,7 +81,6 @@ READ_VERBS = frozenset({"GET", "HEAD"})
 # admitted but no row records it, so there is nothing to bind or settle.
 ADMITTED_UNRECORDED = -1
 REFUSED_BY_WRITE = "write"
-REFUSED_BY_ENGINE = "engine"
 REFUSED_BY_TOTAL = "total"
 REFUSED_BY_LEDGER = "ledger"
 # A settlement row outlives the run it belongs to by this much; pruned on
@@ -99,7 +92,7 @@ SETTLEMENT_TTL_S = 2 * 3600
 class Admission(NamedTuple):
     """``ticket``: the ledger row id when recorded; ``ADMITTED_UNRECORDED``
     when a DB error was tolerated; None when refused - and then ``refused_by``
-    names the cap (``write`` / ``engine`` / ``total``) or ``ledger``
+    names the cap (``write`` / ``total``) or ``ledger``
     (tampered/unusable)."""
 
     ticket: int | None
@@ -177,21 +170,16 @@ def admit_detail(
     fail_closed: bool = False,
     db: Path | None = None,
     kind: str = KIND_WRITE,
-    engine_max: int | None = None,
 ) -> Admission:
     """Atomically admit one engine-triggered run/write under the rolling caps.
 
     A ``write`` (a run) is refused when the universe's ``write`` rows in the
-    window have reached ``write_max``; an ``engine`` admission (write_graph,
-    remix, brain) when its ``engine`` rows have reached ``engine_max``
-    (defaults to two thirds of ``total_max``, so a burst of engine writes can
-    never take the whole budget from runs - Codex); every kind is refused
+    window have reached ``write_max``. An ``engine`` admission (write_graph,
+    remix, brain) has no independent category ceiling. Every kind is refused
     once rows of any kind reach ``total_max``. ``reclassify_read`` may later
     downgrade a ``write`` row once its run proves it wrote nothing. Rows
     older than the window are pruned on each admission.
     """
-    if engine_max is None:
-        engine_max = engine_mutation_limit(total_max)
     if kind not in (KIND_WRITE, KIND_ENGINE):
         raise ValueError(f"admission kind must be write or engine, not {kind!r}")
     db = db or ledger_path()
@@ -228,8 +216,6 @@ def admit_detail(
             refused_by = None
             if kind == KIND_WRITE and int(same_kind) >= write_max:
                 refused_by = REFUSED_BY_WRITE
-            elif kind == KIND_ENGINE and int(same_kind) >= engine_max:
-                refused_by = REFUSED_BY_ENGINE
             elif int(total) >= total_max:
                 refused_by = REFUSED_BY_TOTAL
             if refused_by:

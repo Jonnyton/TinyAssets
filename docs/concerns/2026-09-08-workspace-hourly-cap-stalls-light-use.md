@@ -334,3 +334,11 @@ product choices with fresh source evidence and records one later founder decisio
 about responsibility for mandatory platform overhead. No runtime, policy, PLAN,
 ledger, test dispatch or app action was changed by that pass. Implementation is
 not authorized by the design-only follow-up, and broader acceptance remains open.
+
+## September 9 UTC implementation resumed
+
+The owner's active goal now explicitly authorizes finishing and deploying the
+limits simplification. `retire-engine-mutation-subcap` implements the first
+predicate retirement from the recommendation. The earlier design-only restriction
+is historical, not the current authorization. Broader concurrency/activity/storage
+consolidation remains open; this slice must not be reported as its completion.

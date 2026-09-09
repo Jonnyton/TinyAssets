@@ -2115,6 +2115,40 @@ def test_an_automation_pays_the_same_engine_run_budget_as_a_foreground_run(
     )
 
 
+def test_engine_edits_can_exhaust_total_without_pausing_scheduled_work(
+    tmp_path: Path, registered: Automation, monkeypatch,
+) -> None:
+    """No reserved run share: a full total refuses this period, not the schedule."""
+    from tinyassets import engine_admissions as adm
+    from tinyassets import engine_mcp_server as ems
+
+    stamp = adm.time.time()
+    monkeypatch.setattr(adm.time, "time", lambda: stamp)
+    seam = _SeamRecorder()
+    monkeypatch.setattr(automations_module, "_execute", seam)
+    for _ in range(adm.RUN_TOTAL_LIMIT):
+        assert ems._engine_run_admit(
+            universe_id=UNIVERSE, kind=adm.KIND_ENGINE, fail_closed=True,
+        ) is True
+
+    reason = run_due_automation(
+        tmp_path, registered, "2026-08-29T12:10:00+00:00", now=NOW + timedelta(minutes=10),
+    )
+    assert reason == "run_rate_limited" and seam.calls == []
+    store = AutomationStore(tmp_path)
+    row = store.get(registered.automation_id)
+    assert row is not None and row.desired_state == "active"
+    assert _refusal_rows(tmp_path)[f"automation:{registered.automation_id}"] == reason
+
+    stamp += adm.RUN_WINDOW_SECONDS + 1
+    later = NOW + timedelta(minutes=80)
+    due = due_automations(tmp_path, universe_id=UNIVERSE, now=later)
+    assert len(due) == 1 and due[0][0].automation_id == registered.automation_id
+    assert run_due_automation(tmp_path, due[0][0], due[0][1], now=later) == "ok:ran:run_1"
+    assert len(seam.calls) == 1
+    assert store.get(registered.automation_id).desired_state == "active"
+
+
 def test_an_automation_binds_its_admission_to_the_run_it_starts(
     tmp_path: Path,
     registered: Automation,

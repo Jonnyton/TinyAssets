@@ -98,19 +98,6 @@ next host-actions pass.
 
 ## Blocking a proof path
 
-### Claude subscription spend limit — blocks Claude-family review and browser `ui-test`
-
-*Reverified 2026-09-03: three `peer_agent.py claude` review dispatches exited 1; the
-latest failed after 19 seconds with no review output. A minimal direct diagnostic on
-the earlier attempts reported that the monthly spend limit was reached.*
-
-Raise or reset the Claude usage limit. Until then, Codex-authored public-surface changes
-cannot obtain the required opposite-family review, and the claude.ai browser route cannot
-provide final rendered-chat acceptance. The desktop app remains available for supporting
-SPA checks, but it does not replace either required gate.
-
----
-
 ### Decide what the $20 actually buys — blocks live activation
 
 *Found 2026-08-28 while preparing Stripe to go live. Full finding:
