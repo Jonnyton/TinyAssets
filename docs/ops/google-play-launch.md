@@ -548,8 +548,14 @@ Open, with what each actually waits on:
       debug candidate also proved immediate foreground-notification display and clean
       cancellation. Install code 4 from Play when available, connect a review-safe
       provider, and send one ordinary message to finish the loop.
-- [x] Dedicated `play-review@tinyassets.io` WorkOS password reviewer; two clean isolated
-      sign-ins; Sign in details saved and Actioned; no founder data or provider attached
+- [x] Dedicated `play-review@tinyassets.io` WorkOS password reviewer; the rotated
+      credential completed a clean isolated AuthKit sign-in and reached the empty
+      reviewer Connect screen; no founder data or provider is attached.
+- [ ] Save the rotated reviewer password into Play **Sign in details**. A fresh
+      2026-09-08 Console read shows the server-side record still contains the prior
+      37-character password while the verified 40-character replacement remains
+      staged in a task-owned browser tab. Browser-session ownership prevented an
+      automated Save without exposing the credential.
 - [x] Target audience saved as **18 and over**; Data safety corrected and Actioned
 - [x] Foreground-service declaration (§8a): the privacy-redacted real-phone video is
       published and frame-reviewed (27.11 seconds, 1080×2340, SHA-256
@@ -558,12 +564,14 @@ Open, with what each actually waits on:
       Saved 2026-09-08 as **Data sync → Network processing → Other** with that link;
       App content now reports no declarations needing attention. It is not yet sent
       for review.
-- [ ] Closed testing: code 3 was removed and signed code 4 is saved as the Alpha
-      draft's sole bundle. The preview confirms `4 (1.0.3)`, API 24+, target SDK 36,
-      3.16 MB, and the intended notes; its only validation item is the non-blocking
-      missing-deobfuscation-file warning. Save the preview, submit the release, add at
-      least 11 more real Google-account testers, and maintain 12 continuous opt-ins for
-      14 days. Play reported 0 opted-in testers on 2026-09-08.
+- [ ] Closed testing: code 3 was removed and signed code 4 is the Alpha release's
+      sole bundle. The preview confirmed `4 (1.0.3)`, API 24+, target SDK 36,
+      3.16 MB, and the intended notes; its only validation item was the non-blocking
+      missing-deobfuscation-file warning. The preview was saved into Publishing
+      overview on 2026-09-08 and Google's automated quick checks passed. The Console
+      now offers **Submit 15 changes for review**. Submit them, add at least 11 more
+      real Google-account testers, and maintain 12 continuous opt-ins for 14 days.
+      Play reported 0 opted-in testers on 2026-09-08.
 - [ ] Independent cross-family review of the later voice-native slice. The original
       release review does not cover it; the prepared request and exact retry path are
       in `docs/audits/2026-09-03-android-store-release-claude-review.md`.
