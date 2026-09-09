@@ -1,7 +1,9 @@
 # Turn input method — Claude review
 
-Date: 2026-09-08  
-Writer: Codex  
+Date: 2026-09-08
+
+Writer: Codex
+
 Reviewer family: Claude (opposite-provider)
 
 ## Round 1 verdict
