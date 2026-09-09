@@ -568,13 +568,14 @@ Open, with what each actually waits on:
       3.16 MB, and the intended notes; its only validation item was the non-blocking
       missing-deobfuscation-file warning. The preview was saved into Publishing
       overview on 2026-09-08 and Google's automated quick checks passed. All 15
-      changes were submitted that day. Play's final quick checks completed and the
-      Console now says **Your changes are now in review**. Add at least 11 more real
-      Google-account testers and maintain 12 continuous opt-ins for 14 days. Play
-      reported 0 opted-in testers on 2026-09-08. While review is pending, the web
-      opt-in page reports that no testing version has been published yet. Open testing
-      is not a shortcut: Play explicitly says it becomes available only after
-      production access.
+      changes were submitted that day. Play approved and published the batch at
+      10:35 PM PT. The track now reports **Latest release: 4 (1.0.3)** and **Available
+      to selected testers** across all 177 configured regions. The web opt-in page is
+      live for the invited founder Google account and offers **Become a tester**; that
+      account has not opted in yet. Add at least 11 more real Google-account testers,
+      have all 12 opt in, and maintain those opt-ins for 14 days. Open testing is not
+      a shortcut: Play explicitly says it becomes available only after production
+      access.
 - [ ] Independent cross-family review of the later voice-native slice. The original
       release review does not cover it; the prepared request and exact retry path are
       in `docs/audits/2026-09-03-android-store-release-claude-review.md`.
