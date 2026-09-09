@@ -1,6 +1,7 @@
 """Policy decisions only: these tests do not prove inference or grant authority."""
 
 import ast
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 
@@ -22,7 +23,7 @@ from tinyassets.providers.model_policy import (
 )
 
 COMPONENTS = frozenset({"input_million_tokens_usd", "output_million_tokens_usd"})
-FREE = Pricing("fresh", tuple(Charge(name, 0) for name in sorted(COMPONENTS)))
+FREE = Pricing("fresh", tuple(Charge(name, 0, True) for name in sorted(COMPONENTS)))
 NEEDS = Interaction(True, frozenset({"text"}), COMPONENTS, min_context=100)
 AUTO = ModelPolicy(7, "automatic", (), ranking_source="comparable-v1")
 
@@ -162,7 +163,7 @@ def test_tool_support_must_be_known(tools, reason):
             Pricing("fresh", (Charge("input_million_tokens_usd", 0, False),)),
             "missing_price_component",
         ),
-        (Pricing("fresh", (Charge("input_million_tokens_usd", 1),)), "not_confirmed_free"),
+        (Pricing("fresh", (Charge("input_million_tokens_usd", 1, True),)), "not_confirmed_free"),
     ],
 )
 def test_free_suffix_does_not_override_missing_unconfirmed_or_nonzero_price(pricing, reason):
@@ -174,17 +175,17 @@ def test_free_suffix_does_not_override_missing_unconfirmed_or_nonzero_price(pric
 
 
 def test_explicit_selection_cannot_override_free_only_or_incomplete_caps():
-    paid = Pricing("fresh", tuple(Charge(c, 3) for c in sorted(COMPONENTS)))
+    paid = Pricing("fresh", tuple(Charge(c, 3, True) for c in sorted(COMPONENTS)))
     c = connection(models=[replace(model(), pricing=paid)])
     policy = replace(AUTO, current_selection=ModelRef("gateway", "opaque-A"))
     assert order([c], policy).ineligible[0].reason == "not_confirmed_free"
-    caps = tuple(Charge(c, 4) for c in sorted(COMPONENTS))
+    caps = tuple(Charge(c, 4, True) for c in sorted(COMPONENTS))
     assert order([c], replace(policy, cost_caps=caps)).candidates
     assert (
         order([c], replace(policy, cost_caps=caps[:1])).ineligible[0].reason == "exceeds_cost_cap"
     )
     assert (
-        order([c], replace(policy, cost_caps=tuple(Charge(c, 2) for c in COMPONENTS)))
+        order([c], replace(policy, cost_caps=tuple(Charge(c, 2, True) for c in COMPONENTS)))
         .ineligible[0]
         .reason
         == "exceeds_cost_cap"
@@ -317,9 +318,68 @@ def test_price_is_exact_and_never_coerced_to_free(invalid):
 
 def test_pure_output_is_repeatable_and_does_not_modify_inputs():
     catalog = [connection()]
+    before = deepcopy((catalog, AUTO, NEEDS))
     assert order(catalog) == order(catalog)
+    assert (catalog, AUTO, NEEDS) == before
     assert order(catalog).generation == 7
     tree = ast.parse(Path(policy_module.__file__).read_text(encoding="utf-8"))
     imports = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
     assert imports == {"__future__", "dataclasses", "typing"}
     assert not any(isinstance(node, ast.Import) for node in ast.walk(tree))
+
+
+def test_unconfirmed_is_the_price_default():
+    assert Charge("input", 0).confirmed is False
+
+
+def test_invalid_price_combinations_fail_even_without_candidates():
+    with pytest.raises(ValueError, match="duplicate"):
+        Pricing("fresh", (Charge("input", 0), Charge("input", 0)))
+    with pytest.raises(ValueError, match="unmetered"):
+        Pricing("fresh", (Charge("input", 1),), unmetered=True)
+    with pytest.raises(ValueError, match="duplicate"):
+        replace(AUTO, cost_caps=(Charge("input", 0), Charge("input", 0)))
+
+
+def test_automatic_without_primary_cannot_silently_discard_accepted_fallbacks():
+    with pytest.raises(ValueError, match="primary"):
+        replace(AUTO, fallbacks=(ModelRef("gateway", "opaque-A"),))
+
+
+@pytest.mark.parametrize(
+    "default,reason",
+    [
+        (None, "default_unavailable"),
+        ("withdrawn", "absent_from_catalogue"),
+    ],
+)
+def test_automatic_missing_native_default_has_a_visible_reason(default, reason):
+    c = replace(connection(), source_kind="subscription", default_model_id=default)
+    result = order([c])
+    assert not result.candidates
+    assert result.ineligible[0].ref == ModelRef("gateway", default or "")
+    assert result.ineligible[0].reason == reason
+
+
+def test_unverified_model_limit_does_not_cycle_same_model_through_sibling_keys():
+    a = connection("a", models=[model("x"), model("y")])
+    b = connection("b", models=[model("x"), model("y")])
+    result = order([a, b], exhaustion=(Exhaustion("model", ModelRef("a", "x")),))
+    assert ModelRef("b", "x") not in refs(result)
+    assert ModelRef("b", "y") in refs(result)
+    assert [i.reason for i in result.ineligible] == [
+        "model_exhausted",
+        "capacity_identity_unverified",
+    ]
+
+
+def test_ranked_order_is_invariant_under_model_id_and_excess_context_rewrites():
+    models = [model(str(i), score=Scores("comparable-v1", "fresh", i)) for i in range(3)]
+    rewritten = [
+        replace(m, model_id=f"unexpected/{i}-latest", context_tokens=1000 - i)
+        for i, m in enumerate(models)
+    ]
+    old = order([connection(models=models)])
+    new = order([connection(models=rewritten)])
+    assert [r.model_id for r in refs(old)] == ["2", "1", "0"]
+    assert [r.model_id for r in refs(new)] == [m.model_id for m in reversed(rewritten)]

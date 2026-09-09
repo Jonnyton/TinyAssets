@@ -25,7 +25,7 @@ class ModelRef:
 class Charge:
     component: str  # Includes the unit, e.g. input_million_tokens_usd.
     amount_micros: int
-    confirmed: bool = True
+    confirmed: bool = False
 
     def __post_init__(self) -> None:
         if type(self.amount_micros) is not int or self.amount_micros < 0:
@@ -37,6 +37,12 @@ class Pricing:
     freshness: Freshness = "missing"
     charges: tuple[Charge, ...] = ()
     unmetered: bool = False  # Confirmed non-metered inference, not unknown cost.
+
+    def __post_init__(self) -> None:
+        if len({charge.component for charge in self.charges}) != len(self.charges):
+            raise ValueError("duplicate charge component")
+        if self.unmetered and self.charges:
+            raise ValueError("unmetered pricing cannot also declare metered charges")
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +91,8 @@ class Catalog:
 @dataclass(frozen=True, slots=True)
 class ModelPolicy:
     generation: int
+    # Behaviour when neither current nor saved primary is present. A primary
+    # always wins; clearing it is an explicit caller action, not a mode side effect.
     mode: Literal["automatic", "explicit"]
     fallbacks: tuple[ModelRef, ...]  # Required: an empty tuple is meaningful.
     current_selection: ModelRef | None = None
@@ -99,6 +107,15 @@ class ModelPolicy:
             raise ValueError("invalid policy generation")
         if self.mode not in ("automatic", "explicit"):
             raise ValueError("invalid selection mode")
+        if self.cost_caps is not None:
+            _charges(self.cost_caps)
+        if (
+            self.mode == "automatic"
+            and self.current_selection is None
+            and self.saved_default is None
+            and self.fallbacks
+        ):
+            raise ValueError("accepted fallbacks require an explicit primary or explicit mode")
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,18 +259,30 @@ def order_models(
 
     primary = policy.current_selection or policy.saved_default
     explicit = primary is not None or policy.mode == "explicit"
+    rejected: list[Ineligible] = []
     if explicit:
         refs = ([] if primary is None else [primary]) + list(policy.fallbacks)
     else:
         # A subscription/local connection controls its own advertised default.
         # Other models remain visible in the catalogue for explicit selection.
-        refs = [
-            ref
-            for ref, (c, _) in entries.items()
-            if c.source_kind == "http" or ref.model_id == c.default_model_id
-        ]
+        refs = []
+        for connection in catalog.connections:
+            if connection.source_kind == "http":
+                refs.extend(
+                    ModelRef(connection.connection_id, m.model_id) for m in connection.models
+                )
+            elif connection.default_model_id is None:
+                rejected.append(
+                    Ineligible(
+                        ModelRef(connection.connection_id, ""),
+                        "default_unavailable",
+                    )
+                )
+            else:
+                refs.append(ModelRef(connection.connection_id, connection.default_model_id))
 
     exhausted_models: set[tuple[tuple[str, str, str], str]] = set()
+    model_failures: list[tuple[ConnectionModels, str]] = []
     exhausted_accounts: list[ConnectionModels] = []
     for failure in exhaustion:
         connection = connections.get(failure.ref.connection_id)
@@ -264,9 +293,9 @@ def order_models(
             exhausted_accounts.append(connection)
         else:
             exhausted_models.add((_capacity_identity(connection), failure.ref.model_id))
+            model_failures.append((connection, failure.ref.model_id))
 
     eligible: list[Candidate] = []
-    rejected: list[Ineligible] = []
     seen: set[tuple[tuple[str, str, str], str]] = set()
     for ref in refs:
         entry = entries.get(ref)
@@ -287,6 +316,18 @@ def order_models(
                 break
         if reason is None and identity in exhausted_models:
             reason = "model_exhausted", ""
+        if reason is None:
+            for failed, failed_model in model_failures:
+                if (
+                    failed.provider_scope == connection.provider_scope
+                    and failed_model == model.model_id
+                    and (
+                        not failed.authenticated_account_id
+                        or not connection.authenticated_account_id
+                    )
+                ):
+                    reason = "capacity_identity_unverified", ""
+                    break
         if reason is None:
             reason = _ineligibility(connection, model, policy, interaction, explicit=explicit)
         if reason is None and identity in seen:
