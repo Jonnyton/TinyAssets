@@ -25,9 +25,9 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
+| **P1** | [Workspace hourly cap stalls light use](2026-09-08-workspace-hourly-cap-stalls-light-use.md) — ten real admitted jobs exhausted a separate hard-coded rolling-hour cap despite all leases being released; earlier run/provider increases shipped but did not lift it; founder directs simpler activity/storage accounting | 2026-09-08 |
 | **P1** | [Scheduled uptime probes remain red](2026-09-08-scheduled-uptime-probes-remain-red.md) — handshake/tool/wiki pass, but supervisor liveness, revert evidence and browser probe fail; determine current contracts before inferring an outage or restarting | 2026-09-08 |
 | **note** | [Served tool capability parity gaps](2026-09-08-served-tool-capability-parity-gaps.md) — source audit finds missing stop/trigger/dependency controls and discovery contradictions; secret custody and person-only approval remain deliberate boundaries | 2026-09-08 |
-| **note** | [Automation lifecycle live follow-up](2026-09-08-app-cannot-manage-attached-heartbeat-automation.md) — controls deployed; app confirms paused trigger and terminal last run, but live retirement and other mutations remain unexercised | 2026-09-08 |
 | **P1** | [Request rail refresh erases drafts](2026-09-08-request-rail-refresh-erases-drafts.md) — polling rebuilds active fields; a visible reply vanished before Send reply, blocking ordinary user interaction | 2026-09-08 |
 | **P2** | [Browser voice endpointing awaits organic mic retest](2026-09-05-voice-conversation-turn-taking-and-choice.md) — selector and listening-through-replies are live; 900 ms fragment aggregation is implemented and automated, but pause timing is not yet founder-verified on the real browser/device | 2026-09-08 |
 | **P1** | [Provider compatibility is not open](2026-09-04-provider-compatibility-is-not-open.md) — compiled CLI-name restrictions and ignored connection-local model choices prevent provider portability; provider default, user-saved defaults, and all available model choices are required | 2026-09-04 |

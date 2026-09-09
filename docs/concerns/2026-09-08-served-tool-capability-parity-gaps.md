@@ -19,13 +19,15 @@ connector. An operation may be implemented, documented elsewhere, and still be
 unreachable in the app. User-confirmed rail actions are a legitimate alternative
 route; absence of a direct tool alone is not proof of a gap.
 
-The confirmed live automation blocker has its own concern:
-[attached heartbeat automation](2026-09-08-app-cannot-manage-attached-heartbeat-automation.md).
 Update 2026-09-08 19:59 UTC: the automation row below describes the audited
 pre-fix surface. Its platform route is now deployed in `4a1877f0044a` (PR #3447);
 the exact retest sent at 20:19 UTC through an owner-authorized new tab confirms
 automation inspection and paused-future-trigger readback on that deploy.
-Lifecycle mutations were not exercised by the rendered response. The other inventory rows remain
+Lifecycle mutations were not exercised by that rendered response. Organic owner
+follow-up at 18:00 PDT later confirmed retirement, workflow deletion and a
+terminal last run, resolving the attached-heartbeat blocker. See
+[rendered acceptance](../reviews/2026-09-08-workflow-checklist-live-acceptance.md).
+This does not establish every lifecycle combination. The other inventory rows remain
 unresolved. This does not establish provider portability or all-tool parity.
 Cancellation and legacy schedule controls below are missing from both inspected
 canonical surfaces, not just from the app's narrower wrapper.
@@ -34,7 +36,7 @@ canonical surfaces, not just from the app's narrower wrapper.
 
 | User capability | Existing implementation / route | Served status and disposition |
 |---|---|---|
-| Inspect, create, pause, resume, retire automations | `api/automations.py:474`; connector `universe_server.py:569,1097` | Read targets and write target are excluded by `engine_mcp_server.py:242,1342`. Confirmed live blocker. Reuse owner/admin checks, graph pin, revision CAS and existing scheduler; do not edit private rows through an operator bypass. |
+| Inspect, create, pause, resume, retire automations | `api/automations.py:474`; connector `universe_server.py:569,1097` | Historical audit: targets were excluded. PR #3447 exposes owner-scoped controls; organic owner follow-up at 18:00 PDT confirms retirement and dependent branch cleanup. That blocker is resolved; other lifecycle combinations are not all live-tested. |
 | Stop a run the user started | `api/runs.py:1518`, `_RUN_ACTIONS` in the legacy extensions dispatcher | Served `run_graph` at `engine_mcp_server.py:395` only starts runs; no cancel operation, nor one in canonical `run_graph`. Expose an owner-scoped cancellation request with accurate pending/terminal readback; underlying cooperative cancellation is not an immediate-stop guarantee. |
 | Inspect and revoke inbound webhooks / sources | Connector `run_graph` at `universe_server.py:1458` has `webhook_op` and `source_op` | Served signature has neither. This can leave additional dependents that block branch deletion. Owner-controlled trigger management is needed; creation and token delivery need a reviewed custody boundary, not blind forwarding. |
 | Inspect, pause and remove existing schedules / event subscriptions | `api/runtime_ops.py:884` scheduler action map | Not reachable from the served handles, and not routed by the canonical coarse-grained handles inspected here. Branch deletion names these dependencies (`api/branches.py:839`). Review migration-era authority and universe confinement before mounting existing handlers; automations and scheduler bindings already coexist, so do not add another scheduling system. |
@@ -84,8 +86,8 @@ approval. This eleventh inventory item is not covered by the earlier review.
 
 ## Durable next work
 
-Prioritize existing automation lifecycle controls and truthful stopped-state
-evidence. Then close the other stop/cleanup gaps before expanding discovery and
+The attached-heartbeat lifecycle blocker now has organic stopped/retired/deleted
+evidence. Close the other stop/cleanup gaps before expanding discovery and
 authoring. For each route, record direct-agent versus owner-confirmed semantics,
 resource selectors, scope/ACL checks, and receipt/readback behavior. Add relational
 tests that every operation taught by served tool descriptions is reachable and
