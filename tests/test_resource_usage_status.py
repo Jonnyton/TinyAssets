@@ -103,6 +103,18 @@ def test_requires_exact_admin_grant(meters, permission):
     assert usage.for_authorized_status(meters, UID, now=NOW) is None
 
 
+def test_cached_storage_does_not_bypass_current_admin_gate(meters, monkeypatch):
+    calls = []
+    monkeypatch.setattr(usage.storage_observations, "observe",
+                        lambda *a, **kw: calls.append(1) or {"availability": "observed"})
+    assert usage.for_authorized_status(meters, UID)["retained_storage"]["footprint"]
+    with sqlite3.connect(meters / DB_FILENAME) as conn:
+        conn.execute("UPDATE universe_acl SET permission='read'")
+    conn.close()
+    assert usage.for_authorized_status(meters, UID) is None
+    assert calls == [1]
+
+
 @pytest.mark.parametrize("name", [DB_FILENAME, ea.LEDGER_NAME, f"{UID}/.runs.db"])
 @pytest.mark.parametrize("damage", ["missing", "corrupt", "legacy"])
 def test_unavailable_data_is_not_created_repaired_or_reported_as_zero(meters, name, damage):
