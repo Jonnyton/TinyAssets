@@ -320,7 +320,7 @@ def test_constructor_rejects_non_api_key_http() -> None:
 
 
 def _seed_single_path(base: Path, path: str, *, owner: str = "founder",
-                      universe: str = "u-x") -> None:
+                      universe: str = "u-x", read_paths: tuple[str, ...] = ()) -> None:
     from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
 
     ledger = ConnectionLedger(
@@ -336,7 +336,11 @@ def _seed_single_path(base: Path, path: str, *, owner: str = "founder",
         provider="http",
         destination="compute:test",
         credential_ref="vault://http/compute:test",
-        allowed_endpoints=[{"host": _HOST, "path_template": path, "methods": ["POST"]}],
+        allowed_endpoints=[
+            {"host": _HOST, "path_template": path, "methods": ["POST"]},
+            *({"host": _HOST, "path_template": read_path, "methods": ["GET"]}
+              for read_path in read_paths),
+        ],
     )
     ledger.grant_connection(
         grant_id=_GRANT_ID,
@@ -368,6 +372,18 @@ def test_a_custom_granted_path_is_the_path_called(base: Path) -> None:
     )
 
 
+@pytest.mark.parametrize("path", ["/custom/chat", "/api/v1/chat/completions"])
+def test_discovery_reads_do_not_change_inference_path(base: Path, path: str) -> None:
+    _seed_single_path(base, path, read_paths=("/api/v1/models/user", "/api/v1/key"))
+    proxy = _ok_proxy()
+    _run(ApiKeyHttpProvider(_definition(), proxy_override=proxy), base / "u-x")
+
+    assert len(proxy.calls) == 1
+    verb, wire = proxy.calls[0]
+    assert verb == "POST"
+    assert wire["url"] == f"https://{_HOST}{path}"
+
+
 def test_a_templated_path_is_not_treated_as_concrete() -> None:
     """A placeholder is not a concrete path; guessing a substitution would be worse.
 
@@ -377,17 +393,27 @@ def test_a_templated_path_is_not_treated_as_concrete() -> None:
     from tinyassets.providers.api_key_http_provider import _declared_path
 
     templated = SimpleNamespace(allowed_endpoints=[
-        SimpleNamespace(host=_HOST, path_template="/v1/{model}/chat"),
+        SimpleNamespace(host=_HOST, path_template="/v1/{model}/chat", methods=("POST",)),
     ])
     assert _declared_path(templated) == ""
 
     concrete = SimpleNamespace(allowed_endpoints=[
-        SimpleNamespace(host=_HOST, path_template="/custom/chat"),
+        SimpleNamespace(host=_HOST, path_template="/custom/chat", methods=("POST",)),
     ])
     assert _declared_path(concrete) == "/custom/chat"
 
     none_declared = SimpleNamespace(allowed_endpoints=[])
     assert _declared_path(none_declared) == ""
+
+
+@pytest.mark.parametrize("methods", [("GET",), (), ("DELETE",)])
+def test_non_inference_endpoint_is_never_selected(methods) -> None:
+    from tinyassets.providers.api_key_http_provider import _declared_path
+
+    view = SimpleNamespace(allowed_endpoints=[
+        SimpleNamespace(host=_HOST, path_template="/models", methods=methods),
+    ])
+    assert _declared_path(view) == ""
 
 
 def test_several_declared_paths_fall_back_to_the_protocol_path(base: Path) -> None:
