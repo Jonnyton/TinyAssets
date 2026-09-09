@@ -60,7 +60,12 @@ tests/test_api_key_http_provider.py tests/test_mirror_parity_gate.py --tb=short`
   Desktop start --detach succeeded at22:46 UTC; actual readiness/oracle still to
   verify. Starting the test engine is not production deployment.
 
-Independent execution/refresh review is still required before landing. No app
+Independent execution/refresh review APPROVED exact83b19b49 after349s and
+reproduced42 tests. Full verdict/disposition: selected-model-execution-review.md.
+Docker readiness did not recover: fresh22:46:34 host logs report a startup crash
+at dockerInference. The readiness query was cancelled and exact newly started
+processes stopped; no data reset/deletion. The required Docker oracle is still
+unavailable, not replaced by the supplemental Ubuntu result. No app
 consumer, default/fallback policy persistence, CLI/local dynamic selection, HTTP
 agent-tool continuation or picker is complete. Blocking discovery/HTTP broker IO
 must be integrated off the event loop without moving thread-owned admission

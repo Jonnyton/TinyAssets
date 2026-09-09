@@ -14,8 +14,8 @@ tool continuation are still unfinished; no live account-access claim.
 The discovery transport/decoders and existing-capability metadata publication
 are locally tested and independently APPROVED; see discovery-profile.md. Fresh
 profile-bound snapshots are implemented and tested but have no app consumer.
-Per-attempt HTTP text selection is locally integrated and tested; independent
-implementation review and live account evidence remain gates. General readiness
+Per-attempt HTTP text selection is locally integrated, tested and independently
+APPROVED at83b19b49 (349s,42 reproduced tests). Live account evidence remains a gate. General readiness
 and all production readers must be updated before activating the new policy.
 
 September9 execution integration: request-local ModelRef is not authority. The
