@@ -745,6 +745,13 @@
 
   // ---- MCP client (same-origin /mcp, Bearer from sessionStorage) ----
   //
+  // Turn provenance belongs to the transport contract as well as the UI paths
+  // that observe it. Keep this normalizer in the extracted MCP client block so
+  // its standalone recovery harness exercises the same public call behavior.
+  function turnInputMethod(value){
+    return value==="typed"||value==="spoken"||value==="app_action"?value:"unknown";
+  }
+
   // A transport-level failure, tagged so the UI can say something true about it
   // and decide whether resending is safe.
   //   code       - short machine tag (also what the tests assert on)
@@ -1156,10 +1163,6 @@
   }
   function setStatusLine(t){ $("status-line").textContent=t||""; }
   function setVoiceStatusLine(t){ $("voice-status-line").textContent=t||""; }
-  function turnInputMethod(value){
-    return value==="typed"||value==="spoken"||value==="app_action"?value:"unknown";
-  }
-
   // ---- Voice ----------------------------------------------------------
   // Voice owns only speech transport and turn timing. The universe's actual
   // words still come from MCP.converse through sendVoiceTurn below.

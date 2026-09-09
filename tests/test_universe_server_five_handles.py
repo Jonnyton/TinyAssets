@@ -11,7 +11,8 @@ import json
 import logging
 
 import pytest
-from pydantic import ValidationError
+from fastmcp.exceptions import ValidationError as FastMCPValidationError
+from pydantic import ValidationError as PydanticValidationError
 
 import tinyassets.universe_server as universe_server
 from tinyassets.universe_server import (
@@ -91,7 +92,10 @@ def test_converse_advertises_optional_turn_input_method() -> None:
 
 
 def test_public_converse_boundary_rejects_replaced_voice_active_field() -> None:
-    with pytest.raises(ValidationError, match="Unexpected keyword argument"):
+    with pytest.raises(
+        (FastMCPValidationError, PydanticValidationError),
+        match="Unexpected keyword argument",
+    ):
         asyncio.run(mcp.call_tool("converse", {"message": "hi", "voice_active": True}))
 
 
