@@ -98,7 +98,24 @@ client's reconciliation on reconnect should prefer the stored turn over its own
 optimistic verdict — see [[webapp-send-is-not-proof-of-delivery]] for the
 mirror-image failure.
 
-## How to resolve this file
+## September 9, 2026 owner-app retest observation
+
+On deployed ece0a8e25058221143b40859b2050cba0b610ad4 (authenticated deployment
+gates passed07:11 UTC), the exact checklist retest sent07:12:34 UTC performed
+enough work to create a fresh scoped webhook request. After the browser-control
+transport became unavailable, the saved conversation was refreshed through
+normal visible UI. It showed a07:16:53 "never confirmed" notice without the
+final reply. This is an observation of the reconciliation symptom, not proof
+that the MCP wire was cut or that the backend turn completed. No raw stream or
+live container-start evidence was captured. Source at app.html restoreInflight
+constructs this notice locally when completed history does not yet contain the
+pending message; it does not query authoritative backend terminal state.
+The owner approved the resulting webhook request at07:20 UTC and that
+continuation is visibly thinking. No duplicate checklist prompt was sent.
+Do not attribute this instance to missing origin pings or a production restart
+without evidence. Rendered details: output/user_sim_session.md.
+
+## Closure criterion
 
 Delete it when one authenticated `converse` longer than 3 minutes completes
 over the live connector without the client reporting `stream_truncated`, with

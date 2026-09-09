@@ -950,3 +950,13 @@ work's outcome is unknown. Commander confirmed no competing Chrome control.
 AX input recovery had helper-active/geometry/stale-index errors; screenshot-grounded
 read-only request expansion succeeded. Native view is a different existing owner
 tab from the original controlled mission tab; neither closed or private-edited.
+
+## [2026-09-09 07:20 UTC] USER NOTE owner approval observed
+
+Native read-only UI shows the owner submitted Approved: "Finish my 07:12 webhook
+checklist retest" (and don't ask me this again), timestamp07:20:06 UTC. The
+request card disappeared and Send is disabled with app thinking. Patches made
+no approval or persistent-permission change. No additional retest prompt sent.
+Source inspection confirms the unconfirmed notice is local history/in-flight
+reconciliation, not a backend terminal-status assertion. Linked new observation
+to the existing converse SSE concern rather than inventing a new root cause.
