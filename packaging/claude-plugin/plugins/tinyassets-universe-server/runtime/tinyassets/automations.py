@@ -1365,12 +1365,20 @@ def run_due_automation(
             if callable(on_run_started):
                 on_run_started(run_id)
 
+        from tinyassets.automation_context import resolve_automation_inputs
+
+        current = store.get(automation.automation_id)
+        if current is None:
+            raise ValueError('automation_disappeared_before_context_read')
+        inputs = resolve_automation_inputs(
+            base, current, observed_at=_iso(datetime.now(timezone.utc))
+        )
         outcome = _execute(
             base,
             automation,
             provider_call,
             branch,
-            dict(automation.inputs),
+            inputs,
             _started,
         )
         from tinyassets.runs import RUN_STATUS_COMPLETED

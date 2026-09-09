@@ -9,3 +9,5 @@ Environment: TinyAssets Linux scratch repository workspace, Python 3 at `/usr/bi
 - `python3 scripts/openspec_flow.py check-change automation-live-context --provider codex`: ALLOWED.
 
 `pytest`, `ruff`, `openspec`, `claude`, and `codex` executables are absent in this workspace. Existing scheduler regressions and cross-family review are pending; no live scheduler activation or continuous execution is claimed. No platform code was merged or deployed in this verification.
+
+Follow-up: regenerated the plugin mirror. All six pre-commit invariants pass, including mirror parity for 397 files. The local plugin import probe remains unavailable because uvicorn is absent; CI must run that probe.
