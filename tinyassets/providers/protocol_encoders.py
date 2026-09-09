@@ -42,6 +42,20 @@ class ProtocolDecodeError(ValueError):
     """A provider response did not match the declared protocol shape."""
 
 
+def reported_model(response_body: Any) -> str:
+    """Optional model receipt shared by both wire protocols; empty means unknown.
+
+    A requested alias is not evidence of which model answered. Keep remote
+    metadata bounded and printable, but do not discard a valid completion when
+    a compatible endpoint omits this optional field. This label is telemetry,
+    never a provider identity, routing choice or grant of authority.
+    """
+    value = response_body.get("model") if isinstance(response_body, dict) else None
+    if not isinstance(value, str) or not 1 <= len(value) <= 200 or not value.isprintable():
+        return ""
+    return value.strip()
+
+
 def _messages(prompt: str, system: str) -> list[dict[str, str]]:
     msgs: list[dict[str, str]] = []
     if system:

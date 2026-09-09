@@ -133,7 +133,8 @@ def test_openai_happy_path_and_wire_assembly(base: Path) -> None:
     assert resp.text == "the answer"
     assert resp.input_tokens == 9 and resp.output_tokens == 4
     assert resp.family == "api:openai_chat"
-    assert resp.model == "moonshotai/kimi-k2"
+    # No model was reported: the requested alias is not execution evidence.
+    assert resp.model == ""
 
     # Wire assembly: POST to the exact allowlisted URL, correct body, NO secret.
     verb, wire = proxy.calls[0]
@@ -166,6 +167,42 @@ def test_anthropic_happy_path(base: Path) -> None:
     assert wire["headers"]["anthropic-version"] == "2023-06-01"
     blob = json.dumps(wire).lower()
     assert "x-api-key" not in blob and "authorization" not in blob  # no cred here
+
+
+@pytest.mark.parametrize("protocol", ["openai_chat", "anthropic_messages"])
+def test_receipt_reports_answering_model_without_mutating_selection(
+    base: Path, protocol: str,
+) -> None:
+    _seed(base)
+    body = (
+        {"choices": [{"message": {"content": "answer"}}]}
+        if protocol == "openai_chat"
+        else {"content": [{"type": "text", "text": "answer"}]}
+    )
+    body["model"] = "future-provider/actual-model-2099"
+    proxy = _FakeProxy({"status": 200, "body": json.dumps(body)})
+    provider = ApiKeyHttpProvider(_definition(protocol), proxy_override=proxy)
+    response = _run(provider, base / "u-x")
+    assert response.model == body["model"]
+    assert provider.model == "moonshotai/kimi-k2"
+    assert proxy.calls[0][1]["body"]["model"] == provider.model
+    assert response.provider == provider.name  # remote metadata grants no identity
+    from tinyassets.providers.router import ProviderRouter
+
+    assert ProviderRouter._call_meta(response, 1)["model"] == body["model"]
+
+
+@pytest.mark.parametrize("reported", [None, "", "  ", 12, True, {}, [], "x\ny", "x" * 201])
+def test_unusable_model_metadata_is_unknown_without_discarding_answer(
+    base: Path, reported: Any,
+) -> None:
+    _seed(base)
+    proxy = _FakeProxy({"status": 200, "body": json.dumps({
+        "model": reported, "choices": [{"message": {"content": "answer"}}],
+    })})
+    response = _run(ApiKeyHttpProvider(_definition(), proxy_override=proxy), base / "u-x")
+    assert response.text == "answer"
+    assert response.model == ""
 
 
 def test_openai_sends_no_static_headers(base: Path) -> None:

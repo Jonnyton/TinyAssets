@@ -137,7 +137,11 @@ class AgentInvocationProviderOutcome:
                 raise ValueError("typed_output must be provider_text")
             if self.blocker_code is not None or self.blocker_detail is not None:
                 raise ValueError("successful outcome cannot carry a blocker")
-            _text(self.model, "model")
+            # Optional response metadata: an endpoint may omit its model id.
+            # The exact empty string means unknown, never a fabricated alias.
+            # Provider identity, family, authority and settlement stay strict.
+            if self.model != "":
+                _text(self.model, "model")
             _text(self.family, "family")
             if len(_canonical(self.typed_output)) > MAX_AGENT_PROVIDER_OUTPUT_BYTES:
                 raise ValueError("typed_output exceeds bounded storage")

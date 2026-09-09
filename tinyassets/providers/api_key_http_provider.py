@@ -43,7 +43,7 @@ from tinyassets.exceptions import (
 )
 from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
 from tinyassets.providers.definition import ProviderDefinition
-from tinyassets.providers.protocol_encoders import ENCODERS, ProtocolDecodeError
+from tinyassets.providers.protocol_encoders import ENCODERS, ProtocolDecodeError, reported_model
 
 
 def _single_host(view: Any) -> str:
@@ -245,7 +245,7 @@ class ApiKeyHttpProvider(BaseProvider):
         return ProviderResponse(
             text=text,
             provider=self.name,
-            model=self.model,
+            model=reported_model(parsed),
             family=self.family,
             latency_ms=latency_ms,
             input_tokens=in_tok,
