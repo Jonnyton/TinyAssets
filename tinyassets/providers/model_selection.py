@@ -66,12 +66,43 @@ def prepare_selected_model(
     exact current member before and after this IO, under assignment admission.
     Full HTTP agent tools remain gated in the executor until their runtime exists.
     """
-    from tinyassets.providers.definition import get_definition
-    from tinyassets.providers.discovery_protocols import discovery_protocol
-    from tinyassets.providers.discovery_snapshot import (
-        assert_discovery_snapshot_current,
-        refresh_model_discovery,
+    from tinyassets.providers.discovery_snapshot import refresh_model_discovery
+
+    definition = _selection_definition(
+        base_path, owner_user_id, universe_id, provider, model_id, access
     )
+    snapshot = refresh_model_discovery(
+        owner_user_id=owner_user_id,
+        universe_id=universe_id,
+        definition_id=definition.id,
+    )
+    return _validate_snapshot(definition, snapshot, provider, model_id, access)
+
+
+async def prepare_selected_model_async(
+    *, base_path: Path, owner_user_id: str, universe_id: str,
+    provider: str, model_id: str, access: ModelAccess,
+) -> tuple[SelectedModel, Callable[[], None]]:
+    """Refresh without blocking ingress; the caller re-fences authority afterward.
+
+    No assignment lock or SQLite transaction may span this await. The snapshot
+    is advisory data, not permission, and cancelled callers never reach launch.
+    """
+    from tinyassets.providers.discovery_snapshot import refresh_model_discovery_async
+
+    definition = _selection_definition(
+        base_path, owner_user_id, universe_id, provider, model_id, access
+    )
+    snapshot = await refresh_model_discovery_async(
+        owner_user_id=owner_user_id,
+        universe_id=universe_id,
+        definition_id=definition.id,
+    )
+    return _validate_snapshot(definition, snapshot, provider, model_id, access)
+
+
+def _selection_definition(base_path, owner_user_id, universe_id, provider, model_id, access):
+    from tinyassets.providers.definition import get_definition
     from tinyassets.storage import data_dir
 
     if Path(base_path).resolve() != data_dir().resolve():
@@ -92,11 +123,19 @@ def prepare_selected_model(
     definition = get_definition(universe_id, definition_id)
     if definition is None or definition.owner_user_id != owner_user_id:
         raise PermissionError("selected provider definition is unavailable")
-    snapshot = refresh_model_discovery(
-        owner_user_id=owner_user_id,
-        universe_id=universe_id,
-        definition_id=definition_id,
-    )
+    return definition
+
+
+def _validate_snapshot(definition, snapshot, provider, model_id, access):
+    from tinyassets.providers.discovery_protocols import discovery_protocol
+    from tinyassets.providers.discovery_snapshot import assert_discovery_snapshot_current
+
+    owner_user_id, universe_id = definition.owner_user_id, definition.universe_id
+    if (
+        snapshot.owner_id != owner_user_id or snapshot.universe_id != universe_id
+        or snapshot.provider != provider
+    ):
+        raise PermissionError("discovery snapshot does not match selected provider")
     contract = discovery_protocol(snapshot.models.provider_scope)
     if definition.protocol != contract.inference_protocol:
         raise PermissionError("discovery and inference protocols do not match")

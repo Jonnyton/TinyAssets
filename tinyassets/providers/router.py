@@ -507,15 +507,26 @@ class ProviderRouter:
             ):
                 raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
             universe_dir = universe_context.universe_dir
+            if universe_context.model_selection is not None:
+                from tinyassets.provider_assignment import authorize_served_provider_call_async
+
+                async with authorize_served_provider_call_async(
+                    universe_dir.parent,
+                    universe_dir=universe_dir,
+                    request_carrier=universe_context.provider_request,
+                    role=role, operation=operation,
+                    model_selection=universe_context.model_selection,
+                ) as authority:
+                    return await self._call_routed(
+                        role, prompt, system, config, operation=operation,
+                        universe_context=replace(universe_context, served_provider=authority),
+                    )
             with authorize_served_provider_call(
                 universe_dir.parent,
                 universe_dir=universe_dir,
                 request_carrier=universe_context.provider_request,
                 role=role,
                 operation=operation,
-                **({} if universe_context.model_selection is None else {
-                    "model_selection": universe_context.model_selection,
-                }),
             ) as authority:
                 authorized_context = replace(
                     universe_context,

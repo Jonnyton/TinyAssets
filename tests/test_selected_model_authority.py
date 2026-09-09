@@ -7,7 +7,9 @@ serving intent because general v2 readiness is deliberately still gated.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
+import threading
 from dataclasses import replace
 from datetime import timedelta
 from fractions import Fraction
@@ -24,7 +26,11 @@ from tinyassets.custom_agents import (
     set_binding_serving_in_transaction,
 )
 from tinyassets.exceptions import ProviderAuthorityHeldError, ProviderUnavailableError
-from tinyassets.provider_assignment import authorize_served_provider_call, load_provider_assignment
+from tinyassets.provider_assignment import (
+    authorize_served_provider_call,
+    load_provider_assignment,
+    provider_assignment_admission,
+)
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.provider_serving_binding import bind_serving_provider
 from tinyassets.providers import discovery_snapshot as snapshots
@@ -463,6 +469,141 @@ def test_request_revocation_refuses_before_discovery(served, reader):
     reader[0].clear()
     with pytest.raises(ProviderAuthorityHeldError):
         _call(served)
+    assert reader[0] == [] and served.wire == []
+
+
+@pytest.fixture
+def blocked_discovery(served, reader, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def read(**kwargs):
+        calls.append(kwargs)
+        if "models/user" in kwargs["url"]:
+            entered.set()
+            assert release.wait(5), "test failed to release discovery"
+        return reader[1](**kwargs)
+
+    monkeypatch.setattr(snapshots, "read_http_discovery_document", read)
+    yield entered, release, calls
+    release.set()
+
+
+def _async_call(served):
+    return served.router.call(
+        "writer", "hello", "system", operation="converse", universe_context=served.context
+    )
+
+
+def test_discovery_yields_event_loop_and_assignment_admission(served, blocked_discovery):
+    entered, release, _ = blocked_discovery
+    thread_ids = []
+
+    def assignment_writer():
+        with provider_assignment_admission().exclusive(served.context.universe_dir):
+            # A different thread can take the real fence while discovery waits.
+            thread_ids.append(threading.get_ident())
+            with SQLiteProviderWorkAuthorityStore(served.rig.base).connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.rollback()
+
+    async def scenario():
+        task = asyncio.create_task(_async_call(served))
+        try:
+            assert await asyncio.to_thread(entered.wait, 3)
+            assert not task.done() and not release.is_set()
+            await asyncio.wait_for(asyncio.to_thread(assignment_writer), 2)
+            assert thread_ids and thread_ids[0] != threading.get_ident()
+            assert served.wire == []
+            release.set()
+            assert (await asyncio.wait_for(task, 5)).text == "selected answer"
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("change", ["request", "agent", "assignment", "grant", "profile"])
+def test_async_discovery_rechecks_changes_after_releasing_admission(
+    served, blocked_discovery, change
+):
+    entered, release, _ = blocked_discovery
+
+    async def scenario():
+        task = asyncio.create_task(_async_call(served))
+        try:
+            assert await asyncio.to_thread(entered.wait, 3)
+            assert not task.done()
+            # This is the same thread as router ingress: a retained shared
+            # admission would raise the non-reentrant guard immediately.
+            with provider_assignment_admission().exclusive(served.context.universe_dir):
+                if change == "request":
+                    # Revoke from an independent lease-expiry context, not the
+                    # copied asyncio context owning a different reset token.
+                    contextvars.Context().run(auth.revoke_provider_request, served.capability)
+                elif change == "grant":
+                    served.rig.ledger.revoke_grant("grant-models")
+                elif change == "profile":
+                    served.rig.publish(enabled=False)
+                else:
+                    sql = (
+                        "UPDATE agent_bindings SET revision = revision + 1 WHERE universe_id = ?"
+                        if change == "agent" else
+                        "UPDATE provider_assignments SET generation = generation + 1 "
+                        "WHERE universe_id = ?"
+                    )
+                    with SQLiteProviderWorkAuthorityStore(served.rig.base).connection() as conn:
+                        conn.execute(sql, ("u-models",))
+                        conn.commit()
+            release.set()
+            with pytest.raises(ProviderAuthorityHeldError):
+                await task
+            assert served.wire == []
+            if change != "request":
+                assert auth._active_provider_request(served.capability)["invocations"] == 0
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_router_does_not_launch_or_duplicate_discovery(served, blocked_discovery):
+    entered, release, calls = blocked_discovery
+
+    async def scenario():
+        first = asyncio.create_task(_async_call(served))
+        second = None
+        try:
+            assert await asyncio.to_thread(entered.wait, 3)
+            assert not first.done()
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+            assert served.wire == []
+            assert auth._active_provider_request(served.capability)["invocations"] == 0
+            second = asyncio.create_task(_async_call(served))
+            await asyncio.sleep(0)
+            assert not second.done() and len(calls) == 1
+            release.set()
+            await asyncio.wait_for(second, 5)
+            assert len(served.wire) == 1
+            assert auth._active_provider_request(served.capability)["invocations"] == 1
+            assert len([c for c in calls if "models/user" in c["url"]]) == 1
+            assert not snapshots._INFLIGHT
+        finally:
+            release.set()
+            await asyncio.gather(first, *([second] if second else []), return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("selection", [ModelRef("api_key_http:unaccepted", MODEL), object()])
+def test_async_unaccepted_selection_refused_before_discovery(served, reader, selection):
+    reader[0].clear()
+    with pytest.raises(ProviderAuthorityHeldError):
+        _call(served, context=replace(served.context, model_selection=selection))
     assert reader[0] == [] and served.wire == []
 
 

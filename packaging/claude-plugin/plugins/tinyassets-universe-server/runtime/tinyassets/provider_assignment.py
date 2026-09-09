@@ -16,7 +16,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -1232,8 +1232,120 @@ def load_provider_assignment(
         conn.close()
 
 
+def _served_request_agent(base_path, universe, request_carrier, role, operation):
+    """One validator shared by discovery preflight and final launch admission."""
+    from tinyassets.auth.middleware import validate_provider_request_carrier
+    from tinyassets.custom_agents import get_binding
+
+    uid = universe.name
+    binding_id = str(getattr(request_carrier, "agent_binding_id", ""))
+    revision = getattr(request_carrier, "binding_revision", 0)
+    if str(getattr(request_carrier, "universe_id", "")) != uid or not binding_id:
+        raise PermissionError("provider request does not match universe")
+    capability = validate_provider_request_carrier(
+        request_carrier, universe_id=uid, agent_binding_id=binding_id,
+        binding_revision=revision, operation=operation,
+    )
+    accepted_sources = {
+        ("tinyassets.authenticated-request.v1", "tinyassets.auth.middleware", "converse"),
+        ("tinyassets.authenticated-app-event.v1", "tinyassets.app_ingress_http", "slack_event"),
+    }
+    if (capability.mechanism, capability.issuer, capability.tool_name) not in accepted_sources:
+        raise PermissionError("provider request source is not trusted")
+    if role != "writer" or operation != "converse":
+        raise PermissionError("served authority is converse/writer only")
+    agent = get_binding(base_path, universe_id=uid, binding_id=binding_id)
+    if agent is None or not all((
+        agent["status"] == "serving",
+        agent["created_by"] == capability.principal_id,
+        int(agent["revision"]) == revision,
+    )):
+        raise PermissionError("agent binding is not current serving authority")
+    return capability, agent
+
+
+def _selected_chain(store, base_path, universe, capability, agent, selection):
+    from tinyassets.provider_serving_binding import _current_selected_member_authority
+    from tinyassets.providers.model_policy import ModelRef
+
+    if not isinstance(selection, ModelRef):
+        raise PermissionError("invalid model selection")
+    with store.connection() as conn:
+        conn.execute("BEGIN")
+        return _current_selected_member_authority(
+            conn, store=store, universe_dir=universe, base_path=Path(base_path),
+            owner_user_id=capability.principal_id, universe_id=universe.name,
+            agent=agent, provider=selection.connection_id,
+        )
+
+
 @contextmanager
 def authorize_served_provider_call(
+    base_path: str | Path, *, universe_dir: str | Path, request_carrier: object,
+    role: str, operation: str, model_selection: ModelRef | None = None,
+) -> Iterator[ServedProviderAuthority]:
+    """Synchronous authority entrypoint; caller-supplied discovery is not accepted."""
+    with _authorize_served_provider_call(
+        base_path, universe_dir=universe_dir, request_carrier=request_carrier,
+        role=role, operation=operation, model_selection=model_selection,
+    ) as authority:
+        yield authority
+
+
+@asynccontextmanager
+async def authorize_served_provider_call_async(
+    base_path: str | Path, *, universe_dir: str | Path, request_carrier: object,
+    role: str, operation: str, model_selection: ModelRef,
+):
+    """Release admission for discovery; revalidate the exact chain before launch.
+
+    Thread-owned admission contexts enter and exit on the event-loop thread.
+    Only discovery IO runs in a worker. Neither callers nor configuration may
+    supply the prepared result, and the final fence rechecks request + custody.
+    """
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.providers.model_selection import prepare_selected_model_async
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    universe = Path(universe_dir)
+    try:
+        with provider_assignment_admission().shared(universe):
+            capability, agent = _served_request_agent(
+                base_path, universe, request_carrier, role, operation
+            )
+            chain = _selected_chain(
+                SQLiteProviderWorkAuthorityStore(base_path), base_path, universe,
+                capability, agent, model_selection,
+            )
+            member = next(
+                m for m in chain[0].candidates if m.provider == model_selection.connection_id
+            )
+        # No assignment fence or SQL transaction spans the remote request.
+        selected, recheck = await prepare_selected_model_async(
+            base_path=Path(base_path), owner_user_id=capability.principal_id,
+            universe_id=universe.name, provider=member.provider,
+            model_id=model_selection.model_id, access=member.access,
+        )
+    except ProviderAuthorityHeldError:
+        raise
+    except Exception as exc:
+        raise ProviderAuthorityHeldError(_SERVED_AUTHORITY_HELD) from exc
+    with _authorize_served_provider_call(
+        base_path, universe_dir=universe, request_carrier=request_carrier,
+        role=role, operation=operation, model_selection=model_selection,
+        _prepared_selection=(agent, chain, selected, recheck),
+    ) as authority:
+        yield authority
+
+
+_SERVED_AUTHORITY_HELD = (
+    "Connect your provider before running this universe. TinyAssets will not "
+    "borrow platform credentials or start a metered trial."
+)
+
+
+@contextmanager
+def _authorize_served_provider_call(
     base_path: str | Path,
     *,
     universe_dir: str | Path,
@@ -1241,10 +1353,10 @@ def authorize_served_provider_call(
     role: str,
     operation: str,
     model_selection: ModelRef | None = None,
+    _prepared_selection=None,
 ) -> Iterator[ServedProviderAuthority]:
     """Fence selection + request + binding + custody immediately before launch."""
 
-    from tinyassets.auth.middleware import validate_provider_request_carrier
     from tinyassets.credential_vault import (
         cleanup_llm_credential_snapshot,
         snapshot_llm_subscription_credential,
@@ -1259,10 +1371,7 @@ def authorize_served_provider_call(
         SQLiteProviderWorkAuthorityStore,
     )
 
-    held = (
-        "Connect your provider before running this universe. TinyAssets will not "
-        "borrow platform credentials or start a metered trial."
-    )
+    held = _SERVED_AUTHORITY_HELD
     universe = Path(universe_dir)
     uid = universe.name
     carrier_uid = str(getattr(request_carrier, "universe_id", ""))
@@ -1275,79 +1384,40 @@ def authorize_served_provider_call(
         authority: ServedProviderAuthority | None = None
         credential_snapshot = None
         try:
-            capability = validate_provider_request_carrier(
-                request_carrier,
-                universe_id=uid,
-                agent_binding_id=carrier_binding_id,
-                binding_revision=carrier_revision,
-                operation=operation,
+            capability, agent = _served_request_agent(
+                base_path, universe, request_carrier, role, operation
             )
-            accepted_request_sources = {
-                (
-                    "tinyassets.authenticated-request.v1",
-                    "tinyassets.auth.middleware",
-                    "converse",
-                ),
-                (
-                    "tinyassets.authenticated-app-event.v1",
-                    "tinyassets.app_ingress_http",
-                    "slack_event",
-                ),
-            }
-            if (
-                capability.mechanism,
-                capability.issuer,
-                capability.tool_name,
-            ) not in accepted_request_sources:
-                raise PermissionError("provider request source is not trusted")
-            if role != "writer" or operation != "converse":
-                raise PermissionError("served authority is converse/writer only")
-            agent = get_binding(
-                base_path,
-                universe_id=uid,
-                binding_id=carrier_binding_id,
-            )
-            if agent is None:
-                raise PermissionError("agent binding is missing")
-            exact_agent = (
-                agent["status"] == "serving",
-                agent["created_by"] == capability.principal_id,
-                int(agent["revision"]) == carrier_revision,
-            )
-            if not all(exact_agent):
-                raise PermissionError("agent binding is not current serving authority")
 
             store = SQLiteProviderWorkAuthorityStore(base_path)
             selected_model = None
             selection_recheck = None
             selected_chain = None
             if model_selection is not None:
-                from tinyassets.providers.model_policy import ModelRef
                 from tinyassets.providers.model_selection import prepare_selected_model
 
-                if not isinstance(model_selection, ModelRef):
-                    raise PermissionError("invalid model selection")
-                with store.connection() as selection_conn:
-                    selection_conn.execute("BEGIN")
-                    selected_chain = _current_selected_member_authority(
-                        selection_conn, store=store, universe_dir=universe,
-                        base_path=Path(base_path), owner_user_id=capability.principal_id,
-                        universe_id=uid, agent=agent, provider=model_selection.connection_id,
-                    )
+                selected_chain = _selected_chain(
+                    store, base_path, universe, capability, agent, model_selection
+                )
                 selected_assignment = selected_chain[0]
                 member = next(
                     m for m in selected_assignment.candidates
                     if m.provider == model_selection.connection_id
                 )
-                # Do not hold a SQLite read transaction over network IO. The
-                # assignment admission fence remains held, and all facts are
-                # checked again below after discovery and immediately at launch.
-                selected_model, selection_recheck = prepare_selected_model(
-                    base_path=Path(base_path),
-                    owner_user_id=capability.principal_id, universe_id=uid,
-                    provider=member.provider, model_id=model_selection.model_id,
-                    access=member.access,
-                )
+                if _prepared_selection is None:
+                    # Synchronous callers retain the original fenced path.
+                    # Never keep a SQLite read transaction over discovery IO.
+                    selected_model, selection_recheck = prepare_selected_model(
+                        base_path=Path(base_path),
+                        owner_user_id=capability.principal_id, universe_id=uid,
+                        provider=member.provider, model_id=model_selection.model_id,
+                        access=member.access,
+                    )
+                else:
+                    (before_agent, before_chain, selected_model,
+                     selection_recheck) = _prepared_selection
+                    if before_agent != agent or before_chain != selected_chain:
+                        raise PermissionError("selected authority changed during model discovery")
+                    selection_recheck()
                 if get_binding(
                     base_path, universe_id=uid, binding_id=carrier_binding_id
                 ) != agent:

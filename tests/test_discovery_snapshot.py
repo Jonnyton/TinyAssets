@@ -191,6 +191,16 @@ def test_excessive_delay_or_backwards_clock_refuses_fresh_label(rig, reader, mon
         _refresh(rig)
 
 
+def test_catalogue_request_duration_counts_against_freshness(rig, reader, monkeypatch):
+    def delayed(**kwargs):
+        monkeypatch.setattr(snapshots, "_now", lambda: NOW + timedelta(minutes=6))
+        return reader[1](**kwargs)
+
+    monkeypatch.setattr(snapshots, "read_http_discovery_document", delayed)
+    with pytest.raises(ProviderUnavailableError, match="freshness window"):
+        _refresh(rig)
+
+
 def test_cancelled_waiter_does_not_duplicate_or_cancel_active_read(rig, reader, monkeypatch):
     entered = threading.Event()
     release = threading.Event()

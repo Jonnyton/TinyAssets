@@ -156,8 +156,9 @@ def refresh_model_discovery(
             url=url,
         )
 
-    payload = read(profile.catalogue_url)
+    # Include the catalogue request itself in the freshness window.
     observed_at = _now()
+    payload = read(profile.catalogue_url)
     benchmarks = None
     warnings = ()
     if profile.benchmark_url:
