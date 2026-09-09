@@ -4,6 +4,7 @@ These records are not launch authority. Execution must also validate the current
 root, binding, live custody, selected model, capabilities and permitted pricing.
 Preference order never belongs in this manifest.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -14,8 +15,10 @@ from dataclasses import dataclass, fields
 
 def _text(value: object) -> bool:
     return (
-        isinstance(value, str) and 0 < len(value) <= 500
-        and value.isprintable() and value == value.strip()
+        isinstance(value, str)
+        and 0 < len(value) <= 500
+        and value.isprintable()
+        and value == value.strip()
     )
 
 
@@ -33,7 +36,9 @@ class ModelAccess:
 
     def __post_init__(self) -> None:
         if not isinstance(self.model_scope, str) or self.model_scope not in {
-            "legacy", "explicit", "discovered",
+            "legacy",
+            "explicit",
+            "discovered",
         }:
             raise ValueError("unknown model scope")
         if type(self.model_ids) is not tuple or any(
@@ -52,13 +57,20 @@ class ModelAccess:
             names = []
             for cap in self.cost_caps:
                 if (
-                    type(cap) is not tuple or len(cap) != 2 or not _text(cap[0])
-                    or type(cap[1]) is not int or cap[1] < 0
+                    type(cap) is not tuple
+                    or len(cap) != 2
+                    or not _text(cap[0])
+                    or type(cap[1]) is not int
+                    or cap[1] < 0
                 ):
                     raise ValueError("invalid cost cap")
                 names.append(cap[0])
             if len(set(names)) != len(names):
                 raise ValueError("duplicate cost component")
+            object.__setattr__(self, "cost_caps", tuple(sorted(self.cost_caps)))
+        # Membership is a set, not a preference order. Keep in-memory equality
+        # identical to the canonical persisted representation used by fences.
+        object.__setattr__(self, "model_ids", tuple(sorted(self.model_ids)))
 
     def document(self) -> dict[str, object]:
         return {
@@ -71,14 +83,17 @@ class ModelAccess:
     def from_json(cls, raw: str) -> ModelAccess:
         document = json.loads(raw)
         if not isinstance(document, dict) or set(document) != {
-            "model_scope", "model_ids", "cost_caps",
+            "model_scope",
+            "model_ids",
+            "cost_caps",
         }:
             raise ValueError("invalid model access document")
         models, caps = document["model_ids"], document["cost_caps"]
         if not isinstance(models, list) or (caps is not None and not isinstance(caps, dict)):
             raise ValueError("invalid model access fields")
         return cls(
-            document["model_scope"], tuple(models),
+            document["model_scope"],
+            tuple(models),
             None if caps is None else tuple(sorted(caps.items())),
         )
 
@@ -119,24 +134,31 @@ class AssignmentCandidate:
         }
 
     def digest(self, universe_id: str, assignment_generation: int) -> str:
-        return _digest({
-            **self.identity(), "schema_version": 1,
-            "universe_id": universe_id, "assignment_generation": assignment_generation,
-            "binding_generation": self.binding_generation, "binding_digest": self.binding_digest,
-        })
+        return _digest(
+            {
+                **self.identity(),
+                "schema_version": 1,
+                "universe_id": universe_id,
+                "assignment_generation": assignment_generation,
+                "binding_generation": self.binding_generation,
+                "binding_digest": self.binding_digest,
+            }
+        )
 
 
 def manifest_digest(root_provider: str, candidates: tuple[AssignmentCandidate, ...]) -> str:
     providers = [candidate.provider for candidate in candidates]
     if not providers or len(providers) != len(set(providers)) or root_provider not in providers:
         raise ValueError("manifest requires unique members and its root provider")
-    return _digest({
-        "schema_version": 1,
-        "root_provider": root_provider,
-        "members": [
-            candidate.identity() for candidate in sorted(candidates, key=lambda c: c.provider)
-        ],
-    })
+    return _digest(
+        {
+            "schema_version": 1,
+            "root_provider": root_provider,
+            "members": [
+                candidate.identity() for candidate in sorted(candidates, key=lambda c: c.provider)
+            ],
+        }
+    )
 
 
 def ensure_manifest_schema(conn: sqlite3.Connection) -> None:
@@ -160,7 +182,9 @@ def ensure_manifest_schema(conn: sqlite3.Connection) -> None:
 
 
 def store_candidates(
-    conn: sqlite3.Connection, universe_id: str, generation: int,
+    conn: sqlite3.Connection,
+    universe_id: str,
+    generation: int,
     candidates: tuple[AssignmentCandidate, ...],
 ) -> None:
     if not conn.in_transaction:
@@ -170,27 +194,44 @@ def store_candidates(
         "WHERE universe_id = ? AND assignment_generation = ?",
         (universe_id, generation),
     )
-    conn.executemany("""
+    conn.executemany(
+        """
         INSERT INTO provider_assignment_candidates VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, [(
-        universe_id, generation, candidate.provider, candidate.binding_id,
-        candidate.binding_generation, candidate.binding_digest, candidate.credential_reference_id,
-        candidate.credential_reference_generation, candidate.credential_reference_digest,
-        json.dumps(candidate.access.document(), sort_keys=True, separators=(",", ":")),
-        candidate.digest(universe_id, generation),
-    ) for candidate in candidates])
+    """,
+        [
+            (
+                universe_id,
+                generation,
+                candidate.provider,
+                candidate.binding_id,
+                candidate.binding_generation,
+                candidate.binding_digest,
+                candidate.credential_reference_id,
+                candidate.credential_reference_generation,
+                candidate.credential_reference_digest,
+                json.dumps(candidate.access.document(), sort_keys=True, separators=(",", ":")),
+                candidate.digest(universe_id, generation),
+            )
+            for candidate in candidates
+        ],
+    )
 
 
 def load_candidates(
-    conn: sqlite3.Connection, universe_id: str, generation: int,
+    conn: sqlite3.Connection,
+    universe_id: str,
+    generation: int,
 ) -> tuple[AssignmentCandidate, ...]:
-    rows = conn.execute("""
+    rows = conn.execute(
+        """
         SELECT provider, binding_id, binding_generation, binding_digest,
                credential_reference_id, credential_reference_generation,
                credential_reference_digest, constraints_json, candidate_digest
           FROM provider_assignment_candidates
          WHERE universe_id = ? AND assignment_generation = ? ORDER BY provider
-    """, (universe_id, generation)).fetchall()
+    """,
+        (universe_id, generation),
+    ).fetchall()
     candidates = []
     for row in rows:
         candidate = AssignmentCandidate(*tuple(row)[:7], access=ModelAccess.from_json(row[7]))

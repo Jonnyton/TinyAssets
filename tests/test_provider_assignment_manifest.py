@@ -32,8 +32,16 @@ def connection():
 
 
 def _candidate(provider="z-anchor", access=ModelAccess()):
-    return AssignmentCandidate(provider, f"binding-{provider}", 1, f"binding-digest-{provider}",
-                               f"custody-{provider}", 1, f"custody-digest-{provider}", access)
+    return AssignmentCandidate(
+        provider,
+        f"binding-{provider}",
+        1,
+        f"binding-digest-{provider}",
+        f"custody-{provider}",
+        1,
+        f"custody-digest-{provider}",
+        access,
+    )
 
 
 def _assignment(*, generation=1, legacy=False, candidates=None):
@@ -42,17 +50,24 @@ def _assignment(*, generation=1, legacy=False, candidates=None):
         candidates = () if legacy else (anchor, _candidate("a-fallback", ModelAccess("discovered")))
     digest = "" if legacy else manifest_digest(anchor.provider, candidates)
     identity = {
-        "universe_id": "u-owner", "owner_user_id": "owner", "generation": generation,
-        "provider": anchor.provider, "binding_id": anchor.binding_id,
+        "universe_id": "u-owner",
+        "owner_user_id": "owner",
+        "generation": generation,
+        "provider": anchor.provider,
+        "binding_id": anchor.binding_id,
         "credential_reference_id": anchor.credential_reference_id,
         "credential_reference_generation": anchor.credential_reference_generation,
         "credential_reference_digest": anchor.credential_reference_digest,
     }
     return ProviderAssignment(
-        **identity, state="ready", binding_generation=anchor.binding_generation,
-        binding_digest=anchor.binding_digest, updated_at="2026-09-09T20:00:00Z",
+        **identity,
+        state="ready",
+        binding_generation=anchor.binding_generation,
+        binding_digest=anchor.binding_digest,
+        updated_at="2026-09-09T20:00:00Z",
         assignment_digest=provider_assignment_digest(**identity, manifest_digest=digest),
-        manifest_digest=digest, candidates=candidates,
+        manifest_digest=digest,
+        candidates=candidates,
     )
 
 
@@ -87,29 +102,42 @@ def test_manifest_round_trip_and_legacy_digest(connection):
     assert loaded.candidates[0].provider != loaded.provider  # anchor is not positional
     legacy = _assignment(legacy=True)
     payload = {
-        key: getattr(legacy, key) for key in (
-            "binding_id", "credential_reference_digest", "credential_reference_generation",
-            "credential_reference_id", "generation", "owner_user_id", "provider", "universe_id",
+        key: getattr(legacy, key)
+        for key in (
+            "binding_id",
+            "credential_reference_digest",
+            "credential_reference_generation",
+            "credential_reference_id",
+            "generation",
+            "owner_user_id",
+            "provider",
+            "universe_id",
         )
     }
     payload["schema_version"] = 1
-    expected = "sha256:" + hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    expected = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+    )
     assert legacy.assignment_digest == expected
     assert legacy.assignment_digest != root.assignment_digest
 
 
-@pytest.mark.parametrize("statement", [
-    "DELETE FROM provider_assignment_candidates WHERE provider = 'a-fallback'",
-    "DELETE FROM provider_assignment_candidates WHERE provider = 'z-anchor'",
-    "UPDATE provider_assignment_candidates SET binding_digest = 'tampered'",
-    "UPDATE provider_assignment_candidates SET credential_reference_generation = 2",
-    "UPDATE provider_assignment_candidates SET assignment_generation = 2",
-    "UPDATE provider_assignment_candidates SET constraints_json = '{}'",
-    "UPDATE provider_assignments SET manifest_digest = 'tampered'",
-    "UPDATE provider_assignments SET binding_digest = 'tampered'",
-])
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "DELETE FROM provider_assignment_candidates WHERE provider = 'a-fallback'",
+        "DELETE FROM provider_assignment_candidates WHERE provider = 'z-anchor'",
+        "UPDATE provider_assignment_candidates SET binding_digest = 'tampered'",
+        "UPDATE provider_assignment_candidates SET credential_reference_generation = 2",
+        "UPDATE provider_assignment_candidates SET assignment_generation = 2",
+        "UPDATE provider_assignment_candidates SET constraints_json = '{}'",
+        "UPDATE provider_assignments SET manifest_digest = 'tampered'",
+        "UPDATE provider_assignments SET binding_digest = 'tampered'",
+    ],
+)
 def test_tampering_or_missing_members_fails_readback(connection, statement):
     _store(connection, _assignment())
     connection.execute(statement)
@@ -141,9 +169,12 @@ def test_rollback_preserves_old_root_and_members(connection):
     assert _read(connection).generation == 2
     connection.rollback()
     assert _read(connection) == previous
-    assert connection.execute(
-        "SELECT count(*) FROM provider_assignment_candidates WHERE assignment_generation = 2"
-    ).fetchone()[0] == 0
+    assert (
+        connection.execute(
+            "SELECT count(*) FROM provider_assignment_candidates WHERE assignment_generation = 2"
+        ).fetchone()[0]
+        == 0
+    )
 
 
 def test_legacy_root_ignores_leftover_children(connection):
@@ -156,9 +187,18 @@ def test_legacy_root_ignores_leftover_children(connection):
 def test_existing_schema_migrates_without_rewriting_legacy_rows():
     legacy = _assignment(legacy=True)
     old_columns = (
-        "universe_id", "owner_user_id", "state", "generation", "provider",
-        "binding_id", "binding_generation", "binding_digest", "credential_reference_id",
-        "credential_reference_generation", "credential_reference_digest", "assignment_digest",
+        "universe_id",
+        "owner_user_id",
+        "state",
+        "generation",
+        "provider",
+        "binding_id",
+        "binding_generation",
+        "binding_digest",
+        "credential_reference_id",
+        "credential_reference_generation",
+        "credential_reference_digest",
+        "assignment_digest",
         "updated_at",
     )
     declarations = []
@@ -196,14 +236,20 @@ def test_write_requires_transaction_and_rejects_bad_anchor(connection):
     assert _read(connection) is None
 
 
-@pytest.mark.parametrize("kwargs", [
-    {"model_scope": "unknown"}, {"model_scope": "explicit"},
-    {"model_scope": "discovered", "model_ids": ("a",)},
-    {"model_scope": "explicit", "model_ids": ("a", "a")},
-    {"model_scope": "explicit", "model_ids": ("\n",)},
-    {"cost_caps": (("input_usd", True),)}, {"cost_caps": (("input_usd", -1),)},
-    {"cost_caps": ()}, {"cost_caps": (("input_usd", 1), ("input_usd", 2))},
-])
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"model_scope": "unknown"},
+        {"model_scope": "explicit"},
+        {"model_scope": "discovered", "model_ids": ("a",)},
+        {"model_scope": "explicit", "model_ids": ("a", "a")},
+        {"model_scope": "explicit", "model_ids": ("\n",)},
+        {"cost_caps": (("input_usd", True),)},
+        {"cost_caps": (("input_usd", -1),)},
+        {"cost_caps": ()},
+        {"cost_caps": (("input_usd", 1), ("input_usd", 2))},
+    ],
+)
 def test_invalid_access_is_not_silently_broadened(kwargs):
     with pytest.raises(ValueError):
         ModelAccess(**kwargs)
@@ -214,6 +260,11 @@ def test_native_default_has_explicit_representation():
     assert ModelAccess.from_json(json.dumps(access.document())) == access
 
 
+def test_access_equality_matches_readback_for_unsorted_sets():
+    access = ModelAccess("explicit", ("z", "a"), (("z_units", 2), ("a_units", 1)))
+    assert access == ModelAccess.from_json(json.dumps(access.document()))
+
+
 def test_storage_does_not_activate_unvalidated_model_scope(tmp_path, monkeypatch):
     from tests.test_open_serving_bind import _bound_and_serving
     from tinyassets.provider_assignment import load_provider_assignment
@@ -222,22 +273,47 @@ def test_storage_does_not_activate_unvalidated_model_scope(tmp_path, monkeypatch
 
     universe, _, _ = _bound_and_serving(tmp_path, monkeypatch)
     root = load_provider_assignment(tmp_path, universe_id="u-owner")
-    candidate = AssignmentCandidate(*(getattr(root, key) for key in (
-        "provider", "binding_id", "binding_generation", "binding_digest",
-        "credential_reference_id", "credential_reference_generation", "credential_reference_digest",
-    )), access=ModelAccess("discovered"))
+    candidate = AssignmentCandidate(
+        *(
+            getattr(root, key)
+            for key in (
+                "provider",
+                "binding_id",
+                "binding_generation",
+                "binding_digest",
+                "credential_reference_id",
+                "credential_reference_generation",
+                "credential_reference_digest",
+            )
+        ),
+        access=ModelAccess("discovered"),
+    )
     manifest = manifest_digest(root.provider, (candidate,))
-    identity = {key: getattr(root, key) for key in (
-        "owner_user_id", "universe_id", "provider", "generation", "binding_id",
-        "credential_reference_id", "credential_reference_generation", "credential_reference_digest",
-    )}
+    identity = {
+        key: getattr(root, key)
+        for key in (
+            "owner_user_id",
+            "universe_id",
+            "provider",
+            "generation",
+            "binding_id",
+            "credential_reference_id",
+            "credential_reference_generation",
+            "credential_reference_digest",
+        )
+    }
     root = replace(
-        root, manifest_digest=manifest, candidates=(candidate,),
+        root,
+        manifest_digest=manifest,
+        candidates=(candidate,),
         assignment_digest=provider_assignment_digest(**identity, manifest_digest=manifest),
     )
     with SQLiteProviderWorkAuthorityStore(tmp_path).connection() as conn:
         _store(conn, root)
     with pytest.raises(PermissionError, match="not active"):
         resolve_current_serving_provider_authority(
-            tmp_path, universe_dir=universe, universe_id="u-owner", owner_user_id="owner-1",
+            tmp_path,
+            universe_dir=universe,
+            universe_id="u-owner",
+            owner_user_id="owner-1",
         )

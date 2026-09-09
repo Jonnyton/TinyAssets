@@ -35,6 +35,27 @@ Verification on the September 9 working tree following8a5ac19e:
 - Ruff check and format passed; `python packaging/claude-plugin/build_plugin.py`
   rebuilt398 runtime files and passed the import probe; diff check passed.
 
-Independent exact-head review is next. This slice is local and unactivated.
+Independent exact-head review returned ADAPT on83fd8ec5 after428s and reproduced
+the30 focused tests. It found unsorted ModelAccess tuples compare unequal to
+their own canonical readback, breaking first publication and failure recovery.
+The precise correction canonicalizes model_ids and cost_caps in the frozen value
+object after validation. The full verdict is in the adjacent review artifact.
+
+Correction evidence, September 9,21:18 UTC:
+
+- Process-local baseline reproduction replaces only ModelAccess.__post_init__
+  with the function read from83fd8ec5 and runs three new regressions: all3 fail
+  (first publication, failed-publication recovery, value-object readback equality).
+  Source files remain unchanged by the baseline probe.
+- Corrected focused storage/publication suites:59 passed.
+- Same eight-file combined command above:148 Windows passes/3 skips,18.13s;
+  supplemental Ubuntu3.11.15:150 passes/1 skip,34.86s. Skip reasons unchanged.
+- Ruff,398-file mirror rebuild/import and diff checks pass.
+
+The exact correction is tested, not independently reapproved. No fourth repeat
+candidate-authority review is opened just to obtain a clean label. There are no
+unaddressed blocking findings from this verdict; its future-integration notes
+(scheduled/queued eligibility must follow v2 admission once activated) remain
+required checks before routing activation. This slice is local and unactivated.
 Candidate-aware model validation, discovery, request-local policy, actual ordered
 fallback, HTTP tool continuation and UI remain required before user acceptance.

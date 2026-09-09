@@ -262,7 +262,8 @@ def test_other_identity_cannot_validate_any_member(scene, scope):
             _check_member(scene, root, member, **{scope: "somebody-else"})
 
 
-def test_failed_second_binding_rolls_back_all_and_keeps_deny_all_root(scene, monkeypatch):
+@pytest.mark.parametrize("unsorted", [False, True])
+def test_failed_second_binding_rolls_back_all_and_keeps_deny_all_root(scene, monkeypatch, unsorted):
     import tinyassets.provider_serving_binding as module
 
     initial = bind_serving_provider(**scene[5])
@@ -277,8 +278,14 @@ def test_failed_second_binding_rolls_back_all_and_keeps_deny_all_root(scene, mon
         return original_issue(service, conn, root)
 
     monkeypatch.setattr(module.ProviderWorkBindingService, "issue_in_transaction", fail_second)
+    overrides = {}
+    if unsorted:
+        overrides["model_access"] = {
+            source.id: ModelAccess("explicit", ("z", "a"), (("z_units", 2), ("a_units", 1)))
+            for source in scene[3:5]
+        }
     with pytest.raises(RuntimeError, match="second-connection-failed"):
-        _publish(scene, expected_revision=initial["agent_binding"]["revision"])
+        _publish(scene, expected_revision=initial["agent_binding"]["revision"], **overrides)
     failed = _root(scene)
     assert failed.state == "failed" and len(failed.candidates) == 2
     assert failed.generation == previous.generation + 1
@@ -423,3 +430,16 @@ def test_new_connection_is_not_accepted_without_its_own_custody(scene):
             scene, model_access={scene[3].id: ModelAccess("discovered"), "codex": ModelAccess()}
         )
     assert _root(scene) is None
+
+
+def test_first_publish_with_unsorted_model_ids_and_caps_is_ready(scene):
+    first, second = scene[3:5]
+    access = ModelAccess("explicit", ("z", "a"), (("z_units", 2), ("a_units", 1)))
+    result = _publish(scene, model_access={second.id: access, first.id: access})
+    root = _root(scene)
+    assert result["status"] == "ready" and root.state == "ready"
+    for member in root.candidates:
+        assert member.access == access
+        assert member.access.model_ids == ("a", "z")
+        assert member.access.cost_caps == (("a_units", 1), ("z_units", 2))
+        _check_member(scene, root, member)

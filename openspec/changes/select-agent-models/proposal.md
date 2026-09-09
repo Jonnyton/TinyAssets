@@ -49,5 +49,6 @@ explicit pins remain fixed; previously ignored CLI model strings must not become
 active preferences accidentally. Main specs describe only what actually ships.
 
 Owner: Codex (current Patches task). Proposed delivery branch:
-`codex/select-agent-models`; no PR or runtime activation yet. Connection recovery
-PR #3676 remains the active release priority while this design is prepared.
+`codex/select-agent-models`; no feature PR or runtime activation yet. Supporting
+connection recovery PR #3676, HTTP model receipts PR #3680 and endpoint-path
+compatibility PR #3688 are deployed. They are not completion of this feature.
