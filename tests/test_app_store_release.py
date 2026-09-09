@@ -15,8 +15,11 @@ _SPEC.loader.exec_module(module)
 
 
 class FakeClient:
-    def __init__(self, *, app_store_state="WAITING_FOR_REVIEW"):
+    def __init__(
+        self, *, app_store_state="WAITING_FOR_REVIEW", release_type="MANUAL"
+    ):
         self.app_store_state = app_store_state
+        self.release_type = release_type
         self.calls = []
 
     def request(self, method, path, body=None, **kwargs):
@@ -29,6 +32,7 @@ class FakeClient:
                         "attributes": {
                             "appStoreState": self.app_store_state,
                             "downloadable": self.app_store_state == "READY_FOR_SALE",
+                            "releaseType": self.release_type,
                         },
                     }
                 ]
@@ -37,6 +41,11 @@ class FakeClient:
             return {"data": {"attributes": {"state": "WAITING_FOR_REVIEW"}}}
         if path == "/appStoreVersionReleaseRequests":
             return {"data": {"id": "release-request-id"}}
+        if path == "/appStoreVersions/version-id":
+            self.release_type = body["data"]["attributes"]["releaseType"]
+            return {
+                "data": {"attributes": {"releaseType": self.release_type}}
+            }
         raise AssertionError(path)
 
 
@@ -57,6 +66,7 @@ def test_release_status_reads_exact_version_and_submission(values):
         "WAITING_FOR_REVIEW",
         False,
         "WAITING_FOR_REVIEW",
+        "MANUAL",
     )
     assert client.calls[0][0] == "GET"
     assert "filter%5Bplatform%5D=IOS" in client.calls[0][1]
@@ -82,6 +92,24 @@ def test_request_release_uses_apple_release_request_shape():
                         "data": {"type": "appStoreVersions", "id": "version-id"}
                     }
                 },
+            }
+        },
+    )
+
+
+def test_set_automatic_release_after_approval_uses_apple_update_shape():
+    client = FakeClient()
+
+    module.set_automatic_release_after_approval(client, "version-id")
+
+    assert client.calls[-1] == (
+        "PATCH",
+        "/appStoreVersions/version-id",
+        {
+            "data": {
+                "type": "appStoreVersions",
+                "id": "version-id",
+                "attributes": {"releaseType": "AFTER_APPROVAL"},
             }
         },
     )
@@ -120,6 +148,7 @@ def test_main_releases_only_the_exact_approved_state(
         "API_KEY_B64": "encoded",
         **values,
         "RELEASE_IF_APPROVED": str(release_enabled).lower(),
+        "AUTOMATIC_RELEASE_AFTER_APPROVAL": "false",
     }
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
@@ -134,6 +163,66 @@ def test_main_releases_only_the_exact_approved_state(
     ]
     assert len(release_calls) == expected_release_calls
     assert f"app_store_state={state}" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "state, release_type, expected_patch_calls",
+    [
+        ("WAITING_FOR_REVIEW", "MANUAL", 1),
+        ("IN_REVIEW", "MANUAL", 1),
+        ("WAITING_FOR_REVIEW", "AFTER_APPROVAL", 0),
+        ("PENDING_DEVELOPER_RELEASE", "MANUAL", 0),
+        ("READY_FOR_SALE", "MANUAL", 0),
+    ],
+)
+def test_main_sets_automatic_release_only_before_approval(
+    monkeypatch, values, state, release_type, expected_patch_calls, capsys
+):
+    client = FakeClient(app_store_state=state, release_type=release_type)
+    environment = {
+        "API_KEY_ID": "key",
+        "API_ISSUER_ID": "issuer",
+        "API_KEY_B64": "encoded",
+        **values,
+        "RELEASE_IF_APPROVED": "true",
+        "AUTOMATIC_RELEASE_AFTER_APPROVAL": "true",
+    }
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(module, "_token", lambda supplied: "token")
+    monkeypatch.setattr(module, "AppStoreConnect", lambda token: client)
+    monkeypatch.setattr(module, "us_storefront_listing", lambda app_id: (False, ""))
+
+    module.main()
+
+    patch_calls = [call for call in client.calls if call[0] == "PATCH"]
+    assert len(patch_calls) == expected_patch_calls
+    output = capsys.readouterr().out
+    expected_update = expected_patch_calls == 1
+    assert f"automatic_release_updated={str(expected_update).lower()}" in output
+
+
+def test_main_does_not_set_automatic_release_when_flag_is_false(
+    monkeypatch, values
+):
+    client = FakeClient(app_store_state="WAITING_FOR_REVIEW", release_type="MANUAL")
+    environment = {
+        "API_KEY_ID": "key",
+        "API_ISSUER_ID": "issuer",
+        "API_KEY_B64": "encoded",
+        **values,
+        "RELEASE_IF_APPROVED": "true",
+        "AUTOMATIC_RELEASE_AFTER_APPROVAL": "false",
+    }
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(module, "_token", lambda supplied: "token")
+    monkeypatch.setattr(module, "AppStoreConnect", lambda token: client)
+    monkeypatch.setattr(module, "us_storefront_listing", lambda app_id: (False, ""))
+
+    module.main()
+
+    assert [call for call in client.calls if call[0] == "PATCH"] == []
 
 
 def test_app_id_must_be_numeric():

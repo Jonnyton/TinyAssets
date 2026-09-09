@@ -1,0 +1,3 @@
+The finished item is the prior monitor review's closing note and its AGREE verdict on the already-merged monitor. It adds nothing that changes the analysis above. The running dispatch is this review itself, and the five vanished outputs belong to other sessions; re-dispatching them or taking another lane would violate this task's hard constraints of no dispatch, no edits, and no broad test runs. Nothing further to advance here.
+
+DISAGREE_CONCERN: no test pins that AUTOMATIC_RELEASE_AFTER_APPROVAL=false suppresses the PATCH; removing the flag from the gating condition at scripts/app_store_release.py:166 passes all 21 tests, so the default path every live monitor run takes has no assertion that can go red.
