@@ -239,6 +239,10 @@ class NodeCancelledError(CompilerError):
     imports `compile_branch` from here.
     """
 
+    def __init__(self, message: str, *, node_id: str = "") -> None:
+        super().__init__(message)
+        self.node_id = node_id
+
 
 class EmptyResponseError(CompilerError):
     """Raised when an LLM provider returns an empty response.
@@ -3330,10 +3334,25 @@ def _build_node(
             declared_outputs=_declared_node_outputs(node),
             merge_fields=merge_fields,
         )
-    return _wrap_with_effects(
+    wrapped = _wrap_with_effects(
         inner, node, effect_chain, state_schema, event_sink, ancestors=ancestors,
         chain_key=graph_node_id or node.node_id,
     )
+    if not graph_node_id or graph_node_id == node.node_id:
+        return wrapped
+
+    def graph_instance_node(state: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return wrapped(state)
+        except CompilerError as exc:
+            # Timeout/effect/empty-result terminal events are recorded by the
+            # runner from the exception, not by the inner event sink. Keep their
+            # identity aligned with the graph-instance starting event as well.
+            if getattr(exc, "node_id", None) == node.node_id:
+                exc.node_id = graph_node_id
+            raise
+
+    return graph_instance_node
 
 
 def _build_node_inner(

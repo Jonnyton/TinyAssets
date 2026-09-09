@@ -67,6 +67,39 @@ def test_unknown_edit_operation_teaches_a_reachable_payload(monkeypatch):
     assert json.loads(seen["changes_json"]) == [example]
 
 
+def test_guided_edit_persists_on_owned_branch_and_refuses_foreign(tmp_path, monkeypatch):
+    """Follow actual advice through the real patch transaction and public readback."""
+    import re
+
+    from tinyassets.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
+    from tinyassets.daemon_server import initialize_author_server, save_branch_definition
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    s = _bind(monkeypatch)
+    initialize_author_server(tmp_path)
+    branch = BranchDefinition(name="Guided edit", author="sub-9", entry_point="instance")
+    branch.node_defs = [NodeDefinition(node_id="definition", display_name="Code",
+        output_keys=["out"], source_code="def run(state):\n    return {'out': 'old'}\n")]
+    branch.graph_nodes = [GraphNodeRef(id="instance", node_def_id="definition")]
+    branch.edges = [EdgeDefinition(from_node="START", to_node="instance"),
+                    EdgeDefinition(from_node="instance", to_node="END")]
+    branch.state_schema = [{"name": "out", "type": "str"}]
+    save_branch_definition(tmp_path, branch_def=branch.to_dict())
+    rid = branch.branch_def_id
+    refused = _patch(s, [{"op": "patch_node"}], branch_id=rid)
+    example = json.loads(re.search(r'\{"op":"update_node".*?\}', refused["error"])[0])
+    example.update(node_id="definition",
+                   source_code="def run(state):\n    return {'out': '新🙂'}\n")
+    result = _patch(s, [example], branch_id=rid)
+    assert "error" not in result, result
+    readback = json.loads(s.read_graph(target="branch", branch_id=rid))
+    assert readback["node_defs"][0]["source_code"] == example["source_code"]
+    monkeypatch.setattr(s, "_ACTOR_ID", "someone-else")
+    assert "error" in _patch(s, [{**example, "source_code": "foreign"}], branch_id=rid)
+    monkeypatch.setattr(s, "_ACTOR_ID", "sub-9")
+    assert json.loads(s.read_graph(target="branch", branch_id=rid)) == readback
+
+
 def test_patch_refused_off_allowlist(monkeypatch):
     s = _bind(monkeypatch, allow=("u-other",))
     seen = _capture(monkeypatch)

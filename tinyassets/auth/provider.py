@@ -418,11 +418,12 @@ _EXTENSIONS_COSTLY_ACTIONS = frozenset({
     "unpause_schedule",
     "unschedule_branch",
 })
+# cancel_run intentionally has no costly/admin override: _RUN_WRITE_ACTIONS
+# classifies it as an owner write. api.runs checks its universe ACL or legacy owner.
 _EXTENSIONS_ADMIN_ACTIONS = frozenset({
     "approve",
     "delete_branch",
     "approve_source_code",
-    "cancel_run",
     "grant_effector_consent",
     "revoke_effector_consent",
 })

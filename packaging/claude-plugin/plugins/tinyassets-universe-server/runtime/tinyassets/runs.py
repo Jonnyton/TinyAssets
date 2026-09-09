@@ -2848,12 +2848,15 @@ def node_output_from_run(
 def request_cancel(base_path: str | Path, run_id: str) -> bool:
     initialize_runs_db(base_path)
     with _connect(base_path) as conn:
-        conn.execute(
+        cursor = conn.execute(
             "INSERT OR IGNORE INTO run_cancels (run_id, requested_at) "
-            "VALUES (?, ?)",
-            (run_id, _now()),
+            "SELECT run_id, ? FROM runs WHERE run_id = ? "
+            "AND status NOT IN ('completed', 'failed', 'cancelled', 'interrupted')",
+            (_now(), run_id),
         )
-    return True
+        return cursor.rowcount > 0 or conn.execute(
+            "SELECT 1 FROM run_cancels WHERE run_id = ?", (run_id,),
+        ).fetchone() is not None
 
 
 def is_cancel_requested(base_path: str | Path, run_id: str) -> bool:

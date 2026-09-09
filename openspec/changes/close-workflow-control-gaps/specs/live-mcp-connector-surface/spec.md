@@ -34,6 +34,12 @@ universe and enforce the existing record ACL before content or mutation.
 - **WHEN** the selected run is already terminal
 - **THEN** the actual terminal status is returned without a new cancellation record or false cancelled claim
 
+#### Scenario: Cancellation is an owner control
+- **WHEN** a caller with write capability cancels a run in a universe where it has write access
+- **THEN** cancellation does not require platform-admin or costly capability
+- **AND** a read-only caller is refused
+- **AND** legacy runs without a universe binding require their recorded owner or, when no owner is recorded, their actual actor
+
 #### Scenario: Workspace cleanup follows a real ancestor
 - **WHEN** discard names this run's held workspace created by a graph ancestor with no HTTP result
 - **THEN** absence from the HTTP response map does not refuse the authorized discard

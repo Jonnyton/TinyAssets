@@ -246,6 +246,12 @@ def _run_read_allowed(record: dict[str, Any]) -> bool:
     return universe_access_allows(uid, write=False)
 
 
+def _run_matches_scope(record: dict[str, Any], kwargs: dict[str, Any]) -> bool:
+    """Explicit graph selection narrows ACL access; public visibility cannot widen it."""
+    expected = str(kwargs.get("universe_id") or "").strip()
+    return not expected or _run_universe_id(record) == expected
+
+
 def _run_read_denied_error(record: dict[str, Any], action: str) -> str:
     from tinyassets.api.permissions import universe_access_error
 
@@ -989,8 +995,8 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
         "",
         *error_lines,
         "Use `read_graph target=\"run\" run_id=\"<run id>\"` for a "
-        "snapshot. Wait and cancel controls are not exposed by the "
-        "advertised handles.",
+        "snapshot. To request cancellation use `run_graph operation=\"cancel\" "
+        "run_id=\"<run id>\"`, then read the run to observe its final status.",
     ]).strip()
 
     result: dict[str, Any] = {
@@ -1239,6 +1245,14 @@ def _compose_run_snapshot(
         "recursion_limit": recursion_limit,
     }
     output = run_record.get("output")
+    from tinyassets.api.run_outputs import output_catalog
+
+    snapshot["output_catalog"] = output_catalog(output if isinstance(output, dict) else {})
+    snapshot["output_read"] = (
+        'Use read_graph target="run_output" with this run_id and field_name. '
+        'For continued content pass next_offset as output_offset; omit field_name '
+        'to page the field catalog.'
+    )
     if isinstance(output, dict):
         for key in ("external_write_results", "external_write_errors"):
             if key in output:
@@ -1312,20 +1326,22 @@ def _compose_run_snapshot(
 
 def _action_get_run(kwargs: dict[str, Any]) -> str:
     from tinyassets.runs import get_run as _get_run
-    from tinyassets.runs import list_events
+    from tinyassets.runs import is_cancel_requested, list_events
 
     rid = kwargs.get("run_id", "").strip()
     if not rid:
         return json.dumps({"error": "run_id is required."})
 
     record = _get_run(_base_path(), rid)
-    if record is None:
+    if record is None or not _run_matches_scope(record, kwargs):
         return json.dumps({"error": f"Run '{rid}' not found."})
     if not _run_read_allowed(record):
         return _run_read_denied_error(record, "get_run")
 
     events = list_events(_base_path(), rid)
-    return json.dumps(_compose_run_snapshot(record, events), default=str)
+    snapshot = _compose_run_snapshot(record, events)
+    snapshot["cancel_requested"] = is_cancel_requested(_base_path(), rid)
+    return json.dumps(snapshot, default=str)
 
 
 def _action_list_runs(kwargs: dict[str, Any]) -> str:
@@ -1338,7 +1354,7 @@ def _action_list_runs(kwargs: dict[str, Any]) -> str:
         limit=int(kwargs.get("limit", 50) or 50),
     )
     # Do not expose runs of a private universe the caller cannot read.
-    rows = [r for r in rows if _run_read_allowed(r)]
+    rows = [r for r in rows if _run_matches_scope(r, kwargs) and _run_read_allowed(r)]
     summaries = [
         {
             "run_id": r["run_id"],
@@ -1518,35 +1534,50 @@ def _action_wait_for_run(kwargs: dict[str, Any]) -> str:
 
 def _action_cancel_run(kwargs: dict[str, Any]) -> str:
     from tinyassets.runs import (
-        get_run as _get_run,
+        _TERMINAL_STATUSES,
+        is_cancel_requested,
+        request_cancel,
     )
     from tinyassets.runs import (
-        request_cancel,
+        get_run as _get_run,
     )
 
     rid = kwargs.get("run_id", "").strip()
     if not rid:
         return json.dumps({"error": "run_id is required."})
     record = _get_run(_base_path(), rid)
-    if record is None:
+    if record is None or not _run_matches_scope(record, kwargs):
         return json.dumps({"error": f"Run '{rid}' not found."})
     if not _run_write_allowed(record):
         return _run_write_denied_error(record, "cancel_run")
+    if not _run_universe_id(record):
+        from tinyassets.api.permissions import current_request_actor_id
 
-    request_cancel(_base_path(), rid)
+        owner = str(record.get("owner_user_id") or record.get("actor") or "").strip()
+        if not owner or owner != current_request_actor_id():
+            return json.dumps({"error": f"Run '{rid}' not found."})
+
+    # The storage operation checks terminal state in the same statement as the
+    # insert, so a finish racing this read cannot create a late cancellation.
+    if record.get("status") not in _TERMINAL_STATUSES:
+        request_cancel(_base_path(), rid)
+    record = _get_run(_base_path(), rid) or record
+    terminal = record.get("status") in _TERMINAL_STATUSES
+    requested = is_cancel_requested(_base_path(), rid)
     note = (
-        "Cancel noted. Sync v1 runs typically finish before the flag "
-        "is checked; full cooperative cancel ships with Phase 3.5 "
-        "(task #39)."
-    )
-    text = (
-        "**Cancel requested.** The background executor will stop at the "
-        f"next checkpoint.\n\n{note}"
+        "This run is already terminal; no further cancellation is needed."
+        if terminal else
+        "Cancellation is cooperative. Queued work checks before starting; "
+        "running work checks at node boundaries and supported in-flight polls. "
+        "An external effect already delivered cannot be undone. Read the run "
+        "again to observe the actual terminal status."
     )
     return json.dumps({
-        "text": text,
+        "text": ("**Run finished.** " if terminal else "**Cancel requested.** ") + note,
         "run_id": rid,
-        "status": "cancel_requested",
+        "status": record.get("status"),
+        "terminal": terminal,
+        "cancel_requested": requested,
         "note": note,
     })
 
@@ -1559,13 +1590,22 @@ def _action_get_run_output(kwargs: dict[str, Any]) -> str:
         return json.dumps({"error": "run_id is required."})
 
     record = _get_run(_base_path(), rid)
-    if record is None:
+    if record is None or not _run_matches_scope(record, kwargs):
         return json.dumps({"error": f"Run '{rid}' not found."})
     if not _run_read_allowed(record):
         return _run_read_denied_error(record, "get_run_output")
 
     field = kwargs.get("field_name", "").strip()
     output = record.get("output") or {}
+    if kwargs.get("bounded_output"):
+        from tinyassets.api.run_outputs import read_output
+
+        return json.dumps({
+            "run_id": rid, "status": record.get("status"),
+            **read_output(output, field_name=kwargs.get("field_name", ""),
+                          offset=kwargs.get("output_offset", 0),
+                          max_chars=kwargs.get("output_max_chars", 8192)),
+        }, ensure_ascii=False)
     if field:
         if field not in output:
             return json.dumps({

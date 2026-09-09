@@ -1,6 +1,60 @@
 # Review and reproduction state
 
-September 9 UTC. No runtime edits yet; branch codex/close-workflow-control-gaps
+## Current candidate: five platform gaps implemented locally
+
+September 9, 2026 UTC, Windows/Python 3.14. Source is not pushed or deployed.
+read_graph run_output now always uses bounded formatting in the existing output
+handler: catalog pages of 64 fields, exact strings/typed small values and Unicode
+JSON continuation for larger fields. Existing legacy extension response remains
+compatible. Ordinary run reads discover fields and report pending cancellation.
+Both existing run/list and new output/cancel routes match actual run universe
+before ACL/disclosure. A public foreign universe cannot bypass the pin.
+
+run_graph cancel reuses the run_cancels table and existing executor polls, with
+no admission, new run or provider launch. Its SQL insert tests nonterminal state
+atomically; repeated terminal calls return actual status. Real queued and child
+tests exposed a NodeCancelledError constructor bug (node_id keyword became a
+TypeError), now corrected. Production-style resolve-always scope tests also
+exposed the legacy admin classification: cancel is now an ordinary write, with
+an added legacy-record owner/actor check so it cannot broaden cross-user reach.
+No admin capability is granted to the served agent. The first classification
+edit accidentally placed cancel in the costly override; live-style tests caught
+it, and the final implementation uses the existing _RUN_WRITE_ACTIONS default.
+
+Real owned-branch edit/readback follows the refusal's taught payload and rejects
+a different actor without changing storage. Real code exception/timeout tests
+cover identical and distinct graph/definition IDs plus successful parallel
+siblings. Timeout attribution needed exception.node_id normalization as well as
+event normalization; the same original exception type/object is propagated.
+
+Red evidence: initial graph controls suite had 18 expected failures; real running
+child then failed with TypeError rather than cancelled; distinct graph-ID timeout
+cases failed with the definition ID. Final graph-controls suite has 39 passes,
+including production-style permission gating, read-only refusal, foreign-public
+pin refusal, legacy foreign-owner refusal, race-at-finish, bounded Unicode/types,
+and real queue/child stopping. Node state/timeout/empty-response suite: 41 passes.
+
+Full focused candidate command:
+`python -m pytest -q tests/test_graph_run_controls.py tests/test_api_runs.py tests/test_engine_mcp_server.py tests/test_engine_mcp_write_graph_patch.py tests/test_branch_runner.py tests/test_universe_server_isolation.py tests/test_text_channel_id_redaction.py tests/test_run_branch_version.py tests/test_graph_compiler_failed_event.py tests/test_node_timeout.py tests/test_graph_compiler_empty_response.py tests/test_workspace_effector.py tests/test_cancel_reaches_the_running_child.py tests/test_queue_cancel_cooperative.py tests/test_canonical_branch_mcp.py tests/test_mcp_instruction_surfaces.py tests/test_action_scopes.py tests/test_optional_auth_mode.py --tb=short --junitxml=output/workflow-gaps-windows-head.xml`
+Result: **560 passed, 6 skipped, 1 pre-existing failure**, 63.91s. This is not a
+green suite or Linux proof. A detached, unchanged c2ed4534 checkout ran the same
+existing 15 files (the new graph-controls file did not exist) with 486 passes,
+6 skips and the exact same instruction-response fixture failure in
+output/workflow-gaps-pinned-windows-base.xml; the two auth files separately pass
+23 tests on both baseline and candidate. Baseline total: 509 passes +6 skips +1
+failure, versus candidate 560+6+1. Two legacy terminal-cancel assertions now test
+actual completed status and absence of a cancel record, not a fabricated pending
+cancel after completion. No tests or platform assertions were dropped.
+Baseline fixture finding:
+`docs/concerns/2026-09-09-instruction-response-test-page-fixture.md`.
+
+Generated plugin mirror/import probe passes. Independent exact-head review,
+Linux comparison/CI, authenticated deployment and rendered app retest remain
+required. No app prompt has been sent during this local implementation.
+
+## Historical shape and partial-candidate evidence
+
+At shape review, September 9 UTC, there were no runtime edits yet; branch codex/close-workflow-control-gaps
 starts from c2ed4534 (runtime 8f1b4760). Independent Claude shape/basic-safety
 review dispatched with eight-minute timeout to `output/workflow-gaps-shape-review.md`.
 Command: `python scripts/peer_agent.py claude --out output/workflow-gaps-shape-review.md --prompt-file output/workflow-gaps-shape-brief.md --timeout 480`.

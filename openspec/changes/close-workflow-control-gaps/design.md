@@ -24,7 +24,7 @@ policy changes or completion claims for unfinished resource consolidation.
    guidance must teach that operation and its real payload, not `patch_node`.
    Relational tests cover emitted advice against the served validator and a real
    owned branch write/read. This slice retains existing field validation and
-   authority restrictions; it repairs the four guidance strings and provides
+   authority restrictions; it repairs the five guidance strings and provides
    actionable unknown-operation guidance. Broader field parity requires its own
    verified current safety premise and is not silently enabled here. No second
    compatibility operation is needed merely to preserve incorrect prose.
@@ -49,6 +49,11 @@ policy changes or completion claims for unfinished resource consolidation.
    truncated and next_offset; include the exact typed value only when the whole
    field fits. Catalogs contain names/types/sizes, never hidden previews. Preserve
    exact values across bounded continuation instead of silently truncating them.
+   The new graph route always requests bounded formatting from the existing
+   handler; the unadvertised legacy extensions response remains compatible.
+   Selected-field chunks default to 8192 and cap at 32768 code points; catalogs
+   page 64 field names/types/serialized sizes, using output_offset as field index
+   when no field is selected. These are response bounds, not output-storage caps.
 4. **Record the failing node at execution.** Code exceptions currently reach the
    generic run-failure handler without recording a failed node event. Correct
    the node lifecycle by emitting the existing failed event on the plain code
@@ -57,6 +62,9 @@ policy changes or completion claims for unfinished resource consolidation.
    preserve the original exception and cancellation/timeout classifications.
    Do not infer that every running parallel sibling failed, or rewrite historical
    events on read. Existing precise effect/timeout failures must not regress.
+   Normalize node_id on propagated CompilerError instances too: timeout/empty/
+   effect failures are converted to terminal events in the runner, outside the
+   inner event sink. Preserve the exception object, type and message.
 5. **Cancellation is control, not a new run.** Add run_graph `operation` default
    `run` plus `run_id`; `cancel` uses existing cancellation storage/runner checks,
    never admission/provider launch. Reject ambiguous start/cancel/trigger arguments.
@@ -66,6 +74,21 @@ policy changes or completion claims for unfinished resource consolidation.
    an accepted request reports actual current state and cancel_requested=true,
    not fabricated terminal success. Test queued and in-flight code cancellation
    through the real runner; describe provider/effect cooperative limits honestly.
+   Real in-flight child proof found NodeCancelledError inherited a constructor
+   that rejected its node_id keyword. Give it the same explicit identity-bearing
+   constructor as the other node exceptions so cancellation stays cancelled,
+   not TypeError/failed. Insert cancellation conditionally on nonterminal run
+   state in one SQL statement to cover a concurrent finish without a schema change.
+
+   Scope-gate verification found legacy cancel_run classified as admin, so the
+   live resolve-always provider would reject an ordinary owner even though dev
+   tests passed. Classify cancellation as write, matching the owner-control
+   contract and existing schedule pause/delete precedent. Before doing so,
+   tighten cancel's legacy non-universe path to its recorded owner/actor: the
+   historical broad non-universe write allowance must not become a new cross-user
+   cancellation permission. Universe rows still require their write ACL, and
+   pinned calls still require exact universe membership. No admin capability is
+   granted to the served agent. Test with production-style scope enforcement.
 
 ## Risks / Trade-offs
 
