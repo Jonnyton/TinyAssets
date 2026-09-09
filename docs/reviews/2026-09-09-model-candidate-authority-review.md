@@ -12,11 +12,18 @@ The fixed two-attempt limit must not become a two-model product restriction;
 resolve it with the authorized finite candidate set and existing resource bounds.
 Do not mint a fresh carrier merely to bypass consumed authority.
 
-The five pre-build blockers below remain to resolve against source and tests
+The pre-build blockers below remain to resolve against source and tests
 before schema or authorization changes. In particular, inventory all unassign,
 failed-assignment and disconnect paths; validate manifest/digest readback and
 publication replay equality; specify attempt counting and in-flight generation
 semantics. Preference reorder is not revocation. Access/constraint changes are.
+
+Source correction (September 9, 2026, b3bb8956): blocker 4's claim that existing
+assignment digests are checked only on write is incorrect. `_assignment_from_row`
+in `tinyassets/provider_assignment.py` already recomputes the v1 digest and both
+loaders use it. Preserve that check; new v2 manifest/child-table verification is
+still required. The quoted verdict below is retained verbatim as review evidence,
+not as authority for the contradicted premise.
 
 The review's initial CLI restriction is a staging limit, not acceptance of the
 owner's complete requirement: explicit selection of any discovered supported

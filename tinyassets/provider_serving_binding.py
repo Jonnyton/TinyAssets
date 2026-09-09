@@ -623,11 +623,16 @@ def _current_serving_authority(
     *,
     store: SQLiteProviderWorkAuthorityStore,
     universe_dir: Path,
+    base_path: Path | None = None,
     owner_user_id: str,
     universe_id: str,
     agent: dict[str, object],
 ) -> tuple[ProviderAssignment, object, LLMCredentialCustodyReference]:
     """Re-read the complete server-owned serving chain in one SQLite fence."""
+
+    # Dispatch supplies its explicit storage root; readiness callers already
+    # validate the canonical universe path. Do not change either lookup root.
+    authority_root = Path(base_path) if base_path is not None else Path(universe_dir).parent
 
     assignment = load_provider_assignment_in_transaction(
         conn,
@@ -664,13 +669,13 @@ def _current_serving_authority(
             owner_user_id=owner_user_id,
             universe_id=universe_id,
             connection_id=_open_connection_id(
-                Path(universe_dir).parent, universe_id, assignment.provider
+                authority_root, universe_id, assignment.provider
             ),
         )
         # Exact live-grant revalidation (owner + bound + not-revoked + not-rotated),
         # not just a stored-digest compare (Codex reject #1/#2).
         verify_open_grant_custody(
-            Path(universe_dir).parent, universe_id, owner_user_id,
+            authority_root, universe_id, owner_user_id,
             assignment.provider, custody,
         )
     else:
