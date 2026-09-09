@@ -16,7 +16,30 @@ monitoring, and rollback shape.
 | Clean native generation | From a worktree with no generated `mobile/android/`, `npm ci --ignore-scripts --no-audit --no-fund`, `cap add android`, `cap sync android`, scheme/icon installation, release configuration, and `verify_android_release.py` completed on Windows on 2026-09-03 | Verified; full Gradle build remains a CI gate |
 | Final Wolf Moon Seal artwork | `verify_android_release.py --artwork-only` passed for the reconciled logo commit `688b5cff`: mobile icon/splash, all Android density outputs, and the 512×512 Play icon. That commit is an ancestor of candidate merge head `9ef0c693` | Verified and reconciled |
 | Local signed build | The container path produced the Play-uploaded bundle earlier on 2026-09-03. A fresh re-run in this worktree stopped during `npm ci` with Docker `ENOSPC`, before Android generation; that is a host storage failure, not a passing build | Re-run after Docker storage is recovered |
-| Device behavior | No dated phone install/sign-in/conversation result is recorded | Open; founder action |
+| Device behavior | Google Play installed `io.tinyassets.app` version `3 (1.0.2)` on Samsung S24+ / Android 16 on 2026-09-08; Android reported installer `com.android.vending`. WorkOS sign-in and the provider-callback notification/cancel path were exercised. A corrected debug build proved immediate notification display; the full conversation row still needs the Play-signed code 4 candidate. | Partial; Play-signed `4 (1.0.3)` smoke remains |
+
+### Evidence refresh — 2026-09-08
+
+- The Play-installed code 3 build exposed a real defect: Android registered the
+  foreground-service notification but could defer presenting it until a fast OAuth
+  flow had already finished. Commit `c90df033` calls
+  `setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)` on
+  Android 12+ and preserves the older-API path.
+- GitHub Actions run `34272468350` built the corrected debug APK, SHA-256
+  `d6d795b62a3304aa73a5455b5342005c141789603deae5d0cd7111ea025ea2f9`. On the same
+  phone, **Connect OpenAI** visibly produced `TinyAssets — Finishing your sign-in…`;
+  cancelling stopped `LocalCallbackService` and returned focus to TinyAssets.
+- The 27.11-second 1080×2340 H.264 Play-video candidate contains 104 frames and has
+  SHA-256 `7b49b48d21ca3a1f57acdce23ed8c5ac0f58b63aab57ea3d4cb5696ed61391f2`. It shows the
+  user-initiated Connect state and immediate notification. Every decoded frame was
+  reviewed after masking the unrelated notification row. It is not uploaded.
+- Play has consumed code 3, so `mobile/android-release.json` reserves corrected
+  candidate `4 (1.0.3)`. GitHub Actions run `34276126068` at integrated head
+  `ce00f1274a1252bdb0b910d1ec2d5909b01d28d1` passed clean platform generation,
+  release identity/SDK/manifest/artwork verification, and the debug APK build. The
+  downloaded APK is 4,816,457 bytes with SHA-256
+  `90dde05a5745f7952e3099236ebffef131f17eea7586e7d72598837f6fa768b2`. The signed AAB,
+  Play upload, and code-4 phone smoke remain.
 
 Advertising-ID evidence was re-run on the Windows host on 2026-09-03. Downloading the
 baseline from GitHub Actions run `33797592515` reproduced SHA-256

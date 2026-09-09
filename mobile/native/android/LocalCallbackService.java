@@ -57,6 +57,13 @@ public class LocalCallbackService extends Service {
         Notification.Builder b = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
             ? new Notification.Builder(this, CHANNEL_ID)
             : new Notification.Builder(this);
+        // Android 12+ may defer a foreground-service notification long enough
+        // for this short sign-in flow to finish before the user ever sees it.
+        // This service exists only while the app is waiting in the browser, so
+        // its disclosure must be immediate rather than system-deferred.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            b.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE);
+        }
         Notification n = b
             .setContentTitle("TinyAssets")
             .setContentText("Finishing your sign-in…")

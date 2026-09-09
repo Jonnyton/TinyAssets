@@ -237,6 +237,7 @@ def verify_sources(mobile: Path, release: AndroidRelease) -> None:
         "startup.send(STARTUP_OK",
         "startup.send(STARTUP_FAILED",
         'Log.e("TinyAssetsSignin"',
+        "Notification.FOREGROUND_SERVICE_IMMEDIATE",
     )
     missing = [item for item in startup_safeguards if item not in service]
     if missing:
