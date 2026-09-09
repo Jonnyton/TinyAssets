@@ -1055,8 +1055,8 @@
       if(block){ try{ return JSON.parse(block.text); }catch(_e){ return {reply:block.text}; } }
       return {};
     },
-    converse(message,voiceActive=false){
-      return this.callTool("converse",{message,voice_active:!!voiceActive});
+    converse(message,inputMethod="unknown"){
+      return this.callTool("converse",{message,input_method:turnInputMethod(inputMethod)});
     },
     getStatus(){ return this.callTool("get_status",{},{idempotent:true}); },
     // The shared cross-surface thread. The app rendered ONLY what was appended
@@ -1156,6 +1156,9 @@
   }
   function setStatusLine(t){ $("status-line").textContent=t||""; }
   function setVoiceStatusLine(t){ $("voice-status-line").textContent=t||""; }
+  function turnInputMethod(value){
+    return value==="typed"||value==="spoken"||value==="app_action"?value:"unknown";
+  }
 
   // ---- Voice ----------------------------------------------------------
   // Voice owns only speech transport and turn timing. The universe's actual
@@ -1937,9 +1940,10 @@
   // storage, so the build check's hold on a running turn never depends on
   // localStorage being writable.
   let turnStartedAt=0;
-  function rememberInflight(message, display, sentAt){
+  function rememberInflight(message, display, sentAt, inputMethod){
     try{ localStorage.setItem(INFLIGHT_KEY, JSON.stringify(
       {message, display: display||message,
+       inputMethod:turnInputMethod(inputMethod),
        ts:(typeof sentAt==="number" && Number.isFinite(sentAt))?sentAt:Date.now()})); }catch(_e){}
   }
   function forgetInflight(){ try{ localStorage.removeItem(INFLIGHT_KEY); }catch(_e){} }
@@ -1978,6 +1982,7 @@
   let retainedItems=[];
   function savedItem(q){
     return {message:q.message, display:q.display||q.message, ts:q.ts||Date.now(),
+      inputMethod:turnInputMethod(q.inputMethod||(q.opts&&q.opts.inputMethod)),
       scope:(q.scope!==undefined)?q.scope:queueScope};
   }
   function saveQueue(){
@@ -2059,7 +2064,8 @@
       forgetSavedItem(item);
       // A side send: it neither takes over an unconfirmed turn's record nor
       // clears whatever the founder is typing.
-      sendTurn(item.message, item.display, {relay:true, keepInflight: !!readInflight(), keepComposer:true});
+      sendTurn(item.message, item.display, {relay:true, keepInflight: !!readInflight(),
+        keepComposer:true, inputMethod:turnInputMethod(item.inputMethod)});
     });
     const note=appendMessage("system",text+". ",send,now/1000);
     note.appendChild(document.createTextNode(" "));
@@ -2105,6 +2111,7 @@
 
   async function sendTurn(message, display, opts){
     opts=opts||{};
+    opts.inputMethod=turnInputMethod(opts.inputMethod);
     if($("btn-send").disabled) return queueTurn(message, display, opts);
     // `display` is what the founder sees in their bubble (compact when a file is
     // attached); `message` is the full text sent to the universe (file content
@@ -2116,7 +2123,7 @@
     if(!opts.echoed) appendMessage("founder", display || message, null, sentAt/1000);
     // A line sent from a restore offer is a SIDE send: it must not take over
     // the in-flight record of an unconfirmed turn still on screen.
-    if(!opts.keepInflight) rememberInflight(message, display, sentAt);
+    if(!opts.keepInflight) rememberInflight(message, display, sentAt, opts.inputMethod);
     // A relayed answer or a side send did not come from the composer: what
     // the founder is typing there stays (Codex round 3).
     const input=$("composer-input");
@@ -2125,7 +2132,7 @@
     setStatusLine("Your universe is thinking...");
     let delivered=false;
     try{
-      renderConverse(await MCP.converse(message,Voice.isActive())); delivered=true;setStatusLine("");
+      renderConverse(await MCP.converse(message,opts.inputMethod)); delivered=true;setStatusLine("");
       if(!opts.keepInflight) forgetInflight();
     }catch(err){
       if(err.authRequired){ setStatusLine(""); $("composer-input").value=message; return sessionExpired(); }
@@ -2148,12 +2155,12 @@
     // would make delivery ambiguous. Keep the audio session alive, but ask the
     // founder to wait and say the line again.
     if($("btn-send").disabled) throw new Error("voice_turn_busy");
-    appendMessage("founder",message); rememberInflight(message,message);
+    appendMessage("founder",message); rememberInflight(message,message,undefined,"spoken");
     $("btn-send").disabled=true; turnStartedAt=Date.now();
     setStatusLine("Your universe is thinking...");
     let delivered=false;
     try{
-      const payload=await MCP.converse(message,Voice.isActive());
+      const payload=await MCP.converse(message,"spoken");
       if(!payload||typeof payload.reply!=="string"){
         if(payload&&payload.error){const served=new Error(payload.error);served.served=true;throw served;}
         throw new Error("voice_converse_invalid");
@@ -2162,7 +2169,7 @@
       return payload.reply;
     }catch(error){
       if(error&&error.authRequired){ sessionExpired(); throw error; }
-      offerResend(message,message,error,{echoed:true,keepComposer:true});
+      offerResend(message,message,error,{echoed:true,keepComposer:true,inputMethod:"spoken"});
       throw error;
     }finally{
       $("btn-send").disabled=false;turnStartedAt=0;setStatusLine("");
@@ -2795,7 +2802,7 @@
       const {send,display}=buildTurn(typed);
       if(!send) return;                 // nothing typed and no readable attachment
       pendingAttachments=[]; renderChips();
-      sendTurn(send, display); });
+      sendTurn(send, display, {inputMethod:"typed"}); });
     const input=$("composer-input");
     input.addEventListener("input",()=>autoGrow(input));
     input.addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("composer").requestSubmit(); } });
@@ -3367,7 +3374,8 @@
       if(!text){ note.textContent = "Type something to send."; return; }
       if(fbEl) fbEl.value = "";
       note.textContent = "Sent. The ask stays open until you accept, deny or clear it.";
-      sendTurn(replyLine(req, text), undefined, {relay:true, keepComposer:true});
+      sendTurn(replyLine(req, text), undefined,
+        {relay:true, keepComposer:true, inputMethod:"typed"});
       return;
     }
     const payload = { request_id: req.request_id };
@@ -3391,7 +3399,8 @@
         const actionAsk = req.action && req.action.type && req.action.type !== "answer";
         if(mode === "accept" && actionAsk){
           note.textContent = "This ask can't be granted as written. Your universe has been told why.";
-          sendTurn(refusedGrantLine(req, r.detail || r.error), undefined, {relay:true, keepComposer:true});
+          sendTurn(refusedGrantLine(req, r.detail || r.error), undefined,
+            {relay:true, keepComposer:true, inputMethod:"app_action"});
         } else {
           note.textContent = "Couldn't do that: " + (r.detail || r.error);
         }
@@ -3408,7 +3417,8 @@
           + (busy ? " Your universe will see it when its current turn ends." : "");
         railOpen = null;
         await refreshRail();
-        sendTurn(answerLine(req, mode, payload), undefined, {relay:true, keepComposer:true});
+        sendTurn(answerLine(req, mode, payload), undefined,
+          {relay:true, keepComposer:true, inputMethod:"app_action"});
       }
     }catch(err){
       if(err.authRequired) return enterSignedOut();
@@ -3494,7 +3504,8 @@
     again.addEventListener("click", ()=>{
       // The bubble is already drawn above, so do not echo it a second time.
       note.remove(); forgetInflight();
-      sendTurn(pending.message, pending.display, {echoed:true});
+      sendTurn(pending.message, pending.display,
+        {echoed:true,inputMethod:turnInputMethod(pending.inputMethod)});
     });
     const note=appendMessage("system",
       "This message was never confirmed — the reply did not arrive. ",again);

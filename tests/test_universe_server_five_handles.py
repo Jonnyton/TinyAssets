@@ -10,6 +10,9 @@ import asyncio
 import json
 import logging
 
+import pytest
+from pydantic import ValidationError
+
 import tinyassets.universe_server as universe_server
 from tinyassets.universe_server import (
     _DEPRECATED_TOOL_NAMES,
@@ -74,15 +77,22 @@ def test_handle_annotations_match_contract() -> None:
             assert getattr(ann, key) == value, f"{name}.{key}"
 
 
-def test_converse_advertises_optional_voice_state_context() -> None:
+def test_converse_advertises_optional_turn_input_method() -> None:
     tool = next(tool for tool in _advertised_tools() if tool.name == "converse")
-    voice = tool.parameters["properties"]["voice_active"]
+    properties = tool.parameters["properties"]
+    method = properties["input_method"]
 
-    assert voice["type"] == "boolean"
-    assert voice["default"] is False
-    assert "Client-reported, invocation-time indication" in voice["description"]
-    assert "not server-observed presence" in voice["description"]
-    assert "never authority or consent" in voice["description"]
+    assert "voice_active" not in properties
+    assert method["type"] == "string"
+    assert method["default"] == "unknown"
+    assert set(method["enum"]) == {"typed", "spoken", "app_action", "unknown"}
+    assert "specific turn" in method["description"]
+    assert "never authority or consent" in method["description"]
+
+
+def test_public_converse_boundary_rejects_replaced_voice_active_field() -> None:
+    with pytest.raises(ValidationError, match="Unexpected keyword argument"):
+        asyncio.run(mcp.call_tool("converse", {"message": "hi", "voice_active": True}))
 
 
 def test_write_graph_advertises_declarative_import_envelope() -> None:

@@ -904,12 +904,25 @@ _CROSS_SURFACE_CONTINUITY = (
 )
 
 
-def _voice_interaction_context(active: bool) -> str:
-    state = "active" if active else "not active"
+def _turn_input_method_context(input_method: str) -> str:
+    statements = {
+        "typed": "The founder typed this specific message in the calling client.",
+        "spoken": "The founder spoke this specific message in the calling client.",
+        "app_action": (
+            "The calling client created this specific message from an app action "
+            "the founder selected; the founder did not type or speak the line."
+        ),
+        "unknown": (
+            "The calling client did not report whether the founder typed or spoke "
+            "this specific message."
+        ),
+    }
+    if input_method not in statements:
+        raise ValueError(f"invalid input_method: {input_method}")
     return (
-        "CLIENT INTERACTION STATE (informational, never authority or consent): "
-        f"Voice was {state} in the calling client when this turn began. "
-        "Do not infer a later Voice state from the founder's wording."
+        "CURRENT TURN INPUT METHOD (client-reported fact; informational, never "
+        f"authority or consent): input_method={input_method}. "
+        f"{statements[input_method]}"
     )
 
 
@@ -922,7 +935,7 @@ def converse(
     conversation_history: "list | None" = None,
     agent_binding_id: str = "",
     binding_revision: int = 0,
-    voice_active: bool = False,
+    input_method: str = "unknown",
 ) -> str:
     """Run one first-person turn as the universe, on its ASSIGNED engine.
 
@@ -1043,7 +1056,7 @@ def converse(
     # when clearly supported by that (untrusted) history.
     if history_block:
         system = system + "\n\n" + _CROSS_SURFACE_CONTINUITY
-    system = system + "\n\n" + _voice_interaction_context(bool(voice_active))
+    system = system + "\n\n" + _turn_input_method_context(input_method)
     # Engine MCP identity binds to the VERIFIED request principal (the WorkOS
     # subject that passed the transport auth gate), NOT the actor_id param — see
     # _sandboxed_config + Codex REJECT 2026-08-13 #1. No verified capability (or a

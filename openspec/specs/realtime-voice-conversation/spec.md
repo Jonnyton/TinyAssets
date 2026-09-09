@@ -200,14 +200,30 @@ The shared app SHALL render Voice transport state independently from canonical c
 - **THEN** conversation progress clears normally and the canonical text reply remains rendered
 - **AND** Voice status says whether the reply arrived or failed
 
-### Requirement: The shared app reports Voice state without message inference
-The shared app SHALL derive an invocation-time `voice_active` boolean from its actual Voice state and SHALL pass it with every canonical `converse` call without modifying the founder's authoritative message text.
+### Requirement: The shared app reports each turn's input method
+The shared app SHALL derive the input method of each canonical founder turn from the path that submitted that specific message and SHALL pass `typed`, `spoken`, or `app_action` with the `converse` call without modifying the founder's authoritative message text.
 
-#### Scenario: Turn begins while Voice is active
-- **WHEN** a typed or spoken turn invokes `converse` while Voice capture is active
-- **THEN** the app sends `voice_active=true`
+#### Scenario: Composer turn is typed while Voice is active
+- **GIVEN** Voice capture is active
+- **WHEN** the founder submits a turn through the message composer
+- **THEN** the app sends `input_method=typed`
+- **AND** it does not substitute ambient Voice-session state for the turn's origin
 
-#### Scenario: Turn begins while Voice is off
-- **WHEN** a typed turn invokes `converse` after Voice is disabled
-- **THEN** the app sends `voice_active=false`
-- **AND** it does not infer Voice state from words in the message
+#### Scenario: Browser speech turn is spoken
+- **WHEN** browser speech recognition commits a founder utterance
+- **THEN** the app sends `input_method=spoken`
+
+#### Scenario: Realtime Voice turn is spoken
+- **WHEN** the realtime Voice bridge commits its canonical `converse` tool call
+- **THEN** the app sends `input_method=spoken`
+
+#### Scenario: Request-rail turn reports its actual origin
+- **WHEN** the founder types a request-rail reply
+- **THEN** the app sends `input_method=typed`
+- **WHEN** the founder selects an app action that creates a conversation line
+- **THEN** the app sends `input_method=app_action`
+
+#### Scenario: Input method survives a retry or queue
+- **WHEN** an app turn is queued or retried
+- **THEN** the eventual `converse` call carries the input method recorded at the original submission
+- **AND** the app does not infer it from the message words or current Voice state
