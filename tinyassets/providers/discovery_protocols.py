@@ -4,9 +4,7 @@ Owners choose the granted host. Each adapter defines which path/query actually
 has its account-filtered semantics; schema similarity cannot substitute for it.
 """
 
-import math
 from dataclasses import dataclass
-from fractions import Fraction
 from typing import Callable
 from urllib.parse import urlsplit
 
@@ -14,7 +12,7 @@ from tinyassets.providers.catalog_decoders import (
     decode_openrouter_benchmarks,
     decode_openrouter_models,
 )
-from tinyassets.providers.model_policy import ConnectionModels, Scores
+from tinyassets.providers.model_policy import ConnectionModels, Interaction, Scores
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +27,7 @@ class DiscoveryProtocol:
     inference_protocol: str
     price_components: frozenset[str]
     constrain_inference: Callable[..., dict]
+    text_interaction: Interaction
 
     def validate_urls(self, catalogue_url: str, benchmark_url: str) -> None:
         catalogue = urlsplit(catalogue_url)
@@ -53,6 +52,18 @@ def _openrouter_constrained_body(body: dict, caps: tuple[tuple[str, int], ...]) 
     # or user-controlled provider overrides. Never merge those into a bounded call.
     if set(body) - {"model", "messages", "temperature", "max_tokens"}:
         raise ValueError("unsupported fields in price-constrained inference")
+    model = body.get("model")
+    messages = body.get("messages")
+    if not isinstance(model, str) or "@preset/" in model or model.endswith(":online"):
+        raise ValueError("unsupported model indirection in price-constrained inference")
+    if not isinstance(messages, list) or any(
+        not isinstance(message, dict)
+        or set(message) != {"role", "content"}
+        or message["role"] not in ("system", "user", "assistant")
+        or not isinstance(message["content"], str)
+        for message in messages
+    ):
+        raise ValueError("unsupported message shape in price-constrained inference")
     if (
         len(caps) != len(_OPENROUTER_PRICE_FIELDS)
         or {key for key, _ in caps} != _OPENROUTER_PRICE_FIELDS.keys()
@@ -62,17 +73,11 @@ def _openrouter_constrained_body(body: dict, caps: tuple[tuple[str, int], ...]) 
     for component, micros in caps:
         if type(micros) is not int or micros < 0:
             raise ValueError("invalid inference price bound")
-        # Wire units are USD/million tokens or USD/request/image. Never round a
-        # user ceiling upward when converting exact integer micros to JSON float.
-        bound = Fraction(micros, 10**6)
-        try:
-            value = float(bound)
-        except OverflowError:
-            raise ValueError("inference price bound is too large") from None
-        if not math.isfinite(value):
+        if micros > 10**18:
             raise ValueError("inference price bound is too large")
-        if Fraction(value) > bound:
-            value = math.nextafter(value, 0.0)
+        # Exact decimal string, independent of Decimal context or binary floats.
+        whole, fraction = divmod(micros, 10**6)
+        value = f"{whole}.{fraction:06d}".rstrip("0").rstrip(".")
         prices[_OPENROUTER_PRICE_FIELDS[component]] = value
     return {**body, "provider": {"max_price": prices, "require_parameters": True}}
 
@@ -89,6 +94,33 @@ _PROTOCOLS = {
         "openai_chat",
         frozenset(_OPENROUTER_PRICE_FIELDS),
         _openrouter_constrained_body,
+        Interaction(
+            needs_tools=False,
+            modalities=frozenset({"text"}),
+            charge_components=frozenset({"input_million_tokens_usd", "output_million_tokens_usd"}),
+            min_context=1,
+            ceiling_components=frozenset(_OPENROUTER_PRICE_FIELDS),
+            excluded_components=frozenset(
+                {
+                    "audio_million_tokens_usd",
+                    "image_million_tokens_usd",
+                    "input_audio_cache_million_tokens_usd",
+                    "input_cache_write_1h_million_tokens_usd",
+                }
+            ),
+            extra_price_bounds=(
+                ("input_cache_read_million_tokens_usd", "input_million_tokens_usd"),
+                ("input_cache_write_million_tokens_usd", "input_million_tokens_usd"),
+                ("reasoning_million_tokens_usd", "output_million_tokens_usd"),
+                ("web_search_usd", None),
+                ("image_output_usd", None),
+                ("audio_output_million_tokens_usd", None),
+            ),
+            output_price_components=(
+                ("image", "image_output_usd"),
+                ("audio", "audio_output_million_tokens_usd"),
+            ),
+        ),
     )
 }
 

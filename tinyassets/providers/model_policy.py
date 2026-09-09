@@ -37,6 +37,7 @@ class Pricing:
     freshness: Freshness = "missing"
     charges: tuple[Charge, ...] = ()
     unmetered: bool = False  # Confirmed non-metered inference, not unknown cost.
+    unknown_components: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if len({charge.component for charge in self.charges}) != len(self.charges):
@@ -126,6 +127,11 @@ class Interaction:
     charge_components: frozenset[str]
     min_context: int | None = None
     output_modalities: frozenset[str] = frozenset({"text"})
+    # Declared by the exact encoder contract, never inferred from missing prices.
+    ceiling_components: frozenset[str] = frozenset()
+    excluded_components: frozenset[str] = frozenset()
+    extra_price_bounds: tuple[tuple[str, str | None], ...] = ()
+    output_price_components: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +205,8 @@ def _ineligibility(
     if not explicit and connection.freshness != "fresh":
         return "stale_capability", ""
     pricing = model.pricing
+    if pricing.unknown_components:
+        return "unknown_price_component", sorted(pricing.unknown_components)[0]
     if not explicit and pricing.freshness != "fresh":
         return "stale_price", ""
     if pricing.unmetered:
@@ -207,8 +215,17 @@ def _ineligibility(
         return "missing_price_component", "required_charge_components"
     charges = _charges(pricing.charges)
     caps = None if policy.cost_caps is None else _charges(policy.cost_caps)
-    for component in sorted(interaction.charge_components):
+    for component in sorted(interaction.charge_components | interaction.ceiling_components):
         charge = charges.get(component)
+        if charge is None and component in interaction.ceiling_components:
+            if component not in interaction.charge_components:
+                if caps is not None:
+                    cap = caps.get(component)
+                    if cap is None or not cap.confirmed:
+                        return "exceeds_cost_cap", component
+                # Advisory only: real dispatch must materialize and enforce all
+                # ceilings (including zero for free-only) through this protocol.
+                continue  # No synthetic advertisement.
         if charge is None or not charge.confirmed:
             return "missing_price_component", component
         if caps is None:
@@ -218,6 +235,40 @@ def _ineligibility(
             cap = caps.get(component)
             if cap is None or not cap.confirmed or charge.amount_micros > cap.amount_micros:
                 return "exceeds_cost_cap", component
+    if not interaction.ceiling_components:
+        undeclared = charges.keys() - interaction.charge_components
+        if undeclared:
+            return "unknown_price_component", sorted(undeclared)[0]
+    if interaction.ceiling_components:
+        described_outputs = interaction.output_modalities | {
+            modality for modality, _ in interaction.output_price_components
+        }
+        if model.output_modalities - described_outputs:
+            return "capability_unsupported", "output_price_shape"
+        for modality, component in interaction.output_price_components:
+            if modality in model.output_modalities and component not in charges:
+                return "missing_price_component", component
+        bounds = dict(interaction.extra_price_bounds)
+        for component, charge in sorted(charges.items()):
+            if component in interaction.charge_components | interaction.ceiling_components:
+                continue
+            if component in interaction.excluded_components:
+                continue
+            if component not in bounds:
+                return "unknown_price_component", component
+            if not charge.confirmed:
+                return "missing_price_component", component
+            bound_component = bounds[component]
+            cap = None if caps is None or bound_component is None else caps.get(bound_component)
+            if (
+                bound_component is not None
+                and caps is not None
+                and (cap is None or not cap.confirmed)
+            ):
+                return "exceeds_cost_cap", component
+            maximum = 0 if cap is None else cap.amount_micros
+            if charge.amount_micros > maximum:
+                return "unenforceable_price_component", component
     return None
 
 

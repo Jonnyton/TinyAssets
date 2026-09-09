@@ -63,3 +63,18 @@ another model request or manufacture usage to obtain a successful outcome.
 These are concrete integration requirements within tasks2.3/2.4/3.1. They do not
 establish that the owner's paused background-self workflow has hit a new wall,
 and they do not authorize editing that workflow or changing live credentials.
+
+## Reverified receipt path, September9 23:52 UTC
+
+At feature base558b94a3, the app calls MCP.converse in onboarding/app.html:1065
+and renders its returned payload at2138. universe_server.converse returns only
+reply/universe_id at2365. universe_intelligence._call_writer returns
+call_provider's string; _call_router_with_retry in providers/call.py stores a
+process-global last-provider label and discards ProviderResponse beyond text.
+After the writer reply, learning extraction can make additional provider calls.
+Therefore a global last-call label (even made thread-local) can describe the
+extractor instead of the answering writer. Capture the actual writer result
+at its call boundary and propagate request-local metadata explicitly, with
+tests for interleaved universes and post-reply learning calls. Empty resolved
+model remains unknown; the requested default/alias is not an actual receipt.
+No receipt bridge/UI implemented by this source check.

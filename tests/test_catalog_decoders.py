@@ -177,7 +177,9 @@ def test_missing_or_unfamiliar_charge_is_not_dropped_to_claim_free():
         unknown = row()
         unknown["pricing"]["new_charge_type"] = extra
         result = decode(unknown)
-        assert result.models[0].pricing.freshness == "missing"
+        assert result.models[0].pricing.freshness == "fresh"
+        assert result.models[0].pricing.unknown_components == {"new_charge_type"}
+        assert len(result.models[0].pricing.charges) == 4
         assert not order(result).candidates
 
 

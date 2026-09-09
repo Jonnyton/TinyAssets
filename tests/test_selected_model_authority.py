@@ -171,7 +171,7 @@ def test_selected_model_flows_through_real_router_and_http_encoder(served):
     assert verb == "POST" and wire["url"] == "https://owned.example/custom/chat"
     assert wire["body"]["model"] == MODEL
     assert wire["body"]["provider"] == {
-        "max_price": {"prompt": 0.0, "completion": 0.0, "image": 0.0, "request": 0.0},
+        "max_price": {"prompt": "0", "completion": "0", "image": "0", "request": "0"},
         "require_parameters": True,
     }
     assert served.rig.definition.model == "legacy-fixed"
@@ -247,6 +247,29 @@ def test_fresh_model_must_fit_permitted_cost_and_capabilities(served, monkeypatc
     assert auth._active_provider_request(served.capability)["invocations"] == 0
 
 
+@pytest.mark.parametrize("extra,eligible", [
+    ({}, True),
+    ({"input_cache_read": "0"}, True),
+    ({"web_search": "0.01"}, False),
+    ({"overrides": [{"min_prompt_tokens": 1000, "prompt": "0.000001"}]}, False),
+    ({"unknown_component": "0"}, False),
+])
+def test_real_selected_dispatch_uses_optional_pricing(served, monkeypatch, extra, eligible):
+    row = snapshot_tests._model()
+    row["pricing"] = {"prompt": "0", "completion": "0", **extra}
+    monkeypatch.setattr(snapshots, "read_http_discovery_document", lambda **kwargs: {"data": [row]})
+    if eligible:
+        response = _call(served)
+        assert response.text == "selected answer"
+        assert served.wire[0][1]["body"]["provider"]["max_price"]["request"] == "0"
+        assert auth._active_provider_request(served.capability)["invocations"] == 1
+    else:
+        with pytest.raises(ProviderAuthorityHeldError):
+            _call(served)
+        assert served.wire == []
+        assert auth._active_provider_request(served.capability)["invocations"] == 0
+
+
 def test_text_execution_is_not_misrepresented_as_full_agent_tools(served):
     with pytest.raises(PermissionError, match="tool execution"):
         _call(served, config=ModelConfig(engine_mcp_enabled=True))
@@ -307,7 +330,8 @@ def test_wire_price_ceiling_never_rounds_up(micros):
     caps = tuple((name, micros) for name in sorted(contract.price_components))
     bounded = contract.constrain_inference(body, caps)
     for value in bounded["provider"]["max_price"].values():
-        assert Fraction(value) <= Fraction(micros, 10**6)
+        assert isinstance(value, str)
+        assert Fraction(value) == Fraction(micros, 10**6)
     assert "provider" not in body
 
 

@@ -15,7 +15,6 @@ from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.providers.model_policy import (
     Catalog,
     Charge,
-    Interaction,
     ModelPolicy,
     ModelRef,
     order_models,
@@ -157,12 +156,7 @@ def _validate_snapshot(definition, snapshot, provider, model_id, access):
         fallbacks=(),
         cost_caps=tuple(Charge(name, amount, True) for name, amount in caps),
     )
-    interaction = Interaction(
-        needs_tools=False,
-        modalities=frozenset({"text"}),
-        charge_components=components,
-        min_context=1,
-    )
+    interaction = contract.text_interaction
     order = order_models(
         Catalog(owner_user_id, universe_id, (snapshot.models,)),
         policy,

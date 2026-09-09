@@ -32,6 +32,16 @@ _PRICE_COMPONENTS = {
     "completion": ("output_million_tokens_usd", 10**12),
     "request": ("request_usd", 10**6),
     "image": ("image_usd", 10**6),
+    "audio": ("audio_million_tokens_usd", 10**12),
+    "audio_output": ("audio_output_million_tokens_usd", 10**12),
+    "image_output": ("image_output_usd", 10**6),
+    "image_token": ("image_million_tokens_usd", 10**12),
+    "input_audio_cache": ("input_audio_cache_million_tokens_usd", 10**12),
+    "input_cache_read": ("input_cache_read_million_tokens_usd", 10**12),
+    "input_cache_write": ("input_cache_write_million_tokens_usd", 10**12),
+    "input_cache_write_1h": ("input_cache_write_1h_million_tokens_usd", 10**12),
+    "internal_reasoning": ("reasoning_million_tokens_usd", 10**12),
+    "web_search": ("web_search_usd", 10**6),
 }
 
 
@@ -70,16 +80,43 @@ def _exact_scaled(value: object, scale: int, *, string_only: bool) -> int | None
 
 
 def _pricing(raw: object, freshness: Freshness) -> Pricing:
-    if not isinstance(raw, dict) or set(raw) - _PRICE_COMPONENTS.keys():
-        # An unfamiliar charge component needs adapter support and matching
-        # dispatch enforcement. Do not silently drop it from free eligibility.
+    if not isinstance(raw, dict):
         return Pricing()
-    charges = []
-    for wire_name, (component, scale) in _PRICE_COMPONENTS.items():
-        amount = _exact_scaled(raw.get(wire_name), scale, string_only=True)
-        if amount is not None:
-            charges.append(Charge(component, amount, True))
-    return Pricing(freshness, tuple(charges))
+    amounts: dict[str, int] = {}
+    unknown: set[str] = set()
+    conditions = {"min_prompt_tokens", "utc_days", "utc_start", "utc_end"}
+
+    def collect(prices, *, override=False):
+        for name, value in prices.items():
+            if name in _PRICE_COMPONENTS:
+                component, scale = _PRICE_COMPONENTS[name]
+                amount = _exact_scaled(value, scale, string_only=True)
+                if amount is None:
+                    unknown.add(component)
+                else:
+                    amounts[component] = max(amount, amounts.get(component, 0))
+            elif (override and name in conditions) or (
+                not override and name in {"discount", "overrides"}
+            ):
+                continue
+            else:
+                unknown.add(str(name))
+
+    collect(raw)
+    for required in ("prompt", "completion"):
+        if required not in raw:
+            unknown.add(_PRICE_COMPONENTS[required][0])
+    overrides = raw.get("overrides", [])
+    if not isinstance(overrides, list) or any(not isinstance(item, dict) for item in overrides):
+        unknown.add("overrides")
+    else:
+        for override in overrides:
+            collect(override, override=True)
+    # A malformed base/override never inherits a deceptively usable lower value.
+    charges = tuple(
+        Charge(name, amount, True) for name, amount in amounts.items() if name not in unknown
+    )
+    return Pricing(freshness, charges, unknown_components=frozenset(unknown))
 
 
 def _rows(payload: Any) -> list[dict[str, Any]]:
