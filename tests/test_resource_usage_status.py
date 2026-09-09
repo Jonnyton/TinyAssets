@@ -68,7 +68,8 @@ def test_observes_existing_scoped_meters_without_mutating(meters):
     assert activity["availability"] == "observed"
     assert (activity["total"], activity["read_runs"], activity["write_runs"],
             activity["engine_mutations"]) == (3, 1, 1, 1)
-    assert activity["limits"] == {"total": 900, "write_runs": 300, "engine_mutations": 600}
+    assert activity["limits"] == {"total": 900, "write_runs": 300}
+    assert activity["engine_mutations"] == 1  # observed category, not a separate quota
     assert activity["next_charge_expires_at"] == usage._utc(NOW - 30 + 3600)
     workspace = result["workspace"]
     assert workspace["availability"] == "observed"
