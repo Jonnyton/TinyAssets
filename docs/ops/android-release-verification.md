@@ -53,7 +53,9 @@ monitoring, and rollback shape.
   2026-09-08 the verified reviewer credential was saved and all 15 launch changes
   were submitted. Play's final quick checks completed and the Console now says
   **Your changes are now in review**. The code-4 phone smoke and Google's review
-  decision remain.
+  decision remain. During review, the closed-test opt-in page reports that no testing
+  version has been published yet, and Play states that open testing is unavailable
+  until production access.
 
 Advertising-ID evidence was re-run on the Windows host on 2026-09-03. Downloading the
 baseline from GitHub Actions run `33797592515` reproduced SHA-256

@@ -571,7 +571,10 @@ Open, with what each actually waits on:
       changes were submitted that day. Play's final quick checks completed and the
       Console now says **Your changes are now in review**. Add at least 11 more real
       Google-account testers and maintain 12 continuous opt-ins for 14 days. Play
-      reported 0 opted-in testers on 2026-09-08.
+      reported 0 opted-in testers on 2026-09-08. While review is pending, the web
+      opt-in page reports that no testing version has been published yet. Open testing
+      is not a shortcut: Play explicitly says it becomes available only after
+      production access.
 - [ ] Independent cross-family review of the later voice-native slice. The original
       release review does not cover it; the prepared request and exact retry path are
       in `docs/audits/2026-09-03-android-store-release-claude-review.md`.
