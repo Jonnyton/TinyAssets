@@ -45,12 +45,14 @@ def _boolean(value: str, *, name: str) -> bool:
 
 def release_status(
     client: AppStoreConnect, values: Mapping[str, str]
-) -> tuple[str, str, bool, str]:
+) -> tuple[str, str, bool, str, str]:
     query = urllib.parse.urlencode(
         {
             "filter[platform]": "IOS",
             "filter[versionString]": values["VERSION"],
-            "fields[appStoreVersions]": "appStoreState,downloadable,versionString",
+            "fields[appStoreVersions]": (
+                "appStoreState,downloadable,releaseType,versionString"
+            ),
         }
     )
     versions = client.request(
@@ -65,6 +67,9 @@ def release_status(
     app_store_state = str(attributes.get("appStoreState", "")).strip()
     if not app_store_state:
         raise SystemExit("App Store Connect returned no appStoreState")
+    release_type = str(attributes.get("releaseType", "")).strip()
+    if not release_type:
+        raise SystemExit("App Store Connect returned no releaseType")
 
     submission = client.request(
         "GET", f"/reviewSubmissions/{values['SUBMISSION_ID']}"
@@ -77,6 +82,7 @@ def release_status(
         app_store_state,
         attributes.get("downloadable") is True,
         submission_state,
+        release_type,
     )
 
 
@@ -101,6 +107,25 @@ def request_release(client: AppStoreConnect, version_id: str) -> str:
     return request_id
 
 
+def set_automatic_release_after_approval(
+    client: AppStoreConnect, version_id: str
+) -> None:
+    response: dict[str, Any] = client.request(
+        "PATCH",
+        f"/appStoreVersions/{version_id}",
+        {
+            "data": {
+                "type": "appStoreVersions",
+                "id": version_id,
+                "attributes": {"releaseType": "AFTER_APPROVAL"},
+            }
+        },
+    )
+    saved_type = str(response.get("data", {}).get("attributes", {}).get("releaseType", ""))
+    if saved_type != "AFTER_APPROVAL":
+        raise SystemExit("App Store Connect did not retain automatic release after approval")
+
+
 def us_storefront_listing(app_id: str) -> tuple[bool, str]:
     query = urllib.parse.urlencode({"id": app_id, "country": "us"})
     with urllib.request.urlopen(
@@ -122,12 +147,29 @@ def main() -> None:
         os.environ.get("RELEASE_IF_APPROVED", "false"),
         name="RELEASE_IF_APPROVED",
     )
-    client = AppStoreConnect(_token(values))
-    version_id, app_store_state, downloadable, submission_state = release_status(
-        client, values
+    automatic_release_after_approval = _boolean(
+        os.environ.get("AUTOMATIC_RELEASE_AFTER_APPROVAL", "false"),
+        name="AUTOMATIC_RELEASE_AFTER_APPROVAL",
     )
+    client = AppStoreConnect(_token(values))
+    (
+        version_id,
+        app_store_state,
+        downloadable,
+        submission_state,
+        release_type,
+    ) = release_status(client, values)
 
     release_request_id = ""
+    automatic_release_updated = False
+    if (
+        automatic_release_after_approval
+        and release_type != "AFTER_APPROVAL"
+        and app_store_state in {"READY_FOR_REVIEW", "WAITING_FOR_REVIEW", "IN_REVIEW"}
+    ):
+        set_automatic_release_after_approval(client, version_id)
+        release_type = "AFTER_APPROVAL"
+        automatic_release_updated = True
     if app_store_state == "PENDING_DEVELOPER_RELEASE" and release_if_approved:
         release_request_id = request_release(client, version_id)
 
@@ -139,6 +181,8 @@ def main() -> None:
         f"submission_id={values['SUBMISSION_ID']}",
         f"submission_state={submission_state}",
         f"app_store_state={app_store_state}",
+        f"release_type={release_type}",
+        f"automatic_release_updated={str(automatic_release_updated).lower()}",
         f"downloadable={str(downloadable).lower()}",
         f"listed_in_us={str(listed_in_us).lower()}",
     ]
