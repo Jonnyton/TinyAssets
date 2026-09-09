@@ -48,8 +48,10 @@ monitoring, and rollback shape.
   was then saved and moved out of Needs attention, and code 4 was saved as the Alpha
   draft's sole bundle. The preview confirms version `4 (1.0.3)`, API 24+, target SDK
   36, 3.16 MB new-install size, and the intended notes. Its only validation item is
-  the non-blocking missing-deobfuscation-file warning. The preview-level Save, review
-  submission, and code-4 phone smoke remain.
+  the non-blocking missing-deobfuscation-file warning. On 2026-09-08 the preview was
+  saved into Publishing overview and Google's automated quick checks passed. The
+  Console now reports that all 15 launch changes can be sent for review. Review
+  submission and the code-4 phone smoke remain.
 
 Advertising-ID evidence was re-run on the Windows host on 2026-09-03. Downloading the
 baseline from GitHub Actions run `33797592515` reproduced SHA-256
