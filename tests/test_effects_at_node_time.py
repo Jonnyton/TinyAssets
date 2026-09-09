@@ -828,7 +828,8 @@ def test_source_code_compile_refusals_are_the_universes_to_fix():
     from tinyassets.api.runs import _classify_run_outcome_error
 
     cls, action = _classify_run_outcome_error("Node 'x' source_code exceeds 50KB")
-    assert cls == "code_node_failed" and "patch_node" in action
+    assert cls == "code_node_failed" and "op=update_node" in action
+    assert "patch_node" not in action
     cls, _ = _classify_run_outcome_error(
         "Node 'x' source_code contains disallowed pattern: 'open('"
     )

@@ -917,14 +917,19 @@ def test_stream_run_returns_events_since_cursor(runner_env):
     assert second["events"] == []
 
 
-def test_cancel_run_marks_cancel_requested(runner_env):
-    us, _ = runner_env
+def test_cancel_after_completion_reports_actual_status_without_cancel_record(runner_env):
+    from tinyassets.runs import is_cancel_requested
+
+    us, base = runner_env
     bid = _build_recipe_branch(us)
     run = _run_and_wait(us, branch_def_id=bid,
                        inputs_json=json.dumps({"raw_recipe": "a"}))
 
     result = _call(us, "cancel_run", run_id=run["run_id"])
-    assert result["status"] == "cancel_requested"
+    assert result["status"] == "completed"
+    assert result["terminal"] is True
+    assert result["cancel_requested"] is False
+    assert not is_cancel_requested(base, run["run_id"])
 
 
 def test_get_run_output_full_and_single_field(runner_env):
@@ -1102,7 +1107,8 @@ def test_cancel_run_text_channel(runner_env):
                        inputs_json=json.dumps({"raw_recipe": "a"}))
     result = _call(us, "cancel_run", run_id=run["run_id"])
     assert "text" in result
-    assert "Cancel requested" in result["text"]
+    assert "Run finished" in result["text"]
+    assert "Cancel requested" not in result["text"]
 
 
 def test_get_run_output_text_channel(runner_env):

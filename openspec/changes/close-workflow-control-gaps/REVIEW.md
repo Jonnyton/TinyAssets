@@ -1,0 +1,164 @@
+# Review and reproduction state
+
+## Current candidate: five platform gaps implemented locally
+
+### First exact-head review and Linux CI feedback
+
+Claude approved 41df881917c30ff5421bde4eaba3a8cde4356447 (terminal exit 0,
+444 seconds). Full same-session receipt:
+https://github.com/Jonnyton/TinyAssets/pull/3591#issuecomment-5596516658.
+PR #3591 remains draft. Two nonblocking P3 notes: runner persists dict output;
+the exact field selector intentionally does not trim authored names.
+
+Linux Tests 34316150848 ran checkout 25fe2bba6647f250a255d22be56e9f3876445eaf,
+verified in both checkout logs and full-tree identical to approved head. Slow/
+stress job passed. Selected non-heavy workflow/control files: **441 passes, two
+Windows-only skips**, versus 390+2 on main run 34314054165 (9e9f8397). Three heavy
+files were not run on this PR; do not count them as candidate Linux passes.
+
+The overall required job refused four NEW failures: the new concern lacked its
+index row and ISO filed date, a separate effect test still expected the broken
+patch_node advice, and an automation-stop fixture invented run_in_flight without
+ever persisting a run. No new production defect was inferred from the latter:
+automations._execute calls on_run_started only AFTER execute_branch_async returns
+its persisted ID (automations.py:1160-1175). The test now creates an actual run,
+still proves stop requests cancellation, and adds completed-state no-insert proof.
+The effect assertion now requires op=update_node and rejects patch_node; all
+original classification assertions remain. Concern indexing/date corrected.
+No runtime changes, quarantine edits or test skips are needed for this feedback.
+
+Follow-up Windows command:
+`python -m pytest -q tests/test_automations.py tests/test_effects_at_node_time.py tests/test_concerns_index_matches_the_directory.py --tb=short --junitxml=output/workflow-gaps-ci-feedback-head.xml`
+Result **193 passes**, versus 191 on pinned c2ed4534 (same command, output file
+workflow-gaps-ci-feedback-base.xml). The two added cases are the concern's date
+check and terminal-automation cancellation coverage. Re-run normal CI and obtain
+an updated exact-head receipt before readying the draft; prior receipt names only
+41df8819. No app prompt or live workflow edits have occurred.
+
+September 9, 2026 UTC, Windows/Python 3.14. Source is not pushed or deployed.
+read_graph run_output now always uses bounded formatting in the existing output
+handler: catalog pages of 64 fields, exact strings/typed small values and Unicode
+JSON continuation for larger fields. Existing legacy extension response remains
+compatible. Ordinary run reads discover fields and report pending cancellation.
+Both existing run/list and new output/cancel routes match actual run universe
+before ACL/disclosure. A public foreign universe cannot bypass the pin.
+
+run_graph cancel reuses the run_cancels table and existing executor polls, with
+no admission, new run or provider launch. Its SQL insert tests nonterminal state
+atomically; repeated terminal calls return actual status. Real queued and child
+tests exposed a NodeCancelledError constructor bug (node_id keyword became a
+TypeError), now corrected. Production-style resolve-always scope tests also
+exposed the legacy admin classification: cancel is now an ordinary write, with
+an added legacy-record owner/actor check so it cannot broaden cross-user reach.
+No admin capability is granted to the served agent. The first classification
+edit accidentally placed cancel in the costly override; live-style tests caught
+it, and the final implementation uses the existing _RUN_WRITE_ACTIONS default.
+
+Real owned-branch edit/readback follows the refusal's taught payload and rejects
+a different actor without changing storage. Real code exception/timeout tests
+cover identical and distinct graph/definition IDs plus successful parallel
+siblings. Timeout attribution needed exception.node_id normalization as well as
+event normalization; the same original exception type/object is propagated.
+
+Red evidence: initial graph controls suite had 18 expected failures; real running
+child then failed with TypeError rather than cancelled; distinct graph-ID timeout
+cases failed with the definition ID. Final graph-controls suite has 39 passes,
+including production-style permission gating, read-only refusal, foreign-public
+pin refusal, legacy foreign-owner refusal, race-at-finish, bounded Unicode/types,
+and real queue/child stopping. Node state/timeout/empty-response suite: 41 passes.
+
+Full focused candidate command:
+`python -m pytest -q tests/test_graph_run_controls.py tests/test_api_runs.py tests/test_engine_mcp_server.py tests/test_engine_mcp_write_graph_patch.py tests/test_branch_runner.py tests/test_universe_server_isolation.py tests/test_text_channel_id_redaction.py tests/test_run_branch_version.py tests/test_graph_compiler_failed_event.py tests/test_node_timeout.py tests/test_graph_compiler_empty_response.py tests/test_workspace_effector.py tests/test_cancel_reaches_the_running_child.py tests/test_queue_cancel_cooperative.py tests/test_canonical_branch_mcp.py tests/test_mcp_instruction_surfaces.py tests/test_action_scopes.py tests/test_optional_auth_mode.py --tb=short --junitxml=output/workflow-gaps-windows-head.xml`
+Result: **560 passed, 6 skipped, 1 pre-existing failure**, 63.91s. This is not a
+green suite or Linux proof. A detached, unchanged c2ed4534 checkout ran the same
+existing 15 files (the new graph-controls file did not exist) with 486 passes,
+6 skips and the exact same instruction-response fixture failure in
+output/workflow-gaps-pinned-windows-base.xml; the two auth files separately pass
+23 tests on both baseline and candidate. Baseline total: 509 passes +6 skips +1
+failure, versus candidate 560+6+1. Two legacy terminal-cancel assertions now test
+actual completed status and absence of a cancel record, not a fabricated pending
+cancel after completion. No tests or platform assertions were dropped.
+Baseline fixture finding:
+`docs/concerns/2026-09-09-instruction-response-test-page-fixture.md`.
+
+Generated plugin mirror/import probe passes. Independent exact-head review,
+Linux comparison/CI, authenticated deployment and rendered app retest remain
+required. No app prompt has been sent during this local implementation.
+
+## Historical shape and partial-candidate evidence
+
+At shape review, September 9 UTC, there were no runtime edits yet; branch codex/close-workflow-control-gaps
+starts from c2ed4534 (runtime 8f1b4760). Independent Claude shape/basic-safety
+review dispatched with eight-minute timeout to `output/workflow-gaps-shape-review.md`.
+Command: `python scripts/peer_agent.py claude --out output/workflow-gaps-shape-review.md --prompt-file output/workflow-gaps-shape-brief.md --timeout 480`.
+Claude completed exit 0 after 282 seconds: VERDICT ADAPT. Its self-contained
+final artifact confirms all five source anchors and gives four bounded
+adaptations, incorporated in design/spec before runtime edits:
+keep the existing edit-field restrictions but correct all four wrong operation
+strings; pass separate compiler ancestry to workspace only; use bounded exact
+output chunks; emit failed code events with the same graph key as starting.
+Basic-safety blocker added to scope: existing served run read drops the pin and
+can admit another public universe's run. Require uniform not-found graph-match
+checks for existing run, output and cancel, then normal ACL. Cancel guidance
+must also stop claiming cancellation is unavailable. No tests run by reviewer.
+
+Baseline Windows command:
+`python -m pytest -q tests/test_engine_mcp_write_graph_patch.py tests/test_engine_mcp_server.py tests/test_api_runs.py tests/test_workspace_effector.py tests/test_cancel_reaches_the_running_child.py tests/test_queue_cancel_cooperative.py --junitxml=output/workflow-gaps-windows-base.xml`
+Result **282 passed, 6 skipped**, 21.28 seconds. This is not Linux proof; the
+legacy queue-helper tests also do not establish run cancellation surface behavior.
+
+New two-case real-dispatch workspace regression at unchanged runtime:
+`python -m pytest -q tests/test_workspace_effector.py -k discard_uses_graph_ancestry_through_real_dispatch --junitxml=output/workflow-gaps-discard-red.xml`
+Result **1 expected failure, 1 pass**: actual creation registers a held workspace
+under a graph-instance ID, but legitimate descendant discard falsely refuses
+"not one of its graph ancestors" because the HTTP-result map is empty. A parallel
+non-ancestor correctly refuses. This reproduces the reported gap without editing
+a live workflow or pretending a workspace produced an HTTP result. The first test
+draft had an incorrect cleanup-helper import; corrected to the existing chain
+settle method before this substantive red result. Test data root is explicitly
+temporary and outside the repository.
+
+Source localization also finds ordinary output omitted by _compose_run_snapshot,
+existing legacy output/cancel implementations, wrong patch_node prose versus
+update_node vocabulary, and missing code failure event emission. Those are
+source findings pending their own executable regression and end-to-end proof.
+The primitive checker reports false-negative CLEAN for legacy cancel/output
+actions; reuse actual inspected handlers, do not invent duplicates.
+
+Failed-event baseline: `python -m pytest -q tests/test_graph_compiler_failed_event.py --junitxml=output/workflow-gaps-failed-event-base.xml`
+reported 9 passed. Two new real-child code-failure cases (same ID and distinct
+graph/definition IDs) fail because no failed node event is recorded. The initial
+test draft lacked branch authorship and correctly refused foreign code; giving
+the fixture its actual actor as author reaches the intended error and reproduces
+the missing event without bypassing production authorship. The local launcher
+override exists only in the isolated test; production sandbox remains unchanged.
+
+## Initial candidate, not ready to ship
+
+Separate trusted ancestry now reaches workspace create/push/discard; direct
+internal callers and the two prior ancestry tests use the new keyword rather
+than HTTP-result membership. The full workspace effector suite passes 144 tests
+with its two unchanged Windows skips (9.07 seconds); the new real-dispatch valid
+and sibling cases pass. Linux proof remains required.
+
+Code failure now emits the existing failed event and graph-instance wrappers
+normalize starting/terminal event identity. Both real-child regression cases pass.
+Five (not four) wrong patch_node guidance strings were found and corrected;
+unknown-op guidance supplies a payload accepted by the actual sanitizer.
+Combined failed-event/edit/API suite: 51 passes, 18 deprecation warnings before
+the final guidance relational test addition. More parallel/cancel/timeout and
+real owned-branch coverage is still required; these changes are not live.
+
+Remaining implementation: shared pinned run-scope checks, exact bounded output
+catalog/field reads, and reachable cancellation with actual queued/running/
+terminal semantics. No review is running now: shape review finished. No app
+prompt has been sent since the owner's read-only inspection.
+
+Final partial candidate Windows check, September 9 UTC:
+`python -m pytest -q tests/test_engine_mcp_write_graph_patch.py tests/test_engine_mcp_server.py tests/test_api_runs.py tests/test_workspace_effector.py tests/test_cancel_reaches_the_running_child.py tests/test_queue_cancel_cooperative.py tests/test_graph_compiler_failed_event.py --junitxml=output/workflow-gaps-partial-head.xml`
+reported **296 passed, 6 skipped**, 18 deprecation warnings, 19.33 seconds.
+This equals 282 original passes + 9 existing failed-event cases + 5 new cases.
+Ruff on the nine changed canonical/test files passes, generated six-file plugin
+mirror rebuild/import passes, strict OpenSpec and diff check pass. No Linux
+candidate proof or exact-head code approval yet; do not push this partial branch
+as ready or deploy it before output/cancel/scope work and the remaining proof.

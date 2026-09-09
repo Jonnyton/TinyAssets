@@ -246,7 +246,7 @@ def _wiki_write_back_adapter(
 # wiki write-back. No GitHub/Slack/X/desktop sink lives here by design.
 def _workspace_adapter(
     *, node_id, output_keys, run_state, base_path, run_id, dry_run,
-    allowed_state_keys=None, prior_effects=None, timeout_seconds=0.0,
+    allowed_state_keys=None, prior_effects=None, ancestors=None, timeout_seconds=0.0,
 ):
     return run_workspace_effector(
         node_id=node_id,
@@ -256,7 +256,7 @@ def _workspace_adapter(
         run_id=run_id,
         dry_run=dry_run,
         allowed_state_keys=allowed_state_keys,
-        prior_effects=prior_effects,
+        ancestors=ancestors,
         timeout_seconds=timeout_seconds,
     )
 
@@ -915,6 +915,9 @@ def _fire_node_effects(
                 prior_effects=prior_effects,
             )
             if sink == EXTERNAL_WRITE_SINK_WORKSPACE:
+                # Workspace capabilities follow graph ancestry, not HTTP-result
+                # membership: workspace ancestors produce no HTTP response.
+                adapter_kwargs["ancestors"] = ancestors
                 adapter_kwargs["timeout_seconds"] = float(
                     getattr(node, "timeout_seconds", 0.0) or 0.0
                 )

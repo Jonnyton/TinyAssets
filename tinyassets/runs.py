@@ -2848,12 +2848,15 @@ def node_output_from_run(
 def request_cancel(base_path: str | Path, run_id: str) -> bool:
     initialize_runs_db(base_path)
     with _connect(base_path) as conn:
-        conn.execute(
+        cursor = conn.execute(
             "INSERT OR IGNORE INTO run_cancels (run_id, requested_at) "
-            "VALUES (?, ?)",
-            (run_id, _now()),
+            "SELECT run_id, ? FROM runs WHERE run_id = ? "
+            "AND status NOT IN ('completed', 'failed', 'cancelled', 'interrupted')",
+            (_now(), run_id),
         )
-    return True
+        return cursor.rowcount > 0 or conn.execute(
+            "SELECT 1 FROM run_cancels WHERE run_id = ?", (run_id,),
+        ).fetchone() is not None
 
 
 def is_cancel_requested(base_path: str | Path, run_id: str) -> bool:
@@ -6135,7 +6138,8 @@ def list_recent_runs(
         elif failure_class == "code_node_failed":
             suggested_action = (
                 "Your code node raised or exited non-zero; the error carries its stderr "
-                "tail. Fix run() in that node with write_graph (op=patch_node) and run again."
+                "tail. Fix run() in that node with write_graph "
+                "(operation=patch, payload op=update_node) and run again."
             )
         elif failure_class == "sandbox_unavailable":
             suggested_action = "Enable unprivileged user namespaces or run on a bwrap-capable host."

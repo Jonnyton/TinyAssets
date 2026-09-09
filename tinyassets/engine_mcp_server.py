@@ -248,7 +248,7 @@ def _bind_founder_identity(capabilities=_READ_CAPABILITIES):
 # pin is a real confinement. It is the read sibling of connect_compute, letting
 # the served agent SEE the compute providers it can register/select.
 _PINNED_READ_TARGETS = frozenset({
-    "status", "graph", "branches", "branch", "runs", "run",
+    "status", "graph", "branches", "branch", "runs", "run", "run_output",
     "compute", "connections", "automations", "automation",
     # What you have asked your user for and what came back. Read-only and
     # carries no credential material — the answer to a credential ask goes to
@@ -282,6 +282,9 @@ def read_graph(
     branch_id: str = "",
     run_id: str = "",
     automation_id: str = "",
+    field_name: str = "",
+    output_offset: int = 0,
+    output_max_chars: int = 8192,
 ) -> str:
     """Read your OWN universe's status or graph, without changing anything.
 
@@ -290,8 +293,14 @@ def read_graph(
     Args:
         automation_id: For ``target="automation"`` only, the identifier returned
             by ``target="automations"``. Reads remain pinned to your universe.
-        run_id: For ``target="run"`` only - the id ``run_graph`` returned. Ignored
-            for every other target.
+        run_id: For ``target="run"`` or ``target="run_output"`` - the id
+            ``run_graph`` returned. Ignored for every other target.
+        field_name: For run_output, the exact output field to retrieve. Omit to
+            discover names/types/sizes (no value previews). Strings are verbatim;
+            other values are Unicode JSON. A complete first read also has value.
+        output_offset: Unicode code-point offset in a field, or field index in
+            the catalog. Continue by passing the returned next_offset.
+        output_max_chars: Maximum field chunk length, 1..32768 (default 8192).
         branch_id: For ``target="branch"`` only - the ``branch_def_id`` of the
             workflow to read (get it from ``target="branches"``). Ignored for every
             other target. You can read your own branches and public ones; a private
@@ -305,7 +314,9 @@ def read_graph(
             passing ``branch_id``; READ THIS BEFORE ``run_graph`` whenever you are
             unsure what a branch expects, instead of guessing its input contract or
             telling the user you cannot inspect it), ``runs`` (your recent runs and
-            their statuses), ``run`` (ONE run's outcome by ``run_id``: final status,
+            their statuses), ``run_output`` (exact stored output from your run,
+            selected by run_id and optional field_name), ``run`` (ONE run's outcome
+            by ``run_id``: final status,
             per-node status, ``error``, and a structured ``failure_class`` /
             ``suggested_action`` / ``actionable_by`` - ALWAYS read this after
             ``run_graph`` before telling the user what happened, because a run can
@@ -376,17 +387,20 @@ def read_graph(
             if foreign:
                 return _untrusted(origin, payload)
             return payload
-        if normalized == "run":
+        if normalized in {"run", "run_output"}:
             # get_run is scoped to the caller's own runs; the pinned graph_id keeps
             # the universe scope, run_id only selects within it.
             rid = (run_id or "").strip()
+            if not rid:
+                return json.dumps({"error": "run_id is required."})
             # A run's output is GENERATED text -- model output plus whatever the
             # branch's nodes fetched from the world. It is never the founder
             # speaking, so it is enveloped like any other non-founder content.
-            return _untrusted(
-                f"run:{rid}" if rid else "run",
-                _impl(target=normalized, graph_id=_GRAPH_ID, run_id=rid),
-            )
+            selectors = {"target": normalized, "graph_id": _GRAPH_ID, "run_id": rid}
+            if normalized == "run_output":
+                selectors.update(field_name=field_name, output_offset=output_offset,
+                                 output_max_chars=output_max_chars)
+            return _untrusted(f"run:{rid}", _impl(**selectors))
         return _impl(target=normalized, graph_id=_GRAPH_ID)
     finally:
         _current_identity.reset(token)
@@ -420,6 +434,8 @@ def run_graph(
     branch_def_id: str = "",
     run_name: str = "",
     inputs_json: str = "",
+    operation: str = "run",
+    run_id: str = "",
 ) -> str:
     """Run one of YOUR OWN universe's graph branches end-to-end.
 
@@ -444,6 +460,11 @@ def run_graph(
             target="graph"``). Required.
         run_name: Optional display label for this run.
         inputs_json: Optional JSON object of run inputs.
+        operation: "run" (default) or "cancel". Cancel requests cooperative
+            cancellation without starting or admitting another run. Do not pass
+            branch_def_id, run_name or inputs_json for cancellation. Then read
+            read_graph target=run to observe the actual terminal result.
+        run_id: Required for operation=cancel; the id returned when the run started.
     """
     import json
 
@@ -465,6 +486,27 @@ def run_graph(
                 "hardened."
             ),
         })
+    normalized_operation = (operation or "run").strip().lower()
+    if normalized_operation not in {"run", "cancel"}:
+        return json.dumps({"error": "operation must be run or cancel."})
+    if normalized_operation == "cancel":
+        if any((branch_def_id, run_name, inputs_json)):
+            return json.dumps({"error": "cancel cannot be combined with run arguments."})
+        rid = (run_id or "").strip()
+        if not rid:
+            return json.dumps({"error": "run_id is required."})
+        from tinyassets.auth.middleware import _current_identity
+        from tinyassets.universe_server import run_graph as _impl
+
+        token = _bind_founder_identity(_BRAIN_WRITE_CAPABILITIES)
+        try:
+            return _untrusted(f"run:{rid}", _impl(
+                operation="cancel", run_id=rid, graph_id=_GRAPH_ID,
+            ))
+        finally:
+            _current_identity.reset(token)
+    if run_id:
+        return json.dumps({"error": "run_id is only accepted for operation=cancel."})
     bid = (branch_def_id or "").strip()
     if not bid:
         return json.dumps({
@@ -932,7 +974,9 @@ def _sanitize_served_patch_changes(changes: object) -> str:
         else:
             raise ValueError(
                 f"patch op '{kind or '(empty)'}' is not allowed on the served edit "
-                "surface"
+                'surface. To edit node content, use {"op":"update_node",'
+                '"node_id":"<node definition id>","source_code":"<replacement code>"} '
+                'inside the payload_json array with target="branch", operation="patch".'
             )
     return json.dumps(changes, separators=(",", ":"))
 
@@ -1328,7 +1372,8 @@ def write_graph(
     packet or a far-side error >= 400 FAILS the node and the run (later nodes
     never run) unless the packet declares ``"accept_statuses": [404]`` for a
     probe. A failing code node reports ``code_node_failed`` with its stderr -
-    fix ``run()`` with ``op=patch_node`` and run again. Code runs only in the
+    fix ``run()`` with ``operation=patch`` and payload ``op=update_node``, then run again.
+    Code runs only in the
     universe that authored it: a public branch's code must be remixed
     (``fork_from``) before it runs as yours. Stdlib only (``json re base64
     difflib textwrap html csv datetime math`` ...); 512 MiB, the node's

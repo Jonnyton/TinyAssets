@@ -466,6 +466,9 @@ def _extensions_impl(
     ship_class: str = "",
     changed_paths_json: str = "",
     stable_evidence_handle: str = "",
+    bounded_output: bool = False,
+    output_offset: int = 0,
+    output_max_chars: int = 8192,
 ) -> str:
     """Pattern A2 body — see ``tinyassets.universe_server.extensions`` for the
     chatbot-facing docstring. Behavior is identical; the decorator wrapper
@@ -562,6 +565,9 @@ def _extensions_impl(
         "limit": limit,
         "field_name": field_name,
         "recursion_limit_override": recursion_limit_override,
+        "bounded_output": bounded_output,
+        "output_offset": output_offset,
+        "output_max_chars": output_max_chars,
         "filters_json": filters_json,
         "select": select,
         "aggregate_json": aggregate_json,

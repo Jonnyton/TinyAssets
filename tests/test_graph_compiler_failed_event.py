@@ -309,6 +309,67 @@ def test_build_node_status_map_flips_failed_node_terminal():
     )
 
 
+@pytest.mark.parametrize("graph_id", ["step1", "code-instance"])
+@pytest.mark.parametrize("parallel", [False, True])
+@pytest.mark.parametrize("failure_kind", ["exception", "timeout"])
+def test_code_failure_records_actual_graph_node(
+    tmp_path, monkeypatch, graph_id, parallel, failure_kind,
+):
+    """A real child failure must not leave a running node or use a definition ID."""
+    from tinyassets import node_sandbox
+
+    sandbox_type = node_sandbox.NodeSandbox
+
+    def local_test_sandbox(**kwargs):
+        # Only this isolated test replaces the Linux jail launcher. Production
+        # remains fail-closed without its sandbox. The child and error are real.
+        kwargs["launcher"] = node_sandbox.PlainSubprocessLauncher()
+        return sandbox_type(**kwargs)
+
+    monkeypatch.setattr(node_sandbox, "NodeSandbox", local_test_sandbox)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    branch = _simple_branch()
+    branch.node_defs[0].prompt_template = ""
+    branch.author = "tester"
+    branch.node_defs[0].source_code = (
+        "def run(state):\n    raise RuntimeError('intentional-code-probe')\n"
+    )
+    if failure_kind == "timeout":
+        branch.node_defs[0].source_code = "def run(state):\n    import time\n    time.sleep(2)\n"
+        branch.node_defs[0].timeout_seconds = 0.1
+    branch.entry_point = graph_id
+    branch.graph_nodes = [GraphNodeRef(id=graph_id, node_def_id="step1")]
+    branch.edges = [
+        EdgeDefinition(from_node="START", to_node=graph_id),
+        EdgeDefinition(from_node=graph_id, to_node="END"),
+    ]
+    if parallel:
+        branch.node_defs.append(NodeDefinition(
+            node_id="sibling-definition", display_name="Sibling", output_keys=["sibling_out"],
+            source_code="def run(state):\n    return {'sibling_out': 'done'}\n",
+        ))
+        branch.graph_nodes.append(GraphNodeRef(id="sibling", node_def_id="sibling-definition"))
+        branch.edges.extend([
+            EdgeDefinition(from_node="START", to_node="sibling"),
+            EdgeDefinition(from_node="sibling", to_node="END"),
+        ])
+        branch.state_schema.append({"name": "sibling_out", "type": "str"})
+    base = tmp_path / "runs"
+    base.mkdir()
+    outcome = execute_branch(base, branch=branch, inputs={"x": "test"}, actor="tester")
+    assert outcome.status == RUN_STATUS_FAILED
+    assert ("timeout" if failure_kind == "timeout" else "intentional-code-probe") in outcome.error
+    events = list_events(base, outcome.run_id, since_step=-1)
+    failed = [event for event in events if event["status"] == NODE_STATUS_FAILED]
+    assert [event["node_id"] for event in failed] == [graph_id]
+    status_map = build_node_status_map(events, [graph_id])
+    assert {row["node_id"]: row["status"] for row in status_map}[graph_id] == NODE_STATUS_FAILED
+    if parallel:
+        sibling = [event for event in events if event["node_id"] == "sibling"]
+        assert any(event["status"] == "ran" for event in sibling), sibling
+        assert not any(event["status"] == NODE_STATUS_FAILED for event in sibling)
+
+
 def test_build_node_status_map_failed_priority_beats_running():
     """A 'failed' status arriving after 'running' must win - priority of
     failed and ran is equal (both 2), each beats running (priority 1)."""

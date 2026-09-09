@@ -239,6 +239,10 @@ class NodeCancelledError(CompilerError):
     imports `compile_branch` from here.
     """
 
+    def __init__(self, message: str, *, node_id: str = "") -> None:
+        super().__init__(message)
+        self.node_id = node_id
+
 
 class EmptyResponseError(CompilerError):
     """Raised when an LLM provider returns an empty response.
@@ -2199,7 +2203,9 @@ def _build_source_code_node(
             message = f"code node '{node.node_id}' failed: {error}"
             if stderr_tail.strip():
                 message += f" | stderr: {stderr_tail.strip()[-600:]}"
-            raise CodeNodeError(message, node_id=node.node_id, stderr_tail=stderr_tail)
+            failure = CodeNodeError(message, node_id=node.node_id, stderr_tail=stderr_tail)
+            _emit_failed_event(event_sink, node.node_id, failure)
+            raise failure
         output = dict(result.output_state or {})
         # The return passes through exactly as the in-process node's did:
         # the single-merge-writer guard wrapping this function sees every key
@@ -3289,6 +3295,18 @@ def _build_node(
     effect wrapper - the guard MUST see the delta before any effect fires
     (Codex round 2, P0). ``ancestors`` is the set of graph node ids this node
     may reference; ``graph_node_id`` keys its effects on the run's chain."""
+    if event_sink is not None and graph_node_id and graph_node_id != node.node_id:
+        definition_event_sink = event_sink
+
+        def graph_event_sink(node_id: str, **detail: Any) -> None:
+            # One definition can back several graph nodes. Starting and terminal
+            # events must address the instance the graph actually scheduled.
+            definition_event_sink(
+                node_id=graph_node_id if node_id == node.node_id else node_id,
+                **detail,
+            )
+
+        event_sink = graph_event_sink
     inner = _build_node_inner(
         node,
         provider_call=provider_call,
@@ -3316,10 +3334,25 @@ def _build_node(
             declared_outputs=_declared_node_outputs(node),
             merge_fields=merge_fields,
         )
-    return _wrap_with_effects(
+    wrapped = _wrap_with_effects(
         inner, node, effect_chain, state_schema, event_sink, ancestors=ancestors,
         chain_key=graph_node_id or node.node_id,
     )
+    if not graph_node_id or graph_node_id == node.node_id:
+        return wrapped
+
+    def graph_instance_node(state: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return wrapped(state)
+        except CompilerError as exc:
+            # Timeout/effect/empty-result terminal events are recorded by the
+            # runner from the exception, not by the inner event sink. Keep their
+            # identity aligned with the graph-instance starting event as well.
+            if getattr(exc, "node_id", None) == node.node_id:
+                exc.node_id = graph_node_id
+            raise
+
+    return graph_instance_node
 
 
 def _build_node_inner(

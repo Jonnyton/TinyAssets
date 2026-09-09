@@ -494,12 +494,15 @@ def read_graph(
     author: str = "",
     run_status: str = "",
     limit: int = 30,
+    field_name: str = "",
+    output_offset: int = 0,
+    output_max_chars: int = 8192,
 ) -> str:
     """Read TinyAssets graph state without changing it.
 
     Args:
         target: What to read: status, graphs, graph, branches (your own workflows
-            by name + branch_def_id), goals, goal, runs, run,
+            by name + branch_def_id), goals, goal, runs, run, run_output,
             branch, automations, automation, connections, compute, agents, agent, agent_bindings, or
             agent_binding.
         graph_id: Optional graph/universe identifier.
@@ -521,6 +524,10 @@ def read_graph(
         author: Optional goal author filter.
         run_status: Optional run status filter.
         limit: Maximum number of records to return.
+        field_name: Output field for target=run_output. Omit for a metadata catalog.
+        output_offset: Unicode code-point offset within a selected output field,
+            or field index when reading the catalog. Continue using next_offset.
+        output_max_chars: Selected-field chunk length (1..32768, default 8192).
     """
     normalized = (target or "status").strip().lower()
     if normalized == "status":
@@ -546,12 +553,20 @@ def read_graph(
     if normalized == "goal":
         return _goals_impl(action="get", goal_id=goal_id)
     if normalized == "runs":
-        return _extensions_impl(action="list_runs", status=run_status, limit=limit)
+        return _extensions_impl(action="list_runs", status=run_status, limit=limit,
+                                universe_id=graph_id)
     if normalized == "run":
         # PR-180 SEE half: a founder reads their own run's terminal result +
         # structured failure reason (status, output/external_write_results,
         # error, failure_class/suggested_action/actionable_by/error_detail).
-        return _extensions_impl(action="get_run", run_id=(run_id or graph_id))
+        return _extensions_impl(action="get_run", run_id=(run_id or graph_id),
+                                universe_id=graph_id if run_id else "")
+    if normalized == "run_output":
+        return _extensions_impl(
+            action="get_run_output", run_id=run_id, universe_id=graph_id,
+            field_name=field_name, bounded_output=True, output_offset=output_offset,
+            output_max_chars=output_max_chars,
+        )
     if normalized == "branch":
         # SEE-for-branches: a founder reads their branch's full graph + node
         # configs (timeout_seconds, model_hint, prompt_template, edges, state
@@ -1466,6 +1481,8 @@ def run_graph(
     source_op: str = "",
     token: str = "",
     source_id: str = "",
+    operation: str = "run",
+    run_id: str = "",
 ) -> str:
     """Run a TinyAssets graph branch or the caller's Goal canonical, or manage the
     inbound triggers that let an external channel run a branch.
@@ -1488,7 +1505,22 @@ def run_graph(
             ``revoke`` (needs source_id), ``list``.
         token: The webhook token to revoke (with ``webhook_op="revoke"``).
         source_id: The source to revoke (with ``source_op="revoke"``).
+        operation: "run" (default), or "cancel" to request cancellation of an
+            existing run without starting or admitting another. Do not combine
+            cancel with branch/goal/trigger arguments. Cancellation is cooperative;
+            read_graph target=run shows the actual current/terminal status.
+        run_id: Required for operation=cancel; not accepted for operation=run.
     """
+    normalized_operation = (operation or "run").strip().lower()
+    if normalized_operation not in {"run", "cancel"}:
+        return json.dumps({"error": "operation must be run or cancel."})
+    if normalized_operation == "cancel":
+        if any((branch_def_id, inputs_json, run_name, recursion_limit_override,
+                goal_id, webhook_op, source_op, token, source_id)):
+            return json.dumps({"error": "cancel cannot be combined with run or trigger arguments."})
+        return _extensions_impl(action="cancel_run", run_id=run_id, universe_id=graph_id)
+    if run_id:
+        return json.dumps({"error": "run_id is only accepted for operation=cancel."})
     if webhook_op:
         action = _WEBHOOK_OP_ACTIONS.get(webhook_op)
         if action is None:
