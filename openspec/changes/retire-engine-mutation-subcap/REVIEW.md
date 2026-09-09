@@ -73,4 +73,27 @@ zero skips** (73 automations, 26 admissions, 82 engine surface, 11 hardening,
 only the deliberately replaced engine-share-reservation scenario may disappear.
 The new candidate must add 13 policy cases and the scheduler recovery case.
 
-Linux candidate, independent exact-head review and live gates are still pending.
+## Exact-head and Linux verdicts
+
+Claude completed its independent code review in 228 seconds with exit 0 and
+APPROVE for d22c11054d08928246448e4b4a6d9e5720679a47 against c9fe06fb.
+Full review: `output/engine-subcap-code-review.md`; durable PR receipt:
+https://github.com/Jonnyton/TinyAssets/pull/3577#issuecomment-5595878957.
+No blocking evidence findings. The reviewer independently ran 13 new tests,
+Ruff, strict spec validation and four-file mirror parity.
+
+Linux `required-tests` and `slow-tests` run 34311535677 succeeded September 9 UTC.
+Actual checkout 55920e0d8874e4800edc11d8a76848cf5f7c879a is full-tree identical
+to approved d22c1105 (`git diff --exit-code`). JUnit comparison using
+`python output/compare_engine_subcap_junit.py output/storage-observation-linux-bf39c447/junit.xml output/engine-subcap-linux-d22c1105/junit.xml`
+proves 238 focused passes, no skips or regressions: 13 added policy cases and
+one scheduler recovery case; only the deliberately replaced engine-share
+reservation scenario disappears. Linux receipt:
+https://github.com/Jonnyton/TinyAssets/pull/3577#issuecomment-5596013939.
+
+Normal guarded merge #3577 landed 8f1b47609330f06924246a692740448836672a48
+at 2026-09-09T04:53:16Z. Image build 34312713141 started for that revision.
+Deployment 34312901542 subsequently succeeded at 04:57:38Z, with authenticated
+canary and protected containment proof for 8f1b47609330. Full dated commands,
+scope and rollback: `docs/reviews/2026-09-08-engine-edit-subcap-proof.md`.
+Owner-rendered acceptance remains a separate open gate.

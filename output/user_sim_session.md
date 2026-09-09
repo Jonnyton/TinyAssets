@@ -855,3 +855,16 @@ current; workspace/tooling limits stopped the investigation. No prompt sent.
 TAB HYGIENE: one controlled mission tab; unrelated owner/other-task tabs left
 untouched. Commander requested no duplicate retest while the platform fix is in
 review/CI. This is existing-owner webapp continuation, not first-contact proof.
+
+## [2026-09-08 21:51 PDT] USER NOTE read messages since 21:38
+
+Read authenticated rendered conversation at https://tinyassets.io/mcp/app,
+Chrome tab 1346517638, via cua.getTab. Two Universe messages at 21:39:
+all nine checklist checks passed, including repo write/read/delete, fresh webhook
+200/204, and 12 workspace starts. Agent reports five gaps: patch_node refused,
+discard falsely rejects ancestry, ordinary result values absent, failed node
+still marked running, and no exposed cancellation tool. Second message confirms
+already-completed webhook cleanup rather than another run. Report saved in
+docs/concerns/2026-09-08-app-read-write-sweep-gaps.md; no independent reproduction
+or deployed SHA claimed. No prompt, workflow operation, or approval sent.
+Existing-owner continuation; unrelated tabs untouched.
