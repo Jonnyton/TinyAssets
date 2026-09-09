@@ -11,17 +11,20 @@ without being told where to look.
 
 ## The gap
 
-`list_requests` prepends the synthesized connect ask when
-`not _serving_llm_bound(...)` (`api/pending_requests.py:765`). That helper
-resolves the serving **binding row**
-(`api/pending_requests.py:699-709`) and returns True whenever one exists.
+Originally, `list_requests` prepended the synthesized connect ask when
+`not _serving_llm_bound(...)` (`tinyassets/api/pending_requests.py`). That helper
+resolved only the serving **binding row** and returned True whenever one existed.
+September 9 local correction replaces that test with the canonical
+`resolve_current_serving_provider_authority` check. It verifies local custody,
+assignment and connection grants, but is not yet deployed proof and cannot by
+itself detect remote expiration of an otherwise unchanged credential.
 
 So there are two different unserved states and only one of them asks:
 
 | state | binding row | ask appears |
 |---|---|---|
 | never connected | absent | **yes** |
-| connected, credential expired or revoked | present | **no** |
+| connected, credential expired or revoked | present | **no** on the original implementation |
 
 In the second, the owner is bound, unserved, and un-asked. Every turn fails, the
 rail shows nothing to do, and the only route out is knowing to go and reconnect
@@ -41,10 +44,12 @@ Broaden the condition from "is a binding row present" to "is this universe
 actually servable": a binding whose credential is unusable should raise the ask
 the same way no binding does.
 
-`credential_vault._usable_subscription_record(universe, service)`
-(reached from `snapshot_llm_subscription_credential`,
-`credential_vault.py:1601-1612`) is the per-universe signal — the right one,
-because it reads the universe's OWN vault rather than host auth.
+The existing canonical `resolve_current_serving_provider_authority` in
+`tinyassets/provider_serving_binding.py` is the local authority signal. It reuses
+`_current_serving_authority`, which checks the owner's subscription custody or
+open-connection grant. It is broader than inspecting only subscription material
+and does not assume a provider family. `_usable_subscription_record` alone does
+not establish that a credential is still valid at the remote provider.
 
 **Do not use `api/status.py::_provider_auth_snapshot` for this.** It reads the
 shared-volume host auth paths, which is why it reported codex `"ok"` on
@@ -55,3 +60,15 @@ new place.
 Cost: `list_requests` is a hot read on every rail poll, so the check needs to be
 cheap or cached; a filesystem stat of the vault record is probably acceptable,
 a live provider probe is not.
+
+## September 9 local evidence and remaining scope
+
+`tests/test_pending_requests_power.py` reproduced stale binding behavior for
+real SQLite grant revocation and credential-reference rotation, then passed
+with canonical authority validation. It also exercises the actual request rail
+before and after test subscription custody removal and verifies repeated polling
+does not duplicate the synthesized request. No production credentials or user
+workflows were changed. Remote auth failure feedback, upstream quota/health,
+the owner's two-request OpenRouter/generic-LLM flow, deployment and rendered
+recovery remain unproven. Keep this concern open until recovery is proven across
+the reported failure, not merely for locally revoked authority.

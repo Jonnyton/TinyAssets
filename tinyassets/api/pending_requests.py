@@ -989,16 +989,27 @@ _LLM_REQUEST_ID = "sys_connect_llm"
 
 
 def _serving_llm_bound(base_path, universe_id: str, actor: str) -> bool:
-    """Whether anything is currently serving this universe's turns."""
-    from tinyassets.provider_serving_binding import resolve_serving_agent_binding
+    """Whether this owner's serving connection still has current authority.
+
+    A binding row survives grant revocation and credential rotation. Use the
+    same local custody checks as execution, never host auth or an upstream probe
+    on every rail poll. This does not claim remote quota or provider health.
+    """
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.provider_serving_binding import (
+        resolve_current_serving_provider_authority,
+    )
 
     try:
-        selected = resolve_serving_agent_binding(
-            base_path, universe_id=universe_id, owner_user_id=actor
+        selected = resolve_current_serving_provider_authority(
+            base_path,
+            universe_dir=_universe_dir(universe_id),
+            universe_id=universe_id,
+            owner_user_id=actor,
         )
-    except Exception:  # noqa: BLE001 - "cannot resolve one" IS "none is bound"
+    except Exception:  # noqa: BLE001 - unavailable authority must not hide recovery
         return False
-    return bool(selected and selected.get("agent_binding_id"))
+    return bool(selected and selected.provider)
 
 
 def _connect_llm_request() -> dict[str, object]:
@@ -1014,9 +1025,8 @@ def _connect_llm_request() -> dict[str, object]:
         "kind": "LLM",
         "title": "Connect the model your universe runs on",
         "body": (
-            "Your universe thinks on your own Claude or OpenAI subscription - it "
-            "never runs on anyone else's account. Connect one and it starts "
-            "speaking on the very next turn."
+            "Connect a model you control: a subscription, an API, or your own "
+            "model endpoint. Your universe uses only connections you authorize."
         ),
         "fields": [],
         "action": {"type": "connect_llm"},
@@ -1051,7 +1061,7 @@ def list_requests(*, universe_id: str = "", limit: int = 10) -> dict[str, Any]:
     if denied is not None:
         return denied
     rows = list_pending(udir, limit=limit)
-    # Prepended, not stored: it is derived from whether a model is bound, so it
+    # Prepended, not stored: derived from current serving authority, so it
     # cannot go stale, cannot be dismissed into a state where the universe is
     # mute with no way back, and needs no migration.
     if not _serving_llm_bound(_base_path(), uid, permissions.current_actor_id().strip()):

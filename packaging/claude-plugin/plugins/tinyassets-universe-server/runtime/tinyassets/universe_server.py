@@ -1913,12 +1913,10 @@ _TURN_ENDED_FAILURE_CLASSES = {
         "could not run. Nothing is wrong with your setup; send again in a "
         "minute."
     ),
-    # Deliberately does NOT promise a waiting request. The rail synthesises the
-    # connect ask only when NO binding exists; a binding whose CREDENTIAL died
-    # leaves the owner bound, unserved and un-asked. Saying "there is a request
-    # waiting" would be the same confident-wrong shape this whole change is
-    # fixing. Filed: the ask should also appear when the bound credential is
-    # unusable.
+    # Do not promise a waiting request: the rail now checks local serving
+    # authority, but remote credential expiration may leave local custody
+    # unchanged. Recovery still needs that remote failure signal; local custody
+    # validation alone cannot establish whether the upstream accepts a token.
     "auth_invalid": (
         "Your universe's connection to its model is no longer valid -- the "
         "credential has expired or been revoked. Reconnecting the provider "
