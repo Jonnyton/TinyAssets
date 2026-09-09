@@ -94,7 +94,7 @@ def test_review_detail_404_is_the_only_allowed_not_found(monkeypatch):
     client = module.AppStoreConnect("token")
 
     assert client.request("GET", "/review", not_found_ok=True) is None
-    with pytest.raises(SystemExit, match="HTTP 404"):
+    with pytest.raises(SystemExit, match=r"HTTP 404 for GET /review"):
         client.request("GET", "/review")
 
 
