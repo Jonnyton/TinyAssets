@@ -50,6 +50,14 @@ Codex credential fixture. Ruff and git diff --check pass. The403-file plugin
 runtime build/import probe passes. Supplemental Ubuntu Python3.11.15 runs the
 same16 files through the external-temp receiver-linux-proof.sh harness:
 454passed/1skipped in80.74s, only the optional real-Codex fixture skipped and one
-existing LangChain deprecation warning. Independent review is pending; the
-required Docker oracle remains unavailable due to the
-separately recorded host socket/startup failure. No push/landing claim.
+existing LangChain deprecation warning. Independent Claude review83041 approved
+exact9e19a7b8 after311s, reproducing51 selected-model cases. Full result and
+optional-nit disposition are in selected-model-async-review.md.
+
+The required Docker oracle is now running through an already-installed native
+Ubuntu engine (29.1.3 linux), not the failed Windows Desktop engine. Initial
+oracle invocation could not follow the Windows absolute worktree gitdir; setting
+process-local GIT_DIR to the existing admin directory's /mnt/c equivalent and
+GIT_WORK_TREE to the feature checkout resolved that without changing git files.
+It printed exact9e19a7b8 then began building the normal oracle image. Result
+pending; no push/landing claim. Neither Docker Desktop data nor settings changed.
