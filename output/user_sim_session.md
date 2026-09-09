@@ -884,3 +884,25 @@ owner conversation and composer, still ending with Sep 8 21:39 five-gap report.
 Existing-owner webapp continuation per explicit owner direction, not Claude
 incognito, first-contact or cross-client compatibility proof. PR #3591 merged;
 image build 34318730934 is running. No prompt, approval or workflow edit sent.
+
+## [2026-09-09 06:27 UTC] USER ACTION deployed five-gap retest
+
+TAB HYGIENE: selected-browser inventory contains one mission tab1346517638.
+Reloaded the same saved conversation after deploy; it also loaded owner messages
+at23:09/23:15 PDT about marketing. Earlier unrefreshed view was stale, not proof
+that no newer messages existed. No active reply or draft was interrupted.
+Asked: Retest your workflow checklist
+Got: exact rendered user message at Sep8 23:27 PDT; app is thinking. Deploy
+34318999188 passed authenticated handle canary and protected SHA containment for
+0082695793278fabf520c9bf2a8fa2694c4a2823. No operator workflow edit or new grant.
+
+## [2026-09-09 06:30 UTC] USER ACTION exact temporary webhook approval
+
+App built its own disposable receiver and requested only POST to that exact
+receiver plus DELETE of its exact token, using existing webhook:test vault key.
+Inspected the rendered details and approved through the normal UI with the
+"Don't ask me this again" box unchecked. No wildcard destination or new key.
+Rendered user message: Approved: "Finish my fresh webhook checklist retest";
+app remains thinking with one waiting continuation. Two AX-index clicks found
+detached nodes as the card refreshed; screenshot-grounded clicks opened and
+accepted it once. No operator workflow construction or repair.

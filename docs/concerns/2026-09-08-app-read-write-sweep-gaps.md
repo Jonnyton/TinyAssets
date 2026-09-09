@@ -30,6 +30,13 @@ webhook test was already complete; it is not evidence of another fresh run.
 
 ## Follow-up boundary
 
+September 9, 2026 06:27 UTC: platform fixes deployed as
+0082695793278fabf520c9bf2a8fa2694c4a2823, authenticated canary/SHA passed.
+Exact retest prompt sent through the same app conversation; reply pending.
+Technical evidence: docs/reviews/2026-09-09-workflow-control-gaps-proof.md.
+Keep this concern open until the agent confirms all five gaps closed; source,
+tests and deployment do not replace that acceptance or organic-use evidence.
+
 The owner explicitly added closing all five gaps to the active limits goal on
 September 8 PDT and made the webapp agent's message confirming closure the
 completion criterion. Durable combined scope:

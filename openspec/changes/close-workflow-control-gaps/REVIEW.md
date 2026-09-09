@@ -20,9 +20,12 @@ failures identical to existing baseline cases. Passing required gate is not a
 claim that every repository test passes; heavy files remain untested on this PR.
 Receipt: https://github.com/Jonnyton/TinyAssets/pull/3591#issuecomment-5596933164.
 
-Image build 34318730934 is running. Deployment, authenticated canary/SHA and the
-rendered app confirmation are still pending. The following sections preserve
-dated implementation history, not current release status.
+Image build34318730934 passed and deploy34318999188 succeeded at06:26 UTC.
+Authenticated public handle canary passed; protected SHA check at06:26:34Z
+reported SHIPPED for0082695793278fabf520c9bf2a8fa2694c4a2823. Exact ordinary app
+prompt sent and read back at23:27 PDT: Retest your workflow checklist. The app
+is thinking; rendered all-five closure is still pending. The following sections
+preserve dated implementation history, not current release status.
 
 ## Historical candidate: five platform gaps implemented locally
 
