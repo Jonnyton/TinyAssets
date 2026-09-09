@@ -551,17 +551,19 @@ Open, with what each actually waits on:
 - [x] Dedicated `play-review@tinyassets.io` WorkOS password reviewer; two clean isolated
       sign-ins; Sign in details saved and Actioned; no founder data or provider attached
 - [x] Target audience saved as **18 and over**; Data safety corrected and Actioned
-- [ ] Foreground-service declaration (§8a): the privacy-redacted real-phone video is
+- [x] Foreground-service declaration (§8a): the privacy-redacted real-phone video is
       published and frame-reviewed (27.11 seconds, 1080×2340, SHA-256
       `7b49b48d21ca3a1f57acdce23ed8c5ac0f58b63aab57ea3d4cb5696ed61391f2`) at
       `https://github.com/Jonnyton/TinyAssets/releases/download/android-latest/tinyassets-fgs-play-evidence-final.mp4`.
-      The live form is prepared with **Data sync → Network processing → Other** and
-      that link; its final Save still awaits action-time confirmation.
-- [ ] Closed testing: code 4 is in Play's artifact library and prepared in the Alpha
-      edit form alongside code 3. Remove code 3, save code 4 as the sole draft bundle,
-      finish the foreground-service declaration, submit the release, add at least 11
-      more real Google-account testers, and maintain 12 continuous opt-ins for 14 days.
-      Play reported 0 opted-in testers on 2026-09-08.
+      Saved 2026-09-08 as **Data sync → Network processing → Other** with that link;
+      App content now reports no declarations needing attention. It is not yet sent
+      for review.
+- [ ] Closed testing: code 3 was removed and signed code 4 is saved as the Alpha
+      draft's sole bundle. The preview confirms `4 (1.0.3)`, API 24+, target SDK 36,
+      3.16 MB, and the intended notes; its only validation item is the non-blocking
+      missing-deobfuscation-file warning. Save the preview, submit the release, add at
+      least 11 more real Google-account testers, and maintain 12 continuous opt-ins for
+      14 days. Play reported 0 opted-in testers on 2026-09-08.
 - [ ] Independent cross-family review of the later voice-native slice. The original
       release review does not cover it; the prepared request and exact retry path are
       in `docs/audits/2026-09-03-android-store-release-claude-review.md`.

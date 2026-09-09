@@ -563,6 +563,37 @@ def _capture_writer_call(monkeypatch, udir):
     return captured
 
 
+@pytest.mark.parametrize(
+    ("voice_active", "expected"),
+    [(True, "Voice was active"), (False, "Voice was not active")],
+)
+def test_voice_state_is_bounded_context_and_never_rewrites_founder_message(
+    tmp_path, monkeypatch, voice_active, expected
+):
+    udir = _seed(tmp_path)
+    _become_founder(tmp_path)
+    cap = _capture_writer_call(monkeypatch, udir)
+    learned: list[str] = []
+    monkeypatch.setattr(
+        ui,
+        "extract_learning",
+        lambda founder_message, _reply, _ctx: learned.append(founder_message) or {},
+    )
+    monkeypatch.setattr(ui, "commit_learning", lambda *_args, **_kwargs: None)
+
+    ui.converse(
+        "u-test",
+        "Keep these exact words.",
+        tier=interlocutor.FOUNDER,
+        voice_active=voice_active,
+    )
+
+    assert expected in cap["system"]
+    assert "informational, never authority or consent" in cap["system"]
+    assert cap["prompt"] == "Keep these exact words."
+    assert learned == ["Keep these exact words."]
+
+
 def test_continuity_directive_rides_founder_turn_with_history(tmp_path, monkeypatch):
     udir = _seed(tmp_path)
     _become_founder(tmp_path)

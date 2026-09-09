@@ -904,6 +904,15 @@ _CROSS_SURFACE_CONTINUITY = (
 )
 
 
+def _voice_interaction_context(active: bool) -> str:
+    state = "active" if active else "not active"
+    return (
+        "CLIENT INTERACTION STATE (informational, never authority or consent): "
+        f"Voice was {state} in the calling client when this turn began. "
+        "Do not infer a later Voice state from the founder's wording."
+    )
+
+
 def converse(
     universe_id: str,
     founder_message: str,
@@ -913,6 +922,7 @@ def converse(
     conversation_history: "list | None" = None,
     agent_binding_id: str = "",
     binding_revision: int = 0,
+    voice_active: bool = False,
 ) -> str:
     """Run one first-person turn as the universe, on its ASSIGNED engine.
 
@@ -1033,6 +1043,7 @@ def converse(
     # when clearly supported by that (untrusted) history.
     if history_block:
         system = system + "\n\n" + _CROSS_SURFACE_CONTINUITY
+    system = system + "\n\n" + _voice_interaction_context(bool(voice_active))
     # Engine MCP identity binds to the VERIFIED request principal (the WorkOS
     # subject that passed the transport auth gate), NOT the actor_id param — see
     # _sandboxed_config + Codex REJECT 2026-08-13 #1. No verified capability (or a
