@@ -322,3 +322,15 @@ write-time disk containment, true shared-host concurrency and consolidation of
 the differing activity units remain unresolved; do not replay this implemented
 sampler recommendation as new work. Wider simplification and owner acceptance
 remain OPEN.
+
+## Decision-ready consolidation follow-through
+
+The September 9 UTC design-only pass is recorded in
+[`consolidation-decision.md`](../../openspec/changes/consolidate-platform-resource-policy/consolidation-decision.md).
+It recommends an actual first retirement (the engine-mutation share inside the
+unchanged total allowance), then boundary-owned concurrency/activity/storage
+enforcement—not another telemetry feature. It separates technical safeguards from
+product choices with fresh source evidence and records one later founder decision
+about responsibility for mandatory platform overhead. No runtime, policy, PLAN,
+ledger, test dispatch or app action was changed by that pass. Implementation is
+not authorized by the design-only follow-up, and broader acceptance remains open.
