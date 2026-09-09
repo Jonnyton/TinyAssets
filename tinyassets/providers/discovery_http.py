@@ -1,0 +1,136 @@
+"""Read discovery JSON through existing owner-scoped, credential-blind HTTP.
+
+Internal transport only: no profile publication, inference, ranking or cache.
+The caller supplies server-derived owner/universe context and a configured URL;
+remote catalogue links are never followed. A successful read is evidence, not
+inference authority or proof of account-filtered catalogue semantics.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+from tinyassets.exceptions import (
+    ProviderOverloadedError,
+    ProviderProtocolError,
+    ProviderRateLimitedError,
+    ProviderUnavailableError,
+)
+from tinyassets.providers.definition import ProviderDefinition
+from tinyassets.storage.outbound_connections import (
+    _SSRF_MAX_BODY_BYTES,
+    ConnectionLedger,
+    SsrfValidationError,
+    _canonical_request_url,
+    _enforce_endpoint_allowlist,
+    _parse_canonical_https_url,
+    _verb_within_scopes,
+)
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _reject_constant(value: str) -> None:
+    raise ValueError("non-finite JSON constant")
+
+
+def read_http_discovery_document(
+    *,
+    db_path: Path,
+    definition: ProviderDefinition,
+    owner_user_id: str,
+    universe_id: str,
+    url: str,
+) -> dict[str, Any]:
+    """Make one granted GET; never retry, redirect or change connection state.
+
+    `definition` comes from the verified provider store; registration is not
+    authority. The current grant/resource and supplied authenticated context
+    must agree, both here and in the exact proxy resolver. The broker rechecks
+    live authority, scope, endpoint restrictions and SSRF at dispatch. No secret
+    resolver or header override is exposed to the caller.
+    """
+    if (
+        not owner_user_id
+        or not universe_id
+        or definition.owner_user_id != owner_user_id
+        or definition.universe_id != universe_id
+        or definition.access_method != "api_key_http"
+    ):
+        raise ProviderUnavailableError("discovery connection context does not match")
+    ledger = ConnectionLedger(Path(db_path), verify_authenticated_principal=lambda: owner_user_id)
+    grant = ledger.get_grant(definition.ref)
+    if (
+        grant is None
+        or grant.revoked_at is not None
+        or grant.owner_user_id != owner_user_id
+        or grant.universe_id != universe_id
+    ):
+        raise ProviderUnavailableError("discovery grant is unavailable for this context")
+    view = ledger.get_connection_view(grant.connection_id)
+    if (
+        view is None
+        or view.revoked_at is not None
+        or view.owner_user_id != owner_user_id
+        or view.connection_type != "http"
+        or not _verb_within_scopes("GET", view.scopes, view.access_mode)
+    ):
+        raise ProviderUnavailableError("discovery connection does not permit HTTP reads")
+    try:
+        if not isinstance(url, str) or len(url) > 2048:
+            raise ValueError("invalid URL")
+        canonical = _parse_canonical_https_url(url, allowed_ports=frozenset({443}))
+        _enforce_endpoint_allowlist(canonical, "GET", view.allowed_endpoints, view.access_mode)
+    except (SsrfValidationError, ValueError):
+        raise ProviderUnavailableError("discovery URL is not permitted") from None
+
+    # A bounded, blocking broker operation. Async ingress must offload this call;
+    # cancellation must not start a replacement until this operation settles.
+    try:
+        proxy = ledger.resolve_exact_scoped_proxy(
+            universe_id=universe_id,
+            grant_id=grant.grant_id,
+            connection_id=grant.connection_id,
+        )
+        try:
+            result = proxy.request("GET", {"url": _canonical_request_url(canonical)})
+        finally:
+            proxy.close()
+    except Exception:
+        # Never return upstream/broker exception strings, URLs, headers or bodies.
+        raise ProviderUnavailableError("discovery transport failed") from None
+
+    if not isinstance(result, dict) or type(result.get("status")) is not int:
+        raise ProviderUnavailableError("discovery proxy returned no valid HTTP status")
+    status = result["status"]
+    if status == 429:
+        raise ProviderRateLimitedError("discovery provider rate limited (429)")
+    if 500 <= status < 600:
+        raise ProviderOverloadedError(f"discovery provider error (HTTP {status})")
+    # 206 is partial evidence; redirects are not a second discovery destination.
+    if status != 200:
+        raise ProviderProtocolError(f"discovery provider returned HTTP {status}")
+    body = result.get("body")
+    try:
+        if (
+            not isinstance(body, str)
+            or not body
+            or len(body) > _SSRF_MAX_BODY_BYTES
+            or len(body.encode("utf-8")) > _SSRF_MAX_BODY_BYTES
+        ):
+            raise ValueError("invalid response size")
+        parsed = json.loads(body, object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+        if not isinstance(parsed, dict):
+            raise ValueError("invalid response shape")
+    except (ValueError, RecursionError):
+        raise ProviderProtocolError("discovery response is not a bounded JSON object") from None
+    return parsed

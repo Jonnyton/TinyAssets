@@ -4,9 +4,14 @@ September 9, 2026. Exact proposed adaptation of the candidate-manifest review,
 for pre-build review. No new top-level MCP action, custody mechanism or provider
 SDK. The request launch allowance, additive manifest storage and multi-member
 publication are now implemented locally with focused Windows/Ubuntu evidence;
-publication implementation review is next. There is no app/MCP activation and
+publication implementation review returned ADAPT with one ordering/equality bug,
+now regression-tested and corrected. There is no app/MCP activation and
 manifest-backed execution remains held pending actual model validation. Discovery,
 policy and tool continuation are still unfinished; no live account-access claim.
+
+The internal discovery transport and pure protocol decoders are locally tested.
+The proposed existing-capability metadata extension is in discovery-profile.md;
+its publication and live account-filtered evidence remain pre-build gates.
 
 ## Why candidate identity cannot be a compiled model list
 
