@@ -2420,15 +2420,21 @@ def test_a_run_that_outlives_its_timeout_is_cancelled_not_abandoned(
     ) == "attempt_exists"
 
 
-def test_stop_cancels_an_in_flight_automation_run(tmp_path: Path) -> None:
-    from tinyassets.runs import is_cancel_requested
+@pytest.mark.parametrize("status", ["running", "completed"])
+def test_stop_cancels_an_in_flight_automation_run(tmp_path: Path, status: str) -> None:
+    from tinyassets.runs import create_run, is_cancel_requested, update_run_status
 
     consumer, _inline = _consumer_with_inline_executor(tmp_path)
-    consumer._note_automation_run("run_in_flight")
+    # Production publishes this ID only after execute_branch_async has persisted
+    # the run. Use the actual storage contract, not a never-created placeholder.
+    run_id = create_run(tmp_path, branch_def_id="test-automation", thread_id="test",
+                        inputs={}, actor=f"universe:{UNIVERSE}")
+    update_run_status(tmp_path, run_id, status=status)
+    consumer._note_automation_run(run_id)
 
     consumer.stop()
 
-    assert is_cancel_requested(tmp_path, "run_in_flight") is True
+    assert is_cancel_requested(tmp_path, run_id) is (status == "running")
 
 
 # §6 -- no silent skips

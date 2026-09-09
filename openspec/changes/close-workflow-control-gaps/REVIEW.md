@@ -2,6 +2,39 @@
 
 ## Current candidate: five platform gaps implemented locally
 
+### First exact-head review and Linux CI feedback
+
+Claude approved 41df881917c30ff5421bde4eaba3a8cde4356447 (terminal exit 0,
+444 seconds). Full same-session receipt:
+https://github.com/Jonnyton/TinyAssets/pull/3591#issuecomment-5596516658.
+PR #3591 remains draft. Two nonblocking P3 notes: runner persists dict output;
+the exact field selector intentionally does not trim authored names.
+
+Linux Tests 34316150848 ran checkout 25fe2bba6647f250a255d22be56e9f3876445eaf,
+verified in both checkout logs and full-tree identical to approved head. Slow/
+stress job passed. Selected non-heavy workflow/control files: **441 passes, two
+Windows-only skips**, versus 390+2 on main run 34314054165 (9e9f8397). Three heavy
+files were not run on this PR; do not count them as candidate Linux passes.
+
+The overall required job refused four NEW failures: the new concern lacked its
+index row and ISO filed date, a separate effect test still expected the broken
+patch_node advice, and an automation-stop fixture invented run_in_flight without
+ever persisting a run. No new production defect was inferred from the latter:
+automations._execute calls on_run_started only AFTER execute_branch_async returns
+its persisted ID (automations.py:1160-1175). The test now creates an actual run,
+still proves stop requests cancellation, and adds completed-state no-insert proof.
+The effect assertion now requires op=update_node and rejects patch_node; all
+original classification assertions remain. Concern indexing/date corrected.
+No runtime changes, quarantine edits or test skips are needed for this feedback.
+
+Follow-up Windows command:
+`python -m pytest -q tests/test_automations.py tests/test_effects_at_node_time.py tests/test_concerns_index_matches_the_directory.py --tb=short --junitxml=output/workflow-gaps-ci-feedback-head.xml`
+Result **193 passes**, versus 191 on pinned c2ed4534 (same command, output file
+workflow-gaps-ci-feedback-base.xml). The two added cases are the concern's date
+check and terminal-automation cancellation coverage. Re-run normal CI and obtain
+an updated exact-head receipt before readying the draft; prior receipt names only
+41df8819. No app prompt or live workflow edits have occurred.
+
 September 9, 2026 UTC, Windows/Python 3.14. Source is not pushed or deployed.
 read_graph run_output now always uses bounded formatting in the existing output
 handler: catalog pages of 64 fields, exact strings/typed small values and Unicode

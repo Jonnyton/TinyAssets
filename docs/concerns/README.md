@@ -25,7 +25,8 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
-| **note** | [App read/write sweep gaps](2026-09-08-app-read-write-sweep-gaps.md) — owner conversation reports checklist success but refused node edits/discard, missing result values, stale failed-node state, and absent cancellation exposure; causes await reproduction | 2026-09-08 |
+| **note** | [Instruction-response test uses an invalid page selector](2026-09-09-instruction-response-test-page-fixture.md) — pre-existing quarantined fixture failure on Windows and Linux; independent review identifies the exact path correction, without a runtime change | 2026-09-09 |
+| **note** | [App read/write sweep gaps](2026-09-08-app-read-write-sweep-gaps.md) — owner conversation reports checklist success but refused node edits/discard, missing result values, stale failed-node state, and absent cancellation exposure; platform fixes are reproduced and implemented locally; deployment and rendered all-five confirmation remain open | 2026-09-08 |
 | **note** | [Intermittent missing provider receipt in Linux load proof](2026-09-08-provider-receipt-intermittent-load-failure.md) — the fresh-process claim test intermittently raises a missing-receipt error on unchanged pre-patch source; live impact and root cause remain unproven | 2026-09-08 |
 | **P1** | [Workspace cap correction awaits owner acceptance](2026-09-08-workspace-hourly-cap-stalls-light-use.md) — duplicate ten-start gate removed and scoped usage shipped with authenticated deploy proof; owner-held rendered acceptance and broader consumption-policy simplification remain open | 2026-09-08 |
 | **P1** | [Scheduled uptime probes remain red](2026-09-08-scheduled-uptime-probes-remain-red.md) — handshake/tool/wiki pass, but supervisor liveness, revert evidence and browser probe fail; determine current contracts before inferring an outage or restarting | 2026-09-08 |
