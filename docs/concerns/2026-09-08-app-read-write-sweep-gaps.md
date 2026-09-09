@@ -42,6 +42,16 @@ the agent confirms all five gaps closed. Source, tests and deployment do not
 replace that acceptance. No organic post-fix use beyond this directed retest
 has been observed yet.
 
+September 9,07:11 UTC: cancellation terminal-state follow-up deployed as
+ece0a8e25058221143b40859b2050cba0b610ad4 with authenticated canary/SHA proof.
+Once-sent00:12 PDT exact retest has no rendered final result yet. After browser
+transport loss and normal UI recovery, the saved conversation shows a00:16
+"never confirmed — the reply did not arrive" notice, while a new exact-receiver
+webhook request demonstrates the app did perform work. Root cause and backend
+turn termination are not established. Do not duplicate the retest merely because
+the reply was not delivered. Request details are open for the owner's approval;
+all-five closure remains unproven. See output/user_sim_session.md for recovery.
+
 The owner explicitly added closing all five gaps to the active limits goal on
 September 8 PDT and made the webapp agent's message confirming closure the
 completion criterion. Durable combined scope:

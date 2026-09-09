@@ -35,8 +35,11 @@ Attempt2 succeeded at07:11 UTC. Actual job102372152883 confirms healthy containe
 at07:11:21, authenticated public canary with --assert-handles at07:11:23, and
 authenticated deployed_sha.py --assert-contains ece0a8e25058221143b40859b2050cba0b610ad4
 reported SHIPPED at07:11:24.380Z. No rollback; same immutable digest as the build.
-Credentials stayed in CI. App acceptance remains pending; next prompt is exactly
-the owner's retest text.
+Credentials stayed in CI. The exact retest prompt was sent once at00:12 PDT.
+Following browser transport loss and normal rendered UI recovery, the app shows
+a00:16 unconfirmed-reply notice and a new scoped webhook-test approval request.
+No final retest answer is visible. Request details are open for the owner;
+no duplicate prompt or approval was sent. This is not all-five acceptance.
 
 ## Scope and independent evidence
 

@@ -930,3 +930,23 @@ succeeded after independent exact-digest verification. Incident3602 resolved.
 Asked: Retest your workflow checklist
 Got: exact full rendered message at Sep9 00:12 PDT, composer cleared, app thinking.
 No other prompt, approval, operator workflow construction or repair performed.
+
+## [2026-09-09 07:18 UTC] USER BUG reply unconfirmed; scoped webhook approval pending
+
+CUA transport closed twice after the once-sent00:12 retest. Recovered read-only
+rendered access using the installed Computer Use skill in the visible Chrome
+window132244. Refreshed the saved owner conversation with normal F5; no draft
+overwritten or duplicate prompt sent. Rendered notice at00:16 PDT says:
+"This message was never confirmed — the reply did not arrive."
+The app nevertheless created request "Finish my 07:12 webhook checklist retest"
+and says it prepared temporary workflow76bd3c330bf7. This proves some work occurred,
+not that the original turn is terminal or that any of the five gaps passed.
+Opened request details only: existing webhook:test key, exact POST receiver
+cda2b7cf-18a3-4ccb-8d03-92623e87b28a and DELETE its exact token. No wildcard/key
+creation; persistent approval unchecked. No access approval performed: the native
+Computer Use skill prohibits acting on security/privacy permission requests.
+Owner must accept the opened request. Do not click Send it again while the earlier
+work's outcome is unknown. Commander confirmed no competing Chrome control.
+AX input recovery had helper-active/geometry/stale-index errors; screenshot-grounded
+read-only request expansion succeeded. Native view is a different existing owner
+tab from the original controlled mission tab; neither closed or private-edited.
