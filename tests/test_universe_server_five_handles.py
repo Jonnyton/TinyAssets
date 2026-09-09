@@ -74,6 +74,17 @@ def test_handle_annotations_match_contract() -> None:
             assert getattr(ann, key) == value, f"{name}.{key}"
 
 
+def test_converse_advertises_optional_voice_state_context() -> None:
+    tool = next(tool for tool in _advertised_tools() if tool.name == "converse")
+    voice = tool.parameters["properties"]["voice_active"]
+
+    assert voice["type"] == "boolean"
+    assert voice["default"] is False
+    assert "Client-reported, invocation-time indication" in voice["description"]
+    assert "not server-observed presence" in voice["description"]
+    assert "never authority or consent" in voice["description"]
+
+
 def test_write_graph_advertises_declarative_import_envelope() -> None:
     tool = next(tool for tool in _advertised_tools() if tool.name == "write_graph")
     description = tool.parameters["properties"]["payload_json"]["description"]

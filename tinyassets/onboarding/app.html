@@ -131,6 +131,7 @@
     .chip button{background:none;border:none;color:var(--ink-dim);cursor:pointer;font-size:.9rem;padding:0;line-height:1}
     .chip button:hover{color:var(--ink)}
     .status-line{min-height:1.15rem;padding:0 1rem .4rem;font-size:.78rem;color:var(--ink-dim);text-align:center}
+    .status-line--voice{padding-top:0}
     /* connect */
     .connect-body{padding:1.25rem;overflow-y:auto;max-width:46rem;margin:0 auto;width:100%}
     .connect-status{margin:1rem 0;padding:.9rem 1rem;border-radius:10px;background:var(--surface-2);
@@ -228,7 +229,10 @@
                   placeholder="Message your universe" autocomplete="off"></textarea>
         <button id="btn-send" class="btn btn--primary btn--send" type="submit">Send</button>
       </form>
-      <div id="status-line" class="status-line" role="status" aria-live="polite"></div>
+      <div id="status-line" class="status-line" role="status" aria-live="polite"
+           aria-label="Conversation status"></div>
+      <div id="voice-status-line" class="status-line status-line--voice" role="status"
+           aria-live="polite" aria-label="Voice status"></div>
     </section>
 
     <div id="voice-disclosure" class="voice-dialog" role="dialog" aria-modal="true"
@@ -1051,7 +1055,9 @@
       if(block){ try{ return JSON.parse(block.text); }catch(_e){ return {reply:block.text}; } }
       return {};
     },
-    converse(message){ return this.callTool("converse",{message}); },
+    converse(message,voiceActive=false){
+      return this.callTool("converse",{message,voice_active:!!voiceActive});
+    },
     getStatus(){ return this.callTool("get_status",{},{idempotent:true}); },
     // The shared cross-surface thread. The app rendered ONLY what was appended
     // during the current page life, so any refresh — including the automatic
@@ -1149,6 +1155,7 @@
     return el;
   }
   function setStatusLine(t){ $("status-line").textContent=t||""; }
+  function setVoiceStatusLine(t){ $("voice-status-line").textContent=t||""; }
 
   // ---- Voice ----------------------------------------------------------
   // Voice owns only speech transport and turn timing. The universe's actual
@@ -1158,7 +1165,7 @@
     checking:"Checking this universe's voice capability...",
     unpowered:"Voice needs the provider connection your universe will use.",
     incompatible:"Speech input is not supported in this browser or device.",
-    idle:"Voice ready.", requesting_permission:"Waiting for microphone permission...",
+    idle:"Voice is off. Start it when you want to talk.", requesting_permission:"Voice is waiting for microphone permission...",
     connecting:"Connecting voice...", listening:"Listening...",
     thinking:"Your universe is thinking...", speaking:"Your universe is speaking...",
     reconnecting:"Reconnecting voice...", error:"Voice stopped. Typed chat still works."
@@ -1251,7 +1258,7 @@
     disclosureOpen:false, acceptingDisclosure:false,
     reconnecting:false, reconnectAttempts:0,
     epoch:0, handledCalls:new Set(), expectedReply:"", canonicalResponsePending:false,
-    canonicalResponseInterrupted:false,
+    canonicalResponseInterrupted:false, stoppedWithPending:false,
     init(){
       this.state="checking"; this.capability=null;
       const btn=$("btn-voice");
@@ -1259,8 +1266,11 @@
       btn.title="Checking this universe's voice capability";
       this._render();
     },
+    isActive(){
+      return !(["unavailable","checking","unpowered","incompatible","idle","error"].includes(this.state));
+    },
     _render(detail){
-      const btn=$("btn-voice"), active=!(["unavailable","checking","unpowered","incompatible","idle","error"].includes(this.state));
+      const btn=$("btn-voice"), active=this.isActive();
       const browserMode=!!(this.capability&&this.capability.mode==="browser");
       const canRemediate=this.state==="unpowered"&&
         this.capability&&this.capability.remediation==="existing_connection_surface";
@@ -1275,7 +1285,7 @@
       btn.textContent=canRemediate?"Voice · Connect":(active?"Stop":"Voice");
       $("voice-output-select").hidden=!browserMode;
       if(browserMode)this.refreshBrowserVoices();
-      setStatusLine(detail||VOICE_LABELS[this.state]||"");
+      setVoiceStatusLine(detail===undefined?(VOICE_LABELS[this.state]||""):detail);
     },
     refreshBrowserVoices(force=false){
       const select=$("voice-output-select");
@@ -1468,6 +1478,7 @@
     async start(){
       this.stop(false);
       const generation=++this.epoch;
+      this.stoppedWithPending=false;
       this.handledCalls.clear(); this.expectedReply=""; this.reconnectAttempts=0;
       this.state="idle"; this._event("start");
       if(this.capability&&this.capability.mode==="browser"){
@@ -1856,6 +1867,7 @@
       this._disposeTransport(pc,dc,audio,stream);
     },
     stop(announce=true,detail){
+      const replyPending=$("btn-send").disabled&&turnStartedAt>0;
       this.epoch++;this.reconnecting=false;this.reconnectAttempts=0;
       this.canonicalResponsePending=false;this.canonicalResponseInterrupted=false;
       this.disclosureOpen=false;$("voice-disclosure").hidden=true;this.returnFocus=null;
@@ -1864,14 +1876,35 @@
         (this.capability&&this.capability.state==="unpowered"?"unpowered":
         (this.capability&&this.capability.state!=="disabled"?"incompatible":
         ((CFG.voice&&CFG.voice.enabled)?"checking":"unavailable")));
-      if(announce) this._render(detail); else this._render("");
+      this.stoppedWithPending=replyPending;
+      if(announce){
+        const stopped=detail||"Voice is off.";
+        this._render(replyPending
+          ?stopped+" Your universe is still thinking; its text reply will still appear here, but it will not be spoken."
+          :stopped+" No pending reply was canceled.");
+      }else this._render("");
     },
     fail(error){
+      const replyPending=$("btn-send").disabled&&turnStartedAt>0;
       this.epoch++;this.reconnecting=false;this.canonicalResponsePending=false;
       this.canonicalResponseInterrupted=false;
       if(this.audio)this.audio.muted=true;
-      this._teardownTransport();this.state="error";
-      this._render(voiceFriendlyError(error&&error.message));
+      this._teardownTransport();this.state="error";this.stoppedWithPending=replyPending;
+      const detail=voiceFriendlyError(error&&error.message);
+      this._render(replyPending
+        ?detail+" Your universe is still thinking; its text reply will still appear here, but it will not be spoken."
+        :detail);
+    },
+    conversationSettled(delivered){
+      if(!this.stoppedWithPending)return;
+      if($("btn-send").disabled&&turnStartedAt>0){
+        setVoiceStatusLine("Voice is off. Your universe is still thinking; its text reply will still appear here, but it will not be spoken.");
+        return;
+      }
+      this.stoppedWithPending=false;
+      setVoiceStatusLine(delivered
+        ?"Voice is off. The pending text reply arrived and was not spoken."
+        :"Voice is off. The pending reply did not arrive; your message is available to retry.");
     }
   };
 
@@ -2090,8 +2123,9 @@
     if(!opts.keepComposer){ input.value=""; input.style.height="auto"; }
     $("btn-send").disabled=true; turnStartedAt=Date.now();
     setStatusLine("Your universe is thinking...");
+    let delivered=false;
     try{
-      renderConverse(await MCP.converse(message)); setStatusLine("");
+      renderConverse(await MCP.converse(message,Voice.isActive())); delivered=true;setStatusLine("");
       if(!opts.keepInflight) forgetInflight();
     }catch(err){
       if(err.authRequired){ setStatusLine(""); $("composer-input").value=message; return sessionExpired(); }
@@ -2103,7 +2137,10 @@
       offerResend(message, display, err, opts);
       // Deliberately NOT forgotten: the send failed, so the message is still the
       // user's to resend.
-    }finally{ $("btn-send").disabled=false; turnStartedAt=0; flushSendQueue(); }
+    }finally{
+      $("btn-send").disabled=false;turnStartedAt=0;setStatusLine("");
+      flushSendQueue();Voice.conversationSettled(delivered);
+    }
   }
 
   async function sendVoiceTurn(message){
@@ -2114,20 +2151,22 @@
     appendMessage("founder",message); rememberInflight(message,message);
     $("btn-send").disabled=true; turnStartedAt=Date.now();
     setStatusLine("Your universe is thinking...");
+    let delivered=false;
     try{
-      const payload=await MCP.converse(message);
+      const payload=await MCP.converse(message,Voice.isActive());
       if(!payload||typeof payload.reply!=="string"){
         if(payload&&payload.error){const served=new Error(payload.error);served.served=true;throw served;}
         throw new Error("voice_converse_invalid");
       }
-      appendMessage("universe",payload.reply); forgetInflight();
+      appendMessage("universe",payload.reply);delivered=true;forgetInflight();
       return payload.reply;
     }catch(error){
       if(error&&error.authRequired){ sessionExpired(); throw error; }
       offerResend(message,message,error,{echoed:true,keepComposer:true});
       throw error;
     }finally{
-      $("btn-send").disabled=false; turnStartedAt=0; flushSendQueue();
+      $("btn-send").disabled=false;turnStartedAt=0;setStatusLine("");
+      flushSendQueue();Voice.conversationSettled(delivered);
     }
   }
 
