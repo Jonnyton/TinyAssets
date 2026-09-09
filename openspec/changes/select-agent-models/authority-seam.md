@@ -1,7 +1,9 @@
 # Candidate authority integration: verified constraints and decision gate
 
 September9, source checkout939931a9ff0516e28b7d64ad340cafd023f57401.
-This is pre-build design work, not a new authorization path or a shipped claim.
+Candidate membership remains pre-build design work, not a shipped claim.
+The shared-validator prerequisite is implemented at fc617195, under independent
+review; it changes no accepted provider or authority/storage contract.
 
 ## Reverified constraints
 
@@ -57,3 +59,46 @@ assignment, and factor one shared validator rather than copy the chain again.
 The existing per-request invocation limit is2 and must be resolved for a longer
 accepted sequence without creating an arbitrary two-model restriction. This is
 not yet schema/authority approval; no such implementation has been started.
+
+## Source inventory after review (September 9, fc617195)
+
+`authorize_served_provider_call` now delegates assignment/binding/custody checks
+to `_current_serving_authority`; explicit dispatch base_path is preserved. The
+carrier, trusted request source, operation/role and exact agent status/revision
+remain required before delegation. Differential tests preserve legacy behavior.
+
+The review's v1 read-digest premise was incorrect: `_assignment_from_row` already
+recomputes the assignment digest for both loaders. Future v2 reads must add the
+manifest and child-row checks without weakening this existing validation.
+
+Mutation paths found by `rg` across canonical tinyassets Python sources:
+
+- `provider_serving_binding._assignment` is the only assignment constructor
+  outside the loader. `bind_serving_provider` publishes pending then ready;
+  `_write_failed_assignment` publishes failed, preserving deny-all pending if
+  recovery itself fails. No current production writer publishes unassigned;
+  that state is accepted by the schema/config but is not an extra hidden path.
+- `custom_agents.update_binding` increments the agent revision under exclusive
+  assignment admission. Provider-ref changes and `set_serving` also invalidate
+  the exact carrier revision. Disabling serving does not delete the assignment,
+  but execution checks serving status before considering any candidate.
+- `ConnectionLedger.revoke_grant`, `revoke_connection`, and `delete_connection`
+  invalidate HTTP custody through live grant resolution, not an assignment-row
+  rewrite. Child rows must never override that resolution. New-generation or
+  non-ready root assignments make all older children inert; no destructive
+  cleanup is needed to establish denial.
+
+Attempt accounting is not yet launch-only: router consumes the request invocation
+before budget reservation and provider-slot admission. An authorize refusal does
+not consume it, but a later pre-launch budget/slot refusal currently can. The
+future candidate chain must charge only at the validated launch boundary, retain
+aggregate token/cost/concurrency bounds and never refresh a carrier to reset its
+count. A longer accepted chain must not be limited to two models. Exact finite
+per-turn launch allowance and no-launch reservation release are still build gates.
+
+The candidate manifest is an accepted authority set, not a saved preference order.
+The root's legacy provider_ref anchor must not be confused with whichever member
+the policy currently ranks first. Choosing or reordering an already-authorized
+member must not create new custody or broaden cost/privacy permission. Dynamic
+models within an already-approved connection need this same distinction; manual
+provider-definition publication cannot be the final discovery experience.
