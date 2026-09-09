@@ -36,7 +36,6 @@ GIB = 1024**3
 #: Defaults from design note ``workspace-node`` D4.
 DEFAULT_POOL_BYTES_CAP = 20 * GIB
 DEFAULT_LEASE_BYTES_CAP = 4 * GIB
-DEFAULT_JOBS_PER_HOUR = 10
 DEFAULT_BYTES_PER_HOUR = 20 * GIB
 #: The rolling ledger window, in seconds.
 WINDOW_S = 3600
@@ -534,7 +533,6 @@ def admit(
     universe_used_bytes_fn: Callable[[str], int] | None = None,
     pool_bytes_cap: int = DEFAULT_POOL_BYTES_CAP,
     lease_bytes_cap: int = DEFAULT_LEASE_BYTES_CAP,
-    jobs_per_hour: int = DEFAULT_JOBS_PER_HOUR,
     bytes_per_hour: int = DEFAULT_BYTES_PER_HOUR,
     host_slot: str = HOST_SLOT,
     now: Callable[[], float] = time.time,
@@ -547,7 +545,7 @@ def admit(
 ) -> Lease:
     """Admit one workspace job in ONE ``BEGIN IMMEDIATE`` transaction.
 
-    In order: the startup barrier, the rolling-hour ledger (jobs then bytes), the
+    In order: the startup barrier, the rolling-hour transfer-byte ledger, the
     pool total (scratch) or the universe quota (permanent), the universe lock and
     the host slot, the ledger reservation of ``max_bytes``, and the ``ACTIVE``
     lease. Any refusal or error rolls the whole transaction back, so a refused
@@ -611,15 +609,8 @@ def admit(
                         f"{started_at} not yet AVAILABLE or LOST",
                     )
 
-                # (a) the rolling-hour workspace ledger.
-                jobs = _ledger_sum(conn, universe_id, KIND_JOBS, cutoff)
-                if jobs + 1 > jobs_per_hour:
-                    clears = _window_clears_at(conn, universe_id, KIND_JOBS, cutoff)
-                    raise WorkspacePoolRefused(
-                        REFUSED_QUOTA,
-                        f"workspace jobs per hour ({jobs_per_hour}) exhausted for "
-                        f"{universe_id}: {jobs} charged, clears_at={clears}",
-                    )
+                # (a) actual transfer capacity. Job counts below are observation,
+                # not another starts cap over existing run/effect admission.
                 charged = _ledger_sum(conn, universe_id, KIND_BYTES, cutoff)
                 if charged + max_bytes > bytes_per_hour:
                     clears = _window_clears_at(conn, universe_id, KIND_BYTES, cutoff)
@@ -829,7 +820,6 @@ def reserve_operation_bytes(
     run_id: str,
     operation_id: str,
     max_bytes: int,
-    jobs_per_hour: int = DEFAULT_JOBS_PER_HOUR,
     bytes_per_hour: int = DEFAULT_BYTES_PER_HOUR,
     now: Callable[[], float] = time.time,
 ) -> int:
@@ -867,14 +857,6 @@ def reserve_operation_bytes(
                 conn.commit()
                 return int(existing[0])
 
-            jobs = _ledger_sum(conn, universe_id, KIND_JOBS, cutoff)
-            if jobs + 1 > jobs_per_hour:
-                clears = _window_clears_at(conn, universe_id, KIND_JOBS, cutoff)
-                raise WorkspacePoolRefused(
-                    REFUSED_QUOTA,
-                    f"workspace jobs per hour ({jobs_per_hour}) exhausted for "
-                    f"{universe_id}: {jobs} charged, clears_at={clears}",
-                )
             charged = _ledger_sum(conn, universe_id, KIND_BYTES, cutoff)
             if charged + max_bytes > bytes_per_hour:
                 clears = _window_clears_at(conn, universe_id, KIND_BYTES, cutoff)

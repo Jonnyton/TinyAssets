@@ -1677,6 +1677,16 @@ def get_status(universe_id: str = "", include_conversation: bool = False) -> str
         "universe_exists": universe_exists,
     }
 
+    # Private resource observations need admin authority, not public metadata
+    # visibility. The projection owns its additional gate and never initializes
+    # or repairs a meter merely because status was read.
+    if universe_exists:
+        from tinyassets.api.resource_usage import for_authorized_status
+
+        resource_usage = for_authorized_status(_base_path(), uid)
+        if resource_usage is not None:
+            response["resource_usage"] = resource_usage
+
     # persona — the universe brain speaking as itself. Its self-understanding
     # comes from its learned self-model (an OKF bundle the brain authors about
     # itself), NOT from a hand-fed soul.purpose. The substrate only surfaces it;

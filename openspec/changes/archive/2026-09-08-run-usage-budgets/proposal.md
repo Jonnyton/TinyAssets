@@ -1,5 +1,11 @@
 ## Why
 
+Historical proposal, implemented in #2731. Closure audit 2026-09-08: later #2770
+raised the per-run dispatch threshold to 5,000. The synced requirement describes
+the actual node-level/post-dispatch accounting and its limitations; the original
+500/tier-raisable/exact-charge aspirations below are not current enforcement
+claims. No new runtime implementation is being landed under this old change.
+
 Change `no-graph-size-caps` (2026-08-30, #2730) removed the served build's
 structural limits (100 nodes, 5 effect nodes) on the founder's direction:
 "we can limit them in other ways — if they want to run a big graph then

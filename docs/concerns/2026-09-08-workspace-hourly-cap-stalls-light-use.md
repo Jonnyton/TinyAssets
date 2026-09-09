@@ -97,8 +97,9 @@ but did not edit `tinyassets/workspace_pool.py`. The separate
 are present in deployed source; neither lifts the ten-workspace-jobs gate.
 
 The generic effect budget implementation already landed in PR #2731 (`98b48964`);
-`run-usage-budgets`' unchecked task file is stale completion bookkeeping, not an
-unbuilt implementation. The hourly dispatch/byte values were independently
+At diagnosis, `run-usage-budgets`' unchecked task file was stale completion
+bookkeeping, not an unbuilt implementation; that bookkeeping is now archived.
+The hourly dispatch/byte values were independently
 confirmed in deployed source too. The separate `usage_policy` / `usage_ledger`
 tier meter is not the live refusal source: its enforcement was confirmed **off**
 in production. Do not enable it as a shortcut to consolidation; its own module
@@ -130,8 +131,9 @@ use them as current configuration evidence. The current callers are
 
 ## Re-verifiable mechanism and evidence collection
 
-- `tinyassets/workspace_pool.py`: `DEFAULT_JOBS_PER_HOUR`, `WINDOW_S`, `admit`,
-  `_ledger_sum`, `_window_clears_at`, and `reserve_operation`. Admission checks
+- Historical deployed `tinyassets/workspace_pool.py` at the receipt above:
+  `DEFAULT_JOBS_PER_HOUR`, `WINDOW_S`, `admit`, `_ledger_sum`,
+  `_window_clears_at`, and `reserve_operation_bytes`. Admission checks
   the per-universe rolling sum before transport, within its immediate transaction.
 - `tinyassets/effectors/workspace.py`: `_pool_db`, checkout/create call sites of
   `workspace_pool.admit`. These use the universe's `.runs.db` and omit hourly
@@ -168,9 +170,11 @@ correction must account for actual shared dependency use, not silently reset thi
 universe's ledger or give it a private exception. Raising ten to another isolated
 literal would leave the same fragmentation and is not the requested end state.
 
-Before implementation, reconcile the existing `workspace-node` work with the
-simplified activity/storage direction and verify/sync/archive the already-landed
-`run-usage-budgets` records. A new
+The bounded correction is tracked in `consolidate-platform-resource-policy`,
+draft PR #3560; it removes both starts-count refusals while preserving resource
+guards and adding scoped observations. It is not yet deployed or accepted.
+The already-landed `run-usage-budgets` records were verified, synced and archived
+under `openspec/changes/archive/2026-09-08-run-usage-budgets/`. A new
 accounting scope, authority surface, or storage migration needs proposal/design
 and independent cross-family review. No exact thresholds, cross-universe owner
 aggregation, commercial tier changes, or extra provider spending are authorized
