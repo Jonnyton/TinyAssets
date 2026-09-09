@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 import tinyassets.universe_server as us
 from tinyassets.api import helpers, permissions
 
@@ -54,21 +56,32 @@ def test_converse_founder_relays_intelligence_reply(monkeypatch, tmp_path):
     assert out["universe_id"] == "u-x"
 
 
-def test_converse_relays_actual_voice_state_as_informational_context(monkeypatch, tmp_path):
+def test_converse_relays_current_turn_input_method_as_informational_context(
+    monkeypatch, tmp_path
+):
     import tinyassets.universe_intelligence as ui
 
     _founder_auth(monkeypatch, base=tmp_path)
-    seen: list[bool] = []
+    seen: list[str] = []
 
-    def capture(uid, msg, *, voice_active=False, **_kw):
-        seen.append(voice_active)
+    def capture(uid, msg, *, input_method="unknown", **_kw):
+        seen.append(input_method)
         return "ok"
 
     monkeypatch.setattr(ui, "converse", capture)
-    spoken = us.converse(message="spoken", graph_id="u-x", voice_active=True)
+    spoken = us.converse(message="spoken", graph_id="u-x", input_method="spoken")
     assert json.loads(spoken)["reply"] == "ok"
-    assert json.loads(us.converse(message="typed", graph_id="u-x"))["reply"] == "ok"
-    assert seen == [True, False]
+    typed = us.converse(message="typed", graph_id="u-x", input_method="typed")
+    assert json.loads(typed)["reply"] == "ok"
+    action = us.converse(message="approved", graph_id="u-x", input_method="app_action")
+    assert json.loads(action)["reply"] == "ok"
+    assert json.loads(us.converse(message="unknown", graph_id="u-x"))["reply"] == "ok"
+    assert seen == ["spoken", "typed", "app_action", "unknown"]
+
+
+def test_converse_does_not_accept_replaced_voice_active_field():
+    with pytest.raises(TypeError, match="voice_active"):
+        us.converse(message="hello", voice_active=True)  # type: ignore[call-arg]
 
 
 def test_converse_surfaces_engine_failure_honestly(monkeypatch):

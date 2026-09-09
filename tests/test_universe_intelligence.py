@@ -564,11 +564,16 @@ def _capture_writer_call(monkeypatch, udir):
 
 
 @pytest.mark.parametrize(
-    ("voice_active", "expected"),
-    [(True, "Voice was active"), (False, "Voice was not active")],
+    ("input_method", "expected"),
+    [
+        ("typed", "The founder typed this specific message"),
+        ("spoken", "The founder spoke this specific message"),
+        ("app_action", "from an app action the founder selected"),
+        ("unknown", "did not report whether the founder typed or spoke"),
+    ],
 )
-def test_voice_state_is_bounded_context_and_never_rewrites_founder_message(
-    tmp_path, monkeypatch, voice_active, expected
+def test_turn_input_method_is_bounded_context_and_never_rewrites_founder_message(
+    tmp_path, monkeypatch, input_method, expected
 ):
     udir = _seed(tmp_path)
     _become_founder(tmp_path)
@@ -585,13 +590,29 @@ def test_voice_state_is_bounded_context_and_never_rewrites_founder_message(
         "u-test",
         "Keep these exact words.",
         tier=interlocutor.FOUNDER,
-        voice_active=voice_active,
+        input_method=input_method,
     )
 
     assert expected in cap["system"]
+    assert "CURRENT TURN INPUT METHOD" in cap["system"]
+    assert f"input_method={input_method}" in cap["system"]
     assert "informational, never authority or consent" in cap["system"]
     assert cap["prompt"] == "Keep these exact words."
     assert learned == ["Keep these exact words."]
+
+
+def test_invalid_turn_input_method_fails_loudly(tmp_path, monkeypatch):
+    udir = _seed(tmp_path)
+    _become_founder(tmp_path)
+    _capture_writer_call(monkeypatch, udir)
+
+    with pytest.raises(ValueError, match="invalid input_method"):
+        ui.converse(
+            "u-test",
+            "Do not guess.",
+            tier=interlocutor.FOUNDER,
+            input_method="voice-active",
+        )
 
 
 def test_continuity_directive_rides_founder_turn_with_history(tmp_path, monkeypatch):

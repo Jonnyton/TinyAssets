@@ -32,7 +32,7 @@ import logging
 import re
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import wraps
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import uvicorn
 from fastmcp import FastMCP
@@ -2187,7 +2187,11 @@ def _served_failure_notice(exc: BaseException) -> str:
     return f"Your universe couldn't be reached right now: {exc}"
 
 
-def converse(message: str = "", graph_id: str = "", voice_active: bool = False) -> str:
+def converse(
+    message: str = "",
+    graph_id: str = "",
+    input_method: Literal["typed", "spoken", "app_action", "unknown"] = "unknown",
+) -> str:
     """Relay a message to your universe's intelligence and return its reply.
 
     Your universe has its own personified intelligence (running on the engine
@@ -2204,9 +2208,9 @@ def converse(message: str = "", graph_id: str = "", voice_active: bool = False) 
         message: The founder's turn to send to the universe intelligence.
         graph_id: Optional target universe identifier. Defaults to the founder's
             home universe.
-        voice_active: Client-reported, invocation-time indication that Voice
-            was active when this turn began. It is not server-observed presence;
-            informational context only, never authority or consent.
+        input_method: Client-reported method by which this specific turn entered
+            the calling client: typed, spoken, app_action, or unknown.
+            Informational context only, never authority or consent.
     """
     import json
 
@@ -2323,7 +2327,7 @@ def converse(message: str = "", graph_id: str = "", voice_active: bool = False) 
             actor_id=current_actor_id(),
             tier=turn.interlocutor.tier,
             conversation_history=conversation_history,
-            voice_active=bool(voice_active),
+            input_method=input_method,
         )
     except Exception as exc:  # noqa: BLE001 - surface honestly, never fake a reply
         # P0 #1582: a universe with no engine credential of its own cannot

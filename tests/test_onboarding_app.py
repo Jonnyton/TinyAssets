@@ -185,8 +185,10 @@ def test_voice_csp_and_disclosure_are_dark_until_all_flags(monkeypatch):
 def test_voice_client_keeps_converse_as_the_only_writer():
     html, _csp = onboarding.render_app_html()
     assert 'event.name!=="converse"' in html
-    assert "const payload=await MCP.converse(message,Voice.isActive());" in html
-    assert "{message,voice_active:!!voiceActive}" in html
+    assert 'const payload=await MCP.converse(message,"spoken");' in html
+    assert '{message,input_method:turnInputMethod(inputMethod)}' in html
+    assert 'sendTurn(send, display, {inputMethod:"typed"})' in html
+    assert "voice_active" not in html
     assert 'this._send({type:"tool_result",call_id:callId,output:reply});' in html
     assert 'this._send({type:"speak",call_id:callId,source:"tool_result",verbatim:true});' in html
     assert "body:JSON.stringify({offer_sdp:offerSdp})" in html
@@ -1509,7 +1511,7 @@ const els={
   "thread":new El("div"), "status-line":new El("div"),
 };
 const $=id=>els[id];
-const Voice={isActive:()=>false,conversationSettled:()=>{}};
+const Voice={isActive:()=>!!SCENARIO.voiceActive,conversationSettled:()=>{}};
 const messages=[];
 function appendMessage(role,text,extra){
   if(role!=="system") messages.push({role,text});
@@ -1523,10 +1525,11 @@ function autoGrow(el){ el.style.height="auto"; }
 function sessionExpired(){ messages.push({role:"session-expired"}); }
 function showConnect(){ messages.push({role:"connect"}); }
 const SCENARIO=__SCENARIO__;
-const converseCalls=[];
+const converseCalls=[], converseMethods=[];
 let active=0, maxActive=0;
-const MCP={ converse: async m => {
+const MCP={ converse: async (m,inputMethod) => {
   converseCalls.push(m);
+  converseMethods.push(inputMethod);
   active++; maxActive=Math.max(maxActive, active);
   try{
     if(SCENARIO.transportError){ const e=new Error("offline"); e.transport=true; throw e; }
@@ -1555,17 +1558,19 @@ __APP_FUNCTIONS__
 (async()=>{
   const out={};
   if(SCENARIO.kind==="send"){
+    const turnOpts=SCENARIO.inputMethod?{inputMethod:SCENARIO.inputMethod}:undefined;
     if(SCENARIO.secondMessage){
-      const first=sendTurn(SCENARIO.message);
+      const first=sendTurn(SCENARIO.message,undefined,turnOpts);
       els["composer-input"].value=SCENARIO.secondMessage;
       // ...arriving while the first is in flight
-      for(let i=0;i<(SCENARIO.repeatSecond||1);i++) sendTurn(SCENARIO.secondMessage);
+      for(let i=0;i<(SCENARIO.repeatSecond||1);i++)
+        sendTurn(SCENARIO.secondMessage,undefined,turnOpts);
       (SCENARIO.extraMessages||[]).forEach(m=>{
         const full=sendQueue.length>=SEND_QUEUE_MAX, box=els["composer-input"];
         // the draft is typed once the queue is full
         const draft=SCENARIO.draftBeforeOverflow;
         if(draft && full && !box.value) box.value=draft;
-        sendTurn(m);
+        sendTurn(m,undefined,turnOpts);
       });
       out.composerWhileQueued=els["composer-input"].value;
       out.statusWhileQueued=els["status-line"].textContent;
@@ -1577,14 +1582,15 @@ __APP_FUNCTIONS__
       await first; await new Promise(r=>setTimeout(r, 60));
       out.queueLeft=sendQueue.length;
     } else {
-      await sendTurn(SCENARIO.message);
+      await sendTurn(SCENARIO.message,undefined,turnOpts);
     }
     if(SCENARIO.clickResend){
       const btn=els.thread.children.flatMap(n=>n.children).find(c=>c.tagName==="BUTTON");
       btn.click();                                   // the listener fires sendTurn (async)
       await new Promise(r=>setTimeout(r, 20));
     }
-    out.converseCalls=converseCalls; out.maxActive=maxActive;
+    out.converseCalls=converseCalls; out.converseMethods=converseMethods;
+    out.maxActive=maxActive;
     out.notesRemoved=els.thread.children.filter(n=>n.removed).length;
     out.inflight=JSON.parse(localStorage.getItem(INFLIGHT_KEY)||"null");
     out.messages=messages;
@@ -1595,6 +1601,9 @@ __APP_FUNCTIONS__
     out.status=els["status-line"].textContent;
     out.composer=els["composer-input"] ? els["composer-input"].value : null;
     out.savedAfter=JSON.parse(localStorage.getItem(QUEUE_KEY)||"null");
+  }else if(SCENARIO.kind==="voice"){
+    await sendVoiceTurn(SCENARIO.message);
+    out.converseCalls=converseCalls; out.converseMethods=converseMethods;
   }else if(SCENARIO.kind==="rail"){
     const req=SCENARIO.request;
     els["fb_"+req.request_id]=new El("input");
@@ -1606,8 +1615,9 @@ __APP_FUNCTIONS__
     let release=null;
     if(SCENARIO.turnInFlight){
       // a real turn in flight: sendTurn is awaiting a converse that we release later
-      MCP.converse=async m=>{
+      MCP.converse=async (m,inputMethod)=>{
         converseCalls.push(m);
+        converseMethods.push(inputMethod);
         if(m==="first"){ await new Promise(r=>{ release=r; }); }
         return {reply:"ok "+m};
       };
@@ -1615,7 +1625,8 @@ __APP_FUNCTIONS__
     }
     if(SCENARIO.draft) els["composer-input"].value=SCENARIO.draft;
     const note=new El("div"); const buttons=[new El("button"), new El("button")];
-    await answerRail(req, SCENARIO.dismiss ? "clear" : "accept", note, buttons);
+    await answerRail(req, SCENARIO.mode || (SCENARIO.dismiss ? "clear" : "accept"),
+      note, buttons);
     out.composer=els["composer-input"].value;
     if(SCENARIO.secondRequest){
       const r2=SCENARIO.secondRequest;
@@ -1628,11 +1639,13 @@ __APP_FUNCTIONS__
     out.rolesBeforeRelease=messages.map(m=>m.role);
     if(release){ release(); await new Promise(r=>setTimeout(r, 30)); }
     out.answered=answered; out.refreshed=refreshed; out.note=note.textContent;
-    out.converseCalls=converseCalls; out.messages=messages;
+    out.converseCalls=converseCalls; out.converseMethods=converseMethods;
+    out.messages=messages;
     out.buttonsEnabled=buttons.every(b=>!b.disabled);
   }else if(SCENARIO.kind==="restore"){
     if(SCENARIO.pending) localStorage.setItem(INFLIGHT_KEY, JSON.stringify({
       message:SCENARIO.pending, display:SCENARIO.pending,
+      inputMethod:SCENARIO.pendingInputMethod,
       ts: Date.now()-(SCENARIO.pendingAgeS||0)*1000}));
     if(SCENARIO.queued) localStorage.setItem(QUEUE_KEY, JSON.stringify(SCENARIO.queued));
     if(SCENARIO.draftBeforeRestore) els["composer-input"].value=SCENARIO.draftBeforeRestore;
@@ -1656,7 +1669,7 @@ __APP_FUNCTIONS__
     out.notesAfterClick=els.thread.children.filter(n=>!n.removed).map(n=>n.textContent);
     out.inflight=JSON.parse(localStorage.getItem(INFLIGHT_KEY)||"null");
     out.savedAfter=JSON.parse(localStorage.getItem(QUEUE_KEY)||"null");
-    out.converseCalls=converseCalls;
+    out.converseCalls=converseCalls; out.converseMethods=converseMethods;
     out.messages=messages;
     out.notes=els.thread.children.map(n=>({cls:n.className, text:n.textContent,
       buttons:n.children.filter(c=>c.tagName==="BUTTON").map(b=>b.textContent)}));
@@ -1702,8 +1715,9 @@ def _run_app(tmp_path, scenario: dict) -> dict:
                     r"let retainedItems=[^\n]*;")
     )
     funcs = "\n".join(_js_function(html, f) for f in (
-        "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
-        "offerResend", "sendTurn", "checkForNewBuild", "loadHistory", "restoreInflight",
+        "turnInputMethod", "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
+        "offerResend", "sendTurn", "sendVoiceTurn", "checkForNewBuild", "loadHistory",
+        "restoreInflight",
         "frameTitle", "answerLine", "replyLine", "refusedGrantLine", "answerRail",
         "flushSendQueue", "queueTurn",
         "saveQueue", "readSavedQueue", "stillSaved", "forgetSavedItem", "savedItem",
@@ -1718,6 +1732,121 @@ def _run_app(tmp_path, scenario: dict) -> dict:
                           encoding="utf-8", timeout=60)
     assert proc.returncode == 0, f"app harness crashed:\n{proc.stderr}"
     return json.loads(proc.stdout)
+
+
+def test_typed_turn_reports_its_origin_even_while_voice_is_active(tmp_path):
+    out = _run_app(
+        tmp_path,
+        {
+            "kind": "send",
+            "message": "did I type this or say it?",
+            "inputMethod": "typed",
+            "voiceActive": True,
+            "payload": {"reply": "You typed it."},
+        },
+    )
+
+    assert out["converseMethods"] == ["typed"]
+
+
+def test_voice_turn_reports_spoken_origin(tmp_path):
+    out = _run_app(
+        tmp_path,
+        {
+            "kind": "voice",
+            "message": "spoken words",
+            "payload": {"reply": "heard"},
+        },
+    )
+
+    assert out["converseMethods"] == ["spoken"]
+
+
+def test_request_rail_reports_typed_reply_and_app_action(tmp_path):
+    request = {
+        "request_id": "req-input-method",
+        "title": "Choose",
+        "fields": [],
+    }
+    reply = _run_app(
+        tmp_path,
+        {
+            "kind": "rail",
+            "request": request,
+            "mode": "reply",
+            "feedback": "I typed this",
+            "payload": {"reply": "ok"},
+        },
+    )
+    assert reply["converseMethods"] == ["typed"]
+
+    action = _run_app(
+        tmp_path,
+        {
+            "kind": "rail",
+            "request": request,
+            "payload": {"reply": "ok"},
+        },
+    )
+    assert action["converseMethods"] == ["app_action"]
+
+
+def test_typed_input_method_survives_queue_and_retry(tmp_path):
+    queued = _run_app(
+        tmp_path,
+        {
+            "kind": "send",
+            "message": "first",
+            "secondMessage": "typed while waiting",
+            "inputMethod": "typed",
+            "slowFirst": True,
+            "payload": {"reply": "ok"},
+        },
+    )
+    assert queued["converseMethods"] == ["typed", "typed"]
+    assert queued["savedWhileQueued"][0]["inputMethod"] == "typed"
+
+    retried = _run_app(
+        tmp_path,
+        {
+            "kind": "send",
+            "message": "retry me",
+            "inputMethod": "typed",
+            "transportError": True,
+            "clickResend": True,
+        },
+    )
+    assert retried["converseMethods"] == ["typed", "typed"]
+    assert retried["inflight"]["inputMethod"] == "typed"
+
+
+def test_restored_turn_without_input_provenance_is_unknown(tmp_path):
+    out = _run_app(
+        tmp_path,
+        {
+            "kind": "restore",
+            "pending": "old unconfirmed turn",
+            "clickAfterRestore": "Send it again",
+            "payload": {"reply": "ok"},
+        },
+    )
+
+    assert out["converseMethods"] == ["unknown"]
+
+
+def test_restored_turn_preserves_recorded_spoken_provenance(tmp_path):
+    out = _run_app(
+        tmp_path,
+        {
+            "kind": "restore",
+            "pending": "spoken unconfirmed turn",
+            "pendingInputMethod": "spoken",
+            "clickAfterRestore": "Send it again",
+            "payload": {"reply": "ok"},
+        },
+    )
+
+    assert out["converseMethods"] == ["spoken"]
 
 
 def test_a_served_error_keeps_the_message_resendable_with_the_servers_sentence(tmp_path):
@@ -1842,7 +1971,8 @@ def test_an_unconfirmed_message_survives_a_reload_and_says_so():
 
     html, _csp = render_app_html()
     assert "ta_inflight_turn" in html
-    assert "rememberInflight(message, display, sentAt)" in html
+    assert "rememberInflight(message, display, sentAt, inputMethod)" in html
+    assert "inputMethod:turnInputMethod(inputMethod)" in html
     # Cleared on success, KEPT on failure — a failed send is still the user's.
     assert "forgetInflight();" in html
     assert "the send failed, so the message is still the" in html
