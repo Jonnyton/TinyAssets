@@ -915,3 +915,18 @@ run's code node still says running. 23:31 PDT: exact fresh webhook delivery200,
 receiver deletion204, workflow deleted, run complete; all nine checklist checks
 pass. No test work remains running. Do not count all-five closure: cancellation
 display is a fresh platform follow-up. No additional/coaching prompt sent.
+
+## [2026-09-09 07:12 UTC] USER ACTION cancelled-node follow-up retest
+
+TAB HYGIENE: one controlled mission tab1346517638, https://tinyassets.io/mcp/app;
+unrelated owner/other-task tabs untouched. Reloaded after verified deploy and
+waited for saved conversation to load. New owner input-method messages at23:41/
+23:42 PDT are visible; earlier unrefreshed view was stale, not a current-history
+claim. No active reply or draft interrupted. Existing-owner continuation only.
+Deploy34322420004 attempt2 passed healthy-container, authenticated public handle
+canary and protected SHA containment for ece0a8e25058221143b40859b2050cba0b610ad4.
+Attempt1 failed image resolution before production mutation; unchanged retry
+succeeded after independent exact-digest verification. Incident3602 resolved.
+Asked: Retest your workflow checklist
+Got: exact full rendered message at Sep9 00:12 PDT, composer cleared, app thinking.
+No other prompt, approval, operator workflow construction or repair performed.

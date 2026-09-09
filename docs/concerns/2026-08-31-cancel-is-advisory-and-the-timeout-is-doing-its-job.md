@@ -17,6 +17,14 @@ case described below. Do not remove time/resource safeguards by assuming that
 broader lifecycle evidence exists. The historical source line numbers below
 describe the August 31 finding and must not be reused as current code anchors.
 
+September 9 follow-up review note (source evidence, not a live reproduction):
+Claude's c5266c50 review identified another potential running-under-cancelled
+display case when the automation authority guard raises on the starting event.
+That path is distinct from the actual sandbox cancellation fixed by #3599.
+Preserve it for targeted reproduction; do not infer that the app exercised it.
+Historical cancelled-run records are intentionally not rewritten by the fix.
+Review: https://github.com/Jonnyton/TinyAssets/pull/3599#issuecomment-5597507666.
+
 ## Historical finding: August 31, 2026
 
 **Found 2026-08-31**, following the founder's statement that a borrowed

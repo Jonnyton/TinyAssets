@@ -1,6 +1,17 @@
 # Review and reproduction state
 
-## Current state: four gaps accepted live, cancellation display follow-up
+## Current state: four gaps accepted live, cancellation follow-up merged
+
+PR #3599 merged as ece0a8e25058221143b40859b2050cba0b610ad4 at 07:05:06 UTC.
+Exact-head Claude APPROVE for c5266c50 completed exit 0 after 239 seconds,
+independently running 63 passing tests. Linux Tests34320774044 passed; focused
+comparison185 vs178 passing cases, no new failures or lost passing cases.
+Receipts and tested merge-checkout proof are in
+docs/reviews/2026-09-09-workflow-control-gaps-proof.md.
+Deployment34322420004 attempt2 passed at07:11 UTC with authenticated canary and
+protected SHA containment. Exact retest prompt rendered at00:12 PDT; app thinking,
+so rendered all-five closure remains pending. The following dated
+sections retain the earlier reproduction and implementation evidence.
 
 At Sep 8 23:30-23:31 PDT, the app confirmed editing, exact output, discard and
 failed-node status fixed. It confirmed cancellation works and all nine older

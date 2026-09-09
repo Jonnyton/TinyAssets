@@ -45,3 +45,16 @@ tests, not already reproduced defects or license to weaken desktop support:
 No runtime code, storage schema, capacity number, provider authority or PLAN
 was changed for this design review. The five newly authorized app capability
 gaps also require implementation; none is closed by this design note.
+
+## Reproduced process-local occupancy: September 9, 2026 07:03 UTC
+
+Windows, Python 3.14, unchanged runtime at c5266c50. Command:
+`python output/probe-provider-cross-process-capacity.py` (local diagnostic).
+Two independent Python processes each entered the real provider_slot context
+with TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS=1 and stayed inside until the
+parent released them through stdin. Both reported limit1/live1/admitted1 while
+the parent observed two simultaneous holders. Both probe children exited.
+No provider CLI, production work, workflow, credential or external request was
+launched. This converts the process-local counter premise from source inference
+to an executable local reproduction; it does not establish live host topology,
+descendant containment, a replacement design, or shared-capacity enforcement.

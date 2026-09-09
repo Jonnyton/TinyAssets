@@ -4,6 +4,40 @@ September 9, 2026 UTC / September 8 PDT. Implementation PR #3591; reviewed head
 436f72b8370e6cfbff00184b5f0a0a63f75dc0df; merged and deployed revision
 0082695793278fabf520c9bf2a8fa2694c4a2823.
 
+## Cancelled-node follow-up: reviewed and merged, deployment pending
+
+PR #3599 merged September 9 at 07:05:06 UTC as
+ece0a8e25058221143b40859b2050cba0b610ad4. Reviewed head:
+c5266c5061d8143b9f87481d00408f541eaba527. Independent Claude code/basic-safety
+review completed exit 0 after 239 seconds and independently ran 63 passing tests.
+Receipt: https://github.com/Jonnyton/TinyAssets/pull/3599#issuecomment-5597507666.
+
+Linux Tests 34320774044 passed required-tests (14m56s) and slow-tests (1m23s).
+Actual checkout 923ddba66c57ba58e9de10903835953bba4aeb63 merges reviewed head with
+main58fb86b0. Fetched that exact tree and verified zero difference for all three
+changed canonical files, their mirrors and both changed test files. Other merge
+changes are #3590's input-method reporting, not overlapping cancellation files.
+Required JUnit compared with deployed008 baseline run34318730803: focused
+non-heavy selection185 passes versus178; seven added passes, no passing case
+lost or made nonpassing. Full required artifact14845 passes/54 skips/9 failures/
+2 errors; failure/error identities identical to baseline. Heavy files remain
+outside this PR's Linux coverage. Receipt and commands:
+https://github.com/Jonnyton/TinyAssets/pull/3599#issuecomment-5597654685.
+
+Build and publish image34322091429 passed at07:09:08 UTC, publishing tag
+ece0a8e25058 at digest sha256:d9c446a6c1858e4004acc66b4a385955708c1452ca0c2eb7de3400349a67949c.
+Deploy34322420004 attempt1 stopped at immutable-image resolution (exit255)
+before SSH or production mutation. Independent `docker buildx imagetools inspect
+ghcr.io/jonnyton/tinyassets-daemon:ece0a8e25058` then resolved the same digest.
+Retried unchanged through normal guards; first lookup's cause remains unknown.
+Incident: https://github.com/Jonnyton/TinyAssets/issues/3602.
+Attempt2 succeeded at07:11 UTC. Actual job102372152883 confirms healthy container
+at07:11:21, authenticated public canary with --assert-handles at07:11:23, and
+authenticated deployed_sha.py --assert-contains ece0a8e25058221143b40859b2050cba0b610ad4
+reported SHIPPED at07:11:24.380Z. No rollback; same immutable digest as the build.
+Credentials stayed in CI. App acceptance remains pending; next prompt is exactly
+the owner's retest text.
+
 ## Scope and independent evidence
 
 Correct update_node guidance, trusted workspace ancestry, exact bounded run
