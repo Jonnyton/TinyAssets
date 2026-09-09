@@ -14,4 +14,4 @@
 - [x] 3.2 Rebuild the packaged runtime mirror and pass focused tests, lint, invariants, and strict OpenSpec validation.
 - [x] 3.3 Obtain independent opposite-family review and resolve blocking findings.
 - [x] 3.4 Sync the reviewed delta specs and archive the completed change before landing.
-- [ ] 3.5 Merge through a reviewed PR, deploy the exact revision, and verify typed and spoken provenance through the live app.
+- [x] 3.5 Merge through a reviewed PR, deploy the exact revision, and verify typed and spoken provenance through the live app.

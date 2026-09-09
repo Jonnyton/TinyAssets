@@ -51,3 +51,20 @@ before landing:
   recorded `spoken` provenance keeps that label across reload and resend.
 
 The pull request records the final exact-head review after these refinements.
+
+## Post-deploy live app proof
+
+Verified 2026-09-08 at 23:40–23:42 PDT in the founder's rendered conversation
+at `https://tinyassets.io/mcp/app`, after production deployed merge
+`58fb86b0132ef4bdabb672631b070430d5f31313` successfully in
+[deploy run 34319564555](https://github.com/Jonnyton/TinyAssets/actions/runs/34319564555):
+
+- The founder typed “am i typing or speaking?” The rendered response said,
+  “You’re typing—the input method for this message is marked as typed.”
+- The founder then used speech input. The rendered response said, “You’re
+  speaking now—I can see this message is marked as spoken.”
+- The following exchange also exposed an ordinary transcription limitation:
+  nearby speech from the founder's roommate was included in the spoken turn.
+
+This is post-fix clean-use evidence from the only current user. No synthetic
+prompt or direct MCP call was substituted for the live app conversation.
