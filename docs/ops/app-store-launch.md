@@ -20,14 +20,15 @@ action-time confirmation under product policy remain subject to that policy.
 > first.** This file is the procedure; that one is where both platforms actually
 > stand. The short version for iOS: Apple Developer Program membership activated
 > on 2026-09-03; the explicit App ID and App Store Connect record were created and
-> verified that day. Product metadata and the unpublished privacy draft are saved,
+> verified that day. Product metadata and the published privacy disclosure are saved,
 > and Build 3 is attached to the empty internal TestFlight group with its en-US
 > **What to Test** text saved. Its beta description and marketing URL are saved,
 > Build 3 is selected for App Store Version 1.0, and a free price schedule is
-> confirmed for all 175 displayed countries or regions. Signing, provisioning,
+> confirmed for 148 non-EU storefronts, including the United States. Signing, provisioning,
 > API access, and
 > all six protected CI secrets are complete. Signed build 1.0.0 (3) was accepted by
-> App Store Connect on 2026-09-03, completed processing, and is **Ready to Submit**.
+> App Store Connect on 2026-09-03, completed processing, and was submitted to App
+> Review on 2026-09-09. It is **Waiting for Review**.
 > The copy-ready form answers, asset manifest, smoke checklist, and exact portal
 > sequence live in [`app-store-submission-packet.md`](app-store-submission-packet.md).
 
@@ -132,8 +133,9 @@ under Version 1.0.0 after processing completed. Receipt:
 The App Store Connect API then saved Build 3's en-US **What to Test** text and
 attached it to the empty `Internal` group. After founder reauthentication, the web
 session saved the beta app description and marketing URL, selected Build 3 for App
-Store Version 1.0, and confirmed a free price schedule for all 175 displayed
-countries or regions. Release mode remains manual. The group still has zero testers,
+Store Version 1.0, and confirmed a free price schedule. As of 2026-09-09,
+148 non-EU storefronts are enabled, including the United States. Release mode remains
+manual. The group still has zero testers,
 so no invitation or notification was sent. Its internal settings use manual
 distribution for Xcode builds. The internal-group and build pages expose no
 automatic tester-notification control; Apple's documented checkbox is in the
@@ -263,22 +265,22 @@ and [unavailability procedure](https://developer.apple.com/help/app-store-connec
 - [x] Apple: membership activated; portal shows Team ID and renewal date (2026-09-03)
 - [x] Apple: explicit App ID `io.tinyassets.app` registered and verified (2026-09-03)
 - [x] Founder: App Store Connect Terms accepted and app record created (§0)
-- [x] Product metadata saved; manual release selected; privacy draft configured but not published
+- [x] Product metadata saved; manual release selected; privacy notice and practices published
 - [x] Build 3 attached to the empty `Internal` TestFlight group; en-US **What to Test** saved; 0 testers
 - [x] Founder reauth: beta description saved and Build 3 selected for Version 1.0
-- [x] Free price schedule confirmed for all 175 displayed countries or regions
-- [x] Factual App Review Notes saved; no credentials or personal contact entered
+- [x] Free price schedule confirmed; 148 non-EU storefronts enabled, including the United States
+- [x] Factual App Review Notes, dedicated reviewer credentials, and contact block saved
 - [x] Live age-rating questionnaire saved at 18+ (Korea 19+)
 - [x] Untested Apple Silicon Mac and Apple Vision Pro availability disabled
-- [ ] Content Rights: founder/counsel attest necessary regional third-party-content rights
-- [ ] App Review credentials/contact: unlock secure vault and enter only in App Store Connect
+- [x] Content Rights completed for the selected initial storefronts
+- [x] App Review credentials/contact saved and independently verified without repository secrets
 - [ ] External-testing-only auto-notify control: revisit only if an external group is created; currently no recipients
-- [ ] Founder/counsel: approve final privacy policy; then land/deploy and verify the iOS wording
+- [x] Privacy notice v1.0 published live and Apple privacy practices published
 - [x] Protected `app-store` environment: founder approval + `main` only (§3)
 - [x] Signing setup and all six protected CI values complete (§3)
 - [x] Signed IPA 1.0.0 (1) built and checksum/profile verified
-- [x] Signed build 1.0.0 (3) uploaded, processed, and **Ready to Submit** in TestFlight
-- [x] Apple pre-review validation run; no submission created
-- [ ] Screenshots captured (§6; Apple requires 6.5-inch iPhone and 13-inch iPad images; this Windows host has no `xcrun`)
-- [ ] TestFlight device flow verified → submitted/manual release (§7)
-- [ ] Founder: decide current-shell submission vs native differentiator before App Review
+- [x] Signed build 1.0.0 (3) uploaded, processed, and submitted to App Review
+- [x] Required 6.5-inch iPhone and 13-inch iPad screenshots captured and saved
+- [x] Current-shell review risk accepted by the founder's explicit launch authorization
+- [x] Submission `5c6e4844-2ca2-438c-8aec-a189efb0ebb2` is **Waiting for Review**
+- [ ] After Apple approval, click **Release This Version** and verify a U.S. App Store install

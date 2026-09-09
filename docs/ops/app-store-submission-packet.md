@@ -17,7 +17,7 @@ exceptions in `docs/host-actions.md`.
 | Explicit bundle ID | `io.tinyassets.app` |
 | Bundle ID description | `TinyAssets iOS` |
 | App ID registration | Complete 2026-09-03; verified in the signed-in Apple Developer Identifiers list |
-| App Store Connect record | Created and verified 2026-09-03; Apple ID `6808434444`; iOS 1.0 is **Prepare for Submission** |
+| App Store Connect record | Apple ID `6808434444`; iOS 1.0, build 3, is **Waiting for Review** as of 2026-09-09 |
 | SKU | `tinyassets-ios` |
 | User access | Full Access for the existing Account Holder; the live form disables Limited Access and no additional user is selected |
 | Primary language | English (U.S.) |
@@ -25,7 +25,7 @@ exceptions in `docs/host-actions.md`.
 | Build | Use the numeric GitHub Actions run number |
 | Primary category | Productivity |
 | Secondary category | None |
-| Price | Free; United States (USD) base and `$0.00` schedule for all 175 displayed countries or regions saved 2026-09-03; no in-app purchases in this build |
+| Price | Free; United States (USD) base and `$0.00` schedule; 148 non-EU storefronts enabled, including the United States; no in-app purchases |
 | TestFlight | Internal group `Internal`; manual distribution for Xcode builds; Build 3 attached; 0 testers and no invitations sent |
 
 The explicit App ID, App Store Connect record, Apple Distribution certificate/private
@@ -42,14 +42,14 @@ CI secrets are complete.
   `assistant,agent,automation,workflow,universe,productivity,LLM,chat,projects,research`
 - **Support URL:** `https://tinyassets.io/legal#contact`
 - **Marketing URL:** `https://tinyassets.io`
-- **Privacy Policy URL:** `https://tinyassets.io/legal#app-data`
+- **Privacy Policy URL:** `https://tinyassets.io/legal/#privacy`
 - **User Privacy Choices URL:** `https://tinyassets.io/account`
 - **Copyright:** `2026 TinyAssets`
 
-The support and privacy anchors are reachable on the public site as of 2026-09-03.
-Do not enter or publish the privacy URL yet: the deployed page still omits iOS,
-and the legal page explicitly remains Draft v0 pending counsel. PR #2798 stages
-the iOS wording but does not resolve the legal-review gate.
+The support and privacy anchors are reachable on the public site. Privacy notice
+v1.0 is published and effective 2026-09-09; unrelated terms and token disclosures
+remain explicitly draft. App Store Connect saved this URL and published the four
+declared data types before submission.
 
 **Description:**
 
@@ -134,11 +134,11 @@ Leave all accessibility responses unclaimed until the signed-device matrix is
 complete. Publishing the label is a separate founder approval and cannot be
 undone for a published device response.
 
-## App Privacy draft — first release with realtime voice dark
+## App Privacy — published 2026-09-09, first release with realtime voice dark
 
-Choose **Yes, we collect data from this app**. This table is the conservative
-draft for the shipping app on `main`; each type is linked to the user's identity,
-used only for the named purpose, and not used for tracking.
+App Store Connect is saved as **Yes, we collect data from this app**. This table
+is the published disclosure for build 3; each type is linked to the user's
+identity, used only for the named purpose, and not used for tracking.
 
 | Apple data type | What the app sends or stores | Purpose |
 |---|---|---|
@@ -173,9 +173,9 @@ used only for the named purpose, and not used for tracking.
   dependencies. The native shell has no analytics, advertising, StoreKit, payment, or
   crash-reporting dependency; voice remains dark for Build 3.
 
-This evidence supports the saved four-row draft. It does **not** supply the legal/vendor
-attestation required to publish it: vendor contracts and production treatment still
-need founder/counsel confirmation.
+This evidence supports the published four-row disclosure. The founder's explicit
+launch authorization covered its publication after the live notice and data-flow
+review were complete.
 
 For every row: **linked to identity: Yes**; **tracking: No**; advertising,
 third-party advertising, and developer advertising purposes: **No**. The app has
@@ -185,12 +185,9 @@ text-like attachments only. Payment-card data entered on a processor-hosted web
 page is not collected by this app, and the native shell exposes no checkout.
 
 WorkOS and the infrastructure provider process data to operate the service. A
-user-connected AI provider receives user content at the user's direction. Before
-publishing the label, confirm the current vendor contracts and production data
-path support the intended service-provider/user-directed-transfer treatment.
-App Store Connect's **Publish** confirmation is a separate founder approval.
-The live 2026-09-03 questionnaire did not offer a separate Account Management
-purpose; all four saved draft entries use App Functionality only.
+user-connected AI provider receives user content at the user's direction. The
+published questionnaire did not offer a separate Account Management purpose; all
+four entries use App Functionality only.
 
 ### Conditional voice delta
 
@@ -295,17 +292,16 @@ one, so the server must remain compatible with the last released shell.
    the resulting name and exact bundle ID.
 2. **Complete 2026-09-03:** the founder accepted App Store Connect Terms of Service
    V100 (last updated 04 June 2018), then confirmed creation of the TinyAssets app
-   record. Apple ID `6808434444`; iOS 1.0 is **Prepare for Submission**.
-3. **Partially complete 2026-09-03:** product-page copy, subtitle, Productivity
-   category, copyright, support/marketing URLs, and manual release are saved. The
-   four-type App Privacy draft is fully configured for App Functionality, linked
-   to identity, and no tracking, but it is not published and its legal-policy URLs
-   remain blank. Build 3 is attached to the `Internal` TestFlight group, selected
+   record. Apple ID `6808434444`; current review state is recorded in item 10.
+3. **Complete 2026-09-09:** product-page copy, subtitle, Productivity category,
+   copyright, support/marketing URLs, and manual release are saved. The four-type
+   App Privacy disclosure is published for App Functionality, linked to identity,
+   and no tracking; its live privacy URL is saved. Build 3 is attached to the
+   `Internal` TestFlight group, selected
    for App Store Version 1.0, and its en-US **What to Test** and app-level beta
    description are saved. The group has manual Xcode-build distribution, zero
-   testers, and no invitations were sent. A free price schedule is saved for all
-   175 displayed countries or regions; availability remains unset. Stop at any new agreement, DSA
-   trader-status choice, privacy publication, or other legal declaration.
+   testers, and no invitations were sent. A free price schedule is saved for 148
+   enabled non-EU storefronts, including the United States.
 4. **Complete 2026-09-03:** the founder approved credential creation. A 2048-bit
    Apple Distribution certificate/private-key pair was created and verified, then
    backed up as an encrypted P12. The active `TinyAssets App Store 2026` App Store
@@ -336,15 +332,18 @@ one, so the server must remain compatible with the last released shell.
    unset because Apple's truthful third-party-content answer includes a regional
    rights attestation. Interrupt only where a personal/legal fact cannot be
    established truthfully. Keep release mode manual until publication.
-9. **Complete preflight 2026-09-03:** **Add for Review** returned **Unable to Add
-   for Review** and did not create a submission. Apple requires one 13-inch iPad
-   screenshot, one 6.5-inch iPhone screenshot, Content Rights, a Privacy Policy
-   URL, published privacy practices from an Admin, reviewer username/password,
-   and reviewer first name, last name, email, and `+` country-code phone number.
-10. Obtain the action-time confirmations product policy requires immediately before
-   **Submit for Review** and **Release This Version**.
+9. **Complete 2026-09-09:** the dedicated reviewer password was rotated and verified,
+   the complete reviewer contact block was saved, the privacy notice and four-type
+   disclosure were published, Content Rights was completed, and US-first availability
+   was saved for 148 non-EU storefronts. The United States is **Available on App
+   Release**; all 27 EU storefronts are **Not Available**; app-specific DSA status is
+   non-trader for this initial non-EU release.
+10. **Submitted 2026-09-09 02:32 PDT:** **Add for Review** succeeded and the resulting
+    one-item submission was sent to Apple. iOS 1.0 / build 1.0.0 (3) is **Waiting for
+    Review**, submission ID `5c6e4844-2ca2-438c-8aec-a189efb0ebb2`. Release mode is
+    manual. Receipt: `docs/audits/2026-09-09-ios-app-review-submission-receipt.md`.
 
-## External gates that remain
+## External gate that remains
 
 - The required 6.5-inch iPhone and 13-inch iPad screenshots were captured from Build
   3's exact source, passed dimension/alpha and visual checks, and persisted in App
@@ -352,25 +351,12 @@ one, so the server must remain compatible with the last released shell.
   `docs/audits/2026-09-03-ios-app-store-screenshot-preflight-receipt.md`. A physical
   iPhone is separately required for microphone-release proof if voice ships; Build 3
   remains voice-dark.
-- Founder/counsel confirmation of Content Rights (Apple's truthful
-  third-party-content answer also attests necessary rights), plus live privacy,
-  storefront availability, and DSA/trader declarations.
-- Account-holder-controlled reviewer first name, last name, email, and
-  international-format phone number. The existing least-privilege App Review
-  username/password was recovered from Google Play's dedicated reviewer record and
-  accepted by the App Store Connect fields without copying it into repository files.
-  The founder's local `01-candidate-profile.md` is the authoritative source for the
-  phone; do not duplicate it here. Apple saves the sign-in and contact fields as one
-  block, and explicit action-time authorization is still required before transmitting
-  that phone number to Apple.
+- Apple must review iOS 1.0. When the submission becomes approved, select
+  **Release This Version**, then verify that the United States App Store product page
+  offers the install before calling the launch complete.
 - Automatic tester notification cannot be changed on the current internal-only
   UI. Build 3 has no external group or tester, so the API's residual `true` value
   is inert; revisit the checkbox only if an external-testing group is created.
-- Final founder/counsel approval of the privacy policy. PR #2798 is landed and deployed,
-  and the live disclosure already includes iOS; its own visible **Draft v0** status is
-  the remaining policy blocker.
-- Action-time confirmation where product policy requires it for App Review submission
-  or other representational external actions, notwithstanding the standing directive.
 
 Official references checked 2026-09-03: [add a new app](https://developer.apple.com/help/app-store-connect/create-an-app-record/add-a-new-app/),
 [app information](https://developer.apple.com/help/app-store-connect/reference/app-information/app-information/),
