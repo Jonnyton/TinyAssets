@@ -1,4 +1,4 @@
-# Discovery profile publication — proposed integration, not active
+# Discovery profile publication — implemented locally, not deployed
 
 September 9,2026. The exact metadata home is already present:
 `storage/outbound_connections.py` has `connection_capabilities`, keyed by
@@ -9,11 +9,14 @@ ProviderDefinition identity needs no extension. The primitive checker reports
 no handler-map match for that operation, but direct source inspection confirms
 the explicit universe_server branch; do not propose a duplicate action.
 
-## Proposed bounded extension (pre-build review required)
+## Bounded extension (independent ADAPT corrections incorporated)
 
 Add model_discovery as another typed descriptor in the existing table, not a
 second connection registry. Use a separate ModelDiscoveryCapability value type;
 do not overload realtime voice's session_url or change its existing projection.
+One in-module capability spec table maps each kind to its value type, validator,
+verb and URL fields; kind validation, publication and readback dispatch through
+that same table. Model discovery uses GET; voice keeps its existing POST behavior.
 Closed fields: protocol, catalogue_url, optional benchmark_url. Initially the
 protocol adapter is openrouter_user_models_v1 (the documented authenticated
 user-filtered response), with the existing artificial-analysis benchmark decoder.
@@ -35,8 +38,17 @@ the actual grant/connection from it. Do not accept a caller-supplied connection,
 grant or owner identity. Revalidate live grant/resource ownership and universe
 scope at publication. This new kind must not depend on a currently functioning
 serving LLM or a ready serving assignment: unpowered users need to configure it.
+Bypass the current-serving resolver entirely for this kind. Only its closed
+payload shape admits definition_id; verified lookup checks content address and
+universe bucket. Use a discovery-specific error for an unsupported connection,
+not provider_voice_unsupported. Recheck the exact expected grant/owner/universe
+and connection under the metadata write transaction to fence changes after the
+handler's read. Legacy voice callers do not acquire a new required input.
 The existing realtime voice shape and current-serving resolution stay intact.
 Inaccessible resources receive the existing uniform not_found envelope.
+The row is connection-scoped: all definitions/grants sharing that owned connection
+share the profile; removing it through one removes it for all. Revocation leaves
+metadata stored, but all discovery readers recheck the live grant/resource.
 
 ## Discovery evidence and execution boundary
 
@@ -51,11 +63,24 @@ destinations and compare profile plus current authority after the reads, before
 publishing a snapshot. Initially fetch fresh rather than adding another durable
 cache store. Carry source URLs, fetch time and a digest of the profile/current
 connection authority into the snapshot; recheck at actual model authorization.
-Never mark arbitrary same-schema JSON as verified account-filtered availability:
-the protocol's account-filtered endpoint semantics must be established separately
-from shape decoding. A global catalogue or caller-supplied owner_filtered flag
-cannot substitute for that evidence. The precise compatible-endpoint verification
-is a review question, not a solved claim in the transport implementation.
+Never mark arbitrary same-schema JSON as verified account-filtered availability.
+The protocol adapter pins /api/v1/models/user and owns account-filtered semantics;
+the host remains the owner's explicitly granted choice. A global /models path,
+different path, arbitrary query or caller/body owner_filtered flag is refused.
+The adapter alone sets that fact after a successful200 through the exact live
+credentialed proxy, never from response metadata. Account identity remains None;
+do not invent independent account capacity. Require the protocol's bearer auth
+shape; an anonymous endpoint cannot establish account-filtered availability.
+
+One evidence-backed refinement of the review's no-query recommendation: the
+owner wants ALL available choices. Official docs rechecked September9,21:43 UTC
+explicitly provide output_modalities=all; without it the endpoint defaults to
+text-output models. Pin that single exact query in this adapter as well as the
+path, rather than permitting arbitrary queries or silently showing a partial
+catalogue. Publication requires the existing grant to admit it. Pin the optional
+benchmark path to /api/v1/benchmarks without a query. This is a fixed protocol
+contract, not a model-release list or new endpoint permission. Documentation:
+https://openrouter.ai/docs/api/api-reference/models/list-models-filtered-by-user-provider-preferences-privacy-settings-and-guardrails
 
 Benchmark as_of controls score freshness; a new HTTP fetch does not freshen old
 scores. Missing benchmark coverage leaves models visible but unranked. Missing
@@ -79,3 +104,12 @@ is implemented; do not advertise HTTP full-agent readiness from catalogue tools.
 - Fresh unknown model ids become selectable only through the separate per-attempt
   model validator and approved cost/capability limits. Prove actual execution,
   UI and rendered app behavior later; these unit fixtures are not that proof.
+
+Implementation now follows this adapted design;40 new profile cases and279
+combined Windows/Ubuntu checks pass. Profile-bound refresh and actual selection
+remain unfinished. Evidence: docs/reviews/2026-09-09-discovery-profile-publication-proof.md.
+
+Review: docs/reviews/2026-09-09-model-discovery-review.md. Internal transport and
+decoders APPROVED at4e21c3d5; publication still needs independent implementation
+evidence before landing. Actual account pricing may contain
+additional charge components; do not claim automatic eligibility from fixtures.

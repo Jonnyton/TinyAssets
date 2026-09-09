@@ -822,9 +822,10 @@ def write_graph(
             the owner asks you to remove a credential, or when a key was pasted
             against a destination they did not intend (owner-only).
             Also with target=connection, configure_provider_capability declares or
-            revokes a non-secret capability on the universe's CURRENT serving
-            provider. The server derives its exact live connection and grant;
-            callers cannot select either or widen the provider's endpoint scope.
+            revokes non-secret connection metadata. realtime_voice uses the
+            CURRENT serving provider; model_discovery uses an owned definition
+            and works unpowered. The server derives the live connection and
+            grant; metadata never widens endpoint scope or selects a model.
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
@@ -911,6 +912,17 @@ def write_graph(
             descriptor to revoke. Owner plus home-universe admin authority is
             required; subscription-only providers are refused rather than given a
             second credential path.
+            For model-discovery metadata, instead pass {"capability_kind":
+            "model_discovery", "definition_id": "<owned compute definition>",
+            "enabled": true, "descriptor": {"protocol": "openrouter_user_models_v1",
+            "catalogue_url": "https://<granted-host>/api/v1/models/user?output_modalities=all",
+            "benchmark_url": "https://<granted-host>/api/v1/benchmarks"}}.
+            benchmark_url is optional. Both URLs must already be GET-authorized;
+            the catalogue path and query are fixed by the protocol. Requires the
+            universe's admin and the exact connection owner, but no serving LLM.
+            Pass enabled=false without descriptor to remove this metadata for
+            ALL definitions sharing that connection. This neither grants access
+            nor enables model selection or full-agent execution by itself.
             For target=automation operation=create, pass
             {"name": "Nightly digest", "branch_def_id": "<one of YOUR
             workflows>", "interval_seconds": 3600, "inputs": {...}} — or
@@ -1171,9 +1183,9 @@ def write_graph(
                 )
             )
         if connection_operation == "configure_provider_capability":
-            # Capability metadata is attached only to the exact connection and
-            # grant already serving the authenticated founder's own home. The
-            # payload cannot select authority or widen its endpoint policy.
+            # The handler derives live authority from the current serving chain
+            # for voice, or a verified owned definition for discovery metadata.
+            # Neither shape can widen the connection's endpoint policy.
             from tinyassets.api.provider_capability import (
                 configure_provider_capability,
             )
