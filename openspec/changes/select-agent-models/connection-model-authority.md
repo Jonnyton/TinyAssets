@@ -28,13 +28,16 @@ legacy model remains unchanged. New signed constraints add `model_scope`:
 
 Each child commits to its connection/protocol/grant through the unchanged provider
 definition and custody identity, plus model_scope and cost restrictions. Canonical
-manifest hashing sorts members by stable identity, not preference order. The
+manifest hashing commits to the root identity followed by members sorted by
+stable identity, not preference order. Child rows are keyed by universe,
+assignment generation and provider, with no position field. The
 root's provider_ref is a legacy structural anchor, not the policy's first choice.
 Selecting/reordering an accepted model changes only preference generation.
 Changing accepted connections, allowed model scope or spending restrictions
 changes assignment generation and invalidates stale authorization. Keep v1
 digests byte-compatible when no manifest is present; verify v2 assignment,
-manifest, candidate identity and child-0/root equality on every read.
+manifest, candidate identity and anchor-child/root equality on every read (the
+anchor child is the one whose provider equals assignment.provider).
 
 Publication is the existing two-phase pending/ready transaction, extended over
 all children. Replay compares complete signed membership/constraints as well as
@@ -48,7 +51,7 @@ Do not consult revoked primary custody before checking another accepted child.
 The shared validator resolves a member under the exact current assignment and
 request carrier. It additionally validates the requested opaque model against
 that member's model_scope and refreshed catalogue/cost evidence. It returns the
-authorized model selection as request-local data alongside ServedProviderAuthority.
+authorized model selection as a field on ServedProviderAuthority (None is legacy).
 The router, not a user-supplied ModelConfig field, propagates that result into
 the provider call. No global provider.model mutation and no activating old ignored
 CLI definition.model fields. The adapter passes an explicit CLI model as a separate
@@ -81,6 +84,10 @@ https://openrouter.ai/docs/client-sdks/typescript/api-reference/models/models
 Keep legacy request limit 2. For new policy turns, seal one finite candidate plan
 once under the authenticated request, with launch allowance twice its eligible
 model-candidate count: at most one traversal for reply and one for learning.
+Store the allowance in the existing request registry as set-once launch_limit;
+sealing again with a different value fails. Sealing after any unsealed launch
+also fails. Consumption uses the sealed value when present, never a later
+caller's proposed larger value; unsealed legacy calls retain their existing cap.
 This is not an arbitrary two-model limit. Do not increase the allowance after a
 launch or mint another carrier to replenish it. Candidate refusal, budget refusal
 or slot refusal before launch consumes no invocation. Reserve first, obtain the
@@ -103,3 +110,13 @@ bounded by their turn journal and outbound grant, not an unmetered inner loop.
    refusals do not burn launch count; concurrent calls cannot inflate the count.
 6. Actual model metadata and completed tool results remain per-turn; a switch
    preserves completed work and holds any ambiguous tool outcome for recovery.
+
+## Review disposition
+
+Claude's second candidate-authority shape pass returned ADAPT with two exact
+corrections: provider-keyed children/explicit root identity, and a set-once launch
+allowance in the existing request registry. Both are incorporated above. The
+review accepts a model field on trusted ServedProviderAuthority, overwritten
+into per-call configuration by the router, without a redundant token scheme.
+OpenRouter zero-price enforcement is an inference from documented max-price
+semantics, not live free-model evidence. Full review is preserved separately.

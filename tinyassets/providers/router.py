@@ -912,16 +912,6 @@ class ProviderRouter:
                         reserve_served_provider_budget,
                     )
 
-                    try:
-                        if served_authority.request_capability is not None:
-                            consume_provider_request_invocation(
-                                served_authority.request_capability,
-                                limit=served_authority.request_max_invocations,
-                            )
-                    except PermissionError as exc:
-                        raise ProviderAuthorityHeldError(
-                            _CONNECT_PROVIDER_MESSAGE
-                        ) from exc
                     estimated_input_tokens = max(
                         1,
                         len(
@@ -940,6 +930,7 @@ class ProviderRouter:
                         call_timeout_s=getattr(cfg, "timeout", None),
                     )
                     cfg = replace(cfg, max_tokens=budget_reservation.output_tokens)
+                provider_started = False
                 try:
                     # Bound concurrent provider SUBPROCESSES (~77 MB PSS each,
                     # measured). ASYNC form: a blocking acquire here stalls the event
@@ -957,6 +948,20 @@ class ProviderRouter:
                         ) if served_authority is not None else None
                         if callable(before_launch):
                             before_launch()
+                        if (
+                            served_authority is not None
+                            and served_authority.request_capability is not None
+                        ):
+                            try:
+                                consume_provider_request_invocation(
+                                    served_authority.request_capability,
+                                    limit=served_authority.request_max_invocations,
+                                )
+                            except PermissionError as exc:
+                                raise ProviderAuthorityHeldError(
+                                    _CONNECT_PROVIDER_MESSAGE
+                                ) from exc
+                        provider_started = True
                         resp = await provider.complete(
                             prompt, system, cfg, universe_dir=universe_dir,
                         )
@@ -993,7 +998,7 @@ class ProviderRouter:
                         # as "budget exhausted" while actually having capacity.
                         # Only a failure AFTER the call began (genuinely unknown
                         # usage) is conservatively consumed.
-                        if isinstance(exc, ProviderUnavailableError):
+                        if not provider_started or isinstance(exc, ProviderUnavailableError):
                             release_served_provider_budget(
                                 universe_dir.parent,
                                 budget_reservation,
