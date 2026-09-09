@@ -1,7 +1,8 @@
 {
-  "version": "v0-draft",
-  "effective_date": "2026-04-29",
-  "review_status": "Draft v0 \u2014 pending securities-counsel confirmation. Defaults are best-effort, not legal advice.",
+  "version": "privacy-v1.0 / terms-v0-draft",
+  "terms_effective_date": "2026-04-29",
+  "privacy_effective_date": "2026-09-09",
+  "review_status": "Privacy notice published v1.0 and effective 2026-09-09 as an operational disclosure. Counsel review of this page remains pending.",
   "platform_license": "MIT",
   "content_license": "CC0-1.0",
   "platform_repo": "https://github.com/Jonnyton/TinyAssets",
