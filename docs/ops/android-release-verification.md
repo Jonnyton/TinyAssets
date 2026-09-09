@@ -51,8 +51,9 @@ monitoring, and rollback shape.
   the non-blocking missing-deobfuscation-file warning. On 2026-09-08 the preview was
   saved into Publishing overview and Google's automated quick checks passed. On
   2026-09-08 the verified reviewer credential was saved and all 15 launch changes
-  were submitted. Play now reports **Changes in review** while its final quick checks
-  run. The code-4 phone smoke and Google's review decision remain.
+  were submitted. Play's final quick checks completed and the Console now says
+  **Your changes are now in review**. The code-4 phone smoke and Google's review
+  decision remain.
 
 Advertising-ID evidence was re-run on the Windows host on 2026-09-03. Downloading the
 baseline from GitHub Actions run `33797592515` reproduced SHA-256

@@ -568,10 +568,10 @@ Open, with what each actually waits on:
       3.16 MB, and the intended notes; its only validation item was the non-blocking
       missing-deobfuscation-file warning. The preview was saved into Publishing
       overview on 2026-09-08 and Google's automated quick checks passed. All 15
-      changes were submitted that day; the Console now reports **Changes in review**
-      while final quick checks run. Add at least 11 more real Google-account testers
-      and maintain 12 continuous opt-ins for 14 days. Play reported 0 opted-in
-      testers on 2026-09-08.
+      changes were submitted that day. Play's final quick checks completed and the
+      Console now says **Your changes are now in review**. Add at least 11 more real
+      Google-account testers and maintain 12 continuous opt-ins for 14 days. Play
+      reported 0 opted-in testers on 2026-09-08.
 - [ ] Independent cross-family review of the later voice-native slice. The original
       release review does not cover it; the prepared request and exact retry path are
       in `docs/audits/2026-09-03-android-store-release-claude-review.md`.
