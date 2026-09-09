@@ -23,4 +23,8 @@ Verification on the working tree:
 - `python packaging/claude-plugin/build_plugin.py`: 397 runtime files, import probe passed.
 - `git diff --check`: passed.
 
-Independent review and production verification remain required before landing.
+Independent Claude review of exact fc617195 returned APPROVE (exit 0, 184s),
+independently rerunning all 23 new tests. Full evidence is in
+`docs/reviews/2026-09-09-shared-serving-authority-review.md`. Required CI and
+production verification remain outstanding; model-policy and candidate-set
+approval are separate, unfinished gates.
