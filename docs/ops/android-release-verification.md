@@ -44,8 +44,12 @@ monitoring, and rollback shape.
   as `ea3f1092a4f90f3e737be89c606140e7ea9d64a5`; signed workflow run `34297030257`
   produced a 3,685,314-byte AAB with SHA-256
   `d647d073ae62088c8dba0795b883d4449b31c5ab3eb37f2304adde949e352cc3`. Play accepted
-  code 4 into the artifact library on 2026-09-08. Saving it as the sole Alpha bundle,
-  submitting the declaration/release, and the code-4 phone smoke remain.
+  code 4 into the artifact library on 2026-09-08. The foreground-service declaration
+  was then saved and moved out of Needs attention, and code 4 was saved as the Alpha
+  draft's sole bundle. The preview confirms version `4 (1.0.3)`, API 24+, target SDK
+  36, 3.16 MB new-install size, and the intended notes. Its only validation item is
+  the non-blocking missing-deobfuscation-file warning. The preview-level Save, review
+  submission, and code-4 phone smoke remain.
 
 Advertising-ID evidence was re-run on the Windows host on 2026-09-03. Downloading the
 baseline from GitHub Actions run `33797592515` reproduced SHA-256
