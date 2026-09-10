@@ -40,8 +40,9 @@
   Pure agent-chat codec now implemented after shape ADAPT300s;224 Windows and
   224 actual Linux checks pass,0skips. Immutable whole-batch tool requests and
   exact same-source result continuation are fixtures only, not live dispatch.
-  See docs/reviews/2026-09-10-agent-chat-codec-proof.md. Implementation review
-  pending; all existing HTTP full-agent holds remain in place.
+  See docs/reviews/2026-09-10-agent-chat-codec-proof.md. Exact e6bc197b review
+  APPROVE330s independently reproduced91cases; no required changes.
+  All existing HTTP full-agent holds remain in place.
 
 ## 3. User proof and delivery
 
@@ -59,6 +60,10 @@
   Required CI passed with zero new baseline failures; merged2d12f846 at03:50UTC.
   Deploy34435113016 passed protected SHA containment03:55:41UTC and public
   canary--assert-handles. Fresh exact checklist prompt sent in the owned app
-  tab04:00UTC; reply/footer verification pending. Clickable picker still open.
+  tab04:00UTC. App21:03PDT reports five passes; its new footer visibly says
+  Answered by codex · Model not reported. AX and screenshot verified. Webhook
+  deleted receiver404 still needs owner scope, prior200/204 remains valid.
+  Controlled typed-owner continuation only, not organic/first-contact proof.
+  Clickable picker still open.
 - [ ] 3.2 Run focused cross-platform tests, independent exact-head review and CI; deploy and verify authenticated SHA/canary evidence, then ordinary rendered app use without operator workflow edits.
 - [ ] 3.3 Sync only shipped behavior into main specs and archive this change after completion; update the goal's stage and record any remaining capability gap honestly.

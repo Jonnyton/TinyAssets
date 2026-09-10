@@ -32,7 +32,16 @@ rebuilt with packaging/claude-plugin/build_plugin.py; mirror parity is included.
 Canonical brand generator refresh carries only the previously landed answering-
 model app checksum; no brand appearance changes.
 
-Implementation review is pending on the committed head. No claim of live HTTP
+Implementation review31571 terminated APPROVE330s on exact
+e6bc197b15fd387a763b8838183b16e21b72de27, independently91passing codec tests,
+Ruff and mirror equality. Full result is in
+2026-09-10-agent-chat-codec-implementation-review.md. No required changes.
+Nongating compatibility notes are retained for integration: some endpoints may
+add an index key or reuse call ids across rounds; these remain explicitly held
+until supported by verified fixtures and a round-scoped journal contract.
+The later terminal projection must respect semantic stops, not merely nonempty
+text. Add removed-tool/forged-tuple fixtures when that boundary is integrated;
+reviewer's direct probes already refused both. No claim of live HTTP
 agent support: existing eligibility, selected-executor refusal and legacy price
 guard remain unchanged. Durable tool intent/results, per-inference admission,
 cost-constrained agent requests and actual authorized tool execution must be

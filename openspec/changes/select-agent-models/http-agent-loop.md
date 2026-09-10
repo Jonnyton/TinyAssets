@@ -52,9 +52,10 @@ reduced ProviderResponse to text and updated a process-global last-provider
 label. Feature commit215aacf2 now adds an optional reply-owned response observer
 and WriterExecutionReceipt, propagated into converse's optional execution field.
 The first completed conversational response wins; subsequent learning cannot
-overwrite it. This bridge is built and independently reviewed, not deployed.
-Reply-owned app display is now built in6f0e6273, not deployed; clickable selection
-remains pending. Never use the global label across users.
+overwrite it. Bridge and reply-owned display shipped together in PR3734 as
+2d12f84661f2, protected SHA/canary verified September10,03:55UTC. App21:03PDT
+fresh reply visibly says Answered by codex · Model not reported. Clickable
+selection remains pending. Never use the global label across users.
 See docs/reviews/2026-09-10-interactive-model-receipt-proof.md.
 
 The newer agent-runtime outcome path requires complete usage/cost before success;
@@ -106,10 +107,12 @@ Private transport repair PR3728 is deployed3b541c116e7c03:07UTC with protected
 SHA/canary and20:12PDT five-pass app retest. HTTP tool client5406c3e4 separately
 is built and exact-head APPROVE339s with227 Windows/230 Linux passes, not yet a
 live caller. Fresh per-inference admission and durable tool continuation remain
-unbuilt. Reply-owned display is isolated in draft PR3734 atc4850362;352 Windows/
-352 Linux passes, exact final review and CI pending. No model selection activated.
-Next pure inference/tool transcript boundary is proposed in agent-chat-protocol.md;
-legacy text codecs and price guards remain unchanged until reviewed integration.
+unbuilt. Reply-owned display release PR3734 atc4850362 passed352 Windows/352
+Linux checks and exact APPROVE162s; merged/deployed2d12f846 with rendered proof
+above. No model selection activated. Pure inference/tool codec now e6bc197b,
+224Windows/224Linux passes,0skips, exact APPROVE330s; see agent-chat-protocol.md
+and docs/reviews/2026-09-10-agent-chat-codec-proof.md. Legacy text codecs and
+price guards remain unchanged until reviewed integration.
 
 ## Per-inference integration source check, September10 03:38UTC
 
@@ -132,3 +135,35 @@ tool-start/result states to the authority chain or silently change its schema.
 Any durable tool-intent/result/unknown state table needs its own explicit reviewed
 storage contract under this existing change before integration code. Best-effort
 conversation text and the pure codec are not alternatives to that journal.
+
+## Interactive journal lineage correction, September10 04:09UTC
+
+Focused source read at e6bc197b: universe_server.converse uses the ordinary
+served-request path, not a custom agent-runtime invocation. The MCP middleware
+reserves the exact message/session request, claims a nonserializable
+ProviderRequestCapability and cancels it on return. auth.middleware's
+current_request_boundary_id is an opaque per-transport id, not durable resume
+authority. Never persist/recreate these capabilities as journal credentials.
+
+The router's actual conversational budget is
+provider_assignment.reserve_served_provider_budget, using
+SQLiteProviderWorkAuthorityStore.connection and BEGIN IMMEDIATE in db_path.
+It validates assignment/binding/custody and writes served_provider_budget_reservations,
+distinct from provider_invocation_reservations for custom admitted agent work.
+Therefore a tool journal must not require a synthetic custom-agent invocation
+root or a foreign reservation just to serve ordinary chat. Reuse the shared
+database/transaction owner with explicit lineage for the real execution path.
+
+The existing served finalizer uses conservative unknown-usage estimates and an
+estimated cost floor for selected models, while custom-agent outcome success
+requires known usage. Do not conflate those contracts or label estimates as
+measured codec usage. Each inference still needs its own admitted/settled call.
+
+Next reviewed design must resolve server-minted turn identity, owner/universe
+scope, current policy/assignment generation, matching served-reservation linkage,
+commit-before-dispatch intents and exact completed/unknown results. Persisted
+progress is not authority: resume needs fresh owner/assignment/grant validation;
+an unfinished intent is not permission to replay. Terminal tool rows must outlive
+ordinary settled-budget pruning, with account deletion and retention explicit.
+No new table, resume API, authority mint, cleanup or runtime caller is implemented
+by this inspection. Keep it under tasks2.3/2.4, not a new unrelated change.
