@@ -84,6 +84,20 @@ def test_inventory_finds_one_account_holder_and_exact_internal_group():
     assert all("holder@example.com" not in path for _, path, _ in client.calls)
 
 
+def test_group_with_matching_name_but_external_type_fails_closed():
+    class ExternalGroupClient(FakeClient):
+        def request(self, method, path, body=None, **kwargs):
+            response = super().request(method, path, body, **kwargs)
+            if path.startswith("/apps/"):
+                response["data"][0]["attributes"]["isInternalGroup"] = False
+            return response
+
+    with pytest.raises(SystemExit, match="expected one internal beta group"):
+        module.internal_group(
+            ExternalGroupClient(), "6808434444", group_name="Internal"
+        )
+
+
 def test_add_creates_missing_tester_with_group_relationship():
     client = FakeClient()
     holder = module.account_holder(client)
@@ -124,6 +138,29 @@ def test_add_is_idempotent_when_account_holder_is_already_in_group():
         False,
     )
     assert all(call[0] == "GET" for call in client.calls)
+
+
+def test_add_fails_when_apple_does_not_persist_group_membership():
+    class NonPersistingClient(FakeClient):
+        def request(self, method, path, body=None, **kwargs):
+            response = super().request(method, path, body, **kwargs)
+            if method == "POST":
+                self.in_group = False
+            return response
+
+    client = NonPersistingClient()
+    holder = module.account_holder(client)
+    group = module.internal_group(client, "6808434444", group_name="Internal")
+
+    with pytest.raises(SystemExit, match="did not add the account holder"):
+        module.add_account_holder(client, holder=holder, group=group)
+
+
+def test_duplicate_tester_identity_fails_closed():
+    duplicate = FakeClient._tester()
+
+    with pytest.raises(SystemExit, match="duplicate testers"):
+        module._tester_with_email([duplicate, duplicate], "holder@example.com")
 
 
 @pytest.mark.parametrize(
