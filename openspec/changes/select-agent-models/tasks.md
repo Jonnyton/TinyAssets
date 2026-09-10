@@ -24,7 +24,17 @@
   bodies now implemented locally.373 Windows/373 actual Linux checks pass,0skips.
   See docs/reviews/2026-09-10-agent-runtime-adaptations-proof.md. Actual
   runner, per-inference observer/sealing/accounting and tools-capable selection
-  are still unfinished. No runtime/picker activation or new deployment claimed.
+  were subsequently implemented in the integration below. No new deployment claimed.
+
+  September10 05:49UTC: actual writer bridge -> HTTP agent -> router -> adapter ->
+  journal -> owner-bound engine client composition now implemented locally.
+  Every inference seals/checks current authority, accounts the full encoded
+  request and tool-shaped response, commits intent after launch admission, then
+  commits exact known tool results before continuing. Unknown transport/effect
+  outcomes hold without replay.409 Windows/409 actual Linux checks pass,0skips.
+  See docs/reviews/2026-09-10-interactive-http-agent-proof.md. Independent exact
+  implementation review is next. Typed candidate fallback, saved/current policy
+  ingress and clickable UI remain unfinished; no full-agent live proof yet.
 
   September10 partial: synchronous HTTP lookup/request/cleanup now runs in one
   owned executor Future. Cancellation drains it before router settlement; actual

@@ -177,7 +177,8 @@ def refresh_model_discovery(
             source_kind="http",
             freshness="fresh",
             owner_filtered=contract.account_filtered,
-            executor_tools=False,
+            # Local executor capability, never the remote catalogue's claim.
+            executor_tools=contract.inference_protocol == "openai_chat",
             models=(),
             authenticated_account_id=None,
         ),

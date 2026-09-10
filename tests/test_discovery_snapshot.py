@@ -73,7 +73,7 @@ def test_refresh_keeps_exact_provenance_and_never_upgrades_tool_or_account_autho
     assert result.connection_id == "conn-models" and result.grant_id == "grant-models"
     assert result.models.connection_id == result.provider
     assert result.models.owner_filtered and result.models.freshness == "fresh"
-    assert not result.models.executor_tools and result.models.authenticated_account_id is None
+    assert result.models.executor_tools and result.models.authenticated_account_id is None
     assert result.models.default_model_id is None and result.warnings == ()
     assert result.models.models[0].scores.agentic == 52_000_000
     assert result.observed_at == result.completed_at == NOW

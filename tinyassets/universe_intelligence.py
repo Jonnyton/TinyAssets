@@ -850,7 +850,21 @@ def _call_writer(turn_input, *, system, universe_context, config, response_obser
     """
     from tinyassets.exceptions import AllProvidersExhaustedError
 
+    http_turn = None
+    selection = getattr(universe_context, "model_selection", None)
+    if (getattr(config, "engine_mcp_enabled", False) and selection is not None
+            and selection.connection_id.startswith("api_key_http:")):
+        from tinyassets.providers.call import make_interactive_agent_turn
+
+        http_turn = make_interactive_agent_turn(
+            prompt=turn_input, system=system, universe_context=universe_context, config=config,
+        )
+
     def _attempt():
+        if http_turn is not None:
+            from tinyassets.providers.call import call_interactive_agent_turn
+
+            return call_interactive_agent_turn(http_turn, response_observer=response_observer)
         observe = {} if response_observer is None else {"response_observer": response_observer}
         return call_provider(
             turn_input,
@@ -877,13 +891,20 @@ def _call_writer(turn_input, *, system, universe_context, config, response_obser
         all_skipped = bool(attempts) and all(
             getattr(a, "status", "") == "skipped" for a in attempts
         )
-        if not all_skipped:
+        if not all_skipped or (http_turn is not None and http_turn.turn.rounds):
             raise  # something ran / real failure class → caller's honest notice
         logger.warning(
             "writer chain fully cooled (all providers skipped, nothing ran); "
             "one immediate fresh-process retry (no sleep)",
         )
         return _attempt()
+
+    finally:
+        if http_turn is not None:
+            try:
+                http_turn.close_unused()
+            except Exception:
+                logger.exception("could not close unused interactive agent progress")
 
 
 #: Trusted persona directive appended ONLY when there is recent history to

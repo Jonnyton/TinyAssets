@@ -477,6 +477,7 @@ class ProviderRouter:
         *,
         operation: str | None = None,
         universe_context: UniverseContext | None = None,
+        _agent_observer=None,
     ) -> ProviderResponse:
         """Route a call, fencing founder-facing served turns before launch."""
 
@@ -510,13 +511,19 @@ class ProviderRouter:
             if universe_context.model_selection is not None:
                 from tinyassets.provider_assignment import authorize_served_provider_call_async
 
+                agent_turn = config is not None and config.agent_request is not None
                 async with authorize_served_provider_call_async(
                     universe_dir.parent,
                     universe_dir=universe_dir,
                     request_carrier=universe_context.provider_request,
                     role=role, operation=operation,
                     model_selection=universe_context.model_selection,
+                    **({"agent_turn": True} if agent_turn else {}),
                 ) as authority:
+                    if _agent_observer is not None:
+                        if not agent_turn or not callable(_agent_observer):
+                            raise PermissionError("agent observer requires an agent inference")
+                        authority = replace(authority, after_provider_claim=_agent_observer)
                     return await self._call_routed(
                         role, prompt, system, config, operation=operation,
                         universe_context=replace(universe_context, served_provider=authority),
@@ -623,10 +630,17 @@ class ProviderRouter:
         # ModelConfig preference. Preserve legacy calls by clearing any injected
         # selection when there is no selected-model serving authority.
         cfg = replace(cfg, selected_model=getattr(served_authority, "selected_model", None))
+        from tinyassets.providers.agent_inference import input_size, output_for_settlement
+
+        if cfg.agent_request is not None and (
+            cfg.selected_model is None or not cfg.engine_mcp_enabled
+            or role != "writer" or operation != "converse"
+        ):
+            raise PermissionError("agent inference requires the selected served writer")
         if cfg.selected_model is not None:
             if cfg.selected_model.provider != served_authority.provider:
                 raise PermissionError("selected model does not match serving authority")
-            if cfg.engine_mcp_enabled:
+            if cfg.engine_mcp_enabled and cfg.agent_request is None:
                 raise PermissionError("selected HTTP agent tool execution is not implemented yet")
         if served_authority is not None:
             if (
@@ -645,8 +659,10 @@ class ProviderRouter:
                 # to the ceiling so a small binding still validates.
                 output_limit = min(served_authority.max_tokens, _SERVED_PER_CALL_MAX_TOKENS)
                 if cfg.selected_model is not None:
-                    input_size = len((f"{system}\n\n{prompt}" if system else prompt).encode())
-                    output_limit = min(output_limit, cfg.selected_model.context_tokens - input_size)
+                    required_input = input_size(prompt, system, cfg)
+                    output_limit = min(
+                        output_limit, cfg.selected_model.context_tokens - required_input,
+                    )
                     if output_limit < 1:
                         raise PermissionError("selected model cannot fit this inference context")
                 cfg = replace(cfg, max_tokens=output_limit)
@@ -683,7 +699,7 @@ class ProviderRouter:
         if cfg.selected_model is not None:
             # Match the existing conservative input reservation measure. The
             # selected catalogue's context limit is not a permission to truncate.
-            required_context = len((f"{system}\n\n{prompt}" if system else prompt).encode())
+            required_context = input_size(prompt, system, cfg)
             if (
                 cfg.max_tokens is None
                 or required_context + cfg.max_tokens > cfg.selected_model.context_tokens
@@ -952,14 +968,7 @@ class ProviderRouter:
                         reserve_served_provider_budget,
                     )
 
-                    estimated_input_tokens = max(
-                        1,
-                        len(
-                            (f"{system}\n\n{prompt}" if system else prompt).encode(
-                                "utf-8"
-                            )
-                        ),
-                    )
+                    estimated_input_tokens = max(1, input_size(prompt, system, cfg))
                     budget_reservation = reserve_served_provider_budget(
                         universe_dir.parent,
                         universe_dir=universe_dir,
@@ -1001,6 +1010,11 @@ class ProviderRouter:
                                 raise ProviderAuthorityHeldError(
                                     _CONNECT_PROVIDER_MESSAGE
                                 ) from exc
+                        after_claim = getattr(served_authority, "after_provider_claim", None)
+                        if after_claim is not None:
+                            if not callable(after_claim) or budget_reservation is None:
+                                raise PermissionError("invalid agent pre-dispatch observer")
+                            after_claim(served_authority, budget_reservation, cfg)
                         provider_started = True
                         resp = await provider.complete(
                             prompt, system, cfg, universe_dir=universe_dir,
@@ -1076,7 +1090,7 @@ class ProviderRouter:
                         input_tokens=resp.input_tokens,
                         output_tokens=resp.output_tokens,
                         cost_microunits=resp.cost_microunits,
-                        fallback_output=resp.text,
+                        fallback_output=output_for_settlement(resp),
                     )
                 # A SUCCEEDED settlement must carry KNOWN usage: settle_invocation
                 # rejects anything that is not an int. But usage is optional on

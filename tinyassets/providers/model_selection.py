@@ -8,7 +8,7 @@ No release names or provider wire shapes belong in this module.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from tinyassets.provider_assignment_manifest import ModelAccess
@@ -29,6 +29,7 @@ class SelectedModel:
     cost_caps: tuple[tuple[str, int], ...]
     source_digest: str
     context_tokens: int
+    supports_tools: bool = False
 
     def cost_upper_bound(self, output_tokens: int) -> int:
         """Conservative USD micros for this text-only request at accepted caps.
@@ -58,6 +59,7 @@ def prepare_selected_model(
     provider: str,
     model_id: str,
     access: ModelAccess,
+    needs_tools: bool = False,
 ) -> tuple[SelectedModel, Callable[[], None]]:
     """Refresh an accepted HTTP source; return facts plus a pre-launch recheck.
 
@@ -75,12 +77,15 @@ def prepare_selected_model(
         universe_id=universe_id,
         definition_id=definition.id,
     )
-    return _validate_snapshot(definition, snapshot, provider, model_id, access)
+    return _validate_snapshot(
+        definition, snapshot, provider, model_id, access, needs_tools=needs_tools,
+    )
 
 
 async def prepare_selected_model_async(
     *, base_path: Path, owner_user_id: str, universe_id: str,
     provider: str, model_id: str, access: ModelAccess,
+    needs_tools: bool = False,
 ) -> tuple[SelectedModel, Callable[[], None]]:
     """Refresh without blocking ingress; the caller re-fences authority afterward.
 
@@ -97,7 +102,9 @@ async def prepare_selected_model_async(
         universe_id=universe_id,
         definition_id=definition.id,
     )
-    return _validate_snapshot(definition, snapshot, provider, model_id, access)
+    return _validate_snapshot(
+        definition, snapshot, provider, model_id, access, needs_tools=needs_tools,
+    )
 
 
 def _selection_definition(base_path, owner_user_id, universe_id, provider, model_id, access):
@@ -125,7 +132,7 @@ def _selection_definition(base_path, owner_user_id, universe_id, provider, model
     return definition
 
 
-def _validate_snapshot(definition, snapshot, provider, model_id, access):
+def _validate_snapshot(definition, snapshot, provider, model_id, access, *, needs_tools=False):
     from tinyassets.providers.discovery_protocols import discovery_protocol
     from tinyassets.providers.discovery_snapshot import assert_discovery_snapshot_current
 
@@ -156,7 +163,9 @@ def _validate_snapshot(definition, snapshot, provider, model_id, access):
         fallbacks=(),
         cost_caps=tuple(Charge(name, amount, True) for name, amount in caps),
     )
-    interaction = contract.text_interaction
+    if type(needs_tools) is not bool:
+        raise PermissionError("invalid required model capability")
+    interaction = replace(contract.text_interaction, needs_tools=needs_tools)
     order = order_models(
         Catalog(owner_user_id, universe_id, (snapshot.models,)),
         policy,
@@ -175,5 +184,6 @@ def _validate_snapshot(definition, snapshot, provider, model_id, access):
         caps,
         snapshot.source_digest,
         model.context_tokens,
+        needs_tools,
     )
     return selected, lambda: assert_discovery_snapshot_current(snapshot)

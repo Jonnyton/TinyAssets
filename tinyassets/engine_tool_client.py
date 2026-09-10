@@ -1,8 +1,8 @@
-"""Private, owner-pinned MCP transport for the future HTTP agent loop.
+"""Private, owner-pinned MCP transport for the engine-owned HTTP agent loop.
 
 This client grants no inference authority and supplies no replay policy. Its
 caller must journal tool intent before dispatch and preserve unknown outcomes.
-There is deliberately no provider, model, workflow or live-app caller yet.
+The interactive runner supplies fresh serving authority and durable progress.
 """
 
 from __future__ import annotations

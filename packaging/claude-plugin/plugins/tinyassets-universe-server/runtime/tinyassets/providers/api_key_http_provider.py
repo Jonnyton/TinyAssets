@@ -222,6 +222,7 @@ class ApiKeyHttpProvider(BaseProvider):
         host = _single_host(view)
 
         selection = getattr(config, "selected_model", None)
+        agent_request = getattr(config, "agent_request", None)
         if selection is not None:
             from tinyassets.providers.discovery_protocols import discovery_protocol
 
@@ -231,19 +232,31 @@ class ApiKeyHttpProvider(BaseProvider):
                 or contract.inference_protocol != self._definition.protocol
             ):
                 raise ProviderUnavailableError("selected model does not match the compute source")
-            if config.engine_mcp_enabled:
+            if config.engine_mcp_enabled and agent_request is None:
                 raise ProviderUnavailableError(
                     "selected HTTP agent tool execution is not implemented yet"
                 )
-        protocol_path, body = self._encode(
-            prompt=prompt,
-            system=system,
-            model=self.model if selection is None else selection.model_id,
-            temperature=getattr(config, "temperature", None),
-            max_tokens=getattr(config, "max_tokens", None),
-        )
-        if selection is not None:
-            body = contract.constrain_inference(body, selection.cost_caps)
+        if agent_request is not None:
+            from tinyassets.providers.agent_inference import AgentInferenceRequest
+
+            if (type(agent_request) is not AgentInferenceRequest or selection is None
+                    or not config.engine_mcp_enabled
+                    or self._definition.protocol != "openai_chat"):
+                raise ProviderUnavailableError("HTTP agent inference requires admitted selection")
+            protocol_path, body = agent_request.encode(
+                prompt=prompt, system=system, selection=selection,
+                temperature=config.temperature, max_tokens=config.max_tokens,
+            )
+        else:
+            protocol_path, body = self._encode(
+                prompt=prompt,
+                system=system,
+                model=self.model if selection is None else selection.model_id,
+                temperature=getattr(config, "temperature", None),
+                max_tokens=getattr(config, "max_tokens", None),
+            )
+            if selection is not None:
+                body = contract.constrain_inference(body, selection.cost_caps)
         # The path the user granted wins over the protocol's canonical one: the
         # broker allowlists what they registered, so calling anything else is a
         # guaranteed refusal. The encoder still owns the BODY shape.
@@ -281,9 +294,15 @@ class ApiKeyHttpProvider(BaseProvider):
             raise ProviderUnavailableError(f"compute grant resolution failed: {exc}") from exc
 
         if not isinstance(result, dict):
+            if agent_request is not None:
+                raise ProviderProtocolError("agent inference outcome is unknown")
             raise ProviderUnavailableError("compute proxy returned no response")
         status = _coerce_status(result.get("status"))
         if status is None:
+            if agent_request is not None:
+                # The proxy was called. No status does not prove no remote work;
+                # hold the full reservation rather than report a free attempt.
+                raise ProviderProtocolError("agent inference outcome is unknown")
             # A sanitized error envelope (no HTTP status) — the worker refused or
             # the network failed. Fail loud with the secret-free reason.
             reason = str(result.get("reason") or result.get("error") or "unknown")
@@ -299,11 +318,33 @@ class ApiKeyHttpProvider(BaseProvider):
         if not isinstance(body_str, str) or not body_str:
             raise ProviderProtocolError("compute response had an empty body")
         try:
-            parsed = json.loads(body_str)
+            if agent_request is not None:
+                from tinyassets.providers.agent_chat_codec import _object
+
+                parsed = _object(body_str)
+            else:
+                parsed = json.loads(body_str)
         except (TypeError, ValueError) as exc:
             raise ProviderProtocolError(f"compute response was not JSON: {exc}") from exc
+        agent_reply = None
+        cost = None
         try:
-            text, in_tok, out_tok = self._decode(parsed)
+            if agent_request is not None:
+                from tinyassets.providers.agent_chat_codec import decode_openai_chat_agent
+                from tinyassets.providers.agent_inference import openrouter_usage_cost
+
+                agent_reply = decode_openai_chat_agent(
+                    parsed, source_ref=selection.provider, requested_model=selection.model_id,
+                    tool_names=frozenset(
+                        item["function"]["name"] for item in agent_request.tools()
+                    ),
+                )
+                text = agent_reply.text or ""
+                in_tok, out_tok = agent_reply.input_tokens, agent_reply.output_tokens
+                if selection.discovery_protocol == "openrouter_user_models_v1":
+                    cost = openrouter_usage_cost(body_str)
+            else:
+                text, in_tok, out_tok = self._decode(parsed)
         except ProtocolDecodeError as exc:
             raise ProviderProtocolError(str(exc)) from exc
 
@@ -316,4 +357,6 @@ class ApiKeyHttpProvider(BaseProvider):
             latency_ms=latency_ms,
             input_tokens=in_tok,
             output_tokens=out_tok,
+            cost_microunits=cost,
+            agent_reply=agent_reply,
         )

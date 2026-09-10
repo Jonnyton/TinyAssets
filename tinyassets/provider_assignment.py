@@ -99,6 +99,7 @@ class ServedProviderAuthority:
         default=None, repr=False, compare=False
     )
     selected_model: SelectedModel | None = None
+    after_provider_claim: object | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1279,6 +1280,24 @@ def _selected_chain(store, base_path, universe, capability, agent, selection):
         )
 
 
+def check_served_agent_tool_authority(universe_context) -> str:
+    """Fresh engine-side execution fence, without a provider launch or held IO lock."""
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    universe = universe_context.universe_dir
+    if universe is None or universe_context.provider_invocation is not None:
+        raise PermissionError("interactive agent requires a current served request")
+    with provider_assignment_admission().shared(universe):
+        capability, agent = _served_request_agent(
+            universe.parent, universe, universe_context.provider_request, "writer", "converse",
+        )
+        _selected_chain(
+            SQLiteProviderWorkAuthorityStore(universe.parent), universe.parent,
+            universe, capability, agent, universe_context.model_selection,
+        )
+        return capability.principal_id
+
+
 @contextmanager
 def authorize_served_provider_call(
     base_path: str | Path, *, universe_dir: str | Path, request_carrier: object,
@@ -1296,6 +1315,7 @@ def authorize_served_provider_call(
 async def authorize_served_provider_call_async(
     base_path: str | Path, *, universe_dir: str | Path, request_carrier: object,
     role: str, operation: str, model_selection: ModelRef,
+    agent_turn: bool = False,
 ):
     """Release admission for discovery; revalidate the exact chain before launch.
 
@@ -1325,6 +1345,7 @@ async def authorize_served_provider_call_async(
             base_path=Path(base_path), owner_user_id=capability.principal_id,
             universe_id=universe.name, provider=member.provider,
             model_id=model_selection.model_id, access=member.access,
+            needs_tools=agent_turn,
         )
     except ProviderAuthorityHeldError:
         raise
@@ -1334,6 +1355,7 @@ async def authorize_served_provider_call_async(
         base_path, universe_dir=universe, request_carrier=request_carrier,
         role=role, operation=operation, model_selection=model_selection,
         _prepared_selection=(agent, chain, selected, recheck),
+        agent_turn=agent_turn,
     ) as authority:
         yield authority
 
@@ -1342,6 +1364,34 @@ _SERVED_AUTHORITY_HELD = (
     "Connect your provider before running this universe. TinyAssets will not "
     "borrow platform credentials or start a metered trial."
 )
+
+
+def _seal_agent_launch_allowance(conn, store, assignment, capability) -> None:
+    """Finite accepted-binding ceiling; rolling usage is still admitted each call."""
+    from tinyassets.auth.middleware import seal_provider_request_launch_allowance
+
+    if not assignment.manifest_digest or not assignment.candidates:
+        raise PermissionError("agent inference requires an accepted candidate manifest")
+    seen = set()
+    total = 0
+    for member in assignment.candidates:
+        if member.binding_id in seen:
+            continue
+        binding = store.get_binding_in_transaction(conn, binding_id=member.binding_id)
+        if binding is None or (
+            binding.owner_user_id, binding.universe_id, binding.generation, binding.binding_digest,
+        ) != (
+            assignment.owner_user_id, assignment.universe_id,
+            member.binding_generation, member.binding_digest,
+        ):
+            raise PermissionError("agent launch plan binding changed")
+        allowance = binding.max_invocations
+        if type(allowance) is not int or not 0 < allowance <= 2**63 - 1 - total:
+            raise PermissionError("agent launch plan has invalid finite allowance")
+        total += allowance
+        seen.add(member.binding_id)
+    # Set-once operation refuses late sealing and a changed plan. Never refill.
+    seal_provider_request_launch_allowance(capability, limit=total)
 
 
 @contextmanager
@@ -1354,6 +1404,7 @@ def _authorize_served_provider_call(
     operation: str,
     model_selection: ModelRef | None = None,
     _prepared_selection=None,
+    agent_turn: bool = False,
 ) -> Iterator[ServedProviderAuthority]:
     """Fence selection + request + binding + custody immediately before launch."""
 
@@ -1378,6 +1429,8 @@ def _authorize_served_provider_call(
     carrier_binding_id = str(getattr(request_carrier, "agent_binding_id", ""))
     carrier_revision = getattr(request_carrier, "binding_revision", 0)
     if carrier_uid != uid or not carrier_binding_id:
+        raise ProviderAuthorityHeldError(held)
+    if agent_turn and (role != "writer" or operation != "converse" or model_selection is None):
         raise ProviderAuthorityHeldError(held)
 
     with provider_assignment_admission().shared(universe):
@@ -1411,6 +1464,7 @@ def _authorize_served_provider_call(
                         owner_user_id=capability.principal_id, universe_id=uid,
                         provider=member.provider, model_id=model_selection.model_id,
                         access=member.access,
+                        needs_tools=agent_turn,
                     )
                 else:
                     (before_agent, before_chain, selected_model,
@@ -1455,6 +1509,8 @@ def _authorize_served_provider_call(
                     assignment.provider if model_selection is None
                     else model_selection.connection_id
                 )
+                if agent_turn:
+                    _seal_agent_launch_allowance(conn, store, assignment, capability)
                 if _is_open_provider(provider):
                     authority = ServedProviderAuthority(
                         authority_kind="connection_grant",

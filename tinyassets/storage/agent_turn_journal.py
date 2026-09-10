@@ -1,4 +1,4 @@
-"""Owner-scoped effect journal, deliberately unregistered and without a live caller.
+"""Owner-scoped effect journal for the private interactive agent executor.
 
 Every mutation commits before returning. A winning start is necessary but never
 sufficient authority to dispatch: the executor must supply fresh live authority.

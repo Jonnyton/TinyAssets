@@ -89,6 +89,35 @@ def get_last_provider() -> str:
     return _last_provider
 
 
+def make_interactive_agent_turn(*, prompt, system, universe_context, config):
+    """Create a real selected HTTP agent; no mock or alternate credential route."""
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.interactive_http_agent import InteractiveHttpAgentTurn
+
+    if _force_mock or _real_router is None:
+        raise ProviderAuthorityHeldError("interactive agent requires a real provider router")
+    _register_open_providers_for(universe_context)
+    return InteractiveHttpAgentTurn(
+        router=_real_router, prompt=prompt, system=system,
+        universe_context=universe_context, config=config,
+    )
+
+
+def call_interactive_agent_turn(turn, *, response_observer=None) -> str:
+    """Run on this claiming worker; only the final answer earns a writer receipt."""
+    import asyncio
+
+    global _last_provider
+    result = asyncio.run(turn.run())
+    _last_provider = result.provider
+    if response_observer is not None:
+        try:
+            response_observer(result)
+        except Exception:
+            logger.warning("Provider response receipt could not be recorded")
+    return result.text
+
+
 @dataclass(frozen=True, slots=True)
 class UniverseBoundProviderCall:
     """Callable that carries one exact universe context across graph workers."""

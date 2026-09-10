@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     from tinyassets.config import UniverseConfig
     from tinyassets.provider_assignment import ServedProviderAuthority
     from tinyassets.provider_work_authority import ProviderInvocationCarrier
+    from tinyassets.providers.agent_chat_codec import AgentReply
+    from tinyassets.providers.agent_inference import AgentInferenceRequest
     from tinyassets.providers.model_policy import ModelRef
     from tinyassets.providers.model_selection import SelectedModel
 
@@ -229,6 +231,9 @@ class ModelConfig:
     input, including clearing it for calls without selected-model authority.
     """
 
+    agent_request: AgentInferenceRequest | None = field(default=None, repr=False)
+    """Internal tool inventory/completed history, never execution authority."""
+
     def stream_timeout_profile(self) -> StreamTimeoutProfile:
         """Resolve the idle-watchdog profile, filling ``None`` knobs with the
         design defaults. Backward-compat: a config that only ever set the legacy
@@ -289,6 +294,9 @@ class ProviderResponse:
     Legacy ``model`` may contain a requested/default label. Such a label is not
     proof of the model that answered and must not be substituted here.
     """
+
+    agent_reply: AgentReply | None = field(default=None, repr=False)
+    """One inference's validated result; requested tools have not been executed."""
 
 
 # Sentinel for quality-floor-only degraded judge responses.
