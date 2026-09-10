@@ -19,7 +19,6 @@ tinyassets/api/compute_connection.py:codex:2
 tinyassets/api/llm_deposit.py:claude:4
 tinyassets/api/llm_deposit.py:codex:2
 tinyassets/api/market.py:claude:1
-tinyassets/api/pending_requests.py:claude:1
 tinyassets/api/prompts.py:github:1
 tinyassets/api/runs.py:claude:1
 tinyassets/api/runs.py:gemini:1

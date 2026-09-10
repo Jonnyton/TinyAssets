@@ -24,6 +24,7 @@ an empty string).
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -35,6 +36,7 @@ from tenacity import (
 )
 
 if TYPE_CHECKING:
+    from tinyassets.providers.base import ProviderResponse
     from tinyassets.providers.router import ProviderRouter
 
 logger = logging.getLogger(__name__)
@@ -291,6 +293,7 @@ def _call_router_with_retry(
     universe_context: Any = None,
     operation: str | None = None,
     retry_on_exhaustion: bool = True,
+    response_observer: Callable[[ProviderResponse], None] | None = None,
 ) -> str:
     """Call the installed router, optionally retrying on transient exhaustion.
 
@@ -320,6 +323,11 @@ def _call_router_with_retry(
         else:
             result = _real_router.call_sync(role, prompt, system, **kwargs)
         _last_provider = result.provider
+        if response_observer is not None:
+            try:
+                response_observer(result)
+            except Exception:  # telemetry failure cannot replay an earned answer
+                logger.warning("Provider response receipt could not be recorded")
         return result.text
 
     # A context carrying a ProviderInvocationCarrier is NOT retryable, whatever
@@ -364,6 +372,7 @@ def call_provider(
     universe_context: Any = None,
     operation: str | None = None,
     retry_on_exhaustion: bool = True,
+    response_observer: Callable[[ProviderResponse], None] | None = None,
 ) -> str:
     """Call an LLM provider with automatic fallback.
 
@@ -397,6 +406,10 @@ def call_provider(
         that sleeps between retries on transient ``AllProvidersExhaustedError``.
         The interactive served path passes ``False`` so the inbound request is
         never blocked on a synchronous sleep.
+    response_observer:
+        Optional internal observer of a completed real response, before reducing
+        it to text. Never called for mocked, skipped or failed attempts. Observer
+        failures cannot discard the response or trigger another inference.
     """
     governed = operation is not None or universe_context is not None
     if _force_mock:
@@ -411,9 +424,11 @@ def call_provider(
 
     if _real_router is not None:
         try:
+            observe = {} if response_observer is None else {"response_observer": response_observer}
             return _call_router_with_retry(
                 role, prompt, system, config, universe_context, operation,
                 retry_on_exhaustion,
+                **observe,
             )
         except Exception as e:
             from tinyassets.exceptions import ProviderAuthorityHeldError

@@ -11,7 +11,7 @@ Patterns blocked (module-level or deferred):
 
 Exit codes:
   0 — no new forbidden imports in staged diff (or no Python files staged)
-  2 — one or more new forbidden imports detected
+  2 — forbidden imports detected, or staged changes could not be inspected
 
 Usage (called by pre-commit hook):
     python scripts/pre_commit_invariant_author_server.py
@@ -92,17 +92,23 @@ def _get_staged_diff() -> str:
         result = subprocess.run(
             ["git", "diff", "--cached", "--unified=0", "--diff-filter=ACMR", "--", "*.py"],
             capture_output=True,
-            text=True,
         )
-        if result.returncode == 0:
-            return result.stdout or ""
-    except (FileNotFoundError, UnicodeDecodeError):
-        pass
-    return ""
+    except OSError as exc:
+        raise RuntimeError("unable to read staged Python changes") from exc
+    if result.returncode != 0 or not isinstance(result.stdout, bytes):
+        raise RuntimeError("unable to read staged Python changes")
+    # Git emits file bytes, not the Windows console code page. Capture bytes
+    # so a reader-thread decoding error cannot silently become empty stdout.
+    # Preserve non-UTF-8 source bytes too; the forbidden import grammar is ASCII.
+    return result.stdout.decode("utf-8", errors="surrogateescape")
 
 
 def main(argv: list[str] | None = None) -> int:
-    diff = _get_staged_diff()
+    try:
+        diff = _get_staged_diff()
+    except RuntimeError as exc:
+        print(f"pre-commit [author_server]: inspection failed: {exc}", file=sys.stderr)
+        return 2
     if not diff.strip():
         return 0  # no staged Python changes
 

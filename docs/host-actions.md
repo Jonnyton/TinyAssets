@@ -535,8 +535,8 @@ immediately before every submitted build. Google's reviewer-access requirements 
 
 **What it gated:** Sign in details, Target audience (**18 and over**), Data safety,
 and the foreground-service declaration were submitted with the 15-change review batch
-on 2026-09-08. Play's final quick checks completed and the Console now says **Your
-changes are now in review**. Data safety lists both password and OAuth account creation. Content
+on 2026-09-08. Play approved and published the batch at 10:35 PM PT. Data safety lists
+both password and OAuth account creation. Content
 rating remains complete (IARC, submitted 2026-09-02, Everyone / PEGI 3 / USK 0 /
 ClassInd L).
 
@@ -601,7 +601,7 @@ What remains after the secrets, and who does it (`docs/ops/google-play-launch.md
 | Advertising ID declaration | **done 2026-09-03** — saved No after shipped-artifact, exact-candidate merged-manifest, and dependency verification; submitted for review 2026-09-08 |
 | Foreground-service declaration + behavior video | **done; submitted 2026-09-08** — the 27.11-second 1080×2340 privacy-redacted candidate has SHA-256 `7b49b48d21ca3a1f57acdce23ed8c5ac0f58b63aab57ea3d4cb5696ed61391f2`. Public URL: `https://github.com/Jonnyton/TinyAssets/releases/download/android-latest/tinyassets-fgs-play-evidence-final.mp4`. Play accepted **Data sync → Network processing → Other** with this link; App content reports no declarations needing attention. |
 | Replace the unsafe uploaded conversation screenshot with staged `01-sign-in.png` | **done 2026-09-03** — live draft saved and both retained filenames verified; submitted for review 2026-09-08 |
-| Closed test: 12 testers for 14 days, then apply for production access | **you** — Play reported 0 opted-in testers on 2026-09-08. The Alpha release is configured for all 177 countries/regions and the one-member `Founder devices` list. Code 3 was removed; signed code `4 (1.0.3)` is the sole bundle. The verified reviewer credential and all 15 launch changes were submitted on 2026-09-08; Play's final quick checks completed and the Console says **Your changes are now in review**. Until approval, the opt-in page reports that no testing version has been published; Play also says open testing is unavailable until production access. After approval, the founder account must opt in and at least 11 more real Google-account testers must be recruited before the 14-day clock can start. |
+| Closed test: 12 testers for 14 days, then apply for production access | **you** — Play approved and published signed code `4 (1.0.3)` on 2026-09-08 at 10:35 PM PT. The Alpha track says **Available to selected testers** across all 177 configured regions. The one-member `Founder devices` list is attached, and its invited founder Google account now sees the live opt-in page with **Become a tester**. The founder has not opted in yet. Opt in that account and recruit at least 11 more real Google-account testers; the 14-day clock begins only when 12 remain continuously opted in. |
 | Promote to Production → submit for review → **Roll out** | you (final click) |
 
 ### Google Play: review and submit the foreground-service declaration

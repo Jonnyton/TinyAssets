@@ -1512,9 +1512,11 @@ const els={
 };
 const $=id=>els[id];
 const Voice={isActive:()=>!!SCENARIO.voiceActive,conversationSettled:()=>{}};
-const messages=[];
+const messages=[], executionDetails=[];
 function appendMessage(role,text,extra){
   if(role!=="system") messages.push({role,text});
+  if(role==="universe"&&extra) executionDetails.push({
+    tag:extra.tagName,cls:extra.className,text:extra.textContent,children:extra.children.length});
   const el=new El("div"); el.className="msg msg--"+role; el.textContent=text;
   if(extra) el.appendChild(extra);
   if(role==="system") els.thread.appendChild(el);
@@ -1602,7 +1604,7 @@ __APP_FUNCTIONS__
     out.composer=els["composer-input"] ? els["composer-input"].value : null;
     out.savedAfter=JSON.parse(localStorage.getItem(QUEUE_KEY)||"null");
   }else if(SCENARIO.kind==="voice"){
-    await sendVoiceTurn(SCENARIO.message);
+    out.spokenReply=await sendVoiceTurn(SCENARIO.message);
     out.converseCalls=converseCalls; out.converseMethods=converseMethods;
   }else if(SCENARIO.kind==="rail"){
     const req=SCENARIO.request;
@@ -1685,6 +1687,7 @@ __APP_FUNCTIONS__
     await checkForNewBuild();
     out.reloaded=reloaded; out.fetched=fetched;
   }
+  out.executionDetails=executionDetails;
   console.log(JSON.stringify(out));
 })().catch(e=>{ console.error(e&&e.stack||e); process.exit(1); });
 """
@@ -1716,6 +1719,7 @@ def _run_app(tmp_path, scenario: dict) -> dict:
     )
     funcs = "\n".join(_js_function(html, f) for f in (
         "turnInputMethod", "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
+        "executionLabel", "answerExecutionDetail",
         "offerResend", "sendTurn", "sendVoiceTurn", "checkForNewBuild", "loadHistory",
         "restoreInflight",
         "frameTitle", "answerLine", "replyLine", "refusedGrantLine", "answerRail",
@@ -1760,6 +1764,101 @@ def test_voice_turn_reports_spoken_origin(tmp_path):
     )
 
     assert out["converseMethods"] == ["spoken"]
+
+
+@pytest.mark.parametrize("kind", ["send", "voice"])
+def test_answer_model_receipt_is_visible_on_typed_and_spoken_reply(tmp_path, kind):
+    out = _run_app(tmp_path, {
+        "kind": kind, "message": "hello",
+        "payload": {"reply": "unchanged answer", "execution": {
+            "provider": "my-connection", "model": "actual/model",
+            "model_status": "reported"}, "requested_model": "different/alias"},
+    })
+    assert out["executionDetails"] == [{
+        "tag": "DIV", "cls": "msg-execution",
+        "text": "Answered by my-connection · actual/model", "children": 0,
+    }]
+    if kind == "voice":
+        assert out["spokenReply"] == "unchanged answer"
+    else:
+        assert out["messages"][-1] == {"role": "universe", "text": "unchanged answer"}
+
+
+@pytest.mark.parametrize("execution,expected", [
+    (None, "Provider and model not reported"),
+    ([], "Provider and model not reported"),
+    ("alias", "Provider and model not reported"),
+    ({"model": "orphan", "model_status": "reported"}, "Provider and model not reported"),
+    ({"provider": "codex", "model": "", "model_status": "reported"},
+     "Answered by codex · Model not reported"),
+    ({"provider": "codex", "model": "assumed", "model_status": "unknown"},
+     "Answered by codex · Model not reported"),
+    ({"provider": "codex", "model": "assumed"}, "Answered by codex · Model not reported"),
+    ({"provider": "codex", "model": 42, "model_status": "reported"},
+     "Answered by codex · Model not reported"),
+    ({"provider": " my-source ", "model": " 模型/🪐 ", "model_status": "reported"},
+     "Answered by my-source · 模型/🪐"),
+    ({"provider": "<script>example</script>", "model": "<img src=x>", "model_status": "reported"},
+     "Answered by <script>example</script> · <img src=x>"),
+    ({"provider": "x" * 401}, "Provider and model not reported"),
+    ({"provider": "source", "model": "m" * 201, "model_status": "reported"},
+     "Answered by source · Model not reported"),
+    ({"provider": "source", "model": "🪐" * 200, "model_status": "reported"},
+     "Answered by source · " + "🪐" * 200),
+])
+def test_answer_model_display_handles_optional_untrusted_receipts(tmp_path, execution, expected):
+    out = _run_app(tmp_path, {
+        "kind": "send", "message": "hello",
+        "payload": {"reply": "real answer", "execution": execution},
+    })
+    assert out["executionDetails"] == [{
+        "tag": "DIV", "cls": "msg-execution", "text": expected, "children": 0,
+    }]
+    assert out["messages"][-1]["text"] == "real answer"
+    assert out["inflight"] is None
+
+
+@pytest.mark.parametrize("char", ["\n", "\t", "\x00", "\u202e", "\u2028", "\u00a0", "\ud800"])
+def test_answer_model_display_rejects_nonprintable_labels(tmp_path, char):
+    out = _run_app(tmp_path, {
+        "kind": "send", "message": "one", "secondMessage": "two", "slowFirst": True,
+        "payloads": [
+            {"reply": "one", "execution": {
+                "provider": "bad" + char, "model": "okay", "model_status": "reported"}},
+            {"reply": "two", "execution": {
+                "provider": "okay", "model": "bad" + char, "model_status": "reported"}},
+        ],
+    })
+    assert [d["text"] for d in out["executionDetails"]] == [
+        "Provider and model not reported", "Answered by okay · Model not reported",
+    ]
+
+
+def test_answer_model_display_does_not_reuse_previous_receipt(tmp_path):
+    out = _run_app(tmp_path, {
+        "kind": "send", "message": "one", "secondMessage": "two", "slowFirst": True,
+        "payloads": [
+            {"reply": "one", "execution": {
+                "provider": "source-a", "model": "model-a", "model_status": "reported"}},
+            {"reply": "two"},
+        ],
+    })
+    assert [d["text"] for d in out["executionDetails"]] == [
+        "Answered by source-a · model-a", "Provider and model not reported",
+    ]
+
+
+@pytest.mark.parametrize("payload", [
+    {"error": "held"},
+    {"status": "held", "reason": "setup_required"},
+])
+def test_non_answer_never_gets_answer_model_footer(tmp_path, payload):
+    out = _run_app(tmp_path, {
+        "kind": "send", "message": "hello", "payload": {
+            **payload, "execution": {
+                "provider": "not-an-answer", "model": "false", "model_status": "reported"}},
+    })
+    assert not any(d["cls"] == "msg-execution" for d in out["executionDetails"])
 
 
 def test_request_rail_reports_typed_reply_and_app_action(tmp_path):
@@ -1878,6 +1977,18 @@ def test_send_it_again_resends_the_same_message_once_without_a_second_bubble(tmp
     assert [m["role"] for m in out["messages"]] == ["founder", "universe"]
     assert out["notesRemoved"] == 1
     assert out["inflight"] is None
+    assert out["sendDisabled"] is False
+
+
+def test_optional_execution_receipt_does_not_change_reply_delivery(tmp_path):
+    out = _run_app(tmp_path, {"kind": "send", "message": "hi", "payload": {
+        "reply": "hello", "execution": {
+            "provider": "owned-ref", "model": "actual-model", "model_status": "reported",
+        },
+    }})
+    assert out["inflight"] is None
+    assert [m["role"] for m in out["messages"]] == ["founder", "universe"]
+    assert out["converseCalls"] == ["hi"]
     assert out["sendDisabled"] is False
 
 
@@ -2428,6 +2539,26 @@ def test_the_android_shell_shows_no_checkout_ui():
 
     html = (Path(onboarding.__file__).parent / "app.html").read_text(encoding="utf-8")
     assert "if(!b || !PLAN || NATIVE) return;" in html
+
+
+def test_native_store_shells_keep_review_declared_voice_dark():
+    """The submitted store surface and App Review Notes are voice-dark.
+
+    Their hosted page must therefore keep Voice unreachable even when the same
+    deployment enables browser voice. The iOS binary carries a microphone usage
+    string defensively, but that does not supersede the submitted product scope.
+    Default-hidden markup also prevents a pre-script flash while the Capacitor
+    WebView starts.
+    """
+    from pathlib import Path
+
+    html = (Path(onboarding.__file__).parent / "app.html").read_text(encoding="utf-8")
+    assert 'id="btn-voice" class="btn btn--voice" type="button" hidden' in html
+    assert 'aria-live="polite" aria-label="Voice status" hidden' in html
+    assert '$("btn-voice").hidden=NATIVE;' in html
+    assert '$("voice-status-line").hidden=NATIVE;' in html
+    assert "if(!NATIVE) Voice.init();" in html
+    assert "if(!NATIVE) Voice.refreshCapability();" in html
 
 
 def test_android_openai_browser_dismissal_stops_the_foreground_service():

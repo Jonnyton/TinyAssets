@@ -205,6 +205,33 @@ def test_converse_runs_on_assigned_engine(tmp_path, monkeypatch):
     assert "first person" in captured["system"].lower()
 
 
+def test_converse_receipt_observer_is_not_passed_to_later_learning(tmp_path, monkeypatch):
+    from tinyassets.providers.base import ProviderResponse
+    from tinyassets.providers.execution_receipt import WriterExecutionReceipt
+
+    udir = _seed(tmp_path)
+    _become_founder(tmp_path)
+    seen = []
+
+    def fake_provider(prompt, system="", *, response_observer=None, **kwargs):
+        seen.append(response_observer)
+        if "strict JSON" in system:
+            assert response_observer is None
+            return "{}"
+        response_observer(ProviderResponse("writer reply", "writer", "alias", "family", 1,
+                                           reported_model="actual-writer"))
+        return "writer reply"
+
+    monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-test")
+    monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
+    monkeypatch.setattr(ui, "call_provider", fake_provider)
+    receipt = WriterExecutionReceipt()
+    assert ui.converse("u-test", "hello", tier=interlocutor.FOUNDER,
+                       response_observer=receipt.observe) == "writer reply"
+    assert len(seen) == 2 and seen[0] is not None and seen[1] is None
+    assert receipt.projection()["model"] == "actual-writer"
+
+
 def test_converse_missing_universe_raises(tmp_path, monkeypatch):
     monkeypatch.setattr(ui, "_request_universe", lambda universe_id="": "u-nope")
     monkeypatch.setattr(ui, "_universe_dir", lambda uid: tmp_path / "nope")

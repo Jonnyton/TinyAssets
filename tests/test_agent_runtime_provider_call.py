@@ -28,6 +28,7 @@ class _RecordingProvider(BaseProvider):
         input_tokens: int | None = 70,
         output_tokens: int | None = 30,
         cost_microunits: int | None = 5,
+        model: str = "gpt-test",
     ):
         self.text = text
         self.error = error
@@ -35,6 +36,7 @@ class _RecordingProvider(BaseProvider):
         self.input_tokens = input_tokens
         self.output_tokens = output_tokens
         self.cost_microunits = cost_microunits
+        self.model = model
         self.calls: list[tuple[str, str, ModelConfig, Path | None]] = []
 
     async def complete(
@@ -53,7 +55,7 @@ class _RecordingProvider(BaseProvider):
         return ProviderResponse(
             text=self.text,
             provider=self.name,
-            model="gpt-test",
+            model=self.model,
             family=self.family,
             latency_ms=12.5,
             input_tokens=self.input_tokens,
@@ -101,8 +103,9 @@ def _execution_service(tmp_path, authenticate_request):
     )
 
 
+@pytest.mark.parametrize("model", ["gpt-test", ""])
 def test_actual_provider_call_uses_exact_manifest_input_and_registered_universe(
-    tmp_path, authenticate_request, monkeypatch
+    tmp_path, authenticate_request, monkeypatch, model
 ) -> None:
     from tinyassets.agent_runtime_provider_execution import AgentProviderOutcomeState
 
@@ -110,7 +113,7 @@ def test_actual_provider_call_uses_exact_manifest_input_and_registered_universe(
     wrong_universe = tmp_path / "ambient-other-universe"
     wrong_universe.mkdir()
     monkeypatch.setenv("TINYASSETS_UNIVERSE", str(wrong_universe))
-    provider = _RecordingProvider()
+    provider = _RecordingProvider(model=model)
     router = ProviderRouter({"codex": provider})
 
     result = service.execute_provider_call(
@@ -125,7 +128,14 @@ def test_actual_provider_call_uses_exact_manifest_input_and_registered_universe(
         "text": "approved patch",
     }
     assert result.provider == "codex"
-    assert result.model == "gpt-test"
+    assert result.model == model
+    from dataclasses import replace
+
+    for invalid_model in (None, 7, True, "  ", "m" * 513):
+        with pytest.raises(ValueError, match="model"):
+            replace(result, model=invalid_model)
+    with pytest.raises(ValueError, match="family"):
+        replace(result, family="")
     assert result.invocation_id == admitted.invocation.invocation_id
     assert len(provider.calls) == 1
     prompt, system, config, seen_universe = provider.calls[0]

@@ -273,7 +273,7 @@ def _codex_engine_mcp_args(config: ModelConfig, proc_env: dict[str, str]) -> lis
     Always forces ``/workspace`` untrusted so no project ``.codex/config.toml``
     (and its ``mcp_servers``) loads. Then, when the founder-scoped engine MCP is
     enabled AND a per-universe HTTP engine server is running (its loopback
-    ``url`` + ``secret`` in ``.engine_mcp_http_routes.json``, written 0600 by
+    owner-matched route in ``.engine_mcp_http_routes.json``, written 0600 by
     ``engine_mcp_http``), wires codex to that ONE trusted server — the same
     commons + own-universe handles the browser chatbot has — restricted to
     ``enabled_tools`` and marked ``required``, and injects the bearer into
@@ -292,6 +292,9 @@ def _codex_engine_mcp_args(config: ModelConfig, proc_env: dict[str, str]) -> lis
     secret) -> add no server (WebFetch-only), never a half-wired or
     unauthenticated one. stdio is not an option (the package is not in the jail).
     """
+    # This environment belongs to this launch; do not retain a previous route's
+    # bearer if the new route is missing, disabled, or belongs to another owner.
+    proc_env.pop(_ENGINE_MCP_BEARER_ENV, None)
     args = list(_UNTRUSTED_WORKSPACE_ARGS)
     if not (
         getattr(config, "engine_mcp_enabled", False)
@@ -300,32 +303,14 @@ def _codex_engine_mcp_args(config: ModelConfig, proc_env: dict[str, str]) -> lis
     ):
         return args
     graph_id = config.engine_mcp_graph_id.strip()
-    data_dir = (
-        proc_env.get("TINYASSETS_DATA_DIR")
-        or os.environ.get("TINYASSETS_DATA_DIR")
-        or ""
-    ).strip()
-    url = ""
-    secret = ""
-    try:
-        routes_path = Path(data_dir or ".") / ".engine_mcp_http_routes.json"
-        if routes_path.is_file():
-            routes = json.loads(routes_path.read_text(encoding="utf-8"))
-            if isinstance(routes, dict):
-                entry = routes.get(graph_id)
-                if isinstance(entry, dict):
-                    url = str(entry.get("url") or "").strip()
-                    secret = str(entry.get("secret") or "").strip()
-    except Exception:  # noqa: BLE001 - never break a turn on a bad route file
-        url = ""
-        secret = ""
-    if not (url and secret):
+    from tinyassets.engine_mcp_http import read_engine_mcp_route
+
+    route = read_engine_mcp_route(
+        actor_id=config.engine_mcp_actor_id.strip(), graph_id=graph_id,
+    )
+    if route is None:
         return args
-    # A malformed url containing a double-quote would break the inline TOML; a
-    # loopback engine url never does, but refuse rather than emit broken config.
-    if '"' in url:
-        return args
-    proc_env[_ENGINE_MCP_BEARER_ENV] = secret
+    proc_env[_ENGINE_MCP_BEARER_ENV] = route.secret
     enabled = ",".join(f'"{t}"' for t in _ENGINE_MCP_ENABLED_TOOLS)
     # Dotted key merges the one server into the (otherwise-empty) map.
     # default_tools_approval_mode="approve": codex MCP tools default to `auto`,
@@ -335,7 +320,7 @@ def _codex_engine_mcp_args(config: ModelConfig, proc_env: dict[str, str]) -> lis
     # actually execute (Codex diagnosis 2026-08-22; verified key parses on 0.146).
     server = (
         "mcp_servers.tinyassets={"
-        f'url="{url}",bearer_token_env_var="{_ENGINE_MCP_BEARER_ENV}",'
+        f'url="{route.url}",bearer_token_env_var="{_ENGINE_MCP_BEARER_ENV}",'
         f'required=true,default_tools_approval_mode="approve",'
         f"enabled_tools=[{enabled}]"
         "}"

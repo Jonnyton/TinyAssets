@@ -679,3 +679,33 @@ Enabling Realtime voice SHALL NOT enroll, select, replace, or fall back to any p
 - **GIVEN** an exact user-owned Voice capability is ready and `TINYASSETS_ALLOW_API_KEY_PROVIDERS` is disabled
 - **WHEN** provider routing selects a writer
 - **THEN** the voice allowance does not make API-key writer providers eligible
+
+### Requirement: HTTP inference preserves event-loop progress and in-flight ownership
+
+HTTP provider completion SHALL run its blocking connection lookup, broker request
+and owned-proxy cleanup outside the calling event loop with the request context
+preserved. Cancellation SHALL drain the original executor operation before
+propagating cancellation, keeping existing router admission and reservation
+ownership while the request remains active. This does not grant new inference
+authority, implement remote cancellation, or promise a total broker IPC deadline.
+
+#### Scenario: Another task progresses during an HTTP request
+- **WHEN** an authorized HTTP request is waiting for its provider
+- **THEN** another task on the calling event loop can progress
+- **AND** the HTTP operation sees the original request context
+
+#### Scenario: Cancellation cannot detach or retry a live request
+- **WHEN** the caller is cancelled, repeatedly cancelled, or cancelled by event-loop runner shutdown while HTTP work remains active
+- **THEN** its existing router slot and reservation remain held until that work finishes
+- **AND** cancellation wins over a late answer or provider failure, without starting another request
+- **AND** the existing served budget cancellation path settles conservatively as indeterminate
+
+#### Scenario: Owned proxy cleanup preserves the inference outcome
+- **WHEN** an owned HTTP proxy request returns or raises
+- **THEN** its proxy is closed on the worker thread in finally
+- **AND** a cleanup failure emits a fixed secret-free warning without replacing the original answer or error
+- **AND** reported inference latency excludes cleanup time
+
+#### Scenario: A borrowed proxy retains its existing owner
+- **WHEN** an HTTP provider uses an explicitly supplied proxy override
+- **THEN** completion does not close that borrowed proxy
