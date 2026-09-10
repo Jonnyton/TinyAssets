@@ -10,11 +10,14 @@ class AgentModelPlan:
     catalog: Catalog
     policy: ModelPolicy
     interaction: Interaction
+    policy_source: str = "unknown"
 
     def __post_init__(self):
         if (
             type(self.catalog) is not Catalog or type(self.policy) is not ModelPolicy
             or type(self.interaction) is not Interaction or not self.interaction.needs_tools
+            or type(self.policy_source) is not str
+            or self.policy_source not in {"unknown", "current", "saved", "automatic"}
         ):
             raise ValueError("invalid interactive candidate plan")
 

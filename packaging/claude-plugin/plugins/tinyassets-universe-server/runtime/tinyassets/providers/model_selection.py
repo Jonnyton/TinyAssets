@@ -60,15 +60,18 @@ def prepare_selected_model(
     model_id: str,
     access: ModelAccess,
     needs_tools: bool = False,
-) -> tuple[SelectedModel, Callable[[], None]]:
-    """Refresh an accepted HTTP source; return facts plus a pre-launch recheck.
+) -> tuple[SelectedModel | None, Callable[[], None] | None]:
+    """Prepare an accepted source; native defaults carry no HTTP model facts.
 
     This is not an independent authority entrypoint. The caller must validate the
     exact current member before and after this IO, under assignment admission.
-    Full HTTP agent tools remain gated in the executor until their runtime exists.
+    Native defaults return (None, None); current member and custody validation
+    remains the caller's responsibility before and after this preparation.
     """
     from tinyassets.providers.discovery_snapshot import refresh_model_discovery
 
+    if _native_default(provider, model_id, access):
+        return None, None
     definition = _selection_definition(
         base_path, owner_user_id, universe_id, provider, model_id, access
     )
@@ -86,7 +89,7 @@ async def prepare_selected_model_async(
     *, base_path: Path, owner_user_id: str, universe_id: str,
     provider: str, model_id: str, access: ModelAccess,
     needs_tools: bool = False,
-) -> tuple[SelectedModel, Callable[[], None]]:
+) -> tuple[SelectedModel | None, Callable[[], None] | None]:
     """Refresh without blocking ingress; the caller re-fences authority afterward.
 
     No assignment lock or SQLite transaction may span this await. The snapshot
@@ -94,6 +97,8 @@ async def prepare_selected_model_async(
     """
     from tinyassets.providers.discovery_snapshot import refresh_model_discovery_async
 
+    if _native_default(provider, model_id, access):
+        return None, None
     definition = _selection_definition(
         base_path, owner_user_id, universe_id, provider, model_id, access
     )
@@ -105,6 +110,25 @@ async def prepare_selected_model_async(
     return _validate_snapshot(
         definition, snapshot, provider, model_id, access, needs_tools=needs_tools,
     )
+
+
+def _native_default(provider, model_id, access):
+    """Native defaults need member custody, not fabricated HTTP model facts.
+
+    The caller still validates the exact accepted member and snapshots its owned
+    credential. This predicate grants nothing and performs no account discovery.
+    Explicit native model IDs require their executor's discovery/selection path.
+    """
+    from tinyassets.provider_serving_binding import _PROVIDER_SERVICE
+
+    if not isinstance(provider, str) or provider not in _PROVIDER_SERVICE:
+        return False
+    if (
+        type(model_id) is not str or model_id != "" or type(access) is not ModelAccess
+        or (access.model_scope == "explicit" and "" not in access.model_ids)
+    ):
+        raise PermissionError("native model is outside the supported default selection scope")
+    return True
 
 
 def _selection_definition(base_path, owner_user_id, universe_id, provider, model_id, access):

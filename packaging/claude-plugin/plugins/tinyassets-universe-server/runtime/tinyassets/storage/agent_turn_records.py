@@ -77,10 +77,19 @@ def document(raw: str) -> dict:
     return codec._object(raw)
 
 
-def fields(value: Any, names: set[str]) -> dict:
-    if not isinstance(value, dict) or value.keys() != names or value.get("version") != 1:
+def fields(value: Any, names: set[str], *, version: int = 1) -> dict:
+    if not isinstance(value, dict) or value.keys() != names or value.get("version") != version:
         raise invalid()
     if type(value["version"]) is not int:
+        raise invalid()
+    return value
+
+
+def policy_source(value: Any, generation: int | None) -> str:
+    if (
+        type(value) is not str or value not in {"unknown", "current", "saved", "automatic"}
+        or (value != "unknown" and generation is None)
+    ):
         raise invalid()
     return value
 
@@ -276,6 +285,7 @@ class TurnSnapshot:
     policy_generation: int | None
     created_at: str
     rounds: tuple[RoundSnapshot, ...]
+    policy_source: str = "unknown"
 
 
 @dataclass(frozen=True, slots=True)

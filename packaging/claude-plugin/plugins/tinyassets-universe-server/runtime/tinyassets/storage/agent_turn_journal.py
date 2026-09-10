@@ -89,14 +89,22 @@ def _read(conn: sqlite3.Connection, scope: tuple[str, str, str]) -> TurnSnapshot
             raise records.invalid()
         generation = records.integer(row["generation"], minimum=1)
         frontier = records.integer(row["round_ordinal"])
-        value = records.fields(
-            records.document(row["input_json"]),
-            {"version", "prompt", "system", "policy_generation"},
+        value = records.document(row["input_json"])
+        names = {"version", "prompt", "system", "policy_generation"}
+        header_version = value.get("version")
+        if type(header_version) is not int or header_version not in {1, 2}:
+            raise records.invalid()
+        records.fields(
+            value, names | ({"policy_source"} if header_version == 2 else set()),
+            version=header_version,
         )
         if not isinstance(value["prompt"], str) or not isinstance(value["system"], str):
             raise records.invalid()
         if value["policy_generation"] is not None:
             records.integer(value["policy_generation"])
+        source = records.policy_source(
+            value.get("policy_source", "unknown"), value["policy_generation"]
+        )
         timestamp = row["created_at"]
         if not isinstance(timestamp, str) or not timestamp.endswith("Z"):
             raise records.invalid()
@@ -214,6 +222,7 @@ def _read(conn: sqlite3.Connection, scope: tuple[str, str, str]) -> TurnSnapshot
             value["policy_generation"],
             timestamp,
             tuple(rounds),
+            source,
         )
     except (ValueError, TypeError, KeyError, OverflowError, RecursionError):
         raise JournalUnavailable("agent turn record unavailable") from None
@@ -309,18 +318,21 @@ class AgentTurnJournal:
         prompt: str,
         system: str,
         policy_generation: int | None = None,
+        policy_source: str = "unknown",
     ) -> TurnSnapshot:
         scope = _scope(owner, universe, uuid.uuid4().hex)
         if not isinstance(prompt, str) or not isinstance(system, str):
             raise records.invalid()
         if policy_generation is not None:
             records.integer(policy_generation)
+        records.policy_source(policy_source, policy_generation)
         raw = records.dump(
             {
-                "version": 1,
+                "version": 2,
                 "prompt": prompt,
                 "system": system,
                 "policy_generation": policy_generation,
+                "policy_source": policy_source,
             }
         )
         with self._transaction() as conn:

@@ -56,7 +56,8 @@ lock spans discovery IO. Re-read the same authoritative chain after IO, and the
 router still validates it before EVERY launch. The captured plan is advisory.
 The sink sets model_selection from this plan's first candidate; the runner rejects
 a contradictory plan/selection pair rather than silently overriding it.
-This is a required change to InteractiveHttpAgentTurn._run, not current behavior.
+This rejection is now implemented locally in InteractiveHttpAgentTurn._run;
+public plan production remains unfinished.
 For overrides construct ModelPolicy using override.mode, current_selection equal
 to its primary, saved_default=None, and exactly its fallbacks. Automatic clears
 both primaries. Generation is the observed saved generation (zero when absent).
@@ -64,6 +65,9 @@ Saved mode uses its saved_default and tail with current_selection=None. Record
 provenance separately: extend the versioned journal header with current/saved/
 automatic source, retaining a strict v1 reader with source unknown. No rewrite of
 old headers or inference that generation alone proves which policy drove a turn.
+Version2 input headers now implement this provenance locally; strict version1
+reads retain unknown provenance. See the native-default-policy-provenance proof
+in docs/reviews for tests and remaining activation gaps.
 
 Discovery uses each connection's existing protocol contract. Preserve fresh
 capability/privacy evidence and all accepted model/price restrictions. Filter

@@ -151,13 +151,15 @@ class InteractiveHttpAgentTurn:
             first = self.plan.next_candidate(self.owner, uid, self.exhaustion)
             if first is None:
                 raise ProviderAuthorityHeldError("no eligible interactive model remains")
-            self.context = replace(self.context, model_selection=first)
+            if self.context.model_selection != first:
+                raise ProviderAuthorityHeldError("interactive selection contradicts its plan")
             self._check_scope()
         if self.turn is None:
             self.journal = AgentTurnJournal(self.context.universe_dir.parent)
             self.turn = self.journal.create(
                 self.owner, uid, prompt=self.prompt, system=self.system,
                 policy_generation=None if self.plan is None else self.plan.policy.generation,
+                policy_source="unknown" if self.plan is None else self.plan.policy_source,
             )
         elif self.turn.state != "ready" or self.turn.rounds:
             raise JournalUnavailable("agent turn cannot be replayed")

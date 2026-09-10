@@ -151,7 +151,7 @@ def _effective_universe_provider_ceiling(
             for provider in requester_config.allowed_providers
             if str(provider).strip()
         ]
-    elif getattr(universe_context.served_provider, "selected_model", None) is not None:
+    elif universe_context.served_provider is not None:
         # The exact candidate was accepted by the owner and revalidated against
         # the current manifest. The legacy preferred_writer structural anchor
         # is not a separate ceiling on that membership. Explicit allowlists above

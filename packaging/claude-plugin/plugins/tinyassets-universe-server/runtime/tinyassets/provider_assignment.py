@@ -471,10 +471,25 @@ def reserve_served_provider_budget(
             member = next(
                 (m for m in assignment.candidates if m.provider == authority.provider), None
             )
+            native_default = False
+            if (
+                member is not None and authority.selected_model is None
+                and authority.authority_kind == "subscription_snapshot"
+            ):
+                from tinyassets.providers.model_selection import _native_default
+
+                try:
+                    native_default = _native_default(member.provider, "", member.access)
+                except PermissionError:
+                    pass  # An accepted specific native model is not its default.
             binding_matches_assignment = (
                 authority.operation == "converse"
-                and authority.selected_model is not None
-                and authority.selected_model.provider == authority.provider
+                and (
+                    native_default or (
+                        authority.selected_model is not None
+                        and authority.selected_model.provider == authority.provider
+                    )
+                )
                 and member is not None
                 and member.binding_id == authority.binding_id
                 and member.binding_generation == authority.binding_generation
@@ -1471,7 +1486,8 @@ def _authorize_served_provider_call(
                      selection_recheck) = _prepared_selection
                     if before_agent != agent or before_chain != selected_chain:
                         raise PermissionError("selected authority changed during model discovery")
-                    selection_recheck()
+                    if selection_recheck is not None:
+                        selection_recheck()
                 if get_binding(
                     base_path, universe_id=uid, binding_id=carrier_binding_id
                 ) != agent:

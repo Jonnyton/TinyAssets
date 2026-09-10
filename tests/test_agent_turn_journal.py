@@ -83,6 +83,61 @@ def new(journal, *, owner="owner", universe="home"):
     return journal.create(owner, universe, prompt="exact\nuser 🪐", system="system\n")
 
 
+@pytest.mark.parametrize("source", ["unknown", "current", "saved", "automatic"])
+def test_policy_provenance_survives_reload(journal, source):
+    turn = journal.create(
+        "owner", "home", prompt="exact", system="system",
+        policy_generation=0, policy_source=source,
+    )
+    loaded = journal.get("owner", "home", turn.turn_id)
+    assert loaded == turn
+    assert loaded.policy_source == source and loaded.policy_generation == 0
+
+
+def test_legacy_header_remains_unknown_and_is_not_rewritten(journal):
+    turn = new(journal)
+    raw = records.dump({
+        "version": 1, "prompt": "legacy", "system": "system", "policy_generation": 7,
+    })
+    with journal._ledger.connection() as conn:
+        conn.execute("UPDATE agent_turns SET input_json = ?", (raw,))
+    loaded = journal.get("owner", "home", turn.turn_id)
+    assert loaded.policy_generation == 7 and loaded.policy_source == "unknown"
+    with journal._ledger.connection() as conn:
+        assert conn.execute("SELECT input_json FROM agent_turns").fetchone()[0] == raw
+
+
+@pytest.mark.parametrize("source,generation", [
+    ("inferred", 7), (None, 7), ([], 7), (True, 7), ("saved", None),
+])
+def test_invalid_policy_provenance_is_not_persisted(journal, source, generation):
+    with journal._ledger.connection() as conn:
+        ensure_schema(conn)
+    with pytest.raises(ValueError):
+        journal.create(
+            "owner", "home", prompt="exact", system="system",
+            policy_generation=generation, policy_source=source,
+        )
+    with journal._ledger.connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM agent_turns").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("changes", [
+    {"version": 3}, {"version": True}, {"version": 1}, {"policy_source": None},
+    {"policy_source": "inferred"}, {"policy_generation": None}, {"extra": "ignored"},
+])
+def test_corrupt_policy_provenance_is_held(journal, changes):
+    turn = new(journal)
+    value = {
+        "version": 2, "prompt": "exact", "system": "system",
+        "policy_generation": 7, "policy_source": "current",
+    } | changes
+    with journal._ledger.connection() as conn:
+        conn.execute("UPDATE agent_turns SET input_json = ?", (records.dump(value),))
+    with pytest.raises(JournalUnavailable):
+        journal.get("owner", "home", turn.turn_id)
+
+
 def begin(journal, turn):
     return journal.begin_round(
         "owner", "home", turn.turn_id, expected_generation=turn.generation, candidate=candidate()

@@ -374,6 +374,7 @@ def _with_fallback(agent, monkeypatch, *, empty=False):
         replace(
             discovery_protocol(snapshot.models.provider_scope).text_interaction, needs_tools=True,
         ),
+        policy_source="saved",
     )
     agent.served.context = replace(agent.served.context, agent_model_plan=plan)
     return alternate
@@ -386,6 +387,7 @@ def test_model_capacity_continues_known_tools_without_replay(agent, monkeypatch)
     assert len(agent.wires) == 3 and len(agent.tools) == 1
     turn = agent.latest()
     assert turn.state == "completed" and turn.policy_generation == 7
+    assert turn.policy_source == "saved"
     assert [round.state for round in turn.rounds] == ["received", "failed", "received"]
     body = agent.wires[-1][1]["body"]
     assert body["model"] == alternate
@@ -487,3 +489,17 @@ def test_fallback_plan_does_not_replay_unknown_outcomes(agent, monkeypatch, unkn
         run(agent)
     assert len(agent.wires) == 1
     assert len(agent.tools) == (unknown == "tool")
+
+
+def test_conflicting_plan_and_incoming_selection_refuses_before_launch(agent, monkeypatch):
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.providers.model_policy import ModelRef
+
+    alternate = _with_fallback(agent, monkeypatch)
+    agent.served.context = replace(
+        agent.served.context,
+        model_selection=ModelRef(agent.served.context.model_selection.connection_id, alternate),
+    )
+    with pytest.raises(ProviderAuthorityHeldError, match="contradicts"):
+        run(agent)
+    assert not agent.wires and not agent.tools
