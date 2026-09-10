@@ -171,3 +171,15 @@ reads while preserving readOnly/idempotent facts. Filter registered definitions
 by actual owner, not admin ACL alone. ModelAccess.document is suitable owner-only
 constraint data; snapshot projection includes observation/expiry/warnings only,
 never custody/grant details. Actual implementation still needs independent review.
+
+## Existing single-source setup remains identifiable
+
+The approved API review found that legacy HTTP serving was not identified among
+otherwise unaccepted sources. Add nullable legacy_source with only provider_ref,
+server bind_key and configured model_id (empty for native provider default).
+Populate it only after the complete legacy chain survives the final read fence;
+HTTP model_id comes from its owner-filtered immutable registered definition.
+It is configuration, not a reported answering model, catalogue freshness, or
+permission for a new explicit choice. Do not manufacture a candidate or price.
+This supports explicit access setup while preserving the prior source; invalid
+or revoked legacy authority leaves the field null. No write or schema migration.

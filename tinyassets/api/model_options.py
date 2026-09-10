@@ -248,8 +248,24 @@ def _collect(base, owner, uid):
                 "expires_at": (snapshot.observed_at + timedelta(minutes=5)).isoformat(),
                 "warnings": list(snapshot.warnings),
             })
+    legacy_source = None
+    if legacy is not None and legacy[0].provider not in failed:
+        provider = legacy[0].provider
+        source = sources.get(provider)
+        configured_model = ""
+        if provider.startswith("api_key_http:"):
+            registered = next((item for item in definitions
+                               if "api_key_http:" + item.id == provider), None)
+            if registered is not None:
+                configured_model = registered.model
+            else:
+                source = None
+        if source is not None:
+            legacy_source = {"provider_ref": provider, "bind_key": source["bind_key"],
+                             "model_id": configured_model}
     return {
         "version": 1, "universe_id": uid, "advisory": True,
+        "legacy_source": legacy_source,
         "preferences": preferences.document(), "binding_state": binding_state,
         "binding": None if agent is None else {
             "id": agent["agent_binding_id"], "revision": agent["revision"],

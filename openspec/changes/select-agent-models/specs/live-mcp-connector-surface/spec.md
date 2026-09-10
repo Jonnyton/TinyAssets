@@ -37,6 +37,12 @@ It SHALL NOT create a home, agent, assignment, preference or inference grant.
 - **THEN** its provider default is visible as legacy_single_provider
 - **AND** the read neither invents an actual model name nor grants expanded model selection
 
+#### Scenario: Existing legacy HTTP configuration
+- **WHEN** the current legacy serving chain survives the read's final authority fence
+- **THEN** legacy_source identifies its provider, bind key and configured fixed model
+- **AND** these fields are not actual answering-model receipts or newly admitted candidates
+- **AND** revocation during refresh clears the legacy-source projection
+
 ### Requirement: Converse accepts non-authoritative current model choice
 The authenticated converse handle SHALL accept optional model_choice using the
 existing versioned preferences document. Omission SHALL use supported saved

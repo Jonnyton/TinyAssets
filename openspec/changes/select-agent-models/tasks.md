@@ -165,5 +165,11 @@
   dialog cannot write to a newly rebound home. No authority is granted by choice.
   Access-confirmation UI for unaccepted sources, native explicit discovery,
   rendered preview, independent consumer review and deployment remain open.
+
+  Legacy source read correction now identifies native/default or registered HTTP
+  fixed configuration after final authority checks;106Windows/106Linux pass with
+  zero skips. See legacy-model-inventory-proof.md in docs/reviews. The next exact
+  access setup composition is in model-access-confirmation.md, awaiting review;
+  no access-mutation button implemented or live account changed yet.
 - [ ] 3.2 Run focused cross-platform tests, independent exact-head review and CI; deploy and verify authenticated SHA/canary evidence, then ordinary rendered app use without operator workflow edits.
 - [ ] 3.3 Sync only shipped behavior into main specs and archive this change after completion; update the goal's stage and record any remaining capability gap honestly.

@@ -99,6 +99,37 @@ def test_legacy_model_scope_explains_optin_without_hiding_discovery(catalogue):
     assert "discovery_unavailable" not in result["sources"][0]["reasons"]
 
 
+@pytest.mark.parametrize("revoked", [False, True])
+def test_legacy_http_configuration_is_identified_without_inventing_a_candidate(
+    catalogue, reader, monkeypatch, revoked,
+):
+    from tinyassets.provider_serving_binding import bind_serving_provider
+
+    connected = bind_serving_provider(
+        base_path=catalogue.rig.base, universe_dir=catalogue.rig.base / "u-models",
+        owner_user_id="owner", universe_id="u-models",
+        agent_binding_id=catalogue.binding["agent_binding_id"],
+        expected_revision=catalogue.binding["revision"], provider=catalogue.rig.definition.id,
+    )
+    catalogue.binding = connected["agent_binding"]
+    catalogue.binding = integration.enable(catalogue)
+    if revoked:
+        def revoke_during_discovery(**kwargs):
+            result = reader[1](**kwargs)
+            catalogue.rig.ledger.revoke_grant("grant-models")
+            return result
+        monkeypatch.setattr(discovery_snapshot, "read_http_discovery_document",
+                            revoke_during_discovery)
+    result = read()
+    assert result["legacy_source"] == (None if revoked else {
+        "provider_ref": "api_key_http:" + catalogue.rig.definition.id,
+        "bind_key": catalogue.rig.definition.id,
+        "model_id": catalogue.rig.definition.model,
+    })
+    assert result["accepted_model_access"] == {} and result["order"] == []
+    assert not any(row["in_candidate_catalog"] for row in result["options"])
+
+
 def test_foreign_registered_source_is_not_listed(catalogue):
     foreign = definition.register_definition(
         universe_id="u-models", owner_user_id="different-owner", access_method="api_key_http",
@@ -215,6 +246,9 @@ def test_legacy_native_default_stays_visible_without_model_access_optin(tmp_path
         assert result["options"][0]["reference"] == {"provider_ref": "codex", "model_id": ""}
         assert result["options"][0]["provider_default"] is True
         assert result["accepted_model_access"] == {}
+        assert result["legacy_source"] == {
+            "provider_ref": "codex", "bind_key": "codex", "model_id": "",
+        }
         assert native.calls == 0
     finally:
         auth.revoke_provider_request(capability)
