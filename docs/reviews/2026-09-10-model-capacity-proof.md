@@ -1,6 +1,6 @@
 # Scoped model-capacity continuation: local proof
 
-September 10, 2026, 06:38 UTC. Feature worktree codex/select-agent-models,
+September 10, 2026. Feature worktree codex/select-agent-models,
 implementation based on e5d93e84. Not deployed or publicly activated.
 
 The real writer/router/HTTP adapter/journal/engine-client composition now consumes
@@ -43,3 +43,12 @@ No live reset or classification whitelist change was performed.
 Still required: exact implementation review, public current/saved policy
 consumption, native/subscription model support, clickable controls, CI, deploy,
 authenticated SHA/canary, and ordinary rendered app acceptance.
+
+## Supplemental legacy and serving-authority coverage
+
+Exact runtime964c58f2, September10 2026. Same nine-file command documented in
+interactive-http-agent-proof.md under Supplemental legacy/authority regression
+group: Windows173 passed/3 skipped21.57s; actual Linux175 passed/1 skipped8.62s.
+Linux covers shared-reader concurrency and bubblewrap skipped by Windows.
+The separately configured real-Codex integration remains skipped on both; no
+claim that a real CLI turn ran. No canonical runtime changed during review.

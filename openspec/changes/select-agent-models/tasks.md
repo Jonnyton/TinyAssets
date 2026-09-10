@@ -17,7 +17,7 @@
 - [ ] 2.2 Implement deterministic automatic ranking and ordered explicit fallback within fresh authority, required capabilities and permitted cost; test unscored/stale catalogues and no-paid-fallback.
 - [ ] 2.3 Integrate typed capacity scopes and safe continuation into the existing router; prove account exhaustion skips siblings and completed/ambiguous tools are not replayed.
 
-  September10 06:38UTC: implemented after capacity-shape ADAPT341s;515 Windows/
+  September10 2026: implemented after capacity-shape ADAPT341s;515 Windows/
   515 actual Linux tests pass, zero skips. Real composition preserves known tool
   results across model-only fallback and holds shared/unknown outcomes safely.
   Exact implementation review remains required. See model-capacity-proof.md in
