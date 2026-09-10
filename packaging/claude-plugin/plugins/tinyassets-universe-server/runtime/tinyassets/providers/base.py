@@ -272,6 +272,12 @@ class ProviderResponse:
     """The subprocess exit code, when the stream came from a subprocess."""
     side_effect_state: str | None = None
     """``none`` | ``possible`` | ``committed`` — whether a tool may have run."""
+    reported_model: str = ""
+    """Validated answering-model evidence; empty when the adapter cannot report it.
+
+    Legacy ``model`` may contain a requested/default label. Such a label is not
+    proof of the model that answered and must not be substituted here.
+    """
 
 
 # Sentinel for quality-floor-only degraded judge responses.

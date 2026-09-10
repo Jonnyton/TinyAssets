@@ -2318,6 +2318,9 @@ def converse(
     except Exception:  # noqa: BLE001 - no memory this turn, never a failed turn
         conversation_history = []
 
+    from tinyassets.providers.execution_receipt import WriterExecutionReceipt
+
+    execution_receipt = WriterExecutionReceipt()
     try:
         reply = _converse_impl(
             uid,
@@ -2326,6 +2329,7 @@ def converse(
             tier=turn.interlocutor.tier,
             conversation_history=conversation_history,
             input_method=input_method,
+            response_observer=execution_receipt.observe,
         )
     except Exception as exc:  # noqa: BLE001 - surface honestly, never fake a reply
         # P0 #1582: a universe with no engine credential of its own cannot
@@ -2349,7 +2353,11 @@ def converse(
         record_exchange(memory_universe_dir, memory_session, message, str(reply))
     except Exception:  # noqa: BLE001 - the reply is already earned; memory is best-effort
         logger.warning("converse: conversation memory could not record the turn", exc_info=True)
-    return json.dumps({"reply": reply, "universe_id": uid})
+    payload = {"reply": reply, "universe_id": uid}
+    execution = execution_receipt.projection()
+    if execution is not None:
+        payload["execution"] = execution
+    return json.dumps(payload)
 
 
 _mcp_converse = _register_structured_tool(

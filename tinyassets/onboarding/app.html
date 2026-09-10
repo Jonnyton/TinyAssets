@@ -103,6 +103,8 @@
     .msg-time{font-variant-numeric:tabular-nums;letter-spacing:0;white-space:nowrap}
     .msg--universe .msg-role{color:var(--universe)}
     .msg--system .msg-meta{justify-content:center;gap:.65rem}
+    .msg-execution{margin-top:.55rem;color:var(--ink-dim);font-size:.75rem;
+      white-space:normal;overflow-wrap:anywhere}
     .setup-cta{margin-top:.6rem}
     .composer{display:flex;gap:.5rem;padding:.7rem 1rem;border-top:1px solid var(--line);background:var(--surface);
       padding-bottom:max(.7rem,env(safe-area-inset-bottom))}
@@ -1914,8 +1916,30 @@
     }
   };
 
+  function executionLabel(value,maximum){
+    // Match the server's printable-label contract; Unicode model IDs are opaque.
+    if(typeof value!=="string"||!value.length||Array.from(value).length>maximum||
+       /[\p{C}\p{Z}]/u.test(value.replace(/ /g,""))) return "";
+    return value.trim();
+  }
+  function answerExecutionDetail(payload){
+    const raw=payload&&payload.execution;
+    const receipt=raw&&typeof raw==="object"&&!Array.isArray(raw)?raw:null;
+    const provider=executionLabel(receipt&&receipt.provider,400);
+    const model=receipt&&receipt.model_status==="reported"
+      ?executionLabel(receipt.model,200):"";
+    const detail=document.createElement("div"); detail.className="msg-execution";
+    // Reply-owned observation only: never substitute a default, speech voice,
+    // previous answer or alias. textContent keeps remote labels inert.
+    detail.textContent=provider
+      ?"Answered by "+provider+" · "+(model||"Model not reported")
+      :"Provider and model not reported";
+    return detail;
+  }
   function renderConverse(payload){
-    if(payload&&typeof payload.reply==="string"){ appendMessage("universe",payload.reply); return; }
+    if(payload&&typeof payload.reply==="string"){
+      appendMessage("universe",payload.reply,answerExecutionDetail(payload)); return;
+    }
     if(payload&&payload.status==="held"&&payload.reason==="setup_required"){
       const cta=document.createElement("div"); cta.className="setup-cta";
       const b=document.createElement("button"); b.className="btn btn--ghost";
@@ -2168,7 +2192,8 @@
         if(payload&&payload.error){const served=new Error(payload.error);served.served=true;throw served;}
         throw new Error("voice_converse_invalid");
       }
-      appendMessage("universe",payload.reply);delivered=true;forgetInflight();
+      appendMessage("universe",payload.reply,answerExecutionDetail(payload));
+      delivered=true;forgetInflight();
       return payload.reply;
     }catch(error){
       if(error&&error.authRequired){ sessionExpired(); throw error; }

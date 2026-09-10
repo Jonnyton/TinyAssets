@@ -7,6 +7,7 @@ may reach it — anonymous and non-owner callers are denied.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -54,6 +55,81 @@ def test_converse_founder_relays_intelligence_reply(monkeypatch, tmp_path):
     out = json.loads(us.converse(message="hello", graph_id="u-x"))
     assert out["reply"] == "I hear you: hello"
     assert out["universe_id"] == "u-x"
+
+
+def test_converse_pairs_reported_model_with_this_reply_only(monkeypatch, tmp_path):
+    import tinyassets.universe_intelligence as ui
+    from tinyassets.providers.base import ProviderResponse
+
+    _founder_auth(monkeypatch, base=tmp_path)
+
+    def answer(uid, msg, *, response_observer, **kwargs):
+        response_observer(ProviderResponse(msg, "owned-provider", "requested-alias", "family", 1,
+                                           reported_model="actual-model"))
+        return msg
+
+    monkeypatch.setattr(ui, "converse", answer)
+    raw = us.converse(message="answer one", graph_id="u-x")
+    assert isinstance(raw, str)
+    result = json.loads(raw)
+    assert result["reply"] == "answer one"
+    assert result["execution"] == {
+        "provider": "owned-provider", "model": "actual-model", "model_status": "reported",
+    }
+    monkeypatch.setattr(ui, "converse", lambda *args, **kwargs: "without evidence")
+    assert "execution" not in json.loads(us.converse(message="next", graph_id="u-x"))
+
+
+def test_mcp_converse_keeps_execution_in_both_response_channels(monkeypatch, tmp_path):
+    import tinyassets.universe_intelligence as ui
+    from tinyassets.providers.base import ProviderResponse
+
+    _founder_auth(monkeypatch, base=tmp_path)
+
+    def answer(uid, msg, *, response_observer, **kwargs):
+        response_observer(ProviderResponse(msg, "owned-provider", "alias", "family", 1,
+                                           reported_model="actual-model"))
+        return msg
+
+    monkeypatch.setattr(ui, "converse", answer)
+
+    async def call():
+        return await us.mcp.call_tool("converse", {"message": "hello", "graph_id": "u-x"})
+
+    result = asyncio.run(call())
+    assert result.structured_content["execution"]["model"] == "actual-model"
+    assert json.loads(result.content[0].text) == result.structured_content
+
+
+def test_converse_legacy_model_is_explicitly_unknown(monkeypatch, tmp_path):
+    import tinyassets.universe_intelligence as ui
+    from tinyassets.providers.base import ProviderResponse
+
+    _founder_auth(monkeypatch, base=tmp_path)
+
+    def answer(uid, msg, *, response_observer, **kwargs):
+        response_observer(ProviderResponse(msg, "codex", "provider-default", "openai", 1))
+        return msg
+
+    monkeypatch.setattr(ui, "converse", answer)
+    result = json.loads(us.converse(message="hello", graph_id="u-x"))
+    assert result["execution"] == {"provider": "codex", "model": "", "model_status": "unknown"}
+
+
+def test_converse_error_never_publishes_completed_or_previous_receipt(monkeypatch, tmp_path):
+    import tinyassets.universe_intelligence as ui
+    from tinyassets.providers.base import ProviderResponse
+
+    _founder_auth(monkeypatch, base=tmp_path)
+
+    def failed(uid, msg, *, response_observer, **kwargs):
+        response_observer(ProviderResponse(msg, "owned", "alias", "family", 1,
+                                           reported_model="actual"))
+        raise RuntimeError("turn failed")
+
+    monkeypatch.setattr(ui, "converse", failed)
+    result = json.loads(us.converse(message="hello", graph_id="u-x"))
+    assert "error" in result and "reply" not in result and "execution" not in result
 
 
 def test_converse_relays_current_turn_input_method_as_informational_context(

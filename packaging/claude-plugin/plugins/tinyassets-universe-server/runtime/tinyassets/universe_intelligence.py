@@ -836,7 +836,7 @@ def _conversation_history_block(
         return ""
 
 
-def _call_writer(turn_input, *, system, universe_context, config):
+def _call_writer(turn_input, *, system, universe_context, config, response_observer=None):
     """Run one served writer turn; retry ONCE immediately only if nothing ran.
 
     Streamed attempts now classify their own outcome (idle-timeout /
@@ -851,6 +851,7 @@ def _call_writer(turn_input, *, system, universe_context, config):
     from tinyassets.exceptions import AllProvidersExhaustedError
 
     def _attempt():
+        observe = {} if response_observer is None else {"response_observer": response_observer}
         return call_provider(
             turn_input,
             system=system,
@@ -861,6 +862,7 @@ def _call_writer(turn_input, *, system, universe_context, config):
             # The interactive path must not sleep on aggregated exhaustion; the
             # tenacity backoff in call.py is disabled here (retry policy below).
             retry_on_exhaustion=False,
+            **observe,
         )
 
     try:
@@ -937,6 +939,7 @@ def converse(
     agent_binding_id: str = "",
     binding_revision: int = 0,
     input_method: str = "unknown",
+    response_observer=None,
 ) -> str:
     """Run one first-person turn as the universe, on its ASSIGNED engine.
 
@@ -1073,6 +1076,7 @@ def converse(
             universe_id=uid,
             granted=granted,
         ),
+        **({} if response_observer is None else {"response_observer": response_observer}),
     )
     # Only a FOUNDER teaches the universe.
     #

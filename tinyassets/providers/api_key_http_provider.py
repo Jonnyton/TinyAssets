@@ -302,6 +302,7 @@ class ApiKeyHttpProvider(BaseProvider):
             text=text,
             provider=self.name,
             model=reported_model(parsed),
+            reported_model=reported_model(parsed),
             family=self.family,
             latency_ms=latency_ms,
             input_tokens=in_tok,
