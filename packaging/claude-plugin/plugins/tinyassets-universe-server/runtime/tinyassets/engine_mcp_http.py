@@ -16,30 +16,95 @@ binds ``127.0.0.1`` only, and requires a per-server bearer secret on every reque
 
 Confinement (Codex ADAPT 2026-08-19): run_graph and these servers are limited to
 the ``TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES`` allowlist (empty = dark) until the
-multi-tenant hardening gate lands. The ``{graph_id: {url, secret}}`` route map is
-published (mode 0600) to a file the provider reads
-(``claude_provider._engine_mcp_flags``).
+multi-tenant hardening gate lands. A versioned owner/port/secret route map is
+published (mode 0600) and consumed by the shared ``read_engine_mcp_route`` reader.
+The derived ``url`` is retained only for older readers and rollback.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
 import secrets
 import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 #: First loopback port; each serving universe gets the next free one.
 ENGINE_MCP_HTTP_BASE_PORT = 8790
-#: Route map file, read by ``claude_provider._engine_mcp_flags``.
+#: Private route map used by all engine-tool transport consumers.
 ROUTES_FILENAME = ".engine_mcp_http_routes.json"
 #: How often the supervisor respawns dead servers + reconciles serving intent.
 _SUPERVISOR_INTERVAL_S = 15.0
+
+
+@dataclass(frozen=True, slots=True)
+class EngineMcpRoute:
+    """Private transport pin, not a grant or a server-liveness receipt."""
+
+    actor_id: str
+    graph_id: str
+    url: str
+    secret: str = field(repr=False)
+
+
+def _unique_route_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("ambiguous engine route record")
+        result[key] = value
+    return result
+
+
+def read_engine_mcp_route(
+    *, actor_id: str, graph_id: str, root: Path | None = None,
+) -> EngineMcpRoute | None:
+    """Read the exact caller-owned route, never infer an actor from the graph.
+
+    Callers supply their already verified principal and universe. Re-read each
+    time; a prior route cannot stand in for changed configuration or permissions.
+    This checks transport consistency only; tools still enforce their authority.
+    """
+    if not all(
+        isinstance(value, str) and value and value == value.strip() and value.isprintable()
+        for value in (actor_id, graph_id)
+    ):
+        return None
+    if not _engine_mcp_enabled() or graph_id not in run_graph_allowlist():
+        return None
+    from tinyassets.storage import data_dir
+
+    try:
+        base = data_dir() if root is None else Path(root)
+        if not base.is_absolute():
+            return None
+        routes = json.loads(
+            (base / ROUTES_FILENAME).read_text(encoding="utf-8"),
+            object_pairs_hook=_unique_route_keys,
+        )
+        entry = routes.get(graph_id) if isinstance(routes, dict) else None
+        if not isinstance(entry, dict):
+            return None
+        if type(entry.get("version")) is not int or entry["version"] != 1:
+            return None
+        if entry.get("actor_id") != actor_id:
+            return None
+        port, secret = entry.get("port"), entry.get("secret")
+        if type(port) is not int or not 1 <= port <= 65535:
+            return None
+        if not isinstance(secret, str) or re.fullmatch(r"[A-Za-z0-9_-]{32,}", secret) is None:
+            return None
+        return EngineMcpRoute(actor_id, graph_id, f"http://127.0.0.1:{port}/mcp", secret)
+    except (OSError, ValueError, TypeError, RecursionError):
+        # No raw record/exception logging: the private file contains bearers.
+        return None
 
 
 def _engine_mcp_enabled() -> bool:
@@ -146,6 +211,9 @@ class _EngineServer:
 def _write_routes(root: Path, servers) -> None:
     routes = {
         s.universe_id: {
+            "version": 1,
+            "actor_id": s.owner,
+            "port": s.port,
             "url": f"http://127.0.0.1:{s.port}/mcp",
             "secret": s.secret,
         }
@@ -170,7 +238,11 @@ def _write_routes(root: Path, servers) -> None:
 
 def _desired_owners(root: Path) -> dict[str, str]:
     allow = run_graph_allowlist()
-    return {u: o for (u, o) in _serving_universe_owners(root) if u in allow}
+    owners: dict[str, set[str]] = {}
+    for universe, owner in _serving_universe_owners(root):
+        if universe in allow:
+            owners.setdefault(universe, set()).add(owner)
+    return {universe: next(iter(found)) for universe, found in owners.items() if len(found) == 1}
 
 
 def start_engine_mcp_http_servers(base: str | Path | None = None) -> list:
@@ -186,7 +258,9 @@ def start_engine_mcp_http_servers(base: str | Path | None = None) -> list:
     from tinyassets.storage import data_dir
 
     root = Path(data_dir() if base is None else base)
-    data_dir_env = os.environ.get("TINYASSETS_DATA_DIR", str(root))
+    if not root.is_absolute():
+        raise ValueError("engine MCP data root must be absolute")
+    data_dir_env = str(root)
 
     servers: dict[str, _EngineServer] = {}
     used_ports: set[int] = set()

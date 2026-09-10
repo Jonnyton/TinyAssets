@@ -1,0 +1,240 @@
+"""Shared private tool routes: actual publisher/CLI consumers, no live secrets."""
+
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import FrozenInstanceError
+from types import SimpleNamespace
+
+import pytest
+
+from tinyassets.providers.base import ModelConfig
+
+
+@pytest.fixture(autouse=True)
+def _enable_routes(monkeypatch, tmp_path):
+    monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
+    monkeypatch.setenv("TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES", "u-a,u-b")
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+
+
+def _config():
+    return ModelConfig(
+        engine_mcp_enabled=True, engine_mcp_actor_id="actor-a", engine_mcp_graph_id="u-a",
+    )
+
+
+def _entry(**changes):
+    return {
+        "version": 1, "actor_id": "actor-a", "url": "http://127.0.0.1:8790/mcp",
+        "port": 8790, "secret": "s" * 43, **changes,
+    }
+
+
+def _write(root, entry):
+    (root / ".engine_mcp_http_routes.json").write_text(
+        json.dumps({"u-a": entry}), encoding="utf-8",
+    )
+
+
+def _cli_uses_http(kind, tmp_path, *, root=None):
+    if kind == "codex":
+        from tinyassets.providers.codex_provider import _codex_engine_mcp_args
+
+        env = {} if root is None else {"TINYASSETS_DATA_DIR": str(root)}
+        args = _codex_engine_mcp_args(_config(), env)
+        return "TINYASSETS_ENGINE_MCP_BEARER" in env or any(
+            "mcp_servers.tinyassets" in arg for arg in args
+        )
+    from tinyassets.providers.claude_provider import _engine_mcp_flags
+
+    _engine_mcp_flags(_config(), tmp_path)
+    data = json.loads((tmp_path / ".engine_mcp_config.json").read_text(encoding="utf-8"))
+    server = data["mcpServers"]["tinyassets"]
+    if "url" not in server:
+        assert server["env"]["TINYASSETS_ENGINE_ACTOR_ID"] == "actor-a"
+        assert server["env"]["TINYASSETS_ENGINE_GRAPH_ID"] == "u-a"
+    return "url" in server
+
+
+@pytest.mark.parametrize("kind", ["claude", "codex"])
+def test_cli_refuses_route_for_different_owner(kind, tmp_path, monkeypatch):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    _write(tmp_path, _entry(actor_id="actor-b"))
+    assert not _cli_uses_http(kind, tmp_path, root=tmp_path)
+
+
+@pytest.mark.parametrize("kind", ["claude", "codex"])
+def test_cli_never_uses_route_from_current_working_directory(kind, tmp_path, monkeypatch):
+    from tinyassets import storage
+
+    root = tmp_path / "canonical"
+    root.mkdir()
+    monkeypatch.delenv("TINYASSETS_DATA_DIR", raising=False)
+    monkeypatch.setattr(storage, "data_dir", lambda: root)
+    monkeypatch.chdir(tmp_path)
+    _write(tmp_path, _entry())
+    assert not _cli_uses_http(kind, tmp_path)
+
+
+def _read(**changes):
+    from tinyassets.engine_mcp_http import read_engine_mcp_route
+
+    return read_engine_mcp_route(**{"actor_id": "actor-a", "graph_id": "u-a", **changes})
+
+
+@pytest.mark.parametrize("kind", ["claude", "codex"])
+def test_cli_uses_canonical_root_from_another_cwd(kind, tmp_path, monkeypatch):
+    other = tmp_path / "unrelated"
+    other.mkdir()
+    monkeypatch.chdir(other)
+    _write(tmp_path, _entry())
+    assert _cli_uses_http(kind, tmp_path)
+
+
+def test_publish_readback_binds_owner_and_hides_secret_in_repr(tmp_path):
+    from tinyassets.engine_mcp_http import _EngineServer, _write_routes
+
+    server = _EngineServer("u-a", "actor-a", 8790, str(tmp_path))
+    _write_routes(tmp_path, [server])
+    route = _read()
+    assert (route.actor_id, route.graph_id, route.url) == (
+        "actor-a", "u-a", "http://127.0.0.1:8790/mcp",
+    )
+    assert route.secret == server.secret and route.secret not in repr(route)
+    with pytest.raises(FrozenInstanceError):
+        route.secret = "changed"
+    raw = json.loads((tmp_path / ".engine_mcp_http_routes.json").read_text(encoding="utf-8"))
+    assert raw["u-a"] == _entry(secret=server.secret)
+    if os.name != "nt":
+        assert (tmp_path / ".engine_mcp_http_routes.json").stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("changes", [
+    {"version": None}, {"version": True}, {"version": "1"}, {"version": 2},
+    {"actor_id": None}, {"actor_id": "actor-b"}, {"actor_id": " actor-a"},
+    {"port": None}, {"port": True}, {"port": "8790"}, {"port": 0}, {"port": -1},
+    {"port": 65536}, {"port": 8790.0}, {"secret": ""}, {"secret": "short"},
+    {"secret": "s" * 43 + "\r\nX: bad"}, {"secret": "s" * 43 + '"'},
+    {"secret": ["s" * 43]}, {"secret": "s" * 43 + "ü"},
+])
+def test_reader_rejects_invalid_owner_port_version_or_secret(tmp_path, changes):
+    _write(tmp_path, _entry(**changes))
+    assert _read() is None
+
+
+@pytest.mark.parametrize("raw", [
+    "not json", "null", "[]", '{"u-a":null}', '{"u-a":[]}',
+    '{"u-a": {"actor_id":"actor-b","actor_id":"actor-a"}}',
+    '{"u-a":null,"u-a":{}}',
+])
+def test_reader_rejects_invalid_or_ambiguous_document(tmp_path, raw):
+    (tmp_path / ".engine_mcp_http_routes.json").write_text(raw, encoding="utf-8")
+    assert _read() is None
+
+
+def test_legacy_record_is_not_owner_proof(tmp_path):
+    _write(tmp_path, {"url": "http://127.0.0.1:8790/mcp", "secret": "s" * 43})
+    assert _read() is None
+
+
+@pytest.mark.parametrize("url", [
+    "https://foreign.example/mcp", "http://user:pass@127.0.0.1:8790/mcp",
+    'http://127.0.0.1:8790/mcp?x="', "http://127.0.0.1:8790/mcp#other", None,
+])
+def test_reader_constructs_loopback_url_and_ignores_legacy_url(tmp_path, url):
+    _write(tmp_path, _entry(url=url))
+    assert _read().url == "http://127.0.0.1:8790/mcp"
+
+
+@pytest.mark.parametrize("port", [1, 65535])
+def test_valid_port_boundaries(tmp_path, port):
+    _write(tmp_path, _entry(port=port))
+    assert _read().url == f"http://127.0.0.1:{port}/mcp"
+
+
+def test_reader_ignores_stale_routes_when_disabled_or_unlisted(tmp_path, monkeypatch):
+    _write(tmp_path, _entry())
+    monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "0")
+    assert _read() is None
+    monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
+    monkeypatch.setenv("TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES", "u-other")
+    assert _read() is None
+
+
+@pytest.mark.parametrize("changes", [
+    {"actor_id": ""}, {"actor_id": None}, {"actor_id": "actor-a\n"},
+    {"graph_id": ""}, {"graph_id": " u-a"}, {"graph_id": "u-b"},
+    {"root": "."},
+])
+def test_reader_does_not_infer_or_normalize_missing_scope(tmp_path, changes):
+    _write(tmp_path, _entry())
+    assert _read(**changes) is None
+
+
+def test_opaque_unicode_owner_and_graph(tmp_path, monkeypatch):
+    from tinyassets.engine_mcp_http import _EngineServer, _write_routes
+
+    monkeypatch.setenv("TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES", "宇宙")
+    _write_routes(tmp_path, [_EngineServer("宇宙", "人/🪐", 8790, str(tmp_path))])
+    assert _read(actor_id="人/🪐", graph_id="宇宙").actor_id == "人/🪐"
+
+
+def test_replacement_record_cannot_be_used_by_previous_owner(tmp_path):
+    from tinyassets.engine_mcp_http import _EngineServer, _write_routes
+
+    first = _EngineServer("u-a", "actor-a", 8790, str(tmp_path))
+    second = _EngineServer("u-a", "actor-b", 8790, str(tmp_path))
+    _write_routes(tmp_path, [first])
+    assert _read().secret == first.secret
+    _write_routes(tmp_path, [second])
+    assert _read() is None
+    assert _read(actor_id="actor-b").secret == second.secret != first.secret
+
+
+def test_codex_drops_stale_bearer_and_ignores_child_env_root(tmp_path):
+    from tinyassets.providers.codex_provider import _codex_engine_mcp_args
+
+    _write(tmp_path, _entry())
+    env = {"TINYASSETS_DATA_DIR": str(tmp_path / "not-the-canonical-root")}
+    assert len(_codex_engine_mcp_args(_config(), env)) > 2
+    assert env["TINYASSETS_ENGINE_MCP_BEARER"] == "s" * 43
+    _write(tmp_path, _entry(actor_id="actor-b"))
+    assert len(_codex_engine_mcp_args(_config(), env)) == 2
+    assert "TINYASSETS_ENGINE_MCP_BEARER" not in env
+
+
+def test_conflicting_serving_owners_are_not_picked_by_order(tmp_path, monkeypatch):
+    from tinyassets import engine_mcp_http as http
+
+    rows = [("u-a", "actor-a"), ("u-a", "actor-b"), ("u-b", "actor-c"), ("u-b", "actor-c")]
+    monkeypatch.setattr(http, "_serving_universe_owners", lambda root: rows)
+    assert http._desired_owners(tmp_path) == {"u-b": "actor-c"}
+    rows.reverse()
+    assert http._desired_owners(tmp_path) == {"u-b": "actor-c"}
+
+
+def test_supervisor_uses_one_root_for_database_routes_and_child(tmp_path, monkeypatch):
+    from tinyassets import engine_mcp_http as http
+
+    chosen = tmp_path / "chosen"
+    chosen.mkdir()
+    observed = []
+    monkeypatch.setattr(http, "_serving_universe_owners", lambda root: (
+        observed.append(root) or [("u-a", "actor-a")]
+    ))
+    monkeypatch.setattr(http._EngineServer, "start", lambda self: True)
+    # Capture the supervisor without starting a background thread or a real CLI.
+    monkeypatch.setattr(http.threading, "Thread", lambda **kw: SimpleNamespace(start=lambda: None))
+    [server] = http.start_engine_mcp_http_servers(chosen)
+    assert observed == [chosen]
+    assert server._data_dir == str(chosen)
+    assert _read(root=chosen).actor_id == "actor-a"
+
+
+def test_supervisor_rejects_relative_root():
+    from tinyassets.engine_mcp_http import start_engine_mcp_http_servers
+
+    with pytest.raises(ValueError, match="must be absolute"):
+        start_engine_mcp_http_servers("relative")
