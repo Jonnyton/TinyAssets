@@ -22,6 +22,8 @@ legacy semantics. New connections opting into automatic selection accept discove
 models under explicit/free-only bounds; existing bindings are not migrated merely
 because preferences were saved. Broader discovery endpoints or spending remain
 ordinary explicit owner approvals through existing request/grant mechanisms.
+First opt-in entrypoint: the authenticated custom_agents binding action. The
+deposit/onboarding route stays legacy until its own explicit opt-in gesture exists.
 
 ## One request plan, not two competing choices
 
@@ -35,6 +37,11 @@ the existing codec rather than invent a second reference/order format.
 
 After genuine carrier minting, capture saved preferences from the current-home
 guarded store using the verified principal and universe, never body identities.
+Apply the current-home guard only for home-scoped preferences. Other authorized
+owned-universe turns without an override retain their legacy path, with no home-only
+preference read. Explicit overrides outside supported home scope refuse, rather
+than being silently ignored. General non-home policy/journal support remains a
+later required capability before exposing those controls there.
 Capture generation once. Missing row and missing override preserve the legacy
 binding path exactly. A corrupt/unavailable row is held, not treated as absent.
 An override or saved policy on a legacy assignment cannot expand model authority:
@@ -49,6 +56,14 @@ lock spans discovery IO. Re-read the same authoritative chain after IO, and the
 router still validates it before EVERY launch. The captured plan is advisory.
 The sink sets model_selection from this plan's first candidate; the runner rejects
 a contradictory plan/selection pair rather than silently overriding it.
+This is a required change to InteractiveHttpAgentTurn._run, not current behavior.
+For overrides construct ModelPolicy using override.mode, current_selection equal
+to its primary, saved_default=None, and exactly its fallbacks. Automatic clears
+both primaries. Generation is the observed saved generation (zero when absent).
+Saved mode uses its saved_default and tail with current_selection=None. Record
+provenance separately: extend the versioned journal header with current/saved/
+automatic source, retaining a strict v1 reader with source unknown. No rewrite of
+old headers or inference that generation alone proves which policy drove a turn.
 
 Discovery uses each connection's existing protocol contract. Preserve fresh
 capability/privacy evidence and all accepted model/price restrictions. Filter
@@ -76,6 +91,20 @@ the existing no-replay rule; do not restart a CLI turn merely to traverse a
 fallback list. Mixed-source continuation is allowed only with a proved safe
 inference boundary and portable known progress. HTTP-only support is an interim
 implementation stage, not a substitute for the requested mixed-source behavior.
+The concrete native-default path belongs in _authorize_served_provider_call and
+its async wrapper: recognize the existing _PROVIDER_SERVICE registry, require
+model_id="", use _current_selected_member_authority, skip HTTP prepare_selected_model,
+and yield selected_model=None with the exact member provider and custody snapshot.
+Native explicit IDs follow through executor discovery, not a loosened default path.
+In router._request_ceiling, explicit allowed_providers (including empty) still wins;
+otherwise use the resolved served provider for any served authority, not just HTTP.
+
+The catalog assembler must produce native ConnectionModels from that registry and
+verified member availability/custody: source_kind subscription (or proven local),
+Model(model_id=""), default_model_id="". Preserve the Claude-serving opt-in and
+do not fabricate context/model metadata. Confirmed subscription execution is
+unmetered; actual model remains unknown. A native first candidate uses existing
+all-skipped retry only; no native whole-turn fallback traversal in this first slice.
 
 ## Serving activation
 
@@ -100,3 +129,12 @@ mixed automatic mode; explicit HTTP must win when the user selects it. Preserve
 all old CLI tests. Windows, Linux oracle and independent review precede landing.
 The optional public MCP argument requires both-client rendered pre-merge checks.
 UI exposes current choice separately from saved policy only after runtime works.
+
+Independent shape review59767: exit0 ADAPT358s. Six required corrections above:
+native launch, native catalog, non-home preservation, override provenance,
+contradictory-plan rejection, and delta specs for binding/converse. No duplicate
+review is needed before implementing these corrections. Inventory other served
+sinks before activation (slack_event remains an accepted issuer but its module is
+absent here). Reconcile seven extracted release commits ahead on origin/main
+before landing; do not blindly rebase dirty work. Scoped-reset inventory remains
+an independent unresolved concern, not proven by home/deletion guard unit tests.

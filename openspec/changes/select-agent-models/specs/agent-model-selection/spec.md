@@ -1,5 +1,29 @@
 ## ADDED Requirements
 
+### Requirement: Model access uses the existing owner binding action
+The authenticated custom_agents bind_serving_provider action SHALL accept optional
+model_access via strict ModelAccess validation and existing assignment publication.
+Omission SHALL preserve the legacy provider-only payload. Saving preferences SHALL
+NOT publish or widen assignments, grants or permitted spending.
+
+#### Scenario: Owner opts into discovered models
+- **WHEN** the owner binds authorized sources with discovered scope and accepted price limits
+- **THEN** the current assignment records membership through existing authority
+- **AND** broader discovery grants or paid allowances require explicit authorization
+
+#### Scenario: Onboarding without opt-in
+- **WHEN** the deposit flow has no explicit model-access declaration
+- **THEN** it preserves legacy binding and working native serving behavior
+
+#### Scenario: Mixed-source automatic mode
+- **WHEN** a native default and HTTP models are eligible
+- **THEN** automatic selection uses the native default through its real executor
+- **AND** an HTTP-only catalog cannot silently remove that preference
+
+#### Scenario: Another owned universe retains legacy execution
+- **WHEN** the owner converses with a non-home universe without an override
+- **THEN** home-only preferences neither block nor alter its existing binding
+
 ### Requirement: Connection-scoped model choices
 The app SHALL expose model choices from the universe owner's authorized connections with freshness and capability information, without a compiled model-release list.
 
