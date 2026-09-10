@@ -21,7 +21,8 @@
   September10 partial: synchronous HTTP lookup/request/cleanup now runs in one
   owned executor Future. Cancellation drains it before router settlement; actual
   asyncio.run teardown and selected-authority slot/budget retention are tested.
-  Claude implementation APPROVE224s. Legacy-only extraction is draft PR3718;
+  Claude implementation APPROVE224s. Legacy-only extraction PR3718 is deployed
+  asb9d642646c8d with authenticated SHA/canary and five fresh app checklist passes;
   this feature branch remains unshipped. HTTP tool calls/results, canonical MCP
   execution and durable safe continuation remain required. See
   http-inference-lifecycle.md. Do not mark full-agent selection complete.

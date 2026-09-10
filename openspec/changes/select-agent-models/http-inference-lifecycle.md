@@ -69,10 +69,14 @@ and secret-free diagnostics are correct, and production3.11 lacks that callback.
 The existing legacy executor has the same blocking/lifecycle defect, so the
 bounded fix was extracted against origin/main b801ef11 into
 codex/nonblocking-http-inference, exact commita15d608c22c0789bdddc348f3185eacfd2b7b52f,
-draft PR3718. It excludes all selected-model/discovery/preferences work and adds
+PR3718. It excludes all selected-model/discovery/preferences work and adds
 a legacy serving integration regression. That isolated tree passes133 Windows/
 135 actual Docker Linux checks (3/1 platform/optional skips). Final exact-head
-review and CI gate landing. No live claim at this checkpoint.
+APPROVE141s and all required CI checks passed. Normal merge at01:28:43UTC,
+releaseb9d642646c8d0918c36bb640c470b34123824e15. Build34425633001 and deploy34425981123
+succeeded, authenticated SHA/canary verified01:35UTC. As-built lifecycle spec and
+full deployment proof are in docs-only PR3722; no selector specification is
+represented as shipped.
 
 Feature integration run September10,01:12 UTC:
 `python -m pytest -q tests/test_http_inference_lifecycle.py tests/test_api_key_http_provider.py tests/test_selected_model_authority.py tests/test_provider_served_router.py tests/test_provider_admission.py tests/test_run_provider_session.py tests/test_mirror_parity_gate.py --tb=short -rs`
@@ -84,7 +88,13 @@ not inferred green; this fresh run is the evidence.
 
 Isolated release exact-head review APPROVE141s,15 independent lifecycle tests:
 https://github.com/Jonnyton/TinyAssets/pull/3718#issuecomment-5611165147
-No selected-model activation in that release. CI/deployment still pending.
+No selected-model activation in that release. Exact checklist message sent and
+verified18:35PDT; app18:38 reports five fresh passes and deleted-webhook404.
+Refreshed history revealed the original checklist already completed16:38PDT,
+webhook run1fb7cf62e27044ef (200delivery/204cleanup). It now requests repeatable
+UUID receiver paths on the existing key; operator opened/read, never accepted.
+Those ordinary workflow checks do not prove HTTP cancellation, full HTTP agent
+tools, automatic model selection or organic post-fix user use. These remain open.
 
 ## Next tool-loop integration seams (inspected, not implemented)
 
