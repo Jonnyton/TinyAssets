@@ -102,9 +102,10 @@ tools, automatic model selection or organic post-fix user use. These remain open
 - engine_mcp_server.py already exposes the canonical tools pinned to one owner
   and universe. Do not import it and mutate its module-global environment binding
   between concurrent HTTP turns; use a correctly pinned client transport.
-- engine_mcp_http.py supervises loopback per-universe servers. Its private route
-  records currently contain URL/secret but no owner field. This inspection does
-  not approve borrowing a route as cross-owner authority. No transport chosen yet.
+- engine_mcp_http.py supervises loopback per-universe servers. Feature644d6d74
+  now adds the shared versioned owner-bound route reader, independently approved;
+  isolated draft PR3728 awaits exact-head review/CI. See engine-tool-route.md.
+  This does not approve borrowing a route as fresh authority or add the HTTP client.
 - served_tools.py owns the existing canonical tool inventory. No new public
   handle or parallel private dispatcher is needed for HTTP agent calls.
 - providers/call.py returns response.text; _call_writer in universe_intelligence.py

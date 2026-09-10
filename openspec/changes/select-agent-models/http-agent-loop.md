@@ -18,7 +18,7 @@ implementations, synthesize an actor, expose its bearer to a remote LLM, or acce
 a URL supplied by model output. Its explicit universe allowlist is a current
 authority restriction, not something this feature may silently remove.
 
-The current route map records graph->URL/secret but not the owner identity. An
+At the original inspection the route map recorded graph->URL/secret but not the owner identity. An
 HTTP tool client will need a trustworthy owner/graph match and exact loopback
 destination validation, including during supervisor owner changes. Adding route
 identity metadata must be designed/tested at the shared publisher/consumer seam.
@@ -53,7 +53,8 @@ label. Feature commit215aacf2 now adds an optional reply-owned response observer
 and WriterExecutionReceipt, propagated into converse's optional execution field.
 The first completed conversational response wins; subsequent learning cannot
 overwrite it. This bridge is built and independently reviewed, not deployed.
-The app display remains pending. Never use the global label across users.
+Reply-owned app display is now built in6f0e6273, not deployed; clickable selection
+remains pending. Never use the global label across users.
 See docs/reviews/2026-09-10-interactive-model-receipt-proof.md.
 
 The newer agent-runtime outcome path requires complete usage/cost before success;
@@ -85,7 +86,7 @@ is now scoped in answer-model-display.md. Neither is a full-agent picker proof.
 
 ## Next integration inspection, September10
 
-The existing route lookup is duplicated in claude_provider._engine_mcp_flags and
+The pre-build route lookup was duplicated in claude_provider._engine_mcp_flags and
 codex_provider._codex_engine_mcp_args. Both read graph-keyed URL/secret only and
 fall back to Path(data_dir or "."); neither consumes an owner field because
 engine_mcp_http._write_routes does not publish one. The supervisor already holds
@@ -97,4 +98,10 @@ reader and owner/graph identity contract for these existing consumers. Determine
 fresh authority and ambiguous-owner handling at the publisher/consumer seam;
 do not infer owner authority from possession of a graph-keyed URL. This is a
 source-grounded next dependency, not a new public handle, approved authority
-change or implemented transport. Existing allowlists stay in force.
+change. Existing allowlists stay in force.
+
+Subsequent feature644d6d74 implements the shared owner/graph route contract,
+reviewed APPROVE250s; see engine-tool-route.md for applied shape adaptations.
+Private transport repair is isolated in draft PR3728 atddb343b1 with exact-head
+review/CI pending. It is not yet deployed. The HTTP consumer, fresh per-inference
+admission and durable tool continuation described above remain unbuilt.
