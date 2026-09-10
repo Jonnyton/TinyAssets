@@ -14,10 +14,16 @@ import logging
 from dataclasses import replace
 
 from tinyassets.engine_tool_client import EngineToolError, open_engine_tools
-from tinyassets.exceptions import ProviderAuthorityHeldError, ProviderProtocolError
+from tinyassets.exceptions import (
+    AllProvidersExhaustedError,
+    ProviderAuthorityHeldError,
+    ProviderProtocolError,
+)
 from tinyassets.provider_assignment import check_served_agent_tool_authority
 from tinyassets.providers import agent_chat_codec as codec
 from tinyassets.providers.agent_inference import AgentInferenceRequest
+from tinyassets.providers.agent_model_plan import AgentModelPlan
+from tinyassets.providers.model_capacity import CapacitySignal
 from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 from tinyassets.storage.agent_turn_journal import AgentTurnJournal, JournalUnavailable
 from tinyassets.storage.agent_turn_records import RoundInput, dump, load_result
@@ -37,6 +43,11 @@ class InteractiveHttpAgentTurn:
         self.journal = None
         self.turn = None
         self.owner = None
+        self.plan = universe_context.agent_model_plan
+        if self.plan is not None and type(self.plan) is not AgentModelPlan:
+            raise ValueError("invalid interactive candidate plan")
+        self.exhaustion = ()
+        self.retrying_capacity = False
 
     def _check_scope(self):
         owner = check_served_agent_tool_authority(self.context)
@@ -86,8 +97,10 @@ class InteractiveHttpAgentTurn:
                 self.turn.turn_id,
                 expected_generation=self.turn.generation,
                 candidate=candidate,
+                after_failed_inference=self.retrying_capacity,
             )
         )
+        self.retrying_capacity = False
 
     def _history(self):
         history = []
@@ -134,9 +147,18 @@ class InteractiveHttpAgentTurn:
     async def _run(self):
         self.owner = self._check_scope()
         uid = self.context.universe_dir.name
+        if self.plan is not None:
+            first = self.plan.next_candidate(self.owner, uid, self.exhaustion)
+            if first is None:
+                raise ProviderAuthorityHeldError("no eligible interactive model remains")
+            self.context = replace(self.context, model_selection=first)
+            self._check_scope()
         if self.turn is None:
             self.journal = AgentTurnJournal(self.context.universe_dir.parent)
-            self.turn = self.journal.create(self.owner, uid, prompt=self.prompt, system=self.system)
+            self.turn = self.journal.create(
+                self.owner, uid, prompt=self.prompt, system=self.system,
+                policy_generation=None if self.plan is None else self.plan.policy.generation,
+            )
         elif self.turn.state != "ready" or self.turn.rounds:
             raise JournalUnavailable("agent turn cannot be replayed")
 
@@ -164,7 +186,7 @@ class InteractiveHttpAgentTurn:
                             universe_context=self.context,
                             _agent_observer=self._begin,
                         )
-                    except BaseException:
+                    except BaseException as exc:
                         # No engine tool can start before a validated inference
                         # is committed. Preserve failure, never restart this turn.
                         if self.turn.state == "inference_started":
@@ -178,6 +200,8 @@ class InteractiveHttpAgentTurn:
                                     reply=None,
                                 )
                             )
+                        if self._next_after_capacity(exc):
+                            continue
                         raise
                     if response.agent_reply is None:
                         raise ProviderProtocolError("HTTP agent response lacks validated progress")
@@ -245,6 +269,26 @@ class InteractiveHttpAgentTurn:
                         )
                         if self.turn.state not in {"ready", "tools_pending"}:
                             raise ProviderProtocolError("agent tool result requires attention")
+
+    def _next_after_capacity(self, exc):
+        if (
+            self.plan is None or not isinstance(exc, AllProvidersExhaustedError)
+            or exc.capacity_scope not in {"model", "account", "unknown"}
+            or self.turn.state != "held_transport"
+            or self.turn.rounds[-1].state != "failed"
+            or self.turn.rounds[-1].tools
+        ):
+            return False
+        signal = CapacitySignal(exc.capacity_scope, exc.failure_class, exc.retry_after)
+        self.exhaustion += (signal.exhaustion(self.context.model_selection),)
+        candidate = self.plan.next_candidate(
+            self.owner, self.context.universe_dir.name, self.exhaustion,
+        )
+        if candidate is None:
+            return False
+        self.context = replace(self.context, model_selection=candidate)
+        self.retrying_capacity = True
+        return True
 
     def close_quiescent(self):
         if self.turn is not None and self.turn.state == "ready":

@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from tinyassets.provider_work_authority import ProviderInvocationCarrier
     from tinyassets.providers.agent_chat_codec import AgentReply
     from tinyassets.providers.agent_inference import AgentInferenceRequest
+    from tinyassets.providers.agent_model_plan import AgentModelPlan
     from tinyassets.providers.model_policy import ModelRef
     from tinyassets.providers.model_selection import SelectedModel
 
@@ -121,6 +122,8 @@ class UniverseContext:
     served_provider: "ServedProviderAuthority | None" = None
     model_selection: ModelRef | None = None
     """Requested candidate, not authority; revalidated by the serving boundary."""
+    agent_model_plan: AgentModelPlan | None = None
+    """Captured advisory owner policy; never a grant or a tool-replay instruction."""
 
 
 @dataclass(frozen=True, slots=True)

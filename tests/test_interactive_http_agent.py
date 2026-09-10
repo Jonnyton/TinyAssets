@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -60,6 +61,8 @@ def agent(served, monkeypatch):
         closed=False,
         before_reply=None,
         unknown_inference=False,
+        capacity_failures={},
+        on_capacity=None,
         config=ModelConfig(
             engine_mcp_enabled=True,
             engine_mcp_actor_id="owner",
@@ -104,6 +107,14 @@ def agent(served, monkeypatch):
             state.wires.append((verb, document))
             if state.unknown_inference:
                 return {"error": "synthetic post-dispatch disconnect"}
+            if len(state.wires) in state.capacity_failures:
+                if state.on_capacity is not None:
+                    state.on_capacity()
+                return {
+                    "status": state.capacity_failures[len(state.wires)],
+                    "headers": {"retry-after": "60"},
+                    "body": '{"error":{"message":"synthetic refusal"}}',
+                }
             if state.before_reply is not None:
                 state.before_reply()
             tools = len(state.wires) <= state.requested_rounds
@@ -311,3 +322,168 @@ def test_later_pre_intent_failure_closes_known_progress(agent, monkeypatch, fail
     assert "exact result" in turn.rounds[0].tools[0].result_json
     with agent.journal._ledger.connection() as conn:
         assert reset_blockers(conn, "owner", agent.served.context.universe_dir.name) == []
+
+
+@pytest.mark.parametrize("status,scope", [(402, "account"), (429, "unknown"), (503, "model")])
+def test_capacity_scope_survives_real_router_without_false_spend(agent, status, scope):
+    from tinyassets.exceptions import AllProvidersExhaustedError
+
+    agent.capacity_failures[1] = status
+    with pytest.raises(AllProvidersExhaustedError) as error:
+        run(agent)
+    assert error.value.capacity_scope == scope
+    assert error.value.retry_after == 60
+    assert error.value.attempts[-1].capacity_scope == scope
+    assert len(agent.wires) == 1 and not agent.tools
+    assert agent.latest().state == "held_transport"
+    provider = agent.served.context.model_selection.connection_id
+    remaining = agent.served.router._quota.cooldown_remaining(provider)
+    assert (remaining > 0) == (scope != "model")
+    with agent.journal._ledger.connection() as conn:
+        rows = conn.execute(
+            "SELECT state, actual_total_tokens, actual_cost_microunits "
+            "FROM served_provider_budget_reservations"
+        ).fetchall()
+        assert [tuple(row) for row in rows] == [("succeeded", 0, 0)]
+
+
+def _with_fallback(agent, monkeypatch, *, empty=False):
+    from tinyassets.providers import discovery_snapshot
+    from tinyassets.providers.agent_model_plan import AgentModelPlan
+    from tinyassets.providers.discovery_protocols import discovery_protocol
+    from tinyassets.providers.model_policy import Catalog, ModelPolicy, ModelRef
+
+    original = discovery_snapshot.read_http_discovery_document
+    alternate = "future-vendor/another-model"
+
+    def added(**kwargs):
+        value = original(**kwargs)
+        if "models/user" in kwargs["url"]:
+            value["data"].append(authority_tests.snapshot_tests._model(alternate))
+        return value
+
+    monkeypatch.setattr(discovery_snapshot, "read_http_discovery_document", added)
+    snapshot = authority_tests.snapshot_tests._refresh(agent.served.rig)
+    selected = agent.served.context.model_selection
+    plan = AgentModelPlan(
+        Catalog("owner", agent.served.context.universe_dir.name, (snapshot.models,)),
+        ModelPolicy(
+            generation=7, mode="explicit", saved_default=selected,
+            fallbacks=() if empty else (ModelRef(selected.connection_id, alternate),),
+        ),
+        replace(
+            discovery_protocol(snapshot.models.provider_scope).text_interaction, needs_tools=True,
+        ),
+    )
+    agent.served.context = replace(agent.served.context, agent_model_plan=plan)
+    return alternate
+
+
+def test_model_capacity_continues_known_tools_without_replay(agent, monkeypatch):
+    alternate = _with_fallback(agent, monkeypatch)
+    agent.capacity_failures[2] = 503
+    assert run(agent) == "finished exact answer"
+    assert len(agent.wires) == 3 and len(agent.tools) == 1
+    turn = agent.latest()
+    assert turn.state == "completed" and turn.policy_generation == 7
+    assert [round.state for round in turn.rounds] == ["received", "failed", "received"]
+    body = agent.wires[-1][1]["body"]
+    assert body["model"] == alternate
+    assert json.loads(body["messages"][-1]["content"])["content"][0]["text"] == "exact result 🪐"
+    assert all(
+        set(wire[1]["body"]["provider"]["max_price"].values()) == {"0"}
+        for wire in agent.wires
+    )
+    with agent.journal._ledger.connection() as conn:
+        rows = conn.execute(
+            "SELECT actual_total_tokens FROM served_provider_budget_reservations"
+        ).fetchall()
+        assert len(rows) == 3
+        assert [row[0] for row in rows].count(0) == 1
+
+
+@pytest.mark.parametrize("status", [402, 429])
+def test_shared_capacity_skips_sibling_models_and_keeps_known_results(agent, monkeypatch, status):
+    from tinyassets.exceptions import AllProvidersExhaustedError
+
+    _with_fallback(agent, monkeypatch)
+    agent.capacity_failures[2] = status
+    with pytest.raises(AllProvidersExhaustedError):
+        run(agent)
+    assert len(agent.wires) == 2 and len(agent.tools) == 1
+    assert agent.latest().rounds[0].tools[0].state == "completed"
+
+
+def test_explicit_empty_fallback_stays_empty(agent, monkeypatch):
+    from tinyassets.exceptions import AllProvidersExhaustedError
+
+    _with_fallback(agent, monkeypatch, empty=True)
+    agent.capacity_failures[1] = 503
+    with pytest.raises(AllProvidersExhaustedError):
+        run(agent)
+    assert len(agent.wires) == 1 and not agent.tools
+
+
+def test_replacement_revalidates_revoked_discovery_authority(agent, monkeypatch):
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+
+    _with_fallback(agent, monkeypatch)
+    agent.capacity_failures[2] = 503
+    agent.on_capacity = lambda: agent.served.rig.ledger.revoke_grant("grant-models")
+    with pytest.raises(ProviderAuthorityHeldError):
+        run(agent)
+    assert len(agent.wires) == 2 and len(agent.tools) == 1
+    assert agent.latest().state == "held_transport"
+
+
+def test_paid_replacement_is_rejected_after_fresh_discovery(agent, monkeypatch):
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.providers import discovery_snapshot
+
+    alternate = _with_fallback(agent, monkeypatch)
+    original = discovery_snapshot.read_http_discovery_document
+
+    def withdrawn(**kwargs):
+        value = original(**kwargs)
+        if len(agent.wires) >= 2 and "models/user" in kwargs["url"]:
+            for model in value["data"]:
+                if model["id"] == alternate:
+                    model["pricing"]["prompt"] = "0.001"
+        return value
+
+    monkeypatch.setattr(discovery_snapshot, "read_http_discovery_document", withdrawn)
+    agent.capacity_failures[2] = 503
+    with pytest.raises(ProviderAuthorityHeldError):
+        run(agent)
+    assert len(agent.wires) == 2 and len(agent.tools) == 1
+
+
+def test_advisory_plan_cannot_cross_owner_boundary(agent, monkeypatch):
+    _with_fallback(agent, monkeypatch)
+    plan = agent.served.context.agent_model_plan
+    agent.served.context = replace(
+        agent.served.context, agent_model_plan=replace(
+            plan, catalog=replace(plan.catalog, owner_id="another-owner"),
+        ),
+    )
+    with pytest.raises(ValueError, match="scope mismatch"):
+        run(agent)
+    assert not agent.wires and not agent.tools
+
+
+@pytest.mark.parametrize("unknown", ["inference", "tool"])
+def test_fallback_plan_does_not_replay_unknown_outcomes(agent, monkeypatch, unknown):
+    from tinyassets.exceptions import AllProvidersExhaustedError
+
+    _with_fallback(agent, monkeypatch)
+    agent.unknown_inference = unknown == "inference"
+    agent.fail_tool = unknown == "tool"
+    expected = (
+        AllProvidersExhaustedError
+        if unknown == "inference"
+        else engine_tool_client.EngineToolError
+    )
+    with pytest.raises(expected):
+        run(agent)
+    assert len(agent.wires) == 1
+    assert len(agent.tools) == (unknown == "tool")

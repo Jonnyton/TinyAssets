@@ -27,6 +27,7 @@ from tinyassets.exceptions import (
     ProviderRateLimitedError,
     ProviderTimeoutError,
     ProviderUnavailableError,
+    SelectedModelCapacityError,
 )
 from tinyassets.provider_admission import ProviderBusy as _ProviderBusy
 from tinyassets.provider_admission import provider_slot_async as _provider_slot
@@ -47,6 +48,7 @@ from tinyassets.providers.diagnostics import (
     ProviderAttemptDiagnostic,
     build_chain_state,
     classify_unavailable,
+    dominant_capacity_scope,
     dominant_failure_class,
     dominant_retry_after_s,
     redacted_failure_detail,
@@ -1134,6 +1136,18 @@ class ProviderRouter:
                 raise
             except ProviderAuthorityHeldError:
                 raise
+            except SelectedModelCapacityError as exc:
+                # One model's capacity is not evidence its whole connection is
+                # unhealthy. Shared/unknown scope keeps the conservative cooldown.
+                if exc.signal.scope != "model":
+                    self._quota.cooldown(provider_name, _rate_limit_cooldown_s(exc))
+                attempts.append(ProviderAttemptDiagnostic(
+                    provider=provider_name, status="failed", skip_class="quota_or_cooldown",
+                    detail=exc.failure_class, failure_class=exc.failure_class,
+                    retry_after_s=exc.retry_after, capacity_scope=exc.signal.scope,
+                    side_effect_state="none",
+                ))
+                continue
             except (ProviderRateLimitedError, ProviderOverloadedError) as exc:
                 # A genuine rate-limit / overload IS real capacity: cool the
                 # provider until its own retry-after (+margin), keeping fallback
@@ -1269,6 +1283,7 @@ class ProviderRouter:
                 attempts=attempts,
                 failure_class=dominant_failure_class(attempts),
                 retry_after=dominant_retry_after_s(attempts),
+                capacity_scope=dominant_capacity_scope(attempts),
             )
         if invocation_carrier is not None:
             settle_carrier(

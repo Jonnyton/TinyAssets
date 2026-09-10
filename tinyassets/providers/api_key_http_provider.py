@@ -307,6 +307,12 @@ class ApiKeyHttpProvider(BaseProvider):
             # the network failed. Fail loud with the secret-free reason.
             reason = str(result.get("reason") or result.get("error") or "unknown")
             raise ProviderUnavailableError(f"compute call failed: {reason}")
+        if agent_request is not None and contract.capacity_decoder is not None:
+            from tinyassets.exceptions import SelectedModelCapacityError
+
+            capacity = contract.capacity_decoder(status, result.get("headers"))
+            if capacity is not None:
+                raise SelectedModelCapacityError(capacity)
         if status == 429:
             raise ProviderRateLimitedError("compute provider rate limited (429)")
         if 500 <= status < 600:

@@ -28,6 +28,7 @@ class DiscoveryProtocol:
     price_components: frozenset[str]
     constrain_inference: Callable[..., dict]
     text_interaction: Interaction
+    capacity_decoder: Callable | None = None
 
     def validate_urls(self, catalogue_url: str, benchmark_url: str) -> None:
         catalogue = urlsplit(catalogue_url)
@@ -87,6 +88,19 @@ def _openrouter_constrained_body(body: dict, caps: tuple[tuple[str, int], ...]) 
     return {**body, "provider": {"max_price": prices, "require_parameters": True}}
 
 
+def _openrouter_capacity(status, headers):
+    from tinyassets.providers.model_capacity import CapacitySignal, retry_after_seconds
+
+    if type(status) is not int:
+        return None
+    kind = {
+        402: ("account", "provider_credit_exhausted"),
+        429: ("unknown", "provider_rate_limited"),
+        503: ("model", "provider_overloaded"),
+    }.get(status)
+    return None if kind is None else CapacitySignal(*kind, retry_after_seconds(headers))
+
+
 _PROTOCOLS = {
     "openrouter_user_models_v1": DiscoveryProtocol(
         "/api/v1/models/user",
@@ -126,6 +140,7 @@ _PROTOCOLS = {
                 ("audio", "audio_output_million_tokens_usd"),
             ),
         ),
+        capacity_decoder=_openrouter_capacity,
     )
 }
 

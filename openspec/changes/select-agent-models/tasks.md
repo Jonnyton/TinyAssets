@@ -16,6 +16,12 @@
 
 - [ ] 2.2 Implement deterministic automatic ranking and ordered explicit fallback within fresh authority, required capabilities and permitted cost; test unscored/stale catalogues and no-paid-fallback.
 - [ ] 2.3 Integrate typed capacity scopes and safe continuation into the existing router; prove account exhaustion skips siblings and completed/ambiguous tools are not replayed.
+
+  September10 06:38UTC: implemented after capacity-shape ADAPT341s;515 Windows/
+  515 actual Linux tests pass, zero skips. Real composition preserves known tool
+  results across model-only fallback and holds shared/unknown outcomes safely.
+  Exact implementation review remains required. See model-capacity-proof.md in
+  docs/reviews. Public current/saved plan consumption remains unfinished.
 - [ ] 2.4 Resolve the shared HTTP engine-tool-loop prerequisite and prove actual authorized tools work before enabling HTTP full-agent selection.
 
   September10 integration shape a5689312 independently ADAPT294s; seven mandatory
@@ -36,7 +42,7 @@
   implementation review ADAPT567s found one required settled-frontier close fix;
   applied and now418 Windows/418 Linux tests pass,0skips. Known results remain
   preserved and incomplete/ambiguous tools remain held; exact correction review
-  is next. Typed candidate fallback, saved/current policy
+  APPROVE341s. Typed candidate fallback is now built locally (see2.3); saved/current policy
   ingress and clickable UI remain unfinished; no full-agent live proof yet.
 
   September10 partial: synchronous HTTP lookup/request/cleanup now runs in one
