@@ -1,10 +1,16 @@
 # realtime-voice-conversation Specification
 
 ## Purpose
-Provide one foreground Voice control that always uses the authenticated universe's current writer through canonical conversation, with either disclosed browser/device speech or an optional provider-neutral realtime bridge, while keeping credentials, audio privacy, and teardown fail-closed.
+Provide one foreground Voice control on release-enabled clients that always uses the authenticated universe's current writer through canonical conversation, with either disclosed browser/device speech or an optional provider-neutral realtime bridge, while keeping credentials, audio privacy, store declarations, and teardown fail-closed.
 ## Requirements
 ### Requirement: Voice mode is explicit, foreground-only, and accessible
-The shared TinyAssets app SHALL expose one Voice control beside the message composer. It SHALL use an authorized current-provider realtime bridge when present, and otherwise SHALL use supported browser/device speech recognition and synthesis around the same canonical `converse` operation when typed conversation works. It SHALL require an explicit user start action and transport-specific disclosure, and SHALL stop recognition, microphone capture, and speech output when the user leaves voice mode, hides or unloads the app, signs out, or reaches an unrecoverable error.
+The browser-hosted TinyAssets app SHALL expose one Voice control beside the message composer. The current Capacitor native shells SHALL keep Voice hidden and SHALL NOT initialize or refresh Voice capability until a later native-store submission expressly includes that product surface. On a release-enabled client, Voice SHALL use an authorized current-provider realtime bridge when present, and otherwise SHALL use supported browser/device speech recognition and synthesis around the same canonical `converse` operation when typed conversation works. It SHALL require an explicit user start action and transport-specific disclosure, and SHALL stop recognition, microphone capture, and speech output when the user leaves voice mode, hides or unloads the app, signs out, or reaches an unrecoverable error.
+
+#### Scenario: Current native-store submission is Voice-dark
+- **WHEN** the hosted app runs inside a Capacitor native shell
+- **THEN** the Voice control and Voice status surface remain hidden
+- **AND** the client does not initialize Voice or request Voice capability status
+- **AND** typed conversation, attachments, account controls, and browser Voice remain unchanged
 
 #### Scenario: Realtime bridge transport is unavailable
 - **WHEN** generic outbound HTTP transport is disabled
