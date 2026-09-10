@@ -384,18 +384,42 @@ None of it can produce an installable app without account-owned signing material
    `https://tinyassets.io/legal/#privacy` page was reloaded and verified; and App
    Store Connect published the four-type privacy disclosure. Review receipt:
    `docs/audits/2026-09-09-ios-privacy-publication-review.md`.
-12. **Submitted — Apple App Review (2026-09-09 02:32 PDT).** TinyAssets iOS 1.0,
-   build 1.0.0 (3), is **Waiting for Review**. Submission ID
-   `5c6e4844-2ca2-438c-8aec-a189efb0ebb2`; release remains manual. On approval,
-   select **Release This Version** and verify the United States product page can
-   install the app. Receipt:
+12. **Rejected for information — Apple App Review (2026-09-09 17:56 PDT).** TinyAssets
+   iOS 1.0, build 1.0.0 (3), is **Rejected** with submission state **Unresolved Issues**.
+   Apple's only cited issue is **Guideline 2.1 - Information Needed - New App Submission**:
+   the account's limited review history triggers a latest-iOS physical-device recording
+   plus purpose, audience, access, service, regional, and regulated-content answers.
+   Submission ID `5c6e4844-2ca2-438c-8aec-a189efb0ebb2`; release remains manual. Do not
+   cancel the submission. The reusable response packet is in
+   `docs/ops/app-store-submission-packet.md`; receipt:
    `docs/audits/2026-09-09-ios-app-review-submission-receipt.md`.
+
+   **Smallest founder-only action:** on a physical iPhone updated to the latest iOS,
+   install Build 3 through TestFlight and capture the six-step recording in the response
+   packet, then make the `.mov` available to this task. Apple explicitly requires a
+   physical device, so a simulator recording must not be substituted. App Store Connect
+   sign-in/2FA is also required whenever the visible session expires. All written answers,
+   Notes-field preparation, attachment, and resubmission remain agent-owned, subject to
+   the required action-time confirmation before sending the reviewer reply.
+
+   **Prepared 2026-09-10:** the dedicated App Review account is already provisioned with
+   a capped, expiring, zero-cost inference connection and completed a rendered production
+   turn. Protected read-only run `34522734323` then reverified Apple's retained reviewer
+   account/contact block and unchanged `UNRESOLVED_ISSUES` / `REJECTED` state at 12:50 PDT.
+   PR #3830 / merge `f497050f6586ae70f41e98f78c412932176a46c7` is deployed and
+   verified: Capacitor shells keep Voice hidden and uninitialized, the browser client
+   retains Voice, and protected deploy run `34523794549` passed the public canary and
+   exact-revision receipt gate. Build 3's defensive microphone usage string remains in
+   the binary; the submitted reachable UI and declared review scope remain voice-dark.
+   The reviewer needs no provider setup or payment details. The only outstanding founder
+   action in this lane is the physical-device recording (and Apple sign-in/2FA when the
+   visible App Store Connect session has expired).
 
 **Apple preflight evidence (2026-09-09):** **Add for Review** succeeded after
 Content Rights, published privacy information, screenshots, reviewer credentials and
 contact details, storefront availability, and DSA status were complete. **Submit for
 Review** then succeeded and App Store Connect reloaded to **Waiting for Review**.
-No Apple-controlled action remains until review completes.
+Apple's 2026-09-09 Guideline 2.1 information request supersedes the earlier wait state.
 
 ### Google Play: start the 12-tester closed test — this is the 14-day clock
 
