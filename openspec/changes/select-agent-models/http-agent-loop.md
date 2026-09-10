@@ -110,3 +110,25 @@ unbuilt. Reply-owned display is isolated in draft PR3734 atc4850362;352 Windows/
 352 Linux passes, exact final review and CI pending. No model selection activated.
 Next pure inference/tool transcript boundary is proposed in agent-chat-protocol.md;
 legacy text codecs and price guards remain unchanged until reviewed integration.
+
+## Per-inference integration source check, September10 03:38UTC
+
+Feature7e125b4a source read via rg/docview: provider_assignment.py still sets
+_SERVED_REQUEST_MAX_INVOCATIONS=2 and supplies it in both served-authority forms.
+auth/middleware.py has a set-once seal_provider_request_launch_allowance helper,
+but rg over canonical tinyassets finds no caller. Do not describe a longer sealed
+candidate/HTTP-loop plan as activated. router.py reserves budget, acquires its
+provider slot, revalidates before launch, consumes the request invocation, then
+calls provider.complete once. An internal HTTP loop cannot hide several network
+inferences under that one accounted launch. Move each inference through trusted
+admission/settlement with a finite reviewed turn plan; never refill a spent carrier.
+
+storage/agent_runtime_invocations.py is a read-only authority source with roots
+and events restricted to admitted/invalidated, not a tool-execution journal.
+storage/agent_runtime_invocation.py provides canonical transactional admission
+through SQLiteProviderWorkAuthorityStore and external authority fences. Reuse
+the existing database/transaction ownership where appropriate, but do not append
+tool-start/result states to the authority chain or silently change its schema.
+Any durable tool-intent/result/unknown state table needs its own explicit reviewed
+storage contract under this existing change before integration code. Best-effort
+conversation text and the pure codec are not alternatives to that journal.
