@@ -1881,6 +1881,18 @@ def test_send_it_again_resends_the_same_message_once_without_a_second_bubble(tmp
     assert out["sendDisabled"] is False
 
 
+def test_optional_execution_receipt_does_not_change_reply_delivery(tmp_path):
+    out = _run_app(tmp_path, {"kind": "send", "message": "hi", "payload": {
+        "reply": "hello", "execution": {
+            "provider": "owned-ref", "model": "actual-model", "model_status": "reported",
+        },
+    }})
+    assert out["inflight"] is None
+    assert [m["role"] for m in out["messages"]] == ["founder", "universe"]
+    assert out["converseCalls"] == ["hi"]
+    assert out["sendDisabled"] is False
+
+
 def test_a_delivered_reply_forgets_the_in_flight_record(tmp_path):
     out = _run_app(tmp_path, {"kind": "send", "message": "hi",
                               "payload": {"reply": "hello"}})
