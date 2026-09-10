@@ -16,10 +16,12 @@ from tinyassets.provider_assignment import (
 )
 from tinyassets.provider_serving_binding import (
     _PROVIDER_SERVICE,
+    ServingProviderHeld,
     _current_selected_member_authority,
     _resolve_serving_source,
 )
 from tinyassets.providers.agent_model_plan import AgentModelPlan
+from tinyassets.providers.discovery_snapshot import ModelDiscoveryUnavailable
 from tinyassets.providers.model_policy import (
     Catalog,
     Charge,
@@ -51,15 +53,9 @@ class PreparedPlan:
 
     def recheck(self, conn, *, store, base, universe, owner, agent, check_preferences=False):
         from tinyassets.providers.discovery_snapshot import assert_discovery_snapshot_current
-        from tinyassets.storage.model_preferences import _read
 
-        check_current_home(conn, owner, universe.name)
-        if agent != self.agent or load_provider_assignment_in_transaction(
-            conn, universe_id=universe.name,
-        ) != self.assignment:
-            raise PermissionError("model assignment changed during discovery")
-        if check_preferences and _read(conn, owner, universe.name) != self.preferences:
-            raise PermissionError("model preferences changed during activation")
+        self.recheck_scope(conn, universe=universe, owner=owner, agent=agent,
+                           check_preferences=check_preferences)
         for provider, expected in self.chains:
             actual = _current_selected_member_authority(
                 conn, store=store, universe_dir=universe, base_path=base,
@@ -69,6 +65,72 @@ class PreparedPlan:
                 raise PermissionError("model member changed during discovery")
         for snapshot in self.snapshots:
             assert_discovery_snapshot_current(snapshot)
+
+    def recheck_scope(self, conn, *, universe, owner, agent, check_preferences=False):
+        """A changed home/agent/assignment invalidates the entire display too."""
+        from tinyassets.storage.model_preferences import _read
+
+        check_current_home(conn, owner, universe.name)
+        if agent != self.agent or load_provider_assignment_in_transaction(
+            conn, universe_id=universe.name,
+        ) != self.assignment:
+            raise PermissionError("model assignment changed during discovery")
+        if check_preferences and _read(conn, owner, universe.name) != self.preferences:
+            raise PermissionError("model preferences changed during activation")
+    def recheck_display(self, conn, *, store, base, universe, owner, agent):
+        """Demote only failed sources; never let them hide independent choices."""
+        from tinyassets.providers.discovery_snapshot import assert_discovery_snapshot_current
+
+        self.recheck_scope(conn, universe=universe, owner=owner, agent=agent,
+                           check_preferences=True)
+        failed = {}
+        for provider, expected in self.chains:
+            try:
+                actual = _current_selected_member_authority(
+                    conn, store=store, universe_dir=universe, base_path=base,
+                    owner_user_id=owner, universe_id=universe.name, agent=agent, provider=provider,
+                )
+                if actual != expected:
+                    failed[provider] = "source_revoked"
+            except PermissionError:
+                failed[provider] = "source_revoked"
+        for snapshot in self.snapshots:
+            try:
+                assert_discovery_snapshot_current(snapshot)
+            except ModelDiscoveryUnavailable as exc:
+                failed[snapshot.provider] = exc.reason
+            except ProviderError:
+                failed[snapshot.provider] = "discovery_unavailable"
+        if not failed:
+            return self
+
+        def retained(catalog):
+            return replace(catalog, connections=tuple(
+                item for item in catalog.connections if item.connection_id not in failed
+            ))
+
+        return replace(
+            self, catalog=retained(self.catalog),
+            plan=replace(self.plan, catalog=retained(self.plan.catalog)),
+            ineligible=self.ineligible + tuple(
+                Ineligible(ModelRef(provider, ""), reason) for provider, reason in failed.items()
+            ),
+            chains=tuple(item for item in self.chains if item[0] not in failed),
+            snapshots=tuple(item for item in self.snapshots if item.provider not in failed),
+        )
+
+
+class ModelSourceUnavailable(PermissionError):
+    """Non-executable source with a fixed reason, never upstream error prose."""
+
+    def __init__(self, reason):
+        if reason not in {
+            "executor_unavailable", "protocol_mismatch", "price_components_unenforceable",
+            "price_contract_incompatible",
+        }:
+            raise ValueError("invalid model source reason")
+        super().__init__(reason)
+        self.reason = reason
 
 
 def _native_models(base, universe, owner, member):
@@ -80,7 +142,7 @@ def _native_models(base, universe, owner, member):
     router = get_provider_router()
     provider = None if router is None else router._providers.get(member.provider)
     if provider is None or not provider.is_available():
-        raise PermissionError("native executor unavailable")
+        raise ModelSourceUnavailable("executor_unavailable")
     return ConnectionModels(
         member.provider, "native-subscription:" + member.provider, "subscription", "fresh",
         True, True,
@@ -89,27 +151,28 @@ def _native_models(base, universe, owner, member):
     )
 
 
-def _http_models(owner, uid, member):
+def _http_models(owner, uid, member, *, snapshot=None):
     from tinyassets.providers.definition import get_definition
     from tinyassets.providers.discovery_protocols import discovery_protocol
     from tinyassets.providers.discovery_snapshot import refresh_model_discovery
 
     if not member.provider.startswith("api_key_http:") or member.access.model_scope == "legacy":
         raise PermissionError("model discovery requires accepted model scope")
-    snapshot = refresh_model_discovery(
-        owner_user_id=owner, universe_id=uid,
-        definition_id=member.provider.removeprefix("api_key_http:"),
-    )
+    if snapshot is None:
+        snapshot = refresh_model_discovery(
+            owner_user_id=owner, universe_id=uid,
+            definition_id=member.provider.removeprefix("api_key_http:"),
+        )
     contract = discovery_protocol(snapshot.models.provider_scope)
     definition = get_definition(uid, member.provider.removeprefix("api_key_http:"))
     if (definition is None or definition.owner_user_id != owner
             or definition.protocol != contract.inference_protocol):
-        raise PermissionError("discovery and inference protocols do not match")
+        raise ModelSourceUnavailable("protocol_mismatch")
     caps = member.access.cost_caps
     if caps is None:
         caps = tuple((name, 0) for name in sorted(contract.price_components))
     if {name for name, _ in caps} != contract.price_components:
-        raise PermissionError("executor cannot enforce accepted price components")
+        raise ModelSourceUnavailable("price_components_unenforceable")
     interaction = replace(contract.text_interaction, needs_tools=True)
     order = order_models(
         Catalog(owner, uid, (snapshot.models,)),
@@ -136,12 +199,15 @@ def _http_models(owner, uid, member):
     return snapshot, replace(snapshot.models, models=tuple(models)), interaction, caps, rejected
 
 
-def prepare_owned_model_plan(*, base, universe, owner, agent, current=None, config=None):
+def prepare_owned_model_plan(
+    *, base, universe, owner, agent, current=None, config=None, allow_empty=False,
+):
     """Private composition for authenticated ingress and serving readiness.
 
     Caller must verify its principal and exact agent first. No principal is
     inferred from preferences. A manifest is the explicit opt-in to discovery;
     absent preferences on an existing legacy assignment leave its path unchanged.
+    allow_empty permits advisory display, never invocation without a candidate.
     """
     base, universe = Path(base), Path(universe)
     store = SQLiteProviderWorkAuthorityStore(base)
@@ -153,7 +219,7 @@ def prepare_owned_model_plan(*, base, universe, owner, agent, current=None, conf
         observed_agent = get_binding(
             base, universe_id=universe.name, binding_id=agent["agent_binding_id"],
         )
-        if observed_agent != agent:
+        if observed_agent != agent or agent["created_by"] != owner:
             raise PermissionError("agent binding changed")
         with store.connection() as conn:
             conn.execute("BEGIN")
@@ -170,6 +236,9 @@ def prepare_owned_model_plan(*, base, universe, owner, agent, current=None, conf
                     # Explicit saved/current choices still require a manifest.
                     return None
                 raise PermissionError("model choice requires an accepted model assignment")
+            if (assignment.owner_user_id != owner or assignment.universe_id != universe.name
+                    or agent["configuration"].get("provider_ref") != assignment.binding_id):
+                raise PermissionError("model assignment does not match the current owned agent")
             chains, rejected = [], []
             for member in assignment.candidates:
                 try:
@@ -179,7 +248,7 @@ def prepare_owned_model_plan(*, base, universe, owner, agent, current=None, conf
                         agent=agent, provider=member.provider,
                     )
                 except PermissionError:
-                    rejected.append(Ineligible(ModelRef(member.provider, ""), "member_unavailable"))
+                    rejected.append(Ineligible(ModelRef(member.provider, ""), "source_revoked"))
                 else:
                     chains.append((member.provider, chain))
     if captured is None:
@@ -195,8 +264,18 @@ def prepare_owned_model_plan(*, base, universe, owner, agent, current=None, conf
             if provider in _PROVIDER_SERVICE:
                 catalog = filtered = _native_models(base, universe, owner, member)
             else:
+                from tinyassets.providers.discovery_snapshot import refresh_model_discovery
+
+                snapshot = refresh_model_discovery(
+                    owner_user_id=owner, universe_id=universe.name,
+                    definition_id=provider.removeprefix("api_key_http:"),
+                )
+                # Discovery facts remain useful to a repair screen even when
+                # authority, pricing or the agent's contract excludes execution.
+                all_models.append(snapshot.models)
+                snapshots.append(snapshot)
                 snapshot, filtered, required, caps, denied = _http_models(
-                    owner, universe.name, member,
+                    owner, universe.name, member, snapshot=snapshot,
                 )
                 from tinyassets.universe_intelligence import _engine_mcp_enabled
 
@@ -206,25 +285,28 @@ def prepare_owned_model_plan(*, base, universe, owner, agent, current=None, conf
                                   for model in filtered.models)
                     filtered = replace(filtered, models=())
                 catalog = snapshot.models
-                snapshots.append(snapshot)
                 rejected.extend(denied)
+                common = replace(required, min_context=None)
+                if interaction is not None and interaction != common:
+                    raise ModelSourceUnavailable("price_contract_incompatible")
+                interaction = common
                 # Every HTTP member was prefiltered under its own exact caps.
                 # The combined advisory ceiling cannot authorize an actual call.
                 for name, amount in caps:
                     caps_union[name] = max(caps_union.get(name, 0), amount)
-                common = replace(required, min_context=None)
-                if interaction is not None and interaction != common:
-                    raise PermissionError("incompatible inference price contracts")
-                interaction = common
                 from tinyassets.providers.discovery_protocols import discovery_protocol
 
                 benchmark = discovery_protocol(catalog.provider_scope).ranking_source
                 if benchmark is not None:
                     ranking_sources.add(benchmark)
+        except (ModelDiscoveryUnavailable, ModelSourceUnavailable, ServingProviderHeld) as exc:
+            rejected.append(Ineligible(ModelRef(provider, ""), exc.reason))
+            continue
         except (PermissionError, ValueError, RuntimeError, OSError, ProviderError):
             rejected.append(Ineligible(ModelRef(provider, ""), "discovery_unavailable"))
             continue
-        all_models.append(catalog)
+        if provider in _PROVIDER_SERVICE:
+            all_models.append(catalog)
         if allowed is not None and provider not in allowed:
             rejected.extend(Ineligible(ModelRef(provider, m.model_id), "provider_not_allowed")
                             for m in catalog.models)
@@ -239,7 +321,7 @@ def prepare_owned_model_plan(*, base, universe, owner, agent, current=None, conf
     plan = AgentModelPlan(
         Catalog(owner, universe.name, tuple(admitted)), policy, interaction, source,
     )
-    if plan.next_candidate(owner, universe.name) is None:
+    if not allow_empty and plan.next_candidate(owner, universe.name) is None:
         raise PermissionError("no eligible model in the accepted assignment")
     result = PreparedPlan(
         plan, Catalog(owner, universe.name, tuple(all_models)), tuple(rejected),
@@ -251,9 +333,16 @@ def prepare_owned_model_plan(*, base, universe, owner, agent, current=None, conf
         )
         with store.connection() as conn:
             conn.execute("BEGIN")
-            result.recheck(
-                conn, store=store, base=base, universe=universe, owner=owner, agent=current_agent,
-            )
+            if allow_empty:
+                result = result.recheck_display(
+                    conn, store=store, base=base, universe=universe,
+                    owner=owner, agent=current_agent,
+                )
+            else:
+                result.recheck(
+                    conn, store=store, base=base, universe=universe,
+                    owner=owner, agent=current_agent,
+                )
     return result
 
 

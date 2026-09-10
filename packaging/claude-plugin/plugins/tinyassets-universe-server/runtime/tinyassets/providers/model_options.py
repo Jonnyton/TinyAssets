@@ -47,6 +47,10 @@ def model_options_document(
                 raise ValueError("duplicate model option")
             seen.add(ref)
             candidate = candidates.get(ref)
+            row_reasons = list(reasons.get(ref, []))
+            for reason in reasons.get(ModelRef(ref.connection_id, ""), []):
+                if reason not in row_reasons:
+                    row_reasons.append(reason)
             rows.append({
                 "reference": {"provider_ref": ref.connection_id, "model_id": ref.model_id},
                 "source_kind": connection.source_kind,
@@ -73,7 +77,7 @@ def model_options_document(
                 "order_index": positions.get(ref),
                 "basis": None if candidate is None else candidate.basis,
                 "labels": [] if candidate is None else list(candidate.labels),
-                "reasons": reasons.get(ref, []),
+                "reasons": row_reasons,
             })
     primary = plan.policy.current_selection or plan.policy.saved_default
     referenced = (() if primary is None else (primary,)) + plan.policy.fallbacks

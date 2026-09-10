@@ -30,6 +30,24 @@ from tinyassets.storage.outbound_connections import (
 )
 
 
+class ModelDiscoveryUnavailable(ProviderUnavailableError):
+    """Fixed, credential-blind reasons for discovery and repair displays."""
+
+    _MESSAGES = {
+        "discovery_unavailable": "model discovery context is unavailable",
+        "source_revoked": "model discovery context changed or is unavailable",
+        "missing_discovery_scope": "model discovery permission is unavailable",
+        "protocol_mismatch": "model discovery protocol is incompatible",
+        "discovery_expired": "model discovery is outside its freshness window",
+    }
+
+    def __init__(self, reason: str):
+        if reason not in self._MESSAGES:
+            raise ValueError("invalid model discovery failure reason")
+        super().__init__(self._MESSAGES[reason])
+        self.reason = reason
+
+
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -66,7 +84,7 @@ def read_http_discovery_document(
         or definition.universe_id != universe_id
         or definition.access_method != "api_key_http"
     ):
-        raise ProviderUnavailableError("discovery connection context does not match")
+        raise ModelDiscoveryUnavailable("source_revoked")
     ledger = ConnectionLedger(Path(db_path), verify_authenticated_principal=lambda: owner_user_id)
     grant = ledger.get_grant(definition.ref)
     if (
@@ -75,23 +93,24 @@ def read_http_discovery_document(
         or grant.owner_user_id != owner_user_id
         or grant.universe_id != universe_id
     ):
-        raise ProviderUnavailableError("discovery grant is unavailable for this context")
+        raise ModelDiscoveryUnavailable("source_revoked")
     view = ledger.get_connection_view(grant.connection_id)
     if (
         view is None
         or view.revoked_at is not None
         or view.owner_user_id != owner_user_id
         or view.connection_type != "http"
-        or not _verb_within_scopes("GET", view.scopes, view.access_mode)
     ):
-        raise ProviderUnavailableError("discovery connection does not permit HTTP reads")
+        raise ModelDiscoveryUnavailable("source_revoked")
+    if not _verb_within_scopes("GET", view.scopes, view.access_mode):
+        raise ModelDiscoveryUnavailable("missing_discovery_scope")
     try:
         if not isinstance(url, str) or len(url) > 2048:
             raise ValueError("invalid URL")
         canonical = _parse_canonical_https_url(url, allowed_ports=frozenset({443}))
         _enforce_endpoint_allowlist(canonical, "GET", view.allowed_endpoints, view.access_mode)
     except (SsrfValidationError, ValueError):
-        raise ProviderUnavailableError("discovery URL is not permitted") from None
+        raise ModelDiscoveryUnavailable("missing_discovery_scope") from None
 
     # A bounded, blocking broker operation. Async ingress must offload this call;
     # cancellation must not start a replacement until this operation settles.

@@ -111,6 +111,28 @@ def test_wrong_scope_never_attempts_discovery(rig, reader, field, value):
     assert reader[0] == []
 
 
+@pytest.mark.parametrize("mutation, reason", [
+    ("revoke", "source_revoked"), ("profile", "missing_discovery_scope"),
+    ("scope", "missing_discovery_scope"), ("auth", "protocol_mismatch"),
+])
+def test_discovery_refusal_has_fixed_safe_reason(rig, reader, mutation, reason):
+    if mutation == "revoke":
+        rig.ledger.revoke_grant("grant-models")
+    elif mutation == "profile":
+        rig.publish(enabled=False)
+    else:
+        with rig.ledger._connect() as conn:
+            if mutation == "scope":
+                conn.execute("UPDATE outbound_connections SET scopes_json = '[\"POST\"]'")
+            else:
+                conn.execute("UPDATE outbound_connections SET auth_scheme = 'none'")
+    with pytest.raises(snapshots.ModelDiscoveryUnavailable) as held:
+        _refresh(rig)
+    assert held.value.reason == reason
+    assert "grant-models" not in str(held.value) and "vault" not in str(held.value)
+    assert reader[0] == []
+
+
 @pytest.mark.parametrize(
     "mutation", ["revoke", "remove_profile", "narrow", "credential_ref", "definition"]
 )

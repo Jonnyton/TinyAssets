@@ -34,6 +34,7 @@ staged418 runtime files and import probe passed; mirror parity included above.
 Initial test runs found an absent-home-table regression and a fixture timestamp
 using the wrong SQLite type; both corrected before these final runs.
 
-Independent exact implementation review remains required before landing.
-The prior ADAPT383s is the pre-build shape review, not implementation approval.
+Independent exact8653ae50 implementation review APPROVE335s,7cases reproduced.
+See model-picker-prerequisites-review.md. ADAPT383s remains the pre-build shape
+review, distinct from that implementation approval.
 No live provider call, catalogue/UI proof or deployed-SHA claim.

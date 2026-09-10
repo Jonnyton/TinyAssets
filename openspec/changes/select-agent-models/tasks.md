@@ -137,7 +137,14 @@
   Shared serving lookup filters before its ambiguity bound; legacy home readiness
   refuses explicit/corrupt saved choices and deleted-home authority while preserving
   absent/automatic and non-home behavior.203 Windows/205 Linux passes (3/1skips).
-  See model-picker-prerequisites-proof.md in docs/reviews; implementation review,
-  public catalogue, enabled controls and live proof still pending.
+  See model-picker-prerequisites-proof.md in docs/reviews; exact8653ae50 review
+  APPROVE335s,7cases independently reproduced. Public catalogue, enabled controls
+  and live proof still pending.
+
+  September10 collection partial: typed source failures, retained incompatible
+  catalogues and per-source display demotion now built;875 Windows/877 actualLinux
+  pass (3/1skips). Runtime still requires an eligible candidate; no authority or
+  workflow mutation. See model-catalogue-collection-proof.md. Independent review,
+  registered/unaccepted/native inventory, public ingress and controls still open.
 - [ ] 3.2 Run focused cross-platform tests, independent exact-head review and CI; deploy and verify authenticated SHA/canary evidence, then ordinary rendered app use without operator workflow edits.
 - [ ] 3.3 Sync only shipped behavior into main specs and archive this change after completion; update the goal's stage and record any remaining capability gap honestly.

@@ -236,6 +236,16 @@ class NoServingProvider(PermissionError):
     """The founder has no current serving binding."""
 
 
+class ServingProviderHeld(PermissionError):
+    """Readiness hold with a fixed display code; existing refusal semantics stay."""
+
+    def __init__(self, message: str, *, reason: str):
+        if reason not in {"host_serving_hold", "role_not_supported"}:
+            raise ValueError("invalid serving hold reason")
+        super().__init__(message)
+        self.reason = reason
+
+
 @dataclass(frozen=True, slots=True)
 class CurrentServingProviderAuthority:
     """Secret-free result of the canonical serving-authority revalidation."""
@@ -394,14 +404,16 @@ def _resolve_serving_source(
             role for role in _SERVING_ROLES if selected not in FALLBACK_CHAINS.get(role, ())
         ]
         if not opt_in:
-            raise PermissionError(
+            raise ServingProviderHeld(
                 "claude-code serving is held by default; set "
-                "TINYASSETS_ALLOW_CLAUDE_SERVING for the vetted host to enable it"
+                "TINYASSETS_ALLOW_CLAUDE_SERVING for the vetted host to enable it",
+                reason="host_serving_hold",
             )
         if uncovered:
-            raise PermissionError(
+            raise ServingProviderHeld(
                 "claude-code serving is held until every live role is covered; "
-                f"uncovered role(s): {', '.join(uncovered)}"
+                f"uncovered role(s): {', '.join(uncovered)}",
+                reason="role_not_supported",
             )
     return _ServingSource(selected, open_grant, access)
 

@@ -45,9 +45,9 @@ connection-request gesture, not an inference that authority has been granted.
 Do not hide native sources behind an HTTP-only list. Explicit native discovery
 remains unfinished (native-discovery-evidence.md).
 
-`onboarding/app.html:MCP.converse` still does not forward `model_choice`.
+`onboarding/app.html:MCP.converse` now forwards `model_choice` (03041ce8).
 Typed `sendTurn`, voice `sendVoiceTurn`, queue persistence, in-flight restore and
-resend must capture the SAME choice at the user's send gesture. Reading a mutable
+resend capture the SAME choice at the user's send gesture. Reading a mutable
 picker value when a queued message eventually dispatches would change the user's
 already-submitted selection. Preserve old queue entries without a choice as
 legacy/no override, not an implicit automatic migration. Saving a default is a
@@ -56,6 +56,6 @@ separate generation-checked operation, never a side effect of sending or refresh
 The existing reply footer is observation-only; refreshed history currently
 discards the footer. Keep actual response identity distinct from configured
 selection. A failed refresh cannot turn an old catalogue into fresh availability.
-The future catalogue ingress/auth/refresh contract needs a bounded shape review
-before its public API is implemented. Both-client rendered pre-merge proof remains
+The catalogue ingress/auth/refresh contract has a bounded shape review ADAPT383s,
+with nine accepted adaptations in model-picker-surface.md. Both-client rendered pre-merge proof remains
 required for the already-added optional canonical converse argument.

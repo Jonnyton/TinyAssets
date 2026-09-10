@@ -1,7 +1,8 @@
 # Real preference consumption and serving readiness
 
 September10 2026, feature codex/select-agent-models. Built locally; not deployed.
-Independent implementation review pending. No private owner workflow changed.
+Independent implementation review ADAPT454s, corrected5167596c APPROVE208s.
+No private owner workflow changed.
 
 ## Implemented path
 
@@ -90,7 +91,8 @@ Internal model_options projects credential-blind advisory inventory/order,
 unavailable saved references and reasons even with zero candidates. Eleven new
 cases include the real owned catalogue producer with HTTP-only and mixed native
 bindings, without enabling serving or launching inference. It is not a public
-catalogue endpoint or clickable UI; its independent review is still pending.
+catalogue endpoint or clickable UI; exact5167596c correction/projection review
+subsequently APPROVE208s, recorded in preference-consumption-review.md.
 
 Final combined Windows Python3.14 command:
 

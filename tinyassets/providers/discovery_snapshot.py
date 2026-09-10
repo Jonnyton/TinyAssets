@@ -10,9 +10,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from tinyassets.api.helpers import _base_path
-from tinyassets.exceptions import ProviderUnavailableError
 from tinyassets.providers.definition import ProviderDefinition, get_definition
-from tinyassets.providers.discovery_http import read_http_discovery_document
+from tinyassets.providers.discovery_http import (
+    ModelDiscoveryUnavailable,
+    read_http_discovery_document,
+)
 from tinyassets.providers.discovery_protocols import discovery_protocol
 from tinyassets.providers.model_policy import ConnectionModels
 from tinyassets.storage.outbound_connections import (
@@ -65,7 +67,7 @@ def _context(base: Path, owner: str, uid: str, definition_id: str) -> _Context:
             or definition.owner_user_id != owner
             or definition.access_method != "api_key_http"
         ):
-            raise ValueError("wrong definition context")
+            raise ModelDiscoveryUnavailable("source_revoked")
         ledger = ConnectionLedger(base / "outbound.db")
         with ledger._connect() as conn:
             conn.execute("BEGIN")
@@ -79,35 +81,36 @@ def _context(base: Path, owner: str, uid: str, definition_id: str) -> _Context:
                 or grant["owner_user_id"] != owner
                 or grant["universe_id"] != uid
             ):
-                raise ValueError("unavailable grant")
+                raise ModelDiscoveryUnavailable("source_revoked")
             row = conn.execute(
                 "SELECT * FROM outbound_connections WHERE connection_id = ?",
                 (grant["connection_id"],),
             ).fetchone()
             if row is None:
-                raise ValueError("absent connection")
+                raise ModelDiscoveryUnavailable("source_revoked")
             resource = _resource_from_row(row)
             if (
                 resource.revoked_at is not None
                 or resource.owner_user_id != owner
                 or resource.connection_type != "http"
-                or not _verb_within_scopes("GET", resource.scopes, resource.access_mode)
             ):
-                raise ValueError("unavailable connection")
+                raise ModelDiscoveryUnavailable("source_revoked")
+            if not _verb_within_scopes("GET", resource.scopes, resource.access_mode):
+                raise ModelDiscoveryUnavailable("missing_discovery_scope")
             profile_row = conn.execute(
                 "SELECT descriptor_json FROM connection_capabilities WHERE connection_id = ? "
                 "AND capability_kind = 'model_discovery'",
                 (resource.connection_id,),
             ).fetchone()
             if profile_row is None:
-                raise ValueError("absent profile")
+                raise ModelDiscoveryUnavailable("missing_discovery_scope")
             profile = _validate_connection_capability(
                 resource.connection_id, "model_discovery", json.loads(profile_row[0])
             )
             if not isinstance(profile, ModelDiscoveryCapability):
                 raise ValueError("wrong profile kind")
             if resource.auth_scheme != discovery_protocol(profile.protocol).auth_scheme:
-                raise ValueError("wrong authentication shape")
+                raise ModelDiscoveryUnavailable("protocol_mismatch")
             # Existing custody identity, not a new secret hash or permission.
             identity = _connection_grant_record_digest(
                 grant_id=definition.ref,
@@ -130,7 +133,7 @@ def _context(base: Path, owner: str, uid: str, definition_id: str) -> _Context:
             ).hexdigest()
             return _Context(definition, profile, digest)
     except (LookupError, OSError, TypeError, ValueError):
-        raise ProviderUnavailableError("model discovery context is unavailable") from None
+        raise ModelDiscoveryUnavailable("discovery_unavailable") from None
 
 
 def refresh_model_discovery(
@@ -139,7 +142,7 @@ def refresh_model_discovery(
     """Fetch current data; any later invocation still needs fresh authorization.
 
     Current explicit preferences, inference bindings and private workflows are
-    untouched. The HTTP executor remains text-only. Missing benchmark evidence
+    untouched. Discovery grants no execution capability. Missing benchmark evidence
     leaves models unranked rather than making the catalogue disappear.
     """
     base = _base_path()
@@ -187,9 +190,9 @@ def refresh_model_discovery(
     after = _context(base, owner_user_id, universe_id, definition_id)
     completed_at = _now()
     if after.digest != before.digest or after.definition != before.definition:
-        raise ProviderUnavailableError("model discovery context changed during refresh")
+        raise ModelDiscoveryUnavailable("source_revoked")
     if completed_at < observed_at or completed_at - observed_at > timedelta(minutes=5):
-        raise ProviderUnavailableError("model discovery exceeded its freshness window")
+        raise ModelDiscoveryUnavailable("discovery_expired")
     return DiscoverySnapshot(
         owner_user_id,
         universe_id,
@@ -216,13 +219,13 @@ def assert_discovery_snapshot_current(snapshot: DiscoverySnapshot) -> None:
         now < snapshot.completed_at or now - snapshot.observed_at > timedelta(minutes=5)
         or snapshot.models.freshness != "fresh"
     ):
-        raise ProviderUnavailableError("model discovery is no longer fresh")
+        raise ModelDiscoveryUnavailable("discovery_expired")
     current = _context(
         _base_path(), snapshot.owner_id, snapshot.universe_id,
         snapshot.provider.removeprefix("api_key_http:"),
     )
     if current.digest != snapshot.source_digest:
-        raise ProviderUnavailableError("model discovery context changed before launch")
+        raise ModelDiscoveryUnavailable("source_revoked")
 
 
 async def refresh_model_discovery_async(
