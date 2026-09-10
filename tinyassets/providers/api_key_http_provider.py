@@ -291,7 +291,9 @@ class ApiKeyHttpProvider(BaseProvider):
                     except Exception:  # noqa: BLE001 - preserve result and secret-free diagnostics
                         _LOG.warning("HTTP inference proxy cleanup failed")
         except GrantResolutionError as exc:
-            raise ProviderUnavailableError(f"compute grant resolution failed: {exc}") from exc
+            raise ProviderUnavailableError(
+                f"compute grant resolution failed: {exc}"
+            ) from exc
 
         if not isinstance(result, dict):
             if agent_request is not None:

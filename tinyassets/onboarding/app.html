@@ -232,7 +232,7 @@
                accept=".txt,.md,.markdown,.json,.csv,.tsv,.yaml,.yml,.py,.js,.ts,.jsx,.tsx,.html,.htm,.css,.xml,.log,.sh,.rst,.ini,.toml,.env,.sql,text/*" />
         <button id="btn-attach" class="btn btn--attach" type="button"
                 title="Attach a file" aria-label="Attach a file">📎</button>
-        <button id="btn-voice" class="btn btn--voice" type="button"
+        <button id="btn-voice" class="btn btn--voice" type="button" hidden
                 aria-pressed="false" aria-label="Start voice conversation">Voice</button>
         <select id="voice-output-select" class="voice-output-select"
                 aria-label="Speaking voice" title="Choose the voice that reads replies" hidden>
@@ -245,7 +245,7 @@
       <div id="status-line" class="status-line" role="status" aria-live="polite"
            aria-label="Conversation status"></div>
       <div id="voice-status-line" class="status-line status-line--voice" role="status"
-           aria-live="polite" aria-label="Voice status"></div>
+           aria-live="polite" aria-label="Voice status" hidden></div>
     </section>
 
     <dialog id="model-dialog" class="model-dialog" aria-labelledby="model-title">
@@ -2687,7 +2687,10 @@
     }
     engineConnected = true;
     showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus();
-    Voice.refreshCapability();
+    // Build 3's App Review Notes and submitted product surface are voice-dark.
+    // The hosted web app may expose Voice, but a Capacitor shell must not make it
+    // reachable until a later store submission declares and verifies that surface.
+    if(!NATIVE) Voice.refreshCapability();
     loadPlan();
     loadHistory();
   }
@@ -3132,7 +3135,12 @@
   }
 
   function wire(){
-    Voice.init();
+    // Default-hidden in HTML prevents a pre-script flash inside the native shell.
+    // Reveal and initialise Voice only on the web surface; NATIVE covers both iOS
+    // and Android Capacitor shells.
+    $("btn-voice").hidden=NATIVE;
+    $("voice-status-line").hidden=NATIVE;
+    if(!NATIVE) Voice.init();
     ModelPicker.init();
     $("btn-voice").addEventListener("click",()=>Voice.requestStart());
     $("voice-output-select").addEventListener("change",event=>

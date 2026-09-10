@@ -51,11 +51,11 @@ monitoring, and rollback shape.
   the non-blocking missing-deobfuscation-file warning. On 2026-09-08 the preview was
   saved into Publishing overview and Google's automated quick checks passed. On
   2026-09-08 the verified reviewer credential was saved and all 15 launch changes
-  were submitted. Play's final quick checks completed and the Console now says
-  **Your changes are now in review**. The code-4 phone smoke and Google's review
-  decision remain. During review, the closed-test opt-in page reports that no testing
-  version has been published yet, and Play states that open testing is unavailable
-  until production access.
+  were submitted. Play approved and published the batch on 2026-09-08 at 10:35 PM PT.
+  The Alpha track now says **Latest release: 4 (1.0.3)** and **Available to selected
+  testers** in all 177 configured regions. The web opt-in page is live for the invited
+  founder Google account and offers **Become a tester**. The founder has not opted in
+  yet, so the 12-tester clock has not started. The code-4 phone smoke remains.
 
 Advertising-ID evidence was re-run on the Windows host on 2026-09-03. Downloading the
 baseline from GitHub Actions run `33797592515` reproduced SHA-256
