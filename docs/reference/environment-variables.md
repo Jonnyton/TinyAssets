@@ -158,3 +158,7 @@ python scripts/migrate_secrets_to_vault.py --vendor 1password
 ```
 
 Canonical list of keys: `scripts/secrets_keys.txt` (edit there, not in shell profiles). Full rationale + vendor comparison + bootstrap runbook: `docs/design-notes/2026-04-22-secrets-vault-integration.md`. GitHub Actions secrets are out of scope — they stay in repo settings.
+
+## App feedback
+
+- TINYASSETS_FEEDBACK_REVIEWER: authenticated principal ID of the support reviewer. No default. When unset, new feedback submission returns 503; existing tickets remain available to their submitter. This is account-level support access, not model or patch authority.

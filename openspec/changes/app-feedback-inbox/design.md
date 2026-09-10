@@ -1,0 +1,9 @@
+# Design
+
+The current App Feedback v1 branch only normalizes data. The dispatcher external-request flag is not an intake endpoint. Add a small authenticated app API and a durable ticket store. Use SQLite in the existing data-directory bridge; keep the store isolated and exportable pending the platform transactional-store migration. This lane assumes platform-held support content, explicitly disclosed in the form; it does not settle other private-data custody modes.
+
+TINYASSETS_FEEDBACK_REVIEWER identifies the one support principal. Unconfigured intake returns 503 and creates nothing. The server derives submitter identity from current_identity, never a JSON field. A ticket is keyed by random UUID. UNIQUE(submitter, idempotency_key) plus payload comparison makes retries safe and rejects key reuse with changed content. BEGIN IMMEDIATE serializes rate admission, insert and status history. Reviewer transitions use expected_revision. Only submitter and current configured reviewer can read, export or delete a ticket. Submitted text is inert; deterministic missing-detail classification is advisory only. No model, patches or outbound notifications execute on submit.
+
+The feedback app API serves both submitter tracking and review. GET is read-only, including when the database does not exist. POST requires authenticated identity, JSON, and a bounded body. Responses are no-store. Query pagination is bounded. Canonical text is preserved verbatim. Deletion removes body, history and idempotency entry; backups expire under the existing retention policy.
+
+Independent cross-family review, full dependency tests and deployed browser proof gate landing. The isolated workspace lacks the peer CLI and third-party test dependencies; report those limits without treating stub tests as integration proof.
