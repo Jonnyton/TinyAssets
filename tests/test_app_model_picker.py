@@ -307,3 +307,16 @@ def test_delayed_save_json_cannot_touch_another_login_snapshot(tmp_path):
     assert result["snapshot"]["universe_id"] == "home-b"
     assert result["snapshot"]["preferences"]["generation"] == 2
     assert not result["stale"] and not result["busy"]
+
+
+def test_failed_first_read_does_not_invent_saved_automatic_default(tmp_path):
+    result = run_picker(tmp_path, "", doc={"error": "model_options_unavailable"})
+    assert result["snapshot"] is None
+    assert result["ui"]["model-saved"]["text"] == "Saved default: Not loaded"
+    assert result["ui"]["btn-model-save"]["disabled"]
+
+
+def test_successful_read_without_saved_policy_truthfully_shows_automatic(tmp_path):
+    result = run_picker(tmp_path, "")
+    assert result["snapshot"]["preferences"]["policy"] is None
+    assert result["ui"]["model-saved"]["text"] == "Saved default: Automatic"

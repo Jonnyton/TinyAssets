@@ -2130,7 +2130,7 @@
       for(const source of (this.snapshot&&this.snapshot.source_failures||[])){
         const li=document.createElement("li");li.textContent=source.provider_ref+" — "+source.reasons.map(r=>r.reason.replaceAll("_"," ")).join(", ");inventory.appendChild(li);
       }
-      $("model-saved").textContent="Saved default: "+this.policyLabel(this.snapshot&&this.snapshot.preferences.policy);
+      $("model-saved").textContent="Saved default: "+(this.snapshot ? this.policyLabel(this.snapshot.preferences.policy) : "Not loaded");
       $("model-preview").textContent=draft.mode==="automatic"
         ?"Current saved routing preview (changes after saving; not an execution receipt): "+(this.snapshot&&this.snapshot.order.length ? this.snapshot.order.map(ref=>this.label(ref)).join(" → ") : "No eligible model confirmed")
         :"Selected order: "+[chosen,...draft.fallbacks].map(ref=>this.label(ref)).join(" → ");
