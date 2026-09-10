@@ -126,8 +126,10 @@ def test_reader_rejects_invalid_owner_port_version_or_secret(tmp_path, changes):
 
 @pytest.mark.parametrize("raw", [
     "not json", "null", "[]", '{"u-a":null}', '{"u-a":[]}',
-    '{"u-a": {"actor_id":"actor-b","actor_id":"actor-a"}}',
-    '{"u-a":null,"u-a":{}}',
+    json.dumps({"u-a": _entry()}).replace(
+        '"actor_id": "actor-a"', '"actor_id": "actor-b", "actor_id": "actor-a"',
+    ),
+    '{"u-a":null,"u-a":' + json.dumps(_entry()) + '}',
 ])
 def test_reader_rejects_invalid_or_ambiguous_document(tmp_path, raw):
     (tmp_path / ".engine_mcp_http_routes.json").write_text(raw, encoding="utf-8")
@@ -224,12 +226,26 @@ def test_supervisor_uses_one_root_for_database_routes_and_child(tmp_path, monkey
     monkeypatch.setattr(http, "_serving_universe_owners", lambda root: (
         observed.append(root) or [("u-a", "actor-a")]
     ))
-    monkeypatch.setattr(http._EngineServer, "start", lambda self: True)
+    child_envs = []
+
+    def spawn_without_process(*args, **kwargs):
+        # Record only fixture identity/root values, not the inherited environment
+        # or generated bearer. No real subprocess is launched.
+        child_envs.append({key: kwargs["env"][key] for key in (
+            "TINYASSETS_DATA_DIR", "TINYASSETS_ENGINE_ACTOR_ID", "TINYASSETS_ENGINE_GRAPH_ID",
+        )})
+        return SimpleNamespace(poll=lambda: None)
+
+    monkeypatch.setattr(http.subprocess, "Popen", spawn_without_process)
     # Capture the supervisor without starting a background thread or a real CLI.
     monkeypatch.setattr(http.threading, "Thread", lambda **kw: SimpleNamespace(start=lambda: None))
     [server] = http.start_engine_mcp_http_servers(chosen)
     assert observed == [chosen]
     assert server._data_dir == str(chosen)
+    assert child_envs == [{
+        "TINYASSETS_DATA_DIR": str(chosen), "TINYASSETS_ENGINE_ACTOR_ID": "actor-a",
+        "TINYASSETS_ENGINE_GRAPH_ID": "u-a",
+    }]
     assert _read(root=chosen).actor_id == "actor-a"
 
 
