@@ -3,7 +3,8 @@
 Implementation within existing tasks2.2/2.3, not a new proposal or deployed claim.
 The source-derived shape received opposite-family review before implementation.
 Scoped candidate continuation is now built locally; public policy consumption
-and the model picker remain unwired. Exact implementation review is next.
+and the model picker remain unwired. Exact964c58f2 implementation independently
+APPROVE417s; follow-ups retained in docs/reviews/2026-09-10-model-capacity-review.md.
 
 Official sources read September10 05:56UTC:
 

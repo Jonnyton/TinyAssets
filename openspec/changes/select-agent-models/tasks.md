@@ -20,7 +20,8 @@
   September10 2026: implemented after capacity-shape ADAPT341s;515 Windows/
   515 actual Linux tests pass, zero skips. Real composition preserves known tool
   results across model-only fallback and holds shared/unknown outcomes safely.
-  Exact implementation review remains required. See model-capacity-proof.md in
+  Exact964c58f2 implementation independently APPROVE417s,25 composition cases
+  reproduced. See model-capacity-proof.md and model-capacity-review.md in
   docs/reviews. Public current/saved plan consumption remains unfinished.
 - [ ] 2.4 Resolve the shared HTTP engine-tool-loop prerequisite and prove actual authorized tools work before enabling HTTP full-agent selection.
 
