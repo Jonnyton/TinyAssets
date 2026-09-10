@@ -222,7 +222,7 @@ def test_route_is_mcp_app_get(monkeypatch):
         "/mcp/app/openai/device/start", "/mcp/app/openai/device/poll",
         "/mcp/app/openai/begin", "/mcp/app/openai/exchange", "/mcp/app/trace",
         "/mcp/app/voice/status", "/mcp/app/voice/session",
-        "/mcp/app/serving/bind",
+        "/mcp/app/serving/bind", "/mcp/app/models/preferences",
         "/mcp/app/billing/status", "/mcp/app/billing/checkout",
         "/mcp/app/billing/cancel", "/mcp/app/billing/webhook",
         "/mcp/app/account/delete",
@@ -231,6 +231,7 @@ def test_route_is_mcp_app_get(monkeypatch):
     assert "GET" in by_path["/mcp/app/billing/status"].methods
     assert "GET" in by_path["/mcp/app/me"].methods
     assert "GET" in by_path["/mcp/app/voice/status"].methods
+    assert {"GET", "POST"} <= by_path["/mcp/app/models/preferences"].methods
     for post_only in (
         "/mcp/app/token", "/mcp/app/openai/device/start", "/mcp/app/openai/device/poll",
         "/mcp/app/openai/begin", "/mcp/app/openai/exchange", "/mcp/app/trace",

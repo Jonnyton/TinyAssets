@@ -146,6 +146,23 @@ def two_users(tmp_path: Path) -> Path:
 # --------------------------------------------------------------------------- #
 
 
+def test_model_preferences_removed_for_current_and_former_home_only_for_owner(two_users: Path):
+    from tinyassets.providers.model_policy import ModelRef
+    from tinyassets.providers.model_preferences import ModelPreferences
+    from tinyassets.storage.model_preferences import ModelPreferenceStore
+
+    store = ModelPreferenceStore(two_users)
+    prefs = ModelPreferences("explicit", ModelRef("owned:future", "opaque-new-model"), ())
+    store.save(A, HOME_A, expected_generation=0, policy=prefs)
+    store.save(A, "former-home", expected_generation=0, policy=prefs)
+    other = store.save(B, HOME_B, expected_generation=0, policy=prefs)
+    delete_account(two_users, founder_sub=A, cancel_billing=lambda home: "cancelled",
+                   delete_identity=lambda sub: "deleted")
+    assert store.get(A, HOME_A).policy is None
+    assert store.get(A, "former-home").policy is None
+    assert store.get(B, HOME_B) == other
+
+
 def test_deleting_a_removes_all_of_a_and_none_of_b(two_users: Path):
     base = two_users
     root_db = base / ".tinyassets.db"

@@ -136,6 +136,15 @@ def _provider_invocation_store_mint_proof(
 
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS universe_model_preferences (
+    owner_user_id TEXT NOT NULL,
+    universe_id TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK (typeof(generation) = 'integer' AND generation >= 1),
+    policy_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (owner_user_id, universe_id)
+);
+
 CREATE TABLE IF NOT EXISTS provider_work_bindings (
     binding_id TEXT PRIMARY KEY,
     generation INTEGER NOT NULL CHECK (generation >= 1),

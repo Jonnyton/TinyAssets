@@ -7,6 +7,13 @@
 ## 2. Owner policy and execution
 
 - [ ] 2.1 Add versioned universe-local policy and current-choice input through authenticated app ingress; test generation conflicts, isolation and legacy-pin preservation.
+
+  September10 partial: saved preferences/CAS and authenticated unpowered GET/POST
+  implemented;352 Windows and352 actual Docker Linux checks pass, zero skips.
+  See saved-preferences.md and docs/reviews/2026-09-10-model-preferences-proof.md.
+  Current-choice ingress and runtime consumption are still pending; do not mark
+  this task complete or expose enabled UI before those pieces work.
+
 - [ ] 2.2 Implement deterministic automatic ranking and ordered explicit fallback within fresh authority, required capabilities and permitted cost; test unscored/stale catalogues and no-paid-fallback.
 - [ ] 2.3 Integrate typed capacity scopes and safe continuation into the existing router; prove account exhaustion skips siblings and completed/ambiguous tools are not replayed.
 - [ ] 2.4 Resolve the shared HTTP engine-tool-loop prerequisite and prove actual authorized tools work before enabling HTTP full-agent selection.
