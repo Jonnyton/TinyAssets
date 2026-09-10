@@ -102,8 +102,12 @@ Python3.11.16/Git2.47.3/bubblewrap0.12.0:185pass0skip11.85s. Both commands run
 test_engine_mcp_routes, test_engine_mcp_server, test_engine_mcp_hardening,
 test_provider_sandbox, test_codex_cli_compat and test_mirror_parity_gate, using
 pytest -q --tb=short -rs. Ruff and diff checks pass;396 shipping mirrors/import.
-Final isolated exact-head review process48549 and CI Tests34430319270 are running.
-Draft prevents premature merge. No deployed, rendered route-repair or organic
+Final isolated exact-head review48549 terminated APPROVE270s, independently
+reproducing56 route tests, mirror parity and Ruff:
+https://github.com/Jonnyton/TinyAssets/pull/3728#issuecomment-5611864132
+PR marked ready and normal squash auto-merge enabled02:44UTC on unchanged head.
+Ready-event CI superseded the earlier run; Tests34430615987 required job102725219716
+still running02:47UTC, slow-tests passed. No deployed, rendered route-repair or organic
 post-fix proof yet. Existing app latest18:38PDT remains five passes/deleted receiver.
 
 After normal gated deployment, require authenticated deployed SHA/public canary

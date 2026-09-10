@@ -30,7 +30,8 @@
   Shared owner-bound route now implemented644d6d74, tests strengthened2b3a6a9f;
   feature implementation independently APPROVE250s. Isolated draft PR3728 at
   ddb343b1 passes182 Windows/185 actual Docker Linux checks (3/0symlink skips).
-  Exact release review and CI pending. See engine-tool-route.md. This is existing
+  Exact release APPROVE270s reproduced56 tests; normal auto-merge awaits CI.
+  See engine-tool-route.md. This is existing
   CLI transport repair, not an HTTP client, inference loop or continuation journal.
 
 ## 3. User proof and delivery
