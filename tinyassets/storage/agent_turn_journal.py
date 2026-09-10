@@ -24,6 +24,7 @@ from tinyassets.storage.agent_turn_records import (
     Transition,
     TurnSnapshot,
 )
+from tinyassets.storage.current_home import check_current_home
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
 _SCOPE = "owner_user_id = ? AND universe_id = ? AND turn_id = ?"
@@ -191,9 +192,18 @@ def _read(conn: sqlite3.Connection, scope: tuple[str, str, str]) -> TurnSnapshot
         if len(rounds) != frontier:
             raise records.invalid()
         for completed_round in rounds[:-1]:
-            if _frontier(completed_round) != "ready":
+            if _frontier(completed_round) != "ready" and not (
+                completed_round.state == "failed"
+                and completed_round.reply is None
+                and not completed_round.tools
+            ):
                 raise records.invalid()
-        if row["state"] != (_frontier(rounds[-1]) if rounds else "ready"):
+        expected_state = (
+            _frontier(rounds[-1])
+            if rounds
+            else ("abandoned" if row["state"] == "abandoned" else "ready")
+        )
+        if row["state"] != expected_state:
             raise records.invalid()
         return TurnSnapshot(
             scope[2],
@@ -261,7 +271,12 @@ def reset_blockers(conn: sqlite3.Connection, owner: str, universe: str) -> list[
             (owner, universe),
         ):
             turn = _read(conn, (owner, universe, row[0]))
-            if turn.state in {"ready", "inference_started", "tools_pending", "held_tool_unknown"}:
+            if turn is not None and turn.state in {
+                "ready",
+                "inference_started",
+                "tools_pending",
+                "held_tool_unknown",
+            }:
                 return ["active or ambiguous agent turn references exact home"]
         return []
     except (JournalUnavailable, sqlite3.DatabaseError):
@@ -309,6 +324,7 @@ class AgentTurnJournal:
             }
         )
         with self._transaction() as conn:
+            check_current_home(conn, owner, universe)
             conn.execute(
                 "INSERT INTO agent_turns VALUES (?, ?, ?, 1, 1, 'ready', 0, ?, ?)",
                 (*scope, raw, self._ledger.timestamp()),
@@ -327,15 +343,23 @@ class AgentTurnJournal:
         scope = _scope(owner, universe, turn_id)
         records.integer(expected_generation, minimum=1)
         with self._transaction() as conn:
+            check_current_home(conn, owner, universe)
             current = _read(conn, scope)
             if current is None:
                 raise JournalUnavailable("agent turn unavailable")
             yield conn, scope, current
 
     def begin_round(
-        self, owner, universe, turn_id, *, expected_generation: int, candidate: RoundInput
+        self,
+        owner,
+        universe,
+        turn_id,
+        *,
+        expected_generation: int,
+        candidate: RoundInput,
+        after_failed_inference: bool = False,
     ) -> Transition:
-        if type(candidate) is not RoundInput:
+        if type(candidate) is not RoundInput or type(after_failed_inference) is not bool:
             raise records.invalid()
         raw = candidate.canonical_json()
         with self._mutation(owner, universe, turn_id, expected_generation) as (
@@ -343,7 +367,16 @@ class AgentTurnJournal:
             scope,
             current,
         ):
-            if current.generation != expected_generation or current.state != "ready":
+            retryable = (
+                after_failed_inference
+                and current.state == "held_transport"
+                and current.rounds
+                and current.rounds[-1].state == "failed"
+                and current.rounds[-1].reply is None
+                and not current.rounds[-1].tools
+            )
+            admissible = retryable if after_failed_inference else current.state == "ready"
+            if current.generation != expected_generation or not admissible:
                 return Transition("conflict", current)
             ordinal = len(current.rounds) + 1
             conn.execute(
@@ -352,6 +385,23 @@ class AgentTurnJournal:
                 (*scope, ordinal, raw),
             )
             return _advance(conn, scope, current, "inference_started", ordinal=ordinal)
+
+    def abandon(self, owner, universe, turn_id, *, expected_generation: int) -> Transition:
+        """Close only a never-launched root; never discard an inference or effect."""
+        with self._mutation(owner, universe, turn_id, expected_generation) as (
+            conn,
+            scope,
+            current,
+        ):
+            if current.state == "abandoned" and not current.rounds:
+                return Transition("already_applied", current)
+            if (
+                current.generation != expected_generation
+                or current.state != "ready"
+                or current.rounds
+            ):
+                return Transition("conflict", current)
+            return _advance(conn, scope, current, "abandoned")
 
     def finish_inference(
         self,

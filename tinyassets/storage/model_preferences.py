@@ -13,15 +13,20 @@ from tinyassets.providers.model_preferences import (
     exact_generation,
     strict_json,
 )
+from tinyassets.storage.current_home import (
+    CurrentHomeChanged,
+)
+from tinyassets.storage.current_home import (
+    check_current_home as _check_home,
+)
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+# Preserve the existing route's exception contract while sharing the guard.
+PreferenceHomeChanged = CurrentHomeChanged
 
 
 class PreferenceStoreUnavailable(RuntimeError):
     """An unreadable row is held, never treated as absent/defaulted."""
-
-
-class PreferenceHomeChanged(RuntimeError):
-    """The app's home was removed/rebound between ingress and the transaction."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,21 +81,6 @@ def _read(conn: sqlite3.Connection, owner: str, universe: str) -> PreferenceSnap
         return PreferenceSnapshot(generation, policy, updated_at)
     except (ValueError, TypeError, OverflowError) as exc:
         raise PreferenceStoreUnavailable("model preference record unavailable") from exc
-
-
-def _check_home(conn: sqlite3.Connection, owner: str, universe: str) -> None:
-    from tinyassets.account_deletion import principal_digest
-
-    home = conn.execute(
-        "SELECT universe_id FROM founder_home WHERE founder_sub = ?",
-        (owner,),
-    ).fetchone()
-    deleted = conn.execute(
-        "SELECT 1 FROM deleted_principals WHERE founder_sub = ?",
-        (principal_digest(owner),),
-    ).fetchone()
-    if home is None or home[0] != universe or deleted is not None:
-        raise PreferenceHomeChanged("model preference home changed")
 
 
 class ModelPreferenceStore:

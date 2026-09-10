@@ -73,6 +73,9 @@ def reply(*, count=1, text=None, finish=None, refusal=None):
 
 @pytest.fixture
 def journal(tmp_path):
+    from tinyassets.daemon_server import set_founder_home
+
+    set_founder_home(tmp_path, founder_sub="owner", universe_id="home", platform_generated=True)
     return AgentTurnJournal(tmp_path)
 
 
@@ -441,3 +444,165 @@ def test_tool_result_corruption_does_not_become_retry(journal, column, value):
         conn.execute(f"UPDATE agent_turn_tools SET {column} = ?", (value,))
     with pytest.raises(JournalUnavailable, match="^agent turn record unavailable$"):
         journal.get("owner", "home", turn.turn_id)
+
+
+def test_explicit_failed_inference_retry_retains_completed_effects(journal):
+    known = start(journal, receive(journal, begin(journal, new(journal)))).snapshot
+    known = finish(journal, known, result=result()).snapshot
+    failed = begin(journal, known)
+    failed = journal.finish_inference(
+        "owner",
+        "home",
+        failed.turn_id,
+        expected_generation=failed.generation,
+        ordinal=2,
+        reply=None,
+    ).snapshot
+    retried = journal.begin_round(
+        "owner",
+        "home",
+        failed.turn_id,
+        expected_generation=failed.generation,
+        candidate=candidate(),
+        after_failed_inference=True,
+    ).snapshot
+    assert retried.state == "inference_started"
+    assert retried.rounds[:2] == failed.rounds
+    assert retried.rounds[0].tools[0].result_json == known.rounds[0].tools[0].result_json
+    final = receive(journal, retried, reply(count=0, text="done"))
+    assert final.state == "completed" and len(final.rounds) == 3
+    assert journal.get("owner", "home", final.turn_id) == final
+
+
+def test_failed_inference_retry_has_one_winner(journal):
+    turn = begin(journal, new(journal))
+    held = journal.finish_inference(
+        "owner",
+        "home",
+        turn.turn_id,
+        expected_generation=turn.generation,
+        ordinal=1,
+        reply=None,
+    ).snapshot
+
+    def retry(_):
+        return journal.begin_round(
+            "owner",
+            "home",
+            held.turn_id,
+            expected_generation=held.generation,
+            candidate=candidate(),
+            after_failed_inference=True,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(retry, range(2)))
+    assert sorted(item.status for item in outcomes) == ["applied", "conflict"]
+
+
+@pytest.mark.parametrize("stage", ["ready", "inference_started", "tools_pending", "unknown"])
+def test_retry_flag_cannot_resume_other_states(journal, stage):
+    turn = new(journal)
+    if stage != "ready":
+        turn = begin(journal, turn)
+    if stage in {"tools_pending", "unknown"}:
+        turn = receive(journal, turn)
+    if stage == "unknown":
+        turn = finish(journal, start(journal, turn).snapshot, failure="unknown").snapshot
+    changed = journal.begin_round(
+        "owner",
+        "home",
+        turn.turn_id,
+        expected_generation=turn.generation,
+        candidate=candidate(),
+        after_failed_inference=True,
+    )
+    assert changed.status == "conflict" and changed.snapshot == turn
+
+
+def test_abandon_only_unused_root_unblocks_reset(journal):
+    from tinyassets.storage.agent_turn_journal import reset_blockers
+
+    turn = new(journal)
+    abandoned = journal.abandon(
+        "owner",
+        "home",
+        turn.turn_id,
+        expected_generation=turn.generation,
+    )
+    assert abandoned.status == "applied" and abandoned.snapshot.state == "abandoned"
+    assert (
+        journal.abandon(
+            "owner",
+            "home",
+            turn.turn_id,
+            expected_generation=turn.generation,
+        ).status
+        == "already_applied"
+    )
+    assert (
+        journal.begin_round(
+            "owner",
+            "home",
+            turn.turn_id,
+            expected_generation=abandoned.snapshot.generation,
+            candidate=candidate(),
+        ).status
+        == "conflict"
+    )
+    with journal._ledger.connection() as conn:
+        assert reset_blockers(conn, "owner", "home") == []
+    launched = begin(journal, new(journal))
+    assert (
+        journal.abandon(
+            "owner",
+            "home",
+            launched.turn_id,
+            expected_generation=launched.generation,
+        ).status
+        == "conflict"
+    )
+
+
+@pytest.mark.parametrize("change", ["removed", "rebound", "deleted"])
+@pytest.mark.parametrize("operation", ["create", "begin", "receive", "start", "finish", "abandon"])
+def test_every_mutation_rechecks_home_in_same_write_transaction(journal, change, operation):
+    from tinyassets.account_deletion import principal_digest
+    from tinyassets.storage.current_home import CurrentHomeChanged
+
+    turn = new(journal)
+    if operation in {"receive", "start", "finish"}:
+        turn = begin(journal, turn)
+    if operation in {"start", "finish"}:
+        turn = receive(journal, turn)
+    if operation == "finish":
+        turn = start(journal, turn).snapshot
+    with journal._ledger.connection() as conn:
+        if change == "removed":
+            conn.execute("DELETE FROM founder_home WHERE founder_sub = 'owner'")
+        elif change == "rebound":
+            conn.execute(
+                "UPDATE founder_home SET universe_id = 'new-home' WHERE founder_sub = 'owner'"
+            )
+        else:
+            conn.execute(
+                "INSERT INTO deleted_principals (founder_sub, deleted_at) VALUES (?, 1)",
+                (principal_digest("owner"),),
+            )
+    action = {
+        "create": lambda: new(journal),
+        "begin": lambda: begin(journal, turn),
+        "receive": lambda: receive(journal, turn),
+        "start": lambda: start(journal, turn),
+        "finish": lambda: finish(journal, turn, result=result()),
+        "abandon": lambda: journal.abandon(
+            "owner",
+            "home",
+            turn.turn_id,
+            expected_generation=turn.generation,
+        ),
+    }[operation]
+    with pytest.raises(CurrentHomeChanged):
+        action()
+    # Read-only audit remains possible; failed mutation changed no progress.
+    assert journal.get("owner", "home", turn.turn_id) == turn

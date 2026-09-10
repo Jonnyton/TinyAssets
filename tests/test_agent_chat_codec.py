@@ -271,14 +271,14 @@ def test_unknown_usage_is_not_zero_or_success_accounting(usage):
     assert reply.reported_model == "actual/model" and reply.requested_model == MODEL
 
 
-def test_valid_usage_and_legacy_guards_remain_unchanged():
+def test_valid_usage_and_required_price_bounds_remain_enforced():
     reply = decode({**response([], content="answer", finish="stop"),
                     "usage": {"prompt_tokens": 0, "completion_tokens": 3}})
     assert (reply.input_tokens, reply.output_tokens, reply.reported_model) == (0, 3, "")
     _, body = build(temperature=0, max_tokens=128)
     assert set(body) == {"model", "messages", "tools", "tool_choice", "temperature", "max_tokens"}
     contract = discovery_protocol("openrouter_user_models_v1")
-    with pytest.raises(ValueError, match="unsupported fields"):
+    with pytest.raises(ValueError, match="incomplete inference price bounds"):
         contract.constrain_inference(body, ())
     assert codec.encode_openai_chat_agent not in {entry[0] for entry in ENCODERS.values()}
 

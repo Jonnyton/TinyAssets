@@ -15,6 +15,7 @@ MAX_INT = 2**63 - 1
 STATES = frozenset(
     {
         "ready",
+        "abandoned",
         "inference_started",
         "tools_pending",
         "completed",

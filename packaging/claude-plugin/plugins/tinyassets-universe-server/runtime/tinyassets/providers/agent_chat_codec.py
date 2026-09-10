@@ -118,6 +118,20 @@ class ToolRound:
     outcomes: tuple[ToolOutcome, ...]
 
 
+@dataclass(frozen=True, slots=True, init=False)
+class CapturedToolRound:
+    """Completed round with a detached, immutable historical tool inventory."""
+
+    round: ToolRound
+    tools_json: str = field(repr=False)
+
+    def __init__(self, *, round: ToolRound, tools: Sequence[dict[str, Any]]) -> None:
+        if not isinstance(round, ToolRound):
+            raise _bad("invalid captured round")
+        object.__setattr__(self, "round", round)
+        object.__setattr__(self, "tools_json", _dump({"tools": _definitions(tools)}))
+
+
 def _calls(raw: Any, names: frozenset[str]) -> tuple[ToolRequest, ...]:
     if raw is None:
         return ()
@@ -364,3 +378,107 @@ def encode_openai_chat_agent(
             raise _bad("invalid output token cap")
         body["max_tokens"] = max_tokens
     return OPENAI_CHAT_PATH, body
+
+
+def encode_openai_chat_agent_portable(
+    *, prompt: str, system: str, source_ref: str, model: str,
+    tools: Sequence[dict[str, Any]], history: Sequence[CapturedToolRound] = (),
+    temperature: float | None = None, max_tokens: int | None = None,
+    tool_choice: Literal["auto", "none", "required"] = "auto",
+) -> tuple[str, dict[str, Any]]:
+    """Render known results across selections without carrying foreign reasoning.
+
+    Historical inventories validate historical calls, never today's permission
+    to execute them. Wire identities are local to each completed tool batch.
+    The caller must still admit every new inference and tool dispatch.
+    """
+    path, body = encode_openai_chat_agent(
+        prompt=prompt, system=system, source_ref=source_ref, model=model,
+        tools=tools, temperature=temperature, max_tokens=max_tokens,
+        tool_choice=tool_choice,
+    )
+    if not _sequence(history):
+        raise _bad("captured completed history required")
+    for captured in history:
+        if not isinstance(captured, CapturedToolRound) or not isinstance(
+            captured.round.reply, AgentReply,
+        ):
+            raise _bad("invalid captured history")
+        reply = captured.round.reply
+        # Reuse the strict single-source validator for ONE historical batch.
+        # It checks completeness, exact arguments/results and wire correlation;
+        # its per-request ID set must not span independent historical rounds.
+        _, historical = encode_openai_chat_agent(
+            prompt="", system="", source_ref=reply.source_ref,
+            model=reply.requested_model,
+            tools=_object(captured.tools_json).get("tools"),
+            rounds=(captured.round,),
+        )
+        messages = historical["messages"][1:]
+        if (reply.source_ref, reply.requested_model) != (source_ref, model):
+            messages[0] = {
+                key: value for key, value in messages[0].items()
+                if key in {"role", "content", "tool_calls"}
+            }
+        body["messages"].extend(messages)
+    return path, body
+
+
+def validate_agent_body(body: dict[str, Any]) -> None:
+    """Validate only the portable encoder's wire shape, without granting tools.
+
+    Historical tool names need not be in today's inventory. Every historical
+    batch must still be complete and correlated, with exact known result data.
+    """
+    if not isinstance(body, dict) or set(body) - {
+        "model", "messages", "tools", "tool_choice", "temperature", "max_tokens",
+    }:
+        raise _bad("unsupported request fields")
+    if body.get("tool_choice") not in ("auto", "none", "required"):
+        raise _bad("unsupported tool choice")
+    encode_openai_chat_agent(
+        prompt="", system="", source_ref="validation", model=body.get("model"),
+        tools=body.get("tools"), temperature=body.get("temperature"),
+        max_tokens=body.get("max_tokens"), tool_choice=body["tool_choice"],
+    )
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages or not isinstance(messages[0], dict):
+        raise _bad("request messages required")
+    offset = 0
+    for role in ("system", "user"):
+        if role == "system" and messages[0].get("role") != "system":
+            continue
+        if offset >= len(messages):
+            raise _bad("user message required")
+        message = messages[offset]
+        if (not isinstance(message, dict) or set(message) != {"role", "content"}
+                or message["role"] != role or not isinstance(message["content"], str)):
+            raise _bad("invalid initial message")
+        offset += 1
+    while offset < len(messages):
+        message = messages[offset]
+        if not isinstance(message, dict) or not {"role", "content"} <= message.keys():
+            raise _bad("invalid historical assistant")
+        _, dropped, _ = _assistant(message)
+        if dropped:
+            raise _bad("unsupported historical assistant fields")
+        raw_calls = message.get("tool_calls")
+        if not isinstance(raw_calls, list) or not raw_calls:
+            raise _bad("historical tool batch required")
+        names = frozenset(
+            item["function"]["name"] for item in raw_calls
+            if isinstance(item, dict) and isinstance(item.get("function"), dict)
+            and isinstance(item["function"].get("name"), str)
+        )
+        requests = _calls(raw_calls, names)
+        offset += 1
+        for request in requests:
+            if offset >= len(messages):
+                raise _bad("incomplete historical tool results")
+            result = messages[offset]
+            if (not isinstance(result, dict)
+                    or set(result) != {"role", "tool_call_id", "content"}
+                    or result["role"] != "tool" or result["tool_call_id"] != request.call_id):
+                raise _bad("historical tool result correlation mismatch")
+            _result_projection(_object(result["content"]))
+            offset += 1

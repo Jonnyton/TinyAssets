@@ -50,13 +50,18 @@ _OPENROUTER_PRICE_FIELDS = {
 def _openrouter_constrained_body(body: dict, caps: tuple[tuple[str, int], ...]) -> dict:
     # Existing text encoder has no server plugins, router-selected models array,
     # or user-controlled provider overrides. Never merge those into a bounded call.
-    if set(body) - {"model", "messages", "temperature", "max_tokens"}:
+    agent = "tools" in body or "tool_choice" in body
+    if set(body) - {"model", "messages", "temperature", "max_tokens", "tools", "tool_choice"}:
         raise ValueError("unsupported fields in price-constrained inference")
     model = body.get("model")
     messages = body.get("messages")
     if not isinstance(model, str) or "@preset/" in model or model.endswith(":online"):
         raise ValueError("unsupported model indirection in price-constrained inference")
-    if not isinstance(messages, list) or any(
+    if agent:
+        from tinyassets.providers.agent_chat_codec import validate_agent_body
+
+        validate_agent_body(body)
+    elif not isinstance(messages, list) or any(
         not isinstance(message, dict)
         or set(message) != {"role", "content"}
         or message["role"] not in ("system", "user", "assistant")

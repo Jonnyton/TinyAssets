@@ -18,6 +18,14 @@
 - [ ] 2.3 Integrate typed capacity scopes and safe continuation into the existing router; prove account exhaustion skips siblings and completed/ambiguous tools are not replayed.
 - [ ] 2.4 Resolve the shared HTTP engine-tool-loop prerequisite and prove actual authorized tools work before enabling HTTP full-agent selection.
 
+  September10 integration shape a5689312 independently ADAPT294s; seven mandatory
+  corrections incorporated in interactive-agent-runtime.md. Portable completed
+  history, guarded journal retry/unused abandon, and constrained tool-shaped HTTP
+  bodies now implemented locally.373 Windows/373 actual Linux checks pass,0skips.
+  See docs/reviews/2026-09-10-agent-runtime-adaptations-proof.md. Actual
+  runner, per-inference observer/sealing/accounting and tools-capable selection
+  are still unfinished. No runtime/picker activation or new deployment claimed.
+
   September10 partial: synchronous HTTP lookup/request/cleanup now runs in one
   owned executor Future. Cancellation drains it before router settlement; actual
   asyncio.run teardown and selected-authority slot/budget retention are tested.
@@ -71,6 +79,10 @@
   tab04:00UTC. App21:03PDT reports five passes; its new footer visibly says
   Answered by codex · Model not reported. AX and screenshot verified. Webhook
   deleted receiver404 still needs owner scope, prior200/204 remains valid.
+  Fresh owner21:35PDT approvals subsequently activated reusable receiver scope:
+  agent reports creation201/delivery200/cleanup204, runac12a245fe114351, checklist
+  complete. Duplicate approvals acknowledged without rerun. This closes that
+  checklist blocker, not the separate duplicate-request or model-picker gaps.
   Controlled typed-owner continuation only, not organic/first-contact proof.
   Clickable picker still open.
 - [ ] 3.2 Run focused cross-platform tests, independent exact-head review and CI; deploy and verify authenticated SHA/canary evidence, then ordinary rendered app use without operator workflow edits.

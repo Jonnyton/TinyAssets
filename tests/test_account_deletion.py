@@ -179,12 +179,17 @@ def test_agent_journal_deletion_counts_cascades_and_former_home(two_users: Path)
     }}]}, source_ref="owned:test", requested_model="model", tool_names=frozenset({"tool"}))
     turns = []
     for owner, home in ((A, HOME_A), (A, "former-home"), (B, HOME_B)):
+        # Model a genuine past home, then restore the current one before deletion.
+        from tinyassets.daemon_server import set_founder_home
+
+        set_founder_home(two_users, founder_sub=owner, universe_id=home, platform_generated=True)
         turn = journal.create(owner, home, prompt="private", system="exact")
         turn = journal.begin_round(owner, home, turn.turn_id,
             expected_generation=turn.generation, candidate=candidate).snapshot
         turn = journal.finish_inference(owner, home, turn.turn_id,
             expected_generation=turn.generation, ordinal=1, reply=reply).snapshot
         turns.append(turn)
+    set_founder_home(two_users, founder_sub=A, universe_id=HOME_A, platform_generated=True)
     receipt = delete_account(two_users, founder_sub=A, cancel_billing=lambda home: "cancelled",
                              delete_identity=lambda sub: "deleted")
     assert journal.get(A, HOME_A, turns[0].turn_id) is None
