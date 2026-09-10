@@ -14,6 +14,12 @@
   Current-choice ingress and runtime consumption are still pending; do not mark
   this task complete or expose enabled UI before those pieces work.
 
+  September10 further partial: native-default authority and policy provenance
+  e8adb973 pass317 Windows/319 actual Linux (3/1skips); exact review pending.
+  Pure saved/current whole-order conversion additionally passes108 Windows/
+  108 Linux,0skips, awaiting review with the actual consumer. Real ingress,
+  catalogue production and serving readiness remain unconnected and not live.
+
 - [ ] 2.2 Implement deterministic automatic ranking and ordered explicit fallback within fresh authority, required capabilities and permitted cost; test unscored/stale catalogues and no-paid-fallback.
 - [ ] 2.3 Integrate typed capacity scopes and safe continuation into the existing router; prove account exhaustion skips siblings and completed/ambiguous tools are not replayed.
 

@@ -68,6 +68,12 @@ old headers or inference that generation alone proves which policy drove a turn.
 Version2 input headers now implement this provenance locally; strict version1
 reads retain unknown provenance. See the native-default-policy-provenance proof
 in docs/reviews for tests and remaining activation gaps.
+The pure capture_preference_policy helper now constructs this exact policy:
+saved documents (including saved automatic) carry source saved; current documents
+(including current automatic) carry source current. Neither mode alone implies
+where the choice came from. Missing saved state requires generation0; absent
+saved/current choices return None for the legacy path. This is not yet called by
+production converse, and it neither reads storage nor grants/saves authority.
 
 Discovery uses each connection's existing protocol contract. Preserve fresh
 capability/privacy evidence and all accepted model/price restrictions. Filter

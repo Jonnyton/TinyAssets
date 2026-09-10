@@ -51,3 +51,19 @@ saved/current choice ingress, readiness activation, clickable controls, general
 non-home support, full native model discovery and rendered live proof remain
 unfinished. The separate full-reset inventory concern and its two failing
 integration tests are not included in these passing groups or this patch.
+
+## Subsequent whole-order preference conversion
+
+While the exact native/provenance patch is under review, a separate pure helper
+implements the approved saved/current policy construction. It preserves the
+observed generation, distinguishes current/saved origin even for automatic mode,
+clears saved primary/tail for a one-turn override, rejects inconsistent stored
+state, and returns None when neither choice exists. It performs no IO or save.
+This additional code is not part of the dispatched e8adb973 implementation review
+and still needs review with the actual production preference consumer.
+
+September10 Windows: `python -m pytest -q tests/test_model_preferences.py
+tests/test_model_preference_store.py tests/test_model_policy.py --tb=short -rs`
+→108 passed1.09s. Actual Linux oracle, same three-file arguments →108 passed0.67s,
+zero skips in both. Ruff on its canonical/test files and generated416 mirrors /
+import probe pass. No live behavior or saved owner settings changed.

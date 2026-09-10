@@ -12,6 +12,7 @@ from tinyassets.providers.model_preferences import (
     MAX_GENERATION,
     MAX_POLICY_BYTES,
     ModelPreferences,
+    capture_preference_policy,
     exact_generation,
     parse_preference_write,
     strict_json,
@@ -52,6 +53,58 @@ def test_empty_order_is_not_automatic_and_roundtrips():
 def test_automatic_is_explicitly_represented():
     doc = policy(mode="automatic", saved_default=None)
     assert ModelPreferences.from_document(doc).document() == doc
+
+
+def test_absent_preferences_preserve_legacy_path():
+    assert capture_preference_policy(saved=None, observed_generation=0) is None
+
+
+def test_current_order_replaces_saved_order_without_mutating_it():
+    saved = ModelPreferences("explicit", ModelRef("saved", "primary"), (ModelRef("s", "f"),))
+    current = ModelPreferences("explicit", ModelRef("current", "primary"), ())
+    captured, source = capture_preference_policy(
+        saved=saved, observed_generation=7, current=current,
+    )
+    assert source == "current" and captured.generation == 7
+    assert captured.current_selection == current.saved_default
+    assert captured.saved_default is None and captured.fallbacks == ()
+    assert saved.saved_default == ModelRef("saved", "primary")
+    assert saved.fallbacks == (ModelRef("s", "f"),)
+
+
+def test_current_automatic_clears_saved_primary_and_fallbacks():
+    saved = ModelPreferences("explicit", ModelRef("saved", "primary"), (ModelRef("s", "f"),))
+    captured, source = capture_preference_policy(
+        saved=saved, observed_generation=7, current=ModelPreferences("automatic", None, ()),
+    )
+    assert source == "current" and captured.mode == "automatic"
+    assert captured.current_selection is None and captured.saved_default is None
+    assert captured.fallbacks == () and captured.generation == 7
+
+
+@pytest.mark.parametrize("preferences", [
+    ModelPreferences("automatic", None, ()),
+    ModelPreferences("explicit", ModelRef("subscription", ""), (ModelRef("http", "future"),)),
+])
+def test_saved_or_one_turn_choice_retains_exact_order_and_provenance(preferences):
+    saved, source = capture_preference_policy(saved=preferences, observed_generation=3)
+    assert source == "saved" and saved.generation == 3
+    assert saved.current_selection is None and saved.saved_default == preferences.saved_default
+    assert saved.fallbacks == preferences.fallbacks
+    current, source = capture_preference_policy(
+        saved=None, observed_generation=0, current=preferences,
+    )
+    assert source == "current" and current.generation == 0
+    assert current.saved_default is None and current.current_selection == preferences.saved_default
+    assert current.fallbacks == preferences.fallbacks
+
+
+@pytest.mark.parametrize("saved,generation", [
+    (None, 1), (ModelPreferences("automatic", None, ()), 0), (None, True), ({}, 1),
+])
+def test_inconsistent_saved_capture_is_not_defaulted(saved, generation):
+    with pytest.raises(ValueError):
+        capture_preference_policy(saved=saved, observed_generation=generation)
 
 
 @pytest.mark.parametrize(

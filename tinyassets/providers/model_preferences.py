@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from typing import Literal
 
-from tinyassets.providers.model_policy import ModelRef
+from tinyassets.providers.model_policy import Charge, ModelPolicy, ModelRef
 
 MAX_FALLBACKS = 1024
 MAX_GENERATION = 2**63 - 1
@@ -132,3 +132,32 @@ def parse_preference_write(raw: bytes) -> tuple[int, ModelPreferences]:
     return exact_generation(doc["expected_generation"]), ModelPreferences.from_document(
         doc["policy"]
     )
+
+
+def capture_preference_policy(
+    *, saved: ModelPreferences | None, observed_generation: int,
+    current: ModelPreferences | None = None, ranking_source: str | None = None,
+    cost_caps: tuple[Charge, ...] | None = None,
+) -> tuple[ModelPolicy, str] | None:
+    """Convert validated choices to one advisory plan, without reading or saving.
+
+    The authenticated caller supplies observed storage state and trusted ranking/
+    cost bounds. This neither discovers models nor grants execution authority.
+    None preserves the legacy path when no choice exists. Current automatic is
+    an override too: it clears the saved primary and tail for this turn only.
+    """
+    exact_generation(observed_generation)
+    for value in (saved, current):
+        if value is not None and type(value) is not ModelPreferences:
+            raise ValueError("invalid model preferences")
+    if (saved is None) != (observed_generation == 0):
+        raise ValueError("preference generation does not match saved state")
+    if saved is None and current is None:
+        return None
+    chosen = current if current is not None else saved
+    return ModelPolicy(
+        generation=observed_generation, mode=chosen.mode, fallbacks=chosen.fallbacks,
+        current_selection=None if current is None else current.saved_default,
+        saved_default=chosen.saved_default if current is None else None,
+        ranking_source=ranking_source, cost_caps=cost_caps,
+    ), "current" if current is not None else "saved"
