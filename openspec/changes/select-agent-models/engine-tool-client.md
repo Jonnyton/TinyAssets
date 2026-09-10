@@ -21,7 +21,10 @@ provide only this route's fixed Authorization header, and never forward outer
 request headers/auth even though FastMCP's default transport collects them.
 No OAuth, sampling, elicitation, model-initiated roots, task execution or new
 background tool jobs. Use call_tool_mcp to preserve MCP content, structuredContent
-and isError without schema coercion or a second inferred tool call.
+and isError without coercion or a second tools/call. Readiness discovery must use
+the same session to populate its output-schema cache. The underlying MCP client
+still validates successful structured results; a received-then-rejected result
+therefore becomes unknown, never not_sent or a reason to repeat the tool.
 
 List the actual server's schemas and intersect with SERVED_ENGINE_MCP_TOOLS and
 the caller's explicitly supplied enabled_tools subset. A missing requested tool,
@@ -41,8 +44,10 @@ Cancellation propagates without replacement; the future caller MUST durably
 record tool intent before invoking this client and preserve unknown outcomes.
 The client does not own or invent that journal, launch allowance or cost receipt.
 
-Client/session/HTTP resources close on exit; cleanup errors must not erase a
-result already received and persisted by the caller. No global client pool, no
+Client/session/HTTP cleanup is bounded best-effort: FastMCP exit can time out or
+raise while its session task remains alive. Capture results before context exit;
+report only a fixed cleanup-status code, never erase a result already received
+and persisted by the caller. No global client pool, no
 secret-bearing repr, no shared mutable state across universes. Runtime selector
 must still hold HTTP full-agent eligibility until tool loop, per-inference
 admission/accounting and durable continuation are integrated and proven live.
@@ -65,3 +70,30 @@ one dispatch on failure/cancellation and cleanup. Include a real protocol fixtur
 to avoid proving only a fake Client, and run Windows plus actual Docker Linux.
 One cross-family shape/basic-safety review precedes code. No public handle,
 permission/storage change or live provider/model selection in this slice.
+
+## Shape review disposition, ADAPT411s
+
+Independent Claude source review confirms GET-only SSE resumption and no POST
+retry, real ambient-header forwarding in FastMCP, fixed-factory necessity and
+canonical owner pin. Keep FastMCP's session-monitoring guard instead of inventing
+a raw session wrapper. Factory accepts **kwargs and discards all inbound headers,
+auth, redirect and timeout choices in favor of its fixed private configuration.
+Set an explicit timeout and a no-op server log handler; no untrusted notification
+text goes through the default daemon logger.
+
+Applied corrections: same-session discovery primes output-schema validation;
+validation after an executed tool is unknown. Exit is bounded best-effort, not
+guaranteed resource destruction; cleanup errors cannot replace a received result.
+A supervisor respawn may reuse the port/secret while invalidating the MCP session:
+route equality is not liveness. Session-terminated errors refuse without reconnect
+or replay. Inner-client cancellation is distinct from outer HTTP cancellation,
+which drains its shielded executor. No change to the shape or downstream journal,
+inference allowance and full-agent eligibility gates. Full review is in
+output/engine-tool-client-shape-result.md; no extra hardening round requested.
+
+Implementation safeguards: reject nonlocal schema references before handing a
+schema to MCP's output validator, which may otherwise fetch a remote reference.
+This changes no tool argument content. An ambiguous transport/validation failure
+or inner cancellation makes the session unusable for further calls; it does not
+reconnect automatically. The caller's durable journal remains required across
+sessions/processes. Received MCP isError results are preserved, not ambiguous.
