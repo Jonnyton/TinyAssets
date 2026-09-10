@@ -85,3 +85,27 @@ not inferred green; this fresh run is the evidence.
 Isolated release exact-head review APPROVE141s,15 independent lifecycle tests:
 https://github.com/Jonnyton/TinyAssets/pull/3718#issuecomment-5611165147
 No selected-model activation in that release. CI/deployment still pending.
+
+## Next tool-loop integration seams (inspected, not implemented)
+
+- engine_mcp_server.py already exposes the canonical tools pinned to one owner
+  and universe. Do not import it and mutate its module-global environment binding
+  between concurrent HTTP turns; use a correctly pinned client transport.
+- engine_mcp_http.py supervises loopback per-universe servers. Its private route
+  records currently contain URL/secret but no owner field. This inspection does
+  not approve borrowing a route as cross-owner authority. No transport chosen yet.
+- served_tools.py owns the existing canonical tool inventory. No new public
+  handle or parallel private dispatcher is needed for HTTP agent calls.
+- providers/call.py returns response.text; _call_writer in universe_intelligence.py
+  consumes that bridge. A structured inference/tool-result loop needs an explicit
+  seam, not tool calls stuffed into text or replaying the whole founder request.
+- The launch allowance registry is in auth/middleware.py. Each inference must
+  pass admission/accounting; an unmetered inner loop would bypass the current
+  finite request allowance. Completed/ambiguous tool effects need durable recovery.
+- protocol_encoders.py currently handles plain text only. The OpenRouter
+  discovery contract also rejects tool-shaped bodies; extend both deliberately
+  with protocol tests and authority/cost review, not a relaxed unknown-fields path.
+
+These are source-grounded prerequisites, not new public APIs or a completion
+claim. The owner-visible picker must not offer HTTP full-agent operation until
+the real tool loop and safe continuation work through the live app.
