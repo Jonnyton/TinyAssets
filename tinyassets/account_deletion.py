@@ -876,6 +876,8 @@ def delete_account(
         with _connect(root) as conn:
             _delete_root_rows(conn, principal=principal, home=home, counts=counts)
 
+    from tinyassets.storage.app_feedback import FeedbackStore
+    _phase("app_feedback", lambda: FeedbackStore(root / "app-feedback.sqlite3").delete_actor(principal))
     _phase("root_rows", _root_rows)
     # Every store at the data root, not a named few: an account's data is
     # wherever a store keyed it, and the directory is the only registry that

@@ -198,6 +198,7 @@
         </div>
         <nav class="chat-actions">
           <button id="btn-plan" class="btn btn--link" hidden>Plan</button>
+          <button id="btn-feedback" class="btn btn--link">Feedback</button>
           <button id="btn-account" class="btn btn--link">Account</button>
           <button id="btn-signout" class="btn btn--link">Sign out</button>
         </nav>
@@ -296,10 +297,41 @@
       </div>
     </section>
 
+    <section id="view-feedback" class="view view--connect" hidden>
+      <header class="chat-header">
+        <div class="chat-title">App feedback</div>
+        <button id="feedback-back" class="btn btn--link" type="button">Back</button>
+      </header>
+      <div class="connect-body">
+        <p>Send a bug report, patch request, or idea to TinyAssets support. Your report is stored privately with your account and shared with the support reviewer. Please leave out passwords and API keys.</p>
+        <form id="feedback-form">
+          <label class="field"><span>Type</span><select id="feedback-kind">
+            <option value="bug_report">Bug report</option><option value="patch_request">Patch request</option><option value="idea">Idea</option>
+          </select></label>
+          <label class="field"><span>Title</span><input id="feedback-title" maxlength="200" required /></label>
+          <label class="field"><span>Description</span><textarea id="feedback-description" maxlength="10000" required></textarea></label>
+          <div id="feedback-bug-fields">
+            <label class="field"><span>Steps to reproduce (optional)</span><textarea id="feedback-steps_to_reproduce" maxlength="4000"></textarea></label>
+            <label class="field"><span>Expected result (optional)</span><textarea id="feedback-expected" maxlength="2000"></textarea></label>
+            <label class="field"><span>Actual result (optional)</span><textarea id="feedback-actual" maxlength="2000"></textarea></label>
+          </div>
+          <button id="feedback-send" class="btn btn--primary" type="submit">Send feedback</button>
+        </form>
+        <p id="feedback-status" role="status" aria-live="polite"></p>
+        <h2>Your tickets</h2>
+        <button id="feedback-refresh" class="btn btn--link" type="button">Refresh</button>
+        <label id="feedback-inbox-label" hidden><input id="feedback-inbox" type="checkbox" /> Support inbox</label>
+        <div id="feedback-list"></div>
+        <button id="feedback-more" class="btn btn--link" type="button" hidden>Load more</button>
+        <div id="feedback-detail"></div>
+      </div>
+    </section>
+
     <section id="view-connect" class="view view--connect" hidden>
       <header class="chat-header">
         <div class="chat-title">Connect your subscription</div>
         <nav class="chat-actions">
+          <button id="btn-connect-feedback" class="btn btn--link">Feedback</button>
           <button id="btn-connect-account" class="btn btn--link">Account</button>
           <button id="btn-connect-back" class="btn btn--link">Back to chat</button>
         </nav>
@@ -1111,7 +1143,7 @@
 
   // ---- UI ----
   const $=(id)=>document.getElementById(id);
-  const views={signin:$("view-signin"),chat:$("view-chat"),connect:$("view-connect"),account:$("view-account")};
+  const views={signin:$("view-signin"),chat:$("view-chat"),connect:$("view-connect"),account:$("view-account"),feedback:$("view-feedback")};
   function showView(n){ for(const k in views) views[k].hidden=(k!==n); }
   let hasMessages=false, statusTimer=null;
 
@@ -2328,6 +2360,96 @@
   // with Stripe.
   let PLAN = null;
 
+
+  // Feedback remains separate from conversation and execution authority.
+  let feedbackReviewer=false, feedbackOffset=null, feedbackEpoch=0, feedbackPending=null;
+  async function feedbackFetch(path, body){
+    await ensureFreshToken();
+    const headers={Authorization:"Bearer "+token()};
+    const opts={headers,credentials:"same-origin",cache:"no-store"};
+    if(body!==undefined){ opts.method="POST"; headers["Content-Type"]="application/json"; opts.body=JSON.stringify(body); }
+    const response=await fetch("/mcp/app/feedback"+path,opts);
+    const data=await response.json();
+    if(!response.ok) throw new Error(data.error||"Feedback request failed");
+    return data;
+  }
+  function feedbackText(tag,text,parent){
+    const el=document.createElement(tag); el.textContent=text; parent.appendChild(el); return el;
+  }
+  async function feedbackLoad(more=false){
+    const epoch=feedbackEpoch;
+    try{
+      const inbox=$("feedback-inbox").checked;
+      const data=await feedbackFetch("?inbox="+(inbox?"1":"0")+"&offset="+(more?feedbackOffset||0:0));
+      if(epoch!==feedbackEpoch) return;
+      feedbackReviewer=data.reviewer;
+      $("feedback-inbox-label").hidden=!data.reviewer;
+      $("feedback-send").disabled=!data.intake_available;
+      if(!data.intake_available) $("feedback-status").textContent="Feedback intake is not configured yet. Existing tickets remain available.";
+      if(!more) $("feedback-list").replaceChildren();
+      for(const ticket of data.tickets){
+        const b=feedbackText("button",ticket.submission.title+" — "+ticket.status+" ("+ticket.ticket_id+")",$("feedback-list"));
+        b.type="button"; b.className="btn btn--link";
+        b.addEventListener("click",()=>feedbackDetail(ticket.ticket_id));
+      }
+      feedbackOffset=data.next_offset; $("feedback-more").hidden=feedbackOffset===null;
+    }catch(e){ if(epoch===feedbackEpoch) $("feedback-status").textContent=e.message; }
+  }
+  async function feedbackDetail(id){
+    const epoch=feedbackEpoch;
+    try{
+      const t=await feedbackFetch("/"+encodeURIComponent(id));
+      if(epoch!==feedbackEpoch) return;
+      const box=$("feedback-detail");box.replaceChildren();
+      feedbackText("h3",t.submission.title,box);
+      feedbackText("p",t.ticket_id+" · "+t.status,box);
+      for(const [key,value] of Object.entries(t.submission)){
+        if(value) feedbackText("p",key.replaceAll("_"," ")+": "+value,box);
+      }
+      if(t.missing_fields.length) feedbackText("p","Helpful details: "+t.missing_fields.join(", "),box);
+      for(const event of t.history) feedbackText("p",new Date(event.created_at*1000).toLocaleString()+" · "+event.author+" · "+event.status+(event.note?": "+event.note:""),box);
+      const note=feedbackText("textarea","",box);note.maxLength=4000;note.setAttribute("aria-label","Reply or status note");
+      let busy=false;
+      async function mutate(body){
+        if(busy) return;busy=true;
+        try{
+          await feedbackFetch("/"+encodeURIComponent(id),body);
+          if(epoch!==feedbackEpoch) return;
+          await feedbackDetail(id);await feedbackLoad();
+        }catch(e){ if(epoch===feedbackEpoch) $("feedback-status").textContent=e.message+"; refresh the ticket before retrying."; }
+        finally{busy=false;}
+      }
+      const reply=feedbackText("button","Add details",box);reply.type="button";
+      reply.addEventListener("click",()=>mutate({operation:"reply",revision:t.revision,note:note.value}));
+      if(feedbackReviewer){
+        const select=feedbackText("select","",box);select.setAttribute("aria-label","Ticket status");
+        for(const s of ["received","needs_details","in_review","planned","in_progress","resolved","closed"]){
+          const option=feedbackText("option",s.replaceAll("_"," "),select);option.value=s;
+        }
+        select.value=t.status;
+        const update=feedbackText("button","Update status",box);update.type="button";
+        update.addEventListener("click",()=>mutate({operation:"update",revision:t.revision,status:select.value,note:note.value}));
+      }
+      const exp=feedbackText("button","Download ticket",box);exp.type="button";
+      exp.addEventListener("click",()=>{
+        const url=URL.createObjectURL(new Blob([JSON.stringify(t,null,2)],{type:"application/json"}));
+        const a=document.createElement("a");a.href=url;a.download=t.ticket_id+".json";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+      });
+      const del=feedbackText("button","Delete ticket",box);del.type="button";
+      del.addEventListener("click",async()=>{
+        if(!window.confirm("Permanently delete this ticket and its history?")||busy) return;
+        busy=true;
+        try{await feedbackFetch("/"+encodeURIComponent(id),{operation:"delete"});if(epoch===feedbackEpoch){box.replaceChildren();await feedbackLoad();}}
+        catch(e){if(epoch===feedbackEpoch) $("feedback-status").textContent=e.message;}finally{busy=false;}
+      });
+    }catch(e){if(epoch===feedbackEpoch) $("feedback-status").textContent=e.message;}
+  }
+  function resetFeedback(){
+    feedbackEpoch++;feedbackReviewer=false;feedbackOffset=null;feedbackPending=null;
+    $("feedback-form").reset();$("feedback-list").replaceChildren();$("feedback-detail").replaceChildren();
+    $("feedback-status").textContent="";$("feedback-inbox").checked=false;$("feedback-inbox-label").hidden=true;
+  }
+
   async function billingFetch(path, method){
     // Same bearer discipline as every other authenticated call here: refresh
     // first, because the token rotates about every five minutes.
@@ -2461,7 +2583,7 @@
     $("btn-connect-back").textContent = "Go to your universe";
     setTimeout(()=>{ showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus(); loadPlan(); }, 1200);
   }
-  function enterSignedOut(){ clearInterval(statusTimer); MCP.sessionId=null; Voice.stop(false);
+  function enterSignedOut(){ resetFeedback(); clearInterval(statusTimer); MCP.sessionId=null; Voice.stop(false);
     sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(EXP_KEY); cancelOpenAIFlow(); resetOpenAIUI(); showView("signin"); }
   function showConnect(asGate,guidance){ Voice.stop(false); showView("connect");
     // Web has no loopback listener: the guided device-code path IS the path.
@@ -2852,6 +2974,32 @@
     $("btn-account").addEventListener("click", showAccount);
     $("btn-connect-account").addEventListener("click", showAccount);
     $("btn-account-back").addEventListener("click", leaveAccount);
+
+    function openFeedback(){Voice.stop(false);showView("feedback");feedbackLoad();}
+    $("btn-feedback").addEventListener("click",openFeedback);
+    $("btn-connect-feedback").addEventListener("click",openFeedback);
+    $("feedback-back").addEventListener("click",leaveAccount);
+    $("feedback-refresh").addEventListener("click",()=>feedbackLoad());
+    $("feedback-inbox").addEventListener("change",()=>{feedbackEpoch++;$("feedback-detail").replaceChildren();feedbackLoad();});
+    $("feedback-more").addEventListener("click",()=>feedbackLoad(true));
+    $("feedback-kind").addEventListener("change",()=>{$("feedback-bug-fields").hidden=$("feedback-kind").value!=="bug_report";});
+    $("feedback-form").addEventListener("submit",async(e)=>{
+      e.preventDefault();const epoch=feedbackEpoch;const button=$("feedback-send");if(button.disabled)return;
+      const submission={kind:$("feedback-kind").value,app_version:String(CFG.build||""),surface:NATIVE?"native":"web"};
+      for(const key of ["title","description","steps_to_reproduce","expected","actual"]) submission[key]=$("feedback-"+key).value;
+      const fingerprint=JSON.stringify(submission);
+      if(!feedbackPending||feedbackPending.fingerprint!==fingerprint) feedbackPending={fingerprint,key:crypto.randomUUID()};
+      button.disabled=true;$("feedback-status").textContent="Sending…";
+      try{
+        const out=await feedbackFetch("",{submission,idempotency_key:feedbackPending.key});
+        if(epoch!==feedbackEpoch)return;
+        $("feedback-status").textContent="Saved as "+out.ticket.ticket_id+". You can track progress here.";
+        feedbackPending=null;$("feedback-form").reset();$("feedback-bug-fields").hidden=false;
+        await feedbackLoad();await feedbackDetail(out.ticket.ticket_id);
+      }catch(err){if(epoch===feedbackEpoch)$("feedback-status").textContent=err.message+". Your draft is still here; retry to check delivery.";}
+      finally{if(epoch===feedbackEpoch)button.disabled=false;}
+    });
+
     $("delete-confirm").addEventListener("input",(e)=>{ $("btn-delete-account").disabled = e.target.value.trim()!=="DELETE"; });
     $("btn-delete-account").addEventListener("click", deleteAccount);
     async function deleteAccount(){

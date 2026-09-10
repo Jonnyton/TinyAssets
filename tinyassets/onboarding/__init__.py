@@ -1598,8 +1598,10 @@ def onboarding_routes() -> list[Any]:
     proxy) with no CORS.
     """
     from starlette.routing import Route
+    from tinyassets.onboarding.feedback import routes as feedback_routes
 
     return [
+        *feedback_routes(),
         Route("/mcp/app", _handle_app, methods=["GET", "HEAD"]),
         Route("/mcp/app/token", _handle_token, methods=["POST"]),
         Route("/mcp/app/openai/device/start", _handle_openai_device_start, methods=["POST"]),
