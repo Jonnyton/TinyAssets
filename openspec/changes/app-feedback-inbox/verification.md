@@ -17,3 +17,5 @@ Limitations:
 - App Feedback v1 remains the existing standalone normalization branch. Intake uses deterministic normalization and the graph-accessible inbox; it does not invoke that branch or silently start a model.
 
 Landing remains gated on the checks above. The draft PR is implementation for review, not a deployment claim.
+
+Follow-up: refreshed the app-wide brand receipt after verifying both canonical encoded SVG marks and all other asset/generator hashes unchanged. All six pre-commit invariants and both Node brand tests pass. GitHub independently passed the bundle/plugin import probe for initial commit 9066ccbb. Full required tests and cross-family review remain outstanding.
