@@ -28,11 +28,14 @@
   http-inference-lifecycle.md. Do not mark full-agent selection complete.
 
   Shared owner-bound route now implemented644d6d74, tests strengthened2b3a6a9f;
-  feature implementation independently APPROVE250s. Isolated draft PR3728 at
+  feature implementation independently APPROVE250s. Isolated PR3728 at
   ddb343b1 passes182 Windows/185 actual Docker Linux checks (3/0symlink skips).
-  Exact release APPROVE270s reproduced56 tests; normal auto-merge awaits CI.
-  See engine-tool-route.md. This is existing
-  CLI transport repair, not an HTTP client, inference loop or continuation journal.
+  Exact release APPROVE270s reproduced56 tests; deployed3b541c116e7c03:07UTC
+  with protected SHA/canary evidence. App20:12PDT reports five fresh passes;
+  repeatable webhook receiver needs owner scope. See engine-tool-route.md.
+  Private HTTP client5406c3e4 now built and exact-head APPROVE339s;227 Windows/
+  230 Linux checks pass (3/0symlink skips). See engine-tool-client.md. No live
+  caller, inference loop, per-inference accounting or continuation journal yet.
 
 ## 3. User proof and delivery
 

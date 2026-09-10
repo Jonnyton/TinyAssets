@@ -107,8 +107,18 @@ reproducing56 route tests, mirror parity and Ruff:
 https://github.com/Jonnyton/TinyAssets/pull/3728#issuecomment-5611864132
 PR marked ready and normal squash auto-merge enabled02:44UTC on unchanged head.
 Ready-event CI superseded the earlier run; Tests34430615987 required job102725219716
-still running02:47UTC, slow-tests passed. No deployed, rendered route-repair or organic
-post-fix proof yet. Existing app latest18:38PDT remains five passes/deleted receiver.
+passed03:00:55UTC with zero new failures (known9 failures/2errors unchanged).
+Normal merge3b541c116e7ca3a6bc029f9e453a13246c6ba216 at03:01:01UTC; build34431687041
+and deploy34432022405 passed. CI authenticated `mcp_public_canary.py --url
+https://tinyassets.io/mcp --assert-handles` passed03:07:14UTC and
+`deployed_sha.py --assert-contains 3b541c116e7ca3a6bc029f9e453a13246c6ba216`
+returned SHIPPED03:07:17UTC. Not a claim the full suite has no baseline failures.
+
+Owned extension tab1346517854 refreshed after deployment. Exact retest message
+sent20:09PDT, rendered20:12PDT response names3b541c116e7c and five fresh passes,
+including workspace contention745378b5bcad4f95 and recovery1bf9ae6e30f445c3.
+Webhook404 remains owner-held receiver scope; earlier16:38PDT200/204 completion
+remains valid. No operator workflow/grant change. No organic post-fix use visible.
 
 After normal gated deployment, require authenticated deployed SHA/public canary
 and send only "Retest your workflow checklist" in the refreshed owned app tab.

@@ -97,3 +97,23 @@ This changes no tool argument content. An ambiguous transport/validation failure
 or inner cancellation makes the session unusable for further calls; it does not
 reconnect automatically. The caller's durable journal remains required across
 sessions/processes. Received MCP isError results are preserved, not ambiguous.
+
+## Implementation review and proof, September10 03:23UTC
+
+Exact5406c3e4f57cf61d9af627d3b78b4acc98be3058 independently reviewed by Claude:
+APPROVE339s,45 tests reproduced on Windows. Full final artifact:
+output/engine-tool-client-implementation-result.md. No gating findings. Nongating
+notes: fake connect-failure cleanup differs from real SDK failure status; already
+dead sessions conservatively become unknown; discovery errors use a generic code;
+the direct no-op log test is tautological and actual callback wiring is source-
+verified. No additional review/hardening round required for those notes.
+
+Author verification on exact runtime/tests: Windows Python3.14,227 passed/
+3 existing symlink skips16.58s; actual Docker Linux Python3.11,230 passed/0 skipped
+12.27s. Commands: pytest -q tests/test_engine_tool_client.py
+tests/test_engine_mcp_routes.py tests/test_engine_mcp_server.py
+tests/test_engine_mcp_hardening.py tests/test_provider_sandbox.py
+tests/test_codex_cli_compat.py tests/test_mirror_parity_gate.py --tb=short -rs;
+Linux uses scripts/linux_oracle.py -- with that same group. Ruff/diff/precommit
+passed;408 plugin mirrors/import. Tests use only synthetic routes/protocol peers.
+No live caller/deployment, HTTP agent loop, journal or new inference eligibility.
