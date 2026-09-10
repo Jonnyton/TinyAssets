@@ -30,7 +30,11 @@ Fail loud — never fabricate an empty completion (Hard Rule #8).
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
+import functools
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Any
@@ -44,6 +48,8 @@ from tinyassets.exceptions import (
 from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
 from tinyassets.providers.definition import ProviderDefinition
 from tinyassets.providers.protocol_encoders import ENCODERS, ProtocolDecodeError, reported_model
+
+_LOG = logging.getLogger(__name__)
 
 
 def _single_host(view: Any) -> str:
@@ -148,6 +154,46 @@ class ApiKeyHttpProvider(BaseProvider):
         *,
         universe_dir: Path | None = None,
     ) -> ProviderResponse:
+        # An executor Future (not a Task wrapping to_thread) survives the
+        # cancel-all-Tasks phase of asyncio.run teardown. Shield alone would
+        # not protect a to_thread Task from being cancelled directly there.
+        context = contextvars.copy_context()
+        operation = functools.partial(
+            self._complete_sync,
+            prompt,
+            system,
+            config,
+            universe_dir=universe_dir,
+        )
+        worker = asyncio.get_running_loop().run_in_executor(None, context.run, operation)
+        cancellation = None
+        while True:
+            try:
+                response = await asyncio.shield(worker)
+            except asyncio.CancelledError as exc:
+                # Only this scope owns the Future; cancelling the calling task
+                # never cancels the underlying synchronous request. Preserve the
+                # caller's cancellation across success, failure and repeated cancels.
+                cancellation = cancellation or exc
+                if worker.cancelled():
+                    raise cancellation
+            except BaseException:
+                if cancellation is not None:
+                    raise cancellation from None
+                raise
+            else:
+                if cancellation is not None:
+                    raise cancellation
+                return response
+
+    def _complete_sync(
+        self,
+        prompt: str,
+        system: str,
+        config: ModelConfig,
+        *,
+        universe_dir: Path | None = None,
+    ) -> ProviderResponse:
         if universe_dir is None:
             raise ProviderUnavailableError(
                 "api_key_http compute requires a universe context (universe_dir)"
@@ -210,12 +256,20 @@ class ApiKeyHttpProvider(BaseProvider):
                 connection_id=connection_id,
                 owner_user_id=owner_user_id,
             )
-            result = proxy.request("POST", wire_request)
+            try:
+                result = proxy.request("POST", wire_request)
+                # Inference latency excludes the owned worker's cleanup/join.
+                latency_ms = (time.monotonic() - started) * 1000.0
+            finally:
+                if self._proxy_override is None:
+                    try:
+                        proxy.close()
+                    except Exception:  # noqa: BLE001 - preserve result and secret-free diagnostics
+                        _LOG.warning("HTTP inference proxy cleanup failed")
         except GrantResolutionError as exc:
             raise ProviderUnavailableError(
                 f"compute grant resolution failed: {exc}"
             ) from exc
-        latency_ms = (time.monotonic() - started) * 1000.0
 
         if not isinstance(result, dict):
             raise ProviderUnavailableError("compute proxy returned no response")
