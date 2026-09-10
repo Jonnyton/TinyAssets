@@ -146,3 +146,47 @@ malformed/corrupt records, crash after committed intent, known isError and
 unsupported-content result retention, reused wire id in another round, budget
 pruning independence and real account deletion. Use synthetic data and actual
 Linux as well as Windows. No live workflow, provider or permission edits.
+
+## Applied independent ADAPT352s, September10 04:23UTC
+
+Full shape review at8480ec10 is committed in
+docs/reviews/2026-09-10-agent-turn-journal-shape-review.md. The following exact
+refinements supersede ambiguous prose above before any storage code:
+
+1. finish_tool receives raw validated MCP CallToolResult, not codec.ToolOutcome.
+   Journal projection retains the standard content-block union, excluding meta
+   and unknown envelope extras, plus structuredContent/isError. Derive
+   content_kind from stored JSON; never accept it as caller truth. Only the
+   read-side inference projection uses the text codec. Non-text completion
+   becomes held_unsupported_result with its exact known result retained.
+2. Finalization outcomes are applied/already_applied/conflict. Test a terminal
+   target for byte-identical identity/payload/error/outcome BEFORE comparing the
+   generation. already_applied never mutates or advances generation. Every
+   differing replay is conflict. start_tool never returns a reusable dispatch
+   right from an already-started row.
+3. Both composite child foreign keys use ON DELETE CASCADE. All three tables
+   carry owner/universe and enter the existing person-keyed deletion exception
+   map. Exercise real deletion of current and former-home rows, with another
+   owner's rows preserved and receipt counts including cascaded children.
+4. Classify all three tables for scoped reset in the same implementation. This
+   journal is effect evidence, so preserve completed records and block matching
+   active/ambiguous progress; do not add unreviewed operator deletion authority.
+   Use preserve_or_block plus explicit matching-turn inspection, not a label
+   alone. Scope by exact owner/home, leaving unrelated resets unblocked. Existing
+   unrelated unclassified tables are baseline, not excuse to omit these three.
+   No resettable-column map is needed for preserved, non-deleted tables.
+5. ensure_schema refuses an active transaction and executes individual CREATE
+   statements, never executescript. It cannot commit caller work. Mutating
+   operations require an active transaction; wrapper commits before dispatch.
+6. Tool states are planned/started/completed/not_sent/unknown. not_sent/unknown
+   are terminal held outcomes; a thrown cancellation maps to unknown after
+   start. Turn states are ready/inference_started/tools_pending/completed,
+   held_refusal/held_truncated/held_filter/held_unknown_stop/held_transport,
+   held_tool_not_sent/held_tool_unknown/held_unsupported_result. Corruption raises
+   a fixed corrupt-read error, never synthesizes an executable state. Round
+   provenance includes binding_id, reservation id, binding generation and digest;
+   actual usage remains nullable, without reservation-estimate backfill.
+
+Use a partial unique index for an active inference round, versioned AgentReply
+snapshot/load validation without changing the approved codec, and the shared
+ledger timestamp helper. Loading and finalizing never mint authority or replay.
