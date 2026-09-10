@@ -75,8 +75,9 @@ a legacy serving integration regression. That isolated tree passes133 Windows/
 APPROVE141s and all required CI checks passed. Normal merge at01:28:43UTC,
 releaseb9d642646c8d0918c36bb640c470b34123824e15. Build34425633001 and deploy34425981123
 succeeded, authenticated SHA/canary verified01:35UTC. As-built lifecycle spec and
-full deployment proof are in docs-only PR3722; no selector specification is
-represented as shipped.
+full deployment proof are in docs-only PR3722, now merged as9648a0022f4405063ce4e655792d17028a30f2f6
+after all required checks passed (required-tests completed01:59:14UTC). No
+selector specification is represented as shipped.
 
 Feature integration run September10,01:12 UTC:
 `python -m pytest -q tests/test_http_inference_lifecycle.py tests/test_api_key_http_provider.py tests/test_selected_model_authority.py tests/test_provider_served_router.py tests/test_provider_admission.py tests/test_run_provider_session.py tests/test_mirror_parity_gate.py --tb=short -rs`

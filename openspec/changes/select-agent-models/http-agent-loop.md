@@ -82,3 +82,19 @@ model remains unknown; the requested default/alias is not an actual receipt.
 No receipt bridge/UI was implemented by that historical source check. The bridge
 was subsequently implemented in215aacf2 as described above; reply-owned display
 is now scoped in answer-model-display.md. Neither is a full-agent picker proof.
+
+## Next integration inspection, September10
+
+The existing route lookup is duplicated in claude_provider._engine_mcp_flags and
+codex_provider._codex_engine_mcp_args. Both read graph-keyed URL/secret only and
+fall back to Path(data_dir or "."); neither consumes an owner field because
+engine_mcp_http._write_routes does not publish one. The supervisor already holds
+the pinned server owner, retires changed owners and atomically publishes routes.
+_desired_owners currently collapses serving rows to a graph->owner dictionary.
+
+Before adding a third HTTP consumer, resolve one shared, CWD-independent route
+reader and owner/graph identity contract for these existing consumers. Determine
+fresh authority and ambiguous-owner handling at the publisher/consumer seam;
+do not infer owner authority from possession of a graph-keyed URL. This is a
+source-grounded next dependency, not a new public handle, approved authority
+change or implemented transport. Existing allowlists stay in force.

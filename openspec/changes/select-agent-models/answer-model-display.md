@@ -64,4 +64,19 @@ Ubuntu Docker. All407 plugin mirrors/import probe, focused Ruff and diff checks
 passed. Windows emitted one existing FastMCP asyncio deprecation warning.
 
 No production rollout, persisted history receipt, live model choice or full task
-3.1 completion is claimed. Independent implementation review remains required.
+3.1 completion is claimed.
+
+## Independent implementation review: APPROVE, 284 seconds
+
+Claude reviewed exact6f0e62734859c13da56eb75735d811d9f6765de7 against678d49bc
+and independently ran `python -m pytest -q tests/test_onboarding_app.py --tb=short -rs -p no:cacheprovider`:
+124 passed,19.31s on Windows. It confirmed fresh per-reply nodes, inert text,
+typed/spoken separation, unknown metadata handling, history separation and mirror
+parity. No regression or receipt misassociation found. Full self-contained final
+result: output/answer-model-ui-implementation-result.md. No live acceptance.
+
+Nonblocking concerns retained: runtime ICU and Python Unicode versions can
+disagree about newly assigned characters, yielding an unknown label; malformed
+JSON transported as plain reply text has no receipt and remains unknown. The
+non-answer tripwire was already green before this change; only the two typed/
+spoken positive display assertions are claimed as red-before-green evidence.

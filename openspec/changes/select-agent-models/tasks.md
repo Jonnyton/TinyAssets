@@ -33,7 +33,8 @@
 
   September10 partial: reply-owned provider/model footers now render for typed
   and spoken replies;206 Windows/206 actual Linux checks pass, zero skips.
-  See answer-model-display.md. This is observation only, not a clickable picker;
+  Exact6f0e6273 independently APPROVE284s,124 app tests reproduced. See
+  answer-model-display.md. This is observation only, not a clickable picker;
   current-attempt state, persisted history receipts and working selection controls
   remain pending. No runtime policy or provider authority is changed.
 - [ ] 3.2 Run focused cross-platform tests, independent exact-head review and CI; deploy and verify authenticated SHA/canary evidence, then ordinary rendered app use without operator workflow edits.
