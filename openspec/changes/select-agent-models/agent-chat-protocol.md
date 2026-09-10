@@ -76,3 +76,36 @@ and exact MCP results, detached data, no mutation, full-batch refusal, error/usa
 semantics and unchanged legacy codecs. Synthetic fixtures only; actual authorized
 tool execution and free-only accounting are subsequent integration acceptance,
 not proven by codec tests. Do not expose an enabled HTTP model picker yet.
+
+## Applied shape review ADAPT300s
+
+Recovered the complete reviewer text from this exact dispatch's local session
+record (the stop-hook had replaced its final stdout with a shorter recap), saved
+in output/agent-chat-protocol-shape-full.md. No inferred approval or new review.
+Use a separate agent_chat_codec module, not ENCODERS or ProviderResponse; the
+latter remains a terminal-answer projection only. No runtime caller is added.
+
+Pin the eight cases before code: exactly one choice; reject top-level/per-choice
+errors; message.refusal is a separate non-completed stop; calls with stop or
+tool_calls can proceed but length+calls rejects the entire batch; text length,
+content_filter and unknown finish reasons are non-completed; empty-string
+arguments and missing/blank ids are rejected, never repaired. Reject non-text
+MCP content in this text-wire slice rather than serialize base64 as usable text;
+that is an explicit compatibility limit, not proof all future tools are text.
+Project exactly content/structuredContent/isError, excluding envelope metadata
+and extras. Text block annotations survive, unrelated block metadata does not.
+Assistant continuation allows role/content/tool_calls/reasoning/reasoning_details
+only; record dropped keys and refuse continuation if any had nonempty values.
+Terminal text may survive unrelated metadata, but nonempty legacy function_call
+or audio fields hold even a text-bearing stop; they are unsupported content, not
+metadata to silently discard. No hidden tool can dispatch.
+
+Tool names use the protocol's1–64 ASCII identifier contract; arguments are strict
+JSON objects with no duplicate keys or nonfinite numbers, preserved as exact wire
+strings. Descriptions are bounded at64Ki characters, never truncated. Do not set
+strict on definitions. Whole batches validate before any request is exposed.
+Frozen records store JSON snapshots, not mutable provider objects. Both source_ref
+and requested_model are explicit trusted correlation inputs so even matching model
+names cannot carry opaque continuation across different connections. This adds
+the source distinction required by the reviewed same-source continuation rule.
+The future journal owns persistence; the codec owns no transcript store.
