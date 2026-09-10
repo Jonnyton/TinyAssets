@@ -41,4 +41,5 @@ known failing reset-inventory cases remain outside this focused group, unresolve
 
 Ruff changed canonical/test files passed,418 plugin mirrors/import probe passed,
 mirror parity included in final runs, git diff --check passed. No deployed/live
-claim. Independent exact implementation review remains required before landing.
+claim. Exact6edbf66c independently APPROVE341s;9cases reproduced, no required
+corrections. Subsequent API/correction work needs its own implementation review.

@@ -49,6 +49,16 @@ def test_empty_execution_catalogue_keeps_discovered_choices_for_repair(configure
                        binding_id=configured.binding["agent_binding_id"]) == configured.binding
 
 
+def test_display_result_cannot_be_reused_for_serving_activation(configured, monkeypatch):
+    prepared = collect(configured)
+    assert prepared.display_only is True and prepared.plan.next_candidate("owner", "u-models")
+    monkeypatch.setattr(served_model_plan, "prepare_owned_model_plan", lambda **kwargs: prepared)
+    with pytest.raises(ValueError, match="display catalogue cannot authorize activation"):
+        integration.enable(configured)
+    assert get_binding(configured.rig.base, universe_id="u-models",
+                       binding_id=configured.binding["agent_binding_id"]) == configured.binding
+
+
 @pytest.mark.parametrize("configured", ["mixed"], indirect=True)
 @pytest.mark.parametrize("failure", ["expiry", "revocation"])
 def test_final_source_failure_keeps_independent_native_choice(configured, monkeypatch, failure):
@@ -68,7 +78,7 @@ def test_final_source_failure_keeps_independent_native_choice(configured, monkey
     assert [row["reference"] for row in result["options"]] == result["order"]
     reason = "discovery_expired" if failure == "expiry" else "source_revoked"
     assert any({"reason": reason, "component": ""} in row["reasons"]
-               for row in result["unavailable"])
+               for row in result["source_failures"])
     assert configured.native.calls == 0
 
 
@@ -109,9 +119,9 @@ def test_native_executor_absence_is_visible_without_blocking_http(configured, mo
     result = document(collect(configured))
     assert len(result["order"]) == 1
     assert result["order"][0]["provider_ref"].startswith("api_key_http:")
-    assert {"reference": {"provider_ref": "codex", "model_id": ""}, "reasons": [
+    assert {"provider_ref": "codex", "reasons": [
         {"reason": "executor_unavailable", "component": ""},
-    ]} in result["unavailable"]
+    ]} in result["source_failures"]
 
 
 def test_native_host_hold_retains_fixed_reason(tmp_path, monkeypatch):

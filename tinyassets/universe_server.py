@@ -504,7 +504,7 @@ def read_graph(
         target: What to read: status, graphs, graph, branches (your own workflows
             by name + branch_def_id), goals, goal, runs, run, run_output,
             branch, automations, automation, connections, compute, agents, agent, agent_bindings, or
-            agent_binding.
+            agent_binding, or model_options (all owned model choices, including unavailable ones).
         graph_id: Optional graph/universe identifier.
         goal_id: Optional shared-goal identifier.
         run_id: Run identifier for target=run (the single-run result read).
@@ -649,6 +649,11 @@ def read_graph(
         from tinyassets.api.compute_connection import read_compute_providers
 
         return json.dumps(read_compute_providers(universe_id=graph_id))
+    if normalized == "model_options":
+        from tinyassets.api.model_options import read_model_options
+
+        # Complete protocol-bounded catalogue: limit=30 must not hide new models.
+        return json.dumps(read_model_options(universe_id=graph_id))
     return _unknown_target(
         "read_graph",
         target,
@@ -666,6 +671,7 @@ def read_graph(
             "connections",
             "pending_requests",
             "compute",
+            "model_options",
             "agents",
             "agent",
             "agent_bindings",
@@ -684,7 +690,7 @@ _mcp_read_graph = _register_structured_tool(
         readOnlyHint=True,
         destructiveHint=False,
         idempotentHint=True,
-        openWorldHint=False,
+        openWorldHint=True,
     ),
 )
 

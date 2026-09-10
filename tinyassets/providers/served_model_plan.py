@@ -50,10 +50,13 @@ class PreparedPlan:
     agent: dict
     preferences: object
     snapshots: tuple
+    display_only: bool = False
 
     def recheck(self, conn, *, store, base, universe, owner, agent, check_preferences=False):
         from tinyassets.providers.discovery_snapshot import assert_discovery_snapshot_current
 
+        if self.display_only:
+            raise ValueError("display catalogue cannot authorize activation")
         self.recheck_scope(conn, universe=universe, owner=owner, agent=agent,
                            check_preferences=check_preferences)
         for provider, expected in self.chains:
@@ -113,7 +116,8 @@ class PreparedPlan:
             self, catalog=retained(self.catalog),
             plan=replace(self.plan, catalog=retained(self.plan.catalog)),
             ineligible=self.ineligible + tuple(
-                Ineligible(ModelRef(provider, ""), reason) for provider, reason in failed.items()
+                Ineligible(ModelRef(provider, ""), reason, scope="source")
+                for provider, reason in failed.items()
             ),
             chains=tuple(item for item in self.chains if item[0] not in failed),
             snapshots=tuple(item for item in self.snapshots if item.provider not in failed),
@@ -127,6 +131,7 @@ class ModelSourceUnavailable(PermissionError):
         if reason not in {
             "executor_unavailable", "protocol_mismatch", "price_components_unenforceable",
             "price_contract_incompatible",
+            "model_access_optin_required",
         }:
             raise ValueError("invalid model source reason")
         super().__init__(reason)
@@ -157,7 +162,7 @@ def _http_models(owner, uid, member, *, snapshot=None):
     from tinyassets.providers.discovery_snapshot import refresh_model_discovery
 
     if not member.provider.startswith("api_key_http:") or member.access.model_scope == "legacy":
-        raise PermissionError("model discovery requires accepted model scope")
+        raise ModelSourceUnavailable("model_access_optin_required")
     if snapshot is None:
         snapshot = refresh_model_discovery(
             owner_user_id=owner, universe_id=uid,
@@ -248,7 +253,8 @@ def prepare_owned_model_plan(
                         agent=agent, provider=member.provider,
                     )
                 except PermissionError:
-                    rejected.append(Ineligible(ModelRef(member.provider, ""), "source_revoked"))
+                    rejected.append(Ineligible(ModelRef(member.provider, ""), "source_revoked",
+                                               scope="source"))
                 else:
                     chains.append((member.provider, chain))
     if captured is None:
@@ -300,10 +306,11 @@ def prepare_owned_model_plan(
                 if benchmark is not None:
                     ranking_sources.add(benchmark)
         except (ModelDiscoveryUnavailable, ModelSourceUnavailable, ServingProviderHeld) as exc:
-            rejected.append(Ineligible(ModelRef(provider, ""), exc.reason))
+            rejected.append(Ineligible(ModelRef(provider, ""), exc.reason, scope="source"))
             continue
         except (PermissionError, ValueError, RuntimeError, OSError, ProviderError):
-            rejected.append(Ineligible(ModelRef(provider, ""), "discovery_unavailable"))
+            rejected.append(Ineligible(ModelRef(provider, ""), "discovery_unavailable",
+                                       scope="source"))
             continue
         if provider in _PROVIDER_SERVICE:
             all_models.append(catalog)
@@ -325,7 +332,7 @@ def prepare_owned_model_plan(
         raise PermissionError("no eligible model in the accepted assignment")
     result = PreparedPlan(
         plan, Catalog(owner, universe.name, tuple(all_models)), tuple(rejected),
-        assignment, tuple(chains), agent, preferences, tuple(snapshots),
+        assignment, tuple(chains), agent, preferences, tuple(snapshots), display_only=allow_empty,
     )
     with provider_assignment_admission().shared(universe):
         current_agent = get_binding(

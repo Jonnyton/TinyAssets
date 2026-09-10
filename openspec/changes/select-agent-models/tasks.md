@@ -145,6 +145,15 @@
   catalogues and per-source display demotion now built;875 Windows/877 actualLinux
   pass (3/1skips). Runtime still requires an eligible candidate; no authority or
   workflow mutation. See model-catalogue-collection-proof.md. Independent review,
-  registered/unaccepted/native inventory, public ingress and controls still open.
+  registered/unaccepted/native inventory, public ingress and controls still open
+  at6edbf66c; exact collection independently APPROVE341s,9cases reproduced.
+
+  September10 public catalogue now built: shared read_graph model_options,
+  current-home/admin fences, owner-registered HTTP inventory, legacy native default,
+  exact bind keys/accepted constraints and full structured choices. Source failures
+  are distinct from model rows; display-only results cannot activate serving.
+  893Windows/895Linux pass (3/1skips). See model-options-api-proof.md in docs/reviews.
+  Independent API review, enabled controls, native explicit catalogue and live
+  both-client proof remain; no deployment or workflow edits.
 - [ ] 3.2 Run focused cross-platform tests, independent exact-head review and CI; deploy and verify authenticated SHA/canary evidence, then ordinary rendered app use without operator workflow edits.
 - [ ] 3.3 Sync only shipped behavior into main specs and archive this change after completion; update the goal's stage and record any remaining capability gap honestly.

@@ -156,6 +156,7 @@ class Ineligible:
     ref: ModelRef
     reason: str
     component: str = ""
+    scope: Literal["model", "source"] = "model"
 
 
 @dataclass(frozen=True, slots=True)

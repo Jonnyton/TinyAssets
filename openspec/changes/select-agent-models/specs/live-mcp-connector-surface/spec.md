@@ -1,5 +1,42 @@
 ## ADDED Requirements
 
+### Requirement: Shared unpowered model catalogue
+The read_graph handle SHALL accept target=model_options without changing its
+arguments or direct string/structured-adapter return contract. The read SHALL
+require the authenticated owner's complete current home and explicit admin ACL.
+It SHALL NOT create a home, agent, assignment, preference or inference grant.
+
+#### Scenario: Unpowered current home
+- **WHEN** the owner has a complete home but no serving agent or working model
+- **THEN** the read returns available registered inventory or an empty catalogue
+- **AND** unavailable sources and missing saved model references remain distinguishable
+
+#### Scenario: Unknown or foreign scope
+- **WHEN** an explicit graph is not the current owned home or lacks admin access
+- **THEN** the read refuses without disclosing that graph's model inventory
+- **AND** omitted scope never resolves to a designated public universe
+
+#### Scenario: Complete choices, not a first-page sample
+- **WHEN** approved discovery returns more models than the default read limit
+- **THEN** all protocol-bounded choices survive in structured content
+- **AND** limit does not silently hide models from this catalogue target
+
+#### Scenario: Registration is not execution authority
+- **WHEN** an owned registered HTTP source has approved discovery but is not accepted for inference
+- **THEN** its models remain visible with source_not_accepted and no execution candidates
+- **AND** server-derived bind keys and complete existing model_access constraints are provided separately
+
+#### Scenario: Freshness and source-level reasons
+- **WHEN** a source is revoked or expires during refresh
+- **THEN** that source loses its model rows without concealing independent sources
+- **AND** a changed home, admin scope, serving binding or assignment refuses the whole snapshot
+- **AND** source failures are a separate channel, not invented empty model identifiers
+
+#### Scenario: Existing native default
+- **WHEN** the owner has a current legacy native serving chain
+- **THEN** its provider default is visible as legacy_single_provider
+- **AND** the read neither invents an actual model name nor grants expanded model selection
+
 ### Requirement: Converse accepts non-authoritative current model choice
 The authenticated converse handle SHALL accept optional model_choice using the
 existing versioned preferences document. Omission SHALL use supported saved

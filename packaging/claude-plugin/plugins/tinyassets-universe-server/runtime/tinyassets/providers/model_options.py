@@ -33,9 +33,11 @@ def model_options_document(
         for connection in plan.catalog.connections for model in connection.models
     }
     reasons: dict[ModelRef, list[dict[str, str]]] = {}
+    source_reasons: dict[str, list[dict[str, str]]] = {}
     for item in (*rejected, *order.ineligible):
         reason = {"reason": item.reason, "component": item.component}
-        entries = reasons.setdefault(item.ref, [])
+        entries = (source_reasons.setdefault(item.ref.connection_id, []) if item.scope == "source"
+                   else reasons.setdefault(item.ref, []))
         if reason not in entries:
             entries.append(reason)
 
@@ -48,7 +50,7 @@ def model_options_document(
             seen.add(ref)
             candidate = candidates.get(ref)
             row_reasons = list(reasons.get(ref, []))
-            for reason in reasons.get(ModelRef(ref.connection_id, ""), []):
+            for reason in source_reasons.get(ref.connection_id, []):
                 if reason not in row_reasons:
                     row_reasons.append(reason)
             rows.append({
@@ -96,6 +98,8 @@ def model_options_document(
         "kind": "advisory_model_options", "generation": plan.policy.generation,
         "policy_source": plan.policy_source, "mode": plan.policy.mode,
         "options": rows, "unavailable": missing,
+        "source_failures": [{"provider_ref": provider, "reasons": entries}
+                            for provider, entries in source_reasons.items()],
         "order": [{"provider_ref": item.ref.connection_id, "model_id": item.ref.model_id}
                   for item in order.candidates],
     }
