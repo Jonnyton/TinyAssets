@@ -13,6 +13,16 @@ _current_serving_authority, which rejects every assignment with manifest_digest.
 The composition fixtures bypass that readiness gate internally. No user-facing
 completion claim may rely on those fixtures alone.
 
+The existing public binding callers (api/custom_agents.py and onboarding/serving.py)
+also never pass model_access to bind_serving_provider. The accepted manifest is
+currently an internal foundation, not a user-reachable grant path. Extend the
+existing owner binding flow with strictly parsed optional model-access declarations,
+using ModelAccess validation and existing assignment publication. Absence preserves
+legacy semantics. New connections opting into automatic selection accept discovered
+models under explicit/free-only bounds; existing bindings are not migrated merely
+because preferences were saved. Broader discovery endpoints or spending remain
+ordinary explicit owner approvals through existing request/grant mechanisms.
+
 ## One request plan, not two competing choices
 
 Add optional model_choice to canonical converse and its internal sink, carrying

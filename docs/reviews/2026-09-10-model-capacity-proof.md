@@ -52,3 +52,13 @@ group: Windows173 passed/3 skipped21.57s; actual Linux175 passed/1 skipped8.62s.
 Linux covers shared-reader concurrency and bubblewrap skipped by Windows.
 The separately configured real-Codex integration remains skipped on both; no
 claim that a real CLI turn ran. No canonical runtime changed during review.
+
+## Real local HTTP response parsing
+
+Added test_model_capacity_transport.py after independent runtime approval.
+The production hardened HTTP driver with explicit loopback/TLS test seams
+passes Retry-After to the actual decoder for402/429/503; secret-echoing response
+headers are rejected before declassification. Windows4passed2.35s; actual Linux
+4passed2.20s (same oracle image), zero skips; Ruff clean.
+This is an actual local HTTP server test, not a real provider or complete
+credential-broker subprocess test. No canonical runtime changed.
