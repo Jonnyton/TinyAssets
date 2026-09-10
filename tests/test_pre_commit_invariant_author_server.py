@@ -1,8 +1,15 @@
 """Tests for the tinyassets.author_server import pre-commit invariant."""
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 
+from scripts import pre_commit_invariant_author_server as gate
 from scripts.pre_commit_invariant_author_server import check_diff
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -161,3 +168,57 @@ def test_workflow_daemon_server_not_flagged():
 def test_parametrized_forbidden_forms(variant):
     diff = _make_diff([variant])
     assert len(check_diff(diff)) == 1
+
+
+@pytest.mark.parametrize("prefix", ["# 🧪\n".encode(), b"# legacy byte \x8d\n"])
+def test_diff_capture_preserves_non_ascii_and_still_rejects_imports(monkeypatch, prefix):
+    payload = prefix + _make_diff(["from tinyassets.author_server import x"]).encode()
+
+    def git_diff(command, **kwargs):
+        assert kwargs.get("capture_output") is True
+        assert not kwargs.get("text")
+        assert "encoding" not in kwargs
+        return SimpleNamespace(returncode=0, stdout=payload)
+
+    monkeypatch.setattr(gate.subprocess, "run", git_diff)
+    assert gate._get_staged_diff().encode("utf-8", errors="surrogateescape") == payload
+    assert gate.main() == 2
+
+
+@pytest.mark.parametrize("failure", ["missing_git", "git_error", "missing_output"])
+def test_inspection_failure_is_not_an_empty_success(monkeypatch, capsys, failure):
+    def git_diff(*args, **kwargs):
+        if failure == "missing_git":
+            raise FileNotFoundError("git")
+        return SimpleNamespace(
+            returncode=1 if failure == "git_error" else 0,
+            stdout=None if failure == "missing_output" else b"",
+        )
+
+    monkeypatch.setattr(gate.subprocess, "run", git_diff)
+    assert gate.main() == 2
+    assert "inspection failed" in capsys.readouterr().err
+
+
+def test_successfully_empty_diff_remains_clean(monkeypatch):
+    monkeypatch.setattr(
+        gate.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout=b""),
+    )
+    assert gate.main() == 0
+
+
+def test_real_git_staged_unicode_is_inspected_in_non_utf8_process(tmp_path):
+    """Exercise the pipe reader and main together, not just a mocked diff."""
+    subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
+    source = tmp_path / "probe.py"
+    source.write_text("# 🪐\nfrom tinyassets.author_server import x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "--", source.name], cwd=tmp_path, check=True)
+    environment = dict(os.environ, PYTHONUTF8="0", LC_ALL="C", PYTHONCOERCECLOCALE="0")
+    result = subprocess.run(
+        [sys.executable, str(Path(gate.__file__).resolve())],
+        cwd=tmp_path, env=environment, capture_output=True,
+    )
+    output = (result.stdout + result.stderr).decode("utf-8", errors="replace")
+    assert result.returncode == 2, output
+    assert "probe.py" in output and "tinyassets.author_server" in output
+    assert "UnicodeDecodeError" not in output
