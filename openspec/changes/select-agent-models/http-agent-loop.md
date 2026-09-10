@@ -167,3 +167,35 @@ an unfinished intent is not permission to replay. Terminal tool rows must outliv
 ordinary settled-budget pruning, with account deletion and retention explicit.
 No new table, resume API, authority mint, cleanup or runtime caller is implemented
 by this inspection. Keep it under tasks2.3/2.4, not a new unrelated change.
+
+## Integration checkpoint, September10 04:53UTC
+
+The private journal is now built6ce30ad0 after independent shape corrections;
+see agent-turn-journal.md. No caller is activated. Source read at that head finds
+three specific runtime seams to join, not more substitute test-only providers:
+
+- ApiKeyHttpProvider._complete_sync still explicitly refuses engine_mcp_enabled
+  with selected_model. A full-agent implementation must preserve the owned
+  executor/drain behavior and credential-blind exact-grant request boundary.
+  Each invocation must remain ONE remote inference, with typed agent reply data;
+  the tool/inference loop must sit outside that accounted call.
+- Router reserve/slot/before-launch/consume/complete/finalize is the real served
+  admission lifecycle. Continuation must include advertised tools and completed
+  transcripts in input sizing, persist round provenance before dispatch, and
+  settle each actual network inference. The set-once launch-plan helper still
+  has no caller. Do not refill a carrier or hide multiple calls under one budget.
+- DiscoveryProtocol.constrain_inference currently rejects tools/tool_choice and
+  assistant tool-call/tool-result messages. Adding agent support needs explicit
+  validation of the codec's exact safe shape while retaining all price bounds,
+  require_parameters, no remote server plugins and no model/router override.
+  Do not just remove the guard or mark text-only eligibility as tool-capable.
+
+Fresh primary-source correction to the earlier review's usage hint:
+[OpenRouter usage accounting](https://openrouter.ai/docs/cookbook/administration/usage-accounting),
+read September10 04:51UTC, says responses now include usage automatically;
+usage.include and stream_options.include_usage are deprecated/no-effect.
+usage.cost is the total charged to the account, distinct from upstream cost.
+Do not add an unnecessary generation lookup or broaden grants to obtain it.
+Actual responses still require validation; missing cost stays unknown, never zero.
+This corrects documentation guidance, not an observed live cost receipt or a
+completed runtime parser. The prior independent review artifact stays verbatim.

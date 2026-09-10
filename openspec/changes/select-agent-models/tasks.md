@@ -44,6 +44,14 @@
   APPROVE330s independently reproduced91cases; no required changes.
   All existing HTTP full-agent holds remain in place.
 
+  September10 journal6ce30ad0 built after shape ADAPT352s applied7470b3d4.
+  Windows261passes; actual Linux258passes/3existing reset failures,zero skips.
+  Exact7470b3d4 baseline in identical image reproduces the same3failures.
+  Independent implementation APPROVE432s,48cases reproduced; full review and
+  follow-ups recovered from its exact transcript (stop-hook recap issue).
+  See docs/reviews/2026-09-10-agent-turn-journal-proof.md. Private storage only;
+  actual per-inference admission/tool-loop/picker integration remains pending.
+
 ## 3. User proof and delivery
 
 - [ ] 3.1 Build the clickable active-provider/model control with switch, saved default and fallback ordering; test keyboard access, actual-versus-preferred labels and unpowered use.
