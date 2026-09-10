@@ -50,6 +50,9 @@ class _OpenProxy:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
+    def close(self) -> None:
+        pass
+
     def request(self, verb: str, wire: dict[str, Any]) -> dict[str, Any]:
         self.calls.append((verb, wire))
         return {

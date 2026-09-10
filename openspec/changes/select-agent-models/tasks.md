@@ -18,6 +18,14 @@
 - [ ] 2.3 Integrate typed capacity scopes and safe continuation into the existing router; prove account exhaustion skips siblings and completed/ambiguous tools are not replayed.
 - [ ] 2.4 Resolve the shared HTTP engine-tool-loop prerequisite and prove actual authorized tools work before enabling HTTP full-agent selection.
 
+  September10 partial: synchronous HTTP lookup/request/cleanup now runs in one
+  owned executor Future. Cancellation drains it before router settlement; actual
+  asyncio.run teardown and selected-authority slot/budget retention are tested.
+  Claude implementation APPROVE224s. Legacy-only extraction is draft PR3718;
+  this feature branch remains unshipped. HTTP tool calls/results, canonical MCP
+  execution and durable safe continuation remain required. See
+  http-inference-lifecycle.md. Do not mark full-agent selection complete.
+
 ## 3. User proof and delivery
 
 - [ ] 3.1 Build the clickable active-provider/model control with switch, saved default and fallback ordering; test keyboard access, actual-versus-preferred labels and unpowered use.

@@ -30,7 +30,11 @@ Fail loud — never fabricate an empty completion (Hard Rule #8).
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
+import functools
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Any
@@ -45,21 +49,19 @@ from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderRespons
 from tinyassets.providers.definition import ProviderDefinition
 from tinyassets.providers.protocol_encoders import ENCODERS, ProtocolDecodeError, reported_model
 
+_LOG = logging.getLogger(__name__)
+
 
 def _single_host(view: Any) -> str:
     """The connection's single allowlisted host. A compute connection targets one
     provider endpoint; an ambiguous (multi-host) or hostless connection is refused
     rather than guessed."""
     hosts = {
-        ep.host
-        for ep in getattr(view, "allowed_endpoints", ()) or ()
-        if getattr(ep, "host", "")
+        ep.host for ep in getattr(view, "allowed_endpoints", ()) or () if getattr(ep, "host", "")
     }
     if len(hosts) == 1:
         return next(iter(hosts))
-    raise ProviderUnavailableError(
-        "compute connection must have exactly one allowlisted host"
-    )
+    raise ProviderUnavailableError("compute connection must have exactly one allowlisted host")
 
 
 def _declared_path(view: Any) -> str:
@@ -126,21 +128,64 @@ class ApiKeyHttpProvider(BaseProvider):
         return True
 
     def _resolve_proxy(
-        self, *, db_path: Path, universe_id: str, grant_id: str, connection_id: str,
+        self,
+        *,
+        db_path: Path,
+        universe_id: str,
+        grant_id: str,
+        connection_id: str,
         owner_user_id: str,
     ) -> Any:
         if self._proxy_override is not None:
             return self._proxy_override
         from tinyassets.storage.outbound_connections import ConnectionLedger
 
-        ledger = ConnectionLedger(
-            db_path, verify_authenticated_principal=lambda: owner_user_id
-        )
+        ledger = ConnectionLedger(db_path, verify_authenticated_principal=lambda: owner_user_id)
         return ledger.resolve_exact_scoped_proxy(
             universe_id=universe_id, grant_id=grant_id, connection_id=connection_id
         )
 
     async def complete(
+        self,
+        prompt: str,
+        system: str,
+        config: ModelConfig,
+        *,
+        universe_dir: Path | None = None,
+    ) -> ProviderResponse:
+        # An executor Future (not a Task wrapping to_thread) survives the
+        # cancel-all-Tasks phase of asyncio.run teardown. Shield alone would
+        # not protect a to_thread Task from being cancelled directly there.
+        context = contextvars.copy_context()
+        operation = functools.partial(
+            self._complete_sync,
+            prompt,
+            system,
+            config,
+            universe_dir=universe_dir,
+        )
+        worker = asyncio.get_running_loop().run_in_executor(None, context.run, operation)
+        cancellation = None
+        while True:
+            try:
+                response = await asyncio.shield(worker)
+            except asyncio.CancelledError as exc:
+                # Only this scope owns the Future; cancelling the calling task
+                # never cancels the underlying synchronous request. Preserve the
+                # caller's cancellation across success, failure and repeated cancels.
+                cancellation = cancellation or exc
+                if worker.cancelled():
+                    raise cancellation
+            except BaseException:
+                if cancellation is not None:
+                    raise cancellation from None
+                raise
+            else:
+                if cancellation is not None:
+                    raise cancellation
+                return response
+
+    def _complete_sync(
         self,
         prompt: str,
         system: str,
@@ -166,13 +211,9 @@ class ApiKeyHttpProvider(BaseProvider):
         read_ledger = ConnectionLedger(db_path)
         grant = read_ledger.get_grant(grant_id)
         if grant is None or getattr(grant, "revoked_at", None) is not None:
-            raise ProviderUnavailableError(
-                f"compute grant {grant_id} is absent or revoked"
-            )
+            raise ProviderUnavailableError(f"compute grant {grant_id} is absent or revoked")
         if getattr(grant, "universe_id", "") != universe_id:
-            raise ProviderUnavailableError(
-                "compute grant is not bound to the running universe"
-            )
+            raise ProviderUnavailableError("compute grant is not bound to the running universe")
         connection_id = grant.connection_id
         owner_user_id = grant.owner_user_id
         view = read_ledger.get_connection_view(connection_id)
@@ -226,12 +267,18 @@ class ApiKeyHttpProvider(BaseProvider):
                 connection_id=connection_id,
                 owner_user_id=owner_user_id,
             )
-            result = proxy.request("POST", wire_request)
+            try:
+                result = proxy.request("POST", wire_request)
+                # Inference latency excludes the owned worker's cleanup/join.
+                latency_ms = (time.monotonic() - started) * 1000.0
+            finally:
+                if self._proxy_override is None:
+                    try:
+                        proxy.close()
+                    except Exception:  # noqa: BLE001 - preserve result and secret-free diagnostics
+                        _LOG.warning("HTTP inference proxy cleanup failed")
         except GrantResolutionError as exc:
-            raise ProviderUnavailableError(
-                f"compute grant resolution failed: {exc}"
-            ) from exc
-        latency_ms = (time.monotonic() - started) * 1000.0
+            raise ProviderUnavailableError(f"compute grant resolution failed: {exc}") from exc
 
         if not isinstance(result, dict):
             raise ProviderUnavailableError("compute proxy returned no response")

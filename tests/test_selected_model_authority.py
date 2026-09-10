@@ -111,6 +111,9 @@ def served(rig, reader, monkeypatch):
     wire = []
 
     class Proxy:
+        def close(self):
+            pass
+
         def request(self, verb, document):
             wire.append((verb, document))
             return {
@@ -247,13 +250,16 @@ def test_fresh_model_must_fit_permitted_cost_and_capabilities(served, monkeypatc
     assert auth._active_provider_request(served.capability)["invocations"] == 0
 
 
-@pytest.mark.parametrize("extra,eligible", [
-    ({}, True),
-    ({"input_cache_read": "0"}, True),
-    ({"web_search": "0.01"}, False),
-    ({"overrides": [{"min_prompt_tokens": 1000, "prompt": "0.000001"}]}, False),
-    ({"unknown_component": "0"}, False),
-])
+@pytest.mark.parametrize(
+    "extra,eligible",
+    [
+        ({}, True),
+        ({"input_cache_read": "0"}, True),
+        ({"web_search": "0.01"}, False),
+        ({"overrides": [{"min_prompt_tokens": 1000, "prompt": "0.000001"}]}, False),
+        ({"unknown_component": "0"}, False),
+    ],
+)
 def test_real_selected_dispatch_uses_optional_pricing(served, monkeypatch, extra, eligible):
     row = snapshot_tests._model()
     row["pricing"] = {"prompt": "0", "completion": "0", **extra}
@@ -573,8 +579,8 @@ def test_async_discovery_rechecks_changes_after_releasing_admission(
                 else:
                     sql = (
                         "UPDATE agent_bindings SET revision = revision + 1 WHERE universe_id = ?"
-                        if change == "agent" else
-                        "UPDATE provider_assignments SET generation = generation + 1 "
+                        if change == "agent"
+                        else "UPDATE provider_assignments SET generation = generation + 1 "
                         "WHERE universe_id = ?"
                     )
                     with SQLiteProviderWorkAuthorityStore(served.rig.base).connection() as conn:
@@ -762,3 +768,76 @@ def test_selected_price_bounds_constrain_budget_admission_and_unknown_settlement
                 requested_output_tokens=1,
                 estimated_input_tokens=1,
             )
+
+
+def test_cancelled_http_inference_keeps_slot_and_reservation_until_worker_finishes(
+    served,
+    monkeypatch,
+):
+    from contextlib import asynccontextmanager
+
+    from tinyassets.providers import router as routing
+
+    entered, release = threading.Event(), threading.Event()
+    state = {"slots": 0, "calls": 0, "closed": 0}
+
+    @asynccontextmanager
+    async def slot(**kwargs):
+        state["slots"] += 1
+        try:
+            yield
+        finally:
+            state["slots"] -= 1
+
+    class WaitingProxy:
+        def request(self, verb, document):
+            state["calls"] += 1
+            entered.set()
+            assert release.wait(5), "test failed to release HTTP request"
+            return {
+                "status": 200,
+                "body": json.dumps(
+                    {
+                        "choices": [{"message": {"content": "late response"}}],
+                    }
+                ),
+            }
+
+        def close(self):
+            state["closed"] += 1
+
+    monkeypatch.setattr(routing, "_provider_slot", slot)
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", lambda *a, **k: WaitingProxy())
+
+    def reservations():
+        with SQLiteProviderWorkAuthorityStore(served.rig.base).connection() as conn:
+            return [
+                row[0]
+                for row in conn.execute(
+                    "SELECT state FROM served_provider_budget_reservations",
+                ).fetchall()
+            ]
+
+    async def scenario():
+        task = asyncio.create_task(_async_call(served))
+        try:
+            assert await asyncio.to_thread(entered.wait, 3)
+            assert reservations() == ["reserved"]
+            task.cancel()
+            await asyncio.sleep(0.01)
+            assert not task.done() and state["slots"] == 1
+            assert state["closed"] == 0 and reservations() == ["reserved"]
+            task.cancel()
+            await asyncio.sleep(0.01)
+            assert not task.done() and state["slots"] == 1
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 3)
+            assert state == {"slots": 0, "calls": 1, "closed": 1}
+            assert reservations() == ["indeterminate"]
+            assert auth._active_provider_request(served.capability)["invocations"] == 1
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
