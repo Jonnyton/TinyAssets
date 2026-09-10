@@ -80,7 +80,8 @@ class AppStoreConnect:
         )
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
-                return json.load(response)
+                payload = response.read()
+                return {} if not payload else json.loads(payload)
         except urllib.error.HTTPError as exc:
             if exc.code == 404 and not_found_ok:
                 return None

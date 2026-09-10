@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import urllib.error
 from pathlib import Path
 
@@ -217,6 +218,19 @@ def test_review_detail_404_is_the_only_allowed_not_found(monkeypatch):
     assert client.request("GET", "/review", not_found_ok=True) is None
     with pytest.raises(SystemExit, match=r"HTTP 404 for GET /review"):
         client.request("GET", "/review")
+
+
+def test_client_accepts_empty_204_response(monkeypatch):
+    class EmptyResponse(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", lambda *args, **kwargs: EmptyResponse())
+
+    assert module.AppStoreConnect("token").request("POST", "/relationship") == {}
 
 
 def test_app_id_must_be_numeric():
