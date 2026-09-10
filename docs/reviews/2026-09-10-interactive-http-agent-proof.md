@@ -36,3 +36,17 @@ Not complete: independent implementation review, typed candidate/account fallbac
 saved/current selection consumption, clickable controls, deploy, protected SHA and
 canary gates, and rendered ordinary app proof. No public picker activation or
 checklist completion is claimed by these local tests.
+
+## Supplemental legacy/authority regression group
+
+Exact runtimeffbc918f, September10 05:55UTC. Command:
+
+```text
+python -m pytest -q tests/test_provider_assignment_admission.py tests/test_provider_served_router.py tests/test_provider_assignment_manifest.py tests/test_provider_request_capability.py tests/test_provider_router_diagnostics.py tests/test_agent_runtime_provider_call.py tests/test_provider_auth_router_quarantine.py tests/test_engine_tool_client.py tests/test_provider_router_bug029.py --tb=short -rs
+```
+
+Windows173passed/3skipped20.64s; same arguments in the actual Linux oracle image
+above175passed/1skipped9.33s. Linux exercises the shared-reader concurrency and
+bubblewrap cases skipped on Windows. Both skip the separately configured real
+Codex integration (TINYASSETS_REAL_CODEX_TEST_UNIVERSE/SNAPSHOT absent); this is not
+evidence that real CLI integration ran. No runtime files changed during review.
