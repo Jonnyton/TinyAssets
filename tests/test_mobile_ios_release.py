@@ -272,7 +272,10 @@ def test_app_store_metadata_packet_meets_apple_field_constraints() -> None:
     assert "| User access | Full Access for the existing Account Holder" in packet
     assert "no additional user is selected" in packet
     assert "| App Store Connect record | Apple ID `6808434444`" in packet
-    assert "**Waiting for Review** as of 2026-09-09" in packet
+    assert (
+        "iOS 1.0, build 3, is **Rejected / Unresolved Issues** for a Guideline 2.1 "
+        "information request as of 2026-09-10" in packet
+    )
     assert "Apple ID `6808434444`" in packet
     assert (
         "| TestFlight | Internal group `Internal`; manual distribution for Xcode builds; "

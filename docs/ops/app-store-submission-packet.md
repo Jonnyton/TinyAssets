@@ -17,7 +17,7 @@ exceptions in `docs/host-actions.md`.
 | Explicit bundle ID | `io.tinyassets.app` |
 | Bundle ID description | `TinyAssets iOS` |
 | App ID registration | Complete 2026-09-03; verified in the signed-in Apple Developer Identifiers list |
-| App Store Connect record | Apple ID `6808434444`; iOS 1.0, build 3, is **Waiting for Review** as of 2026-09-09 |
+| App Store Connect record | Apple ID `6808434444`; iOS 1.0, build 3, is **Rejected / Unresolved Issues** for a Guideline 2.1 information request as of 2026-09-10; no binary defect was cited |
 | SKU | `tinyassets-ios` |
 | User access | Full Access for the existing Account Holder; the live form disables Limited Access and no additional user is selected |
 | Primary language | English (U.S.) |
@@ -102,11 +102,12 @@ The en-US **What to Test** text above is saved on Build 3. After founder
 reauthentication, the app-level beta description and verified marketing URL were
 also saved, and Build 3 was selected for App Store Version 1.0. The empty Internal
 group remains configured for manual distribution of Xcode builds and has zero
-testers, so no invitation or notification was sent. The live internal-group and
-build pages expose no automatic tester-notification control; Apple's documented
+testers, so no invitation or notification has yet been sent. The live internal-group
+and build pages expose no automatic tester-notification control; Apple's documented
 checkbox belongs to the external-testing flow. The API's residual
 `autoNotifyEnabled=true` value is therefore inert while there is no external group
-or tester. Keep all groups empty until the founder approves invitations.
+or tester. The founder's 2026-09-10 launch authorization permits adding the account
+holder as an internal tester when needed for the required physical-device recording.
 
 Internal testing comes first. External testing may trigger TestFlight App Review
 and is a separate submission boundary.
@@ -339,9 +340,58 @@ one, so the server must remain compatible with the last released shell.
    Release**; all 27 EU storefronts are **Not Available**; app-specific DSA status is
    non-trader for this initial non-EU release.
 10. **Submitted 2026-09-09 02:32 PDT:** **Add for Review** succeeded and the resulting
-    one-item submission was sent to Apple. iOS 1.0 / build 1.0.0 (3) is **Waiting for
-    Review**, submission ID `5c6e4844-2ca2-438c-8aec-a189efb0ebb2`. Release mode is
-    manual. Receipt: `docs/audits/2026-09-09-ios-app-review-submission-receipt.md`.
+    one-item submission was sent to Apple. Submission ID
+    `5c6e4844-2ca2-438c-8aec-a189efb0ebb2`; release mode remains manual.
+11. **Rejected for information 2026-09-09 17:56 PDT; verified 2026-09-10:** Apple
+    reported **Guideline 2.1 - Information Needed - New App Submission**, not a crash
+    or code defect. Apple requires a latest-iOS physical-device recording plus purpose,
+    audience, access, service, regional, and regulated-content answers. Keep the
+    submission intact and resubmit after the complete response is saved. Receipt:
+    `docs/audits/2026-09-09-ios-app-review-submission-receipt.md`.
+
+### Guideline 2.1 response packet
+
+Use one physical-iPhone recording that begins at a cold launch and shows, in order:
+
+1. TinyAssets launch, native splash, and the signed-out screen.
+2. Email-and-password sign-in with the dedicated App Review account already stored in
+   App Store Connect. Do not expose the password in the recording.
+3. Entry into the pre-provisioned private reviewer universe. The reviewer account
+   already has a working review-only AI connection; no API key, subscription, or
+   payment setup is required.
+4. A substantive text request and the universe's response, followed by a force-quit,
+   relaunch, and proof that the same conversation remains.
+5. Attachment of a small, non-sensitive `.txt` sample and an answer grounded in it.
+6. Account and Privacy navigation, including the visible account-deletion path. Do not
+   complete deletion in the primary recording; use a second disposable account if Apple
+   requires proof of the destructive final step.
+
+Written response facts:
+
+- **Purpose / audience / value:** TinyAssets is an 18+ productivity app for adults who
+  want one persistent, private AI workspace for substantive multi-step projects across
+  phone, web, and supported chatbot clients. It reduces fragmented sessions and repeated
+  setup by keeping one signed-in universe, conversation, memory, and work history.
+- **Access:** use the dedicated Email + Password credentials in App Review Information.
+  The review account has no organization, founder data, or public content attached.
+  It is pre-provisioned with a capped, expiring review-only inference connection, so
+  the reviewer can send a message immediately after sign-in without entering a key or
+  payment information. A rendered production turn was verified on 2026-09-10.
+- **External services:** WorkOS AuthKit provides authentication; Cloudflare provides the
+  public HTTPS edge/tunnel; TinyAssets' hosted daemon stores the user's private universe;
+  and the user-selected AI connection supplies inference (OpenAI, Anthropic/Claude, or
+  another explicitly connected HTTPS provider). Stripe support exists in the platform,
+  but the submitted iOS build exposes no purchase or paid-content flow.
+- **User-generated content:** prompts, text attachments, and responses are private to the
+  signed-in universe. There is no public feed, sharing between users, messaging, or other
+  user-to-user content, so reporting and blocking controls are not applicable.
+- **Regions:** the app's features and content behave consistently in every enabled
+  storefront. The initial release enables 148 non-EU storefronts including the United
+  States and excludes all 27 EU storefronts solely for DSA launch scope; there is no
+  feature or content difference among enabled regions.
+- **Regulated / protected material:** TinyAssets is a general-purpose productivity tool,
+  not a regulated-industry service, and it ships no protected third-party catalog or
+  licensed media. Users may connect services they are authorized to use.
 
 ## External gate that remains
 
@@ -349,11 +399,16 @@ one, so the server must remain compatible with the last released shell.
   3's exact source, passed dimension/alpha and visual checks, and persisted in App
   Store Connect. Receipt:
   `docs/audits/2026-09-03-ios-app-store-screenshot-preflight-receipt.md`. A physical
-  iPhone is separately required for microphone-release proof if voice ships; Build 3
-  remains voice-dark.
-- Apple must review iOS 1.0. When the submission becomes approved, select
-  **Release This Version**, then verify that the United States App Store product page
-  offers the install before calling the launch complete.
+  iPhone is separately required for microphone-release proof if voice ships. Build 3's
+  defensive microphone usage string remains in the binary, but the remotely hosted
+  Capacitor surface is voice-dark: PR #3830 / merge
+  `f497050f6586ae70f41e98f78c412932176a46c7` hides and does not initialize Voice on
+  native while preserving it on web. Deploy run `34523794549` published and verified
+  that exact revision on 2026-09-10.
+- Apple requires the Guideline 2.1 response packet above and a physical-iPhone recording.
+  After both are saved, resubmit iOS 1.0. When it becomes approved, select **Release This
+  Version**, then verify that the United States App Store product page offers the install
+  before calling the launch complete.
 - Automatic tester notification cannot be changed on the current internal-only
   UI. Build 3 has no external group or tester, so the API's residual `true` value
   is inert; revisit the checkbox only if an external-testing group is created.
