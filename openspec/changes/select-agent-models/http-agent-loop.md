@@ -102,6 +102,11 @@ change. Existing allowlists stay in force.
 
 Subsequent feature644d6d74 implements the shared owner/graph route contract,
 reviewed APPROVE250s; see engine-tool-route.md for applied shape adaptations.
-Private transport repair is isolated in draft PR3728 atddb343b1 with exact-head
-review/CI pending. It is not yet deployed. The HTTP consumer, fresh per-inference
-admission and durable tool continuation described above remain unbuilt.
+Private transport repair PR3728 is deployed3b541c116e7c03:07UTC with protected
+SHA/canary and20:12PDT five-pass app retest. HTTP tool client5406c3e4 separately
+is built and exact-head APPROVE339s with227 Windows/230 Linux passes, not yet a
+live caller. Fresh per-inference admission and durable tool continuation remain
+unbuilt. Reply-owned display is isolated in draft PR3734 atc4850362;352 Windows/
+352 Linux passes, exact final review and CI pending. No model selection activated.
+Next pure inference/tool transcript boundary is proposed in agent-chat-protocol.md;
+legacy text codecs and price guards remain unchanged until reviewed integration.
