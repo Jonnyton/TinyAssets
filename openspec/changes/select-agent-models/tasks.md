@@ -30,5 +30,11 @@
 ## 3. User proof and delivery
 
 - [ ] 3.1 Build the clickable active-provider/model control with switch, saved default and fallback ordering; test keyboard access, actual-versus-preferred labels and unpowered use.
+
+  September10 partial: reply-owned provider/model footers now render for typed
+  and spoken replies;206 Windows/206 actual Linux checks pass, zero skips.
+  See answer-model-display.md. This is observation only, not a clickable picker;
+  current-attempt state, persisted history receipts and working selection controls
+  remain pending. No runtime policy or provider authority is changed.
 - [ ] 3.2 Run focused cross-platform tests, independent exact-head review and CI; deploy and verify authenticated SHA/canary evidence, then ordinary rendered app use without operator workflow edits.
 - [ ] 3.3 Sync only shipped behavior into main specs and archive this change after completion; update the goal's stage and record any remaining capability gap honestly.

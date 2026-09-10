@@ -47,12 +47,14 @@ Walking the advisory fallback list after a tool failure would violate it.
 
 ## Observation and accounting
 
-`providers.call._call_router_with_retry` currently reduces ProviderResponse to
-text and updates a process-global last-provider label. `universe_intelligence`
-returns that text, and the public converse reply has no per-turn model receipt.
-The picker must receive request-local execution metadata; never use that global
-label across users. The already deployed HTTP receipt fix preserves the actual
-model at the provider boundary but does not bridge this remaining frontend path.
+At the original source inspection, `providers.call._call_router_with_retry`
+reduced ProviderResponse to text and updated a process-global last-provider
+label. Feature commit215aacf2 now adds an optional reply-owned response observer
+and WriterExecutionReceipt, propagated into converse's optional execution field.
+The first completed conversational response wins; subsequent learning cannot
+overwrite it. This bridge is built and independently reviewed, not deployed.
+The app display remains pending. Never use the global label across users.
+See docs/reviews/2026-09-10-interactive-model-receipt-proof.md.
 
 The newer agent-runtime outcome path requires complete usage/cost before success;
 current HTTP responses do not provide cost there. Missing cost is unknown, not
@@ -77,4 +79,6 @@ extractor instead of the answering writer. Capture the actual writer result
 at its call boundary and propagate request-local metadata explicitly, with
 tests for interleaved universes and post-reply learning calls. Empty resolved
 model remains unknown; the requested default/alias is not an actual receipt.
-No receipt bridge/UI implemented by this source check.
+No receipt bridge/UI was implemented by that historical source check. The bridge
+was subsequently implemented in215aacf2 as described above; reply-owned display
+is now scoped in answer-model-display.md. Neither is a full-agent picker proof.
