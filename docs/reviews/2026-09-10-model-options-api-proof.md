@@ -48,6 +48,7 @@ probe passed; mirror parity is in both final groups. Initial mixed-source API te
 parameterized the wrapper fixture instead of its configured dependency; corrected
 fixture wiring before the final runs, no runtime guard weakened.
 
-Required next: independent exact API review, actual clickable controls, native
+Exact e8d69c3b API independently APPROVE428s,17cases reproduced7.05s; see
+model-options-api-review.md. Required next: actual clickable controls, native
 explicit/non-home/general provider capability work, both-client rendered shape
 proof, CI, deployment, protected SHA/canary and ordinary app conversation proof.

@@ -60,6 +60,9 @@ async def handle_model_preferences(request: Any) -> Any:
             home = onboarding._read_home(identity, raise_errors=True)
             if not home:
                 return {"error": "no_home_universe"}, 409
+            expected_home = request.query_params.get("universe_id")
+            if expected_home is not None and expected_home != home:
+                return {"error": "model_preference_home_changed"}, 409
             store = ModelPreferenceStore(_base_path())
             try:
                 if write is None:

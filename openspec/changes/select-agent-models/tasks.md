@@ -153,7 +153,17 @@
   exact bind keys/accepted constraints and full structured choices. Source failures
   are distinct from model rows; display-only results cannot activate serving.
   893Windows/895Linux pass (3/1skips). See model-options-api-proof.md in docs/reviews.
-  Independent API review, enabled controls, native explicit catalogue and live
-  both-client proof remain; no deployment or workflow edits.
+  Exact e8d69c3b API independently APPROVE428s,17cases reproduced. Actual controls,
+  native explicit catalogue and live both-client proof remain; no deployment or
+  workflow edits.
+
+  September10 picker consumer now built locally: native keyboard-modal control,
+  last-reported answer separate from next-message override, saved defaults and
+  move/remove fallback order. Existing send/queue/voice/retry capture remains.
+  Stale/expired lists and save conflicts disable new changes without rewriting
+  existing choices. The save supplies an explicit current-home target so an old
+  dialog cannot write to a newly rebound home. No authority is granted by choice.
+  Access-confirmation UI for unaccepted sources, native explicit discovery,
+  rendered preview, independent consumer review and deployment remain open.
 - [ ] 3.2 Run focused cross-platform tests, independent exact-head review and CI; deploy and verify authenticated SHA/canary evidence, then ordinary rendered app use without operator workflow edits.
 - [ ] 3.3 Sync only shipped behavior into main specs and archive this change after completion; update the goal's stage and record any remaining capability gap honestly.

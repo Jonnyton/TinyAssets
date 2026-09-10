@@ -95,6 +95,13 @@ Missing endpoint grants use the existing user connection request/deposit flow.
 Readiness must refuse a legacy binding with an explicit saved selection that it
 cannot execute; a saved automatic preference still preserves legacy availability.
 
+The app also supplies the catalogue's universe_id as an explicit query target on
+the existing preference route. The handler refuses a different current home
+before touching storage; its existing transactional home fence still handles a
+rebind during the write. Omitted targets preserve legacy current-home behavior.
+This prevents an old dialog writing generation0 preferences into a newly rebound
+generation0 home. A mismatch is not permission to act on the explicit universe.
+
 ## Interface behavior and proof
 
 One keyboard-accessible model/provider button near the composer, separate from

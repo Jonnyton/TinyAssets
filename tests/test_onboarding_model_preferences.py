@@ -119,12 +119,35 @@ def test_authenticated_user_cannot_select_another_home(app):
     client, _ = app
     client.post(URL, headers=headers(A), json=payload())
     other = client.get(URL + f"?universe_id={HOME_A}&owner_user_id={A}", headers=headers(B))
-    assert other.json()["policy"] is None and other.json()["universe_id"] == HOME_B
+    assert other.status_code == 409
+    assert other.json() == {"error": "model_preference_home_changed"}
     forged = client.post(URL, headers=headers(B), json={**payload(), "universe_id": HOME_A})
     assert forged.status_code == 400
     saved = client.post(URL, headers=headers(B), json=payload(policy=AUTO))
     assert saved.status_code == 200 and saved.json()["universe_id"] == HOME_B
     assert client.get(URL, headers=headers(A)).json()["policy"] == PIN
+
+
+def test_explicit_dialog_target_cannot_write_newly_rebound_home(app):
+    client, base = app
+    snapshot = client.get(URL, headers=headers()).json()
+    with SQLiteProviderWorkAuthorityStore(base).connection() as conn:
+        conn.execute("UPDATE founder_home SET universe_id = ? WHERE founder_sub = ?", (HOME_B, A))
+    response = client.post(URL + "?universe_id=" + snapshot["universe_id"],
+                           headers=headers(), json=payload())
+    assert response.status_code == 409
+    assert response.json() == {"error": "model_preference_home_changed"}
+    assert ModelPreferenceStore(base).get(A, HOME_A).generation == 0
+    assert ModelPreferenceStore(base).get(A, HOME_B).generation == 0
+
+
+def test_explicit_current_home_target_preserves_cas(app):
+    client, _ = app
+    first = client.post(URL + "?universe_id=" + HOME_A, headers=headers(), json=payload())
+    assert first.status_code == 200
+    second = client.post(URL + "?universe_id=" + HOME_A, headers=headers(), json=payload())
+    assert second.status_code == 409
+    assert second.json()["error"] == "model_preferences_conflict"
 
 
 @pytest.mark.parametrize(

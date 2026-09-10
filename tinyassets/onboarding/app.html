@@ -41,6 +41,13 @@
     .danger-zone{margin-top:1.5rem;border:1px solid var(--err);border-radius:var(--radius);padding:1rem 1.1rem}
     .danger-zone h3{margin:0 0 .5rem}
     .btn:disabled{opacity:.5;cursor:default}
+    .model-bar{padding:.25rem 1rem;display:flex;flex-wrap:wrap;gap:.3rem;align-items:center;border-top:1px solid var(--line)}
+    .model-bar button{max-width:100%;overflow-wrap:anywhere;text-align:left}
+    .model-dialog{color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);width:min(42rem,calc(100% - 2rem));max-height:85vh;padding:1.2rem;overflow:auto}
+    .model-dialog::backdrop{background:#0008}
+    .model-dialog select{width:100%;max-width:100%;margin:.4rem 0;padding:.6rem;background:var(--surface);color:var(--ink);border:1px solid var(--line)}
+    .model-dialog li{margin:.5rem 0;overflow-wrap:anywhere}
+    .model-dialog .model-actions{display:flex;flex-wrap:wrap;gap:.4rem;margin:.7rem 0}
     /* chat */
     .chat-header{display:flex;align-items:center;justify-content:space-between;padding:.8rem 1rem;
       border-bottom:1px solid var(--line);background:var(--surface);padding-top:max(.8rem,env(safe-area-inset-top))}
@@ -216,6 +223,10 @@
         </aside>
       </div>
       <div id="attachments" class="attachments" hidden></div>
+      <div class="model-bar">
+        <button id="btn-models" class="btn btn--link" type="button" aria-haspopup="dialog" aria-controls="model-dialog">Model settings · No answering model reported yet</button>
+        <span id="model-next" class="muted">Next message: saved default</span>
+      </div>
       <form id="composer" class="composer">
         <input id="file-input" type="file" multiple hidden
                accept=".txt,.md,.markdown,.json,.csv,.tsv,.yaml,.yml,.py,.js,.ts,.jsx,.tsx,.html,.htm,.css,.xml,.log,.sh,.rst,.ini,.toml,.env,.sql,text/*" />
@@ -236,6 +247,36 @@
       <div id="voice-status-line" class="status-line status-line--voice" role="status"
            aria-live="polite" aria-label="Voice status"></div>
     </section>
+
+    <dialog id="model-dialog" class="model-dialog" aria-labelledby="model-title">
+      <h2 id="model-title">Your agent's model</h2>
+      <p id="model-actual" class="muted">No answering model reported yet.</p>
+      <p id="model-saved" class="muted"></p>
+      <p id="model-status" role="status" aria-live="polite"></p>
+      <label for="model-primary">Model for this choice</label>
+      <select id="model-primary"><option value="">Automatic</option></select>
+      <p class="muted">Automatic prefers your available subscription or local sources, then ranks eligible alternatives. It uses only access and spending you have approved.</p>
+      <div id="model-fallback-editor" hidden>
+        <h3>Fallback order</h3>
+        <p class="muted">Used in order when a model reaches its limits. An empty list means no fallback.</p>
+        <ol id="model-fallbacks"></ol>
+        <label for="model-fallback-add">Add an alternative</label>
+        <select id="model-fallback-add"></select>
+        <button id="btn-model-fallback-add" class="btn btn--link" type="button">Add fallback</button>
+      </div>
+      <p id="model-preview" class="muted"></p>
+      <div class="model-actions">
+        <button id="btn-model-use" class="btn btn--primary" type="button">Use for next messages</button>
+        <button id="btn-model-save" class="btn btn--ghost" type="button">Save default and fallbacks</button>
+        <button id="btn-model-saved" class="btn btn--link" type="button">Use saved default</button>
+      </div>
+      <details><summary>All connected models and availability</summary><ul id="model-inventory"></ul></details>
+      <div class="model-actions">
+        <button id="btn-model-refresh" class="btn btn--link" type="button">Refresh models</button>
+        <button id="btn-model-connect" class="btn btn--link" type="button">Connect a source</button>
+        <button id="btn-model-close" class="btn btn--link" type="button">Close</button>
+      </div>
+    </dialog>
 
     <div id="voice-disclosure" class="voice-dialog" role="dialog" aria-modal="true"
          aria-labelledby="voice-disclosure-title" hidden>
@@ -1070,6 +1111,7 @@
       return this.callTool("converse",args);
     },
     getStatus(){ return this.callTool("get_status",{},{idempotent:true}); },
+    getModelOptions(){ return this.callTool("read_graph",{target:"model_options"},{idempotent:true}); },
     // The shared cross-surface thread. The app rendered ONLY what was appended
     // during the current page life, so any refresh — including the automatic
     // one on a new build — emptied the conversation even though the server had
@@ -1936,6 +1978,7 @@
     detail.textContent=provider
       ?"Answered by "+provider+" · "+(model||"Model not reported")
       :"Provider and model not reported";
+    if(typeof ModelPicker!=="undefined") ModelPicker.observe(detail.textContent);
     return detail;
   }
   function renderConverse(payload){
@@ -1975,6 +2018,197 @@
   function copyModelChoice(value){
     return value==null ? null : JSON.parse(JSON.stringify(value));
   }
+  // Model controls never infer execution authority from a name or grant access.
+  // The server owns ordering/eligibility; this object edits opaque references only.
+  const ModelPicker={
+    snapshot:null,draft:null,epoch:0,busy:false,stale:true,expires:0,timer:null,
+    actual:"No answering model reported yet",
+    automatic(){return {version:1,mode:"automatic",saved_default:null,fallbacks:[]};},
+    key(ref){return JSON.stringify([ref.provider_ref,ref.model_id]);},
+    label(ref){return ref.provider_ref+" · "+(ref.model_id||"Provider default");},
+    policyLabel(policy){return !policy||policy.mode==="automatic" ? "Automatic" : this.label(policy.saved_default);},
+    rows(){return this.snapshot ? [...this.snapshot.options,...this.snapshot.unavailable] : [];},
+    row(ref){return this.rows().find(row=>this.key(row.reference)===this.key(ref));},
+    usable(row){return !!row&&row.in_candidate_catalog===true&&row.freshness==="fresh"&&!(row.reasons||[]).length;},
+    fresh(){return !!this.snapshot&&!this.stale&&Date.now()<this.expires;},
+    canApply(){
+      if(!this.fresh()||!this.draft) return false;
+      if(this.draft.mode==="automatic") return true;
+      return this.snapshot.choice_authority==="accepted_manifest"&&
+        [this.draft.saved_default,...this.draft.fallbacks].every(ref=>this.usable(this.row(ref)));
+    },
+    observe(text){this.actual=text;this.paintHeader();},
+    paintHeader(){
+      $("btn-models").textContent="Model settings · "+this.actual;
+      $("model-actual").textContent=this.actual;
+      $("model-next").textContent="Next message: "+(modelChoiceForNextTurn===null ? "saved default" : this.policyLabel(modelChoiceForNextTurn));
+    },
+    reset(){
+      this.epoch++;clearTimeout(this.timer);this.snapshot=null;this.draft=null;
+      this.busy=false;this.stale=true;modelChoiceForNextTurn=null;
+      this.actual="No answering model reported yet";
+      if($("model-dialog").open) $("model-dialog").close();
+      this.paintHeader();
+    },
+    status(text){$("model-status").textContent=text;},
+    async open(){
+      $("model-dialog").showModal();this.paintHeader();
+      await this.refresh();
+    },
+    async refresh(){
+      if(this.busy) return;
+      const epoch=++this.epoch;this.busy=true;this.stale=true;
+      this.status("Refreshing your connected models…");this.render();
+      try{
+        const doc=await MCP.getModelOptions();
+        if(epoch!==this.epoch) return;
+        if(!doc||doc.error||doc.kind!=="advisory_model_options"||doc.version!==1||
+          !Array.isArray(doc.options)||!Array.isArray(doc.unavailable)||!Array.isArray(doc.order)||
+          !doc.preferences||typeof doc.universe_id!=="string") throw new Error("catalogue unavailable");
+        if(this.snapshot&&this.snapshot.universe_id!==doc.universe_id){
+          modelChoiceForNextTurn=null;this.draft=null;this.actual="No answering model reported yet";
+        }
+        this.snapshot=doc;this.stale=false;
+        if(!this.draft) this.draft=copyModelChoice(modelChoiceForNextTurn||doc.preferences.policy||this.automatic());
+        const expiries=(doc.sources||[]).map(source=>Date.parse(source.expires_at)).filter(Number.isFinite);
+        this.expires=Math.min(Date.now()+300000,...expiries);
+        clearTimeout(this.timer);
+        this.timer=setTimeout(()=>{this.stale=true;this.status("Model availability needs a refresh. Your choices are unchanged.");this.render();},Math.max(0,this.expires-Date.now()));
+        this.status(doc.choice_authority==="legacy_single_provider"
+          ?"Your connected provider default works. Choosing another model needs explicit model-access setup."
+          :doc.binding_state!=="serving" ? "No unique active agent is connected. You can still view models and save Automatic." : "Models refreshed. Selection does not approve new access or spending.");
+      }catch(err){
+        if(epoch!==this.epoch) return;
+        this.stale=true;
+        if(err.authRequired){sessionExpired();return;}
+        this.status("Could not refresh models. Any previous list is stale; your settings are unchanged.");
+      }finally{
+        if(epoch===this.epoch){this.busy=false;this.render();}
+      }
+    },
+    option(select,value,text,disabled){
+      const node=document.createElement("option");node.value=value;node.textContent=text;node.disabled=!!disabled;select.appendChild(node);
+    },
+    render(){
+      this.paintHeader();
+      const rows=this.rows(),primary=$("model-primary"),add=$("model-fallback-add");
+      primary.replaceChildren();add.replaceChildren();this.option(primary,"","Automatic",false);
+      this.option(add,"","Choose an alternative",false);
+      const draft=this.draft||this.automatic(),chosen=draft.saved_default;
+      for(const row of rows){
+        const ref=row.reference,key=this.key(ref),reasons=(row.reasons||[]).map(r=>r.reason.replaceAll("_"," ")).join(", ");
+        const label=this.label(ref)+(reasons ? " — "+reasons : "");
+        this.option(primary,key,label,!this.usable(row));
+        if(this.usable(row)&&(!chosen||this.key(chosen)!==key)&&!draft.fallbacks.some(r=>this.key(r)===key)) this.option(add,key,this.label(ref),false);
+      }
+      if(chosen&&!this.row(chosen)) this.option(primary,this.key(chosen),this.label(chosen)+" — unavailable",true);
+      primary.value=chosen ? this.key(chosen) : "";primary.disabled=this.busy||!this.fresh();
+      $("model-fallback-editor").hidden=draft.mode!=="explicit";
+      const list=$("model-fallbacks");list.replaceChildren();
+      draft.fallbacks.forEach((ref,index)=>{
+        const li=document.createElement("li"),label=document.createElement("span");label.textContent=this.label(ref);li.appendChild(label);
+        for(const [text,delta] of [["Move up",-1],["Move down",1],["Remove",0]]){
+          const btn=document.createElement("button");btn.type="button";btn.className="btn btn--link";btn.textContent=text;
+          btn.setAttribute("aria-label",text+" "+this.label(ref));
+          btn.disabled=this.busy||!this.fresh()||(delta!==0&&(index+delta<0||index+delta>=draft.fallbacks.length));
+          btn.addEventListener("click",()=>{
+            this.move(index,delta);
+            const next=$("model-fallbacks").children[Math.max(0,delta ? index+delta : index-1)];
+            const focus=next&&next.children[delta===-1?1:delta===1?2:3];
+            (focus&&!focus.disabled ? focus : $("model-fallback-add")).focus();
+          });li.appendChild(btn);
+        }
+        list.appendChild(li);
+      });
+      const inventory=$("model-inventory");inventory.replaceChildren();
+      for(const row of rows){
+        const li=document.createElement("li");
+        li.textContent=this.label(row.reference)+" — "+(this.stale ? "stale; " : "")+
+          ((row.reasons||[]).map(r=>r.reason.replaceAll("_"," ")).join(", ")|| (this.usable(row)?"available":"availability unconfirmed"));
+        inventory.appendChild(li);
+      }
+      for(const source of (this.snapshot&&this.snapshot.source_failures||[])){
+        const li=document.createElement("li");li.textContent=source.provider_ref+" — "+source.reasons.map(r=>r.reason.replaceAll("_"," ")).join(", ");inventory.appendChild(li);
+      }
+      $("model-saved").textContent="Saved default: "+this.policyLabel(this.snapshot&&this.snapshot.preferences.policy);
+      $("model-preview").textContent=draft.mode==="automatic"
+        ?"Current saved routing preview (changes after saving; not an execution receipt): "+(this.snapshot&&this.snapshot.order.length ? this.snapshot.order.map(ref=>this.label(ref)).join(" → ") : "No eligible model confirmed")
+        :"Selected order: "+[chosen,...draft.fallbacks].map(ref=>this.label(ref)).join(" → ");
+      const applicable=this.canApply();
+      $("btn-model-use").disabled=this.busy||!applicable||this.snapshot.choice_authority!=="accepted_manifest";
+      $("btn-model-save").disabled=this.busy||!applicable;
+      $("btn-model-refresh").disabled=this.busy;
+      $("btn-model-fallback-add").disabled=this.busy||!this.fresh();add.disabled=this.busy||!this.fresh();
+    },
+    select(key){
+      if(this.busy||!this.fresh()) return;
+      if(!key){this.draft=this.automatic();this.render();return;}
+      const row=this.rows().find(r=>this.key(r.reference)===key);
+      if(!this.usable(row)) return;
+      this.draft={version:1,mode:"explicit",saved_default:copyModelChoice(row.reference),
+        fallbacks:(this.draft&&this.draft.fallbacks||[]).filter(r=>this.key(r)!==key)};
+      this.render();
+    },
+    addFallback(key){
+      if(this.busy||!this.fresh()||!this.draft||this.draft.mode!=="explicit") return;
+      const row=this.rows().find(r=>this.key(r.reference)===key);
+      if(!this.usable(row)||key===this.key(this.draft.saved_default)||this.draft.fallbacks.some(r=>this.key(r)===key)) return;
+      this.draft.fallbacks.push(copyModelChoice(row.reference));this.render();
+    },
+    move(index,delta){
+      if(this.busy||!this.fresh()||!this.draft) return;
+      const refs=this.draft.fallbacks;
+      if(index<0||index>=refs.length||index+delta<0||index+delta>=refs.length) return;
+      if(delta===0) refs.splice(index,1);else [refs[index],refs[index+delta]]=[refs[index+delta],refs[index]];
+      this.render();
+    },
+    use(){
+      if(this.busy||!this.canApply()||this.snapshot.choice_authority!=="accepted_manifest") return;
+      modelChoiceForNextTurn=copyModelChoice(this.draft);this.paintHeader();
+      this.status("Next messages will use this choice. Already sent or queued messages keep their original choice.");
+    },
+    useSaved(){modelChoiceForNextTurn=null;this.draft=copyModelChoice(this.snapshot&&this.snapshot.preferences.policy||this.automatic());this.render();this.status("Next messages will use the saved default. Queued messages are unchanged.");},
+    async save(){
+      if(this.busy||!this.canApply()) return;
+      const epoch=this.epoch,uid=this.snapshot.universe_id;
+      const body=JSON.stringify({expected_generation:this.snapshot.preferences.generation,policy:copyModelChoice(this.draft)});
+      this.busy=true;this.render();this.status("Saving default and fallback order…");
+      try{
+        await ensureFreshToken();
+        if(epoch!==this.epoch) return;
+        // Explicit target prevents a stale dialog writing preferences into a newly rebound home.
+        const response=await fetch("/mcp/app/models/preferences?universe_id="+encodeURIComponent(uid),{
+          method:"POST",credentials:"same-origin",headers:Object.assign({"Content-Type":"application/json"},authHeaders()),body});
+        if(epoch!==this.epoch) return;
+        if(response.status===401){sessionExpired();return;}
+        const result=await response.json();
+        if(epoch!==this.epoch) return;
+        if(result.error==="model_preferences_conflict"){
+          this.stale=true;this.status("Your saved settings changed elsewhere. Refresh models and review before saving again.");return;
+        }
+        if(!response.ok||result.error||result.universe_id!==uid) throw new Error("save unavailable");
+        this.snapshot.preferences={generation:result.generation,policy:result.policy,updated_at:result.updated_at};
+        this.stale=true;
+        this.status("Default and fallbacks saved. Refresh to preview the new order. Your current-message override is unchanged.");
+      }catch(_err){
+        if(epoch===this.epoch){
+          this.stale=true;this.status("Could not confirm the save. Refresh to check your saved settings before trying again.");
+        }
+      }finally{if(epoch===this.epoch){this.busy=false;this.render();}}
+    },
+    init(){
+      $("btn-models").addEventListener("click",()=>this.open());
+      $("btn-model-close").addEventListener("click",()=>$("model-dialog").close());
+      $("model-dialog").addEventListener("close",()=>$("btn-models").focus());
+      $("btn-model-refresh").addEventListener("click",()=>this.refresh());
+      $("model-primary").addEventListener("change",e=>this.select(e.target.value));
+      $("btn-model-fallback-add").addEventListener("click",()=>this.addFallback($("model-fallback-add").value));
+      $("btn-model-use").addEventListener("click",()=>this.use());
+      $("btn-model-save").addEventListener("click",()=>this.save());
+      $("btn-model-saved").addEventListener("click",()=>this.useSaved());
+      $("btn-model-connect").addEventListener("click",()=>{$("model-dialog").close();showConnect(false);});
+    }
+  };
   function captureTurnOptions(opts){
     opts=opts||{};
     return Object.assign({},opts,{
@@ -2260,6 +2494,7 @@
       dot.title=alive?("host: "+host):"no active host";
       const name=s.universe_name||s.universe||s.universe_id||"";
       if(name) $("universe-name").textContent=name;
+      if(ModelPicker.snapshot&&s.universe_id&&ModelPicker.snapshot.universe_id!==s.universe_id) ModelPicker.reset();
       queueScope = String(s.universe_id || s.universe || queueScope || "");
       restoreQueue();   // no-op once done, or until the scope is known
       healServing(s);
@@ -2332,6 +2567,7 @@
     }catch(_e){ return null; }
   }
   async function enterSignedIn(){
+    ModelPicker.reset();
     const me = await fetchMe();
     if(me===null && !token()) return;            // fetchMe signed us out
     if(!(me && me.engine_connected===true)){
@@ -2491,6 +2727,7 @@
   }
   function enterSignedOut(){ clearInterval(statusTimer); MCP.sessionId=null; Voice.stop(false);
     modelChoiceForNextTurn=null;
+    ModelPicker.reset();
     sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(EXP_KEY); cancelOpenAIFlow(); resetOpenAIUI(); showView("signin"); }
   function showConnect(asGate,guidance){ Voice.stop(false); showView("connect");
     // Web has no loopback listener: the guided device-code path IS the path.
@@ -2790,6 +3027,7 @@
 
   function wire(){
     Voice.init();
+    ModelPicker.init();
     $("btn-voice").addEventListener("click",()=>Voice.requestStart());
     $("voice-output-select").addEventListener("change",event=>
       Voice.selectBrowserVoice(event.target.value));
