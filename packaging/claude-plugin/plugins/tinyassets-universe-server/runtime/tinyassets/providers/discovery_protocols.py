@@ -29,6 +29,7 @@ class DiscoveryProtocol:
     constrain_inference: Callable[..., dict]
     text_interaction: Interaction
     capacity_decoder: Callable | None = None
+    ranking_source: str | None = None
 
     def validate_urls(self, catalogue_url: str, benchmark_url: str) -> None:
         catalogue = urlsplit(catalogue_url)
@@ -141,6 +142,7 @@ _PROTOCOLS = {
             ),
         ),
         capacity_decoder=_openrouter_capacity,
+        ranking_source="artificial-analysis",
     )
 }
 

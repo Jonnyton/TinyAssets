@@ -852,6 +852,12 @@ def _call_writer(turn_input, *, system, universe_context, config, response_obser
 
     http_turn = None
     selection = getattr(universe_context, "model_selection", None)
+    if (selection is not None and selection.connection_id.startswith("api_key_http:")
+            and universe_context.agent_model_plan is not None
+            and not getattr(config, "engine_mcp_enabled", False)):
+        from tinyassets.exceptions import ProviderAuthorityHeldError
+
+        raise ProviderAuthorityHeldError("selected interactive model requires engine tools")
     if (getattr(config, "engine_mcp_enabled", False) and selection is not None
             and selection.connection_id.startswith("api_key_http:")):
         from tinyassets.providers.call import make_interactive_agent_turn
@@ -961,6 +967,7 @@ def converse(
     binding_revision: int = 0,
     input_method: str = "unknown",
     response_observer=None,
+    model_choice: dict | None = None,
 ) -> str:
     """Run one first-person turn as the universe, on its ASSIGNED engine.
 
@@ -1047,6 +1054,9 @@ def converse(
         config=load_universe_config(udir),
         provider_request=request_carrier,
     )
+    from tinyassets.providers.served_model_plan import apply_served_model_preferences
+
+    ctx = apply_served_model_preferences(ctx, model_choice=model_choice)
     granted = bound_tier == interlocutor.FOUNDER
     system = _build_persona_system_prompt(
         udir, tier=bound_tier, universe_id=uid

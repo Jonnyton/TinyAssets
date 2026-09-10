@@ -29,6 +29,60 @@ def test_converse_denied_for_anonymous(monkeypatch):
     assert "reply" not in out
 
 
+def test_current_model_choice_is_forwarded_without_becoming_saved_state(monkeypatch, tmp_path):
+    import tinyassets.universe_intelligence as ui
+
+    _founder_auth(monkeypatch, base=tmp_path)
+    seen = []
+
+    def capture(uid, msg, **kwargs):
+        seen.append(kwargs.get("model_choice"))
+        return msg
+
+    monkeypatch.setattr(ui, "converse", capture)
+    choice = {"version": 1, "mode": "automatic", "saved_default": None, "fallbacks": []}
+    assert json.loads(us.converse(message="one", graph_id="u-x", model_choice=choice))["reply"]
+    assert json.loads(us.converse(message="two", graph_id="u-x"))["reply"]
+    assert seen == [choice, None]
+
+
+@pytest.mark.parametrize("choice", [{}, {"version": True}, {"owner": "forged"}])
+def test_malformed_choice_refuses_before_home_creation(monkeypatch, choice):
+    from tinyassets.api import first_contact
+
+    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
+    monkeypatch.setattr(
+        first_contact, "ensure_founder_home", lambda *a: pytest.fail("created home"),
+    )
+    assert json.loads(us.converse(message="hi", model_choice=choice)) == {
+        "error": "invalid_model_choice",
+    }
+
+
+def test_mcp_current_model_choice_preserves_both_response_channels(monkeypatch, tmp_path):
+    import tinyassets.universe_intelligence as ui
+
+    _founder_auth(monkeypatch, base=tmp_path)
+    choice = {"version": 1, "mode": "explicit", "saved_default": {
+        "provider_ref": "owned:future", "model_id": "opaque",
+    }, "fallbacks": []}
+
+    def capture(uid, msg, **kwargs):
+        assert kwargs["model_choice"] == choice
+        return "exact reply"
+
+    monkeypatch.setattr(ui, "converse", capture)
+
+    async def call():
+        return await us.mcp.call_tool("converse", {
+            "message": "hi", "graph_id": "u-x", "model_choice": choice,
+        })
+
+    result = asyncio.run(call())
+    assert result.structured_content["reply"] == "exact reply"
+    assert json.loads(result.content[0].text) == result.structured_content
+
+
 def test_converse_denied_for_non_owner(monkeypatch):
     monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
     monkeypatch.setattr(helpers, "_request_universe", lambda gid="": "u-x")

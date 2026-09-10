@@ -20,6 +20,13 @@
   108 Linux,0skips, awaiting review with the actual consumer. Real ingress,
   catalogue production and serving readiness remain unconnected and not live.
 
+  September10 integration now connects canonical current-choice ingress, real
+  preference capture/catalogue production, public model-access opt-in and serving
+  readiness.765 Windows/767 actual Linux passes (3/1skips), including a real
+  worker-claimed MCP -> writer -> tool-loop composition with synthetic wires.
+  Independent review and both-client rendered proof are pending; UI and non-home
+  controls remain incomplete. See preference-consumption-proof.md in docs/reviews.
+
 - [ ] 2.2 Implement deterministic automatic ranking and ordered explicit fallback within fresh authority, required capabilities and permitted cost; test unscored/stale catalogues and no-paid-fallback.
 - [ ] 2.3 Integrate typed capacity scopes and safe continuation into the existing router; prove account exhaustion skips siblings and completed/ambiguous tools are not replayed.
 

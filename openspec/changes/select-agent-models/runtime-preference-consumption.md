@@ -3,19 +3,18 @@
 September10 2026, next integration of tasks2.1/2.2/2.4. Existing change and
 approved policy/authority stores, not a new proposal or claim of activation.
 
-## Verified gaps
+## Original verified gaps, now integrated locally
 
-universe_server.converse currently accepts message/graph/input-method and calls
-universe_intelligence.converse without selection. That sink constructs a genuine
-request carrier but no model_selection or plan. Saved preferences therefore do
-not affect real turns. Separately, provider_serving_binding.set_serving calls
-_current_serving_authority, which rejects every assignment with manifest_digest.
-The composition fixtures bypass that readiness gate internally. No user-facing
-completion claim may rely on those fixtures alone.
+The original public converse lacked selection, its sink produced no plan, and
+set_serving rejected every manifest. September10 integration now joins canonical
+converse, stored/current policy, fresh member catalogue and real readiness, with
+public binding opt-in. New acceptance cases do not bypass the readiness gate.
+See docs/reviews/2026-09-10-preference-consumption-proof.md:765 Windows/767 actual
+Linux passes (3/1skips), independent review pending. Not deployed or UI-complete.
 
-The existing public binding callers (api/custom_agents.py and onboarding/serving.py)
-also never pass model_access to bind_serving_provider. The accepted manifest is
-currently an internal foundation, not a user-reachable grant path. Extend the
+Originally neither public binding caller passed model_access. The authenticated
+custom_agents caller now passes strict optional declarations; onboarding/serving.py
+still preserves legacy behavior. The implementation extends the
 existing owner binding flow with strictly parsed optional model-access declarations,
 using ModelAccess validation and existing assignment publication. Absence preserves
 legacy semantics. New connections opting into automatic selection accept discovered
@@ -42,8 +41,10 @@ owned-universe turns without an override retain their legacy path, with no home-
 preference read. Explicit overrides outside supported home scope refuse, rather
 than being silently ignored. General non-home policy/journal support remains a
 later required capability before exposing those controls there.
-Capture generation once. Missing row and missing override preserve the legacy
-binding path exactly. A corrupt/unavailable row is held, not treated as absent.
+Capture generation once. Missing row and missing override preserve an existing
+legacy binding exactly. A newly opted-in manifest instead uses automatic
+generation0, as design.md requires for new opt-ins; this does not publish a
+manifest implicitly. A corrupt/unavailable row is held, not treated as absent.
 An override or saved policy on a legacy assignment cannot expand model authority:
 report that its accepted model scope needs updating through the existing binding
 flow. No implicit publication or grant extension. Saving preferences alone still
@@ -57,7 +58,7 @@ router still validates it before EVERY launch. The captured plan is advisory.
 The sink sets model_selection from this plan's first candidate; the runner rejects
 a contradictory plan/selection pair rather than silently overriding it.
 This rejection is now implemented locally in InteractiveHttpAgentTurn._run;
-public plan production remains unfinished.
+canonical plan production is now implemented locally, not yet deployed.
 For overrides construct ModelPolicy using override.mode, current_selection equal
 to its primary, saved_default=None, and exactly its fallbacks. Automatic clears
 both primaries. Generation is the observed saved generation (zero when absent).
@@ -72,8 +73,8 @@ The pure capture_preference_policy helper now constructs this exact policy:
 saved documents (including saved automatic) carry source saved; current documents
 (including current automatic) carry source current. Neither mode alone implies
 where the choice came from. Missing saved state requires generation0; absent
-saved/current choices return None for the legacy path. This is not yet called by
-production converse, and it neither reads storage nor grants/saves authority.
+saved/current choices return None for the legacy path. Real converse now calls
+this helper through the owned plan assembler; the helper grants/saves no authority.
 
 Discovery uses each connection's existing protocol contract. Preserve fresh
 capability/privacy evidence and all accepted model/price restrictions. Filter

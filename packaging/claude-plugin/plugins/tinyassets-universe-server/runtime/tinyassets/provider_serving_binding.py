@@ -978,6 +978,21 @@ def set_serving(
     if existing is None:
         raise LookupError("agent binding was not found")
     store = SQLiteProviderWorkAuthorityStore(base_path)
+    prepared = None
+    if enabled:
+        with store.connection() as conn:
+            assignment = load_provider_assignment_in_transaction(conn, universe_id=uid)
+        if assignment is not None and assignment.manifest_digest:
+            if existing["created_by"] != owner or int(existing["revision"]) != expected_revision:
+                raise PermissionError("agent binding is not current owner authority")
+            from tinyassets.config import load_universe_config
+            from tinyassets.providers.served_model_plan import prepare_owned_model_plan
+
+            # Remote discovery must finish before exclusive admission/SQL mutation.
+            prepared = prepare_owned_model_plan(
+                base=Path(base_path), universe=universe, owner=owner,
+                agent=existing, config=load_universe_config(universe),
+            )
     with provider_assignment_admission().exclusive(universe):
         current = get_binding(base_path, universe_id=uid, binding_id=binding_id)
         if current is None:
@@ -989,14 +1004,21 @@ def set_serving(
         with store.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             if enabled:
-                assignment, _provider_binding, _custody = _current_serving_authority(
-                    conn,
-                    store=store,
-                    universe_dir=universe,
-                    owner_user_id=owner,
-                    universe_id=uid,
-                    agent=current,
-                )
+                if prepared is not None:
+                    prepared.recheck(
+                        conn, store=store, base=Path(base_path), universe=universe,
+                        owner=owner, agent=current, check_preferences=True,
+                    )
+                    assignment = prepared.assignment
+                else:
+                    assignment, _provider_binding, _custody = _current_serving_authority(
+                        conn,
+                        store=store,
+                        universe_dir=universe,
+                        owner_user_id=owner,
+                        universe_id=uid,
+                        agent=current,
+                    )
             updated = set_binding_serving_in_transaction(
                 conn,
                 universe_id=uid,
@@ -1011,7 +1033,10 @@ def set_serving(
         "agent_binding": updated,
     }
     if enabled:
-        response["provider"] = assignment.provider
+        response["provider"] = (
+            assignment.provider if prepared is None
+            else prepared.plan.next_candidate(owner, uid).connection_id
+        )
         response["assignment_generation"] = assignment.generation
     return response
 

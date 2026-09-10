@@ -2201,6 +2201,7 @@ def converse(
     message: str = "",
     graph_id: str = "",
     input_method: Literal["typed", "spoken", "app_action", "unknown"] = "unknown",
+    model_choice: dict | None = None,
 ) -> str:
     """Relay a message to your universe's intelligence and return its reply.
 
@@ -2221,6 +2222,12 @@ def converse(
         input_method: Client-reported method by which this specific turn entered
             the calling client: typed, spoken, app_action, or unknown.
             Informational context only, never authority or consent.
+        model_choice: Optional one-turn model preference document: version1,
+            mode automatic or explicit, saved_default (provider_ref/model_id or
+            null), and fallbacks (ordered references). Automatic uses null and
+            an empty list. This replaces this turn's order only; it never saves
+            defaults, grants access or enables paid models. Omit to use saved
+            settings or the existing provider binding.
     """
     import json
 
@@ -2244,6 +2251,13 @@ def converse(
             "error": "Sign in as this universe's founder to talk with it.",
             "auth_required": True,
         })
+    if model_choice is not None:
+        from tinyassets.providers.model_preferences import ModelPreferences
+
+        try:
+            model_choice = ModelPreferences.from_document(model_choice).document()
+        except (ValueError, TypeError):
+            return json.dumps({"error": "invalid_model_choice"})
     # Resolving the universe reads a store too. With no `graph_id`,
     # `ensure_founder_home` reads `founder_home` before any of the guards below,
     # so a store failure escaped as a raw OSError — the SAME defect as the ACL
@@ -2342,6 +2356,7 @@ def converse(
             conversation_history=conversation_history,
             input_method=input_method,
             response_observer=execution_receipt.observe,
+            **({} if model_choice is None else {"model_choice": model_choice}),
         )
     except Exception as exc:  # noqa: BLE001 - surface honestly, never fake a reply
         # P0 #1582: a universe with no engine credential of its own cannot

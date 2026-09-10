@@ -661,7 +661,12 @@ class ProviderRouter:
                 # to the ceiling so a small binding still validates.
                 output_limit = min(served_authority.max_tokens, _SERVED_PER_CALL_MAX_TOKENS)
                 if cfg.selected_model is not None:
-                    required_input = input_size(prompt, system, cfg)
+                    # The chosen output limit is itself part of the encoded
+                    # agent request. Measure with that field present; otherwise
+                    # adding it can overflow an exactly filled context afterward.
+                    required_input = input_size(
+                        prompt, system, replace(cfg, max_tokens=output_limit),
+                    )
                     output_limit = min(
                         output_limit, cfg.selected_model.context_tokens - required_input,
                     )
