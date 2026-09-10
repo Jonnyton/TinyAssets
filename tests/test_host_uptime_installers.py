@@ -36,6 +36,7 @@ RUNTIME_FILES = (
     "deploy/backup.sh",
     "deploy/ship-logs.sh",
     "scripts/__init__.py",
+    "scripts/_canary_common.py",
     "scripts/watchdog.py",
     "scripts/mcp_public_canary.py",
     "scripts/disk_watch.py",
