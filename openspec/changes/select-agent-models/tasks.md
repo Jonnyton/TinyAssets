@@ -47,5 +47,9 @@
   answer-model-display.md. This is observation only, not a clickable picker;
   current-attempt state, persisted history receipts and working selection controls
   remain pending. No runtime policy or provider authority is changed.
+  Observation-only release now isolated in PR3734 atc4850362;352 Windows/352
+  actual Docker Linux passes,0 skips. Exact final APPROVE162s follows runtime
+  APPROVE249s; corrected generated app checksum and CI brand/preview pass.
+  Ready/normal auto-merge enabled03:34UTC; required CI pending, not deployed.
 - [ ] 3.2 Run focused cross-platform tests, independent exact-head review and CI; deploy and verify authenticated SHA/canary evidence, then ordinary rendered app use without operator workflow edits.
 - [ ] 3.3 Sync only shipped behavior into main specs and archive this change after completion; update the goal's stage and record any remaining capability gap honestly.
