@@ -123,6 +123,10 @@ PERSON_KEYED_DESPITE_UNIVERSE = MappingProxyType({
     "outbound_connection_grants": "owner_user_id",
     # Personal preferences must disappear even after the owner's home is rebound.
     "universe_model_preferences": "owner_user_id",
+    # Private turn progress follows its owner, including former-home history.
+    "agent_turns": "owner_user_id",
+    "agent_turn_rounds": "owner_user_id",
+    "agent_turn_tools": "owner_user_id",
 })
 
 #: Reached through a parent rather than by their own key, and/or entangled in

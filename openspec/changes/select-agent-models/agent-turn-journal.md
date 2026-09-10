@@ -190,3 +190,24 @@ refinements supersede ambiguous prose above before any storage code:
 Use a partial unique index for an active inference round, versioned AgentReply
 snapshot/load validation without changing the approved codec, and the shared
 ledger timestamp helper. Loading and finalizing never mint authority or replay.
+
+## Initial implementation, September10 04:44UTC
+
+Private agent_turn_records.py and agent_turn_journal.py now implement the three
+tables and reviewed transitions. Input/provenance/reply/result snapshots carry
+version1; round states are inference_started/received/failed. Binding identity,
+generation and digests live in the validated candidate snapshot, not duplicated
+SQL columns. Actual token observations stay in the validated reply; cost is
+nullable integer microusd and is never supplied from a reservation estimate here.
+The existing codec is unchanged. There is no live caller or execution authority.
+
+For scoped reset, ready/inference_started/tools_pending/held_tool_unknown block
+the exact owner/home. Semantic and known terminal holds cannot be resumed by
+this store, so they preserve evidence without blocking reset. Corrupt matching
+data blocks; unrelated owners/homes do not. This is inspection, not new deletion
+authority. Account deletion uses its existing counted sweep plus cascading child
+foreign keys and owner-key overrides to remove former-home history as well.
+
+Initial Windows run:87 passes,0 skips across new journal and account-deletion
+tests. Linux, exact independent implementation review and runtime integration
+remain pending. No full-agent readiness or end-to-end fallback claim follows.
