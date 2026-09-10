@@ -15,7 +15,7 @@
   this task complete or expose enabled UI before those pieces work.
 
   September10 further partial: native-default authority and policy provenance
-  e8adb973 pass317 Windows/319 actual Linux (3/1skips); exact review pending.
+  e8adb973 pass317 Windows/319 actual Linux (3/1skips); exact review APPROVE363s.
   Pure saved/current whole-order conversion additionally passes108 Windows/
   108 Linux,0skips, awaiting review with the actual consumer. Real ingress,
   catalogue production and serving readiness remain unconnected and not live.

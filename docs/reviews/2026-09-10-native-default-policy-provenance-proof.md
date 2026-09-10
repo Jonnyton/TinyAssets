@@ -46,7 +46,12 @@ native test found and drove the budget predicate correction above.
 `python packaging/claude-plugin/build_plugin.py`:416 files, import probe pass.
 `git diff --check`: pass (existing generated HTML line-ending warning only).
 
-Independent exact implementation review is pending. Real catalogue production,
+Independent exact e8adb973 implementation review APPROVE363s;12 native tests
+independently reproduced. See the companion native-default-policy-provenance-review.
+The router ceiling change also affects legacy no-selection served authority:
+explicit allowlists win, otherwise the resolved owned provider wins over the
+structural anchor. Older readers refuse new v2 input headers on rollback rather
+than defaulting them. Real catalogue production,
 saved/current choice ingress, readiness activation, clickable controls, general
 non-home support, full native model discovery and rendered live proof remain
 unfinished. The separate full-reset inventory concern and its two failing
@@ -67,3 +72,17 @@ tests/test_model_preference_store.py tests/test_model_policy.py --tb=short -rs`
 →108 passed1.09s. Actual Linux oracle, same three-file arguments →108 passed0.67s,
 zero skips in both. Ruff on its canonical/test files and generated416 mirrors /
 import probe pass. No live behavior or saved owner settings changed.
+
+## Combined regression check after4e28d18a
+
+September10 2026,22 relevant files including native authority, HTTP tools,
+discovery, journal, preferences, routes and mirror parity:
+
+```text
+python -m pytest -q tests/test_agent_inference.py tests/test_interactive_http_agent.py tests/test_selected_model_authority.py tests/test_discovery_snapshot.py tests/test_api_key_http_provider.py tests/test_http_inference_lifecycle.py tests/test_writer_execution_receipt.py tests/test_universe_intelligence.py tests/test_agent_turn_journal.py tests/test_agent_chat_codec.py tests/test_agent_chat_portable_history.py tests/test_agent_price_guard.py tests/test_mirror_parity_gate.py tests/test_model_capacity.py tests/test_model_policy.py tests/test_provider_router_diagnostics.py tests/test_provider_served_router.py tests/test_native_model_authority.py tests/test_model_preferences.py tests/test_model_preference_store.py tests/test_onboarding_model_preferences.py tests/test_model_capacity_transport.py --tb=short -rs
+674 passed, 3 skipped, 1 warning in 43.63s
+```
+
+Actual Linux oracle with the same arguments:676 passed,1 skipped,1 warning in
+38.96s. Skip reasons are unchanged above; framework deprecation warnings only.
+No reset-inventory integration cases included; that separate concern remains open.
