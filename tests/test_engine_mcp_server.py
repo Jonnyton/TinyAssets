@@ -770,9 +770,11 @@ def test_engine_mcp_flags_fail_closed_without_ids(tmp_path):
     assert _engine_mcp_flags(cfg, tmp_path) == []
 
 
-def test_engine_mcp_flags_emits_strict_config_and_pins(tmp_path):
+def test_engine_mcp_flags_emits_strict_config_and_pins(tmp_path, monkeypatch):
     from tinyassets.providers.base import ModelConfig
     from tinyassets.providers.claude_provider import _engine_mcp_flags
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
     cfg = ModelConfig(
         engine_mcp_enabled=True,
@@ -848,10 +850,14 @@ def test_codex_engine_mcp_args_off_adds_only_untrusted_workspace(tmp_path):
     assert "TINYASSETS_ENGINE_MCP_BEARER" not in env
 
 
-def test_codex_engine_mcp_args_fail_closed_without_route(tmp_path):
+def test_codex_engine_mcp_args_fail_closed_without_route(tmp_path, monkeypatch):
     """Engine MCP requested but no running HTTP server -> no server, no bearer."""
     from tinyassets.providers.base import ModelConfig
     from tinyassets.providers.codex_provider import _codex_engine_mcp_args
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
+    monkeypatch.setenv("TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES", "u-9")
 
     env = {"TINYASSETS_DATA_DIR": str(tmp_path)}  # no routes file present
     cfg = ModelConfig(
@@ -861,15 +867,20 @@ def test_codex_engine_mcp_args_fail_closed_without_route(tmp_path):
     assert "TINYASSETS_ENGINE_MCP_BEARER" not in env
 
 
-def test_codex_engine_mcp_args_wires_trusted_http_server(tmp_path):
+def test_codex_engine_mcp_args_wires_trusted_http_server(tmp_path, monkeypatch):
     from tinyassets.providers.base import ModelConfig
     from tinyassets.providers.codex_provider import (
         _ENGINE_MCP_ENABLED_TOOLS,
         _codex_engine_mcp_args,
     )
 
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
+    monkeypatch.setenv("TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES", "u-9")
+    secret = "s" * 43
     (tmp_path / ".engine_mcp_http_routes.json").write_text(
-        json.dumps({"u-9": {"url": "http://127.0.0.1:8790/mcp", "secret": "s3cr3t"}}),
+        json.dumps({"u-9": {"version": 1, "actor_id": "sub", "port": 8790,
+                            "url": "http://127.0.0.1:8790/mcp", "secret": secret}}),
         encoding="utf-8",
     )
     env = {"TINYASSETS_DATA_DIR": str(tmp_path)}
@@ -893,16 +904,21 @@ def test_codex_engine_mcp_args_wires_trusted_http_server(tmp_path):
         assert f'"{_t}"' in server
     assert "publish_shape" not in server
     # secret goes in the subprocess env (read via bearer_token_env_var), NOT argv
-    assert env["TINYASSETS_ENGINE_MCP_BEARER"] == "s3cr3t"
-    assert "s3cr3t" not in server
+    assert env["TINYASSETS_ENGINE_MCP_BEARER"] == secret
+    assert secret not in server
 
 
-def test_codex_engine_mcp_args_fail_closed_missing_secret(tmp_path):
+def test_codex_engine_mcp_args_fail_closed_missing_secret(tmp_path, monkeypatch):
     from tinyassets.providers.base import ModelConfig
     from tinyassets.providers.codex_provider import _codex_engine_mcp_args
 
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
+    monkeypatch.setenv("TINYASSETS_ENGINE_RUN_GRAPH_UNIVERSES", "u-9")
+
     (tmp_path / ".engine_mcp_http_routes.json").write_text(
-        json.dumps({"u-9": {"url": "http://127.0.0.1:8790/mcp", "secret": ""}}),
+        json.dumps({"u-9": {"version": 1, "actor_id": "sub", "port": 8790,
+                            "url": "http://127.0.0.1:8790/mcp", "secret": ""}}),
         encoding="utf-8",
     )
     env = {"TINYASSETS_DATA_DIR": str(tmp_path)}
