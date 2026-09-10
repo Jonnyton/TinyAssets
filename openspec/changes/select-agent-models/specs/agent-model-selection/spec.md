@@ -31,6 +31,16 @@ NOT publish or widen assignments, grants or permitted spending.
 - **THEN** the response provider identifies the plan's first eligible candidate
 - **AND** the assignment anchor is not rewritten to impersonate the selected candidate
 
+#### Scenario: Legacy readiness cannot execute the saved choice
+- **WHEN** the current owned home has an explicit saved choice but no accepted model assignment
+- **THEN** enabling serving refuses without modifying its binding or saved preference
+- **AND** absent or saved automatic preferences preserve legacy provider-default readiness
+
+#### Scenario: Many inactive agents do not hide serving authority
+- **WHEN** more than100 newer inactive bindings exist in the universe
+- **THEN** serving selection still considers every exact owner-serving match
+- **AND** zero or multiple matches cannot be mistaken for one current binding
+
 #### Scenario: Another owned universe retains legacy execution
 - **WHEN** the owner converses with a non-home universe without an override
 - **THEN** home-only preferences neither block nor alter its existing binding

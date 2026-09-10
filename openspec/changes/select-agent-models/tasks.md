@@ -132,5 +132,12 @@
   picker yet. Shared catalogue/picker shape ADAPT383s; nine required corrections
   incorporated in model-picker-surface.md before API implementation. Review this
   client wiring with that consumer; see app-model-choice-capture-proof.md in docs/reviews.
+
+  September10 further partial: reviewed catalogue prerequisites7/9 now implemented.
+  Shared serving lookup filters before its ambiguity bound; legacy home readiness
+  refuses explicit/corrupt saved choices and deleted-home authority while preserving
+  absent/automatic and non-home behavior.203 Windows/205 Linux passes (3/1skips).
+  See model-picker-prerequisites-proof.md in docs/reviews; implementation review,
+  public catalogue, enabled controls and live proof still pending.
 - [ ] 3.2 Run focused cross-platform tests, independent exact-head review and CI; deploy and verify authenticated SHA/canary evidence, then ordinary rendered app use without operator workflow edits.
 - [ ] 3.3 Sync only shipped behavior into main specs and archive this change after completion; update the goal's stage and record any remaining capability gap honestly.

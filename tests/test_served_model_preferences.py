@@ -349,6 +349,84 @@ def test_legacy_home_without_preferences_is_unchanged(tmp_path):
         auth.revoke_provider_request(capability)
 
 
+@pytest.mark.parametrize("mode", ["absent", "automatic", "explicit", "corrupt", "deleted"])
+def test_legacy_readiness_matches_saved_home_preferences(tmp_path, mode):
+    from tinyassets.account_deletion import principal_digest
+    from tinyassets.storage.current_home import CurrentHomeChanged
+    from tinyassets.storage.model_preferences import PreferenceStoreUnavailable
+
+    universe, binding, capability, context = _served_context(tmp_path)
+    try:
+        daemon_server.set_founder_home(
+            tmp_path, founder_sub="owner-1", universe_id=universe.name, platform_generated=True,
+        )
+        disabled = set_serving(
+            base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
+            universe_id=universe.name, agent_binding_id=binding["agent_binding_id"],
+            expected_revision=binding["revision"], enabled=False,
+        )["agent_binding"]
+        store = ModelPreferenceStore(tmp_path)
+        if mode != "absent":
+            policy = (ModelPreferences("explicit", ModelRef("codex", "chosen-model"), ())
+                      if mode == "explicit" else ModelPreferences("automatic", None, ()))
+            store.save("owner-1", universe.name, expected_generation=0, policy=policy,
+                       require_current_home=True)
+        with SQLiteProviderWorkAuthorityStore(tmp_path).connection() as conn:
+            if mode == "corrupt":
+                conn.execute("UPDATE universe_model_preferences SET policy_json = '{}' ")
+            if mode == "deleted":
+                conn.execute(
+                    "INSERT INTO deleted_principals (founder_sub, deleted_at) VALUES (?, ?)",
+                    (principal_digest("owner-1"), 1788998400.0),
+                )
+            before = tuple(
+                conn.execute("SELECT * FROM universe_model_preferences").fetchone() or (),
+            )
+        kwargs = dict(
+            base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
+            universe_id=universe.name, agent_binding_id=binding["agent_binding_id"],
+            expected_revision=disabled["revision"], enabled=True,
+        )
+        errors = {"explicit": PermissionError, "corrupt": PreferenceStoreUnavailable,
+                  "deleted": CurrentHomeChanged}
+        if mode in errors:
+            with pytest.raises(errors[mode]):
+                set_serving(**kwargs)
+            assert get_binding(tmp_path, universe_id=universe.name,
+                               binding_id=binding["agent_binding_id"]) == disabled
+        else:
+            assert set_serving(**kwargs)["status"] == "serving"
+        with SQLiteProviderWorkAuthorityStore(tmp_path).connection() as conn:
+            after = tuple(
+                conn.execute("SELECT * FROM universe_model_preferences").fetchone() or (),
+            )
+            assert after == before
+    finally:
+        auth.revoke_provider_request(capability)
+
+
+def test_legacy_nonhome_readiness_does_not_consume_home_preferences(tmp_path):
+    universe, binding, capability, context = _served_context(tmp_path)
+    try:
+        daemon_server.set_founder_home(
+            tmp_path, founder_sub="owner-1", universe_id="other-home", platform_generated=True,
+        )
+        store = ModelPreferenceStore(tmp_path)
+        saved = store.save(
+            "owner-1", "other-home", expected_generation=0,
+            policy=ModelPreferences("explicit", ModelRef("missing", "model"), ()),
+            require_current_home=True,
+        )
+        assert set_serving(
+            base_path=tmp_path, universe_dir=universe, owner_user_id="owner-1",
+            universe_id=universe.name, agent_binding_id=binding["agent_binding_id"],
+            expected_revision=binding["revision"], enabled=True,
+        )["status"] == "serving"
+        assert store.get("owner-1", "other-home", require_current_home=True) == saved
+    finally:
+        auth.revoke_provider_request(capability)
+
+
 def test_corrupt_saved_preferences_are_not_treated_as_absent(agent, monkeypatch):
     _save(agent, ModelPreferences("automatic", None, ()))
     with SQLiteProviderWorkAuthorityStore(agent.served.rig.base).connection() as conn:

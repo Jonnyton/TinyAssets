@@ -18,7 +18,7 @@ from tinyassets.credential_vault import (
 )
 from tinyassets.custom_agents import (
     get_binding,
-    list_bindings,
+    serving_binding_candidates,
     set_binding_provider_ref_in_transaction,
     set_binding_serving_in_transaction,
 )
@@ -1011,6 +1011,29 @@ def set_serving(
                     )
                     assignment = prepared.assignment
                 else:
+                    from tinyassets.storage.current_home import check_current_home
+                    from tinyassets.storage.model_preferences import _read
+
+                    # Home-only preferences must agree with legacy readiness.
+                    # Read under this same write transaction, so a concurrent
+                    # save cannot slip between validation and enabling serving.
+                    # Non-home bindings retain their existing independent path.
+                    # Standalone legacy installations may not have initialized
+                    # onboarding/home storage at all. Do not bootstrap it here.
+                    has_home_storage = conn.execute(
+                        "SELECT 1 FROM sqlite_master "
+                        "WHERE type = 'table' AND name = 'founder_home'",
+                    ).fetchone() is not None
+                    home = None if not has_home_storage else conn.execute(
+                        "SELECT universe_id FROM founder_home WHERE founder_sub = ?", (owner,),
+                    ).fetchone()
+                    if home is not None and home[0] == uid:
+                        check_current_home(conn, owner, uid)
+                        preferences = _read(conn, owner, uid)
+                        if preferences.policy is not None and preferences.policy.mode == "explicit":
+                            raise PermissionError(
+                                "model choice requires an accepted model assignment"
+                            )
                     assignment, _provider_binding, _custody = _current_serving_authority(
                         conn,
                         store=store,
@@ -1049,11 +1072,9 @@ def resolve_serving_agent_binding(
 ) -> dict[str, object]:
     """Select exactly one current serving binding for a founder turn."""
 
-    matches = [
-        binding
-        for binding in list_bindings(base_path, universe_id=universe_id, limit=100)
-        if binding["status"] == "serving" and binding["created_by"] == owner_user_id
-    ]
+    matches = serving_binding_candidates(
+        base_path, universe_id=universe_id, owner_user_id=owner_user_id,
+    )
     if len(matches) != 1:
         raise PermissionError(
             "connect your provider: exactly one founder serving binding is required"
@@ -1083,11 +1104,7 @@ def resolve_current_serving_provider_authority(
     universe = _canonical_universe(base, universe_dir, uid)
     store = SQLiteProviderWorkAuthorityStore(base)
     with provider_assignment_admission().shared(universe):
-        matches = [
-            binding
-            for binding in list_bindings(base, universe_id=uid, limit=100)
-            if binding["status"] == "serving" and binding["created_by"] == owner
-        ]
+        matches = serving_binding_candidates(base, universe_id=uid, owner_user_id=owner)
         if not matches:
             raise NoServingProvider("connect your provider before enabling serving")
         if len(matches) != 1:
