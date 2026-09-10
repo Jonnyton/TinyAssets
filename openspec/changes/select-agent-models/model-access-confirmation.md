@@ -10,8 +10,11 @@ The picker reads server bind_key, complete accepted_model_access, exact binding
 id/revision and current home. Current/saved selection is never authorization.
 Existing write_graph target=agent_binding operation=bind_serving_provider accepts
 provider plus a complete model_access map, fenced by owner and binding revision.
-Its publication is not equivalent to a successful model call. Do not call
-set_serving implicitly or claim a selected model ran from a successful bind.
+Its publication is not equivalent to a successful model call. The explicit owner
+confirmation includes reconnecting the agent: after bind returns its new binding
+revision, call set_serving enabled=true with that exact revision. Never claim a
+model ran from either response. A bind followed by failed readiness is partial
+success, not a working connection.
 
 ## Explicit owner action
 
@@ -35,6 +38,12 @@ not on another connection: first establish model access on the existing source,
 then add alternatives. Native conversion is explicit provider-default only.
 HTTP conversion explicitly says only compatible free models will be eligible;
 an old paid/fixed alias is not silently accepted or given a fabricated ceiling.
+Count rows whose fresh compatibility/cost checks pass after removing only the
+model-membership refusal being explicitly changed. Show that count and refuse
+conversion when it is zero. This is advisory; final readiness still checks live
+authority. If re-enable fails after legacy conversion, offer an explicitly clicked
+restore of the same legacy provider (bind without model_access, then set_serving
+with the returned revision). Never silently restore or retry uncertain writes.
 The owner can cancel and retain their existing legacy behavior. No current
 choice/default/fallback is rewritten by access setup.
 
@@ -43,6 +52,13 @@ guidance rather than pretending an access expansion repaired missing authority.
 This does not complete the separate fully-unpowered/general-provider setup work.
 
 ## Proof required
+
+Review ADAPT331s accepted these three corrections before implementation: explicit
+re-enable, positive eligible-count precheck plus legacy recovery, and server-derived
+access_method in sources and legacy_source (api_key_http/subscription_cli/null for
+unknown). The browser does not infer the access method or bind key from a prefix.
+It does not string-match write error prose. Existing revoked members are retained;
+their separately confirmed removal is not silently folded into an expansion.
 
 Actual browser action sends the exact existing shared write shape; cancellation,
 scope/revision conflict, ambiguous response and late signout do not retry or

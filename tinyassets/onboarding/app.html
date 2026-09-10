@@ -271,6 +271,11 @@
         <button id="btn-model-saved" class="btn btn--link" type="button">Use saved default</button>
       </div>
       <details><summary>All connected models and availability</summary><ul id="model-inventory"></ul></details>
+      <details><summary>Model access for connected sources</summary>
+        <p class="muted">Adding model access is separate from choosing a model. New API access is free-only; existing spending limits stay unchanged.</p>
+        <ul id="model-access-sources"></ul>
+      </details>
+      <button id="btn-model-restore" class="btn btn--ghost" type="button" hidden>Restore previous single-provider setup</button>
       <div class="model-actions">
         <button id="btn-model-refresh" class="btn btn--link" type="button">Refresh models</button>
         <button id="btn-model-connect" class="btn btn--link" type="button">Connect a source</button>
@@ -2018,10 +2023,10 @@
   function copyModelChoice(value){
     return value==null ? null : JSON.parse(JSON.stringify(value));
   }
-  // Model controls never infer execution authority from a name or grant access.
-  // The server owns ordering/eligibility; this object edits opaque references only.
+  // Model choices never grant authority; access expansion is separately confirmed.
+  // The server owns ordering, eligibility, source identity and accepted constraints.
   const ModelPicker={
-    snapshot:null,draft:null,epoch:0,busy:false,stale:true,expires:0,timer:null,
+    snapshot:null,draft:null,epoch:0,busy:false,stale:true,expires:0,timer:null,recovery:null,
     actual:"No answering model reported yet",
     automatic(){return {version:1,mode:"automatic",saved_default:null,fallbacks:[]};},
     key(ref){return JSON.stringify([ref.provider_ref,ref.model_id]);},
@@ -2045,7 +2050,7 @@
     },
     reset(){
       this.epoch++;clearTimeout(this.timer);this.snapshot=null;this.draft=null;
-      this.busy=false;this.stale=true;modelChoiceForNextTurn=null;
+      this.busy=false;this.stale=true;this.recovery=null;modelChoiceForNextTurn=null;
       this.actual="No answering model reported yet";
       if($("model-dialog").open) $("model-dialog").close();
       this.paintHeader();
@@ -2066,7 +2071,7 @@
           !Array.isArray(doc.options)||!Array.isArray(doc.unavailable)||!Array.isArray(doc.order)||
           !doc.preferences||typeof doc.universe_id!=="string") throw new Error("catalogue unavailable");
         if(this.snapshot&&this.snapshot.universe_id!==doc.universe_id){
-          modelChoiceForNextTurn=null;this.draft=null;this.actual="No answering model reported yet";
+          modelChoiceForNextTurn=null;this.draft=null;this.recovery=null;this.actual="No answering model reported yet";
         }
         this.snapshot=doc;this.stale=false;
         if(!this.draft) this.draft=copyModelChoice(modelChoiceForNextTurn||doc.preferences.policy||this.automatic());
@@ -2130,6 +2135,21 @@
       for(const source of (this.snapshot&&this.snapshot.source_failures||[])){
         const li=document.createElement("li");li.textContent=source.provider_ref+" — "+source.reasons.map(r=>r.reason.replaceAll("_"," ")).join(", ");inventory.appendChild(li);
       }
+      const accessList=$("model-access-sources");accessList.replaceChildren();
+      for(const source of (this.snapshot&&this.snapshot.sources||[])){
+        const proposal=this.accessProposal(source),li=document.createElement("li");
+        const label=document.createElement("span");label.textContent=source.provider_ref;li.appendChild(label);
+        if(proposal){
+          const btn=document.createElement("button");btn.type="button";btn.className="btn btn--link";
+          btn.textContent="Allow "+proposal.count+" compatible model"+(proposal.count===1?"":"s")+" and reconnect";
+          btn.disabled=this.busy||proposal.count===0;
+          btn.addEventListener("click",()=>this.allowAccess(source));li.appendChild(btn);
+        }else{
+          const note=document.createElement("span");note.textContent=" — "+(this.stale?"refresh required":source.accepted?"existing access retained":"connect or enable model access on your current source first");li.appendChild(note);
+        }
+        accessList.appendChild(li);
+      }
+      $("btn-model-restore").hidden=!this.recovery;$("btn-model-restore").disabled=this.busy;
       $("model-saved").textContent="Saved default: "+(this.snapshot ? this.policyLabel(this.snapshot.preferences.policy) : "Not loaded");
       $("model-preview").textContent=draft.mode==="automatic"
         ?"Current saved routing preview (changes after saving; not an execution receipt): "+(this.snapshot&&this.snapshot.order.length ? this.snapshot.order.map(ref=>this.label(ref)).join(" → ") : "No eligible model confirmed")
@@ -2168,6 +2188,91 @@
       this.status("Next messages will use this choice. Already sent or queued messages keep their original choice.");
     },
     useSaved(){modelChoiceForNextTurn=null;this.draft=copyModelChoice(this.snapshot&&this.snapshot.preferences.policy||this.automatic());this.render();this.status("Next messages will use the saved default. Queued messages are unchanged.");},
+    accessProposal(source){
+      const snapshot=this.snapshot;
+      if(!this.fresh()||!snapshot.binding||!source||!source.bind_key) return null;
+      const legacy=snapshot.legacy_source;
+      if(snapshot.choice_authority!=="accepted_manifest"&&
+         !(snapshot.choice_authority==="legacy_single_provider"&&legacy&&legacy.provider_ref===source.provider_ref)) return null;
+      const method=source.access_method,access=copyModelChoice(snapshot.accepted_model_access||{});
+      const prior=access[source.bind_key];
+      if(method==="api_key_http"){
+        if(prior&&prior.model_scope==="discovered") return null;
+        access[source.bind_key]={model_scope:"discovered",model_ids:[],cost_caps:prior?prior.cost_caps:null};
+      }else if(method==="subscription_cli"){
+        if(prior&&prior.model_scope==="explicit") return null;
+        access[source.bind_key]={model_scope:"explicit",model_ids:[""],cost_caps:prior?prior.cost_caps:null};
+      }else return null;
+      const membership=new Set(["source_not_accepted","model_access_optin_required","outside_accepted_model_scope"]);
+      const count=snapshot.options.filter(row=>row.reference.provider_ref===source.provider_ref&&
+        row.freshness==="fresh"&&(method!=="subscription_cli"||row.reference.model_id==="")&&
+        (row.reasons||[]).every(reason=>membership.has(reason.reason))).length;
+      return {source:copyModelChoice(source),access,count,legacy:copyModelChoice(legacy),
+        universe_id:snapshot.universe_id,binding:copyModelChoice(snapshot.binding)};
+    },
+    bindingWrite(operation,scope,revision,payload){
+      return MCP.callTool("write_graph",{target:"agent_binding",operation,
+        graph_id:scope.universe_id,agent_binding_id:scope.binding.id,
+        expected_revision:revision,payload_json:JSON.stringify(payload)});
+    },
+    async allowAccess(source){
+      if(this.busy) return;
+      const proposal=this.accessProposal(source);
+      if(!proposal||proposal.count===0) return;
+      const caps=proposal.access[source.bind_key].cost_caps;
+      const limits=source.access_method==="subscription_cli" ? "your connected subscription's provider default"
+        :caps===null ? "free compatible models only" : "your existing spending ceilings: "+JSON.stringify(caps);
+      const legacy=proposal.legacy ? " This replaces fixed-provider mode. If reconnecting fails, you can restore the previous setup." : "";
+      if(!confirm("Allow "+proposal.count+" compatible model(s) from "+source.provider_ref+" using "+limits+", and reconnect this agent? Other accepted sources and saved choices stay unchanged."+legacy)) return;
+      if(!this.fresh()){this.status("Model availability changed while you were confirming. Refresh and review again.");return;}
+      await this.publishAccess(proposal,{provider:source.bind_key,model_access:proposal.access});
+    },
+    async publishAccess(scope,payload){
+      const epoch=this.epoch;this.busy=true;this.recovery=null;this.render();
+      let bound=false,ready=false;
+      this.status("Updating model access and reconnecting your agent…");
+      try{
+        const result=await this.bindingWrite("bind_serving_provider",scope,scope.binding.revision,payload);
+        if(epoch!==this.epoch) return;
+        const binding=result&&result.agent_binding;
+        if(!result||result.error||result.status!=="ready"||!binding||binding.agent_binding_id!==scope.binding.id||!Number.isInteger(binding.revision)) throw new Error("bind unconfirmed");
+        bound=true;
+        if(scope.legacy) this.recovery={universe_id:scope.universe_id,binding:{id:scope.binding.id,revision:binding.revision},legacy:scope.legacy};
+        const enabled=await this.bindingWrite("set_serving",scope,binding.revision,{enabled:true});
+        if(epoch!==this.epoch) return;
+        if(!enabled||enabled.error||enabled.status!=="serving") throw new Error("reconnect unconfirmed");
+        ready=true;this.recovery=null;this.stale=true;
+      }catch(err){
+        if(epoch!==this.epoch) return;
+        if(err.authRequired){sessionExpired();return;}
+        this.stale=true;
+        this.status(bound ? "Model access was updated, but reconnecting was not confirmed. Refresh to check; if needed, restore the previous setup below."
+          :"Could not confirm the access update. Refresh and check your connection before trying again; nothing will be retried automatically.");
+      }finally{if(epoch===this.epoch){this.busy=false;this.render();}}
+      if(ready&&epoch===this.epoch) await this.refresh();
+    },
+    async restoreAccess(){
+      if(this.busy||!this.recovery) return;
+      const recovery=copyModelChoice(this.recovery),epoch=this.epoch;
+      if(!confirm("Restore "+recovery.legacy.provider_ref+" to its previous single-provider mode and reconnect? Your saved choices will not change.")) return;
+      this.busy=true;this.render();
+      try{
+        const home=await MCP.getModelOptions();
+        if(epoch!==this.epoch) return;
+        if(!home||home.error||home.universe_id!==recovery.universe_id) throw new Error("home changed");
+        const current=await MCP.callTool("read_graph",{target:"agent_binding",graph_id:recovery.universe_id,agent_binding_id:recovery.binding.id},{idempotent:true});
+        if(epoch!==this.epoch) return;
+        const binding=current&&current.binding;
+        if(!binding||binding.revision!==recovery.binding.revision||binding.status!=="configured") throw new Error("binding changed");
+        this.busy=false;
+        await this.publishAccess(recovery,{provider:recovery.legacy.bind_key});
+      }catch(err){
+        if(epoch===this.epoch){
+          if(err.authRequired){sessionExpired();return;}
+          this.stale=true;this.status("Connection state changed or could not be checked. Refresh before deciding how to reconnect; no restore was attempted.");
+        }
+      }finally{if(epoch===this.epoch){this.busy=false;this.render();}}
+    },
     async save(){
       if(this.busy||!this.canApply()) return;
       const epoch=this.epoch,uid=this.snapshot.universe_id;
@@ -2206,6 +2311,7 @@
       $("btn-model-use").addEventListener("click",()=>this.use());
       $("btn-model-save").addEventListener("click",()=>this.save());
       $("btn-model-saved").addEventListener("click",()=>this.useSaved());
+      $("btn-model-restore").addEventListener("click",()=>this.restoreAccess());
       $("btn-model-connect").addEventListener("click",()=>{$("model-dialog").close();showConnect(false);});
     }
   };

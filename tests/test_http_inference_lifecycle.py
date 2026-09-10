@@ -280,3 +280,92 @@ def test_asyncio_run_shutdown_does_not_release_while_executor_still_runs(base, m
     assert not controller.is_alive() and not errors
     assert observations == [False]
     assert slot_released.is_set() and proxy.calls == proxy.closed == 1
+
+
+def test_served_http_cancellation_holds_slot_and_budget_until_request_finishes(
+    tmp_path,
+    monkeypatch,
+):
+    from contextlib import asynccontextmanager
+
+    from tests.test_provider_served_router import _fresh_served_request
+    from tests.test_run_provider_session import _seed_open_serving_assignment
+    from tinyassets.auth import middleware as auth
+    from tinyassets.custom_agents import list_bindings
+    from tinyassets.providers import router as routing
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    _seed_open_serving_assignment(
+        tmp_path,
+        monkeypatch,
+        owner_user_id="owner-1",
+        universe_id="u-owner",
+    )
+    serving = list_bindings(tmp_path, universe_id="u-owner")[0]
+    capability, context = _fresh_served_request(
+        tmp_path / "u-owner",
+        serving,
+        request_id="http-cancel",
+    )
+    entered, release = threading.Event(), threading.Event()
+    slots = [0]
+
+    @asynccontextmanager
+    async def slot(**kwargs):
+        slots[0] += 1
+        try:
+            yield
+        finally:
+            slots[0] -= 1
+
+    class Waiting(Proxy):
+        def request(self, verb, wire):
+            entered.set()
+            assert release.wait(5)
+            return super().request(verb, wire)
+
+    proxy = Waiting()
+    monkeypatch.setattr(routing, "_provider_slot", slot)
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", lambda *a, **k: proxy)
+
+    def reservations():
+        with SQLiteProviderWorkAuthorityStore(tmp_path).connection() as conn:
+            return [
+                row[0]
+                for row in conn.execute(
+                    "SELECT state FROM served_provider_budget_reservations",
+                )
+            ]
+
+    async def scenario():
+        task = asyncio.create_task(
+            routing.ProviderRouter({}).call(
+                "writer",
+                "hello",
+                "system",
+                operation="converse",
+                universe_context=context,
+            )
+        )
+        try:
+            assert await asyncio.to_thread(entered.wait, 3)
+            assert reservations() == ["reserved"]
+            for _ in range(2):
+                task.cancel()
+                await asyncio.sleep(0.01)
+                assert not task.done() and slots == [1]
+                assert proxy.closed == 0 and reservations() == ["reserved"]
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 3)
+            assert slots == [0] and proxy.calls == proxy.closed == 1
+            assert reservations() == ["indeterminate"]
+            assert auth._active_provider_request(capability)["invocations"] == 1
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        auth.revoke_provider_request(capability)

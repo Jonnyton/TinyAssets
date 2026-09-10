@@ -169,7 +169,14 @@
   Legacy source read correction now identifies native/default or registered HTTP
   fixed configuration after final authority checks;106Windows/106Linux pass with
   zero skips. See legacy-model-inventory-proof.md in docs/reviews. The next exact
-  access setup composition is in model-access-confirmation.md, awaiting review;
-  no access-mutation button implemented or live account changed yet.
+  access setup composition is in model-access-confirmation.md. Shape ADAPT331s
+  required explicit re-enable, positive eligibility count with guarded legacy
+  recovery, and server-derived access_method; all applied before implementation.
+  Access controls now built locally, preserving complete accepted constraints
+  and requiring separate confirmation. Actual picker36 cases and public API21
+  cases pass; final37-file group1074Windows/1076Linux (3/1skips). Network-disabled
+  rendered confirmation/select/order/focus checks pass at390/1280px. See
+  docs/reviews/2026-09-10-model-access-ui-proof.md. No live account changed;
+  exact release integration/review, deployment and app acceptance remain open.
 - [ ] 3.2 Run focused cross-platform tests, independent exact-head review and CI; deploy and verify authenticated SHA/canary evidence, then ordinary rendered app use without operator workflow edits.
 - [ ] 3.3 Sync only shipped behavior into main specs and archive this change after completion; update the goal's stage and record any remaining capability gap honestly.

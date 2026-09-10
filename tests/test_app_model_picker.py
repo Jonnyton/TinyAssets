@@ -57,12 +57,22 @@ let focused=null;
 const $=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
 const document={createElement:()=>new Element()};
 let modelChoiceForNextTurn=null,requests=[],expired=false,refreshed=0,connects=0;
+let confirmed=true,confirmations=[],writes=[];
+const confirm=text=>{confirmations.push(text);return confirmed;};
 const setTimeout=fn=>{globalThis.expire=fn;return 1;},clearTimeout=()=>{};
 const ensureFreshToken=async()=>{refreshed++;},authHeaders=()=>({Authorization:"test fixture"});
 const sessionExpired=()=>{expired=true;ModelPicker.reset();};
 const showConnect=()=>{connects++;};
 let doc=__DOC__,response=__RESPONSE__;
 const MCP={getModelOptions:async()=>JSON.parse(JSON.stringify(doc))};
+MCP.callTool=async(name,args)=>{
+ writes.push({name,args});
+ if(name==="read_graph")
+  return {binding:{agent_binding_id:"binding-a",revision:3,status:"configured"}};
+ return args.operation==="bind_serving_provider"
+  ?{status:"ready",agent_binding:{agent_binding_id:"binding-a",revision:3}}
+  :{status:"serving",agent_binding:{agent_binding_id:"binding-a",revision:4}};
+};
 let fetch=async(url,options)=>{
  requests.push({url,method:options.method,body:JSON.parse(options.body)});
  return {ok:!response.error,status:response.error?409:200,json:async()=>response};
@@ -77,7 +87,7 @@ __FUNCTIONS__
    children:$(id).children.map(c=>({text:c.textContent,value:c.value,disabled:c.disabled}))}]));
  console.log(JSON.stringify({choice:modelChoiceForNextTurn,draft:ModelPicker.draft,
    snapshot:ModelPicker.snapshot,stale:ModelPicker.stale,busy:ModelPicker.busy,requests,
-   expired,refreshed,connects,dialogOpen:$("model-dialog").open,
+   expired,refreshed,connects,writes,confirmations,recovery:ModelPicker.recovery,dialogOpen:$("model-dialog").open,
    focusReturned:focused===$("btn-models"),ui}));
 })().catch(err=>{console.error(err);process.exitCode=1;});
 """
@@ -296,14 +306,17 @@ def test_native_dialog_close_returns_focus_and_connection_is_real_action(tmp_pat
 
 
 def test_delayed_save_json_cannot_touch_another_login_snapshot(tmp_path):
-    result = run_picker(tmp_path, """
+    result = run_picker(
+        tmp_path,
+        """
       let finish;
       fetch=async()=>({ok:true,status:200,json:()=>new Promise(resolve=>{finish=resolve;})});
       const pending=ModelPicker.save();
       while(!finish) await Promise.resolve();
       ModelPicker.reset();doc.universe_id="home-b";await ModelPicker.refresh();
       finish(response);await pending;
-    """)
+    """,
+    )
     assert result["snapshot"]["universe_id"] == "home-b"
     assert result["snapshot"]["preferences"]["generation"] == 2
     assert not result["stale"] and not result["busy"]
@@ -320,3 +333,177 @@ def test_successful_read_without_saved_policy_truthfully_shows_automatic(tmp_pat
     result = run_picker(tmp_path, "")
     assert result["snapshot"]["preferences"]["policy"] is None
     assert result["ui"]["model-saved"]["text"] == "Saved default: Automatic"
+
+
+def access_catalogue(*, legacy=False, native=False):
+    doc = catalogue()
+    doc["binding"] = {"id": "binding-a", "revision": 2}
+    doc["accepted_model_access"] = {}
+    source = {
+        "provider_ref": ref("first")["provider_ref"],
+        "bind_key": "server-key",
+        "access_method": "subscription_cli" if native else "api_key_http",
+        "accepted": False,
+    }
+    doc["sources"] = [source]
+    doc["legacy_source"] = {**source, "model_id": "" if native else "old-fixed"} if legacy else None
+    if legacy:
+        doc["choice_authority"] = "legacy_single_provider"
+    for row in doc["options"]:
+        row["reasons"] = [{"reason": "source_not_accepted"}]
+        row["in_candidate_catalog"] = False
+    if native:
+        doc["options"] = [doc["options"][0]]
+        doc["options"][0]["reference"]["model_id"] = ""
+    return doc
+
+
+def test_access_cancel_has_no_write_or_preference_change(tmp_path):
+    result = run_picker(
+        tmp_path,
+        "confirmed=false;await ModelPicker.allowAccess(doc.sources[0]);",
+        access_catalogue(),
+    )
+    assert result["writes"] == [] and result["requests"] == [] and result["choice"] is None
+    assert "3 compatible" in result["confirmations"][0]
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_confirmed_access_uses_server_discriminator_and_returned_revision(tmp_path, native):
+    result = run_picker(
+        tmp_path,
+        "await ModelPicker.allowAccess(doc.sources[0]);",
+        access_catalogue(legacy=True, native=native),
+    )
+    bind, enable = result["writes"]
+    args = bind["args"]
+    assert args["target"] == "agent_binding" and args["graph_id"] == "home-a"
+    assert args["expected_revision"] == 2 and args["agent_binding_id"] == "binding-a"
+    assert json.loads(args["payload_json"]) == {
+        "provider": "server-key",
+        "model_access": {
+            "server-key": {
+                "model_scope": "explicit" if native else "discovered",
+                "model_ids": [""] if native else [],
+                "cost_caps": None,
+            }
+        },
+    }
+    assert enable["args"]["operation"] == "set_serving"
+    assert enable["args"]["expected_revision"] == 3
+    assert json.loads(enable["args"]["payload_json"]) == {"enabled": True}
+    assert result["requests"] == [] and result["choice"] is None
+
+
+def test_expansion_preserves_existing_spending_and_all_other_members(tmp_path):
+    doc = access_catalogue()
+    old = {
+        "server-key": {
+            "model_scope": "explicit",
+            "model_ids": ["old"],
+            "cost_caps": {"input_million_tokens_usd": 1250000},
+        },
+        "another-key": {"model_scope": "explicit", "model_ids": ["keep"], "cost_caps": None},
+    }
+    doc["accepted_model_access"] = old
+    result = run_picker(tmp_path, "await ModelPicker.allowAccess(doc.sources[0]);", doc)
+    changed = json.loads(result["writes"][0]["args"]["payload_json"])["model_access"]
+    assert changed["another-key"] == old["another-key"]
+    assert changed["server-key"]["cost_caps"] == old["server-key"]["cost_caps"]
+    assert changed["server-key"]["model_scope"] == "discovered"
+
+
+@pytest.mark.parametrize(
+    "reason", ["cost_exceeds_cap", "source_revoked", "engine_tools_unavailable"]
+)
+def test_zero_eligible_models_cannot_begin_access_conversion(tmp_path, reason):
+    doc = access_catalogue(legacy=True)
+    for row in doc["options"]:
+        row["reasons"].append({"reason": reason})
+    result = run_picker(tmp_path, "await ModelPicker.allowAccess(doc.sources[0]);", doc)
+    assert result["writes"] == [] and result["confirmations"] == []
+
+
+def test_legacy_conversion_cannot_silently_replace_another_source(tmp_path):
+    doc = access_catalogue(legacy=True)
+    doc["legacy_source"]["provider_ref"] = "a-different-current-source"
+    result = run_picker(tmp_path, "await ModelPicker.allowAccess(doc.sources[0]);", doc)
+    assert result["writes"] == []
+
+
+def test_ambiguous_binding_is_not_retried_or_followed_by_enable(tmp_path):
+    result = run_picker(
+        tmp_path,
+        """
+      MCP.callTool=async(name,args)=>{writes.push({name,args});throw new Error("network");};
+      await ModelPicker.allowAccess(doc.sources[0]);await ModelPicker.allowAccess(doc.sources[0]);
+    """,
+        access_catalogue(legacy=True),
+    )
+    assert len(result["writes"]) == 1 and result["stale"]
+    assert result["recovery"] is None
+
+
+def test_failed_reconnect_has_explicit_fenced_legacy_restore(tmp_path):
+    result = run_picker(
+        tmp_path,
+        """
+      const original=MCP.callTool;
+      MCP.callTool=async(name,args)=>{
+        if(args.operation==="set_serving"&&writes.length===1){
+          writes.push({name,args});return {error:"held"};
+        }
+        return original(name,args);
+      };
+      await ModelPicker.allowAccess(doc.sources[0]);
+      if(!ModelPicker.recovery) throw new Error("missing recovery");
+      await ModelPicker.restoreAccess();
+    """,
+        access_catalogue(legacy=True),
+    )
+    assert len(result["confirmations"]) == 2
+    assert [w["args"].get("operation", "read") for w in result["writes"]] == [
+        "bind_serving_provider",
+        "set_serving",
+        "read",
+        "bind_serving_provider",
+        "set_serving",
+    ]
+    restore = result["writes"][3]["args"]
+    assert restore["expected_revision"] == 3
+    assert json.loads(restore["payload_json"]) == {"provider": "server-key"}
+    assert result["recovery"] is None and result["choice"] is None
+
+
+def test_signout_after_bind_prevents_followup_enable(tmp_path):
+    result = run_picker(
+        tmp_path,
+        """
+      const original=MCP.callTool;
+      MCP.callTool=async(name,args)=>{
+        const result=await original(name,args);ModelPicker.reset();return result;
+      };
+      await ModelPicker.allowAccess(doc.sources[0]);
+    """,
+        access_catalogue(legacy=True),
+    )
+    assert len(result["writes"]) == 1 and result["snapshot"] is None
+
+
+@pytest.mark.parametrize("changed", ["home", "revision", "serving"])
+def test_restore_does_not_overwrite_changed_or_working_state(tmp_path, changed):
+    mutation = {
+        "home": 'doc.universe_id="new-home";',
+        "revision": 'MCP.callTool=async()=>({binding:{revision:99,status:"configured"}});',
+        "serving": 'MCP.callTool=async()=>({binding:{revision:3,status:"serving"}});',
+    }[changed]
+    result = run_picker(tmp_path, """
+      const original=MCP.callTool;
+      MCP.callTool=async(name,args)=>{
+        if(args.operation==="set_serving") {writes.push({name,args});return {error:"held"};}
+        return original(name,args);
+      };
+      await ModelPicker.allowAccess(doc.sources[0]);
+    """ + mutation + "await ModelPicker.restoreAccess();", access_catalogue(legacy=True))
+    assert len(result["writes"]) == 2
+    assert "no restore was attempted" in result["ui"]["model-status"]["text"]

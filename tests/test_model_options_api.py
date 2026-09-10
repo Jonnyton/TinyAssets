@@ -124,6 +124,7 @@ def test_legacy_http_configuration_is_identified_without_inventing_a_candidate(
     assert result["legacy_source"] == (None if revoked else {
         "provider_ref": "api_key_http:" + catalogue.rig.definition.id,
         "bind_key": catalogue.rig.definition.id,
+        "access_method": "api_key_http",
         "model_id": catalogue.rig.definition.model,
     })
     assert result["accepted_model_access"] == {} and result["order"] == []
@@ -136,6 +137,53 @@ def test_foreign_registered_source_is_not_listed(catalogue):
         protocol="openai_chat", model="private-model", ref="private-grant",
     )
     assert foreign.id not in json.dumps(read())
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_shared_access_confirmation_composes_bind_then_enable(catalogue, legacy):
+    from tinyassets.provider_serving_binding import bind_serving_provider
+
+    if legacy:
+        bound = bind_serving_provider(
+            base_path=catalogue.rig.base, universe_dir=catalogue.rig.base / "u-models",
+            owner_user_id="owner", universe_id="u-models",
+            agent_binding_id=catalogue.binding["agent_binding_id"],
+            expected_revision=catalogue.binding["revision"], provider=catalogue.rig.definition.id,
+        )
+        catalogue.binding = bound["agent_binding"]
+        source_id = catalogue.rig.definition.id
+    else:
+        extra = definition.register_definition(
+            universe_id="u-models", owner_user_id="owner", access_method="api_key_http",
+            protocol="openai_chat", model="extra-fixed", ref="grant-models",
+        )
+        source_id = extra.id
+    catalogue.binding = integration.enable(catalogue)
+    before = read()
+    source = next(s for s in before["sources"] if s["bind_key"] == source_id)
+    assert source["access_method"] == "api_key_http"
+    access = {**before["accepted_model_access"], source["bind_key"]: {
+        "model_scope": "discovered", "model_ids": [], "cost_caps": None,
+    }}
+    bound = json.loads(universe_server.write_graph(
+        target="agent_binding", operation="bind_serving_provider", graph_id="u-models",
+        agent_binding_id=before["binding"]["id"], expected_revision=before["binding"]["revision"],
+        payload_json=json.dumps({"provider": source["bind_key"], "model_access": access}),
+    ))
+    assert bound["status"] == "ready"
+    assert bound["agent_binding"]["status"] == "configured"
+    enabled = json.loads(universe_server.write_graph(
+        target="agent_binding", operation="set_serving", graph_id="u-models",
+        agent_binding_id=bound["agent_binding"]["agent_binding_id"],
+        expected_revision=bound["agent_binding"]["revision"],
+        payload_json=json.dumps({"enabled": True}),
+    ))
+    assert enabled["status"] == "serving"
+    after = read()
+    assert after["choice_authority"] == "accepted_manifest" and after["legacy_source"] is None
+    assert after["accepted_model_access"] == access
+    assert after["order"]
+    assert before["preferences"] == after["preferences"]
 
 
 @pytest.mark.parametrize("case", ["anonymous", "other_actor", "non_admin", "foreign_graph",
@@ -248,6 +296,7 @@ def test_legacy_native_default_stays_visible_without_model_access_optin(tmp_path
         assert result["accepted_model_access"] == {}
         assert result["legacy_source"] == {
             "provider_ref": "codex", "bind_key": "codex", "model_id": "",
+            "access_method": "subscription_cli",
         }
         assert native.calls == 0
     finally:

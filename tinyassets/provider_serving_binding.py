@@ -503,7 +503,8 @@ def bind_serving_provider(
 
     None preserves the legacy single-provider contract. A supplied map is the
     complete accepted membership, NOT fallback order or a model preference.
-    No app/MCP caller supplies it until per-attempt selection is implemented.
+    App/MCP callers supply it only through explicit model-access confirmation;
+    preferences and current model choices never imply this authority change.
     """
     base = Path(base_path)
     owner, uid = owner_user_id.strip(), universe_id.strip()

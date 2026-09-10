@@ -134,6 +134,7 @@ def _collect(base, owner, uid):
             continue
         provider = "api_key_http:" + item.id
         sources[provider] = {"provider_ref": provider, "bind_key": item.id,
+                             "access_method": "api_key_http",
                              "accepted": provider in accepted, "reasons": []}
         if prepared is not None and provider in accepted:
             continue
@@ -156,6 +157,7 @@ def _collect(base, owner, uid):
                                        scope="source"))
     for provider, custody in native.items():
         sources[provider] = {"provider_ref": provider, "bind_key": provider,
+                             "access_method": "subscription_cli",
                              "accepted": provider in accepted, "reasons": []}
         if prepared is not None and provider in accepted:
             continue
@@ -188,6 +190,7 @@ def _collect(base, owner, uid):
     # Accepted sources missing from registration remain visible as unavailable.
     for provider in accepted:
         sources.setdefault(provider, {"provider_ref": provider,
+                                      "access_method": None,
                                       "bind_key": provider.removeprefix("api_key_http:"),
                                       "accepted": True, "reasons": []})
     failed = {}
@@ -262,6 +265,7 @@ def _collect(base, owner, uid):
                 source = None
         if source is not None:
             legacy_source = {"provider_ref": provider, "bind_key": source["bind_key"],
+                             "access_method": source["access_method"],
                              "model_id": configured_model}
     return {
         "version": 1, "universe_id": uid, "advisory": True,
