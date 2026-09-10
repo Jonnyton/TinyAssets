@@ -292,51 +292,38 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
     if not (actor_id and graph_id):
         return []
     import json as _json
-    import os as _os
     import sys as _sys
-    from pathlib import Path as _Path
+
+    from tinyassets.engine_mcp_http import read_engine_mcp_route
+    from tinyassets.storage import data_dir
 
     # Config lives in the sandboxed universe_dir (the engine has no filesystem
-    # read tool, so it never sees it). It carries only identifiers — the founder
-    # actor_id + graph_id + data root — never a secret. Overwritten each turn.
+    # read tool, so it never sees it). HTTP config carries the private bearer;
+    # never put this config in the prompt or logs. Overwritten each turn.
     config_path = universe_dir / ".engine_mcp_config.json"
     server_env = {
         "TINYASSETS_ENGINE_ACTOR_ID": actor_id,
         "TINYASSETS_ENGINE_GRAPH_ID": graph_id,
     }
-    data_dir = _os.environ.get("TINYASSETS_DATA_DIR", "").strip()
-    if data_dir:
-        server_env["TINYASSETS_DATA_DIR"] = data_dir
+    root = data_dir()
+    server_env["TINYASSETS_DATA_DIR"] = str(root)
     # Transport selection. The claude CLI's STDIO MCP spawn is flaky in the
     # headless served subprocess (verified live 2026-08-19: the server process
     # never launched, CLI reported "still connecting"); HTTP MCP connects
     # reliably. So when a persistent per-universe HTTP engine server is running,
     # point --mcp-config at its loopback URL + inject the per-server bearer
     # secret (Codex gate #6). Falls back to stdio when none is running. The route
-    # map ``{graph_id: {"url": ..., "secret": ...}}`` is written 0600 by
-    # engine_mcp_http; the secret goes in the --mcp-config HEADERS (which the CLI
+    # owner-bound route map is written 0600 by engine_mcp_http; the secret goes
+    # in the --mcp-config HEADERS (which the CLI
     # holds internally — never surfaced to the LLM), not the prompt.
-    http_url = ""
-    http_secret = ""
-    try:
-        _routes_path = _Path(data_dir or ".") / ".engine_mcp_http_routes.json"
-        if _routes_path.is_file():
-            _routes = _json.loads(_routes_path.read_text(encoding="utf-8"))
-            if isinstance(_routes, dict):
-                _entry = _routes.get(graph_id)
-                if isinstance(_entry, dict):
-                    http_url = str(_entry.get("url") or "").strip()
-                    http_secret = str(_entry.get("secret") or "").strip()
-    except Exception:  # noqa: BLE001 - never break a turn on a bad route file
-        http_url = ""
-        http_secret = ""
-    if http_url and http_secret:
+    route = read_engine_mcp_route(actor_id=actor_id, graph_id=graph_id, root=root)
+    if route is not None:
         mcp_config = {
             "mcpServers": {
                 "tinyassets": {
                     "type": "http",
-                    "url": http_url,
-                    "headers": {"Authorization": "Bearer " + http_secret},
+                    "url": route.url,
+                    "headers": {"Authorization": "Bearer " + route.secret},
                 }
             }
         }
