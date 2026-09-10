@@ -2541,6 +2541,26 @@ def test_the_android_shell_shows_no_checkout_ui():
     assert "if(!b || !PLAN || NATIVE) return;" in html
 
 
+def test_native_store_shells_keep_review_declared_voice_dark():
+    """The submitted store surface and App Review Notes are voice-dark.
+
+    Their hosted page must therefore keep Voice unreachable even when the same
+    deployment enables browser voice. The iOS binary carries a microphone usage
+    string defensively, but that does not supersede the submitted product scope.
+    Default-hidden markup also prevents a pre-script flash while the Capacitor
+    WebView starts.
+    """
+    from pathlib import Path
+
+    html = (Path(onboarding.__file__).parent / "app.html").read_text(encoding="utf-8")
+    assert 'id="btn-voice" class="btn btn--voice" type="button" hidden' in html
+    assert 'aria-live="polite" aria-label="Voice status" hidden' in html
+    assert '$("btn-voice").hidden=NATIVE;' in html
+    assert '$("voice-status-line").hidden=NATIVE;' in html
+    assert "if(!NATIVE) Voice.init();" in html
+    assert "if(!NATIVE) Voice.refreshCapability();" in html
+
+
 def test_android_openai_browser_dismissal_stops_the_foreground_service():
     """Closing the Custom Tab must immediately end its listener and notification."""
     from pathlib import Path
