@@ -113,3 +113,54 @@ priority, explicit order, CAS conflicts, stale refresh, keyboard flow, queue/
 voice/retry capture, and real selection reaching the writer. Public MCP shape
 proof is both rendered clients, then deployed SHA/canary and ordinary app use.
 No enabled decorative picker ships before those mutations and runtime work.
+
+## Pre-build review: ADAPT383s, corrections accepted
+
+Claude75270 reviewed ab522e39, exit0 on September10 08:35UTC. AGREE on one shared
+read target and existing mutation/settings surfaces. No public catalogue code
+was implemented before this review. The nine required adaptations below govern
+implementation; they refine the shape above rather than introduce another lane.
+
+1. Common legacy connections must not get an empty picker. Validate the full
+   legacy chain through _current_serving_authority (which checks the agent's
+   provider_ref and delegates _current_bound_member_authority with member=None).
+   Emit its owned native default row, distinguish legacy_single_provider from
+   manifest choice authority, and keep other sources visible. No explicit override
+   may masquerade as legacy authority; selecting expanded access still needs opt-in.
+2. Separately enumerate owner-filtered api_key_http definitions absent from the
+   accepted assignment and refresh through their existing grants/profiles. Mark
+   these source_not_accepted, not outside_accepted_model_scope (the latter is an
+   accepted member whose exact model-id set excludes a discovered model).
+3. Carry a server-derived bind_key per source: bare definition id for HTTP,
+   existing service alias for native. Model refs remain api_key_http:<id>/opaque
+   native refs. The UI does not strip prefixes or reconstruct authority keys.
+4. Use typed/fixed failure codes at originating checks, not a string-match over
+   exception prose or one discovery_unavailable bucket. Distinguish host serving
+   hold, executor absence, protocol mismatch, unenforceable price components,
+   missing discovery scope and revoked source. Public messages remain fixed and
+   credential-blind; runtime authority guards stay unchanged.
+5. Preserve a freshly discovered catalogue even when its price contract cannot
+   join the current agent's contract; mark price_contract_incompatible. Runtime
+   must still exclude it. Do not lose all_models when filtering rejects a source.
+6. Separate complete-snapshot owner/home/agent/assignment fences from per-source
+   freshness/revocation. A changed owner scope refuses the response; a failed
+   source is demoted to source_revoked/discovery_expired without hiding independent
+   current sources. No expired model row remains labelled usable.
+7. Do not infer unique serving state from list_bindings(limit=100). Its API clamps
+   at100. Add/reuse a predicate-specific read over owner+universe+serving status,
+   with enough rows to distinguish zero, exactly one and multiple, even when more
+   than100 newer inactive bindings exist. Do not change the owner's binding.
+8. Resolve an omitted graph id using get_founder_home plus home completeness,
+   never _request_universe's public-universe fallback. No home is no_home_universe;
+   an explicit id must equal that current home. No bootstrap through a read.
+9. Make readiness refuse legacy plus explicit saved preference rather than claim
+   enabled then refuse every turn. Preserve saved-auto legacy usability. The
+   refusal belongs in existing serving readiness, not just a UI disabled button.
+
+Non-gating follow-ups: sync discovery lacks async single-flight; catalogue reads
+must not claim bounded de-duplication that the chosen ingress does not provide.
+The read_graph openWorldHint metadata must acknowledge authenticated external
+reads while preserving readOnly/idempotent facts. Filter registered definitions
+by actual owner, not admin ACL alone. ModelAccess.document is suitable owner-only
+constraint data; snapshot projection includes observation/expiry/warnings only,
+never custody/grant details. Actual implementation still needs independent review.

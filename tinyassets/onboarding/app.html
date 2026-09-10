@@ -1064,8 +1064,10 @@
       if(block){ try{ return JSON.parse(block.text); }catch(_e){ return {reply:block.text}; } }
       return {};
     },
-    converse(message,inputMethod="unknown"){
-      return this.callTool("converse",{message,input_method:turnInputMethod(inputMethod)});
+    converse(message,inputMethod="unknown",modelChoice=null){
+      const args={message,input_method:turnInputMethod(inputMethod)};
+      if(modelChoice!==null) args.model_choice=copyModelChoice(modelChoice);
+      return this.callTool("converse",args);
     },
     getStatus(){ return this.callTool("get_status",{},{idempotent:true}); },
     // The shared cross-surface thread. The app rendered ONLY what was appended
@@ -1967,10 +1969,24 @@
   // storage, so the build check's hold on a running turn never depends on
   // localStorage being writable.
   let turnStartedAt=0;
-  function rememberInflight(message, display, sentAt, inputMethod){
+  // A current choice is separate from saved defaults and actual reply receipts.
+  // Null means no override; the server reads the current saved preference.
+  let modelChoiceForNextTurn=null;
+  function copyModelChoice(value){
+    return value==null ? null : JSON.parse(JSON.stringify(value));
+  }
+  function captureTurnOptions(opts){
+    opts=opts||{};
+    return Object.assign({},opts,{
+      inputMethod:turnInputMethod(opts.inputMethod),
+      modelChoice:copyModelChoice(Object.prototype.hasOwnProperty.call(opts,"modelChoice")
+        ? opts.modelChoice : modelChoiceForNextTurn)});
+  }
+  function rememberInflight(message, display, sentAt, inputMethod, modelChoice){
     try{ localStorage.setItem(INFLIGHT_KEY, JSON.stringify(
       {message, display: display||message,
        inputMethod:turnInputMethod(inputMethod),
+       modelChoice:copyModelChoice(modelChoice),
        ts:(typeof sentAt==="number" && Number.isFinite(sentAt))?sentAt:Date.now()})); }catch(_e){}
   }
   function forgetInflight(){ try{ localStorage.removeItem(INFLIGHT_KEY); }catch(_e){} }
@@ -2010,6 +2026,8 @@
   function savedItem(q){
     return {message:q.message, display:q.display||q.message, ts:q.ts||Date.now(),
       inputMethod:turnInputMethod(q.inputMethod||(q.opts&&q.opts.inputMethod)),
+      modelChoice:copyModelChoice(Object.prototype.hasOwnProperty.call(q,"modelChoice")
+        ? q.modelChoice : q.opts&&q.opts.modelChoice),
       scope:(q.scope!==undefined)?q.scope:queueScope};
   }
   function saveQueue(){
@@ -2033,13 +2051,18 @@
       return Array.isArray(items)?items.filter(i=>i&&typeof i.message==="string"&&i.message):[];
     }catch(_e){ return []; }
   }
+  function sameSavedLine(a,b){
+    const left=savedItem(a), right=savedItem(b);
+    return a.message===b.message && (a.ts||0)===(b.ts||0) && left.scope===right.scope &&
+      JSON.stringify(left.modelChoice)===JSON.stringify(right.modelChoice);
+  }
   // Is this line still on disk? Another window may have sent or discarded
   // it since the offer was drawn here.
   function stillSaved(item){
-    return readSavedQueue().some(i=>i.message===item.message && (i.ts||0)===(item.ts||0));
+    return readSavedQueue().some(i=>sameSavedLine(i,item));
   }
   function forgetSavedItem(item){
-    retainedItems=retainedItems.filter(i=>!(i.message===item.message && (i.ts||0)===(item.ts||0)));
+    retainedItems=retainedItems.filter(i=>!sameSavedLine(i,item));
     saveQueue();
   }
   // Another tab that restored while this one waited took the saved queue
@@ -2049,7 +2072,7 @@
     try{
       const raw=localStorage.getItem(QUEUE_KEY);
       const items=raw?JSON.parse(raw):[];
-      return !(Array.isArray(items) && items.some(i=>i && i.message===item.message));
+      return !(Array.isArray(items) && items.some(i=>i && sameSavedLine(i,item)));
     }catch(_e){ return false; }
   }
   // Lines that were waiting when the page went away come back as an OFFER,
@@ -2092,7 +2115,8 @@
       // A side send: it neither takes over an unconfirmed turn's record nor
       // clears whatever the founder is typing.
       sendTurn(item.message, item.display, {relay:true, keepInflight: !!readInflight(),
-        keepComposer:true, inputMethod:turnInputMethod(item.inputMethod)});
+        keepComposer:true, inputMethod:turnInputMethod(item.inputMethod),
+        modelChoice:copyModelChoice(item.modelChoice)});
     });
     const note=appendMessage("system",text+". ",send,now/1000);
     note.appendChild(document.createTextNode(" "));
@@ -2115,7 +2139,8 @@
     const last=sendQueue[sendQueue.length-1];
     // The same typed line twice is one line - but two answers to two asks
     // that happen to share a title are two answers (Codex round 2).
-    if(last && last.message===message && !opts.relay) return;
+    if(last && last.message===message && !opts.relay &&
+      JSON.stringify(last.opts.modelChoice)===JSON.stringify(opts.modelChoice)) return;
     const input=$("composer-input");
     if(sendQueue.length>=SEND_QUEUE_MAX){
       // ...and never over a draft the founder is typing: put it below it.
@@ -2137,8 +2162,7 @@
   }
 
   async function sendTurn(message, display, opts){
-    opts=opts||{};
-    opts.inputMethod=turnInputMethod(opts.inputMethod);
+    opts=captureTurnOptions(opts);
     if($("btn-send").disabled) return queueTurn(message, display, opts);
     // `display` is what the founder sees in their bubble (compact when a file is
     // attached); `message` is the full text sent to the universe (file content
@@ -2150,7 +2174,8 @@
     if(!opts.echoed) appendMessage("founder", display || message, null, sentAt/1000);
     // A line sent from a restore offer is a SIDE send: it must not take over
     // the in-flight record of an unconfirmed turn still on screen.
-    if(!opts.keepInflight) rememberInflight(message, display, sentAt, opts.inputMethod);
+    if(!opts.keepInflight) rememberInflight(
+      message, display, sentAt, opts.inputMethod, opts.modelChoice);
     // A relayed answer or a side send did not come from the composer: what
     // the founder is typing there stays (Codex round 3).
     const input=$("composer-input");
@@ -2159,7 +2184,8 @@
     setStatusLine("Your universe is thinking...");
     let delivered=false;
     try{
-      renderConverse(await MCP.converse(message,opts.inputMethod)); delivered=true;setStatusLine("");
+      renderConverse(await MCP.converse(message,opts.inputMethod,opts.modelChoice));
+      delivered=true;setStatusLine("");
       if(!opts.keepInflight) forgetInflight();
     }catch(err){
       if(err.authRequired){ setStatusLine(""); $("composer-input").value=message; return sessionExpired(); }
@@ -2182,12 +2208,14 @@
     // would make delivery ambiguous. Keep the audio session alive, but ask the
     // founder to wait and say the line again.
     if($("btn-send").disabled) throw new Error("voice_turn_busy");
-    appendMessage("founder",message); rememberInflight(message,message,undefined,"spoken");
+    const opts=captureTurnOptions({inputMethod:"spoken"});
+    appendMessage("founder",message);
+    rememberInflight(message,message,undefined,"spoken",opts.modelChoice);
     $("btn-send").disabled=true; turnStartedAt=Date.now();
     setStatusLine("Your universe is thinking...");
     let delivered=false;
     try{
-      const payload=await MCP.converse(message,"spoken");
+      const payload=await MCP.converse(message,"spoken",opts.modelChoice);
       if(!payload||typeof payload.reply!=="string"){
         if(payload&&payload.error){const served=new Error(payload.error);served.served=true;throw served;}
         throw new Error("voice_converse_invalid");
@@ -2197,7 +2225,7 @@
       return payload.reply;
     }catch(error){
       if(error&&error.authRequired){ sessionExpired(); throw error; }
-      offerResend(message,message,error,{echoed:true,keepComposer:true,inputMethod:"spoken"});
+      offerResend(message,message,error,Object.assign({},opts,{echoed:true,keepComposer:true}));
       throw error;
     }finally{
       $("btn-send").disabled=false;turnStartedAt=0;setStatusLine("");
@@ -2462,6 +2490,7 @@
     setTimeout(()=>{ showView("chat"); startHeartbeat(); warmSession(); $("composer-input").focus(); loadPlan(); }, 1200);
   }
   function enterSignedOut(){ clearInterval(statusTimer); MCP.sessionId=null; Voice.stop(false);
+    modelChoiceForNextTurn=null;
     sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(EXP_KEY); cancelOpenAIFlow(); resetOpenAIUI(); showView("signin"); }
   function showConnect(asGate,guidance){ Voice.stop(false); showView("connect");
     // Web has no loopback listener: the guided device-code path IS the path.
@@ -3533,7 +3562,8 @@
       // The bubble is already drawn above, so do not echo it a second time.
       note.remove(); forgetInflight();
       sendTurn(pending.message, pending.display,
-        {echoed:true,inputMethod:turnInputMethod(pending.inputMethod)});
+        {echoed:true,inputMethod:turnInputMethod(pending.inputMethod),
+         modelChoice:copyModelChoice(pending.modelChoice)});
     });
     const note=appendMessage("system",
       "This message was never confirmed — the reply did not arrive. ",again);

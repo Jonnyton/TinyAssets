@@ -125,5 +125,12 @@
   checklist blocker, not the separate duplicate-request or model-picker gaps.
   Controlled typed-owner continuation only, not organic/first-contact proof.
   Clickable picker still open.
+
+  September10 current-choice send wiring now built: typed/voice/queue/retry and
+  restore preserve the exact captured choice; old records remain no-override.
+  153 Windows/153 actual Linux app/brand/mirror checks pass, zero skips. No enabled
+  picker yet. Shared catalogue/picker shape ADAPT383s; nine required corrections
+  incorporated in model-picker-surface.md before API implementation. Review this
+  client wiring with that consumer; see app-model-choice-capture-proof.md in docs/reviews.
 - [ ] 3.2 Run focused cross-platform tests, independent exact-head review and CI; deploy and verify authenticated SHA/canary evidence, then ordinary rendered app use without operator workflow edits.
 - [ ] 3.3 Sync only shipped behavior into main specs and archive this change after completion; update the goal's stage and record any remaining capability gap honestly.
