@@ -50,3 +50,16 @@ above175passed/1skipped9.33s. Linux exercises the shared-reader concurrency and
 bubblewrap cases skipped on Windows. Both skip the separately configured real
 Codex integration (TINYASSETS_REAL_CODEX_TEST_UNIVERSE/SNAPSHOT absent); this is not
 evidence that real CLI integration ran. No runtime files changed during review.
+
+## Required review correction
+
+The exactffbc918f review returned ADAPT567s: settled ready progress could block
+reset after a later pre-intent failure. Applied the review's non-executing close;
+known history is retained, closed roots cannot resume, and incomplete/ambiguous
+frontiers still refuse close (including corrupt terminal-label tests).
+See 2026-09-10-interactive-http-agent-review.md.
+
+Same13-file command after the correction, September10 2026: Windows418passed,
+0skips47.91s; actual Linux418passed,0skips35.51s. Focused journal/composition92
+passed18.16s. Ruff and414-file plugin/import probe passed. These are synthetic
+network composition tests, not a deploy or full-agent live proof.

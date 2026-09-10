@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from dataclasses import replace
 
 from tinyassets.engine_tool_client import EngineToolError, open_engine_tools
@@ -20,6 +21,8 @@ from tinyassets.providers.agent_inference import AgentInferenceRequest
 from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 from tinyassets.storage.agent_turn_journal import AgentTurnJournal, JournalUnavailable
 from tinyassets.storage.agent_turn_records import RoundInput, dump, load_result
+
+_LOG = logging.getLogger(__name__)
 
 
 class InteractiveHttpAgentTurn:
@@ -116,6 +119,19 @@ class InteractiveHttpAgentTurn:
         return tuple(history)
 
     async def run(self):
+        try:
+            return await self._run()
+        except BaseException:
+            # A later pre-intent failure has no uncertain action to preserve.
+            # Keep zero-round roots ready for the writer's one all-skipped retry.
+            if self.turn is not None and self.turn.state == "ready" and self.turn.rounds:
+                try:
+                    self.close_quiescent()
+                except Exception:
+                    _LOG.exception("could not close settled interactive agent progress")
+            raise
+
+    async def _run(self):
         self.owner = self._check_scope()
         uid = self.context.universe_dir.name
         if self.turn is None:
@@ -230,8 +246,8 @@ class InteractiveHttpAgentTurn:
                         if self.turn.state not in {"ready", "tools_pending"}:
                             raise ProviderProtocolError("agent tool result requires attention")
 
-    def close_unused(self):
-        if self.turn is not None and self.turn.state == "ready" and not self.turn.rounds:
+    def close_quiescent(self):
+        if self.turn is not None and self.turn.state == "ready":
             self._accept(
                 self.journal.abandon(
                     self.owner,

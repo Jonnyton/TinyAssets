@@ -520,7 +520,7 @@ def test_retry_flag_cannot_resume_other_states(journal, stage):
     assert changed.status == "conflict" and changed.snapshot == turn
 
 
-def test_abandon_only_unused_root_unblocks_reset(journal):
+def test_abandon_unused_root_unblocks_reset(journal):
     from tinyassets.storage.agent_turn_journal import reset_blockers
 
     turn = new(journal)
@@ -562,6 +562,52 @@ def test_abandon_only_unused_root_unblocks_reset(journal):
         ).status
         == "conflict"
     )
+
+
+def test_abandon_settled_frontier_preserves_history_and_refuses_resume(journal):
+    from tinyassets.storage.agent_turn_journal import reset_blockers
+
+    turn = new(journal)
+    for _ in range(2):
+        turn = receive(journal, begin(journal, turn))
+        turn = finish(journal, start(journal, turn).snapshot, result=result()).snapshot
+    closed = journal.abandon("owner", "home", turn.turn_id, expected_generation=turn.generation)
+    assert closed.status == "applied" and closed.snapshot.state == "abandoned"
+    assert closed.snapshot.rounds == turn.rounds
+    assert journal.get("owner", "home", turn.turn_id) == closed.snapshot
+    assert journal.abandon(
+        "owner", "home", turn.turn_id, expected_generation=turn.generation,
+    ).status == "already_applied"
+    assert journal.begin_round(
+        "owner", "home", turn.turn_id, expected_generation=closed.snapshot.generation,
+        candidate=candidate(),
+    ).status == "conflict"
+    with journal._ledger.connection() as conn:
+        assert reset_blockers(conn, "owner", "home") == []
+
+
+@pytest.mark.parametrize("stage", ["inference", "planned", "started", "unknown", "nontext"])
+def test_abandon_cannot_hide_incomplete_or_ambiguous_progress(journal, stage):
+    turn = begin(journal, new(journal))
+    if stage != "inference":
+        turn = receive(journal, turn)
+    if stage not in {"inference", "planned"}:
+        turn = start(journal, turn).snapshot
+    if stage == "unknown":
+        turn = finish(journal, turn, failure="unknown").snapshot
+    elif stage == "nontext":
+        turn = finish(journal, turn, result=CallToolResult(content=[
+            ImageContent(type="image", data="AA==", mimeType="image/png"),
+        ])).snapshot
+    assert journal.abandon(
+        "owner", "home", turn.turn_id, expected_generation=turn.generation,
+    ).status == "conflict"
+    with journal._ledger.connection() as conn:
+        conn.execute(
+            "UPDATE agent_turns SET state = 'abandoned' WHERE turn_id = ?", (turn.turn_id,),
+        )
+    with pytest.raises(JournalUnavailable):
+        journal.get("owner", "home", turn.turn_id)
 
 
 @pytest.mark.parametrize("change", ["removed", "rebound", "deleted"])

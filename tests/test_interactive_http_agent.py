@@ -275,3 +275,39 @@ def test_unknown_inference_outcome_is_not_settled_as_zero_spend(agent):
     with agent.journal._ledger.connection() as conn:
         rows = conn.execute("SELECT state FROM served_provider_budget_reservations").fetchall()
         assert [row[0] for row in rows] == ["indeterminate"]
+
+
+@pytest.mark.parametrize("failure", ["claim", "intent", "history"])
+def test_later_pre_intent_failure_closes_known_progress(agent, monkeypatch, failure):
+    from tinyassets.auth import middleware
+    from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
+    from tinyassets.interactive_http_agent import InteractiveHttpAgentTurn
+    from tinyassets.storage.agent_turn_journal import reset_blockers
+
+    target, name = {
+        "claim": (middleware, "consume_provider_request_invocation"),
+        "intent": (AgentTurnJournal, "begin_round"),
+        "history": (InteractiveHttpAgentTurn, "_history"),
+    }[failure]
+    original = getattr(target, name)
+
+    def refuse_later(*args, **kwargs):
+        if agent.tools:
+            raise PermissionError("synthetic later pre-intent failure")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(target, name, refuse_later)
+    expected = {
+        "claim": ProviderAuthorityHeldError,
+        "intent": AllProvidersExhaustedError,
+        "history": PermissionError,
+    }[failure]
+    with pytest.raises(expected):
+        run(agent)
+    turn = agent.latest()
+    assert turn.state == "abandoned" and len(turn.rounds) == 1
+    assert len(agent.wires) == len(agent.tools) == 1
+    assert turn.rounds[0].tools[0].state == "completed"
+    assert "exact result" in turn.rounds[0].tools[0].result_json
+    with agent.journal._ledger.connection() as conn:
+        assert reset_blockers(conn, "owner", agent.served.context.universe_dir.name) == []

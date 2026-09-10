@@ -33,7 +33,10 @@
   commits exact known tool results before continuing. Unknown transport/effect
   outcomes hold without replay.409 Windows/409 actual Linux checks pass,0skips.
   See docs/reviews/2026-09-10-interactive-http-agent-proof.md. Independent exact
-  implementation review is next. Typed candidate fallback, saved/current policy
+  implementation review ADAPT567s found one required settled-frontier close fix;
+  applied and now418 Windows/418 Linux tests pass,0skips. Known results remain
+  preserved and incomplete/ambiguous tools remain held; exact correction review
+  is next. Typed candidate fallback, saved/current policy
   ingress and clickable UI remain unfinished; no full-agent live proof yet.
 
   September10 partial: synchronous HTTP lookup/request/cleanup now runs in one

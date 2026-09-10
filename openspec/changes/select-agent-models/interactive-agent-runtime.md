@@ -99,8 +99,11 @@ No stored retry bit or turn id grants new execution authority.
 Do not implement automatic post-crash resurrection. Recovery into a new genuine
 owner request may load completed progress, but must never claim/replay an old
 started tool or recreate a revoked capability. Define a non-executing abandon
-transition for unused ready roots so an unlaunched turn need not block scoped
-reset forever. Any later public resume UX needs its own explicit contract.
+transition for quiescent ready roots, including a fully settled prefix, so a
+later pre-intent failure cannot block scoped reset forever. Preserve all known
+history and refuse resume after close. Never close an in-flight or ambiguous
+frontier. Independent implementation ADAPT567s identified and required this
+extension beyond unused roots. Any later public resume UX needs its own contract.
 
 ## Portable history, price guard and observed usage
 

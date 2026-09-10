@@ -902,9 +902,9 @@ def _call_writer(turn_input, *, system, universe_context, config, response_obser
     finally:
         if http_turn is not None:
             try:
-                http_turn.close_unused()
+                http_turn.close_quiescent()
             except Exception:
-                logger.exception("could not close unused interactive agent progress")
+                logger.exception("could not close quiescent interactive agent progress")
 
 
 #: Trusted persona directive appended ONLY when there is recent history to

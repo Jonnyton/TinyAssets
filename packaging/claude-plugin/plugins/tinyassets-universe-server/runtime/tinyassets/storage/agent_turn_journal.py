@@ -198,11 +198,11 @@ def _read(conn: sqlite3.Connection, scope: tuple[str, str, str]) -> TurnSnapshot
                 and not completed_round.tools
             ):
                 raise records.invalid()
-        expected_state = (
-            _frontier(rounds[-1])
-            if rounds
-            else ("abandoned" if row["state"] == "abandoned" else "ready")
-        )
+        expected_state = _frontier(rounds[-1]) if rounds else "ready"
+        # Closing a quiescent frontier preserves all known progress. A stored
+        # terminal label must never hide an in-flight or ambiguous effect.
+        if row["state"] == "abandoned" and expected_state == "ready":
+            expected_state = "abandoned"
         if row["state"] != expected_state:
             raise records.invalid()
         return TurnSnapshot(
@@ -387,18 +387,17 @@ class AgentTurnJournal:
             return _advance(conn, scope, current, "inference_started", ordinal=ordinal)
 
     def abandon(self, owner, universe, turn_id, *, expected_generation: int) -> Transition:
-        """Close only a never-launched root; never discard an inference or effect."""
+        """Close a quiescent root, retaining every settled inference and effect."""
         with self._mutation(owner, universe, turn_id, expected_generation) as (
             conn,
             scope,
             current,
         ):
-            if current.state == "abandoned" and not current.rounds:
+            if current.state == "abandoned":
                 return Transition("already_applied", current)
             if (
                 current.generation != expected_generation
                 or current.state != "ready"
-                or current.rounds
             ):
                 return Transition("conflict", current)
             return _advance(conn, scope, current, "abandoned")
