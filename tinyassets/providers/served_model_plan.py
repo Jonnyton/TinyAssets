@@ -160,7 +160,14 @@ def prepare_owned_model_plan(*, base, universe, owner, agent, current=None, conf
             check_current_home(conn, owner, universe.name)
             assignment = load_provider_assignment_in_transaction(conn, universe_id=universe.name)
             if assignment is None or not assignment.manifest_digest:
-                if captured is None:
+                if captured is None or (
+                    current is None and preferences.policy is not None
+                    and preferences.policy.mode == "automatic"
+                ):
+                    # Saving an unpowered preference cannot brick an existing
+                    # native binding. Without model-access opt-in, saved auto
+                    # retains that provider's own default and grants nothing.
+                    # Explicit saved/current choices still require a manifest.
                     return None
                 raise PermissionError("model choice requires an accepted model assignment")
             chains, rejected = [], []
@@ -279,5 +286,5 @@ def apply_served_model_preferences(context, *, model_choice=None):
             context, agent_model_plan=prepared.plan,
             model_selection=prepared.plan.next_candidate(capability.principal_id, universe.name),
         )
-    except (PermissionError, ValueError, RuntimeError) as exc:
+    except (PermissionError, ValueError, RuntimeError, ProviderError) as exc:
         raise ProviderAuthorityHeldError(str(exc)) from exc

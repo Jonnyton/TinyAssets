@@ -27,6 +27,12 @@
   Independent review and both-client rendered proof are pending; UI and non-home
   controls remain incomplete. See preference-consumption-proof.md in docs/reviews.
 
+  September10 review ADAPT454s required saved-automatic compatibility with legacy
+  subscription binds. Corrected without changing saved generation or explicit
+  choices; final793 Windows/795 Linux passes (3/1skips). Structured discovery-expiry
+  refusals and internal picker projection are also built. Independent correction
+  review pending; public catalogue, clickable controls and live proof still open.
+
 - [ ] 2.2 Implement deterministic automatic ranking and ordered explicit fallback within fresh authority, required capabilities and permitted cost; test unscored/stale catalogues and no-paid-fallback.
 - [ ] 2.3 Integrate typed capacity scopes and safe continuation into the existing router; prove account exhaustion skips siblings and completed/ambiguous tools are not replayed.
 

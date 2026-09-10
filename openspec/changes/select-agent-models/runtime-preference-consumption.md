@@ -10,7 +10,10 @@ set_serving rejected every manifest. September10 integration now joins canonical
 converse, stored/current policy, fresh member catalogue and real readiness, with
 public binding opt-in. New acceptance cases do not bypass the readiness gate.
 See docs/reviews/2026-09-10-preference-consumption-proof.md:765 Windows/767 actual
-Linux passes (3/1skips), independent review pending. Not deployed or UI-complete.
+Linux passes (3/1skips). Independent review ADAPT454s found a saved-automatic
+compatibility regression on legacy bindings; corrected tree now passes793 Windows/
+795 Linux (3/1skips), independent correction review pending.
+Not deployed or UI-complete.
 
 Originally neither public binding caller passed model_access. The authenticated
 custom_agents caller now passes strict optional declarations; onboarding/serving.py
@@ -45,7 +48,10 @@ Capture generation once. Missing row and missing override preserve an existing
 legacy binding exactly. A newly opted-in manifest instead uses automatic
 generation0, as design.md requires for new opt-ins; this does not publish a
 manifest implicitly. A corrupt/unavailable row is held, not treated as absent.
-An override or saved policy on a legacy assignment cannot expand model authority:
+Saved automatic mode without a current override preserves an existing legacy
+provider's own default; the saved row/generation remains intact and publishes no
+manifest. This keeps unpowered settings followed by a legacy subscription connect
+usable. Current overrides and explicit saved policy still cannot expand authority:
 report that its accepted model scope needs updating through the existing binding
 flow. No implicit publication or grant extension. Saving preferences alone still
 does not alter assignments or credentials.

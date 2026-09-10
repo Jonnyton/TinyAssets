@@ -76,3 +76,33 @@ requires both-client rendered pre-merge proof; these synthetic structured-result
 tests do not replace it. No canary/deployed-SHA or fresh app retest for this patch
 has run. Clickable UI, general non-home policy controls, native explicit-model
 discovery and safe cross-native continuation remain required, not completed here.
+
+## Review correction and internal picker projection
+
+September10 2026, local working tree after66bececb. Independent ADAPT454s required
+preserving legacy execution after an unpowered saved-automatic preference. That
+correction now passes, as do structured final-discovery-expiry refusals. Explicit
+saved/current selections still fail closed without accepted model access. Saved
+generation is unchanged. Four focused correction cases pass2.08s, including actual
+native router launch. No authority gate was relaxed to make the tests pass.
+
+Internal model_options projects credential-blind advisory inventory/order,
+unavailable saved references and reasons even with zero candidates. Eleven new
+cases include the real owned catalogue producer with HTTP-only and mixed native
+bindings, without enabling serving or launching inference. It is not a public
+catalogue endpoint or clickable UI; its independent review is still pending.
+
+Final combined Windows Python3.14 command:
+
+```text
+python -m pytest -q tests/test_agent_inference.py tests/test_interactive_http_agent.py tests/test_selected_model_authority.py tests/test_discovery_snapshot.py tests/test_api_key_http_provider.py tests/test_http_inference_lifecycle.py tests/test_writer_execution_receipt.py tests/test_universe_intelligence.py tests/test_agent_turn_journal.py tests/test_agent_chat_codec.py tests/test_agent_chat_portable_history.py tests/test_agent_price_guard.py tests/test_mirror_parity_gate.py tests/test_model_capacity.py tests/test_model_policy.py tests/test_provider_router_diagnostics.py tests/test_provider_served_router.py tests/test_native_model_authority.py tests/test_model_preferences.py tests/test_model_preference_store.py tests/test_onboarding_model_preferences.py tests/test_model_capacity_transport.py tests/test_served_model_preferences.py tests/test_provider_serving_binding.py tests/test_provider_assignment_manifest.py tests/test_converse_handle.py tests/test_universe_server_mcp_structured_results.py tests/test_model_options.py tests/test_model_options_composition.py tests/test_compute_connection.py --tb=short --show-capture=no -rs
+793 passed, 3 skipped, 6 warnings in 106.39s
+```
+
+Same30-file group through actual Docker Linux oracle:795 passed,1 skipped,
+1 warning in71.11s, Python3.11.16/git2.47.3/bwrap0.12.0. Same real-account and
+Windows-only skips as above; framework deprecations only. Both full-reset inventory
+regressions remain explicitly excluded and unresolved, not hidden by this count.
+Supplemental guidance/projection group64 Windows passes10.24s; prior62-case Linux
+group passed3.84s before the two later composition tests, now covered in795.
+Ruff/diff checks pass;418 plugin mirrors/import probe pass. No deployed/live claim.

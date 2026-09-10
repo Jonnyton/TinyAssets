@@ -278,6 +278,7 @@ def custom_agents(
             document = _payload(payload)
             if normalized in {"bind_serving_provider", "set_serving"}:
                 from tinyassets.api.helpers import _universe_dir
+                from tinyassets.exceptions import ProviderError
                 from tinyassets.provider_serving_binding import (
                     bind_serving_provider,
                     set_serving,
@@ -343,7 +344,7 @@ def custom_agents(
                     )
                 except (
                     PermissionError, ValueError, LookupError,
-                    CurrentHomeChanged, PreferenceStoreUnavailable,
+                    CurrentHomeChanged, PreferenceStoreUnavailable, ProviderError,
                 ) as exc:
                     return {"error": "provider_authority_denied", "detail": str(exc)}
             if normalized == "create_binding":

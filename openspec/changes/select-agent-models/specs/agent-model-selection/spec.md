@@ -20,6 +20,17 @@ NOT publish or widen assignments, grants or permitted spending.
 - **THEN** automatic selection uses the native default through its real executor
 - **AND** an HTTP-only catalog cannot silently remove that preference
 
+#### Scenario: Saved automatic preference on an existing legacy binding
+- **WHEN** an owner saves automatic mode and has a legacy provider-only assignment
+- **THEN** a turn without a current override retains that provider's own default
+- **AND** the saved policy and generation remain unchanged without granting model access
+- **AND** current overrides or explicit saved choices still require accepted model authority
+
+#### Scenario: Serving readiness reports its selected provider
+- **WHEN** a manifest-backed agent is enabled successfully
+- **THEN** the response provider identifies the plan's first eligible candidate
+- **AND** the assignment anchor is not rewritten to impersonate the selected candidate
+
 #### Scenario: Another owned universe retains legacy execution
 - **WHEN** the owner converses with a non-home universe without an override
 - **THEN** home-only preferences neither block nor alter its existing binding
