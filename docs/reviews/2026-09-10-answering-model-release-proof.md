@@ -45,3 +45,27 @@ are lost, mismatched or falsely attributed. Reverify protected SHA/canary and
 rendered conversation. No stored preference, credential, grant or user data
 migration to undo. History reload currently loses these new transient footers;
 that limitation is explicitly outside this observation-only release.
+
+## Isolated review and packaging correction,03:30UTC
+
+Claude exact84053a845bfd3b2194da7ae2c27b83a15119232c APPROVE249s independently
+reproduced143 receipt/app tests. Final self-contained verdict is preserved in
+output/answering-model-release-result.md. Nongating: this is an extracted slice
+of existing select-agent-models planning, not a second proposal directory;
+failure_class responses intentionally do not supply successful receipts; commit
+hook's cp1252 decoding failure must be recorded, not called clean. The last
+point is resolved by explicitly scanning the exact29,528-character committed
+Python diff through the same check_diff using UTF-8: no forbidden imports.
+The underlying checker repair already exists in primary92ad462d and is a separate
+unlanded fix; this release does not bypass or alter that gate.
+
+Draft PR3734 initially failed brand-parity and the same brand test in preview
+contracts because the generated receipt hashes the whole app HTML. Ran canonical
+`python WebSite/brand/render_marks.py`; only generated-assets.json changed, one
+app checksum, no other asset/runtime/test bytes. All six pre-commit-scoped
+invariants now pass including52 matching brand artifacts. After locked `npm ci`,
+`npm test` at WebSite/site-react passes233 tests with4 existing Windows skips
+(237 total); earlier missing-yaml run is superseded, not a source regression.
+CI Linux had236 passes and only the stale app hash failure before this correction.
+No website route/style/brand geometry edits or separate public-site deployment.
+Generated manifest/proof-only head correction requires fresh exact-head review.
