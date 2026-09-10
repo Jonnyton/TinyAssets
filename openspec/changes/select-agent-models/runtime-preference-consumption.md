@@ -12,7 +12,7 @@ public binding opt-in. New acceptance cases do not bypass the readiness gate.
 See docs/reviews/2026-09-10-preference-consumption-proof.md:765 Windows/767 actual
 Linux passes (3/1skips). Independent review ADAPT454s found a saved-automatic
 compatibility regression on legacy bindings; corrected tree now passes793 Windows/
-795 Linux (3/1skips), independent correction review pending.
+795 Linux (3/1skips), exact5167596c correction independently APPROVE208s.
 Not deployed or UI-complete.
 
 Originally neither public binding caller passed model_access. The authenticated
