@@ -458,6 +458,33 @@ The founder-only `converse` handle SHALL accept one optional `input_method` fiel
 - **THEN** founder authentication, universe access, interlocutor tier, and effect consent remain unchanged
 - **AND** conversation storage and learning extraction preserve only the original founder message and canonical reply
 
+### Requirement: A conversational answer can identify its own answering model
+Successful `converse` JSON MAY include an optional `execution` object containing
+bounded printable `provider`, `model`, and `model_status` labels. The receipt
+SHALL belong to that request's first successful conversational writer response,
+not to a shared last-provider slot or later learning extraction. `model_status`
+SHALL be `reported` only with validated answering-model evidence, otherwise
+`unknown` with an empty model. Requested aliases, configured defaults and speech
+voices SHALL NOT substitute for answering-model evidence. Held/error replies
+SHALL omit execution receipts. Public inputs, direct JSON-string return type,
+and authentication/authority checks SHALL remain unchanged.
+
+#### Scenario: A reply is followed by learning or another conversation
+- **WHEN** a writer completes and subsequent inference uses another provider
+- **THEN** the successful reply retains only its own request-local receipt
+- **AND** receipt-observer failure does not discard or retry the earned answer
+
+#### Scenario: Provider does not report the resolved model
+- **WHEN** the writer succeeds without validated resolved-model metadata
+- **THEN** the receipt marks the model unknown rather than presenting its requested alias as fact
+
+#### Scenario: Typed or spoken app reply includes optional telemetry
+- **WHEN** the app renders a newly delivered canonical reply
+- **THEN** it displays that reply's provider/model evidence as inert text or explicitly reports missing metadata
+- **AND** the text spoken aloud remains the canonical reply without the metadata footer
+- **AND** receipt rendering does not activate selection controls or change model routing
+- **AND** historical replies without persisted receipts are not assigned inferred model labels
+
 ### Requirement: Authorized status explains platform resource observations
 Existing authenticated status SHALL offer existing ACL admins universe-scoped resource
 observations with timestamp, actual activity scope and limits, workspace

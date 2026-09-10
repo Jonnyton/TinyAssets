@@ -135,6 +135,7 @@ def test_openai_happy_path_and_wire_assembly(base: Path) -> None:
     assert resp.family == "api:openai_chat"
     # No model was reported: the requested alias is not execution evidence.
     assert resp.model == ""
+    assert resp.reported_model == ""
 
     # Wire assembly: POST to the exact allowlisted URL, correct body, NO secret.
     verb, wire = proxy.calls[0]
@@ -184,6 +185,7 @@ def test_receipt_reports_answering_model_without_mutating_selection(
     provider = ApiKeyHttpProvider(_definition(protocol), proxy_override=proxy)
     response = _run(provider, base / "u-x")
     assert response.model == body["model"]
+    assert response.reported_model == body["model"]
     assert provider.model == "moonshotai/kimi-k2"
     assert proxy.calls[0][1]["body"]["model"] == provider.model
     assert response.provider == provider.name  # remote metadata grants no identity
@@ -203,6 +205,7 @@ def test_unusable_model_metadata_is_unknown_without_discarding_answer(
     response = _run(ApiKeyHttpProvider(_definition(), proxy_override=proxy), base / "u-x")
     assert response.text == "answer"
     assert response.model == ""
+    assert response.reported_model == ""
 
 
 def test_openai_sends_no_static_headers(base: Path) -> None:
