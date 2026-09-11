@@ -7,20 +7,25 @@ platform callbacks or model-release lists. The exact contract, endpoint and
 authority context SHALL be revalidated before model admission. Legacy descriptors
 SHALL keep their prior interpretation and serialization.
 
-#### Scenario: Owner accepts a custom source contract
-- **WHEN** the owner previews and commits the exact validated contract digest
+#### Scenario: Owner configures a custom source contract
+- **WHEN** an authorized owner configures a validated contract with optional preview
 - **THEN** its successfully fetched catalogue may enter selection under existing accepted model, grant, executor and cost limits
-- **AND** the UI distinguishes source-contract acceptance from verified account availability
-- **AND** configuration acceptance creates no inference or spending permission
+- **AND** the UI distinguishes owner-configured source semantics from verified account availability
+- **AND** configuration creates no inference or spending permission and cannot satisfy an independently required privacy restriction
 
 #### Scenario: Catalogue invents trust or execution support
 - **WHEN** remote data claims filtered availability, account identity, unmetered pricing or executor support
 - **THEN** those claims cannot create trusted authority or an installed executor
-- **AND** absent accepted source semantics leave the source unverified
+- **AND** absent authenticated source configuration leaves the source unverified
 
 #### Scenario: Unsupported charging or changed contract
 - **WHEN** unknown charges, unenforceable ceilings, stale evidence or a changed contract invalidate a candidate
 - **THEN** no inference uses the stale candidate and free-only routing cannot become paid
+
+#### Scenario: Contract edits do not manufacture independent capacity
+- **WHEN** separate custom-source connections lack independent account evidence
+- **THEN** they share a conservative server-derived capacity scope
+- **AND** changing a descriptor, host, key or model name cannot establish independent capacity
 
 #### Scenario: Distinct unfamiliar catalogue shape
 - **WHEN** a supported custom contract describes a new source schema and model ID

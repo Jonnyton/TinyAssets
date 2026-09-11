@@ -48,7 +48,9 @@ and authority changes require reviewed design before implementation. Existing
 explicit pins remain fixed; previously ignored CLI model strings must not become
 active preferences accidentally. Main specs describe only what actually ships.
 
-Owner: Codex (current Patches task). Proposed delivery branch:
-`codex/select-agent-models`; no feature PR or runtime activation yet. Supporting
+Owner: Codex (current Patches task). Delivery branch:
+`codex/select-agent-models`; PR #3832 is draft/open, remote head bd93e239,
+no auto-merge (rechecked September11 05:44UTC with gh pr view). The feature is
+not deployed. Supporting
 connection recovery PR #3676, HTTP model receipts PR #3680 and endpoint-path
 compatibility PR #3688 are deployed. They are not completion of this feature.

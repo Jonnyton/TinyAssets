@@ -6,8 +6,10 @@
 
   September11 remaining public/storage correction is specified in
   discovery-contract-v1.md. Bounded connection-authored extraction/price/capacity
-  data and explicit source-contract acceptance replace a closed service profile.
-  Pre-build shape review required; no runtime extension or new permission yet.
+  data replace a closed service profile. Pre-build ADAPT122s corrections are
+  incorporated: configuration is not proof/extra approval, accounting stays
+  dimensionally closed, legacy parsing preserved, capacity scope conservative.
+  No runtime extension or new permission yet; implementation review remains.
 
 ## 2. Owner policy and execution
 

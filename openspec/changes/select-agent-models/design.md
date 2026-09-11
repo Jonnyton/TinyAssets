@@ -115,9 +115,11 @@ receipts but disables new routing, retaining the prior explicit binding.
 `discovery-contract-v1.md` proposes the bounded versioned extension to the
 existing capability descriptor. It distinguishes an owner-accepted source
 contract from independently verified availability, preserves legacy descriptors,
-and reuses current grant, assignment, price and executor checks. It is awaiting
-pre-build review; do not implement the public/storage extension until required
-shape corrections are resolved. This does not complete arbitrary CLI support.
+and reuses current grant, assignment, price and executor checks. Pre-build review
+ADAPT122s required removing the digest-as-consent ceremony, closing accounting
+through supported units, preserving legacy scalar/substring behavior and defining
+conservative capacity scope. These corrections are incorporated; implementation
+and exact-head review remain. This does not complete arbitrary CLI support.
 
 ### Reviewed pure policy kernel (September 9)
 

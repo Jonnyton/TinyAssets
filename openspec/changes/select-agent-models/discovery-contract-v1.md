@@ -1,7 +1,9 @@
 # Connection-authored discovery contracts — pre-build review
 
 September 11, 2026. Proposed correction to the closed discovery seam, not
-implemented, approved, deployed or a claim of universal CLI compatibility.
+implemented or deployed or a claim of universal CLI compatibility. Independent
+pre-build review of 1b9afd38 returned ADAPT in 122s; its four required corrections
+are incorporated below. This is not implementation or release approval.
 
 ## Intent and existing homes
 
@@ -39,7 +41,7 @@ The contract has these closed groups:
 | completeness | Optional total-count and next-page pointers. A present count must equal row count; a present next page must be empty. No automatic pagination or response URLs. |
 | prices | Price-object pointer; closed mapping of source field to unit-bearing component and exact decimal scale; required fields; bounded override-list pointer; recognized non-price condition keys. |
 | benchmark | Optional rows/source/ID/score/time pointers, exact source ID and score scales; one comparable source, no source-name inference. |
-| inference | Required body-key set, excluded model-ID literal prefixes/suffixes, price-cap output paths and exact scales, required constant request fields, and charge-component relationships. |
+| inference | Required body-key set, excluded model-ID literal prefixes/suffixes/substrings, price-cap output paths and exact scales, required constant request fields, and charge-component relationships. |
 | capacity | Finite HTTP status-to-scope/reason mapping plus optional standard Retry-After interpretation. |
 | usage | Optional exact total-cost pointer and scale; absent/invalid cost remains unknown. |
 
@@ -48,17 +50,22 @@ at most 16 segments/512 characters; no wildcards, expressions, templates, regex,
 callbacks, imports, transforms that execute code, response-driven URLs or loops
 other than bounded catalogue/override lists. Document <=64 KiB, <=128 extraction
 fields, <=64 price components, <=32 capacity cases. Wire response retains current
-transport size/deadline limits, plus <=10,000 model rows and <=128 overrides per
-row. Exceeding a limit refuses the snapshot instead of publishing a prefix.
+transport size/deadline limits; new-version contracts additionally permit at
+most 10,000 model rows and 128 overrides per row. Legacy descriptors retain their
+current transport-bounded behavior rather than silently acquiring new row caps.
+Exceeding an applicable limit refuses the snapshot instead of publishing a prefix.
 Unknown fields/version/operators refuse at publication and readback.
 
 Exact scalar operations are finite: required/optional lookup, positive integer,
-trimmed opaque identifier, string set, list-membership or boolean tools evidence,
+opaque identifier with surrounding whitespace rejected (never trimmed), string set, list-membership or boolean tools evidence,
 minimum known positive contexts, and nonnegative decimal scaling. Amounts use
 the existing exact integer-micro units. Scales are integer powers of ten within
-the current bounded Decimal range; no floats, rounding, underflow-to-zero or
-invented prices. Existing legacy JSON numeric benchmark/usage behavior must be
-preserved by the legacy contract; new contracts specify accepted scalar encoding.
+the current bounded Decimal range; price normalization permits no rounding,
+underflow-to-zero or invented prices. Benchmark scalar encoding retains legacy
+numeric compatibility. Observed usage is separate: original JSON numeric tokens
+are parsed as Decimal and positive fractional micros round UP, as before, never
+down to free. New contracts specify accepted scalar encoding; floats must not be
+an intermediate representation for money parsed from the wire.
 Optional unknown capabilities remain unknown, never a successful default.
 
 ## Price closure and inference ceilings
@@ -77,15 +84,32 @@ fields are literal JSON scalars/objects with bounded depth/size. Output paths
 must be pairwise nonoverlapping and must not overwrite model, messages, tools,
 tool_choice, credentials, headers, endpoints, temperature or token limits.
 No remote catalogue entry may supply these fields. Conflicting existing body
-fields refuse rather than merge. Supported model indirection restrictions are
-literal contract data; aliases cannot bypass a known restriction.
+fields refuse rather than merge. Every constant extension also declares its
+effects within charge closure: plugin/routing options are unsupported unless
+the installed executor can bound their quantities and the contract caps every
+charge. A harmless-looking unknown constant is not automatically permitted.
+Supported model indirection restrictions are literal contract data; aliases
+cannot bypass a known restriction, including legacy substring exclusions.
 
 The existing `Interaction` structure stays the sole charge/capability policy:
 required, excluded, ceiling, output-modality and bounded-extra components are
 validated references to declared unit-bearing components. Missing caps or an
 unrepresentable/unenforceable ceiling means ineligible, not "try and see".
 Catalogue price <= permitted price is necessary but is not a spending grant.
-Free-only remains exact zero ceilings; unknown usage never becomes zero usage.
+Every declared charge must have an enforceable request cap and a dimensionally
+compatible conservative reservation bound, or be established impossible by the
+installed executor. A descriptor's exclusion/condition assertion alone cannot
+establish that a charged operation is impossible. For v1, unfamiliar field names
+normalize to existing supported reservation units: input/output per million
+tokens in USD and USD per request; cache/reasoning charges use the existing
+conservative bounded relationships. Additional quantities are unsupported until
+the executor has a real quantity bound, not a general formula language. An
+existing component identifier can never acquire a new unit meaning.
+The same compiled contract validates `SelectedModel.cost_upper_bound`,
+`affordable_output`, dispatch ceilings and settlement as one accounting path;
+replacing protocol lookups alone is insufficient. Free-only remains exact zero
+ceilings; unknown usage never becomes zero usage. These are source-declared
+ceiling semantics: writing a field does not prove a remote server honors it.
 
 ## Availability and semantic trust — explicitly separate from authority
 
@@ -95,39 +119,42 @@ its pinned credential-filtered contract; a compatible JSON body alone proves
 neither that promise nor account identity. Do not turn a caller's
 `account_filtered=true` into trusted evidence.
 
-New custom contracts therefore require explicit acceptance of their exact
-normalized descriptor through the existing authenticated owner/admin action:
-first preview validation returns its digest and scope/cost-enforcement summary,
-then commit must supply that digest. Extend only new-version publication with
-`preview: true` (no write) or `expected_descriptor_digest` (commit). The summary
-states that the connected source, not TinyAssets, asserts its availability,
-privacy and ceiling semantics. It names the exact endpoints and notes that the
-contract is shared by all definitions using this owned connection. The agent
-can compose it; the UI must not auto-accept it from remote catalogue content.
-Existing legacy calls keep their shape and do not gain a mandatory preview.
+New custom contracts use the existing authenticated owner/admin configuration
+action; that existing authority suffices, with no new human approval ceremony.
+An optional `preview: true` validates without writing and returns the normalized
+descriptor's digest and scope/cost summary. Publication returns the same digest;
+it is identity/integrity data, never an approval credential. The summary states
+that the connected source, not TinyAssets, declares availability, privacy and
+ceiling semantics. It names the exact endpoints and notes the contract's
+connection-wide sharing. An agent may compose/configure within its existing
+authority; remote catalogue data cannot publish or change configuration.
+Legacy calls keep their exact shape and gain no required preview or digest.
 
-This acceptance is configuration consent, NOT a credential, inference/spend
-grant, nor independent validation of the provider's promises. No account IDs,
+Authenticated configuration is NOT a credential, inference/spend grant,
+human-review proof or independent validation of provider promises. No account IDs,
 executor-tools flag or source-kind priority may come from the contract.
 Subscription/local priority remains server-derived. Actual inference still
 requires an accepted assignment/model, current grant/custody and price ceilings.
 
 Replace the internal ambiguous `owner_filtered` truth projection with an
 explicit availability basis for the policy boundary: `credential_filtered`,
-`owner_accepted_contract`, or `unverified`. Legacy adapters retain their old
+`owner_configured_contract`, or `unverified`. Legacy adapters retain their old
 credential-filtered meaning. A custom source is eligible only after authenticated
-transport to the exact accepted endpoint, the compiled structural checks and
-all existing admission rules; its UI basis is "source contract accepted", never
+transport to the exact configured endpoint, the compiled structural checks and
+all existing admission rules; its UI basis is "owner-configured source contract", never
 "verified account availability". Unverified sources stay display-only. This is
 an intentional reviewed distinction, not silently relabelling a declaration as
 proof. No broader privacy guarantee is claimed than the owner's chosen source.
+Eligibility relies explicitly on that configured source's declared semantics;
+any independently required privacy restriction remains required and cannot be
+marked verified by configuration. Missing evidence for such a restriction holds.
 
-Acceptance is bound to normalized bytes including version, URLs and the whole
-contract. Validate the submitted descriptor again under the metadata write's
-existing BEGIN IMMEDIATE grant/resource fence; compare its expected digest.
-No stored approval flag is accepted from a caller. The stored new-version row
-exists only after this path; readers compute its digest from the validated
-document. An unsupported contract never publishes a ready snapshot. Deletion,
+Identity covers normalized bytes including version, URLs and the whole
+contract. Validate under the metadata write's existing BEGIN IMMEDIATE
+grant/resource fence. No caller approval flag or trusted-basis enum is accepted.
+Readers derive configured-source provenance from current authenticated
+publication/authority and exact-endpoint transport, and compute the descriptor
+digest from validated bytes. An unsupported contract never publishes a ready snapshot. Deletion,
 revocation and owner/connection changes retain their current fail-closed rules.
 
 ## Ranking, capacity and freshness
@@ -139,6 +166,16 @@ future, missing, malformed or stale times are not fresh. Scores with a different
 source/schema/scale identity are incomparable, even if source labels match.
 Keep the existing stable ranked/unranked ordering and subscription/local
 preference, allowing explicit user selection regardless of unknown ranking.
+
+Capacity source scope is server-derived, distinct from descriptor identity and
+authenticated account identity. Legacy protocol scopes retain current behavior.
+For custom HTTP sources v1 uses one conservative `custom-http` scope across
+connections when no independent account evidence exists: different hosts, keys,
+definitions, contract digests or edits do not prove independent capacity. This
+may conservatively hold another source after an unknown/account-wide refusal;
+model-local refusals still advance normally. Do not invent narrower independence
+from an arbitrary endpoint hostname or metadata. A future trusted account fact
+can narrow grouping through the existing typed capacity mechanism.
 
 Capacity status mappings may emit only the existing bounded reason vocabulary
 and scopes `model`, `account`, `unknown`. They do not create an authenticated
@@ -172,7 +209,7 @@ support, not remote permission to activate a missing tool loop.
 
 ## Required tests and rollout evidence
 
-1. Strict publication/readback, preview no-write, exact digest commit, owner/admin
+1. Strict publication/readback, optional preview no-write, exact digest identity, owner/admin
    and grant fences, same-connection sharing, invalid contract no overwrite,
    legacy byte/behavior compatibility, unpowered configuration.
 2. Frozen old decoder/constraint/usage/capacity differential tests over existing
@@ -180,7 +217,9 @@ support, not remote permission to activate a missing tool loop.
 3. A distinctly shaped unfamiliar catalogue and source name, with a new opaque
    model ID, goes through public configure -> discovery -> picker -> saved/current
    policy -> actual writer/router/HTTP tool loop. No preset registration or source
-   code edit. Synthetic wires are supporting evidence, not live acceptance.
+   code edit. Include two separate connections whose contract changes must not
+   create independent capacity, plus model-local refusal continuing safely.
+   Synthetic wires are supporting evidence, not live acceptance.
 4. Stale/incomplete/unknown data, incompatible codec, missing or unenforceable caps,
    altered contract or revoked grant cannot yield an inference call. Price/cap
    field conflicts and descriptor-origin URLs never escape existing permissions.
