@@ -279,8 +279,9 @@ def test_app_store_metadata_packet_meets_apple_field_constraints() -> None:
     assert "Apple ID `6808434444`" in packet
     assert (
         "| TestFlight | Internal group `Internal`; manual distribution for Xcode builds; "
-        "Build 3 attached; 0 testers and no invitations sent |" in packet
+        "Build 3 attached; Account Holder added and **Invited** on 2026-09-10 |" in packet
     )
+    assert "release mode was changed to automatic\n    after approval on 2026-09-10" in packet
     assert "all\nfour entries use App Functionality only" in packet
     assert "App Functionality; Account Management" not in packet
     assert "it is not published and its legal-policy URLs" not in packet

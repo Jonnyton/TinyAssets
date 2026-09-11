@@ -26,7 +26,7 @@ exceptions in `docs/host-actions.md`.
 | Primary category | Productivity |
 | Secondary category | None |
 | Price | Free; United States (USD) base and `$0.00` schedule; 148 non-EU storefronts enabled, including the United States; no in-app purchases |
-| TestFlight | Internal group `Internal`; manual distribution for Xcode builds; Build 3 attached; 0 testers and no invitations sent |
+| TestFlight | Internal group `Internal`; manual distribution for Xcode builds; Build 3 attached; Account Holder added and **Invited** on 2026-09-10 |
 
 The explicit App ID, App Store Connect record, Apple Distribution certificate/private
 key, App Store provisioning profile, Developer-role CI upload key, and all six protected
@@ -92,22 +92,20 @@ never in this repository.
   `TinyAssets is a persistent AI universe for real multi-step work. This beta validates the installed iPhone shell, sign-in return, conversation continuity, file attachment, and recovery behavior before App Store submission.`
 - **What to Test:**
   `Test sign-in and the return to TinyAssets, reconnect after force-quit, send a substantive message, confirm the same conversation on web, attach a small text file, open Account and Privacy, and recover after briefly disabling the network. Voice, purchases, and ads are not included. Report any blank screen, dead sign-in callback, lost conversation, inaccessible control, layout overflow, or recovery failure.`
-- **Feedback Email:** enter an account-holder-controlled support address directly
-  in App Store Connect. Do not commit it here.
-- **Beta App Review Information:** provide a dedicated disposable review account
-  and account-holder contact details directly in App Store Connect. Never place
-  credentials or personal contact details in this repository.
+- **Feedback Email:** the Account Holder contact is saved directly in App Store
+  Connect and remains outside this repository.
+- **Beta App Review Information:** the dedicated disposable reviewer and Account
+  Holder contact details are saved in Apple's separate beta-review record. Never
+  place credentials or personal contact details in this repository.
 
 The en-US **What to Test** text above is saved on Build 3. After founder
 reauthentication, the app-level beta description and verified marketing URL were
-also saved, and Build 3 was selected for App Store Version 1.0. The empty Internal
-group remains configured for manual distribution of Xcode builds and has zero
-testers, so no invitation or notification has yet been sent. The live internal-group
-and build pages expose no automatic tester-notification control; Apple's documented
-checkbox belongs to the external-testing flow. The API's residual
-`autoNotifyEnabled=true` value is therefore inert while there is no external group
-or tester. The founder's 2026-09-10 launch authorization permits adding the account
-holder as an internal tester when needed for the required physical-device recording.
+also saved, and Build 3 was selected for App Store Version 1.0. On 2026-09-10 the
+Account Holder was added to the Internal group; after the beta review details were
+completed and the Build 3 relationship was refreshed, Apple's API and UI both showed
+the tester as **Invited** with one tester and one build. No external group or beta
+review submission was created. Receipt:
+`docs/audits/2026-09-10-ios-review-recovery-access.md`.
 
 Internal testing comes first. External testing may trigger TestFlight App Review
 and is a separate submission boundary.
@@ -341,7 +339,8 @@ one, so the server must remain compatible with the last released shell.
    non-trader for this initial non-EU release.
 10. **Submitted 2026-09-09 02:32 PDT:** **Add for Review** succeeded and the resulting
     one-item submission was sent to Apple. Submission ID
-    `5c6e4844-2ca2-438c-8aec-a189efb0ebb2`; release mode remains manual.
+    `5c6e4844-2ca2-438c-8aec-a189efb0ebb2`; release mode was changed to automatic
+    after approval on 2026-09-10.
 11. **Rejected for information 2026-09-09 17:56 PDT; verified 2026-09-10:** Apple
     reported **Guideline 2.1 - Information Needed - New App Submission**, not a crash
     or code defect. Apple requires a latest-iOS physical-device recording plus purpose,
@@ -406,12 +405,10 @@ Written response facts:
   native while preserving it on web. Deploy run `34523794549` published and verified
   that exact revision on 2026-09-10.
 - Apple requires the Guideline 2.1 response packet above and a physical-iPhone recording.
-  After both are saved, resubmit iOS 1.0. When it becomes approved, select **Release This
-  Version**, then verify that the United States App Store product page offers the install
-  before calling the launch complete.
-- Automatic tester notification cannot be changed on the current internal-only
-  UI. Build 3 has no external group or tester, so the API's residual `true` value
-  is inert; revisit the checkbox only if an external-testing group is created.
+  The Account Holder's TestFlight invitation is live and Build 3 is attached. After the
+  recording and written response are saved, resubmit iOS 1.0. Release is configured for
+  automatic publication after approval; verify that the United States App Store product
+  page offers the install before calling the launch complete.
 
 Official references checked 2026-09-03: [add a new app](https://developer.apple.com/help/app-store-connect/create-an-app-record/add-a-new-app/),
 [app information](https://developer.apple.com/help/app-store-connect/reference/app-information/app-information/),
