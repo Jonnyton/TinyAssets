@@ -100,6 +100,14 @@
   Linux attempt could not start because Docker's Linux engine is unavailable;
   no Linux result is claimed. No production authority code or user workflow edit.
 
+  September11 20:33UTC follow-up proves list_serving_universes silently omits a
+  successfully enabled manifest universe, before background execution reaches
+  its launch guard. Added real bind/enable/inventory regression with passing
+  legacy control. Complete file now21passed/3failed in9.08s, zero skips; all
+  three failures are new release-blocker cases. Candidate365281a5 CI34641621317
+  completed successfully but does not contain these new tests. It is not cleared
+  for deployment by that result. No peer review or production mutation.
+
   September10 partial: saved preferences/CAS and authenticated unpowered GET/POST
   implemented;352 Windows and352 actual Docker Linux checks pass, zero skips.
   See saved-preferences.md and docs/reviews/2026-09-10-model-preferences-proof.md.

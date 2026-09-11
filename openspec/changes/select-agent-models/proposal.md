@@ -22,7 +22,7 @@ capability; a successful OpenRouter workflow call does not establish it.
   existing speech-voice menu. Display preferred, attempting, answered and waiting
   states honestly, including missing model metadata.
 
-This does not modify private workflows, take over the paused background-self PR,
+This does not modify private workflows, take over the cloud universe's projects,
 create provider accounts or authorize hosted custody beyond existing rules.
 Two unpowered connection requests remain tracked in their existing concern.
 The shared HTTP tool loop is a prerequisite for calling an HTTP connection a
@@ -58,8 +58,8 @@ explicit pins remain fixed; previously ignored CLI model strings must not become
 active preferences accidentally. Main specs describe only what actually ships.
 
 Owner: Codex (current Patches task). Delivery branch:
-`codex/select-agent-models`; PR #3832 is draft/open, remote head bd93e239,
-no auto-merge (rechecked September11 05:44UTC with gh pr view). The feature is
-not deployed. Supporting
+`codex/select-agent-models`; PR #3832. Current review, test and deployment state
+belongs in tasks/evidence and the active goal's stage list, not a pinned proposal
+head. Supporting
 connection recovery PR #3676, HTTP model receipts PR #3680 and endpoint-path
 compatibility PR #3688 are deployed. They are not completion of this feature.

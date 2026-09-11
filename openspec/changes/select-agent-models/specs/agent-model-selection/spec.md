@@ -16,6 +16,12 @@ rewriting a private workflow. Preferences alone SHALL NOT grant execution access
 - **THEN** its invocation uses that exact choice without changing the main agent or the task definition
 - **AND** actual execution identity and settlement identify the source that ran
 
+#### Scenario: Enabling model access preserves background polling
+- **WHEN** a universe successfully enables accepted model access with an eligible source
+- **THEN** it remains visible to the generic background coordinator for its authorized work
+- **AND** inventory does not silently drop it through legacy single-provider validation
+- **AND** actual launches still independently validate current authority and lifecycle
+
 #### Scenario: Multiple sources share one work allowance
 - **WHEN** different nodes or fallback attempts use different accepted sources
 - **THEN** they remain constrained by the same work-level aggregate allowance and current per-source constraints

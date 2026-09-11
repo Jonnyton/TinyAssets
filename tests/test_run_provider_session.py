@@ -538,6 +538,36 @@ def test_accepted_native_model_manifest_preserves_foreground_execution(
         ).fetchall() == [("succeeded",)]
 
 
+@pytest.mark.parametrize("manifest", [False, True], ids=["legacy", "model-access"])
+def test_enabled_model_access_universe_remains_visible_to_background_scheduler(
+    tmp_path: Path,
+    authenticate_request,
+    manifest: bool,
+) -> None:
+    """Successful enable cannot silently remove the universe from polling."""
+    from tinyassets.daemon_server import set_founder_home
+    from tinyassets.provider_assignment_manifest import ModelAccess
+    from tinyassets.provider_serving_binding import (
+        list_serving_universes,
+        resolve_serving_agent_binding,
+    )
+
+    authenticate_request("acct_alice")
+    set_founder_home(
+        tmp_path, founder_sub="acct_alice", universe_id="universe_alice",
+        platform_generated=True,
+    )
+    _seed_serving_assignment(
+        tmp_path,
+        model_access={"codex": ModelAccess("explicit", ("",))} if manifest else None,
+    )
+    agent = resolve_serving_agent_binding(
+        tmp_path, universe_id="universe_alice", owner_user_id="acct_alice",
+    )
+    assert agent["status"] == "serving"
+    assert list_serving_universes(tmp_path) == ["universe_alice"]
+
+
 def test_foreground_run_refreshes_a_stale_run_binding_after_serving_rebind(
     tmp_path: Path,
     monkeypatch,

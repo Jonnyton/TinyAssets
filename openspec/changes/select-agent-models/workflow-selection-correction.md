@@ -31,6 +31,13 @@ tests/test_run_provider_session.py --tb=short --show-capture=no` returned
 2failed,20passed,38upstream deprecation warnings in9.07s. Only the two new
 regressions fail; all existing cases pass. This is a local synthetic test,
 not evidence of live user execution.
+
+September11 20:33UTC follow-up adds real scheduler eligibility, parameterized
+over legacy/model-access binding. The legacy case passes; the manifest case
+successfully enables serving but list_serving_universes returns an empty list.
+The same complete-file command now reports3failed/21passed/38upstream warnings
+in9.08s, zero skips. This is not a background-project test: it exercises the
+platform's authoritative universe inventory used by its generic coordinator.
 Underlying refusal is `model selection authority is not active`, wrapped into
 a misleading connect-provider failure by the foreground session/compiler.
 Ruff on the changed test passes. Linux verification attempted from an isolated
@@ -47,6 +54,12 @@ any test started. The archive is not a completed Linux verification.
   require the declared providers to match one assignment provider. Background
   `_authorize_launch` repeats that restriction before its activation/lease and
   attempt-budget checks. Those lifecycle checks must survive the correction.
+- `list_serving_universes` also calls the legacy helper and catches its refusal,
+  silently omitting enabled manifest universes. AssignedQueueConsumer.poll_once
+  uses this list for automation submission and heartbeat publication. Thus
+  background work can disappear before reaching the per-attempt authority path.
+  Correct serving-intent inventory/readiness separately from actual launch
+  admission; do not add remote discovery inside each SQL inventory read.
 - Both workflow wrappers pass only the one-use invocation carrier to the
   router, not validated model selection. The router clears caller-injected
   `ModelConfig.selected_model`; setting that field alone is intentionally not
@@ -101,6 +114,9 @@ choices and private definitions do not change. Also cover stale/foreign/revoked
 members, custody rotation, cost/model exclusion, aggregate exhaustion across
 sources, stopped activation, cancelled runs and once-only settlement/recovery.
 Each refusal must identify its true class without disclosing secrets.
+Verify the configured universe remains in scheduler polling after model access
+is enabled. An available selected member must not depend on the structural
+anchor's unrelated credential, while revoked/disabled work still cannot launch.
 
 The currently requested additional model-release review exception is unanswered;
 the previous three-round cap is not waived by goal continuation. These tests
