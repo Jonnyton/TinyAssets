@@ -118,10 +118,31 @@ Verify the configured universe remains in scheduler polling after model access
 is enabled. An available selected member must not depend on the structural
 anchor's unrelated credential, while revoked/disabled work still cannot launch.
 
-The currently requested additional model-release review exception is unanswered;
-the previous three-round cap is not waived by goal continuation. These tests
-and this proposal do not count as a fourth review. Runtime/storage implementation
-awaits the required correction-shape review. After implementation and release
+The owner explicitly answered **Allow one additional review** on September11.
+That single additional model-release review has not yet been dispatched. These
+tests and this proposal do not count as a fourth review. New runtime/storage
+authority representation still awaits the required correction-shape review.
+After implementation and release
 gates, verify the live deployment and ask only `Retest your workflow checklist`.
 The app must confirm usable general capabilities; its own project completion
 is neither taken over nor substituted as this task's implementation.
+
+## Inventory integration correction — September 11, 22:21 UTC
+
+The scheduler inventory now uses the existing accepted-member validator for
+manifest enrollments, preserving the legacy validator for legacy enrollments.
+It re-reads enrollment after admission, accepts any still-current member without
+depending on the anchor credential, and makes no remote discovery request or
+invocation/receipt. This is an internal caller correction, not a new storage or
+launch-authority representation and not completion of workflow selection.
+
+WindowsPython3.14 command:
+`python -m pytest -q tests/test_run_provider_session.py -k 'background_scheduler or scheduler_inventory' --tb=short --show-capture=no`
+passes5cases in1.42s, zero skips: legacy/manifest inventory, pause, credential
+rotation and an independent member surviving anchor rotation. Synthetic vault
+fixtures only; no live credential or user configuration changed.
+
+`python -m pytest -q tests/test_run_provider_session.py tests/test_assigned_queue_consumer.py tests/test_background_budget_finalization_e2e.py --tb=short --show-capture=no`
+reports50passed/2failed/42dependency warnings in14.29s, zero skips. The two failures
+remain the explicit/default foreground-manifest release blockers, not hidden or
+xfail cases. Ruff and plugin mirror/import pass. No Linux/review/deployment claim.

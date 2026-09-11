@@ -112,6 +112,7 @@ def _seed_serving_assignment(
     owner_user_id: str = "acct_alice",
     universe_id: str = "universe_alice",
     model_access=None,
+    services=("codex",),
 ) -> None:
     from tinyassets.credential_vault import write_credential_vault
     from tinyassets.custom_agents import create_binding, publish_definition
@@ -128,9 +129,11 @@ def _seed_serving_assignment(
         [
             {
                 "credential_type": "llm_subscription",
-                "service": "codex",
-                "auth_json_b64": "e30=",
+                "service": service,
+                **({"auth_json_b64": "e30="} if service == "codex"
+                   else {"oauth_token": "synthetic-claude-test-only"}),
             }
+            for service in services
         ],
         owner_user_id=owner_user_id,
         universe_id=universe_id,
@@ -539,10 +542,12 @@ def test_accepted_native_model_manifest_preserves_foreground_execution(
 
 
 @pytest.mark.parametrize("manifest", [False, True], ids=["legacy", "model-access"])
+@pytest.mark.parametrize("invalidate", ["custody", "pause"])
 def test_enabled_model_access_universe_remains_visible_to_background_scheduler(
     tmp_path: Path,
     authenticate_request,
     manifest: bool,
+    invalidate: str,
 ) -> None:
     """Successful enable cannot silently remove the universe from polling."""
     from tinyassets.daemon_server import set_founder_home
@@ -565,6 +570,65 @@ def test_enabled_model_access_universe_remains_visible_to_background_scheduler(
         tmp_path, universe_id="universe_alice", owner_user_id="acct_alice",
     )
     assert agent["status"] == "serving"
+    assert list_serving_universes(tmp_path) == ["universe_alice"]
+
+    # Inventory cannot become a launch grant or mint a work receipt.
+    with sqlite3.connect(authority_db_path(tmp_path)) as conn:
+        assert conn.execute("SELECT count(*) FROM provider_work_receipts").fetchone() == (0,)
+
+    if invalidate == "pause":
+        from tinyassets.provider_serving_binding import set_serving
+
+        set_serving(
+            base_path=tmp_path, universe_dir=tmp_path / "universe_alice",
+            owner_user_id="acct_alice", universe_id="universe_alice",
+            agent_binding_id=agent["agent_binding_id"],
+            expected_revision=agent["revision"], enabled=False,
+        )
+        assert list_serving_universes(tmp_path) == []
+        return
+
+    # A credential rotation invalidates the accepted member until re-bound.
+    from tinyassets.credential_vault import write_credential_vault
+
+    write_credential_vault(
+        tmp_path / "universe_alice",
+        [{"credential_type": "llm_subscription", "service": "codex",
+          "auth_json_b64": "eyJyb3RhdGVkIjp0cnVlfQ=="}],
+        owner_user_id="acct_alice", universe_id="universe_alice",
+    )
+    assert list_serving_universes(tmp_path) == []
+
+
+def test_scheduler_inventory_keeps_independent_member_after_anchor_rotation(
+    tmp_path: Path, authenticate_request, monkeypatch,
+) -> None:
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.daemon_server import set_founder_home
+    from tinyassets.provider_assignment_manifest import ModelAccess
+    from tinyassets.provider_serving_binding import list_serving_universes
+
+    authenticate_request("acct_alice")
+    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
+    set_founder_home(
+        tmp_path, founder_sub="acct_alice", universe_id="universe_alice",
+        platform_generated=True,
+    )
+    _seed_serving_assignment(
+        tmp_path, services=("codex", "claude"),
+        model_access={name: ModelAccess("explicit", ("",)) for name in ("codex", "claude-code")},
+    )
+    assert list_serving_universes(tmp_path) == ["universe_alice"]
+    write_credential_vault(
+        tmp_path / "universe_alice",
+        [
+            {"credential_type": "llm_subscription", "service": "codex",
+             "auth_json_b64": "eyJyb3RhdGVkIjp0cnVlfQ=="},
+            {"credential_type": "llm_subscription", "service": "claude",
+             "oauth_token": "synthetic-claude-test-only"},
+        ],
+        owner_user_id="acct_alice", universe_id="universe_alice",
+    )
     assert list_serving_universes(tmp_path) == ["universe_alice"]
 
 

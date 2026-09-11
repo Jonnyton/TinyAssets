@@ -1152,7 +1152,13 @@ def resolve_current_serving_provider_authority(
 
 
 def list_serving_universes(base_path: str | Path) -> list[str]:
-    """Return universes with exactly one fully-current serving enrollment."""
+    """Return enrolled universes with current connection authority.
+
+    This is scheduler inventory, not model selection or launch authorization.
+    Manifest enrollments need a current accepted member; actual work must still
+    select and authorize its model at launch. Never discover remote models while
+    holding the inventory's database snapshot.
+    """
 
     from collections import defaultdict
 
@@ -1194,14 +1200,40 @@ def list_serving_universes(base_path: str | Path) -> list[str]:
                 with provider_assignment_admission().shared(universe):
                     with store.connection() as authority_conn:
                         authority_conn.execute("BEGIN")
-                        _current_serving_authority(
-                            authority_conn,
-                            store=store,
-                            universe_dir=universe,
-                            owner_user_id=str(row["created_by"]),
-                            universe_id=uid,
-                            agent=agent,
+                        # Re-read after taking admission: a pause/rebind must not
+                        # be evaluated using the pre-lock enrollment projection.
+                        current_agent = get_binding(
+                            base, universe_id=uid,
+                            binding_id=str(row["agent_binding_id"]),
                         )
+                        if current_agent is None or current_agent["status"] != "serving":
+                            continue
+                        assignment = load_provider_assignment_in_transaction(
+                            authority_conn, universe_id=uid,
+                        )
+                        if assignment is not None and assignment.manifest_digest:
+                            for member in assignment.candidates:
+                                try:
+                                    _current_selected_member_authority(
+                                        authority_conn, store=store, universe_dir=universe,
+                                        base_path=base, owner_user_id=str(row["created_by"]),
+                                        universe_id=uid, agent=current_agent,
+                                        provider=member.provider,
+                                    )
+                                except PermissionError:
+                                    continue
+                                break
+                            else:
+                                continue
+                        else:
+                            _current_serving_authority(
+                                authority_conn,
+                                store=store,
+                                universe_dir=universe,
+                                owner_user_id=str(row["created_by"]),
+                                universe_id=uid,
+                                agent=current_agent,
+                            )
                         authority_conn.rollback()
             except (PermissionError, RuntimeError, ValueError, sqlite3.Error):
                 continue

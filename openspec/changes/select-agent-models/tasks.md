@@ -108,6 +108,15 @@
   completed successfully but does not contain these new tests. It is not cleared
   for deployment by that result. No peer review or production mutation.
 
+  September11 22:21UTC: scheduler inventory caller now uses existing validated
+  manifest-member authority, without remote discovery or minting work authority.
+  Five focused inventory tests pass, including pause, rotation and an independent
+  member surviving anchor rotation. Expanded foreground/consumer/background
+  group50passes/2failures, WindowsPython3.14,14.29s, zero skips; both foreground
+  manifest launch regressions remain open. Mirror/import and Ruff pass. Owner
+  authorized one additional model-release review; not yet dispatched. See
+  workflow-selection-correction.md. No workflow execution or rollout claimed.
+
   September10 partial: saved preferences/CAS and authenticated unpowered GET/POST
   implemented;352 Windows and352 actual Docker Linux checks pass, zero skips.
   See saved-preferences.md and docs/reviews/2026-09-10-model-preferences-proof.md.
