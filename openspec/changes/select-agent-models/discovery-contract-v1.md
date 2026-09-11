@@ -5,6 +5,35 @@ implemented or deployed or a claim of universal CLI compatibility. Independent
 pre-build review of 1b9afd38 returned ADAPT in 122s; its four required corrections
 are incorporated below. This is not implementation or release approval.
 
+Internal compiler progress:777ff9ba composes the reviewed bounded interpreters
+without adding a provider registry entry. It is not yet published through the
+connection action or consumed by live selection. The private document currently
+requires `version`, `transport`, `catalogue`, `prices`, `inference`,
+`quantity_model`, `extension_quantities`, `charge_bindings`, `capacity`, and
+`price_bound_basis`; benchmark and usage are optional. Completeness pointers
+live with the catalogue/benchmark row shapes. The whole document is JSON-only,
+at most64KiB and16 nested levels; unknown fields refuse.
+
+`extension_quantities` must cover exactly every constant's pointer: explicit
+`quantity_neutral` or a nonempty list of aggregate dimensions compatible with
+that constant's declared charge components. `charge_bindings` maps the three
+supported canonical price components to input tokens, output tokens and requests.
+The derived Interaction uses required advertised prices and all request ceilings;
+the descriptor cannot mark additional charges excluded or supply unmetered status.
+Base dispatch quantities cannot be removed. Additional billing dimensions remain
+unsupported, not silently omitted; this is not complete future-provider support.
+
+The installed WireProtocol now optionally supplies a request validator and its
+protected request fields. Missing local validation refuses source compilation;
+the legacy encoders/decoders and their existing callers are unchanged. Final
+envelope validation compares exact canonical JSON with the compiler-generated
+request, preserving types (true is not1), ceilings, constants and base fields.
+Benchmark comparability uses declared source+score_schema+scale identity, never
+source name alone. Current custom-source price basis accepts only
+`source_request_caps`; tariff-only authority remains the separate prerequisite
+below. Every one of these declarations remains non-authoritative until the
+existing publisher/current-grant/assignment path admits it.
+
 ## Intent and existing homes
 
 An owner can describe an unfamiliar connected source's catalogue, prices,

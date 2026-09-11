@@ -49,6 +49,15 @@
   No production consumer yet. Whole-source price/constant-effect closure,
   publication/capture and per-attempt enforcement remain required before activation.
 
+  Whole-source private composition777ff9ba now joins catalogue/price/benchmark,
+  request ceilings, extension quantity bindings, reservation, usage and capacity.
+  Initial review ADAPT117s found JSON type coercion and agent numeric-check bypass;
+  corrected315a0bba,703Windows/703actualLinux pass, zero skips. Exact correction
+  independently APPROVE78s,58cases reproduced. See
+  docs/reviews/2026-09-11-source-contract-compiler-proof.md. Existing descriptors,
+  public publication, same-digest live consumers and legacy full-price migration
+  remain unfinished. Do not mark connection-authored discovery or this task done.
+
 ## 2. Owner policy and execution
 
 - [ ] 2.1 Add versioned universe-local policy and current-choice input through authenticated app ingress; test generation conflicts, isolation and legacy-pin preservation.
