@@ -4,6 +4,7 @@ import json
 from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
+from itertools import permutations
 
 import pytest
 
@@ -44,7 +45,7 @@ def test_legacy_request_bytes_and_exclusions_are_preserved(model, tokens):
     new = outcome(lambda: NEW.constrain_inference(body, CAPS))
     assert old == new
     if old[0]:
-        assert json.dumps(old[1], sort_keys=True) == json.dumps(new[1], sort_keys=True)
+        assert json.dumps(old[1]) == json.dumps(new[1])
     assert body == original
 
 
@@ -72,6 +73,15 @@ def test_legacy_python_containers_do_not_silently_acquire_new_semantics():
     assert outcome(lambda: OLD.constrain_inference(body, iter(CAPS))) == outcome(
         lambda: NEW.constrain_inference(body, iter(CAPS)),
     )
+
+
+@pytest.mark.parametrize("caps", list(permutations(CAPS)))
+def test_every_legacy_cap_order_preserves_literal_request_serialization(caps):
+    body = {"messages": [{"role": "user", "content": "exact 🪐"}],
+            "model": "future", "max_tokens": 1000}
+    old = OLD.constrain_inference(body, caps)
+    new = NEW.constrain_inference(body, caps)
+    assert json.dumps(old, ensure_ascii=False) == json.dumps(new, ensure_ascii=False)
 
 
 @pytest.mark.parametrize("field", list(before._PRICE_FIELDS))

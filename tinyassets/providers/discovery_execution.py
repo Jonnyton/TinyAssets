@@ -257,7 +257,14 @@ The full source compiler must match every price/constant effect to these caps.
         validate_body(body)
         amounts = self._caps(caps)
         result = deepcopy(body) if self.legacy else json.loads(json.dumps(body, allow_nan=False))
-        for component, pointer, divisor in self.outputs:
+        outputs = self.outputs
+        if self.legacy:
+            # Old callers supplied cap order; keep literal request bytes stable,
+            # not only JSON meaning, for existing transport fingerprints.
+            by_component = {component: (pointer, divisor)
+                            for component, pointer, divisor in outputs}
+            outputs = tuple((component, *by_component[component]) for component in amounts)
+        for component, pointer, divisor in outputs:
             amount = amounts[component]
             whole, fraction = divmod(amount, divisor)
             digits = len(str(divisor)) - 1
