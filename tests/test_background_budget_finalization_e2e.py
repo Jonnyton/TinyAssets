@@ -9,10 +9,13 @@ provider binding/receipt/claim/reservation, and routing all use their real store
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from concurrent.futures import Future
 from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from tinyassets.background_branch_authority import (
     BackgroundBranchExecutorAudience,
@@ -38,9 +41,9 @@ from tinyassets.storage.provider_work_authority import db_path as authority_db_p
 
 
 class _CountingProvider(BaseProvider):
-    def __init__(self, on_call=None) -> None:
-        self.name = "codex"
-        self.family = "codex"
+    def __init__(self, on_call=None, *, name="codex") -> None:
+        self.name = name
+        self.family = name
         self.calls: list[ModelConfig] = []
         self.on_call = on_call
 
@@ -50,9 +53,9 @@ class _CountingProvider(BaseProvider):
         self.calls.append(config)
         return ProviderResponse(
             text="routed-ok",
-            provider="codex",
+            provider=self.name,
             model="fake",
-            family="codex",
+            family=self.family,
             latency_ms=0.0,
             input_tokens=700,
             output_tokens=300,
@@ -60,24 +63,27 @@ class _CountingProvider(BaseProvider):
         )
 
 
-def _seed_branch_version(tmp_path: Path):
+def _seed_branch_version(tmp_path: Path, *, policy=None):
     from tinyassets.branch_versions import publish_branch_version
     from tinyassets.daemon_server import initialize_author_server, save_branch_definition
 
-    node = NodeDefinition(
-        node_id="n1",
+    nodes = [NodeDefinition(
+        node_id=f"n{index + 1}",
         display_name="Background writer",
         prompt_template="Complete the assigned background task.",
-    )
+        llm_policy=node_policy,
+    ) for index, node_policy in enumerate(policy if isinstance(policy, list) else [policy])]
     branch = BranchDefinition(
         branch_def_id="branch_repo_spec_loop",
         name="Repository spec loop",
         author="acct_alice",
         visibility="private",
-        graph_nodes=[GraphNodeRef(id="n1", node_def_id="n1")],
-        edges=[EdgeDefinition(from_node="n1", to_node="END")],
+        graph_nodes=[GraphNodeRef(id=n.node_id, node_def_id=n.node_id) for n in nodes],
+        edges=[EdgeDefinition(from_node=n.node_id, to_node=(
+            nodes[index + 1].node_id if index + 1 < len(nodes) else "END"
+        )) for index, n in enumerate(nodes)],
         entry_point="n1",
-        node_defs=[node],
+        node_defs=nodes,
         state_schema=[],
     )
     initialize_author_server(tmp_path)
@@ -85,7 +91,7 @@ def _seed_branch_version(tmp_path: Path):
     return publish_branch_version(tmp_path, branch.to_dict(), publisher="acct_alice")
 
 
-def _seed_serving_assignment(tmp_path: Path) -> None:
+def _seed_serving_assignment(tmp_path: Path, *, model_access=None, services=("codex",)) -> None:
     from tinyassets.credential_vault import write_credential_vault
     from tinyassets.custom_agents import create_binding, publish_definition
     from tinyassets.provider_serving_binding import (
@@ -101,9 +107,11 @@ def _seed_serving_assignment(tmp_path: Path) -> None:
         [
             {
                 "credential_type": "llm_subscription",
-                "service": "codex",
-                "auth_json_b64": "e30=",
+                "service": service,
+                **({"auth_json_b64": "e30="} if service == "codex"
+                   else {"oauth_token": "synthetic-claude-test-only"}),
             }
+            for service in services
         ],
         owner_user_id="acct_alice",
         universe_id="universe_alice",
@@ -134,6 +142,7 @@ def _seed_serving_assignment(tmp_path: Path) -> None:
         agent_binding_id=agent["agent_binding_id"],
         expected_revision=1,
         provider="codex",
+        model_access=model_access,
     )
     set_serving(
         base_path=tmp_path,
@@ -147,7 +156,8 @@ def _seed_serving_assignment(tmp_path: Path) -> None:
     assert list_serving_universes(tmp_path) == ["universe_alice"]
 
 
-def _seed_claimable_background_path(tmp_path: Path):
+def _seed_claimable_background_path(tmp_path: Path, *, model_access=None,
+                                    services=("codex",), policy=None):
     from tests.test_cloud_automation_continuation import (
         BRANCH_TASK_ID,
         _activate_cloud,
@@ -159,7 +169,7 @@ def _seed_claimable_background_path(tmp_path: Path):
     )
     from tinyassets.daemon_registry import create_daemon, ensure_daemon_runtime
 
-    version = _seed_branch_version(tmp_path)
+    version = _seed_branch_version(tmp_path, policy=policy)
     daemon = create_daemon(
         tmp_path,
         display_name="Owner-authorized background daemon",
@@ -213,7 +223,16 @@ def _seed_claimable_background_path(tmp_path: Path):
         admission,
         audience=audience,
     )
-    _seed_serving_assignment(tmp_path)
+    if model_access is not None:
+        from tinyassets.daemon_server import set_founder_home
+
+        set_founder_home(
+            tmp_path,
+            founder_sub="acct_alice",
+            universe_id="universe_alice",
+            platform_generated=True,
+        )
+    _seed_serving_assignment(tmp_path, model_access=model_access, services=services)
 
     candidates = Epoch2BranchTaskAdapter(tmp_path).list_candidates(
         universe_id="universe_alice",
@@ -223,11 +242,11 @@ def _seed_claimable_background_path(tmp_path: Path):
     return BRANCH_TASK_ID, audience
 
 
-def _run_consumer_once(tmp_path: Path, monkeypatch):
+def _run_consumer_once(tmp_path: Path, monkeypatch, *, model_access=None,
+                       services=("codex",), policy=None, before_execution=None):
     import tinyassets.providers.call as provider_call_module
     from tinyassets.runtime.assigned_queue_consumer import AssignedQueueConsumer
 
-    branch_task_id, audience = _seed_claimable_background_path(tmp_path)
     observed_owner_states: list[BackgroundBranchAuthorityOwnerState] = []
 
     def observe_running_owner() -> None:
@@ -239,9 +258,12 @@ def _run_consumer_once(tmp_path: Path, monkeypatch):
         observed_owner_states.append(owner.state)
 
     fake = _CountingProvider(observe_running_owner)
+    fake.peers = {"codex": fake}
+    if "claude" in services:
+        fake.peers["claude-code"] = _CountingProvider(observe_running_owner, name="claude-code")
     previous_router = provider_call_module.get_provider_router()
     previous_force_mock = provider_call_module.is_force_mock()
-    provider_call_module.set_provider_router(ProviderRouter({"codex": fake}))
+    provider_call_module.set_provider_router(ProviderRouter(fake.peers))
     provider_call_module.set_force_mock(False)
     monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
     consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
@@ -274,6 +296,12 @@ def _run_consumer_once(tmp_path: Path, monkeypatch):
     consumer._executor.shutdown(wait=False, cancel_futures=True)
     consumer._executor = deferred
     try:
+        branch_task_id, audience = _seed_claimable_background_path(
+            tmp_path,
+            model_access=model_access,
+            services=services,
+            policy=policy,
+        )
         assert not hasattr(consumer, "worker_id_for")
         assert consumer.poll_once() == 1
         pending_owner = SQLiteBackgroundBranchAuthorityStore(tmp_path).get_owner(
@@ -282,6 +310,8 @@ def _run_consumer_once(tmp_path: Path, monkeypatch):
         )
         assert pending_owner is not None
         assert pending_owner.state is BackgroundBranchAuthorityOwnerState.PENDING
+        if before_execution is not None:
+            before_execution()
         deferred.run()
         for future in list(consumer._active.values()):
             future.result(timeout=10)
@@ -359,11 +389,144 @@ def test_carrier_launch_records_actual_usage(tmp_path: Path, monkeypatch) -> Non
     conn = sqlite3.connect(authority_db_path(tmp_path))
     conn.row_factory = sqlite3.Row
     cols = {
-        row["name"]
-        for row in conn.execute("PRAGMA table_info(provider_invocation_reservations)")
+        row["name"] for row in conn.execute("PRAGMA table_info(provider_invocation_reservations)")
     }
     assert "actual_total_tokens" in cols
     row = conn.execute(
         "SELECT actual_total_tokens FROM provider_invocation_reservations"
     ).fetchone()
     assert row["actual_total_tokens"] == 1000
+
+
+def test_model_selection_preserves_background_execution(tmp_path: Path, monkeypatch) -> None:
+    """Real owner opt-in must not remove the consumer's ability to launch work."""
+    from tinyassets.provider_assignment_manifest import ModelAccess
+
+    task_id, audience, consumer, fake, states = _run_consumer_once(
+        tmp_path,
+        monkeypatch,
+        model_access={"codex": ModelAccess("discovered")},
+    )
+    task = Epoch2BranchTaskAdapter(tmp_path).get(task_id)
+    assert task.status == "succeeded", task.error
+    assert task.claimed_by == consumer.consumer_id
+    assert len(fake.calls) == 1
+    assert states == [BackgroundBranchAuthorityOwnerState.RUNNING]
+    with sqlite3.connect(authority_db_path(tmp_path)) as conn:
+        receipts = [
+            json.loads(row[0])
+            for row in conn.execute(
+                "SELECT record_json FROM provider_work_receipts",
+            )
+        ]
+        reservations = [
+            json.loads(row[0])
+            for row in conn.execute(
+                "SELECT record_json FROM provider_invocation_reservations",
+            )
+        ]
+    assert len(receipts) == len(reservations) == 1
+    assert receipts[0]["schema_version"] == 4
+    assert receipts[0]["authority_scope"] == "manifest"
+    assert receipts[0]["provider"] is None
+    assert receipts[0]["binding_id"] is None
+    assert receipts[0]["actor_id"] == audience.daemon_id
+    assert reservations[0]["schema_version"] == 3
+    assert reservations[0]["selection"]["provider"] == "codex"
+    assert reservations[0]["state"] == "succeeded"
+    assert reservations[0]["actual_total_tokens"] == 1000
+    assert reservations[0]["actual_cost_microunits"] == 50
+
+
+@pytest.mark.parametrize("rotated", [None, "codex", "claude-code"])
+def test_background_selection_uses_independent_current_member(tmp_path, monkeypatch, rotated):
+    from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.provider_assignment import load_provider_assignment
+    from tinyassets.provider_assignment_manifest import ModelAccess
+
+    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
+
+    def rotate():
+        if rotated is not None:
+            write_credential_vault(
+                tmp_path / "universe_alice",
+                [
+                    {"credential_type": "llm_subscription", "service": "codex",
+                     "auth_json_b64": "eyJyb3RhdGVkIjp0cnVlfQ==" if rotated == "codex" else "e30="},
+                    {"credential_type": "llm_subscription", "service": "claude",
+                     "oauth_token": "rotated-test-only" if rotated == "claude-code"
+                     else "synthetic-claude-test-only"},
+                ], owner_user_id="acct_alice", universe_id="universe_alice",
+            )
+
+    task_id, _, _, fake, _ = _run_consumer_once(
+        tmp_path, monkeypatch,
+        services=("codex", "claude"),
+        model_access={name: ModelAccess("discovered") for name in ("codex", "claude-code")},
+        policy={"preferred": {"provider": "claude-code"}, "fallback_chain": []},
+        before_execution=rotate,
+    )
+    assert len(fake.calls) == 0
+    assert len(fake.peers["claude-code"].calls) == int(rotated != "claude-code")
+    task = Epoch2BranchTaskAdapter(tmp_path).get(task_id)
+    assert (task.status == "succeeded") == (rotated != "claude-code"), task.error
+    assignment = load_provider_assignment(tmp_path, universe_id="universe_alice")
+    assert assignment.provider == "codex"
+    with sqlite3.connect(authority_db_path(tmp_path)) as conn:
+        rows = [json.loads(row[0]) for row in conn.execute(
+            "SELECT record_json FROM provider_invocation_reservations",
+        )]
+    assert len(rows) == int(rotated != "claude-code")
+    if rows:
+        assert rows[0]["selection"]["provider"] == "claude-code"
+        assert rows[0]["state"] == "succeeded"
+
+
+def test_background_explicit_unknown_model_cannot_silently_default(tmp_path, monkeypatch):
+    from tinyassets.provider_assignment_manifest import ModelAccess
+
+    task_id, _, _, fake, _ = _run_consumer_once(
+        tmp_path, monkeypatch,
+        model_access={"codex": ModelAccess("discovered")},
+        policy={"preferred": {"provider": "codex", "model": "unavailable-model"}},
+    )
+    assert fake.calls == []
+    assert Epoch2BranchTaskAdapter(tmp_path).get(task_id).status != "succeeded"
+    with sqlite3.connect(authority_db_path(tmp_path)) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM provider_invocation_reservations",
+        ).fetchone() == (0,)
+
+
+@pytest.mark.parametrize("allowance", [1, 2])
+def test_background_members_share_one_attempt_budget(tmp_path, monkeypatch, allowance):
+    from tinyassets.provider_assignment_manifest import ModelAccess
+
+    monkeypatch.setenv("TINYASSETS_ALLOW_CLAUDE_SERVING", "1")
+    monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_UNIVERSE_MAX_INVOCATIONS", str(allowance))
+    task_id, _, _, fake, _ = _run_consumer_once(
+        tmp_path, monkeypatch, services=("codex", "claude"),
+        model_access={name: ModelAccess("discovered") for name in ("codex", "claude-code")},
+        policy=[{"preferred": {"provider": provider}, "fallback_chain": []}
+                for provider in ("codex", "claude-code")],
+    )
+    task = Epoch2BranchTaskAdapter(tmp_path).get(task_id)
+    assert (task.status == "succeeded") == (allowance == 2), task.error
+    assert len(fake.calls) == 1
+    assert len(fake.peers["claude-code"].calls) == allowance - 1
+    with sqlite3.connect(authority_db_path(tmp_path)) as conn:
+        receipts = [json.loads(row[0]) for row in conn.execute(
+            "SELECT record_json FROM provider_work_receipts",
+        )]
+        reservations = [json.loads(row[0]) for row in conn.execute(
+            "SELECT record_json FROM provider_invocation_reservations ORDER BY ordinal",
+        )]
+        assert conn.execute(
+            "SELECT COUNT(*) FROM provider_work_execution_claims",
+        ).fetchone() == (1,)
+    assert len(receipts) == 1
+    assert receipts[0]["max_invocations"] == allowance
+    assert len(reservations) == allowance
+    assert {r["receipt_id"] for r in reservations} == {receipts[0]["receipt_id"]}
+    assert [r["state"] for r in reservations] == ["succeeded"] * allowance
+    assert sum(r["actual_total_tokens"] for r in reservations) == 1000 * allowance

@@ -2388,7 +2388,7 @@ class SQLiteProviderWorkAuthorityStore:
         self,
         conn: sqlite3.Connection,
         *,
-        authority: ProviderUniverseWorkAuthority,
+        authority: ProviderUniverseWorkAuthority | ProviderUniverseWorkReceipt,
         worker_id: str,
         runtime_id: str,
         claim_nonce_digest: str,
@@ -2397,6 +2397,8 @@ class SQLiteProviderWorkAuthorityStore:
         role: str,
         max_tokens: int,
         max_cost_microunits: int,
+        manifest_bindings: tuple[ProviderWorkBinding, ...] = (),
+        selection: ProviderInvocationSelection | None = None,
     ) -> ProviderInvocationCarrier:
         """Issue/claim from durable background state and arm atomically."""
 
@@ -2405,15 +2407,17 @@ class SQLiteProviderWorkAuthorityStore:
 
         now = self._now()
         transaction = _Transaction(conn)
-        receipt_candidate = _receipt_from_authority(
-            authority,
-            created_at=self._timestamp(now),
-        )
-        issued = transaction._issue_universe_receipt(
-            authority,
-            receipt_candidate,
-            now=now,
-        )
+        manifest = type(authority) is ProviderUniverseWorkReceipt
+        if manifest:
+            if authority.work_item_kind != "background_attempt":
+                raise PermissionError("background provider receipt has the wrong work kind")
+            self._validate_native_work_selection(conn, authority, selection)
+            issued = transaction._issue_manifest_receipt(authority, manifest_bindings, now=now)
+        else:
+            receipt_candidate = _receipt_from_authority(
+                authority, created_at=self._timestamp(now),
+            )
+            issued = transaction._issue_universe_receipt(authority, receipt_candidate, now=now)
         if (
             issued.outcome
             not in {
@@ -2453,6 +2457,7 @@ class SQLiteProviderWorkAuthorityStore:
             claim_candidate,
             now=now,
             allow_test_fixtures=self._allow_test_fixtures,
+            manifest_authorized=manifest,
         )
         if (
             claimed.outcome
@@ -2471,16 +2476,18 @@ class SQLiteProviderWorkAuthorityStore:
             claim_digest=claim.claim_digest,
             claim_generation=claim.generation,
             invocation_key=invocation_key,
-            operation=authority.operation,
+            operation="background_branch_run" if manifest else authority.operation,
             role=role,
             max_tokens=max_tokens,
             max_cost_microunits=max_cost_microunits,
+            selection=selection,
         )
         reserved = transaction.reserve_invocation(
             request,
             now=now,
             created_at=self._timestamp(now),
             allow_test_fixtures=self._allow_test_fixtures,
+            manifest_selection=selection,
         )
         if (
             reserved.record is None
@@ -2496,6 +2503,7 @@ class SQLiteProviderWorkAuthorityStore:
             ProviderInvocationLaunchRequest.from_reservation(reserved.record),
             now=now,
             allow_test_fixtures=self._allow_test_fixtures,
+            manifest_selection=selection,
         )
         if (
             armed.outcome is not ProviderWorkAuthorityWriteOutcome.APPLIED

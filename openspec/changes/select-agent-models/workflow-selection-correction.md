@@ -4,6 +4,38 @@ September 11, 2026, 20:25 UTC. Correction proposal and reproduced blocker;
 The initial proposal below is superseded by the reviewed disposition immediately
 below. Runtime integration remains unfinished.
 
+## Native background compatibility connected — September11 23:58UTC
+
+The assigned background consumer now uses the same accepted-member selection
+fence for manifest assignments. It preserves canonical task, activation, attempt,
+owner and executor checks; it issues one aggregate receipt and claim for the
+background attempt, with per-call selected-member reservations. No synthetic
+provider binding is created for a manifest and its claim identity does not depend
+on the structural default's credential. Actual selected custody is snapshotted.
+Legacy background admission remains intact. No user workflow was edited or run.
+
+Windows Python3.14 at ce5837fb plus this working-tree correction:
+`python -m pytest -q tests/test_background_budget_finalization_e2e.py --tb=short
+--show-capture=no` passes9 in8.16s, zero skips. Real-store consumer proofs cover
+owner model-access opt-in, independent provider with empty fallback, unrelated
+anchor rotation, selected-member rotation refusal, unknown model refusal and
+two sources sharing one receipt/claim/allowance (including exhaustion before
+the second launch). Actual usage settles once and the main choice is unchanged.
+
+`python -m pytest -q tests/test_run_provider_session.py
+tests/test_assigned_queue_consumer.py tests/test_background_budget_finalization_e2e.py
+tests/test_provider_work_authority.py tests/test_provider_invocation_selection.py
+tests/test_selected_model_authority.py tests/test_app_model_picker.py
+tests/test_app_model_choice.py --tb=short --show-capture=no`
+passes312 in32.77s,84 dependency warnings, zero skips. Ruff, plugin build/import
+and strict OpenSpec validation pass. This group excludes the separately documented
+main-baseline Windows symlink privilege failure, not via a skip or quarantine.
+No new Linux, independent exact-head approval, deployment or live selector proof.
+
+Native defaults only remain supported here. Prepared HTTP workflow selection,
+native explicit catalogue/execution and integrated live selector acceptance are
+still open; do not call these local compatibility tests a usable MVP release.
+
 ## Foreground native-manifest execution connected — September11
 
 The two real bind/enable/run regressions now pass. Foreground work issues one
@@ -34,7 +66,7 @@ credentials/providers only; private workflow and main-provider choice unchanged.
 Ruff and plugin mirror/import pass. No Linux or live execution claim yet.
 
 Still required: HTTP prepared model/discovery admission and router propagation,
-background workflow integration, full fallback/loop budget coverage, native
+HTTP background workflow integration, full fallback/loop budget coverage, native
 explicit-model catalogue/execution, final integrated tests/review/CI/deploy and
 rendered selector acceptance. Passing the two foreground regressions does not
 complete these requirements or make this candidate release-ready.
