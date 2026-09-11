@@ -6,7 +6,7 @@
 ## 2. Broker execution
 
 - [x] 2.1 Add bounded child-only redirect metadata and shared DNS/transport deadline plumbing without changing no-follow behavior; differential-test the legacy path.
-- [ ] 2.2 Implement approved redirect chains, per-hop authority/network rechecks, anonymous cross-origin behavior and sensitive-material declassification; prove all design refusal and budget cases.
+- [x] 2.2 Implement approved redirect chains, per-hop authority/network rechecks, anonymous cross-origin behavior and sensitive-material declassification; prove all design refusal and budget cases.
 - [x] 2.3 Verify the real broker/effect/code-node composition returns usable bounded text with no redirect-capability leaks, duplicate effects or private-workflow changes.
 
 ## 3. Delivery and acceptance
@@ -126,3 +126,39 @@ query values of at least16characters. That cutoff is NOT proof that shorter
 values cannot be capabilities. Independent review must resolve whether this
 meets the declared confidentiality contract or needs correction; do not quietly
 weaken that contract or call arbitrary encoding/partial reflection protected.
+
+## First independent implementation review and corrections — September11
+
+Claude/Opus approved exact8bc0175b after450s, with no pre-live blockers, then
+independently ran50 chain tests (26.18s). The final wrapper output omitted its
+earlier full review; it was recovered verbatim from this dispatched review's
+own transcript. Durable artifact in the lead checkout:
+docs/reviews/2026-09-11-approved-download-implementation-opus.md.
+This is the download review, not another model-selection review.
+
+The reviewer accepted the cutoff for conventional long opaque capabilities
+versus short control values. That is not a guarantee against arbitrary short
+bare-token or adversarially transformed reflections. Complete URLs/paths/query
+pairs remain tracked at any length; actual credentials/authenticators remain
+tracked at any length. Task2.2's implementation disposition is now complete.
+
+Two suggested improvements were taken: C1 scans long path segments as well as
+query values, and C3 propagates authority revocation raised at the actual dial
+checkpoint. Four new cases first failed on8bc0175b and now pass. Windows
+`python -m pytest -q tests/test_http_redirect_chain.py
+tests/test_http_redirect_transport.py tests/test_http_redirect_composition.py
+--tb=short --show-capture=no` passed78 in42.91s. Mirror/import passes.
+The changed head requires a focused exact-head review before readiness.
+
+Non-blocking post-live follow-ups from the reviewer: C2 distinct fixed reason
+for capability-echo refusal; C4 whether mid-chain grant action-cap changes must
+be observed beyond this one admitted effect; C5 avoid unused body encoding on
+the bodyless redirect branch. No new permission or user workflow work is implied.
+
+Draft PR3837 was opened on8bc0175b for existing Ubuntu3.11 CI. Local Docker
+startup failed on a stale inaccessible runtime reparse point; a preserving
+rename also refused without modifying it. No reset, data removal or settings
+change. The changed runtime paths are HTTP transport/permission handling, not
+sandbox, filesystem helpers, process limits or workspace execution. Existing
+Linux CI is the available Linux verification path; inspect actual targeted
+coverage, never report the unavailable local oracle as passing.

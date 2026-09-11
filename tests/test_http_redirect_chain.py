@@ -281,6 +281,37 @@ def test_revocation_after_followup_dns_stops_before_its_socket(chain):
     assert len(chain.state["sockets"]) == 1
 
 
+@pytest.mark.parametrize("checkpoint", [3, 6])
+def test_revocation_at_actual_dial_preserves_authority_error(chain, checkpoint):
+    chain.state["responses"] = [_redirect("https://cdn.example.com/blob")]
+    checks = 0
+
+    def recheck(deadline):
+        nonlocal checks
+        checks += 1
+        # Before DNS, after DNS, and at the dial, once per hop.
+        if checks == checkpoint:
+            raise GrantResolutionError("outbound connection authority changed")
+
+    with pytest.raises(GrantResolutionError, match="authority changed"):
+        _request(_driver(chain), revalidate_authority=recheck)
+    assert checks == checkpoint
+    assert len(chain.state["sockets"]) == (0 if checkpoint == 3 else 1)
+
+
+@pytest.mark.parametrize("encoded", [False, True])
+def test_reflected_path_segment_capability_is_refused(chain, encoded):
+    token = "opaque-path-capability-123456789"
+    path_token = token.replace("-", "%2D") if encoded else token
+    chain.state["responses"] = [
+        _redirect(f"https://cdn.example.com/downloads/{path_token}/file"),
+        {"body": token.encode()},
+    ]
+    with pytest.raises(ProxyRequestError):
+        _request(_driver(chain))
+    assert len(chain.state["requests"]) == 2
+
+
 @pytest.mark.parametrize("change", ["connection", "grant", "incarnation", "policy", "mode"])
 def test_real_broker_rechecks_the_original_ledger_authority_between_hops(chain, tmp_path, change):
     ledger = ConnectionLedger(tmp_path / "outbound.db")

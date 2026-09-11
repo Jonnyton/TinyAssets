@@ -2319,7 +2319,7 @@ def _redirect_target(
 def _redirect_capability_material(location: str, target: _CanonicalOutboundUrl) -> set[str]:
     """Conventional capability echoes, not a proof against arbitrary encodings.
 
-    Protect complete URLs/path/query and opaque query values. Short control
+    Protect complete URLs/path/query and opaque query values/path segments. Short control
     values (e.g. version/format switches) are not individually capabilities;
     matching a one-character value would reject almost every downloaded body.
     Raw/resolved connection secrets are ALWAYS scanned separately, at any length.
@@ -2329,6 +2329,7 @@ def _redirect_capability_material(location: str, target: _CanonicalOutboundUrl) 
     material = {location, url, target.path_qs}
     if path != "/":
         material.add(path)
+    material.update(segment for segment in path.split("/") if len(segment) >= 16)
     if query:
         material.add(query)
         for key, value in urllib.parse.parse_qsl(query, keep_blank_values=True):
@@ -2405,7 +2406,7 @@ def _execute_pinned_https_request(
         response = opener.open(request, timeout=min(timeout, remaining))
     except _TotalDeadlineExceeded:
         deadline_exceeded = True
-    except SsrfValidationError:
+    except (SsrfValidationError, GrantResolutionError):
         raise
     except Exception as exc:
         # A deadline breach during the status-line/header parse surfaces as a
