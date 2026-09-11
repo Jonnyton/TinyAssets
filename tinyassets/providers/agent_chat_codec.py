@@ -183,31 +183,30 @@ def _assistant(message: dict[str, Any]) -> tuple[dict[str, Any], tuple[str, ...]
     return result, dropped, incompatible
 
 
-def decode_openai_chat_agent(
-    response_body: Any, *, source_ref: str, requested_model: str, tool_names: frozenset[str],
-) -> AgentReply:
-    """Validate a complete response before exposing any requested tool."""
+def validate_reply_context(
+    source_ref: str, requested_model: str, tool_names: frozenset[str],
+) -> None:
+    """Validate the source and captured tool inventory without a wire response."""
     if not _identifier(source_ref, 4096) or not _identifier(requested_model, 4096):
         raise _bad("source and requested model are required")
     if not isinstance(tool_names, frozenset) or any(
         not isinstance(name, str) or not _NAME.fullmatch(name) for name in tool_names
     ):
         raise _bad("invalid enabled tool names")
-    if not isinstance(response_body, dict) or response_body.get("error") is not None:
-        raise _bad("response unavailable")
-    choices = response_body.get("choices")
-    if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
-        raise _bad("exactly one choice required")
-    choice = choices[0]
-    if choice.get("error") is not None or choice.get("finish_reason") == "error":
+
+
+def reply_state(
+    message: dict[str, Any], *, finish: str, calls: tuple[ToolRequest, ...],
+    incompatible: bool,
+) -> tuple[StopReason, str | None, str | None]:
+    """State semantics shared by wire decoding and the version-one journal.
+
+    Callers validate the message projection and complete call batch first. The
+    journal keeps its historical finish labels; no HTTP envelope is required to
+    validate those records and no held state gains execution authority here.
+    """
+    if finish == "error":
         raise _bad("choice unavailable")
-    message = choice.get("message")
-    if not isinstance(message, dict):
-        raise _bad("assistant message required")
-    projection, dropped, incompatible = _assistant(message)
-    calls = _calls(message.get("tool_calls"), tool_names)
-    finish = choice.get("finish_reason")
-    finish = finish if isinstance(finish, str) else ""
     refusal = message.get("refusal")
     if refusal is not None and not isinstance(refusal, str):
         raise _bad("invalid refusal field")
@@ -231,6 +230,32 @@ def decode_openai_chat_agent(
         stop = "completed"
     elif not calls and finish == "tool_calls":
         raise _bad("tool finish without tool requests")
+    return stop, text, refusal
+
+
+def decode_openai_chat_agent(
+    response_body: Any, *, source_ref: str, requested_model: str, tool_names: frozenset[str],
+) -> AgentReply:
+    """Validate a complete response before exposing any requested tool."""
+    validate_reply_context(source_ref, requested_model, tool_names)
+    if not isinstance(response_body, dict) or response_body.get("error") is not None:
+        raise _bad("response unavailable")
+    choices = response_body.get("choices")
+    if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
+        raise _bad("exactly one choice required")
+    choice = choices[0]
+    if choice.get("error") is not None or choice.get("finish_reason") == "error":
+        raise _bad("choice unavailable")
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        raise _bad("assistant message required")
+    projection, dropped, incompatible = _assistant(message)
+    calls = _calls(message.get("tool_calls"), tool_names)
+    finish = choice.get("finish_reason")
+    finish = finish if isinstance(finish, str) else ""
+    stop, text, refusal = reply_state(
+        message, finish=finish, calls=calls, incompatible=incompatible,
+    )
     usage = response_body.get("usage")
 
     def tokens(name: str) -> int | None:

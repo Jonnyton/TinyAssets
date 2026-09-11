@@ -177,24 +177,16 @@ def load_reply(raw: str, candidate: RoundInput) -> codec.AgentReply:
     if tuple(requests) != (calls if value["stop"] == "tool_requests" else ()):
         raise invalid()
     message = {**assistant, "refusal": value["refusal"]}
-    decoded = codec.decode_openai_chat_agent(
-        {
-            "choices": [{"message": message, "finish_reason": value["raw_finish_reason"]}],
-            "model": value["reported_model"],
-            "usage": {
-                "prompt_tokens": value["input_tokens"],
-                "completion_tokens": value["output_tokens"],
-            },
-        },
-        source_ref=candidate.source_ref,
-        requested_model=candidate.model,
-        tool_names=candidate.tool_names(),
+    codec.validate_reply_context(candidate.source_ref, candidate.model, candidate.tool_names())
+    stop, text, refusal = codec.reply_state(
+        message, finish=value["raw_finish_reason"], calls=calls,
+        incompatible=False,
     )
     # Unknown non-empty dropped fields were intentionally not retained by the codec.
     # Their absence may improve a re-decode, but must never promote the held snapshot.
     held_unknown = value["stop"] == "unknown" and bool(value["dropped_fields"])
-    if (decoded.stop != value["stop"] and not held_unknown) or (
-        decoded.text != value["text"] or decoded.refusal != value["refusal"]
+    if (stop != value["stop"] and not held_unknown) or (
+        text != value["text"] or refusal != value["refusal"]
     ):
         raise invalid()
     values = {key: val for key, val in value.items() if key != "version"}

@@ -45,6 +45,13 @@
   docs/reviews. Public current/saved plan consumption remains unfinished.
 - [ ] 2.4 Resolve the shared HTTP engine-tool-loop prerequisite and prove actual authorized tools work before enabling HTTP full-agent selection.
 
+  September11 internal provider-boundary correction: version-one journal replies
+  now validate their canonical record directly, without a synthetic vendor HTTP
+  response. Frozen parent decoder/loader differential tests and the expanded
+  inference/continuation group pass259Windows/259actualLinux, zero skips.
+  See docs/reviews/2026-09-11-agent-reply-record-proof.md. Exact-head review and
+  the remaining discovery/executor coupling corrections are pending; not deployed.
+
   September10 integration shape a5689312 independently ADAPT294s; seven mandatory
   corrections incorporated in interactive-agent-runtime.md. Portable completed
   history, guarded journal retry/unused abandon, and constrained tool-shaped HTTP
