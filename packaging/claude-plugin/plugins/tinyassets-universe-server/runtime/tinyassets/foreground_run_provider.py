@@ -596,6 +596,12 @@ class _ForegroundRunProviderSession:
                 return response, "mock"
 
         self._ensure_admitted()
+        from tinyassets.shared_self import prepare_shared_self_turn, shared_self_requested
+
+        if shared_self_requested(self._branch_snapshot):
+            prompt, system, config = prepare_shared_self_turn(
+                self._base_path, self._universe_id, self._principal_id, prompt, config,
+            )
         with self._authorize_attempt(
             role=role,
             prompt=prompt,
