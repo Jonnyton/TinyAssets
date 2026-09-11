@@ -193,6 +193,17 @@ def _validate_chat_request(body):
         "model", "messages", "temperature", "max_tokens", "tools", "tool_choice",
     }:
         raise ValueError("unsupported constrained wire body")
+    if "max_tokens" in body and (type(body["max_tokens"]) is not int
+                                 or not 1 <= body["max_tokens"] <= 10**18):
+        raise ValueError("invalid constrained wire output limit")
+    if "temperature" in body:
+        value = body["temperature"]
+        try:
+            valid = type(value) in (float, int) and math.isfinite(value)
+        except OverflowError:
+            valid = False
+        if not valid:
+            raise ValueError("invalid constrained wire temperature")
     if "tools" in body or "tool_choice" in body:
         from tinyassets.providers.agent_chat_codec import validate_agent_body
 
@@ -206,17 +217,6 @@ def _validate_chat_request(body):
                 or message["role"] not in ("system", "user", "assistant")
                 or type(message["content"]) is not str for message in messages)):
         raise ValueError("unsupported constrained wire messages")
-    if "max_tokens" in body and (type(body["max_tokens"]) is not int
-                                 or not 1 <= body["max_tokens"] <= 10**18):
-        raise ValueError("invalid constrained wire output limit")
-    if "temperature" in body:
-        value = body["temperature"]
-        try:
-            valid = type(value) in (float, int) and math.isfinite(value)
-        except OverflowError:
-            valid = False
-        if not valid:
-            raise ValueError("invalid constrained wire temperature")
 
 
 def _chat_agent_codec() -> AgentCodec:

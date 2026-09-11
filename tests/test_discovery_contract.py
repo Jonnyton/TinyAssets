@@ -240,3 +240,43 @@ def test_literal_extension_nesting_is_explicitly_bounded():
         nested = nested["nested"]
     with pytest.raises(ValueError, match="nesting"):
         SourceContract.compile(document)
+
+
+@pytest.mark.parametrize("change", ["tuple", "integer_keys"])
+def test_envelope_rejects_types_that_json_would_silently_coerce(change):
+    contract = SourceContract.compile(descriptor())
+    request = body()
+    envelope = contract.constrain_inference(request, caps())
+    if change == "tuple":
+        envelope["messages"] = tuple(envelope["messages"])
+    else:
+        envelope["billing"]["ceilings"] = {
+            int(key): value for key, value in envelope["billing"]["ceilings"].items()
+        }
+    with pytest.raises(ValueError, match="JSON|keys"):
+        contract.validate_envelope(request, envelope, caps())
+
+
+@pytest.mark.parametrize("agent", [False, True])
+@pytest.mark.parametrize("limit", [None, True, 0, -1, 10**18 + 1])
+def test_text_and_agent_requests_share_numeric_bounds(agent, limit):
+    document = descriptor()
+    document["inference"]["allowed"] += ["tools", "tool_choice"]
+    contract = SourceContract.compile(document)
+    request = {**body(), "max_tokens": limit}
+    if agent:
+        request.update(tool_choice="auto", tools=[{
+            "type": "function", "function": {"name": "read", "description": "",
+                                               "parameters": {"type": "object"}},
+        }])
+    with pytest.raises(ValueError, match="output limit"):
+        contract.constrain_inference(request, caps())
+    with pytest.raises(ValueError, match="output limit"):
+        contract.validate_envelope(request, request, caps())
+
+
+def test_base_request_is_not_silently_coerced_before_envelope_validation():
+    request = body()
+    request["messages"] = tuple(request["messages"])
+    with pytest.raises(ValueError, match="JSON"):
+        SourceContract.compile(descriptor()).constrain_inference(request, caps())

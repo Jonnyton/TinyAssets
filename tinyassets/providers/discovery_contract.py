@@ -35,17 +35,17 @@ def _canonical(document):
     return json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
-def _json_shape(value, depth=0):
-    if depth > 16:
+def _json_shape(value, depth=0, *, maximum_depth=16):
+    if maximum_depth is not None and depth > maximum_depth:
         raise ValueError("source contract nesting exceeds the limit")
     if type(value) is dict:
         if any(type(key) is not str for key in value):
             raise ValueError("source contract object keys must be strings")
         for nested in value.values():
-            _json_shape(nested, depth + 1)
+            _json_shape(nested, depth + 1, maximum_depth=maximum_depth)
     elif type(value) is list:
         for nested in value:
-            _json_shape(nested, depth + 1)
+            _json_shape(nested, depth + 1, maximum_depth=maximum_depth)
     elif type(value) not in (str, int, float, bool, type(None)):
         raise ValueError("source contract requires JSON values")
 
@@ -186,10 +186,14 @@ class SourceContract:
                 self.benchmark.decode(payload, now=now, max_age=max_age).items()}
 
     def constrain_inference(self, body, caps):
+        _json_shape(body, maximum_depth=None)
         return self.request.constrain(body, caps, validate_body=self.wire.request_validator)
 
     def validate_envelope(self, body, envelope, caps):
         expected = self.constrain_inference(body, caps)
+        # Do not impose the descriptor's nesting limit on user tool schemas or
+        # completed history. Reject Python-only types before JSON can coerce them.
+        _json_shape(envelope, maximum_depth=None)
         # JSON bytes preserve types (True != 1 here) and reject extra/mutated fields.
         if _canonical(envelope) != _canonical(expected):
             raise ValueError("source final envelope differs from compiled contract")
