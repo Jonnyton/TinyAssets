@@ -181,6 +181,42 @@ class WireProtocol:
     decode: Callable
     headers: tuple[tuple[str, str], ...] = ()
     agent_factory: Callable[[], AgentCodec] | None = None
+    request_validator: Callable[[dict], None] | None = None
+    request_fields: frozenset[str] = frozenset()
+
+
+def _validate_chat_request(body):
+    """Installed wire structure only; no knowledge of a source's extensions."""
+    import math
+
+    if type(body) is not dict or not {"model", "messages"} <= body.keys() <= {
+        "model", "messages", "temperature", "max_tokens", "tools", "tool_choice",
+    }:
+        raise ValueError("unsupported constrained wire body")
+    if "tools" in body or "tool_choice" in body:
+        from tinyassets.providers.agent_chat_codec import validate_agent_body
+
+        validate_agent_body(body)
+        return
+    model, messages = body["model"], body["messages"]
+    if (type(model) is not str or not model or len(model) > 200
+            or not model.isprintable() or model != model.strip()
+            or type(messages) is not list or any(
+                type(message) is not dict or message.keys() != {"role", "content"}
+                or message["role"] not in ("system", "user", "assistant")
+                or type(message["content"]) is not str for message in messages)):
+        raise ValueError("unsupported constrained wire messages")
+    if "max_tokens" in body and (type(body["max_tokens"]) is not int
+                                 or not 1 <= body["max_tokens"] <= 10**18):
+        raise ValueError("invalid constrained wire output limit")
+    if "temperature" in body:
+        value = body["temperature"]
+        try:
+            valid = type(value) in (float, int) and math.isfinite(value)
+        except OverflowError:
+            valid = False
+        if not valid:
+            raise ValueError("invalid constrained wire temperature")
 
 
 def _chat_agent_codec() -> AgentCodec:
@@ -201,6 +237,9 @@ ANTHROPIC_VERSION = "2023-06-01"
 PROTOCOLS = {
     "openai_chat": WireProtocol(
         encode_openai_chat, decode_openai_chat, agent_factory=_chat_agent_codec,
+        request_validator=_validate_chat_request,
+        request_fields=frozenset({"model", "messages", "temperature", "max_tokens",
+                                  "tools", "tool_choice"}),
     ),
     "anthropic_messages": WireProtocol(
         encode_anthropic_messages, decode_anthropic_messages,
