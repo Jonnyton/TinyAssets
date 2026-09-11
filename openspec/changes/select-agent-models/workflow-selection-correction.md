@@ -181,6 +181,23 @@ is neither taken over nor substituted as this task's implementation.
 
 ## Version4 aggregate receipt implementation — September11 23:00UTC
 
+### Receipt storage migration verified — September11
+
+The receipt table now supports an aggregate manifest without a provider anchor.
+The atomic migration preserves existing authority JSON, claims, reservations,
+indexes and triggers; interrupted copies/drop/rename roll back, concurrent opens
+are idempotent, and unfamiliar or malformed schemas refuse without discarding
+data. The foreign-key setting is restored on success and failure. No public
+issuer emits manifest receipts and a stored inert manifest still cannot claim
+launch authority through the legacy path.
+
+Windows Python3.14: `python -m pytest -q tests/test_provider_work_authority.py
+--tb=short --show-capture=no` passes101cases in5.69s, zero skips, including9 new
+migration cases. Ruff and canonical plugin mirror/import pass. The expanded
+run/consumer/background command below remains50passed/2failed in11.70s: both
+known native-manifest foreground launch failures, no additional failures. This
+is local migration evidence, not Linux, release review or live readiness.
+
 Implemented the reviewed inert receipt representation and strict serialization.
 Manifest receipts preserve the existing aggregate identity, subject and budget,
 while refusing every provider/member/credential/parent field. Provider-bound
