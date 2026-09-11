@@ -34,4 +34,18 @@ scripts/linux_oracle.py with Python3.11.16/git2.47.3/bubblewrap0.12.0.
 66 new cases include differential reservation checks against the unchanged
 SelectedModel implementation, malformed shapes, exact caps and usage rounding.
 Ruff clean,421-file plugin build/import probe and diff check pass.
-Independent exact-head review required; no push/deployment or live proof.
+Independent exact6f4096cd0fa41476324273b4fdae01d2b9a9350f review completed104s,
+terminal exit0, APPROVE for the inactive inner compiler only.66 new cases
+independently passed0.41s, zero skips, via python -B -m pytest -q
+tests/test_discovery_execution_shapes.py -p no:cacheprovider --tb=short
+--show-capture=no -rs, Windows September10 local/September11 UTC; broader group
+not rerun. Exact-range whitespace and canonical/mirror comparison passed.
+No required implementation correction. No push/deployment or live proof.
+
+Review makes later activation requirements explicit: installed-codec validation
+must cover injected extensions' paths, meanings, scales/effects and codec-specific
+protected fields, not only the original body. Declared charge_components alone
+is no proof of bounded effects. Dispatch must clamp affordable output to actual
+executor/model limits and reserve that bounded quantity; free output price's
+None is not an unlimited execution allowance. Whole-source compilation and
+the production consumers remain unbuilt and unapproved by this review.

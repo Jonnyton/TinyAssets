@@ -36,7 +36,10 @@
   Pure usage/capacity/request-ceiling execution shapes are now built, including
   exact observed-cost rounding and existing token/request reservation arithmetic.
   538Windows/538actualLinux pass, zero skips; see
-  docs/reviews/2026-09-11-discovery-execution-proof.md. Exact review pending.
+  docs/reviews/2026-09-11-discovery-execution-proof.md. Exact6f4096cd APPROVE104s,
+  66cases independently passed. Activation must additionally validate injected
+  extensions against installed-codec facts and clamp/reserve actual output limits;
+  declared charge references and free-output arithmetic are not those proofs.
   No production consumer yet. Whole-source price/constant-effect closure,
   publication/capture and per-attempt enforcement remain required before activation.
 
