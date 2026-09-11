@@ -2253,6 +2253,21 @@ def _read_capped_body(response: Any, max_body_bytes: int) -> bytes | None:
     return b"".join(chunks)
 
 
+@dataclass(repr=False)
+class _HttpHopMetadata:
+    """Child-local bounded hop data. Never returned in a transport result."""
+
+    locations: tuple[str, ...] = ()
+    body_bytes: int = 0
+
+
+def _remaining_redirect_seconds(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if not math.isfinite(remaining) or remaining <= 0:
+        raise SsrfValidationError("outbound request exceeded the total deadline")
+    return remaining
+
+
 def _execute_pinned_https_request(
     *,
     method: str,
@@ -2267,9 +2282,17 @@ def _execute_pinned_https_request(
     max_body_bytes: int,
     max_header_count: int,
     max_header_bytes: int,
+    absolute_deadline: float | None = None,
+    hop_metadata: _HttpHopMetadata | None = None,
 ) -> dict[str, Any]:
     """Fire ONE request: no ambient proxies, no redirects, bounded response."""
-    deadline = time.monotonic() + max_total_seconds
+    deadline = (
+        time.monotonic() + max_total_seconds
+        if absolute_deadline is None else absolute_deadline
+    )
+    remaining = (
+        max_total_seconds if absolute_deadline is None else _remaining_redirect_seconds(deadline)
+    )
     url = _canonical_request_url(canonical)
     request = urllib.request.Request(url, data=body, method=method, headers=headers)
 
@@ -2294,7 +2317,7 @@ def _execute_pinned_https_request(
         # Cap connect + header phase at the smaller of the per-op timeout and the
         # remaining total budget; the socket-layer deadline (_DeadlineSocket)
         # additionally bounds the status-line + header parse against the total.
-        response = opener.open(request, timeout=min(timeout, max_total_seconds))
+        response = opener.open(request, timeout=min(timeout, remaining))
     except _TotalDeadlineExceeded:
         deadline_exceeded = True
     except SsrfValidationError:
@@ -2348,6 +2371,15 @@ def _execute_pinned_https_request(
                 if body_bytes is None:
                     bound_violation = "outbound response exceeds the size bound"
                 else:
+                    if hop_metadata is not None:
+                        # Preserve multiplicity BEFORE the legacy dictionary
+                        # projection discards duplicate header names. Bounds
+                        # above apply to all raw headers and the decoded body.
+                        hop_metadata.locations = tuple(
+                            str(value) for name, value in raw_headers
+                            if str(name).lower() == "location"
+                        )
+                        hop_metadata.body_bytes = len(body_bytes)
                     sanitized = {
                         "status": status,
                         "reason": reason,
@@ -2381,6 +2413,8 @@ def _execute_pinned_https_request(
         raise SsrfValidationError(bound_violation)
     if sanitized is None:
         raise ProxyRequestError("outbound request failed at destination")
+    if absolute_deadline is not None:
+        _remaining_redirect_seconds(deadline)
     return sanitized
 
 
@@ -2467,6 +2501,8 @@ class _SsrfHardenedHttpDriver:
         "_max_total_seconds",
         "_open_socket",
         "_resolver",
+        "_resolver_base",
+        "_dns_timeout",
         "_ssl_context",
         "_timeout",
         "_validator",
@@ -2491,6 +2527,8 @@ class _SsrfHardenedHttpDriver:
         # the production default wraps getaddrinfo in the threaded deadline so a
         # hanging resolver is abandoned instead of escaping the budget.
         self._resolver = resolver or _make_default_resolver(dns_timeout)
+        self._resolver_base = resolver or _default_dns_resolver
+        self._dns_timeout = float(dns_timeout)
         self._validator = validator or _classify_global_address
         self._open_socket = open_socket or _default_open_socket
         self._ssl_context = ssl_context if ssl_context is not None else _default_ssl_context()
@@ -2500,6 +2538,28 @@ class _SsrfHardenedHttpDriver:
         self._max_body_bytes = int(max_body_bytes)
         self._max_header_count = int(max_header_count)
         self._max_header_bytes = int(max_header_bytes)
+
+    def _redirect_address(self, canonical: _CanonicalOutboundUrl, deadline: float) -> str:
+        """Resolve within the SAME chain deadline, including initial DNS.
+
+        A stuck resolver is abandoned inside the existing broker child. This
+        does not claim to cancel a native resolver thread instantly.
+        """
+        remaining = _remaining_redirect_seconds(deadline)
+        if canonical.is_ip_literal:
+            pinned = self._validator(canonical.hostname)
+        else:
+            def resolve(host: str, port: int) -> list[str]:
+                return _threaded_dns_resolve(
+                    host, port, base_resolver=self._resolver_base,
+                    timeout=min(self._dns_timeout, remaining),
+                )
+
+            pinned = _resolve_pinned_addresses(
+                canonical.hostname, canonical.port, resolver=resolve, validator=self._validator,
+            )[0]
+        _remaining_redirect_seconds(deadline)
+        return pinned
 
     def __call__(
         self,

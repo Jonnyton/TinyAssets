@@ -5,7 +5,7 @@
 
 ## 2. Broker execution
 
-- [ ] 2.1 Add bounded child-only redirect metadata and shared DNS/transport deadline plumbing without changing no-follow behavior; differential-test the legacy path.
+- [x] 2.1 Add bounded child-only redirect metadata and shared DNS/transport deadline plumbing without changing no-follow behavior; differential-test the legacy path.
 - [ ] 2.2 Implement approved redirect chains, per-hop authority/network rechecks, anonymous cross-origin behavior and sensitive-material declassification; prove all design refusal and budget cases.
 - [ ] 2.3 Verify the real broker/effect/code-node composition returns usable bounded text with no redirect-capability leaks, duplicate effects or private-workflow changes.
 
@@ -62,3 +62,34 @@ Task1.2's local approval implementation is complete, not live acceptance.
 Transport remains unimplemented. Actual Linux, independent implementation review,
 CI, deployment and rendered owner-approved downloads are still required. Do not
 ship the permission-only foundation or claim its tests prove network behavior.
+
+## Transport foundation — September11,2026
+
+Task2.1 adds an optional absolute deadline to the existing pinned leaf and a
+non-representing metadata object holding bounded raw Location multiplicity and
+actual body-byte count. Neither is added to returned result fields. The new
+redirect DNS helper uses remaining chain time, validates every address and
+checks time again after resolution. These seams are not yet a redirect loop.
+
+Windows `python -m pytest -q tests/test_http_redirect_transport.py
+tests/test_outbound_ssrf_driver.py --tb=short --show-capture=no` passed125 tests
+in20.44s, no skips. The22 new cases cover frozen-leaf differential responses
+(including UTF8 replacement and redirects), differential bound refusals,
+duplicate Location metadata, already-expired and reduced shared deadlines,
+bounded initial DNS and mixed public/private DNS refusal. The frozen leaf
+matches b7cd2a25 by AST; six shared pinned transport helpers remain unchanged.
+Ruff, mirror/import, strict spec and diff checks pass.
+
+This does not prove a functioning redirect chain or production TLS against a
+remote server. Local socket fixtures retain their explicitly injected
+passthrough TLS and loopback address handling. Task2.2 must integrate these seams
+with child-local authority rechecks, per-hop credentials and declassification;
+task2.3 must prove broker/effect/code composition. Linux and live proof remain.
+
+At21:15UTC the full current Windows slice passed431 tests in41.43s, no skips:
+`python -m pytest -q tests/test_http_redirect_policy.py
+tests/test_http_redirect_approval.py tests/test_http_redirect_transport.py
+tests/test_pending_requests.py tests/test_http_connection_provisioning.py
+tests/test_full_channel_access.py tests/test_outbound_http_connection.py
+tests/test_outbound_ssrf_driver.py tests/test_workspace_authority.py
+--tb=short --show-capture=no`. No test process remains running from this check.
