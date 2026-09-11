@@ -58,6 +58,17 @@
   public publication, same-digest live consumers and legacy full-price migration
   remain unfinished. Do not mark connection-authored discovery or this task done.
 
+  Authenticated publication/preview and exact snapshot captureca73f353 now built
+  through the existing graph action and metadata table. Preview preserves current
+  rows; both operations require the same current grant/resource/auth/GET/endpoint
+  checks. Real broker refresh uses exact custom numbers and captures the whole
+  compiled source with server-derived semantic provenance; admission is unchanged.
+  440Windows/440actualLinux pass, zero skips; exact APPROVE79s,26cases independently
+  reproduced. See docs/reviews/2026-09-11-custom-discovery-publication-proof.md.
+  Remaining: same-contract selection/request/reservation/settlement/usage/capacity,
+  semantic admission/caveats and discoverable authoring schema/help, plus legacy
+  full-price migration and live acceptance. Publication is not agent readiness.
+
 ## 2. Owner policy and execution
 
 - [ ] 2.1 Add versioned universe-local policy and current-choice input through authenticated app ingress; test generation conflicts, isolation and legacy-pin preservation.

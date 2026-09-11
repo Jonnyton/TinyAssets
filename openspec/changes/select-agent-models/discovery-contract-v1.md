@@ -5,9 +5,11 @@ implemented or deployed or a claim of universal CLI compatibility. Independent
 pre-build review of 1b9afd38 returned ADAPT in 122s; its four required corrections
 are incorporated below. This is not implementation or release approval.
 
-Internal compiler progress:777ff9ba composes the reviewed bounded interpreters
-without adding a provider registry entry. It is not yet published through the
-connection action or consumed by live selection. The private document currently
+Compiler progress:777ff9ba and correction315a0bba compose the reviewed bounded
+interpreters without adding a provider registry entry. Publicationca73f353 now
+accepts this document through the existing owned connection action, including
+non-writing preview, and captures it in fresh discovery snapshots. Selection and
+inference consumers remain held/unintegrated; no live rollout. The document currently
 requires `version`, `transport`, `catalogue`, `prices`, `inference`,
 `quantity_model`, `extension_quantities`, `charge_bindings`, `capacity`, and
 `price_bound_basis`; benchmark and usage are optional. Completeness pointers
@@ -32,7 +34,22 @@ Benchmark comparability uses declared source+score_schema+scale identity, never
 source name alone. Current custom-source price basis accepts only
 `source_request_caps`; tariff-only authority remains the separate prerequisite
 below. Every one of these declarations remains non-authoritative until the
-existing publisher/current-grant/assignment path admits it.
+existing current-grant/assignment/dispatch path admits it. Publication verifies
+current owned definition/admin/resource/grant and exact existing GET endpoints;
+it does not create those permissions or establish answering-agent readiness.
+
+The new outer descriptor has `schema_version:1`, exact catalogue URL, optional
+benchmark URL and compiled `contract`; its internal `protocol` selector is empty,
+not a new registry alias. Legacy descriptors retain their exact serialization.
+`preview:true` is optional only with enabled model discovery and follows the same
+BEGIN IMMEDIATE grant/resource/endpoint checks before returning without INSERT.
+Both preview and publication return whole-descriptor identity and an explicit
+source-semantics caveat, not a token authorizing inference. The source's
+`availability_basis` is server-derived `owner_configured_contract`, while
+`owner_filtered` remains false. Admission is unchanged until the captured
+contract reaches every required consumer. Public authoring guidance/schema
+discovery must still make the new descriptor understandable without reading
+platform source; do not count hidden support as a completed user-facing tool.
 
 ## Intent and existing homes
 

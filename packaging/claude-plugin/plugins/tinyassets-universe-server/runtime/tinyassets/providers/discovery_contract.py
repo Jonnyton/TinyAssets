@@ -1,7 +1,7 @@
 """Compose one finite source contract; configuration is not execution authority.
 
-Private compiler, not yet a published connection descriptor. Installed wire
-validators establish structure; source-declared effects/tariffs remain promises.
+Compiler for owner-configured connection metadata, not inference authority.
+Installed wire validators establish structure; declared effects/tariffs remain promises.
 No credentials, grants, network, storage or source-specific callbacks live here.
 """
 
