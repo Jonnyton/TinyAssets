@@ -11,7 +11,7 @@
 
 ## 3. Delivery and acceptance
 
-- [ ] 3.1 Run focused Windows and actual Linux tests plus independent exact-head implementation review; address concrete findings and pass CI without weakening gates.
+- [x] 3.1 Run focused Windows and actual Linux tests plus independent exact-head implementation review; address concrete findings and pass CI without weakening gates.
 - [ ] 3.2 Deploy, verify protected SHA/canary evidence, and obtain rendered app proof of owner-approved redirected download capability through ordinary conversation; keep both-client compatibility and owner approval boundaries.
 - [ ] 3.3 Sync only shipped requirements, archive this delivery and update the broader goal without declaring unrelated channel migration complete.
 
@@ -162,3 +162,18 @@ change. The changed runtime paths are HTTP transport/permission handling, not
 sandbox, filesystem helpers, process limits or workspace execution. Existing
 Linux CI is the available Linux verification path; inspect actual targeted
 coverage, never report the unavailable local oracle as passing.
+
+## Release checks and merge — September11,2026 22:28UTC
+
+Exact4e2a0bf3 independently APPROVE275s,54chain cases independently passed.
+Windows full group588passed91.50s. Actual Ubuntu3.11 CI34651881696 passed:
+JUnit proves142redirect cases, zero failures/errors/skips; whole-suite aggregator
+reports zero new failures against the unchanged baseline. Slow tests and builds
+pass. Windows installer first timed out (preserved evidence), then the identical
+artifact retry103441996512 passed46s with install/health/repair/uninstall logs.
+All signing checks pass. No code/deadline/check change to obtain that result.
+
+PR3837 merged as e83ded5839a29bbab8cd26681e2a5b97c9a2882d at22:27:43UTC.
+Image build34654104718 running; deployment and rendered acceptance remain open.
+Main-spec sync describes the implemented echo-scanner bounds explicitly; it
+does not convert bounded reflection detection into a universal guarantee.
