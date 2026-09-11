@@ -8,6 +8,7 @@ these shapes. No descriptor may supply the local body validator or account ID.
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import dataclass
 from decimal import ROUND_CEILING, Decimal, InvalidOperation, localcontext
 
@@ -50,30 +51,36 @@ class UsageShape:
     cost: Pointer
     scale: int
     encoding: str
+    legacy: bool = False
 
     @classmethod
-    def compile(cls, document):
+    def compile(cls, document, *, legacy=False):
         _document(document)
         _fields(document, {"cost", "scale", "encoding"})
         encoding = document["encoding"]
         if type(encoding) is not str or encoding not in {"string", "number", "either"}:
             raise ValueError("invalid usage encoding")
-        return cls(Pointer.compile(document["cost"]), _scale(document["scale"]), encoding)
+        if type(legacy) is not bool:
+            raise ValueError("invalid usage compatibility mode")
+        return cls(Pointer.compile(document["cost"]), _scale(document["scale"]), encoding, legacy)
 
     def decode(self, raw_json):
         """Observed integer micros, rounding positive fractions UP, never to free."""
         try:
             # Matches the existing broker's maximum; limits this standalone parser too.
-            if type(raw_json) is not str or len(raw_json.encode("utf-8")) > 5 * 1024 * 1024:
+            if type(raw_json) is not str or (
+                not self.legacy and len(raw_json.encode("utf-8")) > 5 * 1024 * 1024
+            ):
                 return None
-            document = json.loads(raw_json, parse_float=Decimal, object_pairs_hook=_unique,
-                                  parse_constant=_constant)
+            options = {} if self.legacy else {"parse_constant": _constant}
+            document = json.loads(raw_json, parse_float=Decimal,
+                                  object_pairs_hook=_unique, **options)
             value = self.cost.read(document)
             if type(value) is str and self.encoding in {"string", "either"}:
                 if len(value) > 80 or _DECIMAL_TOKEN.fullmatch(value) is None:
                     return None
             elif type(value) in (int, Decimal) and self.encoding in {"number", "either"}:
-                if len(str(value)) > 80:
+                if not self.legacy and len(str(value)) > 80:
                     return None
             else:
                 return None
@@ -83,7 +90,7 @@ class UsageShape:
             if amount == 0:
                 return 0
             with localcontext() as context:
-                context.prec = 100
+                context.prec = max(100, len(amount.as_tuple().digits) + 7)
                 if amount > Decimal(2**63 - 1) / self.scale:
                     return None
                 if 0 < amount < Decimal(1) / self.scale:
@@ -164,9 +171,10 @@ The full source compiler must match every price/constant effect to these caps.
     prefixes: tuple[str, ...]
     suffixes: tuple[str, ...]
     substrings: tuple[str, ...]
+    legacy: bool = False
 
     @classmethod
-    def compile(cls, document):
+    def compile(cls, document, *, components=_UNITS, legacy=False):
         _document(document)
         _fields(document, {"required", "allowed", "caps", "constants", "model_exclusions"})
         required, allowed = frozenset(_names(document["required"])), frozenset(
@@ -175,7 +183,12 @@ The full source compiler must match every price/constant effect to these caps.
         if not {"model"} <= required <= allowed:
             raise ValueError("invalid required request keys")
         raw_caps = document["caps"]
-        if type(raw_caps) is not dict or raw_caps.keys() != _UNITS:
+        # Expanded components/compatibility are installed-code inputs, never
+        # descriptor flags. Public SourceContract still requires its closed units.
+        if (type(legacy) is not bool or type(components) is not frozenset
+                or not 1 <= len(components) <= 64 or any(not identifier(x) for x in components)):
+            raise ValueError("invalid installed ceiling components")
+        if type(raw_caps) is not dict or raw_caps.keys() != components:
             raise ValueError("unsupported or incomplete reservation units")
         outputs = []
         for component, raw in raw_caps.items():
@@ -188,7 +201,7 @@ The full source compiler must match every price/constant effect to these caps.
         for raw in raw_constants:
             _fields(raw, {"path", "value", "charge_components"})
             effects = _names(raw["charge_components"])
-            if not effects or not set(effects) <= _UNITS:
+            if not effects or not set(effects) <= components:
                 raise ValueError("request constant has unbounded charge effects")
             # JSON bytes detach nested caller data. Outer compilation must validate
             # these declared effects against the executor's actual quantity bounds.
@@ -206,11 +219,19 @@ The full source compiler must match every price/constant effect to these caps.
         _fields(excluded, {"prefixes", "suffixes", "substrings"})
         return cls(required, allowed, tuple(outputs), tuple(constants),
                    _names(excluded["prefixes"]), _names(excluded["suffixes"]),
-                   _names(excluded["substrings"]))
+                   _names(excluded["substrings"]), legacy)
+
+    @property
+    def components(self):
+        return frozenset(component for component, _, _ in self.outputs)
 
     def _caps(self, caps):
-        if (type(caps) is not tuple or any(type(item) is not tuple or len(item) != 2
-                                         for item in caps)):
+        if self.legacy and len(caps) != len(self.outputs):
+            raise ValueError("incomplete accepted ceilings")
+        if not self.legacy and (
+            type(caps) is not tuple
+            or any(type(item) is not tuple or len(item) != 2 for item in caps)
+        ):
             raise ValueError("invalid accepted ceilings")
         result = {}
         for component, amount in caps:
@@ -218,22 +239,24 @@ The full source compiler must match every price/constant effect to these caps.
                     or type(amount) is not int or not 0 <= amount <= 10**18):
                 raise ValueError("invalid accepted ceiling")
             result[component] = amount
-        if result.keys() != _UNITS:
+        if result.keys() != self.components:
             raise ValueError("incomplete accepted ceilings")
         return result
 
     def constrain(self, body, caps, *, validate_body):
         """Validator is installed local code supplied by the executor, never source data."""
-        if type(body) is not dict or not self.required <= body.keys() <= self.allowed:
+        is_object = isinstance(body, dict) if self.legacy else type(body) is dict
+        if not is_object or not self.required <= body.keys() <= self.allowed:
             raise ValueError("unsupported fields in constrained request")
         model = body.get("model")
-        if (not identifier(model) or any(model.startswith(x) for x in self.prefixes)
+        valid_model = isinstance(model, str) if self.legacy else identifier(model)
+        if (not valid_model or any(model.startswith(x) for x in self.prefixes)
                 or any(model.endswith(x) for x in self.suffixes)
                 or any(x in model for x in self.substrings)):
             raise ValueError("unsupported model indirection")
         validate_body(body)
         amounts = self._caps(caps)
-        result = json.loads(json.dumps(body, allow_nan=False))
+        result = deepcopy(body) if self.legacy else json.loads(json.dumps(body, allow_nan=False))
         for component, pointer, divisor in self.outputs:
             amount = amounts[component]
             whole, fraction = divmod(amount, divisor)

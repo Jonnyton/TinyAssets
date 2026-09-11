@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 # Canonical request paths per protocol. The host comes from the connection's
@@ -183,20 +184,22 @@ class WireProtocol:
     agent_factory: Callable[[], AgentCodec] | None = None
     request_validator: Callable[[dict], None] | None = None
     request_fields: frozenset[str] = frozenset()
+    legacy_request_validator: Callable[[dict], None] | None = None
 
 
-def _validate_chat_request(body):
+def _validate_chat_request(body, *, legacy=False):
     """Installed wire structure only; no knowledge of a source's extensions."""
     import math
 
-    if type(body) is not dict or not {"model", "messages"} <= body.keys() <= {
+    is_object = isinstance(body, dict) if legacy else type(body) is dict
+    if not is_object or not {"model", "messages"} <= body.keys() <= {
         "model", "messages", "temperature", "max_tokens", "tools", "tool_choice",
     }:
         raise ValueError("unsupported constrained wire body")
-    if "max_tokens" in body and (type(body["max_tokens"]) is not int
+    if not legacy and "max_tokens" in body and (type(body["max_tokens"]) is not int
                                  or not 1 <= body["max_tokens"] <= 10**18):
         raise ValueError("invalid constrained wire output limit")
-    if "temperature" in body:
+    if not legacy and "temperature" in body:
         value = body["temperature"]
         try:
             valid = type(value) in (float, int) and math.isfinite(value)
@@ -210,6 +213,14 @@ def _validate_chat_request(body):
         validate_agent_body(body)
         return
     model, messages = body["model"], body["messages"]
+    if legacy:
+        if not isinstance(model, str) or not isinstance(messages, list) or any(
+            not isinstance(message, dict) or message.keys() != {"role", "content"}
+            or message["role"] not in ("system", "user", "assistant")
+            or not isinstance(message["content"], str) for message in messages
+        ):
+            raise ValueError("unsupported constrained wire messages")
+        return
     if (type(model) is not str or not model or len(model) > 200
             or not model.isprintable() or model != model.strip()
             or type(messages) is not list or any(
@@ -238,6 +249,7 @@ PROTOCOLS = {
     "openai_chat": WireProtocol(
         encode_openai_chat, decode_openai_chat, agent_factory=_chat_agent_codec,
         request_validator=_validate_chat_request,
+        legacy_request_validator=partial(_validate_chat_request, legacy=True),
         request_fields=frozenset({"model", "messages", "temperature", "max_tokens",
                                   "tools", "tool_choice"}),
     ),

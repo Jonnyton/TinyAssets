@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from decimal import ROUND_CEILING, Decimal, InvalidOperation, localcontext
 from typing import TYPE_CHECKING, Any
 
 from tinyassets.providers import agent_chat_codec as codec
+from tinyassets.providers.discovery_execution import UsageShape
+from tinyassets.providers.discovery_presets import compatibility_document
+
+_LEGACY_USAGE = UsageShape.compile(compatibility_document()["usage"], legacy=True)
 
 if TYPE_CHECKING:
     from tinyassets.providers.model_selection import SelectedModel
@@ -90,24 +93,5 @@ def output_for_settlement(response) -> str:
 
 
 def openrouter_usage_cost(raw_json: str) -> int | None:
-    """Documented account charge in USD -> ceiling micros, never a zero guess.
-
-    Parse the original numeric token as Decimal so float conversion cannot erase
-    a sub-micro charge. This is observation, not permission to spend.
-    """
-    try:
-        value = json.loads(raw_json, parse_float=Decimal, object_pairs_hook=codec._pairs)
-        usage = value.get("usage")
-        cost = usage.get("cost") if isinstance(usage, dict) else None
-        if type(cost) not in (int, Decimal):
-            return None
-        cost = Decimal(cost)
-        if not cost.is_finite() or cost < 0 or cost > Decimal("9223372036854.775807"):
-            return None
-        if 0 < cost < Decimal("0.000001"):
-            return 1
-        with localcontext() as context:
-            context.prec = max(32, len(cost.as_tuple().digits) + 7)
-            return int((cost * 10**6).to_integral_value(rounding=ROUND_CEILING))
-    except (ValueError, TypeError, AttributeError, InvalidOperation, OverflowError):
-        return None
+    """Compatibility name for the shared exact usage interpreter."""
+    return _LEGACY_USAGE.decode(raw_json)
