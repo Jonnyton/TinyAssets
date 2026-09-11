@@ -326,10 +326,10 @@ None of it can produce an installable app without account-owned signing material
    Identifiers table shows `TinyAssets iOS` / `io.tinyassets.app`. App Store Connect
    Terms of Service V100 (last updated 04 June 2018) was accepted by the founder.
    The founder then confirmed record creation. Apple ID `6808434444`. Product
-   metadata and manual release are saved. Build 3 is attached to
+   metadata are saved. Build 3 is attached to
    the `Internal` TestFlight group, selected for App Store Version 1.0, and its
    en-US **What to Test** and beta app description are saved. The group has manual
-   Xcode-build distribution, 0 testers, and no invitations sent. The free price
+   Xcode-build distribution, one Account Holder tester, and a live invitation. The free price
    schedule is confirmed; current submission and availability state is recorded
    in items 10–12 below.
 4. **Complete — signing, profile, and CI upload credentials (2026-09-03).** The active
@@ -340,6 +340,12 @@ None of it can produce an installable app without account-owned signing material
    App Store Connect API key are present as all six secrets named in §3.
    The protected GitHub environment `app-store` is complete: founder approval is required,
    and only `main` may deploy. You do NOT need a Mac — CI builds on `macos-15`.
+   On 2026-09-10 a separate App Manager team key named `TinyAssets Release` replaced
+   the protected API key ID/private-key secrets and was backed up in Windows Credential
+   Manager. Protected verify-only run `34562826944` proved the replacement key against
+   Apple's retained App Review account and contact record. The private key remains outside
+   this repository. Receipt:
+   `docs/audits/2026-09-10-ios-review-recovery-access.md`.
 5. **Complete — Xcode 26 build accepted and processed by TestFlight (2026-09-03).**
    Exact fix revision `6ccb3d24` received a Claude Opus **AGREE** review and landed in
    PR #2798 as `76d795a1`. Every exact-head PR check passed, including `build-ios` and
@@ -350,11 +356,11 @@ None of it can produce an installable app without account-owned signing material
 6. **Complete — authenticated TestFlight/App Store metadata (2026-09-03).** The
    founder reauthenticated, after which the beta app description and marketing URL
    were saved, Build 3 was selected for App Store Version 1.0, and the free price
-   schedule was confirmed. Release mode remains manual. The internal-group and
-   Build 3 pages expose no automatic tester-notification control; the documented
-   checkbox belongs to external testing. With no external group or tester, the API's
-   residual `autoNotifyEnabled=true` has no recipient and is inert. Receipt:
+   schedule was confirmed. On 2026-09-10 the release mode was changed to automatic
+   after approval. The Account Holder was added to the internal group and Apple now
+   shows one tester, one build, and an **Invited** state for Build 3. Receipt:
    `docs/audits/2026-09-03-ios-testflight-preparation-receipt.md`.
+   Recovery update: `docs/audits/2026-09-10-ios-review-recovery-access.md`.
 7. **Complete — age rating and tested-platform scope (2026-09-03).** The live
    questionnaire is saved at 18+ (19+ in Korea; earlier operating systems show
    17+ with Apple's regional exceptions). Untested Apple Silicon Mac and Apple
@@ -389,13 +395,15 @@ None of it can produce an installable app without account-owned signing material
    Apple's only cited issue is **Guideline 2.1 - Information Needed - New App Submission**:
    the account's limited review history triggers a latest-iOS physical-device recording
    plus purpose, audience, access, service, regional, and regulated-content answers.
-   Submission ID `5c6e4844-2ca2-438c-8aec-a189efb0ebb2`; release remains manual. Do not
+   Submission ID `5c6e4844-2ca2-438c-8aec-a189efb0ebb2`; release is now automatic after
+   approval. Do not
    cancel the submission. The reusable response packet is in
    `docs/ops/app-store-submission-packet.md`; receipt:
    `docs/audits/2026-09-09-ios-app-review-submission-receipt.md`.
 
-   **Smallest founder-only action:** on a physical iPhone updated to the latest iOS,
-   install Build 3 through TestFlight and capture the six-step recording in the response
+   **Smallest founder-only action:** accept the live TestFlight invitation for the
+   Account Holder on a physical iPhone updated to the latest iOS, install Build 3, and
+   capture the six-step recording in the response
    packet, then make the `.mov` available to this task. Apple explicitly requires a
    physical device, so a simulator recording must not be substituted. App Store Connect
    sign-in/2FA is also required whenever the visible session expires. All written answers,
@@ -414,6 +422,13 @@ None of it can produce an installable app without account-owned signing material
    The reviewer needs no provider setup or payment details. The only outstanding founder
    action in this lane is the physical-device recording (and Apple sign-in/2FA when the
    visible App Store Connect session has expired).
+
+   **Prepared 2026-09-10, access recovery:** the App Manager `TinyAssets Release` key
+   is protected and live-verified by run `34562826944`; TestFlight retained its feedback,
+   privacy, contact, and demo-account details; the Account Holder tester is **Invited**
+   with Build 3 attached; and App Store Version 1.0 is `AFTER_APPROVAL`. No beta-review
+   submission was started. Receipt:
+   `docs/audits/2026-09-10-ios-review-recovery-access.md`.
 
 **Apple preflight evidence (2026-09-09):** **Add for Review** succeeded after
 Content Rights, published privacy information, screenshots, reviewer credentials and

@@ -103,3 +103,20 @@ account/contact block plus `submission_state=UNRESOLVED_ISSUES`,
 148 enabled non-EU storefronts and all 27 EU storefronts remain excluded. Do not
 cancel the submission. Resubmit only after the physical-iPhone recording and the
 complete written response have both been attached/saved in App Store Connect.
+
+## Access recovery — 2026-09-10
+
+The Account Holder generated a separate App Manager team key, synchronized it to
+the protected `app-store` environment, and backed it up in Windows Credential
+Manager. Protected verify-only run `34562826944` proved the replacement key can
+read the retained App Review credential and contact block. Apple's separate
+TestFlight review record was completed from the same verified values without
+placing them in this repository.
+
+The Account Holder was added to the existing Internal TestFlight group. After
+Build 3's group relationship was refreshed, Apple's API changed the tester state
+from `NOT_INVITED` to `INVITED`; the authenticated UI showed one tester, one build,
+and **Invited — Sep 10, 2026**. App Store Version 1.0 was also changed to
+`releaseType=AFTER_APPROVAL`. The rejection and unresolved-issues states did not
+change, and no reviewer reply, beta-review submission, or resubmission was sent.
+Receipt: `docs/audits/2026-09-10-ios-review-recovery-access.md`.
