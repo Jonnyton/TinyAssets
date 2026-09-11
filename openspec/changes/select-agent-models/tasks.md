@@ -119,6 +119,15 @@
 - [ ] 2.2 Implement deterministic automatic ranking and ordered explicit fallback within fresh authority, required capabilities and permitted cost; test unscored/stale catalogues and no-paid-fallback.
 - [ ] 2.3 Integrate typed capacity scopes and safe continuation into the existing router; prove account exhaustion skips siblings and completed/ambiguous tools are not replayed.
 
+  September11 mixed native/HTTP release blocker: corrected design6958026b/f2f53226,
+  pure retry checker f2f53226 and native terminal journal ef1d1e7e now built.
+  Checker570Win/Linux0skips; journal366Win,363Linux+3reset failures0skips.
+  Base292Linux+same3failures, no added failures;71new cases pass on both systems.
+  Journal independently APPROVE79s,71cases reproduced.
+  See docs/reviews/2026-09-11-native-agent-journal-proof.md. Actual coordinator,
+  native protocol evidence and portable history remain unbuilt; unused support
+  is not activation/completion, and whole-PR ADAPT177s remains open.
+
   September10 2026: implemented after capacity-shape ADAPT341s;515 Windows/
   515 actual Linux tests pass, zero skips. Real composition preserves known tool
   results across model-only fallback and holds shared/unknown outcomes safely.
