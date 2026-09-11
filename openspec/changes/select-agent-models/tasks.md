@@ -13,9 +13,8 @@
   existing legacy decoding. Review ADAPT113s required strict custom completeness;
   corrected with legacy behavior preserved.552Windows/552actualLinux pass, zero skips; see
   docs/reviews/2026-09-11-shared-discovery-decoder-proof.md. Full source-contract
-  publication, provenance, cost/capacity enforcement and unfamiliar-source
-  actual execution remain unbuilt. No public payload/permission extension;
-  independent exact-commit review pending.
+  publication and execution were separate follow-up work, now described below;
+  the final user-facing discovery task remains open.
 
   Exact numeric-money parsing/encoding and array-root transport are now built
   behind an internal explicit mode, retaining legacy object/float decoding.
@@ -23,8 +22,8 @@
   646Windows/646actualLinux, zero skips after initial ADAPT corrected malformed
   string decimals without changing legacy presets; see
   docs/reviews/2026-09-11-exact-discovery-numbers-proof.md. Exact28714628 correction
-  independently APPROVE92s. The source-contract publisher/consumer and enforced accounting/capacity
-  remain unbuilt; no live activation or complete source-support claim.
+  independently APPROVE92s. The later publisher/consumer work is described below;
+  no live activation or complete source-support claim.
 
   Mixed-source ranking now preserves each accepted source's own Interaction and
   caps through the advisory plan and picker, removing same-Interaction rejection
@@ -46,8 +45,7 @@
   passed. See docs/reviews/2026-09-11-discovery-quantities-proof.md.
   Existing source-cap authority is unchanged. Tariff-only sources require a
   separate explicit money-authority design, not inferred permission.
-  No production consumer yet. Whole-source price/constant-effect closure,
-  publication/capture and per-attempt enforcement remain required before activation.
+  The later whole-source composition and consumers below use this arithmetic.
 
   Whole-source private composition777ff9ba now joins catalogue/price/benchmark,
   request ceilings, extension quantity bindings, reservation, usage and capacity.
@@ -55,19 +53,25 @@
   corrected315a0bba,703Windows/703actualLinux pass, zero skips. Exact correction
   independently APPROVE78s,58cases reproduced. See
   docs/reviews/2026-09-11-source-contract-compiler-proof.md. Existing descriptors,
-  public publication, same-digest live consumers and legacy full-price migration
-  remain unfinished. Do not mark connection-authored discovery or this task done.
+  public publication and captured-contract consumers followed below; legacy
+  full-price migration and live proof remain. Do not mark this task done.
 
   Authenticated publication/preview and exact snapshot captureca73f353 now built
   through the existing graph action and metadata table. Preview preserves current
   rows; both operations require the same current grant/resource/auth/GET/endpoint
   checks. Real broker refresh uses exact custom numbers and captures the whole
-  compiled source with server-derived semantic provenance; admission is unchanged.
+  compiled source with server-derived semantic provenance; that commit left admission unchanged.
   440Windows/440actualLinux pass, zero skips; exact APPROVE79s,26cases independently
   reproduced. See docs/reviews/2026-09-11-custom-discovery-publication-proof.md.
-  Remaining: same-contract selection/request/reservation/settlement/usage/capacity,
-  semantic admission/caveats and discoverable authoring schema/help, plus legacy
-  full-price migration and live acceptance. Publication is not agent readiness.
+  Routing614d1709 now carries the captured source through real selection/request,
+  aggregate affordability/reservation, usage and capacity fallback. Server-derived
+  semantic admission retains owner_filtered=false and visible source-claim caveats.
+  398Windows/398actualLinux pass, zero skips, including real configured-source
+  writer/tool/broker/journal tests and synthetic-DOM picker proof. Independent
+  exact-commit APPROVE135s,13cases reproduced; see
+  docs/reviews/2026-09-11-custom-source-routing-proof.md.
+  Discoverable authoring schema/help, legacy full-price migration and live
+  acceptance remain. Configuration alone is not agent authority/readiness.
 
 ## 2. Owner policy and execution
 

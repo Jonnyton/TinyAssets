@@ -1,15 +1,17 @@
 # Connection-authored discovery contracts — pre-build review
 
-September 11, 2026. Proposed correction to the closed discovery seam, not
-implemented or deployed or a claim of universal CLI compatibility. Independent
+September 11, 2026. Correction to the closed discovery seam, partially implemented
+locally, not deployed or a claim of universal CLI compatibility. Independent
 pre-build review of 1b9afd38 returned ADAPT in 122s; its four required corrections
 are incorporated below. This is not implementation or release approval.
 
 Compiler progress:777ff9ba and correction315a0bba compose the reviewed bounded
 interpreters without adding a provider registry entry. Publicationca73f353 now
 accepts this document through the existing owned connection action, including
-non-writing preview, and captures it in fresh discovery snapshots. Selection and
-inference consumers remain held/unintegrated; no live rollout. The document currently
+non-writing preview, and captures it in fresh discovery snapshots. Routing614d1709
+now consumes that captured contract for selection, encoding, aggregate reservation,
+usage and capacity. Real writer/broker/tool/journal tests pass; independent review
+APPROVE135s covers that exact commit, not a live rollout. The document currently
 requires `version`, `transport`, `catalogue`, `prices`, `inference`,
 `quantity_model`, `extension_quantities`, `charge_bindings`, `capacity`, and
 `price_bound_basis`; benchmark and usage are optional. Completeness pointers
@@ -46,8 +48,10 @@ BEGIN IMMEDIATE grant/resource/endpoint checks before returning without INSERT.
 Both preview and publication return whole-descriptor identity and an explicit
 source-semantics caveat, not a token authorizing inference. The source's
 `availability_basis` is server-derived `owner_configured_contract`, while
-`owner_filtered` remains false. Admission is unchanged until the captured
-contract reaches every required consumer. Public authoring guidance/schema
+`owner_filtered` remains false. Current local admission uses that declared-source
+basis without granting independently verified privacy or account identity. Picker
+inventory visibly distinguishes configured availability/privacy/charge claims.
+Public authoring guidance/schema
 discovery must still make the new descriptor understandable without reading
 platform source; do not count hidden support as a completed user-facing tool.
 
