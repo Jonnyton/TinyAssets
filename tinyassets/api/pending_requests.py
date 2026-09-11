@@ -488,8 +488,21 @@ def _validated_endpoint_list(action: dict[str, Any]) -> list[dict[str, Any]]:
         for key in ("param_patterns", "allowed_query", "query_patterns", "required_query"):
             if raw.get(key) is not None:
                 endpoint[key] = raw[key]
+        # Presence matters: null/unknown modes must fail validation, not be
+        # silently dropped and displayed as a different permission request.
+        if "redirect_mode" in raw:
+            endpoint["redirect_mode"] = raw["redirect_mode"]
         endpoints.append(endpoint)
-    _parse_allowed_endpoints(endpoints)   # raises on anything the deposit refuses
+    parsed = _parse_allowed_endpoints(endpoints)   # same validation as deposit
+    if any(endpoint.redirect_mode == "public_https_get" for endpoint in parsed):
+        from tinyassets.api.http_connection import _canonical_policy
+
+        # Consent for the additional capability is semantic, not input-order
+        # dependent. Keep legacy no-follow request identities byte-compatible.
+        return json.loads(_canonical_policy([endpoint.as_dict() for endpoint in parsed]))
+    for endpoint in endpoints:
+        if endpoint.get("redirect_mode") == "none":
+            endpoint.pop("redirect_mode")
     return endpoints
 
 
@@ -667,15 +680,36 @@ def request_from_user(*, universe_id: str = "", payload: Any = None) -> dict[str
         return {"error": "endpoint_not_permitted", "detail": str(exc)}
 
     if action.get("type") == "extend_http":
-        held = _extend_ask_verdict(_uid, action)
+        captured_preview: dict[str, Any] = {}
+        held = _extend_ask_verdict(_uid, action, captured_preview=captured_preview)
         if held is not None:
             return held
+        if any(e.get("redirect_mode") == "public_https_get" for e in action["endpoints"]):
+            # Capture the same preview that admitted the ask. Agent-supplied
+            # snapshots are never accepted by action normalization.
+            snapshot = {
+                "access_mode": captured_preview.get("expected_access_mode"),
+                "endpoints_json": captured_preview.get("stored_json"),
+                "scopes_json": captured_preview.get("stored_scopes_json"),
+                "incarnation": captured_preview.get("stored_incarnation"),
+            }
+            if not all(isinstance(v, str) and v for v in snapshot.values()):
+                return _bad("Could not capture this connection's redirect approval policy.")
+            action = {**action, "policy_snapshot": snapshot}
         if action.get("access") == "full":
             # The sentence has to name the hosts this key actually reaches, and
             # only the CONNECTION knows them -- a full ask carries no endpoints
             # by design. Read once, here, so the row the owner sees and the row
             # stored for the audit trail say the same thing.
             action = {**action, **_full_channel_reach(_uid, action)}
+
+    if action.get("type") in {"connect_http", "extend_http"} and any(
+        e.get("redirect_mode") == "public_https_get" for e in action.get("endpoints", [])
+    ):
+        # This server version generated the redirect disclosure. Older pending
+        # rows cannot acquire new authority merely by being answered after an
+        # upgrade. Action normalization discards any caller-supplied marker.
+        action = {**action, "redirect_consent_version": 1}
 
     # Include body AND fields. With only (kind, title, action), muting "Approve
     # this?" about a harmless draft also silenced "Approve this?" about deleting
@@ -760,7 +794,10 @@ def _full_channel_reach(universe_id: str, action: dict[str, Any]) -> dict[str, A
     return reach
 
 
-def _extend_ask_verdict(universe_id: str, action: dict[str, Any]) -> dict[str, Any] | None:
+def _extend_ask_verdict(
+    universe_id: str, action: dict[str, Any], *,
+    captured_preview: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     """Check an ``extend_http`` ask against the connection the owner already
     holds, when the agent RAISES it. ``None`` means "raise the tab".
 
@@ -785,6 +822,8 @@ def _extend_ask_verdict(universe_id: str, action: dict[str, Any]) -> dict[str, A
         # review round 1, P0).
         "access": action.get("access") or "exact",
     })
+    if captured_preview is not None:
+        captured_preview.update(preview)
     if preview.get("error") == "not_found":
         return _bad(
             f'no key is deposited as "{action.get("destination")}" to extend; '
@@ -837,6 +876,10 @@ def _granted_lines(action: dict[str, Any]) -> list[str]:
     """
     lines = [
         f"{'/'.join(e.get('methods') or [])} {e.get('host')}{e.get('path_template')}"
+        + (
+            " (may follow public HTTPS redirects without sharing this key with another origin)"
+            if e.get("redirect_mode") == "public_https_get" else ""
+        )
         for e in (action.get("endpoints") or [])
     ]
     for scope in (action.get("scopes") or []):
@@ -1329,6 +1372,13 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             "this request no longer matches what it was created as, so what "
             "you were shown is not what would happen; ask again"
         )
+    if action.get("type") in {"connect_http", "extend_http"} and any(
+        e.get("redirect_mode") == "public_https_get" for e in action.get("endpoints", [])
+    ):
+        if type(action.get("redirect_consent_version")) is not int or (
+            action["redirect_consent_version"] != 1
+        ):
+            return _bad("This older request did not disclose redirect permission; ask again.")
     if row["fields"]:
         try:
             _validated_fields(row["fields"], action)

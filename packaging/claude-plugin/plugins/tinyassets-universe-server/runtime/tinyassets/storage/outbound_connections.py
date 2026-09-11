@@ -63,9 +63,10 @@ class OutboundEndpoint:
     allowed_query: tuple[str, ...] = ()
     query_patterns: tuple[tuple[str, str], ...] = ()
     required_query: tuple[str, ...] = ()
+    redirect_mode: str = "none"
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        document = {
             "host": self.host,
             "path_template": self.path_template,
             "methods": list(self.methods),
@@ -74,6 +75,11 @@ class OutboundEndpoint:
             "query_patterns": {name: pat for name, pat in self.query_patterns},
             "required_query": list(self.required_query),
         }
+        # Preserve legacy policy bytes and consent identity for no-follow.
+        # Only an explicit added permission appears in stored/projected policy.
+        if self.redirect_mode != "none":
+            document["redirect_mode"] = self.redirect_mode
+        return document
 
 
 #: A connection is granted one of two ways (full-channel-access D2).
@@ -737,6 +743,21 @@ class CredentialBlindBroker:
         resource = self._ledger._active_resource_for_grant(grant_id)
         if resource is None:
             raise GrantResolutionError("absent or revoked outbound connection grant")
+        revalidate_authority = None
+        if resource.connection_type == "http" and str(verb).upper() == "GET" and any(
+            endpoint.redirect_mode == "public_https_get" for endpoint in resource.allowed_endpoints
+        ):
+            initial = self._ledger._active_resource_snapshot_for_grant(grant_id)
+            if initial is None:
+                raise GrantResolutionError("absent or revoked outbound connection grant")
+            resource, authority_stamp = initial
+
+            def revalidate_authority(deadline: float) -> None:
+                current = self._ledger._active_resource_snapshot_for_grant(
+                    grant_id, deadline=deadline,
+                )
+                if current is None or current[1] != authority_stamp:
+                    raise GrantResolutionError("outbound connection authority changed")
         if not _verb_within_scopes(verb, resource.scopes, resource.access_mode):
             raise PermissionError(
                 f"verb {verb!r} is outside the granted connection scope"
@@ -772,6 +793,7 @@ class CredentialBlindBroker:
                 access_mode=resource.access_mode,
                 verb=verb,
                 request=request,
+                **({"revalidate_authority": revalidate_authority} if revalidate_authority else {}),
             )
         except AmbiguousProxyOutcome:
             self._record_error(
@@ -1607,14 +1629,21 @@ def _validate_endpoint(raw: Any) -> OutboundEndpoint:
     allowed_query, query_patterns, required_query = _validate_query_rules(
         raw.get("allowed_query"), raw.get("query_patterns"), raw.get("required_query")
     )
+    methods = _validate_endpoint_methods(raw.get("methods"))
+    redirect_mode = raw.get("redirect_mode", "none")
+    if type(redirect_mode) is not str or redirect_mode not in {"none", "public_https_get"}:
+        raise SsrfValidationError("endpoint redirect_mode is not permitted")
+    if redirect_mode != "none" and methods != ("GET",):
+        raise SsrfValidationError("redirect permission requires a GET-only endpoint")
     return OutboundEndpoint(
         host=host,
         path_template=path_template,
-        methods=_validate_endpoint_methods(raw.get("methods")),
+        methods=methods,
         param_patterns=_validate_param_patterns(path_template, raw.get("param_patterns")),
         allowed_query=allowed_query,
         query_patterns=query_patterns,
         required_query=required_query,
+        redirect_mode=redirect_mode,
     )
 
 
@@ -2240,6 +2269,91 @@ def _read_capped_body(response: Any, max_body_bytes: int) -> bytes | None:
     return b"".join(chunks)
 
 
+@dataclass(repr=False)
+class _HttpHopMetadata:
+    """Child-local bounded hop data. Never returned in a transport result."""
+
+    locations: tuple[str, ...] = ()
+    body_bytes: int = 0
+
+
+def _remaining_redirect_seconds(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if not math.isfinite(remaining) or remaining <= 0:
+        raise SsrfValidationError("outbound request exceeded the total deadline")
+    return remaining
+
+
+def _redirect_target(
+    location: str, previous: _CanonicalOutboundUrl, allowed_ports: frozenset[int],
+) -> _CanonicalOutboundUrl:
+    """Validate the reference BEFORE joining, then apply the full URL policy."""
+    invalid = False
+    target = None
+    try:
+        if not location or "#" in location or _SSRF_FORBIDDEN_URL_CHARS.search(location):
+            raise ValueError("invalid reference")
+        reference = urllib.parse.urlsplit(location)
+        if reference.scheme and reference.scheme != "https":
+            raise ValueError("invalid scheme")
+        if any(segment in {".", ".."} for segment in reference.path.split("/")):
+            raise ValueError("invalid path")
+        _reject_unsafe_encoded_path(reference.path)
+        target = _parse_canonical_https_url(
+            urllib.parse.urljoin(_canonical_request_url(previous), location),
+            allowed_ports=allowed_ports,
+        )
+        query = target.path_qs.partition("?")[2]
+        if len(query) > _SSRF_MAX_QUERY_LEN:
+            raise ValueError("query bound")
+        urllib.parse.parse_qsl(query, keep_blank_values=True, max_num_fields=_SSRF_MAX_QUERY_FIELDS)
+    except (ValueError, TypeError, ProxyRequestError):
+        invalid = True
+    if invalid or target is None:
+        # Raise outside the handler so neither the URL nor a parser's exception
+        # can be recovered through an exception context.
+        raise SsrfValidationError("outbound redirect target is not permitted")
+    return target
+
+
+def _redirect_capability_material(location: str, target: _CanonicalOutboundUrl) -> set[str]:
+    """Conventional capability echoes, not a proof against arbitrary encodings.
+
+    Protect complete URLs/path/query and opaque query values/path segments. Short control
+    values (e.g. version/format switches) are not individually capabilities;
+    matching a one-character value would reject almost every downloaded body.
+    Raw/resolved connection secrets are ALWAYS scanned separately, at any length.
+    """
+    url = _canonical_request_url(target)
+    path, _, query = target.path_qs.partition("?")
+    material = {location, url, target.path_qs}
+    if path != "/":
+        material.add(path)
+    material.update(segment for segment in path.split("/") if len(segment) >= 16)
+    if query:
+        material.add(query)
+        for key, value in urllib.parse.parse_qsl(query, keep_blank_values=True):
+            material.add(f"{key}={value}")
+            if len(value) >= 16:
+                material.add(value)
+    material.discard("/")
+    return {form for item in material for form in (item, urllib.parse.unquote(item)) if form}
+
+
+def _redirect_auth_material(headers: dict[str, str]) -> list[str]:
+    """Keep every generated authenticator, including individual OAuth signatures."""
+    material: list[str] = []
+    for value in headers.values():
+        material.append(value)
+        if " " in value:
+            material.append(value.split(" ", 1)[1])
+        if value.startswith("OAuth "):
+            match = re.search(r'(?:^|,\s*)oauth_signature="([^"]+)"', value[6:])
+            if match:
+                material.extend([match.group(1), urllib.parse.unquote(match.group(1))])
+    return material
+
+
 def _execute_pinned_https_request(
     *,
     method: str,
@@ -2254,9 +2368,17 @@ def _execute_pinned_https_request(
     max_body_bytes: int,
     max_header_count: int,
     max_header_bytes: int,
+    absolute_deadline: float | None = None,
+    hop_metadata: _HttpHopMetadata | None = None,
 ) -> dict[str, Any]:
     """Fire ONE request: no ambient proxies, no redirects, bounded response."""
-    deadline = time.monotonic() + max_total_seconds
+    deadline = (
+        time.monotonic() + max_total_seconds
+        if absolute_deadline is None else absolute_deadline
+    )
+    remaining = (
+        max_total_seconds if absolute_deadline is None else _remaining_redirect_seconds(deadline)
+    )
     url = _canonical_request_url(canonical)
     request = urllib.request.Request(url, data=body, method=method, headers=headers)
 
@@ -2281,10 +2403,10 @@ def _execute_pinned_https_request(
         # Cap connect + header phase at the smaller of the per-op timeout and the
         # remaining total budget; the socket-layer deadline (_DeadlineSocket)
         # additionally bounds the status-line + header parse against the total.
-        response = opener.open(request, timeout=min(timeout, max_total_seconds))
+        response = opener.open(request, timeout=min(timeout, remaining))
     except _TotalDeadlineExceeded:
         deadline_exceeded = True
-    except SsrfValidationError:
+    except (SsrfValidationError, GrantResolutionError):
         raise
     except Exception as exc:
         # A deadline breach during the status-line/header parse surfaces as a
@@ -2335,6 +2457,15 @@ def _execute_pinned_https_request(
                 if body_bytes is None:
                     bound_violation = "outbound response exceeds the size bound"
                 else:
+                    if hop_metadata is not None:
+                        # Preserve multiplicity BEFORE the legacy dictionary
+                        # projection discards duplicate header names. Bounds
+                        # above apply to all raw headers and the decoded body.
+                        hop_metadata.locations = tuple(
+                            str(value) for name, value in raw_headers
+                            if str(name).lower() == "location"
+                        )
+                        hop_metadata.body_bytes = len(body_bytes)
                     sanitized = {
                         "status": status,
                         "reason": reason,
@@ -2368,6 +2499,8 @@ def _execute_pinned_https_request(
         raise SsrfValidationError(bound_violation)
     if sanitized is None:
         raise ProxyRequestError("outbound request failed at destination")
+    if absolute_deadline is not None:
+        _remaining_redirect_seconds(deadline)
     return sanitized
 
 
@@ -2454,6 +2587,8 @@ class _SsrfHardenedHttpDriver:
         "_max_total_seconds",
         "_open_socket",
         "_resolver",
+        "_resolver_base",
+        "_dns_timeout",
         "_ssl_context",
         "_timeout",
         "_validator",
@@ -2478,6 +2613,8 @@ class _SsrfHardenedHttpDriver:
         # the production default wraps getaddrinfo in the threaded deadline so a
         # hanging resolver is abandoned instead of escaping the budget.
         self._resolver = resolver or _make_default_resolver(dns_timeout)
+        self._resolver_base = resolver or _default_dns_resolver
+        self._dns_timeout = float(dns_timeout)
         self._validator = validator or _classify_global_address
         self._open_socket = open_socket or _default_open_socket
         self._ssl_context = ssl_context if ssl_context is not None else _default_ssl_context()
@@ -2487,6 +2624,28 @@ class _SsrfHardenedHttpDriver:
         self._max_body_bytes = int(max_body_bytes)
         self._max_header_count = int(max_header_count)
         self._max_header_bytes = int(max_header_bytes)
+
+    def _redirect_address(self, canonical: _CanonicalOutboundUrl, deadline: float) -> str:
+        """Resolve within the SAME chain deadline, including initial DNS.
+
+        A stuck resolver is abandoned inside the existing broker child. This
+        does not claim to cancel a native resolver thread instantly.
+        """
+        remaining = _remaining_redirect_seconds(deadline)
+        if canonical.is_ip_literal:
+            pinned = self._validator(canonical.hostname)
+        else:
+            def resolve(host: str, port: int) -> list[str]:
+                return _threaded_dns_resolve(
+                    host, port, base_resolver=self._resolver_base,
+                    timeout=min(self._dns_timeout, remaining),
+                )
+
+            pinned = _resolve_pinned_addresses(
+                canonical.hostname, canonical.port, resolver=resolve, validator=self._validator,
+            )[0]
+        _remaining_redirect_seconds(deadline)
+        return pinned
 
     def __call__(
         self,
@@ -2500,6 +2659,7 @@ class _SsrfHardenedHttpDriver:
         header_name: str = "",
         allowed_endpoints: tuple[OutboundEndpoint, ...] | None = None,
         access_mode: str = ACCESS_EXACT,
+        revalidate_authority: Callable[[float], None] | None = None,
     ) -> dict[str, Any]:
         if not isinstance(bundle, ConnectionSecretBundle):
             raise SsrfValidationError("a typed connection secret bundle is required")
@@ -2539,6 +2699,27 @@ class _SsrfHardenedHttpDriver:
             if len(scheme_split) == 2:
                 sensitive.append(scheme_split[1])
         encoded_body = _encode_request_body(body, request_headers)
+        approved_sources = tuple(
+            endpoint for endpoint in (allowed_endpoints or ())
+            if endpoint.redirect_mode == "public_https_get"
+        )
+        redirect_enabled = False
+        if verb == "GET" and body is None and approved_sources:
+            try:
+                _enforce_endpoint_allowlist(canonical, verb, approved_sources, ACCESS_EXACT)
+                redirect_enabled = True
+            except SsrfValidationError:
+                pass  # Full access alone does not opt in arbitrary source paths.
+        if redirect_enabled:
+            if revalidate_authority is None:
+                raise GrantResolutionError("redirects require current connection authority")
+            return self._redirect_chain(
+                canonical=canonical, bundle=bundle, auth_scheme=auth_scheme,
+                header_name=header_name, initial_headers=request_headers,
+                initial_auth=auth_headers,
+                sensitive=sensitive, allowed_endpoints=allowed_endpoints or (),
+                access_mode=access_mode, revalidate_authority=revalidate_authority,
+            )
         if canonical.is_ip_literal:
             pinned = self._validator(canonical.hostname)
         else:
@@ -2564,6 +2745,92 @@ class _SsrfHardenedHttpDriver:
         )
         _declassify_response(result, tuple(sensitive))
         return result
+
+    def _redirect_chain(
+        self, *, canonical: _CanonicalOutboundUrl, bundle: ConnectionSecretBundle,
+        auth_scheme: str, header_name: str, initial_headers: dict[str, str],
+        initial_auth: dict[str, str],
+        sensitive: list[str], allowed_endpoints: tuple[OutboundEndpoint, ...],
+        access_mode: str, revalidate_authority: Callable[[float], None],
+    ) -> dict[str, Any]:
+        deadline = time.monotonic() + self._max_total_seconds  # before INITIAL DNS
+        initial_origin = (canonical.hostname, canonical.port)
+        crossed_origin = False
+        visited = {_canonical_request_url(canonical)}
+        capabilities: set[str] = set()
+        remaining_bytes = self._max_body_bytes
+        headers = initial_headers
+        sensitive.extend(_redirect_auth_material(initial_auth))
+        count = 0
+
+        def checked_socket(*args: Any) -> socket.socket:
+            revalidate_authority(deadline)  # after DNS, immediately before each actual dial
+            _remaining_redirect_seconds(deadline)
+            return self._open_socket(*args)
+
+        while True:
+            revalidate_authority(deadline)
+            pinned = self._redirect_address(canonical, deadline)
+            revalidate_authority(deadline)
+            metadata = _HttpHopMetadata()
+            result = _execute_pinned_https_request(
+                method="GET", canonical=canonical, pinned_address=pinned,
+                headers=headers, body=None, ssl_context=self._ssl_context,
+                open_socket=checked_socket, timeout=self._timeout,
+                max_total_seconds=self._max_total_seconds, max_body_bytes=remaining_bytes,
+                max_header_count=self._max_header_count, max_header_bytes=self._max_header_bytes,
+                absolute_deadline=deadline, hop_metadata=metadata,
+            )
+            remaining_bytes -= metadata.body_bytes
+            _declassify_response(result, tuple(sensitive))  # ALL raw response fields
+            safe = {
+                **result, "headers": {
+                    key: value for key, value in result["headers"].items()
+                    if key.lower() not in {
+                        "location", "content-location", "cookie", "cookie2",
+                        "set-cookie", "set-cookie2",
+                    }
+                },
+            }
+            if result["status"] not in {301, 302, 303, 307, 308}:
+                _declassify_response(safe, tuple(capabilities))
+                return {**safe, "redirect_count": count}
+            if len(metadata.locations) != 1:
+                raise SsrfValidationError("outbound redirect requires exactly one Location")
+            if count >= 5:
+                raise SsrfValidationError("outbound redirect limit exceeded")
+            location = metadata.locations[0]
+            target = _redirect_target(location, canonical, self._allowed_ports)
+            target_url = _canonical_request_url(target)
+            _declassify_response(
+                {
+                    "target": target_url, "decoded": urllib.parse.unquote(target_url),
+                    "form_decoded": urllib.parse.unquote_plus(target_url),
+                },
+                tuple(sensitive),
+            )
+            if target_url in visited:
+                raise SsrfValidationError("outbound redirect loop refused")
+            capabilities.update(_redirect_capability_material(location, target))
+            _declassify_response(safe, tuple(capabilities))
+            visited.add(target_url)
+            crossed_origin = crossed_origin or (target.hostname, target.port) != initial_origin
+            headers = {"Accept": "*/*", "User-Agent": "TinyAssets-download"}
+            if not crossed_origin:
+                authorized = False
+                try:
+                    _enforce_endpoint_allowlist(target, "GET", allowed_endpoints, access_mode)
+                    authorized = True
+                except SsrfValidationError:
+                    pass  # Same origin is not itself authorization for another path.
+                if authorized:
+                    auth = _ssrf_auth_headers(
+                        auth_scheme, bundle, header_name=header_name, method="GET", url=target_url,
+                    )
+                    headers.update(auth)
+                    sensitive.extend(_redirect_auth_material(auth))
+            canonical = target
+            count += 1
 
 
 _OAUTH1A_BUNDLE_KEYS = frozenset(
@@ -2672,6 +2939,7 @@ class _TrustedNetworkDriver:
         auth_scheme = str(kwargs.pop("auth_scheme", "") or "")
         allowed_endpoints = kwargs.pop("allowed_endpoints", ()) or ()
         access_mode = kwargs.pop("access_mode", ACCESS_EXACT)
+        revalidate_authority = kwargs.pop("revalidate_authority", None)
         if connection_type == "http":
             return self._dispatch_http(
                 auth_scheme=auth_scheme,
@@ -2680,6 +2948,7 @@ class _TrustedNetworkDriver:
                 credential=kwargs.get("credential", ""),
                 verb=str(kwargs.get("verb", "")),
                 request=kwargs.get("request"),
+                revalidate_authority=revalidate_authority,
             )
         if connection_type == "":
             # Legacy untyped connections route ONLY to the gated test fixture —
@@ -2700,6 +2969,7 @@ class _TrustedNetworkDriver:
         verb: str,
         request: object,
         access_mode: str = ACCESS_EXACT,
+        revalidate_authority: Callable[[float], None] | None = None,
     ) -> Any:
         if not self._allow_http:
             # Fail closed until a deployment enables the general http path.
@@ -2720,6 +2990,7 @@ class _TrustedNetworkDriver:
             header_name=str(request.get("header_name", "") or ""),
             allowed_endpoints=allowed_endpoints,
             access_mode=access_mode,
+            **({"revalidate_authority": revalidate_authority} if revalidate_authority else {}),
         )
 
 
@@ -3099,6 +3370,9 @@ class ConnectionLedger:
         scopes: tuple[str, ...],
         expected_endpoints_json: str,
         expected_scopes_json: str,
+        expected_access_mode: str | None = None,
+        expected_incarnation: str | None = None,
+        expected_grant_id: str | None = None,
     ) -> bool:
         """ADD endpoints to an existing http connection. Never remove or replace.
 
@@ -3130,22 +3404,31 @@ class ConnectionLedger:
             )
         new_scopes = tuple(_required("scope", scope) for scope in scopes)
         validate_git_scopes(new_scopes, hosts=[endpoint.host for endpoint in parsed])
-        with self._connect() as connection:
-            cursor = connection.execute(
-                """
+        sql = """
                 UPDATE outbound_connections
                 SET allowed_endpoints_json = ?, scopes_json = ?
                 WHERE connection_id = ? AND allowed_endpoints_json = ?
                   AND scopes_json = ?
-                """,
-                (
-                    json.dumps([ep.as_dict() for ep in parsed]),
-                    json.dumps(list(new_scopes)),
-                    connection_id,
-                    expected_endpoints_json,
-                    expected_scopes_json,
-                ),
-            )
+        """
+        params: list[Any] = [
+            json.dumps([ep.as_dict() for ep in parsed]), json.dumps(list(new_scopes)),
+            connection_id, expected_endpoints_json, expected_scopes_json,
+        ]
+        if expected_access_mode is not None or expected_incarnation is not None:
+            if not expected_access_mode or not expected_incarnation:
+                raise SsrfValidationError("complete connection policy snapshot is required")
+            sql += " AND access_mode = ? AND incarnation = ? AND revoked_at IS NULL"
+            params.extend([normalize_access_mode(expected_access_mode), expected_incarnation])
+        if expected_grant_id is not None:
+            sql += """ AND EXISTS (
+                SELECT 1 FROM outbound_connection_grants AS g
+                WHERE g.grant_id = ? AND g.connection_id = outbound_connections.connection_id
+                  AND g.owner_user_id = outbound_connections.owner_user_id
+                  AND g.revoked_at IS NULL
+            )"""
+            params.append(expected_grant_id)
+        with self._connect() as connection:
+            cursor = connection.execute(sql, tuple(params))
             return cursor.rowcount > 0
 
     def set_access_mode(
@@ -3245,6 +3528,27 @@ class ConnectionLedger:
         if row is None:
             return None
         return str(row["incarnation"])
+
+    def _resource_policy_snapshot(
+        self, connection_id: str,
+    ) -> tuple[ConnectionResource, dict[str, str]] | None:
+        """Trusted resource and exact approval policy from ONE SQLite row read.
+
+        Keep the credential-bearing resource internal; only the four policy
+        fields may be projected into an owner-visible approval.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM outbound_connections WHERE connection_id = ?", (connection_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return _resource_from_row(row), {
+            "endpoints_json": str(row["allowed_endpoints_json"]),
+            "scopes_json": str(row["scopes_json"]),
+            "access_mode": normalize_access_mode(row["access_mode"]),
+            "incarnation": str(row["incarnation"]),
+        }
 
     def _get_connection_resource(
         self, connection_id: str
@@ -3811,6 +4115,30 @@ class ConnectionLedger:
         if row is None:
             return None
         return _resource_from_row(row)
+
+    def _active_resource_snapshot_for_grant(
+        self, grant_id: str, *, deadline: float | None = None,
+    ) -> tuple[ConnectionResource, str] | None:
+        """One child-local read of active resource, grant identity and policy."""
+        with self._connect() as connection:
+            if deadline is not None:
+                milliseconds = max(1, int(_remaining_redirect_seconds(deadline) * 1000))
+                connection.execute(f"PRAGMA busy_timeout = {milliseconds}")
+            row = connection.execute(
+                """SELECT c.*, g.universe_id AS grant_universe,
+                          g.granted_at AS grant_created_at
+                     FROM outbound_connection_grants AS g
+                     JOIN outbound_connections AS c ON c.connection_id = g.connection_id
+                    WHERE g.grant_id = ? AND g.revoked_at IS NULL
+                      AND c.revoked_at IS NULL AND g.owner_user_id = c.owner_user_id""",
+                (grant_id,),
+            ).fetchone()
+        if deadline is not None:
+            _remaining_redirect_seconds(deadline)
+        if row is None:
+            return None
+        stamp = hashlib.sha256(json.dumps(dict(row), sort_keys=True).encode("utf-8")).hexdigest()
+        return _resource_from_row(row), stamp
 
     def require_active_grant(self, grant_id: str) -> ConnectionGrant:
         """Return a grant only while both it and its connection are current."""

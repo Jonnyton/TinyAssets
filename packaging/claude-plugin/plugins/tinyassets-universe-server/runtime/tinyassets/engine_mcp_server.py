@@ -1167,8 +1167,9 @@ def write_graph(
     **Ask for the whole channel, not a path list.** Add ``"access": "full"`` to
     a ``connect_http`` or ``extend_http`` ask and it means: everything this key
     can do on this channel -- any path, any verb, and clone or push to any
-    repository it reaches on the channel's git host. One yes, and you never ask
-    about that channel again. A full ask carries NO ``endpoints`` and NO
+    repository it reaches on the channel's git host. One yes for that direct
+    channel access. Redirected downloads need the separate permission below.
+    A full ask carries NO ``endpoints`` and NO
     ``scopes``; a full deposit names the channel's ``hosts`` instead, 1 to 4 of
     them::
 
@@ -1195,6 +1196,15 @@ def write_graph(
                                   "path_template": "/repos/o/r/contents/{path+}",
                                   "methods": ["GET", "PUT"],
                                   "param_patterns": {"path": "[A-Za-z0-9._\\-/]{1,200}"}}]}
+
+    To follow redirected downloads, ask to extend the source GET-only endpoint
+    with ``"redirect_mode": "public_https_get"``. This explicitly allows bounded
+    public HTTPS follow-up downloads without sharing the key with another
+    origin. Omitted/``none`` stays no-follow, even for full channel access.
+    Use a separate endpoint extension, not ``access: full``; it preserves an
+    existing full grant and requires no new key. Let the owner approve the
+    generated disclosure before retrying the download. No mutating request or
+    GET with a body may follow redirects.
 
     To TAKE BACK a credential, raise the SAME KIND OF ASK with
     ``{"type": "remove_http", "destination": "<name>"}`` and NO fields --
