@@ -25,6 +25,7 @@ on. A tracked file is. Link an issue from a concern file when one exists — but
 
 | Severity | Concern | Filed |
 |---|---|---|
+| **note** | [Background self awaits deployed continuity proof](background-self-live-proof.md) — runtime recovery and checkpoint validation are implemented; independent review, deployment and automatic-cycle proof remain open | 2026-09-09 |
 | **note** | [Instruction-response test uses an invalid page selector](2026-09-09-instruction-response-test-page-fixture.md) — pre-existing quarantined fixture failure on Windows and Linux; independent review identifies the exact path correction, without a runtime change | 2026-09-09 |
 | **note** | [App read/write sweep gaps](2026-09-08-app-read-write-sweep-gaps.md) — owner conversation reports checklist success but refused node edits/discard, missing result values, stale failed-node state, and absent cancellation exposure; platform fixes are reproduced and implemented locally; deployment and rendered all-five confirmation remain open | 2026-09-08 |
 | **note** | [Intermittent missing provider receipt in Linux load proof](2026-09-08-provider-receipt-intermittent-load-failure.md) — the fresh-process claim test intermittently raises a missing-receipt error on unchanged pre-patch source; live impact and root cause remain unproven | 2026-09-08 |
