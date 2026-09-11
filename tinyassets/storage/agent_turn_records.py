@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mcp.types import CallToolResult, ContentBlock
 from pydantic import TypeAdapter
 
 from tinyassets.providers import agent_chat_codec as codec
+
+if TYPE_CHECKING:
+    from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
 
 MAX_INT = 2**63 - 1
 STATES = frozenset(
@@ -17,6 +20,9 @@ STATES = frozenset(
         "ready",
         "abandoned",
         "inference_started",
+        "native_started",
+        "held_native_capacity",
+        "held_native_unknown",
         "tools_pending",
         "completed",
         "held_refusal",
@@ -260,9 +266,9 @@ class ToolSnapshot:
 @dataclass(frozen=True, slots=True, repr=False)
 class RoundSnapshot:
     ordinal: int
-    candidate: RoundInput
+    candidate: RoundInput | NativeInput
     state: str
-    reply: codec.AgentReply | None
+    reply: codec.AgentReply | NativeTerminal | None
     tools: tuple[ToolSnapshot, ...]
     cost_microusd: int | None
 
