@@ -74,6 +74,66 @@ def test_corrupt_context_never_reaches_execution(tmp_path, registered, monkeypat
     reason = scheduler.run_due_automation(
         tmp_path, registered, (NOW + timedelta(seconds=600)).isoformat(), now=NOW
     )
-    assert reason.startswith("automation_error")
+    assert reason == "context_unavailable"
     assert calls == []
     assert store.get(registered.automation_id).consecutive_failures == 1
+
+def _repair_context_case(tmp_path, registered, monkeypatch, with_checkpoint):
+    import tinyassets.engine_mcp_server as engine
+    store = scheduler.AutomationStore(tmp_path)
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
+            "UPDATE automations SET inputs_json = ? WHERE automation_id = ?",
+            (json.dumps({"context": {"$automation_context": "v1"}}),
+             registered.automation_id),
+        )
+    seen, records, admissions = [], {}, []
+    original_admit = engine._engine_run_admit
+
+    def admit(*args, **kwargs):
+        admissions.append(True)
+        return original_admit(*args, **kwargs)
+
+    def execute(base, automation, provider, branch, inputs, on_run_started=None):
+        seen.append(inputs["context"])
+        run_id = "repair_run_" + str(len(seen))
+        records[run_id] = {
+            "run_id": run_id, "queue_universe_id": UNIVERSE,
+            "branch_def_id": registered.branch_def_id, "status": "completed",
+            "output": {"progress": {"completed": {"one": "retained"}}},
+        }
+        return _FakeOutcome(run_id)
+
+    monkeypatch.setattr(engine, "_engine_run_admit", admit)
+    monkeypatch.setattr(scheduler, "_execute", execute)
+    monkeypatch.setattr(runs, "get_run", lambda base, run_id: records.get(run_id))
+
+    def tick(seconds):
+        at = NOW + timedelta(seconds=seconds)
+        return scheduler.run_due_automation(
+            tmp_path, store.get(registered.automation_id), at.isoformat(), now=at
+        )
+
+    if with_checkpoint:
+        assert tick(600) == "ok:ran:repair_run_1"
+    database = tmp_path / UNIVERSE / ".conversation_memory.db"
+    database.write_text("temporarily corrupt")
+    admitted_before = len(admissions)
+    assert tick(1200) == "context_unavailable"
+    assert len(admissions) == admitted_before
+    assert len(seen) == int(with_checkpoint)
+    database.unlink()
+    assert tick(1800) == "ok:ran:repair_run_" + str(1 + int(with_checkpoint))
+    assert store.get(registered.automation_id).consecutive_failures == 0
+    if with_checkpoint:
+        assert seen[-1]["last_completed_run"]["output"]["progress"]["completed"] == {"one": "retained"}
+    else:
+        assert seen[-1]["last_completed_run"] is None
+
+
+def test_checkpoint_recovers_after_context_repair(tmp_path, registered, monkeypatch):
+    _repair_context_case(tmp_path, registered, monkeypatch, True)
+
+
+def test_first_wake_recovers_after_context_repair(tmp_path, registered, monkeypatch):
+    _repair_context_case(tmp_path, registered, monkeypatch, False)

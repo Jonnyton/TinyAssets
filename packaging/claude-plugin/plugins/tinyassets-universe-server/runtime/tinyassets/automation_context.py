@@ -64,12 +64,12 @@ def _conversation(root: Path) -> dict[str, Any]:
 
 
 def _previous_run_id(base: Path, automation: Any) -> str:
-    """Recover a retained run across a rate-limited tick, without hiding loss."""
+    """Recover a retained run across known no-execution refusals, without hiding loss."""
     if automation.last_run_id:
         return automation.last_run_id
     if not getattr(automation, "last_due_at", ""):
         return ""
-    if getattr(automation, "last_reason", "") != "run_rate_limited":
+    if getattr(automation, "last_reason", "") not in {"run_rate_limited", "context_unavailable"}:
         raise ValueError("automation_context_previous_run_missing")
     path = base / ".automations.db"
     if not path.is_file():
@@ -85,11 +85,11 @@ def _previous_run_id(base: Path, automation: Any) -> str:
             seen = True
             if run_id:
                 return str(run_id)
-            if status != "refused" or reason != "run_rate_limited":
+            if status != "refused" or reason not in {"run_rate_limited", "context_unavailable"}:
                 raise ValueError("automation_context_previous_run_missing")
     if not seen:
         raise ValueError("automation_context_previous_run_missing")
-    # Only rate-limited refusals exist: no graph has run yet.
+    # Only known no-execution refusals exist: no graph has run yet.
     return ""
 
 

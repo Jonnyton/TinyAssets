@@ -267,5 +267,30 @@ class AutomationContextTests(unittest.TestCase):
         snapshot = self.resolve(self.prior())["context"]
         self.assertEqual(snapshot["last_completed_run"], snapshot["previous_run"])
 
+    def test_context_refusal_recovers_completed_checkpoint(self):
+        self.rate_limited_history([
+            ("a-owner", "2026-09-11T00:00:00+00:00", "r1", "completed", "ok"),
+            ("a-owner", "2026-09-11T01:00:00+00:00", "", "refused", "context_unavailable"),
+        ])
+        self.auto.last_reason = "context_unavailable"
+        snapshot = self.resolve(self.prior())["context"]
+        self.assertEqual(snapshot["last_completed_run"]["run_id"], "r1")
+
+    def test_first_context_refusal_can_retry_without_prior_graph(self):
+        self.rate_limited_history([
+            ("a-owner", "2026-09-11T01:00:00+00:00", "", "refused", "context_unavailable"),
+        ])
+        self.auto.last_reason = "context_unavailable"
+        self.assertIsNone(self.resolve()["context"]["previous_run"])
+
+    def test_context_refusal_cannot_hide_unknown_execution(self):
+        self.rate_limited_history([
+            ("a-owner", "2026-09-11T00:00:00+00:00", "", "error", "unknown"),
+            ("a-owner", "2026-09-11T01:00:00+00:00", "", "refused", "context_unavailable"),
+        ])
+        self.auto.last_reason = "context_unavailable"
+        with self.assertRaisesRegex(ValueError, "previous_run_missing"):
+            self.resolve()
+
 if __name__ == "__main__":
     unittest.main()
