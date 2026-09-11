@@ -65,3 +65,14 @@ Not whole-PR approval, deployment or rendered user acceptance. Public source
 authoring help, native explicit/all-universe controls, persisted receipts and
 unpowered automatic setup remain open. PR3832 at08:51UTC still draft/open,
 remote bd93e239, auto-merge null. No private workflow or app account changed.
+
+Release follow-up08:56UTC:353f1eee pushed to the same draft PR; packaging CI
+34581378904 passes and slow-tests in34581378851 passes, required-tests still
+running. Invariants34581378823/preview34581379070 find the same stale generated
+app checksum from the earlier picker change. Canonical render_marks changes only
+that checksum; all52generated assets unchanged. All six pre-commit invariants
+now pass. Normal npm ci resolves the initial missing-yaml local test dependency;
+npm test passes233with4platform skips,0failures. No package/lockfile edits.
+Two earlier frozen-oracle EOF blank lines removed; full bd93-to-working diff
+whitespace check clean. Ratchet Linux15passed5.23s,0skips. PR scope gate correctly
+needs fresh exact whole-PR authority review; old bd93 approval is not reused.

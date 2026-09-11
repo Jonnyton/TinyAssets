@@ -144,4 +144,3 @@ def legacy_load_reply(raw: str, candidate: RoundInput) -> codec.AgentReply:
     values["tool_requests"] = tuple(requests)
     values["dropped_fields"] = tuple(value["dropped_fields"])
     return codec.AgentReply(**values)
-

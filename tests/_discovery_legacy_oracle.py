@@ -230,4 +230,3 @@ def decode_openrouter_benchmarks(
             _exact_scaled(row.get("intelligence_index"), 10**6, string_only=False),
         )
     return {key: value for key, value in scores.items() if key not in duplicates}
-
