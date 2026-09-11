@@ -42,6 +42,7 @@ The contract has these closed groups:
 | prices | Price-object pointer; closed mapping of source field to unit-bearing component and exact decimal scale; required fields; bounded override-list pointer; recognized non-price condition keys. |
 | benchmark | Optional rows/source/ID/score/time pointers, exact source ID and score scales; one comparable source, no source-name inference. |
 | inference | Required body-key set, excluded model-ID literal prefixes/suffixes/substrings, price-cap output paths and exact scales, required constant request fields, and charge-component relationships. |
+| quantity_model | Versioned finite aggregate input/output/request bounds; explicit extension effects and dimension-compatible charge bindings are checked against them. |
 | capacity | Finite HTTP status-to-scope/reason mapping plus optional standard Retry-After interpretation. |
 | usage | Optional exact total-cost pointer and scale; absent/invalid cost remains unknown. |
 

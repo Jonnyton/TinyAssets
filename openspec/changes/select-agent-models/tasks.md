@@ -37,9 +37,15 @@
   exact observed-cost rounding and existing token/request reservation arithmetic.
   538Windows/538actualLinux pass, zero skips; see
   docs/reviews/2026-09-11-discovery-execution-proof.md. Exact6f4096cd APPROVE104s,
-  66cases independently passed. Activation must additionally validate injected
-  extensions against installed-codec facts and clamp/reserve actual output limits;
-  declared charge references and free-output arithmetic are not those proofs.
+  66cases independently passed. Follow-up composition ADAPT85s corrects the
+  activation boundary: validate final-envelope structure and declared quantity/
+  charge closure; installed codecs cannot prove future remote extension meanings.
+  Finite aggregate quantity arithmetic4d38b964 now reserves internal samples and
+  overhead, with bounded affordability and signed64 cost refusal.618Windows/
+  618actualLinux pass, zero skips; exact review APPROVE73s,80cases independently
+  passed. See docs/reviews/2026-09-11-discovery-quantities-proof.md.
+  Existing source-cap authority is unchanged. Tariff-only sources require a
+  separate explicit money-authority design, not inferred permission.
   No production consumer yet. Whole-source price/constant-effect closure,
   publication/capture and per-attempt enforcement remain required before activation.
 
