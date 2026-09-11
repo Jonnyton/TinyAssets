@@ -32,6 +32,7 @@ from tinyassets.providers.model_policy import (
     ModelPolicy,
     ModelRef,
     Pricing,
+    SourceModelPolicy,
     order_models,
 )
 from tinyassets.providers.model_preferences import ModelPreferences, capture_preference_policy
@@ -114,7 +115,9 @@ class PreparedPlan:
 
         return replace(
             self, catalog=retained(self.catalog),
-            plan=replace(self.plan, catalog=retained(self.plan.catalog)),
+            plan=replace(self.plan, catalog=retained(self.plan.catalog), source_policies=tuple(
+                item for item in self.plan.source_policies if item.connection_id not in failed
+            )),
             ineligible=self.ineligible + tuple(
                 Ineligible(ModelRef(provider, ""), reason, scope="source")
                 for provider, reason in failed.items()
@@ -260,8 +263,8 @@ def prepare_owned_model_plan(
     if captured is None:
         captured = ModelPolicy(0, "automatic", ()), "automatic"
     policy, source = captured
-    all_models, admitted, snapshots, caps_union = [], [], [], {}
-    interaction = None
+    all_models, admitted, snapshots, source_policies = [], [], [], []
+    interaction = Interaction(True, frozenset({"text"}), frozenset())
     ranking_sources = set()
     allowed = None if config is None else config.allowed_providers
     for provider, chain in chains:
@@ -269,6 +272,7 @@ def prepare_owned_model_plan(
         try:
             if provider in _PROVIDER_SERVICE:
                 catalog = filtered = _native_models(base, universe, owner, member)
+                required, caps = interaction, member.access.cost_caps
             else:
                 from tinyassets.providers.discovery_snapshot import refresh_model_discovery
 
@@ -292,14 +296,6 @@ def prepare_owned_model_plan(
                     filtered = replace(filtered, models=())
                 catalog = snapshot.models
                 rejected.extend(denied)
-                common = replace(required, min_context=None)
-                if interaction is not None and interaction != common:
-                    raise ModelSourceUnavailable("price_contract_incompatible")
-                interaction = common
-                # Every HTTP member was prefiltered under its own exact caps.
-                # The combined advisory ceiling cannot authorize an actual call.
-                for name, amount in caps:
-                    caps_union[name] = max(caps_union.get(name, 0), amount)
                 from tinyassets.providers.discovery_protocols import discovery_protocol
 
                 benchmark = discovery_protocol(catalog.provider_scope).ranking_source
@@ -319,14 +315,17 @@ def prepare_owned_model_plan(
                             for m in catalog.models)
         else:
             admitted.append(filtered)
-    if interaction is None:
-        interaction = Interaction(True, frozenset({"text"}), frozenset())
+            source_policies.append(SourceModelPolicy(
+                provider, required,
+                None if caps is None else tuple(Charge(k, v, True) for k, v in caps),
+            ))
     policy = replace(
-        policy, cost_caps=tuple(Charge(k, v, True) for k, v in sorted(caps_union.items())),
+        policy,
         ranking_source=next(iter(ranking_sources)) if len(ranking_sources) == 1 else None,
     )
     plan = AgentModelPlan(
         Catalog(owner, universe.name, tuple(admitted)), policy, interaction, source,
+        tuple(source_policies),
     )
     if not allow_empty and plan.next_candidate(owner, universe.name) is None:
         raise PermissionError("no eligible model in the accepted assignment")

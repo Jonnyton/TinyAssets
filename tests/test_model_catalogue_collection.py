@@ -154,7 +154,7 @@ def test_unknown_price_components_keep_facts_but_no_candidate(configured):
     )
 
 
-def test_conflicting_contract_keeps_second_catalogue_outside_execution(configured, monkeypatch):
+def test_different_source_contracts_keep_both_eligible_catalogues(configured, monkeypatch):
     second = definition.register_definition(
         universe_id="u-models", owner_user_id="owner", access_method="api_key_http",
         protocol="openai_chat", model="another-legacy-pin", ref="grant-models",
@@ -182,7 +182,6 @@ def test_conflicting_contract_keeps_second_catalogue_outside_execution(configure
 
     monkeypatch.setattr(served_model_plan, "_http_models", differing_contract)
     result = document(collect(configured))
-    assert len(result["options"]) == 2 and len(result["order"]) == 1
-    rejected = next(row for row in result["options"] if row["reference"]["provider_ref"] == seen[1])
-    assert not rejected["in_candidate_catalog"]
-    assert {"reason": "price_contract_incompatible", "component": ""} in rejected["reasons"]
+    assert len(result["options"]) == 2 and len(result["order"]) == 2
+    assert {row["provider_ref"] for row in result["order"]} == set(seen)
+    assert all(row["in_candidate_catalog"] and not row["reasons"] for row in result["options"])

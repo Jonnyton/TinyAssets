@@ -235,7 +235,9 @@ def _collect(base, owner, uid):
                     failed[provider] = "discovery_unavailable"
     plan = replace(plan, catalog=replace(plan.catalog, connections=tuple(
         item for item in plan.catalog.connections if item.connection_id not in failed
-    )))
+    )), source_policies=tuple(
+        item for item in plan.source_policies if item.connection_id not in failed
+    ))
     models = tuple(item for item in models if item.connection_id not in failed)
     rejected.extend(Ineligible(ModelRef(provider, ""), reason, scope="source")
                     for provider, reason in failed.items())

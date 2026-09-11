@@ -5,7 +5,7 @@ must work with zero eligible models and preserve missing explicit choices.
 """
 
 from tinyassets.providers.agent_model_plan import AgentModelPlan
-from tinyassets.providers.model_policy import Catalog, Ineligible, ModelRef, order_models
+from tinyassets.providers.model_policy import Catalog, Ineligible, ModelRef
 
 
 def model_options_document(
@@ -22,10 +22,7 @@ def model_options_document(
         plan.catalog.owner_id, plan.catalog.universe_id,
     ):
         raise ValueError("model option scopes do not match")
-    order = order_models(
-        plan.catalog, plan.policy, plan.interaction,
-        owner_id=available.owner_id, universe_id=available.universe_id,
-    )
+    order = plan.order(available.owner_id, available.universe_id)
     positions = {item.ref: index for index, item in enumerate(order.candidates)}
     candidates = {item.ref: item for item in order.candidates}
     admitted = {

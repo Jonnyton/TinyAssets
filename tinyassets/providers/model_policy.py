@@ -8,7 +8,7 @@ model-release list, credentials, storage, clock or network belong in this module
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 Freshness = Literal["fresh", "stale", "missing"]
@@ -273,6 +273,25 @@ def _ineligibility(
     return None
 
 
+@dataclass(frozen=True, slots=True)
+class SourceModelPolicy:
+    """Private per-source requirements and accepted caps, never remote authority."""
+
+    connection_id: str
+    interaction: Interaction
+    cost_caps: tuple[Charge, ...] | None = None
+
+    def __post_init__(self):
+        if (type(self.connection_id) is not str or not self.connection_id
+                or type(self.interaction) is not Interaction
+                or (self.cost_caps is not None and (
+                    type(self.cost_caps) is not tuple
+                    or any(type(item) is not Charge for item in self.cost_caps)))):
+            raise ValueError("invalid source model policy")
+        if self.cost_caps is not None:
+            _charges(self.cost_caps)
+
+
 def order_models(
     catalog: Catalog,
     policy: ModelPolicy,
@@ -281,6 +300,7 @@ def order_models(
     owner_id: str,
     universe_id: str,
     exhaustion: tuple[Exhaustion, ...] = (),
+    source_policies: tuple[SourceModelPolicy, ...] = (),
 ) -> AdvisoryOrder:
     """Return a finite advisory order from normalized, explicitly scoped evidence.
 
@@ -301,6 +321,14 @@ def order_models(
     connections = {c.connection_id: c for c in catalog.connections}
     if len(connections) != len(catalog.connections):
         raise ValueError("duplicate connection")
+    if type(source_policies) is not tuple or any(
+        type(item) is not SourceModelPolicy for item in source_policies
+    ):
+        raise ValueError("invalid source model policies")
+    per_source = {item.connection_id: item for item in source_policies}
+    if source_policies and (len(per_source) != len(source_policies)
+                            or per_source.keys() != connections.keys()):
+        raise ValueError("source model policies must match the complete catalogue")
     entries: dict[ModelRef, tuple[ConnectionModels, Model]] = {}
     for connection in catalog.connections:
         if connection.source_kind not in ("subscription", "local", "http"):
@@ -385,7 +413,11 @@ def order_models(
                     reason = "capacity_identity_unverified", ""
                     break
         if reason is None:
-            reason = _ineligibility(connection, model, policy, interaction, explicit=explicit)
+            source = per_source.get(connection.connection_id)
+            checked_policy = (policy if source is None
+                              else replace(policy, cost_caps=source.cost_caps))
+            required = interaction if source is None else source.interaction
+            reason = _ineligibility(connection, model, checked_policy, required, explicit=explicit)
         if reason is None and identity in seen:
             reason = "duplicate", ""
         if reason is not None:
