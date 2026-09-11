@@ -153,9 +153,13 @@ def _configure_model_discovery(
         return dict(_NOT_FOUND)
     enabled = document.get("enabled")
     expected_fields = {"capability_kind", "definition_id", "enabled"}
+    preview = document.get("preview", False)
     if enabled is True:
         expected_fields.add("descriptor")
-    if not isinstance(enabled, bool) or set(document) != expected_fields:
+        if "preview" in document:
+            expected_fields.add("preview")
+    if (not isinstance(enabled, bool) or type(preview) is not bool
+            or set(document) != expected_fields):
         return {
             "error": "provider_capability_invalid",
             "detail": "payload fields do not match the discovery operation",
@@ -185,6 +189,7 @@ def _configure_model_discovery(
             descriptor=document.get("descriptor"),
             enabled=enabled,
             expected_grant=grant,
+            preview=preview,
         )
     except (LookupError, PermissionError):
         return dict(_NOT_FOUND)
@@ -194,13 +199,31 @@ def _configure_model_discovery(
             "detail": "discovery descriptor is invalid or its URLs are not permitted",
         }
     response: dict[str, Any] = {
-        "status": "configured" if enabled else "revoked",
+        "status": "preview" if preview else ("configured" if enabled else "revoked"),
         "capability_kind": "model_discovery",
         "provider": f"api_key_http:{definition.id}",
         "scope": "connection",
     }
     if capability is not None:
         response["descriptor"] = capability.descriptor()
+        if capability.contract_json:
+            import hashlib
+
+            response["descriptor_digest"] = hashlib.sha256(json.dumps(
+                capability.descriptor(), sort_keys=True, separators=(",", ":"),
+                allow_nan=False,
+            ).encode()).hexdigest()
+            response["source_semantics"] = {
+                "basis": "owner_configured_contract",
+                "independently_verified": False,
+                "grants_inference": False,
+                "grants_spending": False,
+                "price_bound_basis": "source_request_caps",
+                "scope": "connection",
+                "notice": "Availability, privacy and charging behavior are declared by the "
+                          "configured source, not independently verified by TinyAssets. "
+                          "Configuration alone does not establish agent readiness.",
+            }
     return response
 
 

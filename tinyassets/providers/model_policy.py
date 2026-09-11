@@ -81,6 +81,9 @@ class ConnectionModels:
     models: tuple[Model, ...]
     default_model_id: str | None = None
     authenticated_account_id: str | None = None
+    # Derived only by authenticated publication + exact-endpoint refresh. This
+    # is distinct from privacy verification and does not yet change admission.
+    availability_basis: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

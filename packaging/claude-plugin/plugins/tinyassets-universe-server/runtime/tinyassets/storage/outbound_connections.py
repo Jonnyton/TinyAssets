@@ -253,12 +253,28 @@ class ModelDiscoveryCapability:
     protocol: str
     catalogue_url: str
     benchmark_url: str
+    contract_json: str = ""
 
-    def descriptor(self) -> dict[str, str]:
-        result = {"protocol": self.protocol, "catalogue_url": self.catalogue_url}
+    def descriptor(self) -> dict[str, Any]:
+        result = (
+            {"schema_version": 1, "catalogue_url": self.catalogue_url,
+             "contract": json.loads(self.contract_json)}
+            if self.contract_json else
+            {"protocol": self.protocol, "catalogue_url": self.catalogue_url}
+        )
         if self.benchmark_url:
             result["benchmark_url"] = self.benchmark_url
         return result
+
+    def execution_contract(self):
+        """Resolve validated metadata, never an execution or semantic-trust grant."""
+        if self.contract_json:
+            from tinyassets.providers.discovery_contract import SourceContract
+
+            return SourceContract.compile(json.loads(self.contract_json))
+        from tinyassets.providers.discovery_protocols import discovery_protocol
+
+        return discovery_protocol(self.protocol)
 
 
 @dataclass(frozen=True)
@@ -1876,15 +1892,28 @@ def _validate_model_discovery_capability(
 ) -> ModelDiscoveryCapability:
     from tinyassets.providers.discovery_protocols import discovery_protocol
 
-    required = {"protocol", "catalogue_url"}
+    custom = isinstance(descriptor, dict) and "schema_version" in descriptor
+    required = {"schema_version", "contract", "catalogue_url"} if custom else {
+        "protocol", "catalogue_url",
+    }
     if (
         not isinstance(descriptor, dict)
         or not required.issubset(descriptor)
         or set(descriptor) - (required | {"benchmark_url"})
     ):
         raise ValueError("discovery descriptor fields are invalid")
-    protocol = descriptor["protocol"]
-    contract = discovery_protocol(protocol)
+    contract_json = ""
+    if custom:
+        from tinyassets.providers.discovery_contract import SourceContract
+
+        if type(descriptor["schema_version"]) is not int or descriptor["schema_version"] != 1:
+            raise ValueError("unsupported discovery descriptor version")
+        contract = SourceContract.compile(descriptor["contract"])
+        contract_json = contract.descriptor_json
+        protocol = ""  # A custom source is not a caller-created registry identity.
+    else:
+        protocol = descriptor["protocol"]
+        contract = discovery_protocol(protocol)
     if "benchmark_url" in descriptor and not isinstance(descriptor["benchmark_url"], str):
         raise ValueError("discovery benchmark_url must be a string when provided")
     catalogue_url = _capability_https_url("catalogue_url", descriptor["catalogue_url"])
@@ -1894,7 +1923,7 @@ def _validate_model_discovery_capability(
     contract.validate_urls(catalogue_url, benchmark_url)
     return ModelDiscoveryCapability(
         _required("connection_id", connection_id), "model_discovery", protocol,
-        catalogue_url, benchmark_url,
+        catalogue_url, benchmark_url, contract_json,
     )
 
 
@@ -3385,6 +3414,7 @@ class ConnectionLedger:
         descriptor: Any = None,
         enabled: bool,
         expected_grant: ConnectionGrant | None = None,
+        preview: bool = False,
     ) -> ConnectionCapability | ModelDiscoveryCapability | None:
         """Idempotently configure one bounded capability on existing authority.
 
@@ -3399,6 +3429,8 @@ class ConnectionLedger:
             raise ValueError("enabled must be a boolean")
         connection_key = _required("connection_id", connection_id)
         kind = _validate_capability_kind(capability_kind)
+        if type(preview) is not bool or (preview and (not enabled or kind != "model_discovery")):
+            raise ValueError("preview requires enabled model discovery metadata")
         capability = (
             _validate_connection_capability(connection_key, kind, descriptor)
             if enabled
@@ -3452,9 +3484,7 @@ class ConnectionLedger:
             if resource.connection_type != "http" or not verb_allowed:
                 raise PermissionError(f"connection does not authorize capability {spec.verb}")
             if isinstance(capability, ModelDiscoveryCapability):
-                from tinyassets.providers.discovery_protocols import discovery_protocol
-
-                if resource.auth_scheme != discovery_protocol(capability.protocol).auth_scheme:
+                if resource.auth_scheme != capability.execution_contract().auth_scheme:
                     raise PermissionError(
                         "connection authentication does not match discovery protocol"
                     )
@@ -3466,6 +3496,8 @@ class ConnectionLedger:
                 _enforce_endpoint_allowlist(
                     canonical, spec.verb, resource.allowed_endpoints, resource.access_mode,
                 )
+            if preview:
+                return capability  # Same current grant/endpoint checks, no metadata write.
             connection.execute(
                 """
                 INSERT INTO connection_capabilities (

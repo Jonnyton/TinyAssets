@@ -5,17 +5,18 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from tinyassets.api.helpers import _base_path
 from tinyassets.providers.definition import ProviderDefinition, get_definition
+from tinyassets.providers.discovery_contract import SourceContract
 from tinyassets.providers.discovery_http import (
     ModelDiscoveryUnavailable,
     read_http_discovery_document,
 )
-from tinyassets.providers.discovery_protocols import discovery_protocol
+from tinyassets.providers.discovery_protocols import DiscoveryProtocol
 from tinyassets.providers.model_policy import ConnectionModels
 from tinyassets.storage.outbound_connections import (
     ConnectionLedger,
@@ -40,6 +41,7 @@ class DiscoverySnapshot:
     completed_at: datetime
     models: ConnectionModels
     warnings: tuple[str, ...]
+    execution_contract: SourceContract | DiscoveryProtocol | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,7 +111,7 @@ def _context(base: Path, owner: str, uid: str, definition_id: str) -> _Context:
             )
             if not isinstance(profile, ModelDiscoveryCapability):
                 raise ValueError("wrong profile kind")
-            if resource.auth_scheme != discovery_protocol(profile.protocol).auth_scheme:
+            if resource.auth_scheme != profile.execution_contract().auth_scheme:
                 raise ModelDiscoveryUnavailable("protocol_mismatch")
             # Existing custody identity, not a new secret hash or permission.
             identity = _connection_grant_record_digest(
@@ -148,16 +150,19 @@ def refresh_model_discovery(
     base = _base_path()
     before = _context(base, owner_user_id, universe_id, definition_id)
     profile = before.profile
-    contract = discovery_protocol(profile.protocol)
+    contract = profile.execution_contract()
+    custom = isinstance(contract, SourceContract)
     from tinyassets.providers.protocol_encoders import agent_codec_for
 
     def read(url: str):
+        mode = {"json_mode": "exact"} if custom else {}
         return read_http_discovery_document(
             db_path=base / "outbound.db",
             definition=before.definition,
             owner_user_id=owner_user_id,
             universe_id=universe_id,
             url=url,
+            **mode,
         )
 
     # Include the catalogue request itself in the freshness window.
@@ -167,24 +172,27 @@ def refresh_model_discovery(
     warnings = ()
     if profile.benchmark_url:
         try:
-            benchmarks = contract.benchmark_decoder(
+            decode_benchmark = contract.decode_benchmarks if custom else contract.benchmark_decoder
+            benchmarks = decode_benchmark(
                 read(profile.benchmark_url), now=_now(), max_age=timedelta(days=1)
             )
         except Exception:
             warnings = ("benchmark_unavailable",)
     provider = f"api_key_http:{before.definition.id}"
-    models = contract.model_decoder(
+    decode_models = contract.decode_models if custom else contract.model_decoder
+    models = decode_models(
         payload,
         connection=ConnectionModels(
             connection_id=provider,
-            provider_scope=profile.protocol,
+            provider_scope="custom-http" if custom else profile.protocol,
             source_kind="http",
             freshness="fresh",
-            owner_filtered=contract.account_filtered,
+            owner_filtered=False if custom else contract.account_filtered,
             # Local executor capability, never the remote catalogue's claim.
             executor_tools=agent_codec_for(contract.inference_protocol) is not None,
             models=(),
             authenticated_account_id=None,
+            availability_basis="owner_configured_contract" if custom else None,
         ),
         benchmarks=benchmarks,
     )
@@ -207,6 +215,7 @@ def refresh_model_discovery(
         completed_at,
         models,
         warnings,
+        contract,
     )
 
 
