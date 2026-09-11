@@ -54,7 +54,7 @@
   independently APPROVE78s,58cases reproduced. See
   docs/reviews/2026-09-11-source-contract-compiler-proof.md. Existing descriptors,
   public publication and captured-contract consumers followed below; legacy
-  full-price migration and live proof remain. Do not mark this task done.
+  full-price migration followed below; live proof remains. Do not mark this task done.
 
   Authenticated publication/preview and exact snapshot captureca73f353 now built
   through the existing graph action and metadata table. Preview preserves current
@@ -70,8 +70,15 @@
   writer/tool/broker/journal tests and synthetic-DOM picker proof. Independent
   exact-commit APPROVE135s,13cases reproduced; see
   docs/reviews/2026-09-11-custom-source-routing-proof.md.
-  Discoverable authoring schema/help, legacy full-price migration and live
-  acceptance remain. Configuration alone is not agent authority/readiness.
+  Legacy full-price compatibility52f56a94 now uses the same shared data interpreters
+  for14prices,4ceilings, benchmark, requests, capacity and usage. Initial APPROVE140s
+  found a nonblocking byte-order claim mismatch; correction9963d04b preserves old
+  caller-cap ordering.287 frozen differential cases and870Windows/870actualLinux
+  pass, zero skips. Exact correction APPROVE59s reproduced287cases;
+  see docs/reviews/2026-09-11-bundled-source-contract-proof.md. Two discovery ratchet
+  loci removed through actual shared execution; two agent wire-code loci remain.
+  Discoverable authoring schema/help and live acceptance remain. Configuration
+  alone is not agent authority/readiness; native/all-universe choices are still open.
 
 ## 2. Owner policy and execution
 

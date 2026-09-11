@@ -71,10 +71,16 @@ connection registry, credential path, provider-definition field or SQL column.
 This nevertheless changes a public/storage contract and needs pre-build review.
 
 Existing descriptor `{protocol, catalogue_url, benchmark_url?}` keeps its exact
-validation and interpretation. Its protocol name resolves a bundled immutable
-data contract through the same compiler used for new descriptors. No rewrite
-of old rows or definition IDs. Generic decoding must differential-test the old
-model/benchmark/cost/capacity results before replacing the old implementation.
+validation and interpretation. Local52f56a94 now resolves its protocol name to
+installed JSON through the shared catalogue/request/capacity/usage compilers used
+for new descriptors. The installed compatibility composer retains all14 price
+fields,4 ceilings and the original Interaction exclusions/derived bounds. No rewrite
+of old rows or definition IDs. Initial review APPROVE140s confirmed shared execution
+but corrected the exact-byte claim: cap-key order differed. Correction9963d04b
+preserves caller order;287 frozen-before/data-after comparisons now include24
+unsorted byte-order permutations. Expanded870Windows/870actualLinux pass, zero
+skips. Exact correction APPROVE59s reproduced287cases. The
+internal legacy parsing/component parameters cannot be selected by owner JSON.
 The old functions remain only as compatibility callers where actually needed;
 do not retain a second working decoder or move brand branches into another file.
 
