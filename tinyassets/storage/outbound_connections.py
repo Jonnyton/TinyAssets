@@ -63,9 +63,10 @@ class OutboundEndpoint:
     allowed_query: tuple[str, ...] = ()
     query_patterns: tuple[tuple[str, str], ...] = ()
     required_query: tuple[str, ...] = ()
+    redirect_mode: str = "none"
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        document = {
             "host": self.host,
             "path_template": self.path_template,
             "methods": list(self.methods),
@@ -74,6 +75,11 @@ class OutboundEndpoint:
             "query_patterns": {name: pat for name, pat in self.query_patterns},
             "required_query": list(self.required_query),
         }
+        # Preserve legacy policy bytes and consent identity for no-follow.
+        # Only an explicit added permission appears in stored/projected policy.
+        if self.redirect_mode != "none":
+            document["redirect_mode"] = self.redirect_mode
+        return document
 
 
 #: A connection is granted one of two ways (full-channel-access D2).
@@ -1607,14 +1613,21 @@ def _validate_endpoint(raw: Any) -> OutboundEndpoint:
     allowed_query, query_patterns, required_query = _validate_query_rules(
         raw.get("allowed_query"), raw.get("query_patterns"), raw.get("required_query")
     )
+    methods = _validate_endpoint_methods(raw.get("methods"))
+    redirect_mode = raw.get("redirect_mode", "none")
+    if type(redirect_mode) is not str or redirect_mode not in {"none", "public_https_get"}:
+        raise SsrfValidationError("endpoint redirect_mode is not permitted")
+    if redirect_mode != "none" and methods != ("GET",):
+        raise SsrfValidationError("redirect permission requires a GET-only endpoint")
     return OutboundEndpoint(
         host=host,
         path_template=path_template,
-        methods=_validate_endpoint_methods(raw.get("methods")),
+        methods=methods,
         param_patterns=_validate_param_patterns(path_template, raw.get("param_patterns")),
         allowed_query=allowed_query,
         query_patterns=query_patterns,
         required_query=required_query,
+        redirect_mode=redirect_mode,
     )
 
 

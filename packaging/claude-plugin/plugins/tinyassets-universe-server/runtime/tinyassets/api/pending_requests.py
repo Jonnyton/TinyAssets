@@ -488,8 +488,15 @@ def _validated_endpoint_list(action: dict[str, Any]) -> list[dict[str, Any]]:
         for key in ("param_patterns", "allowed_query", "query_patterns", "required_query"):
             if raw.get(key) is not None:
                 endpoint[key] = raw[key]
+        # Presence matters: null/unknown modes must fail validation, not be
+        # silently dropped and displayed as a different permission request.
+        if "redirect_mode" in raw:
+            endpoint["redirect_mode"] = raw["redirect_mode"]
         endpoints.append(endpoint)
     _parse_allowed_endpoints(endpoints)   # raises on anything the deposit refuses
+    for endpoint in endpoints:
+        if endpoint.get("redirect_mode") == "none":
+            endpoint.pop("redirect_mode")
     return endpoints
 
 
@@ -837,6 +844,10 @@ def _granted_lines(action: dict[str, Any]) -> list[str]:
     """
     lines = [
         f"{'/'.join(e.get('methods') or [])} {e.get('host')}{e.get('path_template')}"
+        + (
+            " (may follow public HTTPS redirects without sharing this key with another origin)"
+            if e.get("redirect_mode") == "public_https_get" else ""
+        )
         for e in (action.get("endpoints") or [])
     ]
     for scope in (action.get("scopes") or []):

@@ -346,6 +346,10 @@ def _canonical_policy(endpoints: list[dict[str, Any]]) -> str:
             "allowed_query": sorted(set(endpoint.get("allowed_query") or ())),
             "query_patterns": endpoint.get("query_patterns") or {},
             "required_query": sorted(set(endpoint.get("required_query") or ())),
+            **(
+                {"redirect_mode": endpoint["redirect_mode"]}
+                if endpoint.get("redirect_mode", "none") != "none" else {}
+            ),
         }
         for endpoint in endpoints
     ]
