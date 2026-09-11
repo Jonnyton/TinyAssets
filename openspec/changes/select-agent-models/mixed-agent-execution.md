@@ -95,3 +95,49 @@ decoding and version-two malformed/mismatched record refusal. Run Windows and
 actual Linux, independent exact-head review, fresh CI, protected deployment proof
 and rendered ordinary app retest. Neither the classifier nor a hidden UI option
 closes this requirement on its own.
+
+## Pre-build review disposition
+
+Independent review ADAPT143s agrees with the coordinator and requires these
+concrete boundaries before runtime activation. This section resolves those
+requirements; it does not claim the unbuilt integration is approved.
+
+1. Installed step kind is separate from config.agent_request presence. Add a
+   private native_agent/engine_inference contract to coordinator/router, validate
+   it against the actual resolved executor after source resolution, and reject
+   mismatches before launch. Both kinds use agent-turn launch allowance under
+   existing per-binding cost/token budgets. Native receives agent_request=None
+   and selected_model=None, never a forged HTTP model. Observer authorization
+   requires writer/converse, current selected serving authority and matched kind.
+2. Version-two native candidate/reply has a distinct terminal union: completed,
+   capacity_no_effects, indeterminate. Its failure branch durably stores the
+   validated evidence, never just missing HTTP tools. _read/_frontier and prefix
+   validation distinguish that union from version-one engine inference. A native
+   started step is reset-blocking; uncertain native outcomes use a distinct
+   held_native_unknown state that reset_blockers includes, not held_transport.
+   Only explicit native capacity_no_effects or existing valid engine refusal
+   may precede another step. Old v1 bytes/semantics remain unchanged. Test scoped
+   reset while native started/unknown, and after known-no-effects or success.
+3. Complete native failure evidence includes exact attempt slot/provider,
+   supported complete protocol, reaped child and sticky side_effect_state=none.
+   Claude's initial none without terminal proof is insufficient; Codex's empty
+   current in-flight set after clearing is insufficient. Propagate the evidence
+   through post-stream terminal classification in both installed adapters. Unknown
+   events/EOF/truncation/reader errors or possible/committed tool activity hold.
+   The router may attach unconditional no-effects to SelectedModelCapacityError
+   only for a proven engine-inference refusal, never native delegation. The pure
+   classifier requires explicit execution kind plus aligned native proof slots;
+   a summary failure_class alone never authorizes traversal.
+4. Native claim observer does not call HTTP _begin: it hashes actual native
+   rendered input and records the exact authorized source, model="" where
+   default, binding and reservation after claim/before launch. Factor historical
+   batch validation into a shared projector; do not call a model-requiring HTTP
+   encoder with an invented native alias. Skip native history only for a validated
+   no-effects terminal; any incomplete or ambiguous prior step holds. Preserve
+   exact argument/result text and exclude foreign reasoning.
+5. Native terminal records distinguish requested/default model, legacy configured
+   response label and optional reported_model. Accounting values copied from the
+   executor are explicitly executor_accounting (estimated or unknown), not
+   claimed provider-reported billing. Existing budget settlement remains intact;
+   do not turn unknown cost/token/model data into zero or a verified fact. Only
+   the coordinator's final successful response invokes the answer observer.

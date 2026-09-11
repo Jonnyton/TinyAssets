@@ -75,6 +75,21 @@ def test_legacy_python_containers_do_not_silently_acquire_new_semantics():
     )
 
 
+@pytest.mark.parametrize("message", [
+    {"role": "user", "content": [{"type": "text", "text": "hello"}]},
+    {"role": "user", "content": "hello", "cache_control": {}},
+    {"role": "tool", "content": "hello"},
+    {"role": "user", "content": None},
+])
+def test_legacy_message_refusal_keeps_exact_diagnostic(message):
+    body = {"model": "future-model", "messages": [message]}
+    with pytest.raises(ValueError) as old:
+        OLD.constrain_inference(body, CAPS)
+    with pytest.raises(ValueError) as new:
+        NEW.constrain_inference(body, CAPS)
+    assert str(new.value) == str(old.value)
+
+
 @pytest.mark.parametrize("caps", list(permutations(CAPS)))
 def test_every_legacy_cap_order_preserves_literal_request_serialization(caps):
     body = {"messages": [{"role": "user", "content": "exact 🪐"}],

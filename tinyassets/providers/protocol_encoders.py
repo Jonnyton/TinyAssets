@@ -223,7 +223,7 @@ def _validate_chat_request(body, *, legacy=False):
             or message["role"] not in ("system", "user", "assistant")
             or not isinstance(message["content"], str) for message in messages
         ):
-            raise ValueError("unsupported constrained wire messages")
+            raise ValueError("unsupported message shape in price-constrained inference")
         return
     if (type(model) is not str or not model or len(model) > 200
             or not model.isprintable() or model != model.strip()
