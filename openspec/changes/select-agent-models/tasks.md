@@ -124,9 +124,14 @@
   Checker570Win/Linux0skips; journal366Win,363Linux+3reset failures0skips.
   Base292Linux+same3failures, no added failures;71new cases pass on both systems.
   Journal independently APPROVE79s,71cases reproduced.
-  See docs/reviews/2026-09-11-native-agent-journal-proof.md. Actual coordinator,
-  native protocol evidence and portable history remain unbuilt; unused support
-  is not activation/completion, and whole-PR ADAPT177s remains open.
+  See docs/reviews/2026-09-11-native-agent-journal-proof.md. Coordinator d1d3b39e
+  now integrates both execution kinds, fresh authority, exact portable history
+  and final receipts.574Windows/1Linux-only skip;575Linux/0skips. Additional
+  compatibility384Windows/0skips. Independent bounded APPROVE120s,11cases
+  reproduced; docs/reviews/2026-09-11-mixed-agent-execution-proof.md. Native
+  attempted-capacity observation remains incomplete, so those failures hold;
+  all-skipped quota can advance. Whole-PR release review and live acceptance
+  remain open. Do not mark the full task complete from synthetic evidence.
 
   September10 2026: implemented after capacity-shape ADAPT341s;515 Windows/
   515 actual Linux tests pass, zero skips. Real composition preserves known tool

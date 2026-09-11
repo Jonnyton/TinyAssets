@@ -5,9 +5,12 @@
 The owner can order native/subscription/local and HTTP choices together. The
 runtime must execute that order at safe capacity boundaries, retaining completed
 work. Hiding mixed choices is not completion of the requested capability.
-Current _call_writer chooses an execution style once; native exhaustion never
-advances the plan, while the HTTP loop advances to native with an incompatible
-structured agent request. Existing default/current/saved ordering stays intact.
+At reviewed9374a633, _call_writer chose an execution style once; native exhaustion
+never advanced the plan, while the HTTP loop advanced to native with an
+incompatible structured request. Coordinator d1d3b39e corrects those dispatch
+paths locally, preserving default/current/saved ordering. Complete native
+attempted-capacity evidence and live acceptance remain open; see
+docs/reviews/2026-09-11-mixed-agent-execution-proof.md.
 
 ## One coordinator, two installed execution capabilities
 
