@@ -415,6 +415,8 @@ def _sandbox_cli_args(
 class ClaudeProvider(BaseProvider):
     """Calls Claude via the ``claude -p`` CLI binary."""
 
+    agent_execution_kind = "native_agent"
+
     name = "claude-code"
     family = "anthropic"
 
@@ -589,6 +591,13 @@ class ClaudeProvider(BaseProvider):
                 "exit_code": _coerce_int(proc.returncode),
                 "terminal": terminal is not None,
             }
+            # Liveness normalization deliberately tolerates unknown events; it
+            # is not a complete effects trace and cannot attest a safe retry.
+            from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
+
+            exc.native_evidence = NativeCompletionEvidence(
+                self.name, False, type(proc.returncode) is int, side_effect_state,
+            )
             return exc
 
         async def _raise_timeout(bound_is_absolute: bool, allow: float) -> None:
@@ -711,6 +720,8 @@ class ClaudeProvider(BaseProvider):
             elapsed_ms = (time.monotonic() - start) * 1000
 
             if terminal is not None and _result_is_success(terminal):
+                from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
+
                 final_text = str(terminal.get("result") or "").strip()
                 if not final_text:
                     final_text = (
@@ -742,6 +753,9 @@ class ClaudeProvider(BaseProvider):
                     tool_phase=tool_phase,
                     exit_code=_coerce_int(returncode),
                     side_effect_state=side_effect_state,
+                    native_evidence=NativeCompletionEvidence(
+                        self.name, False, type(returncode) is int, side_effect_state,
+                    ),
                 )
 
             # Not a successful terminal result — classify the failure.

@@ -86,9 +86,12 @@ class NativeTerminal:
                 records.identity(value)
         if self.status == "completed":
             if (type(self.text) is not str or proof is None
-                    or not proof.protocol_complete or not proof.process_reaped
+                    or not proof.process_reaped
                     or self.configured_model is None):
                 raise records.invalid()
+            # A validated successful terminal can finish the turn even when
+            # intermediate tool telemetry was incomplete. It never permits a
+            # following step. Capacity retry still needs a complete no-effects proof.
         elif any(value is not None for value in (
             self.text, self.configured_model, self.reported_model,
             self.input_tokens, self.output_tokens,

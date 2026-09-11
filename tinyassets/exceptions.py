@@ -146,6 +146,7 @@ class AllProvidersExhaustedError(ProviderError):
         failure_class=None,
         retry_after=None,
         capacity_scope=None,
+        native_evidence=(),
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -161,6 +162,9 @@ class AllProvidersExhaustedError(ProviderError):
         # / overload outcome, carried through for the user-facing notice.
         self.retry_after = retry_after
         self.capacity_scope = capacity_scope
+        # Private local executor evidence aligned with attempts; not a public
+        # provider diagnostic field, credential, or instruction to retry.
+        self.native_evidence = native_evidence
 
 
 # ---------------------------------------------------------------------------

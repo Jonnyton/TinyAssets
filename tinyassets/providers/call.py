@@ -90,7 +90,7 @@ def get_last_provider() -> str:
 
 
 def make_interactive_agent_turn(*, prompt, system, universe_context, config):
-    """Create a real selected HTTP agent; no mock or alternate credential route."""
+    """Create a selected agent coordinator; no mock or alternate credential route."""
     from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.interactive_http_agent import InteractiveHttpAgentTurn
 

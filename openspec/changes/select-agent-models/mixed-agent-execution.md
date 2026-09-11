@@ -48,6 +48,19 @@ Existing streamed tool observations remain sticky: a later tool-finished event
 must not erase the fact that work happened. Do not broaden fallback from legacy
 unselected writer calls, which keep their existing one-all-skipped retry rule.
 
+Source re-verification September11: installed Codex JSONL explicitly documents
+best-effort intermediate tool events; Claude's liveness normalizer intentionally
+accepts unknown blocks/subtypes as heartbeats. Neither liveness trace proves
+complete effects coverage. Do not manufacture protocol_complete from terminal
+presence plus an empty tool list. Existing adapters report incomplete coverage;
+attempted capacity holds unless actual execution-bound no-effects proof exists.
+All-skipped quota gates can still advance without a native launch. Native success
+uses its validated successful terminal plus reaped child, with effects unknown;
+it ends the turn and cannot precede another candidate, so complete effects coverage
+is not necessary for success. The journal's completed branch must reflect that
+distinction without weakening capacity_no_effects. This does not declare native
+first-attempt capacity fallback solved; complete observation remains required.
+
 ## Durable progress and native delegation
 
 Extend the private journal by explicit versioned native-step records, preserving

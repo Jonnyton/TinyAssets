@@ -2,7 +2,7 @@
 
 Invoked only by the ordinary provider-call bridge on the capability-claiming
 thread. A journal is progress, never authority or permission to replay actions.
-Native CLI agents retain their native execution path.
+Selected native agents and engine-managed inference share one finite coordinator.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from contextlib import AsyncExitStack
 from dataclasses import replace
 
 from tinyassets.engine_tool_client import EngineToolError, open_engine_tools
@@ -21,10 +22,12 @@ from tinyassets.exceptions import (
 )
 from tinyassets.provider_assignment import check_served_agent_tool_authority
 from tinyassets.providers import agent_chat_codec as codec
+from tinyassets.providers.agent_capacity_boundary import capacity_boundary
 from tinyassets.providers.agent_inference import AgentInferenceRequest
 from tinyassets.providers.agent_model_plan import AgentModelPlan
-from tinyassets.providers.model_capacity import CapacitySignal
+from tinyassets.providers.native_agent_input import render_native_input
 from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
 from tinyassets.storage.agent_turn_journal import AgentTurnJournal, JournalUnavailable
 from tinyassets.storage.agent_turn_records import RoundInput, dump, load_result
 
@@ -48,6 +51,9 @@ class InteractiveHttpAgentTurn:
             raise ValueError("invalid interactive candidate plan")
         self.exhaustion = ()
         self.retrying_capacity = False
+        self.visited = set()
+        self.execution_kind = None
+        self.native_input = None
 
     def _check_scope(self):
         owner = check_served_agent_tool_authority(self.context)
@@ -105,6 +111,11 @@ class InteractiveHttpAgentTurn:
     def _history(self):
         history = []
         for previous in self.turn.rounds:
+            if type(previous.candidate) is NativeInput:
+                if (type(previous.reply) is NativeTerminal
+                        and previous.reply.status == "capacity_no_effects"):
+                    continue
+                raise JournalUnavailable("native continuation is incomplete")
             if previous.state == "failed":
                 continue
             if (
@@ -130,6 +141,52 @@ class InteractiveHttpAgentTurn:
                 )
             )
         return tuple(history)
+
+    def _begin_native(self, authority, reservation, config):
+        if (authority.owner_user_id != self.owner
+                or authority.universe_id != self.context.universe_dir.name
+                or authority.provider != self.context.model_selection.connection_id
+                or authority.selected_model is not None or config.agent_request is not None
+                or self.native_input is None):
+            raise ProviderAuthorityHeldError("native agent scope changed")
+        prompt, system = self.native_input
+        candidate = NativeInput(
+            authority.provider, self.context.model_selection.model_id,
+            authority.binding_id, reservation.reservation_id, authority.binding_generation,
+            authority.binding_digest,
+            "sha256:" + hashlib.sha256(
+                dump({"prompt": prompt, "system": system}).encode("utf-8"),
+            ).hexdigest(),
+        )
+        self._accept(self.journal.begin_round(
+            self.owner, authority.universe_id, self.turn.turn_id,
+            expected_generation=self.turn.generation, candidate=candidate,
+            after_failed_inference=self.retrying_capacity,
+        ))
+        self.retrying_capacity = False
+
+    def _finish_native_failure(self, exc):
+        terminal = NativeTerminal("indeterminate")
+        if isinstance(exc, AllProvidersExhaustedError):
+            proofs = getattr(exc, "native_evidence", ())
+            boundary = capacity_boundary(
+                self.context.model_selection, exc.attempts,
+                execution_kind="native_agent", native_evidence=proofs,
+            )
+            # One claimed native intent corresponds to exactly one executed
+            # provider attempt. Never compress several unknown launches to one proof.
+            if boundary is not None and boundary.attempted and len(proofs) == 1:
+                terminal = NativeTerminal(
+                    "capacity_no_effects", evidence=proofs[0],
+                    failure_class=boundary.failure_class,
+                    capacity_scope=boundary.exhaustion.scope,
+                    retry_after_s=boundary.retry_after_s,
+                )
+        self._accept(self.journal.finish_native(
+            self.owner, self.context.universe_dir.name, self.turn.turn_id,
+            expected_generation=self.turn.generation, ordinal=len(self.turn.rounds),
+            terminal=terminal,
+        ))
 
     async def run(self):
         try:
@@ -166,32 +223,46 @@ class InteractiveHttpAgentTurn:
 
         timeout = self.config.stream_timeout_profile().absolute_cap_s
         async with asyncio.timeout(timeout):
-            async with open_engine_tools(
-                actor_id=self.owner,
-                graph_id=uid,
-                enabled_tools=SERVED_ENGINE_MCP_TOOLS,
-                timeout=timeout,
-            ) as engine:
+            async with AsyncExitStack() as stack:
+                engine = None
                 while True:
-                    request = AgentInferenceRequest(
-                        tools=codec.tool_definitions(engine.tools),
-                        history=self._history(),
+                    self.execution_kind = self.router.selected_agent_execution_kind(
+                        self.context.model_selection,
                     )
-                    config = replace(self.config, agent_request=request)
+                    if self.execution_kind == "engine_inference":
+                        if engine is None:
+                            engine = await stack.enter_async_context(open_engine_tools(
+                                actor_id=self.owner, graph_id=uid,
+                                enabled_tools=SERVED_ENGINE_MCP_TOOLS, timeout=timeout,
+                            ))
+                        config = replace(self.config, agent_request=AgentInferenceRequest(
+                            tools=codec.tool_definitions(engine.tools), history=self._history(),
+                        ))
+                        prompt, system, observer = self.prompt, self.system, self._begin
+                    else:
+                        self.native_input = render_native_input(
+                            self.prompt, self.system, self._history(),
+                        )
+                        prompt, system = self.native_input
+                        config = replace(self.config, agent_request=None, selected_model=None)
+                        observer = self._begin_native
                     try:
                         response = await self.router.call(
                             "writer",
-                            self.prompt,
-                            self.system,
+                            prompt,
+                            system,
                             config,
                             operation="converse",
                             universe_context=self.context,
-                            _agent_observer=self._begin,
+                            _agent_observer=observer,
+                            _agent_execution_kind=self.execution_kind,
                         )
                     except BaseException as exc:
                         # No engine tool can start before a validated inference
                         # is committed. Preserve failure, never restart this turn.
-                        if self.turn.state == "inference_started":
+                        if self.turn.state == "native_started":
+                            self._finish_native_failure(exc)
+                        elif self.turn.state == "inference_started":
                             self._accept(
                                 self.journal.finish_inference(
                                     self.owner,
@@ -205,6 +276,28 @@ class InteractiveHttpAgentTurn:
                         if self._next_after_capacity(exc):
                             continue
                         raise
+                    if self.execution_kind == "native_agent":
+                        try:
+                            if response.provider != self.context.model_selection.connection_id:
+                                raise ProviderProtocolError("native response source changed")
+                            terminal = NativeTerminal(
+                                "completed", evidence=response.native_evidence,
+                                text=response.text, configured_model=response.model,
+                                reported_model=response.reported_model or None,
+                                input_tokens=response.input_tokens,
+                                output_tokens=response.output_tokens,
+                            )
+                            self._accept(self.journal.finish_native(
+                                self.owner, uid, self.turn.turn_id,
+                                expected_generation=self.turn.generation,
+                                ordinal=len(self.turn.rounds), terminal=terminal,
+                                cost_microusd=response.cost_microunits,
+                            ))
+                        except BaseException as exc:
+                            if self.turn.state == "native_started":
+                                self._finish_native_failure(exc)
+                            raise
+                        return response
                     if response.agent_reply is None:
                         raise ProviderProtocolError("HTTP agent response lacks validated progress")
                     self._accept(
@@ -275,21 +368,25 @@ class InteractiveHttpAgentTurn:
     def _next_after_capacity(self, exc):
         if (
             self.plan is None or not isinstance(exc, AllProvidersExhaustedError)
-            or exc.capacity_scope not in {"model", "account", "unknown"}
-            or self.turn.state != "held_transport"
-            or self.turn.rounds[-1].state != "failed"
-            or self.turn.rounds[-1].tools
+            or self.turn.state not in {"ready", "held_transport", "held_native_capacity"}
         ):
             return False
-        signal = CapacitySignal(exc.capacity_scope, exc.failure_class, exc.retry_after)
-        self.exhaustion += (signal.exhaustion(self.context.model_selection),)
+        boundary = capacity_boundary(
+            self.context.model_selection, exc.attempts, execution_kind=self.execution_kind,
+            native_evidence=(getattr(exc, "native_evidence", ())
+                             if self.execution_kind == "native_agent" else ()),
+        )
+        if boundary is None:
+            return False
+        self.visited.add(self.context.model_selection)
+        self.exhaustion += (boundary.exhaustion,)
         candidate = self.plan.next_candidate(
             self.owner, self.context.universe_dir.name, self.exhaustion,
         )
-        if candidate is None:
+        if candidate is None or candidate in self.visited:
             return False
         self.context = replace(self.context, model_selection=candidate)
-        self.retrying_capacity = True
+        self.retrying_capacity = self.turn.state != "ready"
         return True
 
     def close_quiescent(self):

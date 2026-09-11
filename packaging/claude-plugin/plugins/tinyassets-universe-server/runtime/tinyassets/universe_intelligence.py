@@ -852,14 +852,14 @@ def _call_writer(turn_input, *, system, universe_context, config, response_obser
 
     http_turn = None
     selection = getattr(universe_context, "model_selection", None)
-    if (selection is not None and selection.connection_id.startswith("api_key_http:")
-            and universe_context.agent_model_plan is not None
+    if (selection is not None and universe_context.agent_model_plan is not None
             and not getattr(config, "engine_mcp_enabled", False)):
         from tinyassets.exceptions import ProviderAuthorityHeldError
 
         raise ProviderAuthorityHeldError("selected interactive model requires engine tools")
     if (getattr(config, "engine_mcp_enabled", False) and selection is not None
-            and selection.connection_id.startswith("api_key_http:")):
+            and (universe_context.agent_model_plan is not None
+                 or selection.connection_id.startswith("api_key_http:"))):
         from tinyassets.providers.call import make_interactive_agent_turn
 
         http_turn = make_interactive_agent_turn(
@@ -897,7 +897,9 @@ def _call_writer(turn_input, *, system, universe_context, config, response_obser
         all_skipped = bool(attempts) and all(
             getattr(a, "status", "") == "skipped" for a in attempts
         )
-        if not all_skipped or (http_turn is not None and http_turn.turn.rounds):
+        if not all_skipped or (http_turn is not None and (
+            http_turn.plan is not None or http_turn.turn.rounds
+        )):
             raise  # something ran / real failure class → caller's honest notice
         logger.warning(
             "writer chain fully cooled (all providers skipped, nothing ran); "

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -57,7 +58,18 @@ def configured(rig, reader, monkeypatch, request):
                 "credential_type": "llm_subscription", "service": "codex", "auth_json_b64": "e30=",
             }], owner_user_id="owner", universe_id="u-models",
         )
-        native = _RecordingProvider("codex")
+        from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
+
+        class NativeRecording(_RecordingProvider):
+            agent_execution_kind = "native_agent"
+
+            async def complete(self, *args, **kwargs):
+                response = await super().complete(*args, **kwargs)
+                return replace(response, native_evidence=NativeCompletionEvidence(
+                    self.name, False, True, "unknown",
+                ))
+
+        native = NativeRecording("codex")
         monkeypatch.setattr(provider_calls, "_real_router", ProviderRouter({"codex": native}))
         access["codex"] = ModelAccess("explicit", ("",))
     connected = custom_agents(
@@ -105,7 +117,7 @@ def served(configured):
     auth.revoke_provider_request(capability)
 
 
-def _converse(agent, monkeypatch, choice=None):
+def _converse(agent, monkeypatch, choice=None, observer=None):
     monkeypatch.setattr(
         universe_intelligence.interlocutor, "resolve_interlocutor_tier",
         lambda *_: SimpleNamespace(tier=universe_intelligence.interlocutor.FOUNDER),
@@ -116,7 +128,9 @@ def _converse(agent, monkeypatch, choice=None):
     )
     monkeypatch.setattr(universe_intelligence, "extract_learning", lambda *a: None)
     monkeypatch.setattr(universe_intelligence, "commit_learning", lambda *a, **k: None)
-    return universe_intelligence.converse("u-models", "hello", model_choice=choice)
+    return universe_intelligence.converse(
+        "u-models", "hello", model_choice=choice, response_observer=observer,
+    )
 
 
 def _save(agent, prefs):

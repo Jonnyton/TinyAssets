@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from tinyassets.config import UniverseConfig
     from tinyassets.provider_assignment import ServedProviderAuthority
     from tinyassets.provider_work_authority import ProviderInvocationCarrier
+    from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
     from tinyassets.providers.agent_chat_codec import AgentReply
     from tinyassets.providers.agent_inference import AgentInferenceRequest
     from tinyassets.providers.agent_model_plan import AgentModelPlan
@@ -300,6 +301,8 @@ class ProviderResponse:
 
     agent_reply: AgentReply | None = field(default=None, repr=False)
     """One inference's validated result; requested tools have not been executed."""
+    native_evidence: NativeCompletionEvidence | None = field(default=None, repr=False)
+    """Local execution evidence, not provider-reported billing or HTTP progress."""
 
 
 # Sentinel for quality-floor-only degraded judge responses.
@@ -1241,6 +1244,9 @@ class BaseProvider(abc.ABC):
 
     family: str = ""
     """Model family for judge diversity enforcement."""
+
+    agent_execution_kind: str | None = None
+    """Installed execution capability; unknown executors cannot claim an agent lane."""
 
     @classmethod
     def is_available(cls) -> bool:

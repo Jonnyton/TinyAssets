@@ -106,6 +106,8 @@ def _coerce_status(value: Any) -> int | None:
 class ApiKeyHttpProvider(BaseProvider):
     """Compute over a user-registered http provider, via the credential-blind proxy."""
 
+    agent_execution_kind = "engine_inference"
+
     def __init__(
         self, definition: ProviderDefinition, *, proxy_override: Any | None = None
     ) -> None:

@@ -684,6 +684,8 @@ async def _stream_codex_exec(
 class CodexProvider(BaseProvider):
     """Calls GPT via the ``codex exec`` CLI binary."""
 
+    agent_execution_kind = "native_agent"
+
     name = "codex"
     family = "openai"
 
@@ -1031,6 +1033,8 @@ class CodexProvider(BaseProvider):
                 f"stderr: {stderr_text[:200].strip() or '(empty)'}"
             )
 
+        from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
+
         return ProviderResponse(
             text=text,
             provider=self.name,
@@ -1042,4 +1046,9 @@ class CodexProvider(BaseProvider):
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cost_microunits=cost_microunits,
+            # JSONL intermediate tool events are best-effort. Even a recognized
+            # successful terminal proves no absence of earlier internal effects.
+            native_evidence=NativeCompletionEvidence(
+                self.name, False, type(proc.returncode) is int, "unknown",
+            ) if machine_accounting else None,
         )

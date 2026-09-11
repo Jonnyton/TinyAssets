@@ -137,6 +137,15 @@ def test_native_success_receipt_is_not_a_fabricated_http_reply(journal):
     assert begin_native(journal, done, retry=True).status == "conflict"
 
 
+def test_reaped_success_with_incomplete_effects_ends_turn_but_never_allows_retry(journal):
+    turn = begin_native(journal, new(journal)).snapshot
+    terminal = completed(evidence=proof(protocol_complete=False, side_effect_state="unknown"))
+    turn = end_native(journal, turn, terminal).snapshot
+    assert turn.state == "completed" and not blockers(journal)
+    assert begin_native(journal, turn, retry=True).status == "conflict"
+    assert journal.get("owner", "home", turn.turn_id) == turn
+
+
 @pytest.mark.parametrize("terminal", [None, NativeTerminal("indeterminate")])
 def test_native_started_and_unknown_block_reset_and_cannot_retry(journal, terminal):
     turn = begin_native(journal, new(journal)).snapshot

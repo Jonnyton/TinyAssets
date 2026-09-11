@@ -470,6 +470,14 @@ class ProviderRouter:
                 alive.append(provider_name)
         return alive
 
+    def selected_agent_execution_kind(self, selection) -> str:
+        """Advisory installed capability; actual dispatch rechecks the resolved executor."""
+        provider = self._providers.get(selection.connection_id)
+        kind = getattr(provider, "agent_execution_kind", None)
+        if kind not in ("native_agent", "engine_inference"):
+            raise ProviderAuthorityHeldError("selected provider has no installed agent executor")
+        return kind
+
     async def call(
         self,
         role: str,
@@ -480,8 +488,17 @@ class ProviderRouter:
         operation: str | None = None,
         universe_context: UniverseContext | None = None,
         _agent_observer=None,
+        _agent_execution_kind=None,
     ) -> ProviderResponse:
         """Route a call, fencing founder-facing served turns before launch."""
+        if _agent_execution_kind is not None and (
+            _agent_execution_kind not in ("native_agent", "engine_inference")
+            or role != "writer" or operation != "converse"
+            or config is None or not config.engine_mcp_enabled
+            or universe_context is None or universe_context.model_selection is None
+            or universe_context.provider_invocation is not None
+        ):
+            raise PermissionError("agent step requires the selected served writer")
 
         # A context that ALREADY carries an authorized ServedProviderAuthority (the
         # daemon-owned background consumer fences its own authority per call in
@@ -513,7 +530,8 @@ class ProviderRouter:
             if universe_context.model_selection is not None:
                 from tinyassets.provider_assignment import authorize_served_provider_call_async
 
-                agent_turn = config is not None and config.agent_request is not None
+                agent_turn = (_agent_execution_kind is not None
+                              or config is not None and config.agent_request is not None)
                 async with authorize_served_provider_call_async(
                     universe_dir.parent,
                     universe_dir=universe_dir,
@@ -529,6 +547,7 @@ class ProviderRouter:
                     return await self._call_routed(
                         role, prompt, system, config, operation=operation,
                         universe_context=replace(universe_context, served_provider=authority),
+                        _agent_execution_kind=_agent_execution_kind,
                     )
             with authorize_served_provider_call(
                 universe_dir.parent,
@@ -567,6 +586,7 @@ class ProviderRouter:
         *,
         operation: str | None = None,
         universe_context: UniverseContext | None = None,
+        _agent_execution_kind=None,
     ) -> ProviderResponse:
         """Route a single call through the fallback chain for *role*.
 
@@ -632,6 +652,12 @@ class ProviderRouter:
         # ModelConfig preference. Preserve legacy calls by clearing any injected
         # selection when there is no selected-model serving authority.
         cfg = replace(cfg, selected_model=getattr(served_authority, "selected_model", None))
+        if _agent_execution_kind == "native_agent" and (
+            cfg.agent_request is not None or cfg.selected_model is not None
+        ):
+            raise PermissionError("native agent cannot use HTTP inference facts")
+        if _agent_execution_kind == "engine_inference" and cfg.agent_request is None:
+            raise PermissionError("engine inference requires its structured request")
         from tinyassets.providers.agent_inference import input_size, output_for_settlement
 
         if cfg.agent_request is not None and (
@@ -827,6 +853,7 @@ class ProviderRouter:
         # For normal fallback routing, remove unregistered providers before
         # iteration so the live chain does not advertise phantom first entries.
         attempts: list[ProviderAttemptDiagnostic] = []
+        native_proofs = {}
         if (
             invocation_carrier is None
             and served_authority is None
@@ -928,6 +955,10 @@ class ProviderRouter:
                     detail="provider name not registered with daemon",
                 ))
                 continue
+            if _agent_execution_kind is not None and (
+                getattr(provider, "agent_execution_kind", None) != _agent_execution_kind
+            ):
+                raise PermissionError("selected agent executor changed before dispatch")
             if not self._quota.available(provider_name):
                 logger.info("Skipping %s (quota/cooldown)", provider_name)
                 cd = self._quota.cooldown_remaining(provider_name)
@@ -1150,10 +1181,20 @@ class ProviderRouter:
                     provider=provider_name, status="failed", skip_class="quota_or_cooldown",
                     detail=exc.failure_class, failure_class=exc.failure_class,
                     retry_after_s=exc.retry_after, capacity_scope=exc.signal.scope,
-                    side_effect_state="none",
+                    side_effect_state=(
+                        "none" if cfg.agent_request is not None
+                        and getattr(provider, "agent_execution_kind", None) == "engine_inference"
+                        else _side_effect_from(exc)
+                    ),
                 ))
                 continue
             except (ProviderRateLimitedError, ProviderOverloadedError) as exc:
+                from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
+
+                proof = getattr(exc, "native_evidence", None)
+                if (type(proof) is NativeCompletionEvidence
+                        and proof.provider == provider_name):
+                    native_proofs[len(attempts)] = proof
                 # A genuine rate-limit / overload IS real capacity: cool the
                 # provider until its own retry-after (+margin), keeping fallback
                 # forbidden for the sole served writer.
@@ -1289,6 +1330,7 @@ class ProviderRouter:
                 failure_class=dominant_failure_class(attempts),
                 retry_after=dominant_retry_after_s(attempts),
                 capacity_scope=dominant_capacity_scope(attempts),
+                native_evidence=tuple(native_proofs.get(i) for i in range(len(attempts))),
             )
         if invocation_carrier is not None:
             settle_carrier(

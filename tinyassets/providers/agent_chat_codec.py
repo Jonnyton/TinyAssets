@@ -411,6 +411,23 @@ def build_portable_agent_body(
         tools=tools, temperature=temperature, max_tokens=max_tokens,
         tool_choice=tool_choice,
     )
+    body["messages"].extend(project_completed_history(history, source_ref=source_ref, model=model))
+    return body
+
+
+def project_completed_history(
+    history: Sequence[CapturedToolRound], *, source_ref: str | None = None,
+    model: str | None = None,
+) -> list[dict[str, Any]]:
+    """Validate exact completed batches without requiring a new model or wire.
+
+    An absent destination strips all private reasoning, including for native
+    agents. Each old batch is still checked against its own captured inventory.
+    No historical tool becomes permission to execute it again.
+    """
+    if (source_ref is None) != (model is None):
+        raise _bad("incomplete history destination")
+    result = []
     if not _sequence(history):
         raise _bad("captured completed history required")
     for captured in history:
@@ -434,8 +451,8 @@ def build_portable_agent_body(
                 key: value for key, value in messages[0].items()
                 if key in {"role", "content", "tool_calls"}
             }
-        body["messages"].extend(messages)
-    return body
+        result.extend(messages)
+    return result
 
 
 def encode_openai_chat_agent(**kwargs) -> tuple[str, dict[str, Any]]:
