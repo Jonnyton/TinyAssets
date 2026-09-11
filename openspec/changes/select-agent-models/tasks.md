@@ -22,9 +22,15 @@
   Real scoped-broker -> compiled catalogue tests plus expanded group pass
   646Windows/646actualLinux, zero skips after initial ADAPT corrected malformed
   string decimals without changing legacy presets; see
-  docs/reviews/2026-09-11-exact-discovery-numbers-proof.md. Correction review
-  pending. The source-contract publisher/consumer and enforced accounting/capacity
+  docs/reviews/2026-09-11-exact-discovery-numbers-proof.md. Exact28714628 correction
+  independently APPROVE92s. The source-contract publisher/consumer and enforced accounting/capacity
   remain unbuilt; no live activation or complete source-support claim.
+
+  Next integration must also remove the current same-Interaction assumption in
+  served_model_plan.prepare_owned_model_plan: independently eligible HTTP sources
+  with different enforceable price shapes currently become price_contract_incompatible.
+  Preserve per-source admission/caps while ranking their eligible models together;
+  do not weaken pricing or manufacture a common remote contract.
 
 ## 2. Owner policy and execution
 

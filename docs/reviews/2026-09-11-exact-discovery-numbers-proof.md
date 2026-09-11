@@ -53,4 +53,10 @@ explicitly retain their original Decimal interpretation; benchmarks preserve
 the same legacy split.47 additional regressions cover malformed and valid tokens,
 legacy prices and benchmark strings. Same ten-file command now passes
 646Windows28.97s/646actualLinux20.87s, zero skips; ruff/plugin/import/mirrors
-and diff checks pass. Independent correction review required; no push/deployment.
+and diff checks pass. Independent correction review of exact
+28714628abd1359cc43c20d8e7aa7591c39bcfb2 completed92s, terminal exit0,
+VERDICT APPROVE.71 focused cases independently passed in memory plus bounds,
+benchmark and immutability probes (python -B -, Windows September11 UTC);
+not an independent reproduction of the full646-case group. Canonical/mirror blob
+791cdce2cfe14c0219a24d899c830a8ee8757468 matched. No further required correction;
+no whole-PR or live acceptance approval. No push/deployment.
