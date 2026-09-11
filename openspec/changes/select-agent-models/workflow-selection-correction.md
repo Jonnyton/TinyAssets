@@ -1,7 +1,57 @@
 # Workflow selection must compose with accepted model authority
 
 September 11, 2026, 20:25 UTC. Correction proposal and reproduced blocker;
-not an approved authority design or an implemented fix.
+The initial proposal below is superseded by the reviewed disposition immediately
+below. Runtime integration remains unfinished.
+
+## September11 reviewed implementation decisions
+
+The owner's one extra independent review completed in336s, verdict ADAPT.
+Full recovered verdict: docs/reviews/2026-09-11-workflow-model-authority-extra-review.md.
+The wrapper saved a later stop-hook recap; the actual review was recovered from
+that same invocation's transcript, not by dispatching another review. No tests
+were run by the reviewer. This approves the adapted shape, not unimplemented code.
+
+Adopt its typed aggregate design: ProviderUniverseWorkReceipt version4 adds
+authority_scope and manifest_digest. Manifest scope has no provider, provider
+binding, credential or parent-binding fields (all null); assignment generation,
+digest, owner, universe, immutable work subject/claim and aggregate ceilings remain.
+Provider scope preserves all legacy semantics. Versions1–3 retain exact wire
+documents and reject new fields. ProviderWorkBinding remains provider-specific.
+Never fill required legacy columns with a fictional provider or credential.
+
+Reservation version3 will persist exact selected member/binding/custody,
+assignment/manifest, model/executor and discovery/cost evidence, covered by the
+existing carrier seal. Receipt SQL must support nullable provider-binding columns
+through an atomic migration preserving dependent claim/reservation rows and FKs;
+old binaries fail closed on new records. No new work IDs or per-provider budget
+stores. Reserve/arm revalidate current assignment AND exact selected member.
+Replay compares the full selection/fence, not only tokens/cost. Router selection
+comes only from sealed authority; caller config never grants execution.
+
+Budget clarification: preserve aggregate arithmetic and ALSO sum charged tokens,
+cost and invocation count for each member, not merely check each request against
+the member maximum. Use explicit aggregate authorized ceilings where present,
+otherwise conservative common ceilings; do not synthesize a union of maxima.
+Pre-launch refusals release reservations. A launched failure still consumes its
+actual/indeterminate allowance; it is not relabelled pre-launch to fund fallback.
+The compiled authorized retry/fallback plan must fit a finite shared work budget;
+one-call-per-node is not a sufficient allowance for requested retries. No fresh
+full budget per retry or invented identity is permitted.
+
+First implementation step is the inert version4 record and strict parsing tests;
+it cannot issue/launch work until the migration and validated store/caller paths
+are integrated. Then version3 reservations/carriers, shared admission, both
+foreground/background callers and router. Preserve cancellation/recovery and
+independent members after anchor revocation. Native explicit model discovery and
+executor propagation are still required for the requested all-available-models
+selector; a provider-default-only menu is not that MVP.
+
+Owner September11 priority: ship the usable model-selector MVP now, including
+seeing the answering source and selecting from all available authorized models.
+Do not let unrelated workflow-project or diagnostic lanes delay this release.
+Keep the broader goal and fallback/default requirements; this priority is not
+permission to deploy the existing workflow regressions or fabricate model names.
 
 ## User capability and ownership
 
@@ -119,15 +169,33 @@ is enabled. An available selected member must not depend on the structural
 anchor's unrelated credential, while revoked/disabled work still cannot launch.
 
 The owner explicitly answered **Allow one additional review** on September11.
-That single additional model-release review has not yet been dispatched. These
-tests and this proposal do not count as a fourth review. New runtime/storage
-authority representation still awaits the required correction-shape review.
+That review is now complete: ADAPT336s, disposition at the top of this file.
+No further review is authorized by that exception. No unimplemented runtime
+or rollout is approved by the shape verdict.
 After implementation and release
 gates, verify the live deployment and ask only `Retest your workflow checklist`.
 The app must confirm usable general capabilities; its own project completion
 is neither taken over nor substituted as this task's implementation.
 
 ## Inventory integration correction — September 11, 22:21 UTC
+
+## Version4 aggregate receipt implementation — September11 23:00UTC
+
+Implemented the reviewed inert receipt representation and strict serialization.
+Manifest receipts preserve the existing aggregate identity, subject and budget,
+while refusing every provider/member/credential/parent field. Provider-bound
+legacy wire documents remain unchanged. No store schema or launch path emits
+this version yet; no migration, model selection or production readiness claim.
+
+WindowsPython3.14: `python -m pytest -q tests/test_provider_work_authority.py
+--tb=short --show-capture=no` passes92cases in5.22s, zero skips. Includes26 new
+manifest/strictness cases (full fixture-backed legacy coverage also remains).
+Ruff, strict OpenSpec validation and canonical plugin mirror/import pass.
+Expanded real run/consumer/background group remains50passed/2failed in11.63s,
+42dependency warnings, zero skips. Both known native-manifest foreground launch
+failures remain; do not conceal them with the92record tests. No Linux proof yet.
+
+### Earlier inventory evidence
 
 The scheduler inventory now uses the existing accepted-member validator for
 manifest enrollments, preserving the legacy validator for legacy enrollments.

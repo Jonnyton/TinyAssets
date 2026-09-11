@@ -27,6 +27,17 @@ rewriting a private workflow. Preferences alone SHALL NOT grant execution access
 - **THEN** they remain constrained by the same work-level aggregate allowance and current per-source constraints
 - **AND** concurrent attempts cannot multiply the budget or replay completed effects
 
+#### Scenario: Aggregate authority is not an anchor credential
+- **WHEN** a manifest-authorized workflow records its work budget
+- **THEN** its version4 receipt binds the assignment manifest and immutable work subject without a provider binding or credential
+- **AND** each reserved invocation binds its own selected member, model, custody and permitted cost
+- **AND** unrelated anchor-custody revocation does not invalidate a still-authorized member
+
+#### Scenario: Legacy authority records stay strict
+- **WHEN** existing version1–3 receipts are read or written
+- **THEN** their prior exact representation and provider-bound semantics are preserved
+- **AND** new manifest receipts cannot disguise provider or credential fields as aggregate authority
+
 #### Scenario: Main-provider change through ordinary controls
 - **WHEN** the authorized user requests a main-provider change through the app agent
 - **THEN** existing scoped operations and necessary owner confirmation perform and report the actual change

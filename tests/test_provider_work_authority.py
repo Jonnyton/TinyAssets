@@ -509,6 +509,88 @@ def test_universe_receipt_is_dark_bounded_and_restart_safe(tmp_path) -> None:
     assert store.list_reservations(receipt.receipt_id) == ()
 
 
+_RECEIPT_MEMBER_FIELDS = (
+    "provider", "binding_id", "binding_generation", "binding_digest",
+    "binding_revocation_generation", "credential_reference_digest",
+    "parent_binding_id", "parent_binding_generation", "parent_binding_digest",
+    "parent_binding_revocation_generation",
+)
+
+
+def _manifest_receipt(tmp_path):
+    store, _binding, root, _authority, service = _ledger_fixture(tmp_path)
+    legacy = service.issue(root).record
+    assert legacy is not None
+    manifest = replace(
+        legacy, schema_version=4, authority_scope="manifest",
+        manifest_digest=f"sha256:{'d' * 64}",
+        **dict.fromkeys(_RECEIPT_MEMBER_FIELDS),
+    )
+    return store, legacy, replace(manifest, receipt_digest=manifest.expected_digest())
+
+
+def test_manifest_receipt_roundtrip_has_no_anchor_authority(tmp_path) -> None:
+    store, legacy, receipt = _manifest_receipt(tmp_path)
+    payload = receipt.to_dict()
+    assert payload.keys() == ProviderUniverseWorkReceipt._FIELDS_V4
+    assert all(payload[name] is None for name in _RECEIPT_MEMBER_FIELDS)
+    assert receipt.receipt_id == legacy.receipt_id
+    assert receipt.execution_subject == legacy.execution_subject
+    assert receipt.max_invocations == legacy.max_invocations
+    assert receipt.max_tokens == legacy.max_tokens
+    assert receipt.max_cost_microunits == legacy.max_cost_microunits
+    assert ProviderUniverseWorkReceipt.from_dict(payload) == receipt
+    assert receipt.receipt_digest == receipt.expected_digest()
+    assert receipt.receipt_digest != legacy.receipt_digest
+    # Constructing the inert record neither publishes authority nor issues work.
+    assert store.get_receipt(receipt.receipt_id) == legacy
+    assert store.list_reservations(receipt.receipt_id) == ()
+
+
+@pytest.mark.parametrize("field", _RECEIPT_MEMBER_FIELDS)
+def test_manifest_receipt_rejects_every_member_field(tmp_path, field) -> None:
+    _store, legacy, receipt = _manifest_receipt(tmp_path)
+    value = getattr(legacy, field)
+    if value is None:
+        value = 1 if "generation" in field else f"sha256:{'a' * 64}"
+    with pytest.raises(ValueError, match="cannot carry member authority"):
+        replace(receipt, **{field: value})
+
+
+@pytest.mark.parametrize("field,value", [
+    ("manifest_digest", None), ("manifest_digest", "not-a-digest"),
+    ("authority_scope", "anchor"), ("authority_scope", []),
+    ("schema_version", 3), ("schema_version", 5),
+    ("schema_version", 4.0), ("schema_version", True),
+    ("assignment_generation", 0), ("assignment_digest", "not-a-digest"),
+    ("max_invocations", 0), ("max_tokens", -1),
+    ("max_cost_microunits", -1), ("principal_id", ""),
+    ("execution_subject", None),
+])
+def test_manifest_receipt_keeps_strict_scope_subject_and_budget_checks(
+    tmp_path, field, value,
+) -> None:
+    _store, _legacy, receipt = _manifest_receipt(tmp_path)
+    with pytest.raises(ValueError):
+        replace(receipt, **{field: value})
+
+
+def test_legacy_receipt_wire_is_unchanged_and_rejects_manifest_fields(tmp_path) -> None:
+    _store, legacy, manifest = _manifest_receipt(tmp_path)
+    payload = legacy.to_dict()
+    assert "authority_scope" not in payload and "manifest_digest" not in payload
+    assert ProviderUniverseWorkReceipt.from_dict(payload).to_dict() == payload
+    with pytest.raises(ValueError, match="fields do not match schema"):
+        ProviderUniverseWorkReceipt.from_dict(dict(payload, authority_scope="manifest"))
+    for field in ("authority_scope", "manifest_digest"):
+        incomplete = manifest.to_dict()
+        del incomplete[field]
+        with pytest.raises(ValueError, match="fields do not match schema"):
+            ProviderUniverseWorkReceipt.from_dict(incomplete)
+    with pytest.raises(ValueError, match="cannot carry a manifest digest"):
+        replace(legacy, schema_version=4, manifest_digest=manifest.manifest_digest)
+
+
 def test_universe_receipt_preserves_exact_authorized_role_set(tmp_path) -> None:
     store, _binding, root, authority, _service = _ledger_fixture(tmp_path)
     with pytest.raises(ValueError, match="allowed_roles"):

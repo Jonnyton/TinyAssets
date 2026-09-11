@@ -491,17 +491,17 @@ class ProviderUniverseWorkReceipt:
     state: ProviderWorkReceiptState
     work_item_kind: str
     work_item_id: str
-    binding_id: str
-    binding_generation: int
-    binding_digest: str
-    binding_revocation_generation: int
+    binding_id: str | None
+    binding_generation: int | None
+    binding_digest: str | None
+    binding_revocation_generation: int | None
     principal_id: str
     actor_id: str
     universe_id: str
     branch_def_id: str | None
     branch_version_id: str | None
-    provider: str
-    credential_reference_digest: str
+    provider: str | None
+    credential_reference_digest: str | None
     assignment_generation: int
     assignment_digest: str
     executor_class: str
@@ -520,6 +520,10 @@ class ProviderUniverseWorkReceipt:
     parent_binding_generation: int | None = None
     parent_binding_digest: str | None = None
     parent_binding_revocation_generation: int | None = None
+    # Version4 separates a work's aggregate allowance from the provider selected
+    # by each invocation. This record remains inert, never launch authority.
+    authority_scope: str = "provider"
+    manifest_digest: str | None = None
 
     _FIELDS_V1 = frozenset(
         {
@@ -569,10 +573,32 @@ class ProviderUniverseWorkReceipt:
             "parent_binding_revocation_generation",
         }
     )
+    _FIELDS_V4 = _FIELDS_V3 | frozenset({"authority_scope", "manifest_digest"})
 
     def __post_init__(self) -> None:
-        if self.schema_version not in {1, 2, 3}:
+        if type(self.schema_version) is not int or self.schema_version not in {1, 2, 3, 4}:
             raise ValueError("unsupported schema_version")
+        if (
+            type(self.authority_scope) is not str
+            or self.authority_scope not in {"provider", "manifest"}
+        ):
+            raise ValueError("unsupported work authority scope")
+        manifest_scope = self.authority_scope == "manifest"
+        if self.schema_version < 4 and (manifest_scope or self.manifest_digest is not None):
+            raise ValueError("legacy receipts cannot carry manifest authority")
+        if manifest_scope:
+            _digest(self.manifest_digest, "manifest_digest")
+            member_facts = (
+                self.provider, self.binding_id, self.binding_generation,
+                self.binding_digest, self.binding_revocation_generation,
+                self.credential_reference_digest, self.parent_binding_id,
+                self.parent_binding_generation, self.parent_binding_digest,
+                self.parent_binding_revocation_generation,
+            )
+            if any(value is not None for value in member_facts):
+                raise ValueError("manifest work receipts cannot carry member authority")
+        elif self.manifest_digest is not None:
+            raise ValueError("provider work receipts cannot carry a manifest digest")
         if not isinstance(self.state, ProviderWorkReceiptState):
             raise ValueError("state must be typed")
         if self.work_item_kind not in _WORK_ITEM_KINDS:
@@ -580,13 +606,14 @@ class ProviderUniverseWorkReceipt:
         for name in (
             "receipt_id",
             "work_item_id",
-            "binding_id",
             "principal_id",
             "actor_id",
             "universe_id",
-            "provider",
         ):
             _reference(getattr(self, name), name)
+        if not manifest_scope:
+            _reference(self.binding_id, "binding_id")
+            _reference(self.provider, "provider")
         if self.schema_version == 1:
             if self.work_item_kind == "agent_invocation":
                 raise ValueError("agent invocation receipts require schema_version 2")
@@ -623,7 +650,7 @@ class ProviderUniverseWorkReceipt:
         if self.schema_version < 3:
             if any(value is not None for value in parent):
                 raise ValueError("legacy receipts cannot carry a parent binding")
-        else:
+        elif not manifest_scope:
             if any(value is None for value in parent):
                 raise ValueError("run receipt parent binding identity is incomplete")
             _reference(self.parent_binding_id, "parent_binding_id")
@@ -636,17 +663,18 @@ class ProviderUniverseWorkReceipt:
             )
         _digest(self.receipt_digest, "receipt_digest")
         _integer(self.generation, "generation", minimum=1)
-        _integer(self.binding_generation, "binding_generation", minimum=1)
-        _digest(self.binding_digest, "binding_digest")
-        _integer(
-            self.binding_revocation_generation,
-            "binding_revocation_generation",
-            minimum=0,
-        )
-        _digest(
-            self.credential_reference_digest,
-            "credential_reference_digest",
-        )
+        if not manifest_scope:
+            _integer(self.binding_generation, "binding_generation", minimum=1)
+            _digest(self.binding_digest, "binding_digest")
+            _integer(
+                self.binding_revocation_generation,
+                "binding_revocation_generation",
+                minimum=0,
+            )
+            _digest(
+                self.credential_reference_digest,
+                "credential_reference_digest",
+            )
         _integer(self.assignment_generation, "assignment_generation", minimum=1)
         _digest(self.assignment_digest, "assignment_digest")
         if self.executor_class != "cloud":
@@ -712,7 +740,7 @@ class ProviderUniverseWorkReceipt:
                     "agent_invocation_generation": self.agent_invocation_generation,
                 }
             )
-        if self.schema_version == 3:
+        if self.schema_version >= 3:
             payload.update(
                 {
                     "parent_binding_id": self.parent_binding_id,
@@ -723,6 +751,11 @@ class ProviderUniverseWorkReceipt:
                     ),
                 }
             )
+        if self.schema_version == 4:
+            payload.update(
+                authority_scope=self.authority_scope,
+                manifest_digest=self.manifest_digest,
+            )
         return payload
 
     @classmethod
@@ -730,10 +763,13 @@ class ProviderUniverseWorkReceipt:
         if not isinstance(data, dict):
             raise ValueError("ProviderUniverseWorkReceipt fields do not match schema")
         schema_version = data.get("schema_version")
+        if type(schema_version) is not int:
+            raise ValueError("unsupported schema_version")
         expected = {
             1: cls._FIELDS_V1,
             2: cls._FIELDS_V2,
             3: cls._FIELDS_V3,
+            4: cls._FIELDS_V4,
         }.get(schema_version, cls._FIELDS_V3)
         if set(data) != expected:
             raise ValueError("ProviderUniverseWorkReceipt fields do not match schema")
