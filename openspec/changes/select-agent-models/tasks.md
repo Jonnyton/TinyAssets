@@ -10,11 +10,17 @@
   incorporated: configuration is not proof/extra approval, accounting stays
   dimensionally closed, legacy parsing preserved, capacity scope conservative.
   Catalogue/price/benchmark interpreter now built internally and consumed by
-  existing legacy decoding.522Windows/522actualLinux pass, zero skips; see
+  existing legacy decoding. Review ADAPT113s required strict custom completeness;
+  corrected with legacy behavior preserved.552Windows/552actualLinux pass, zero skips; see
   docs/reviews/2026-09-11-shared-discovery-decoder-proof.md. Full source-contract
   publication, provenance, cost/capacity enforcement and unfamiliar-source
   actual execution remain unbuilt. No public payload/permission extension;
   independent exact-commit review pending.
+
+  Next integration must also provide exact numeric-money parsing/encoding and
+  array-root transport for declared new shapes where applicable. Current
+  discovery_http preserves legacy object/float decoding; do not silently alter
+  legacy benchmark interpretation or label the string-price subset complete.
 
 ## 2. Owner policy and execution
 

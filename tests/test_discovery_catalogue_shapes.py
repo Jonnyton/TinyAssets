@@ -185,3 +185,36 @@ def test_incomplete_and_oversized_results_do_not_publish_a_prefix():
             wire["inventory"]["items"][0]["tariff"]["tiers"] *= 129
         with pytest.raises(CatalogDecodeError):
             shape.decode(wire, connection=CONNECTION)
+
+
+@pytest.mark.parametrize("kind", ["catalogue", "benchmark"])
+@pytest.mark.parametrize("extra", [
+    {"totals": "malformed"}, {"totals": {"count": None}},
+    {"totals": {"count": True}}, {"totals": {"count": "0"}},
+    {"totals": {"count": 1}}, {"page": ["nonempty-next-page"]},
+    {"page": {"next": False}}, {"page": {"next": []}},
+    {"page": {"next": {}}}, {"page": {"next": "more"}},
+])
+def test_custom_completeness_cannot_hide_malformed_fields(kind, extra):
+    fields = {"rows": "/items", "count": "/totals/count", "next_page": "/page/next"}
+    if kind == "catalogue":
+        shape = CatalogueShape.compile({**CATALOGUE, **fields}, PRICES)
+        kwargs = {"connection": CONNECTION}
+    else:
+        shape = BenchmarkShape.compile({**BENCHMARK, **fields})
+        kwargs = {"now": NOW, "max_age": timedelta(days=1)}
+    with pytest.raises(CatalogDecodeError):
+        shape.decode({"items": [], **extra}, **kwargs)
+
+
+@pytest.mark.parametrize("kind", ["catalogue", "benchmark"])
+@pytest.mark.parametrize("extra", [{}, {"totals": {}}, {"totals": {"count": 0}},
+                                   {"page": {"next": None}}, {"page": {"next": ""}}])
+def test_custom_completeness_allows_missing_or_explicitly_empty_page(kind, extra):
+    fields = {"rows": "/items", "count": "/totals/count", "next_page": "/page/next"}
+    if kind == "catalogue":
+        shape = CatalogueShape.compile({**CATALOGUE, **fields}, PRICES)
+        assert not shape.decode({"items": [], **extra}, connection=CONNECTION).models
+    else:
+        shape = BenchmarkShape.compile({**BENCHMARK, **fields})
+        assert not shape.decode({"items": [], **extra}, now=NOW, max_age=timedelta(days=1))

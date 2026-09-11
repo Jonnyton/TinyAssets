@@ -122,6 +122,7 @@ class Rows:
     count: Pointer | None
     next_page: Pointer | None
     maximum: int | None
+    strict_completeness: bool = True
 
     def read(self, payload):
         rows = self.rows.read(payload)
@@ -131,10 +132,25 @@ class Rows:
             raise CatalogDecodeError("catalogue response exceeds the row limit")
         if any(not isinstance(row, dict) for row in rows):
             raise CatalogDecodeError("catalogue entries must be objects")
-        count = _read(self.count, payload)
-        if count is not None and (type(count) is not int or count != len(rows)):
+        count = (_MISSING if self.count is None else self.count.read(
+            payload, default=_MISSING, malformed=_MALFORMED,
+        ))
+        if not self.strict_completeness and count in (_MISSING, _MALFORMED):
+            count = None
+        absent = count is _MISSING or (not self.strict_completeness and count is None)
+        if not absent and (type(count) is not int or count != len(rows)):
             raise CatalogDecodeError("catalogue response is incomplete or has an invalid count")
-        if _read(self.next_page, payload):
+        next_page = (_MISSING if self.next_page is None else self.next_page.read(
+            payload, default=_MISSING, malformed=_MALFORMED,
+        ))
+        if not self.strict_completeness and next_page in (_MISSING, _MALFORMED):
+            next_page = None
+        if self.strict_completeness:
+            incomplete = not (next_page is _MISSING or next_page is None
+                              or (type(next_page) is str and next_page == ""))
+        else:
+            incomplete = bool(next_page)
+        if incomplete:
             raise CatalogDecodeError("catalogue response is incomplete")
         return rows
 
@@ -242,7 +258,7 @@ class CatalogueShape:
             raise ValueError("invalid discovery context pointers")
         return cls(
             Rows(Pointer.compile(document["rows"]), _pointer(document, "count"),
-                 _pointer(document, "next_page"), None if legacy else 10000),
+                 _pointer(document, "next_page"), None if legacy else 10000, not legacy),
             Pointer.compile(document["model_id"]), _pointer(document, "join_key"),
             Pointer.compile(document["inputs"]), Pointer.compile(document["outputs"]),
             Pointer.compile(document["tools"]), document.get("tools_member"),
@@ -308,7 +324,7 @@ class BenchmarkShape:
             raise ValueError("invalid benchmark source or scale")
         return cls(
             Rows(Pointer.compile(document["rows"]), _pointer(document, "count"),
-                 _pointer(document, "next_page"), None if legacy else 10000),
+                 _pointer(document, "next_page"), None if legacy else 10000, not legacy),
             document["source"], Pointer.compile(document["source_field"]),
             Pointer.compile(document["model_id"]), Pointer.compile(document["timestamp"]),
             Pointer.compile(document["agentic"]), Pointer.compile(document["general"]),

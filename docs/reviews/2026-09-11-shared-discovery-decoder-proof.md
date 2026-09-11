@@ -31,10 +31,19 @@ Verification command: `python -m pytest -q` with these nine files followed by
 - tests/test_selected_model_authority.py
 - tests/test_interactive_http_agent.py
 
-Final Windows: 522 passed in43.48s, zero skips. Final actual Linux through
+Initial Windows: 522 passed in43.48s, zero skips. Initial actual Linux through
 Ubuntu WSL `python3 scripts/linux_oracle.py --` with the same arguments:
 522 passed in20.12s, zero skips; Python3.11.16, git2.47.3, bubblewrap0.12.0.
-Both final groups include the missing-versus-malformed nested override fix.
+Both groups include the missing-versus-malformed nested override fix.
+
+Independent review at2663a79b returned ADAPT113s: custom completeness pointers
+still treated malformed traversal or present null counts as absent. Corrected
+Rows to distinguish missing/malformed/present values for new shapes, preserving
+legacy permissiveness explicitly. Empty next-page is only absent, null or empty
+string for new contracts; malformed objects/arrays/bools refuse. Thirty added
+catalogue/benchmark cases cover negative and valid-empty/missing behavior.
+Final same nine-file group:552Windows41.15s /552actualLinux19.43s, zero skips.
+Ruff/plugin/import gates pass after correction; exact correction review pending.
 
 Frozen legacy catalogue decoder unchanged: differential values and exception
 class/messages agree for price, identity, capability, completeness and ranking
