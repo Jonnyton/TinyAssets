@@ -1,7 +1,7 @@
 ## 1. Permission contract
 
 - [x] 1.1 Add validated GET-only redirect policy with omitted/none compatibility; prove parse, projection, canonical equality and old-reader/writer fail-closed behavior.
-- [ ] 1.2 Carry exact redirect permission through connection extension, owner-generated preview and approval; prove full-mode preservation, consent deduplication and incarnation/mode/policy snapshot fencing.
+- [x] 1.2 Carry exact redirect permission through connection extension, owner-generated preview and approval; prove full-mode preservation, consent deduplication and incarnation/mode/policy snapshot fencing.
 
 ## 2. Broker execution
 
@@ -37,9 +37,28 @@ class, parser and SQL writer match deployed cd28c3806c44ff63612adb8fcc709b622f89
 by AST comparison; five shared leaf validators are unchanged. This is frozen
 policy-reader/writer evidence, not old-binary network execution proof.
 
-Task1.2 remains open: full-mode extension still short-circuits and exact-mode
-approval still needs owner-time whole-policy/incarnation fencing. The request
-normalizer and sentence now carry the permission, but that is not end-to-end
-approval proof. No redirect transport, Linux execution, independent implementation
-review, CI, deployment or new owner grant is claimed. Do not ship this foundation
-alone or infer capability success from its green tests.
+Task1.2 was incomplete at this checkpoint; the newer evidence below supersedes
+that local implementation status. No live capability was established here.
+
+## Approval evidence — September 11, 2026 21:04 UTC
+
+The same Windows command plus `tests/test_http_redirect_approval.py` and
+`tests/test_workspace_authority.py` passed409 tests in31.60s, no skips.
+The34 new real temporary owner/request/ledger tests began with13 failing cases,
+then prove full/exact approval, preserved scopes/mode/credential reference,
+changed owner-time policy, changes immediately before SQL write, connection and
+grant revocation, missing/partial snapshots, old unversioned requests, equivalent
+reordered requests, non-reuse of old no-follow approval and new-key setup.
+
+Redirect approval takes one resource/policy row snapshot and writes under
+endpoint/scope/mode/incarnation checks plus active grant and unrevoked connection
+checks. Generated request disclosure has a server-owned version marker in the
+existing consent identity. A legacy row cannot authorize it after upgrade.
+The tool description now explains how users can request this permission;
+the existing app renders the server's grant_sentence as text.
+
+Focused ruff, strict spec validation, mirror build/import and diff checks pass.
+Task1.2's local approval implementation is complete, not live acceptance.
+Transport remains unimplemented. Actual Linux, independent implementation review,
+CI, deployment and rendered owner-approved downloads are still required. Do not
+ship the permission-only foundation or claim its tests prove network behavior.

@@ -178,6 +178,14 @@ def _answered_policy_snapshot(document: dict) -> dict[str, str] | None:
     return snapshot  # type: ignore[return-value]
 
 
+def _redirect_permission_requested(endpoints: Any) -> bool:
+    """Recognize the additional permission before strict endpoint validation."""
+    return isinstance(endpoints, list) and any(
+        isinstance(endpoint, dict) and "redirect_mode" in endpoint
+        and endpoint["redirect_mode"] != "none" for endpoint in endpoints
+    )
+
+
 def _requested_git_scopes(document: dict[str, Any]) -> frozenset[str]:
     """The git scopes a caller asked for, canonicalized.
 
@@ -980,12 +988,33 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
         added=added, requested_git_scopes=requested_git_scopes,
         access=asked_access,
     )
-    if preview.get("error") or preview.get("status") == "unchanged":
+    if preview.get("error"):
+        return preview
+
+    redirect_extension = _redirect_permission_requested(added)
+    expected_redirect = None
+    if redirect_extension:
+        expected_redirect = _answered_policy_snapshot(document)
+        current_snapshot = {
+            "access_mode": preview.get("expected_access_mode"),
+            "endpoints_json": preview.get("stored_json"),
+            "scopes_json": preview.get("stored_scopes_json"),
+            "incarnation": preview.get("stored_incarnation"),
+        }
+        if (
+            not expected_redirect or not expected_redirect.get("incarnation")
+            or expected_redirect != current_snapshot
+        ):
+            return {
+                "error": "connection_conflict", "resource": "connection",
+                "detail": "Redirect permission needs fresh approval of the displayed connection.",
+            }
+    if preview.get("status") == "unchanged":
         return preview
 
     ledger = preview["ledger"]
     connection_id = preview["connection_id"]
-    if preview.get("access") == ACCESS_FULL:
+    if preview.get("access") == ACCESS_FULL and not redirect_extension:
         # The whole write: one mode, compare-and-swapped on the policy THE
         # OWNER READ. When the ask carries the snapshot it rendered its
         # sentence from, that is what the swap compares -- not this call's own
@@ -1033,6 +1062,11 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
             scopes=preview["scopes"],
             expected_endpoints_json=preview["stored_json"],
             expected_scopes_json=preview["stored_scopes_json"],
+            **({
+                "expected_access_mode": expected_redirect["access_mode"],
+                "expected_incarnation": expected_redirect["incarnation"],
+                "expected_grant_id": _ids(universe_id=uid, destination=destination)[1],
+            } if expected_redirect else {}),
         )
     except GitScopeError as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
@@ -1046,7 +1080,7 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     return {
         "status": "extended",
         "destination": destination,
-        "access": ACCESS_EXACT,
+        "access": preview.get("access", ACCESS_EXACT),
         "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
         "scopes": list(resource.scopes),
         "secret_reused": True,
@@ -1089,6 +1123,22 @@ def _extend_preview(
         verify_authenticated_principal=lambda: actor,
     )
     resource = ledger._get_connection_resource(connection_id)
+    redirect_extension = _redirect_permission_requested(added)
+    redirect_snapshot = None
+    if redirect_extension:
+        try:
+            _parse_allowed_endpoints(added)
+        except (SsrfValidationError, ValueError, TypeError) as exc:
+            return {"error": "endpoint_not_permitted", "detail": str(exc)}
+        if normalize_access_mode(access) == ACCESS_FULL:
+            return {
+                "error": "connection_setup_invalid",
+                "detail": "Request redirect endpoints separately from full channel access.",
+            }
+        captured = ledger._resource_policy_snapshot(connection_id)
+        if captured is None:
+            return dict(_NOT_FOUND)
+        resource, redirect_snapshot = captured
     if resource is None or resource.owner_user_id != actor:
         # Nothing to extend, or not this principal's connection. Uniform
         # envelope so this cannot be used to probe which destinations exist.
@@ -1119,7 +1169,10 @@ def _extend_preview(
     # from the same raw read the CAS compares against. Deriving the union from
     # an earlier parsed read and the CAS from a later raw read let a write
     # that landed between them pass the CAS and be lost (Codex round 2).
-    raw_policy = ledger.policy_json(connection_id)
+    raw_policy = (
+        (redirect_snapshot["endpoints_json"], redirect_snapshot["scopes_json"])
+        if redirect_snapshot else ledger.policy_json(connection_id)
+    )
     if raw_policy is None:
         return dict(_NOT_FOUND)
     stored_json, stored_scopes_json = raw_policy
@@ -1139,7 +1192,7 @@ def _extend_preview(
     })
     stored_mode = normalize_access_mode(resource.access_mode)
     asked_mode = normalize_access_mode(access)
-    if stored_mode == ACCESS_FULL:
+    if stored_mode == ACCESS_FULL and not redirect_extension:
         # The channel is already granted whole, so nothing an extension could
         # name adds anything -- a full re-ask and an exact ask alike. The agent
         # is told it holds the channel and acts, instead of asking the owner a
@@ -1152,6 +1205,15 @@ def _extend_preview(
             "allowed_endpoints": stored,
             "scopes": stored_scope_list,
         }
+    if stored_mode == ACCESS_FULL and redirect_extension:
+        if requested_git_scopes or any(
+            e.host not in stored_hosts for e in _parse_allowed_endpoints(added)
+        ):
+            return {
+                "error": "connection_setup_invalid",
+                "detail": "Redirect permission cannot add authenticated hosts or scopes "
+                          "to full channel access.",
+            }
     if asked_mode == ACCESS_FULL:
         # exact -> full: the WRITE is the mode, compare-and-swapped on the mode
         # this snapshot read. No endpoint or scope row changes, which is the
@@ -1203,6 +1265,16 @@ def _extend_preview(
             | stored_git_scopes
         )
     )
+    if redirect_extension:
+        scopes = tuple(stored_scope_list) if stored_mode == ACCESS_FULL else tuple(
+            sorted(set(stored_scope_list) | set(scopes))
+        )
+    snapshot_fields = {
+        "expected_access_mode": redirect_snapshot["access_mode"],
+        "stored_json": redirect_snapshot["endpoints_json"],
+        "stored_scopes_json": redirect_snapshot["scopes_json"],
+        "stored_incarnation": redirect_snapshot["incarnation"],
+    } if redirect_snapshot else {}
     # The ledger's own rule, run here so an ask that would fail at the write
     # fails at the RAISE, with the reason going to the agent that can act on it.
     try:
@@ -1230,12 +1302,12 @@ def _extend_preview(
         and not new_git_scopes
     ):
         return {"status": "unchanged", "destination": destination,
-                "access": ACCESS_EXACT,
+                "access": stored_mode if redirect_extension else ACCESS_EXACT,
                 "allowed_endpoints": stored,
-                "scopes": stored_scope_list}
+                "scopes": stored_scope_list, **snapshot_fields}
     return {
         "status": "extends",
-        "access": ACCESS_EXACT,
+        "access": stored_mode if redirect_extension else ACCESS_EXACT,
         "destination": destination,
         "connection_id": connection_id,
         "ledger": ledger,
@@ -1248,6 +1320,7 @@ def _extend_preview(
         "git_host": git_host_for_endpoints(
             [str(e.get("host") or "") for e in stored], resource.provider
         ),
+        **snapshot_fields,
     }
 
 

@@ -3112,6 +3112,9 @@ class ConnectionLedger:
         scopes: tuple[str, ...],
         expected_endpoints_json: str,
         expected_scopes_json: str,
+        expected_access_mode: str | None = None,
+        expected_incarnation: str | None = None,
+        expected_grant_id: str | None = None,
     ) -> bool:
         """ADD endpoints to an existing http connection. Never remove or replace.
 
@@ -3143,22 +3146,31 @@ class ConnectionLedger:
             )
         new_scopes = tuple(_required("scope", scope) for scope in scopes)
         validate_git_scopes(new_scopes, hosts=[endpoint.host for endpoint in parsed])
-        with self._connect() as connection:
-            cursor = connection.execute(
-                """
+        sql = """
                 UPDATE outbound_connections
                 SET allowed_endpoints_json = ?, scopes_json = ?
                 WHERE connection_id = ? AND allowed_endpoints_json = ?
                   AND scopes_json = ?
-                """,
-                (
-                    json.dumps([ep.as_dict() for ep in parsed]),
-                    json.dumps(list(new_scopes)),
-                    connection_id,
-                    expected_endpoints_json,
-                    expected_scopes_json,
-                ),
-            )
+        """
+        params: list[Any] = [
+            json.dumps([ep.as_dict() for ep in parsed]), json.dumps(list(new_scopes)),
+            connection_id, expected_endpoints_json, expected_scopes_json,
+        ]
+        if expected_access_mode is not None or expected_incarnation is not None:
+            if not expected_access_mode or not expected_incarnation:
+                raise SsrfValidationError("complete connection policy snapshot is required")
+            sql += " AND access_mode = ? AND incarnation = ? AND revoked_at IS NULL"
+            params.extend([normalize_access_mode(expected_access_mode), expected_incarnation])
+        if expected_grant_id is not None:
+            sql += """ AND EXISTS (
+                SELECT 1 FROM outbound_connection_grants AS g
+                WHERE g.grant_id = ? AND g.connection_id = outbound_connections.connection_id
+                  AND g.owner_user_id = outbound_connections.owner_user_id
+                  AND g.revoked_at IS NULL
+            )"""
+            params.append(expected_grant_id)
+        with self._connect() as connection:
+            cursor = connection.execute(sql, tuple(params))
             return cursor.rowcount > 0
 
     def set_access_mode(
@@ -3258,6 +3270,27 @@ class ConnectionLedger:
         if row is None:
             return None
         return str(row["incarnation"])
+
+    def _resource_policy_snapshot(
+        self, connection_id: str,
+    ) -> tuple[ConnectionResource, dict[str, str]] | None:
+        """Trusted resource and exact approval policy from ONE SQLite row read.
+
+        Keep the credential-bearing resource internal; only the four policy
+        fields may be projected into an owner-visible approval.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM outbound_connections WHERE connection_id = ?", (connection_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return _resource_from_row(row), {
+            "endpoints_json": str(row["allowed_endpoints_json"]),
+            "scopes_json": str(row["scopes_json"]),
+            "access_mode": normalize_access_mode(row["access_mode"]),
+            "incarnation": str(row["incarnation"]),
+        }
 
     def _get_connection_resource(
         self, connection_id: str

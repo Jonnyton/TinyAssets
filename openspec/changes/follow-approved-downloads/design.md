@@ -178,6 +178,18 @@ authority; an old open tab cannot approve a silently reinterpreted request.
 Prove this contract against actual old readers/writers. No permission is
 auto-enabled on upgrade or rollback.
 
+### Implemented approval binding
+
+The request layer adds `redirect_consent_version: 1` only after generating the
+validated redirect disclosure. Action normalization drops caller-provided
+markers. The marker is part of the existing stored consent identity; answering
+a legacy unversioned redirect request refuses before deposit/extension. Full
+and exact extensions also carry the four-field owner-time policy snapshot from
+one SQLite row read. Endpoint extension compares that policy at write time and
+requires the original grant still active and the connection unrevoked. These
+are implementation details of the explicit-disclosure/fencing contract above,
+not automatic owner approval or a new tool.
+
 ## Independent shape disposition
 
 September11: independent fallback reviewer completed in150s, VERDICT ADAPT.
