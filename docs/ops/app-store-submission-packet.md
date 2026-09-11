@@ -360,7 +360,9 @@ Use one physical-iPhone recording that begins at a cold launch and shows, in ord
    payment setup is required.
 4. A substantive text request and the universe's response, followed by a force-quit,
    relaunch, and proof that the same conversation remains.
-5. Attachment of a small, non-sensitive `.txt` sample and an answer grounded in it.
+5. Attachment of `docs/ops/app-store-review-sample.txt`, followed by the prompt
+   `What is the project, target storefront, and review deadline in this file?` and
+   an answer grounded in the file.
 6. Account and Privacy navigation, including the visible account-deletion path. Do not
    complete deletion in the primary recording; use a second disposable account if Apple
    requires proof of the destructive final step.

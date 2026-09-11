@@ -1,0 +1,6 @@
+TinyAssets App Review sample
+
+Project: Orchard launch
+Milestone: physical-device validation
+Target storefront: United States
+Review deadline: Friday
