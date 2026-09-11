@@ -156,5 +156,49 @@ class AutomationContextTests(unittest.TestCase):
         snapshot = self.resolve(self.prior(status="failed", error="delivery failed"))
         self.assertEqual(snapshot["context"]["previous_run"]["error"], "delivery failed")
 
+
+    def rate_limited_history(self, rows):
+        self.auto.last_due_at = "2026-09-11T01:00:00+00:00"
+        self.auto.last_reason = "run_rate_limited"
+        with sqlite3.connect(self.base / ".automations.db") as conn:
+            conn.execute("CREATE TABLE automation_attempts "
+                         "(automation_id TEXT, due_at TEXT, run_id TEXT, "
+                         "status TEXT, reason TEXT)")
+            conn.executemany("INSERT INTO automation_attempts VALUES (?, ?, ?, ?, ?)",
+                             rows)
+
+    def test_rate_limited_tick_recovers_prior_result(self):
+        self.rate_limited_history([
+            ("a-owner", "2026-09-11T00:00:00+00:00", "r1", "completed", "ok"),
+            ("a-owner", "2026-09-11T01:00:00+00:00", "", "refused", "run_rate_limited"),
+            ("a-other", "2026-09-11T01:00:00+00:00", "foreign", "completed", "ok"),
+        ])
+        recovered = self.resolve(self.prior())["context"]["previous_run"]
+        self.assertEqual(recovered["run_id"], "r1")
+        self.assertEqual(recovered["output"]["result"]["artifact"], "full result")
+
+    def test_initial_rate_limit_does_not_wedge_first_wake(self):
+        self.rate_limited_history([
+            ("a-owner", "2026-09-11T01:00:00+00:00", "", "refused",
+             "run_rate_limited"),
+        ])
+        self.assertIsNone(self.resolve()["context"]["previous_run"])
+
+    def test_rate_limit_cannot_hide_unknown_intervening_attempt(self):
+        self.rate_limited_history([
+            ("a-owner", "2026-09-11T00:00:00+00:00", "r1", "completed", "ok"),
+            ("a-owner", "2026-09-11T00:30:00+00:00", "", "failed", "unknown"),
+            ("a-owner", "2026-09-11T01:00:00+00:00", "", "refused",
+             "run_rate_limited"),
+        ])
+        with self.assertRaisesRegex(ValueError, "previous_run_missing"):
+            self.resolve(self.prior())
+
+    def test_rate_limit_without_attempt_evidence_fails_closed(self):
+        self.rate_limited_history([])
+        with self.assertRaisesRegex(ValueError, "previous_run_missing"):
+            self.resolve()
+
+
 if __name__ == "__main__":
     unittest.main()
