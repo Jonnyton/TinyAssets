@@ -76,7 +76,13 @@
   caller-cap ordering.287 frozen differential cases and870Windows/870actualLinux
   pass, zero skips. Exact correction APPROVE59s reproduced287cases;
   see docs/reviews/2026-09-11-bundled-source-contract-proof.md. Two discovery ratchet
-  loci removed through actual shared execution; two agent wire-code loci remain.
+  loci removed through actual shared execution. Agent envelope separation
+  e2b67fca now removes the remaining wire-code regressions; exact APPROVE105s,
+  781Windows/781actualLinux pass, zero skips. The engine uses installed finite
+  envelope data around canonical message/history validation, not legacy wrappers.
+  Frozen oracle197cases independently reproduced; wheel assets/import proved
+  locally. Downward-only baseline refresh passes15ratchet tests. See
+  docs/reviews/2026-09-11-agent-envelope-proof.md. No arbitrary wire/CLI claim.
   Discoverable authoring schema/help and live acceptance remain. Configuration
   alone is not agent authority/readiness; native/all-universe choices are still open.
 
@@ -273,6 +279,7 @@
   September11 assignment projection now consumes resolved candidate records,
   retaining legacy behavior and current admission authority.119Windows/119Linux
   pass, zero skips; see docs/reviews/2026-09-11-assignment-projection-proof.md.
-  Config's two provider-name regressions removed; four gate loci remain.
-  Independent exact-commit review and complete release validation still required.
+  Config's two provider-name regressions removed; subsequent shared source and
+  agent-envelope work removes the other gate regressions. Exact narrow reviews
+  pass; complete PR-head review, fresh CI and live release validation remain.
 - [ ] 3.3 Sync only shipped behavior into main specs and archive this change after completion; update the goal's stage and record any remaining capability gap honestly.

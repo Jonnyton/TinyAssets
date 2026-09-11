@@ -108,6 +108,17 @@ land tested runtime and UI together; no decorative enabled controls. Verify
 deployment and normal rendered conversation. Rollback preserves saved policy and
 receipts but disables new routing, retaining the prior explicit binding.
 
+## Installed agent envelope boundary (September 11)
+
+Canonical text/tool messages and captured completed history are validated without
+an HTTP envelope. Installed AgentWireShape data owns the relative request path,
+six top-level field mappings and reply/receipt selectors. The actual executor's
+AgentCodec uses that adapter directly; historical function imports delegate only
+for compatibility. Authority, source admission, tools and cost checks stay outside
+translation. This internal boundary does not publish a new owner-authored wire
+schema or promise unknown message formats/CLIs. Reviewed implementation and
+frozen compatibility proof: docs/reviews/2026-09-11-agent-envelope-proof.md.
+
 ## Open Questions / pre-build gate
 
 ### Connection-authored discovery correction (September 11)

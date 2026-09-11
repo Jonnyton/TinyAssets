@@ -170,4 +170,3 @@ def encode_openai_chat_agent_portable(
             }
         body["messages"].extend(messages)
     return path, body
-
