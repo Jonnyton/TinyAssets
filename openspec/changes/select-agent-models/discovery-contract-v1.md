@@ -86,8 +86,12 @@ tool_choice, credentials, headers, endpoints, temperature or token limits.
 No remote catalogue entry may supply these fields. Conflicting existing body
 fields refuse rather than merge. Every constant extension also declares its
 effects within charge closure: plugin/routing options are unsupported unless
-the installed executor can bound their quantities and the contract caps every
-charge. A harmless-looking unknown constant is not automatically permitted.
+the compiled quantity model bounds their declared aggregate quantities and the
+contract caps every charge. Each extension explicitly declares quantity-neutral
+behavior or references its affected quantity bounds; there is no implicit
+neutrality. These are owner-configured source promises, not installed-codec
+knowledge of arbitrary future fields. A harmless-looking unknown constant is
+not automatically permitted.
 Supported model indirection restrictions are literal contract data; aliases
 cannot bypass a known restriction, including legacy substring exclusions.
 
@@ -103,8 +107,33 @@ establish that a charged operation is impossible. For v1, unfamiliar field names
 normalize to existing supported reservation units: input/output per million
 tokens in USD and USD per request; cache/reasoning charges use the existing
 conservative bounded relationships. Additional quantities are unsupported until
-the executor has a real quantity bound, not a general formula language. An
+the executor has a finite declared quantity bound, not a general formula language. An
 existing component identifier can never acquire a new unit meaning.
+
+`quantity_model` version 1 has exactly three aggregate dimensions: input tokens,
+output tokens and requests. Each uses nonnegative integer coefficients for
+`Q = a*input_bound + b*output_limit + c*attempts + d`; coefficients are at most
+1,000,000 and runtime facts at most 10^18. Requests cannot depend on token facts.
+All source-internal work, defaults and extensions must be included: eight
+internal output samples require eight outputs in the reservation even when only
+one is returned. Charge bindings retain the existing three unit meanings and
+must match these dimensions. Exact integer arithmetic rounds each token charge
+up; reservations must fit signed 64-bit micros. Affordability is bounded by the
+actual executor/model output limit, never an unlimited free-output allowance.
+This arithmetic can be checked locally; its remote semantic accuracy cannot.
+
+Validation first checks the installed base wire body, then the final envelope's
+exact extension paths, values/types, protected fields and complete quantity/charge
+bindings. The codec need not understand source-specific extension meanings.
+The compiled quantity model is shared by affordability and reservation, with a
+fresh reservation per outbound attempt and no request mutation afterward.
+
+Price-bound basis must be explicit. Current authority requiring source-promised
+request caps remains required. Sources without such caps stay ineligible under
+that authority. Supporting owner-accepted remote tariff ceilings is a separate
+public/storage/money-authority design and review prerequisite, not permission
+implied by configuring a descriptor. Neither basis independently proves a remote
+server honors its tariff. No existing accepted consent changes meaning here.
 The same compiled contract validates `SelectedModel.cost_upper_bound`,
 `affordable_output`, dispatch ceilings and settlement as one accounting path;
 replacing protocol lookups alone is insufficient. Free-only remains exact zero

@@ -42,10 +42,13 @@ tests/test_discovery_execution_shapes.py -p no:cacheprovider --tb=short
 not rerun. Exact-range whitespace and canonical/mirror comparison passed.
 No required implementation correction. No push/deployment or live proof.
 
-Review makes later activation requirements explicit: installed-codec validation
-must cover injected extensions' paths, meanings, scales/effects and codec-specific
-protected fields, not only the original body. Declared charge_components alone
-is no proof of bounded effects. Dispatch must clamp affordable output to actual
+Follow-up composition diagnosis (85s, ADAPT, September11 UTC) corrects the
+initial activation wording: the installed codec cannot know future extensions'
+remote meanings. Local final-envelope validation must cover paths/types,
+protected fields and declared quantity/charge bindings; semantic behavior remains
+an owner-configured remote promise. Declared charge_components alone is no
+quantity bound (eight internal samples must reserve eight outputs). See the
+updated discovery-contract-v1 design. Dispatch must clamp affordable output to actual
 executor/model limits and reserve that bounded quantity; free output price's
 None is not an unlimited execution allowance. Whole-source compilation and
 the production consumers remain unbuilt and unapproved by this review.
