@@ -1,5 +1,6 @@
 """Focused shared-self checks; runnable with stdlib unittest in the workspace."""
 import contextlib
+import tinyassets
 import json
 import importlib.util
 import sqlite3
@@ -158,7 +159,8 @@ class SharedSelfTests(unittest.TestCase):
                                engine_mcp_graph_id=kwargs["universe_id"], sandbox_chat=True,
                                allowed_tools=("same",))
         intelligence._sandboxed_config = config
-        with patch.dict(sys.modules, {"tinyassets.universe_intelligence": intelligence}), \
+        with patch.object(tinyassets, "universe_intelligence", intelligence, create=True), \
+             patch.dict(sys.modules, {"tinyassets.universe_intelligence": intelligence}), \
              patch("tinyassets.shared_self.require_founder_home", return_value=Path("/tmp/u-own")), \
              patch("tinyassets.config.load_universe_config", return_value=None), \
              patch("tinyassets.conversation_store.load_recent_readonly", side_effect=[["old"], ["new"], ["new"]]) as history:
