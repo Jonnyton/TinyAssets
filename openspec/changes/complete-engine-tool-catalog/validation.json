@@ -1,0 +1,39 @@
+{
+  "catalog": {
+    "returncode": 0,
+    "stdout_tail": "",
+    "stderr_tail": ".\n----------------------------------------------------------------------\nRan 1 test in 0.027s\n\nOK\n",
+    "truncated": false
+  },
+  "pytest": {
+    "returncode": 1,
+    "stdout_tail": "",
+    "stderr_tail": "/usr/bin/python3: No module named pytest\n",
+    "truncated": false
+  },
+  "ruff": {
+    "returncode": 1,
+    "stdout_tail": "",
+    "stderr_tail": "/usr/bin/python3: No module named ruff\n",
+    "truncated": false
+  },
+  "plugin": {
+    "returncode": 1,
+    "stdout_tail": "Staged claude-plugin runtime tinyassets/ at /workspace/packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets (401 files)\n",
+    "stderr_tail": "Traceback (most recent call last):\n  File \"/workspace/packaging/claude-plugin/build_plugin.py\", line 153, in <module>\n    main()\n    ~~~~^^\n  File \"/workspace/packaging/claude-plugin/build_plugin.py\", line 149, in main\n    _probe_import()\n    ~~~~~~~~~~~~~^^\n  File \"/workspace/packaging/claude-plugin/build_plugin.py\", line 117, in _probe_import\n    raise RuntimeError(\n    ...<2 lines>...\n    )\nRuntimeError: Plugin runtime import probe failed.\nstdout:\n\nstderr:\nTraceback (most recent call last):\n  File \"<string>\", line 1, in <module>\n    import sys; sys.path.insert(0, '/workspace/packaging/claude-plugin/plugins/tinyassets-universe-server/runtime'); import tinyassets.universe_server as us; assert hasattr(us, 'main'), 'tinyassets.universe_server.main missing'; import tinyassets.auth.workos_provider; print('probe-ok')\n                                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/universe_server.py\", line 37, in <module>\n    import uvicorn\nModuleNotFoundError: No module named 'uvicorn'\n\n",
+    "truncated": false
+  },
+  "diff_check": {
+    "returncode": 0,
+    "stdout_tail": "",
+    "stderr_tail": "",
+    "truncated": false
+  },
+  "diff": {
+    "returncode": 0,
+    "stdout_tail": " .../runtime/tinyassets/providers/codex_provider.py               | 2 +-\n .../runtime/tinyassets/served_tools.py                           | 7 ++++---\n .../runtime/tinyassets/universe_intelligence.py                  | 9 +--------\n tests/test_engine_mcp_server.py                                  | 5 ++---\n tinyassets/providers/codex_provider.py                           | 2 +-\n tinyassets/served_tools.py                                       | 7 ++++---\n tinyassets/universe_intelligence.py                              | 9 +--------\n 7 files changed, 14 insertions(+), 27 deletions(-)\n",
+    "stderr_tail": "",
+    "truncated": false
+  },
+  "validation_note": "Runtime validation and review are incomplete; this is a draft."
+}
