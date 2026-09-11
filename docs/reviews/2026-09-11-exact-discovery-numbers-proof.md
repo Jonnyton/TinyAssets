@@ -46,4 +46,11 @@ diff whitespace clean. Unchanged channel-neutrality gate remains red at4loci.
 Full source-contract publication/provenance, dimensionally closed reservation,
 request ceilings, usage/capacity and unfamiliar-source actual execution remain
 unbuilt. Nothing configures a live account, edits workflows or widens grants.
-Independent exact-head review remains required; no push or deployment.
+Initial exact99ffc777 review returned ADAPT: Decimal accepts malformed string
+syntax such as 0__0 as zero. New-contract string/either scalars now require a
+complete ASCII JSON decimal token before exact conversion. Legacy price presets
+explicitly retain their original Decimal interpretation; benchmarks preserve
+the same legacy split.47 additional regressions cover malformed and valid tokens,
+legacy prices and benchmark strings. Same ten-file command now passes
+646Windows28.97s/646actualLinux20.87s, zero skips; ruff/plugin/import/mirrors
+and diff checks pass. Independent correction review required; no push/deployment.

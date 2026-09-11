@@ -164,3 +164,50 @@ def test_unrecoverable_float_rounding_is_not_reinterpreted_as_exact_money():
     shape = PriceFields.compile(numeric_prices())
     assert shape.decode(exact, "fresh").unknown_components
     assert shape.decode(rounded, "fresh").unknown_components
+
+
+@pytest.mark.parametrize("encoding", ["string", "either"])
+@pytest.mark.parametrize("value", [
+    "0__0", "_0", "0e_1", "0_1", " 0", "0 ", "+0", ".0", "0.", "00", "٠",
+    "0\n", "1,000", "", "NaN", "Infinity",
+])
+def test_new_price_strings_require_complete_ascii_decimal_syntax(encoding, value):
+    shape = PriceFields.compile(numeric_prices(encoding))
+    pricing = shape.decode({"input": value, "output": value, "call": value}, "fresh")
+    assert not pricing.charges and len(pricing.unknown_components) == 3
+
+
+@pytest.mark.parametrize("value", ["0", "-0", "0.25", "2.5e-1", "25E-2", "0e+1"])
+def test_new_price_strings_accept_exact_decimal_tokens(value):
+    shape = PriceFields.compile(numeric_prices("either"))
+    pricing = shape.decode({"input": value, "output": value, "call": value}, "fresh")
+    assert not pricing.unknown_components
+    assert all(charge.amount_micros == int(Decimal(value) * 1000000)
+               for charge in pricing.charges)
+
+
+@pytest.mark.parametrize("value", ["0__0", "_0", "0e_1", " 0", "+0", ".0", "00", "٠"])
+def test_legacy_price_presets_keep_their_original_decimal_interpretation(value):
+    shape = PriceFields.compile(PRICES, legacy=True)
+    pricing = shape.decode({"input": value, "output": value, "call": value}, "fresh")
+    assert not pricing.unknown_components
+    assert all(charge.amount_micros == 0 for charge in pricing.charges)
+
+
+def test_new_benchmark_strings_share_strict_syntax_without_changing_legacy():
+    from datetime import timedelta
+
+    payload = {"measured_at": "2026-09-11T00:00:00Z", "evaluations": [{
+        "subject": "model-key", "measurement": {
+            "source": "independent-lab/schema-v3", "agent_score": "0__0",
+            "reason_score": "0e_1",
+        },
+    }]}
+    scores = BenchmarkShape.compile(BENCHMARK).decode(
+        payload, now=NOW, max_age=timedelta(days=1),
+    )["model-key"]
+    assert scores.agentic is None and scores.general is None
+    legacy = BenchmarkShape.compile(BENCHMARK, legacy=True).decode(
+        payload, now=NOW, max_age=timedelta(days=1),
+    )["model-key"]
+    assert legacy.agentic == 0 and legacy.general == 0

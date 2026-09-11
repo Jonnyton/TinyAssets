@@ -20,8 +20,9 @@
   Exact numeric-money parsing/encoding and array-root transport are now built
   behind an internal explicit mode, retaining legacy object/float decoding.
   Real scoped-broker -> compiled catalogue tests plus expanded group pass
-  599Windows/599actualLinux, zero skips; see
-  docs/reviews/2026-09-11-exact-discovery-numbers-proof.md. Exact-head review
+  646Windows/646actualLinux, zero skips after initial ADAPT corrected malformed
+  string decimals without changing legacy presets; see
+  docs/reviews/2026-09-11-exact-discovery-numbers-proof.md. Correction review
   pending. The source-contract publisher/consumer and enforced accounting/capacity
   remain unbuilt; no live activation or complete source-support claim.
 

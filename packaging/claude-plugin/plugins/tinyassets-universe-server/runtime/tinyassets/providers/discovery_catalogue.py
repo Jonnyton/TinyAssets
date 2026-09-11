@@ -8,6 +8,7 @@ Neither a compiled shape nor remote fields establish those facts.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, localcontext
@@ -16,6 +17,7 @@ from tinyassets.providers.model_policy import Charge, Model, Pricing, Scores
 
 _MISSING = object()
 _MALFORMED = object()
+_DECIMAL_TOKEN = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
 
 
 class CatalogDecodeError(ValueError):
@@ -50,6 +52,8 @@ def exact_scaled(value, scale, *, string_only):
 def declared_scaled(value, scale, encoding):
     """Exact new-contract scalars; binary-float intermediates are never prices."""
     if type(value) is str and encoding in {"string", "either"}:
+        if len(value) > 80 or _DECIMAL_TOKEN.fullmatch(value) is None:
+            return None
         return exact_scaled(value, scale, string_only=True)
     if type(value) in (int, Decimal) and encoding in {"number", "either"}:
         return exact_scaled(str(value), scale, string_only=True)
@@ -172,6 +176,7 @@ class PriceFields:
     metadata: frozenset[str]
     conditions: frozenset[str]
     maximum_overrides: int | None
+    exact_numbers: bool = True
 
     @classmethod
     def compile(cls, document, *, legacy=False):
@@ -198,7 +203,7 @@ class PriceFields:
         if set(required) - raw.keys() or (metadata | conditions) & raw.keys():
             raise ValueError("discovery price metadata overlaps charges")
         return cls(tuple(fields), required, _pointer(document, "overrides"), metadata,
-                   conditions, None if legacy else 128)
+                   conditions, None if legacy else 128, not legacy)
 
     def decode(self, raw, freshness):
         if not isinstance(raw, dict):
@@ -211,7 +216,8 @@ class PriceFields:
             for name, value in prices.items():
                 if name in mapping:
                     component, scale, encoding = mapping[name]
-                    amount = declared_scaled(value, scale, encoding)
+                    amount = (declared_scaled(value, scale, encoding) if self.exact_numbers
+                              else exact_scaled(value, scale, string_only=True))
                     if amount is None:
                         unknown.add(component)
                     else:
