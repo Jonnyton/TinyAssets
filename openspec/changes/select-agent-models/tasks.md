@@ -45,6 +45,13 @@
   docs/reviews. Public current/saved plan consumption remains unfinished.
 - [ ] 2.4 Resolve the shared HTTP engine-tool-loop prerequisite and prove actual authorized tools work before enabling HTTP full-agent selection.
 
+  September11 further internal correction: inference encoding/decoding and
+  discovery executor-tool support use the installed protocol capability;
+  usage semantics are declared by the discovery contract.444Windows/444actualLinux
+  passes, zero skips; see docs/reviews/2026-09-11-agent-protocol-capability-proof.md.
+  Six channel-ratchet loci remain and public extensible discovery is not built.
+  Exact-head review and deployment pending for this correction.
+
   September11 internal provider-boundary correction: version-one journal replies
   now validate their canonical record directly, without a synthetic vendor HTTP
   response. Frozen parent decoder/loader differential tests and the expanded

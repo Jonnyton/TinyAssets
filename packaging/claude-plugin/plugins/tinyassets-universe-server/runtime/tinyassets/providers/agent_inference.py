@@ -39,13 +39,15 @@ class AgentInferenceRequest:
         max_tokens: int | None,
     ) -> tuple[str, dict[str, Any]]:
         from tinyassets.providers.discovery_protocols import discovery_protocol
+        from tinyassets.providers.protocol_encoders import agent_codec_for
 
         if selection is None or not selection.supports_tools:
             raise PermissionError("selected model lacks admitted agent tool support")
         contract = discovery_protocol(selection.discovery_protocol)
-        if contract.inference_protocol != "openai_chat":
+        agent_codec = agent_codec_for(contract.inference_protocol)
+        if agent_codec is None:
             raise PermissionError("agent inference protocol is unsupported")
-        path, body = codec.encode_openai_chat_agent_portable(
+        path, body = agent_codec.encode(
             prompt=prompt,
             system=system,
             source_ref=selection.provider,

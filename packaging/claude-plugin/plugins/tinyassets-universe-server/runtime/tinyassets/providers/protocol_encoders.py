@@ -26,6 +26,8 @@ and a valid reply must not be discarded over metadata.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 # Canonical request paths per protocol. The host comes from the connection's
@@ -165,12 +167,27 @@ def decode_anthropic_messages(response_body: Any) -> tuple[str, int | None, int 
     return text, in_tok, out_tok
 
 
-# Protocol -> (encoder, decoder) dispatch. The api_key_http executor selects by the
-# ProviderDefinition.protocol; there is no per-vendor branch.
-ENCODERS = {
-    "openai_chat": (encode_openai_chat, decode_openai_chat),
-    "anthropic_messages": (encode_anthropic_messages, decode_anthropic_messages),
-}
+@dataclass(frozen=True, slots=True)
+class AgentCodec:
+    """Installed wire capability, not a remote claim or inference grant."""
+
+    encode: Callable
+    decode: Callable
+
+
+@dataclass(frozen=True, slots=True)
+class WireProtocol:
+    encode: Callable
+    decode: Callable
+    headers: tuple[tuple[str, str], ...] = ()
+    agent_factory: Callable[[], AgentCodec] | None = None
+
+
+def _chat_agent_codec() -> AgentCodec:
+    # Lazy resolution avoids the codec's shared-error/helper import cycle.
+    from tinyassets.providers import agent_chat_codec as codec
+
+    return AgentCodec(codec.encode_openai_chat_agent_portable, codec.decode_openai_chat_agent)
 
 #: The Anthropic Messages API REQUIRES an ``anthropic-version`` request header
 #: (independent of the api key). Pinned to the stable GA version.
@@ -181,10 +198,28 @@ ANTHROPIC_VERSION = "2023-06-01"
 #: auth_scheme. anthropic_messages needs ``anthropic-version`` or the API 400s; the
 #: api key itself rides the connection's auth (auth_scheme="header",
 #: header_name="x-api-key" for Anthropic — never in these static headers).
-STATIC_HEADERS: dict[str, dict[str, str]] = {
-    "openai_chat": {},
-    "anthropic_messages": {"anthropic-version": ANTHROPIC_VERSION},
+PROTOCOLS = {
+    "openai_chat": WireProtocol(
+        encode_openai_chat, decode_openai_chat, agent_factory=_chat_agent_codec,
+    ),
+    "anthropic_messages": WireProtocol(
+        encode_anthropic_messages, decode_anthropic_messages,
+        headers=(("anthropic-version", ANTHROPIC_VERSION),),
+    ),
 }
+
+# Preserve legacy text-only lookup shapes. Agent readiness is a separate,
+# optional local capability and never changes a legacy text encoder's contract.
+ENCODERS = {key: (value.encode, value.decode) for key, value in PROTOCOLS.items()}
+STATIC_HEADERS = {key: dict(value.headers) for key, value in PROTOCOLS.items()}
+
+
+def agent_codec_for(protocol: str) -> AgentCodec | None:
+    """Resolve installed full-agent support independently of source branding."""
+    contract = PROTOCOLS.get(protocol)
+    if contract is None or contract.agent_factory is None:
+        return None
+    return contract.agent_factory()
 
 
 def static_headers_for(protocol: str) -> dict[str, str]:

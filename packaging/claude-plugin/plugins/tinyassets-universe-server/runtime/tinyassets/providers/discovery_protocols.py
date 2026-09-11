@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Callable
 from urllib.parse import urlsplit
 
+from tinyassets.providers.agent_inference import openrouter_usage_cost
 from tinyassets.providers.catalog_decoders import (
     decode_openrouter_benchmarks,
     decode_openrouter_models,
@@ -30,6 +31,7 @@ class DiscoveryProtocol:
     text_interaction: Interaction
     capacity_decoder: Callable | None = None
     ranking_source: str | None = None
+    usage_decoder: Callable[[str], int | None] | None = None
 
     def validate_urls(self, catalogue_url: str, benchmark_url: str) -> None:
         catalogue = urlsplit(catalogue_url)
@@ -143,6 +145,7 @@ _PROTOCOLS = {
         ),
         capacity_decoder=_openrouter_capacity,
         ranking_source="artificial-analysis",
+        usage_decoder=openrouter_usage_cost,
     )
 }
 

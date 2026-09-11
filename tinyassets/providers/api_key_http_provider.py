@@ -238,10 +238,12 @@ class ApiKeyHttpProvider(BaseProvider):
                 )
         if agent_request is not None:
             from tinyassets.providers.agent_inference import AgentInferenceRequest
+            from tinyassets.providers.protocol_encoders import agent_codec_for
 
+            agent_codec = agent_codec_for(self._definition.protocol)
             if (type(agent_request) is not AgentInferenceRequest or selection is None
                     or not config.engine_mcp_enabled
-                    or self._definition.protocol != "openai_chat"):
+                    or agent_codec is None):
                 raise ProviderUnavailableError("HTTP agent inference requires admitted selection")
             protocol_path, body = agent_request.encode(
                 prompt=prompt, system=system, selection=selection,
@@ -338,10 +340,7 @@ class ApiKeyHttpProvider(BaseProvider):
         cost = None
         try:
             if agent_request is not None:
-                from tinyassets.providers.agent_chat_codec import decode_openai_chat_agent
-                from tinyassets.providers.agent_inference import openrouter_usage_cost
-
-                agent_reply = decode_openai_chat_agent(
+                agent_reply = agent_codec.decode(
                     parsed, source_ref=selection.provider, requested_model=selection.model_id,
                     tool_names=frozenset(
                         item["function"]["name"] for item in agent_request.tools()
@@ -349,8 +348,8 @@ class ApiKeyHttpProvider(BaseProvider):
                 )
                 text = agent_reply.text or ""
                 in_tok, out_tok = agent_reply.input_tokens, agent_reply.output_tokens
-                if selection.discovery_protocol == "openrouter_user_models_v1":
-                    cost = openrouter_usage_cost(body_str)
+                if contract.usage_decoder is not None:
+                    cost = contract.usage_decoder(body_str)
             else:
                 text, in_tok, out_tok = self._decode(parsed)
         except ProtocolDecodeError as exc:

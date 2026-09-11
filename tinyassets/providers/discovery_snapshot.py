@@ -149,6 +149,7 @@ def refresh_model_discovery(
     before = _context(base, owner_user_id, universe_id, definition_id)
     profile = before.profile
     contract = discovery_protocol(profile.protocol)
+    from tinyassets.providers.protocol_encoders import agent_codec_for
 
     def read(url: str):
         return read_http_discovery_document(
@@ -181,7 +182,7 @@ def refresh_model_discovery(
             freshness="fresh",
             owner_filtered=contract.account_filtered,
             # Local executor capability, never the remote catalogue's claim.
-            executor_tools=contract.inference_protocol == "openai_chat",
+            executor_tools=agent_codec_for(contract.inference_protocol) is not None,
             models=(),
             authenticated_account_id=None,
         ),
