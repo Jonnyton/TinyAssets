@@ -142,6 +142,17 @@ def test_selection_order_is_copied_and_actual_receipt_is_separate(tmp_path):
     assert result["requests"] == []
 
 
+def test_configured_source_claims_are_visible_without_disabling_permitted_choice(tmp_path):
+    doc = catalogue()
+    doc["options"][0]["availability_basis"] = "owner_configured_contract"
+    result = run_picker(tmp_path, choose("first") + "ModelPicker.use();", doc)
+    assert result["choice"]["saved_default"] == ref("first")
+    text = result["ui"]["model-inventory"]["children"][0]["text"]
+    assert "availability, privacy and charges" in text and "not independently verified" in text
+    other = result["ui"]["model-inventory"]["children"][1]["text"]
+    assert "not independently verified" not in other
+
+
 def test_remove_last_fallback_preserves_explicit_empty_list(tmp_path):
     result = run_picker(
         tmp_path, choose("first") + add("second") + "ModelPicker.move(0,0);ModelPicker.use();"

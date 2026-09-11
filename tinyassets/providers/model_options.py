@@ -53,6 +53,7 @@ def model_options_document(
             rows.append({
                 "reference": {"provider_ref": ref.connection_id, "model_id": ref.model_id},
                 "source_kind": connection.source_kind,
+                "availability_basis": connection.availability_basis,
                 "freshness": connection.freshness,
                 "provider_default": connection.default_model_id == model.model_id,
                 "tools": model.tools,

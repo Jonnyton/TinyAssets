@@ -8,8 +8,13 @@ No release names or provider wire shapes belong in this module.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tinyassets.providers.discovery_contract import SourceContract
+    from tinyassets.providers.discovery_protocols import DiscoveryProtocol
 
 from tinyassets.provider_assignment_manifest import ModelAccess
 from tinyassets.providers.model_policy import (
@@ -30,20 +35,45 @@ class SelectedModel:
     source_digest: str
     context_tokens: int
     supports_tools: bool = False
+    execution_contract: SourceContract | DiscoveryProtocol | None = field(default=None, repr=False)
+
+    def contract(self):
+        if self.execution_contract is not None:
+            return self.execution_contract
+        from tinyassets.providers.discovery_protocols import discovery_protocol
+
+        return discovery_protocol(self.discovery_protocol)
 
     def cost_upper_bound(self, output_tokens: int) -> int:
         """Conservative USD micros for this text-only request at accepted caps.
 
         Use the whole model context as an input upper bound, not a tokenizer
-        guess. The wire has no images or paid server plugins. Actual response
+        guess. Captured source quantities also bound declared internal samples
+        and overhead; legacy text arithmetic stays unchanged. Actual response
         cost remains unknown unless reported; this is reservation evidence.
         """
+        from tinyassets.providers.discovery_contract import SourceContract
+
+        if isinstance(self.execution_contract, SourceContract):
+            return self.execution_contract.cost_upper_bound(
+                self.cost_caps, self.context_tokens, output_tokens,
+            )
         caps = dict(self.cost_caps)
         input_cost = (self.context_tokens * caps["input_million_tokens_usd"] + 999999) // 1000000
         output_cost = (output_tokens * caps["output_million_tokens_usd"] + 999999) // 1000000
         return input_cost + output_cost + caps["request_usd"]
 
-    def affordable_output(self, remaining_cost: int) -> int | None:
+    def affordable_output(
+        self, remaining_cost: int, *, output_limit: int | None = None,
+    ) -> int | None:
+        from tinyassets.providers.discovery_contract import SourceContract
+
+        if isinstance(self.execution_contract, SourceContract):
+            if output_limit is None:
+                raise ValueError("configured source requires a finite output limit")
+            return self.execution_contract.affordable_output(
+                self.cost_caps, self.context_tokens, output_limit, remaining_cost,
+            )
         available = remaining_cost - self.cost_upper_bound(0)
         if available < 0:
             return 0
@@ -157,7 +187,6 @@ def _selection_definition(base_path, owner_user_id, universe_id, provider, model
 
 
 def _validate_snapshot(definition, snapshot, provider, model_id, access, *, needs_tools=False):
-    from tinyassets.providers.discovery_protocols import discovery_protocol
     from tinyassets.providers.discovery_snapshot import assert_discovery_snapshot_current
 
     owner_user_id, universe_id = definition.owner_user_id, definition.universe_id
@@ -166,7 +195,7 @@ def _validate_snapshot(definition, snapshot, provider, model_id, access, *, need
         or snapshot.provider != provider
     ):
         raise PermissionError("discovery snapshot does not match selected provider")
-    contract = discovery_protocol(snapshot.models.provider_scope)
+    contract = snapshot.contract()
     if definition.protocol != contract.inference_protocol:
         raise PermissionError("discovery and inference protocols do not match")
     components = contract.price_components
@@ -209,5 +238,6 @@ def _validate_snapshot(definition, snapshot, provider, model_id, access, *, need
         snapshot.source_digest,
         model.context_tokens,
         needs_tools,
+        contract,
     )
     return selected, lambda: assert_discovery_snapshot_current(snapshot)

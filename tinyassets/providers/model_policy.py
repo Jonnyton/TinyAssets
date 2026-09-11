@@ -82,7 +82,7 @@ class ConnectionModels:
     default_model_id: str | None = None
     authenticated_account_id: str | None = None
     # Derived only by authenticated publication + exact-endpoint refresh. This
-    # is distinct from privacy verification and does not yet change admission.
+    # admits declared-source candidates, not independently verified privacy.
     availability_basis: str | None = None
 
 
@@ -191,7 +191,8 @@ def _ineligibility(
     *,
     explicit: bool,
 ) -> tuple[str, str] | None:
-    if not connection.owner_filtered:
+    if (not connection.owner_filtered
+            and connection.availability_basis != "owner_configured_contract"):
         return "privacy_unverified", ""
     if interaction.needs_tools and not connection.executor_tools:
         return "executor_unsupported", ""
@@ -432,6 +433,8 @@ def order_models(
             for stale, label in (
                 (connection.freshness != "fresh", "refresh_capabilities"),
                 (model.pricing.freshness != "fresh", "refresh_price"),
+                (connection.availability_basis == "owner_configured_contract",
+                 "source_claims_not_independently_verified"),
             )
             if stale
         )

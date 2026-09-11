@@ -201,5 +201,21 @@ class SourceContract:
     def cost_upper_bound(self, caps, input_bound, output_limit):
         return self.quantities.cost_upper_bound(caps, input_bound, output_limit)
 
+    @property
+    def price_components(self):
+        return self.interaction.ceiling_components
+
+    @property
+    def text_interaction(self):
+        return self.interaction
+
+    @property
+    def capacity_decoder(self):
+        return self.capacity.decode
+
+    @property
+    def usage_decoder(self):
+        return None if self.usage is None else self.usage.decode
+
     def affordable_output(self, caps, input_bound, output_limit, remaining_cost):
         return self.quantities.affordable_output(caps, input_bound, output_limit, remaining_cost)

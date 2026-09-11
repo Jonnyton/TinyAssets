@@ -43,6 +43,15 @@ class DiscoverySnapshot:
     warnings: tuple[str, ...]
     execution_contract: SourceContract | DiscoveryProtocol | None = field(default=None, repr=False)
 
+    def contract(self) -> SourceContract | DiscoveryProtocol:
+        if self.execution_contract is not None:
+            return self.execution_contract
+        # Compatibility for legacy snapshots only. A connection-scoped custom
+        # source is never registered as a provider alias or resolved by its name.
+        from tinyassets.providers.discovery_protocols import discovery_protocol
+
+        return discovery_protocol(self.models.provider_scope)
+
 
 @dataclass(frozen=True, slots=True)
 class _Context:

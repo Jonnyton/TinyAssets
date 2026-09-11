@@ -61,6 +61,8 @@ def source(rig, monkeypatch):
         _enforce_endpoint_allowlist(canonical, kwargs["verb"], kwargs["allowed_endpoints"],
                                     kwargs["access_mode"])
         state.calls.append((kwargs["verb"], request))
+        if kwargs["verb"] == "POST":
+            return state.infer(request)
         raw = state.benchmark_json if "benchmarks" in request["url"] else state.catalogue_json
         state.after_response()
         return {"status": 200, "body": raw}
@@ -188,8 +190,8 @@ def test_real_publication_snapshot_captures_exact_contract_not_a_provider_alias(
     assert source.closes == 2 and len(source.starts) == 2
     assert rig.ledger.get_grant("grant-models") == rig.grant
     snapshots.assert_discovery_snapshot_current(snapshot)
-    # This commit does not silently activate custom-source selection. The typed
-    # provenance remains separate from independently established privacy evidence.
+    # Discovery/configuration alone supplies no spending permission. The source
+    # claims remain distinct from independently established privacy evidence.
     result = order_models(Catalog("owner", "u-models", (snapshot.models,)),
                           ModelPolicy(0, "automatic", ()), snapshot.execution_contract.interaction,
                           owner_id="owner", universe_id="u-models")

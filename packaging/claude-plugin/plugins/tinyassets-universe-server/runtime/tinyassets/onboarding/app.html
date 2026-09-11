@@ -2130,6 +2130,7 @@
         const li=document.createElement("li");
         li.textContent=this.label(row.reference)+" — "+(this.stale ? "stale; " : "")+
           ((row.reasons||[]).map(r=>r.reason.replaceAll("_"," ")).join(", ")|| (this.usable(row)?"available":"availability unconfirmed"));
+        if(row.availability_basis==="owner_configured_contract") li.textContent+=" — availability, privacy and charges are declared by this configured source, not independently verified";
         inventory.appendChild(li);
       }
       for(const source of (this.snapshot&&this.snapshot.source_failures||[])){

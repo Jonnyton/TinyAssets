@@ -224,9 +224,7 @@ class ApiKeyHttpProvider(BaseProvider):
         selection = getattr(config, "selected_model", None)
         agent_request = getattr(config, "agent_request", None)
         if selection is not None:
-            from tinyassets.providers.discovery_protocols import discovery_protocol
-
-            contract = discovery_protocol(selection.discovery_protocol)
+            contract = selection.contract()
             if (
                 selection.provider != self.name
                 or contract.inference_protocol != self._definition.protocol

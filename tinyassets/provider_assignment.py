@@ -631,8 +631,10 @@ def reserve_served_provider_budget(
             remaining_tokens - estimated_input_tokens,
             affordable_total_tokens - estimated_input_tokens,
         )
-        if authority.selected_model is not None:
-            selected_affordable = authority.selected_model.affordable_output(remaining_cost)
+        if authority.selected_model is not None and output_tokens > 0:
+            selected_affordable = authority.selected_model.affordable_output(
+                remaining_cost, output_limit=output_tokens,
+            )
             if selected_affordable is not None:
                 output_tokens = min(output_tokens, selected_affordable)
         if output_tokens < 1:
@@ -646,6 +648,9 @@ def reserve_served_provider_budget(
             reserved_cost = max(
                 reserved_cost, authority.selected_model.cost_upper_bound(output_tokens)
             )
+        if reserved_cost > remaining_cost:
+            conn.rollback()
+            raise ProviderAuthorityHeldError(held)
         # Per-call lease deadline: this call's OWN worst-case healthy duration.
         # The reconciler settles a row only past this, so it never reclaims a live
         # call even under an unbounded configured timeout (Codex re-review #4).

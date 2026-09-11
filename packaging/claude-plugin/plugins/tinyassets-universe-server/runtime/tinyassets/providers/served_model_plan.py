@@ -161,7 +161,6 @@ def _native_models(base, universe, owner, member):
 
 def _http_models(owner, uid, member, *, snapshot=None):
     from tinyassets.providers.definition import get_definition
-    from tinyassets.providers.discovery_protocols import discovery_protocol
     from tinyassets.providers.discovery_snapshot import refresh_model_discovery
 
     if not member.provider.startswith("api_key_http:") or member.access.model_scope == "legacy":
@@ -171,7 +170,7 @@ def _http_models(owner, uid, member, *, snapshot=None):
             owner_user_id=owner, universe_id=uid,
             definition_id=member.provider.removeprefix("api_key_http:"),
         )
-    contract = discovery_protocol(snapshot.models.provider_scope)
+    contract = snapshot.contract()
     definition = get_definition(uid, member.provider.removeprefix("api_key_http:"))
     if (definition is None or definition.owner_user_id != owner
             or definition.protocol != contract.inference_protocol):
@@ -296,9 +295,7 @@ def prepare_owned_model_plan(
                     filtered = replace(filtered, models=())
                 catalog = snapshot.models
                 rejected.extend(denied)
-                from tinyassets.providers.discovery_protocols import discovery_protocol
-
-                benchmark = discovery_protocol(catalog.provider_scope).ranking_source
+                benchmark = snapshot.contract().ranking_source
                 if benchmark is not None:
                     ranking_sources.add(benchmark)
         except (ModelDiscoveryUnavailable, ModelSourceUnavailable, ServingProviderHeld) as exc:

@@ -38,12 +38,11 @@ class AgentInferenceRequest:
         temperature: float | None,
         max_tokens: int | None,
     ) -> tuple[str, dict[str, Any]]:
-        from tinyassets.providers.discovery_protocols import discovery_protocol
         from tinyassets.providers.protocol_encoders import agent_codec_for
 
         if selection is None or not selection.supports_tools:
             raise PermissionError("selected model lacks admitted agent tool support")
-        contract = discovery_protocol(selection.discovery_protocol)
+        contract = selection.contract()
         agent_codec = agent_codec_for(contract.inference_protocol)
         if agent_codec is None:
             raise PermissionError("agent inference protocol is unsupported")
