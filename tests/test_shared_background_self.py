@@ -101,7 +101,7 @@ class ConversationPagingTests(unittest.TestCase):
             self.assertEqual(payload["content"]["chunk"], "α🙂\\n\x00tail")
             owner.assert_called_with(self.root.parent, "u-own", "owner")
             denied = json.loads(engine.read_graph(target="conversation", field_name="100"))
-            self.assertEqual(denied["content"]["error"], "conversation_message_not_found")
+            self.assertEqual(denied["error"], "conversation_message_not_found")
             owner.side_effect = PermissionError("revoked")
             denied = json.loads(engine.read_graph(target="conversation", field_name="101"))
             self.assertEqual(denied, {"error": "revoked"})
