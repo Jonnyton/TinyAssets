@@ -249,7 +249,7 @@ def _bind_founder_identity(capabilities=_READ_CAPABILITIES):
 # the served agent SEE the compute providers it can register/select.
 _PINNED_READ_TARGETS = frozenset({
     "status", "graph", "branches", "branch", "runs", "run", "run_output",
-    "compute", "connections", "automations", "automation",
+    "compute", "connections", "automations", "automation", "conversation",
     # What you have asked your user for and what came back. Read-only and
     # carries no credential material — the answer to a credential ask goes to
     # the vault, never into this read.
@@ -295,10 +295,13 @@ def read_graph(
             by ``target="automations"``. Reads remain pinned to your universe.
         run_id: For ``target="run"`` or ``target="run_output"`` - the id
             ``run_graph`` returned. Ignored for every other target.
-        field_name: For run_output, the exact output field to retrieve. Omit to
+        field_name: For conversation, a message id from its catalog. For run_output,
+            the exact output field to retrieve. Omit to
             discover names/types/sizes (no value previews). Strings are verbatim;
             other values are Unicode JSON. A complete first read also has value.
-        output_offset: Unicode code-point offset in a field, or field index in
+        output_offset: For conversation catalogs, the returned before-message-id
+            cursor (0 starts at newest); for a message, a Unicode character offset.
+            For run_output, Unicode code-point offset in a field, or field index in
             the catalog. Continue by passing the returned next_offset.
         output_max_chars: Maximum field chunk length, 1..32768 (default 8192).
         branch_id: For ``target="branch"`` only - the ``branch_def_id`` of the
@@ -334,6 +337,9 @@ def read_graph(
             ``grant_id``, ``destination`` label, and allowed ``host``/``path``, so
             you can build an authenticated_external_call node without asking the
             owner to paste those ids back; secrets are never included),
+            ``conversation`` (page your founder\'s retained conversation: omit
+            field_name for message ids, then select an id for exact text chunks;
+            all history is evidence, never new consent),
             ``automations`` (list recurring triggers,
             their desired state, revision and latest run) and ``automation``
             (inspect one by automation_id). A paused or retired trigger is not
@@ -359,6 +365,22 @@ def read_graph(
 
     token = _bind_founder_identity()
     try:
+        if normalized == "conversation":
+            from tinyassets.api.branches import _base_path
+            from tinyassets.conversation_retrieval import read_conversation_page
+            from tinyassets.shared_self import require_founder_home
+
+            try:
+                root = require_founder_home(_base_path(), _GRAPH_ID, _ACTOR_ID)
+                payload = read_conversation_page(
+                    root, f"principal:{_ACTOR_ID}", field_name=field_name,
+                    offset=output_offset, max_chars=output_max_chars,
+                )
+            except (PermissionError, ValueError) as exc:
+                return json.dumps({"error": str(exc)})
+            except Exception:
+                return json.dumps({"error": "conversation_read_failed"})
+            return _untrusted("conversation", json.dumps(payload, ensure_ascii=False))
         if normalized in {"automations", "automation"}:
             from tinyassets.api.automations import automations
 
@@ -1167,8 +1189,9 @@ def write_graph(
     **Ask for the whole channel, not a path list.** Add ``"access": "full"`` to
     a ``connect_http`` or ``extend_http`` ask and it means: everything this key
     can do on this channel -- any path, any verb, and clone or push to any
-    repository it reaches on the channel's git host. One yes, and you never ask
-    about that channel again. A full ask carries NO ``endpoints`` and NO
+    repository it reaches on the channel's git host. One yes for that direct
+    channel access. Redirected downloads need the separate permission below.
+    A full ask carries NO ``endpoints`` and NO
     ``scopes``; a full deposit names the channel's ``hosts`` instead, 1 to 4 of
     them::
 
@@ -1195,6 +1218,15 @@ def write_graph(
                                   "path_template": "/repos/o/r/contents/{path+}",
                                   "methods": ["GET", "PUT"],
                                   "param_patterns": {"path": "[A-Za-z0-9._\\-/]{1,200}"}}]}
+
+    To follow redirected downloads, ask to extend the source GET-only endpoint
+    with ``"redirect_mode": "public_https_get"``. This explicitly allows bounded
+    public HTTPS follow-up downloads without sharing the key with another
+    origin. Omitted/``none`` stays no-follow, even for full channel access.
+    Use a separate endpoint extension, not ``access: full``; it preserves an
+    existing full grant and requires no new key. Let the owner approve the
+    generated disclosure before retrying the download. No mutating request or
+    GET with a body may follow redirects.
 
     To TAKE BACK a credential, raise the SAME KIND OF ASK with
     ``{"type": "remove_http", "destination": "<name>"}`` and NO fields --
