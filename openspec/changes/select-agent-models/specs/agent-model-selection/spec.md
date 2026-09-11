@@ -1,5 +1,36 @@
 ## ADDED Requirements
 
+### Requirement: Main and work-scoped choices are independent
+The platform SHALL support owner-authorized main-agent provider/model changes
+and independent provider/model choices for an agent, workflow or task. A work
+choice SHALL NOT require changing the universe's main serving provider or
+rewriting a private workflow. Preferences alone SHALL NOT grant execution access.
+
+#### Scenario: Accepted model access followed by an ordinary workflow
+- **WHEN** an owner successfully binds and enables accepted model access
+- **THEN** a permitted foreground or background workflow can execute with no explicit pin
+- **AND** the runtime validates the chosen member/model rather than treating the assignment as legacy authority
+
+#### Scenario: A task chooses a different authorized source
+- **WHEN** a task selects a supported provider/model within current accepted authority that differs from the main agent
+- **THEN** its invocation uses that exact choice without changing the main agent or the task definition
+- **AND** actual execution identity and settlement identify the source that ran
+
+#### Scenario: Multiple sources share one work allowance
+- **WHEN** different nodes or fallback attempts use different accepted sources
+- **THEN** they remain constrained by the same work-level aggregate allowance and current per-source constraints
+- **AND** concurrent attempts cannot multiply the budget or replay completed effects
+
+#### Scenario: Main-provider change through ordinary controls
+- **WHEN** the authorized user requests a main-provider change through the app agent
+- **THEN** existing scoped operations and necessary owner confirmation perform and report the actual change
+- **AND** no developer-console action or generic approval acknowledgement is presented as an executed repair
+
+#### Scenario: A selected source cannot currently execute
+- **WHEN** the choice is outside model/cost authority, revoked, stale or unsupported by its executor
+- **THEN** execution refuses with the actual category before provider launch
+- **AND** it neither silently changes the pin nor requests unrelated authentication as the repair
+
 ### Requirement: Connection-authored discovery contracts
 The existing provider-capability action SHALL allow a versioned bounded data
 contract for an unfamiliar connected model source, without provider-specific

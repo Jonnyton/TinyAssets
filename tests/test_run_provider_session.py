@@ -111,6 +111,7 @@ def _seed_serving_assignment(
     *,
     owner_user_id: str = "acct_alice",
     universe_id: str = "universe_alice",
+    model_access=None,
 ) -> None:
     from tinyassets.credential_vault import write_credential_vault
     from tinyassets.custom_agents import create_binding, publish_definition
@@ -160,6 +161,7 @@ def _seed_serving_assignment(
         agent_binding_id=agent["agent_binding_id"],
         expected_revision=1,
         provider="codex",
+        model_access=model_access,
     )
     set_serving(
         base_path=base_path,
@@ -280,6 +282,7 @@ def _run_branch(
     mock_provider: bool = False,
     open_provider: bool = False,
     open_router_resolution_refusal: bool = False,
+    model_access=None,
 ) -> tuple[dict[str, Any], _CountingProvider, dict[str, Any]]:
     from tinyassets.api import runs as api_runs
     from tinyassets.daemon_server import save_branch_definition, set_founder_home
@@ -306,7 +309,7 @@ def _run_branch(
                 select_for_serving=authority_case != "registered_only",
             )
         else:
-            _seed_serving_assignment(tmp_path)
+            _seed_serving_assignment(tmp_path, model_access=model_access)
     (universe_dir / "config.yaml").write_text(
         f"preferred_writer: {selected_provider}\n"
         f"allowed_providers:\n  - {selected_provider}\n",
@@ -499,6 +502,40 @@ def test_foreground_run_launches_active_serving_provider_and_settles_once(
         "work_item_id": response["run_id"],
     }
     assert claim["state"] == "released"
+
+
+@pytest.mark.parametrize("pin_provider", [False, True], ids=["default", "pinned"])
+def test_accepted_native_model_manifest_preserves_foreground_execution(
+    tmp_path: Path,
+    monkeypatch,
+    authenticate_request,
+    pin_provider: bool,
+) -> None:
+    """Real bind/enable/run admission must compose, not just interactive chat."""
+    from tinyassets.provider_assignment import load_provider_assignment
+    from tinyassets.provider_assignment_manifest import ModelAccess
+
+    branch = _branch(node_count=1)
+    if not pin_provider:
+        branch.node_defs[0].llm_policy = None
+    before = branch.to_dict()
+    response, provider, _captured = _run_branch(
+        tmp_path,
+        monkeypatch,
+        authenticate_request,
+        branch,
+        model_access={"codex": ModelAccess("explicit", ("",))},
+    )
+    assignment = load_provider_assignment(tmp_path, universe_id="universe_alice")
+    assert assignment is not None and assignment.manifest_digest
+    assert assignment.state == "ready"
+    assert branch.to_dict() == before
+    assert response["terminal_status"] == "completed", response["terminal_error"]
+    assert len(provider.calls) == 1
+    with sqlite3.connect(authority_db_path(tmp_path)) as conn:
+        assert conn.execute(
+            "SELECT state FROM provider_invocation_reservations"
+        ).fetchall() == [("succeeded",)]
 
 
 def test_foreground_run_refreshes_a_stale_run_binding_after_serving_rebind(

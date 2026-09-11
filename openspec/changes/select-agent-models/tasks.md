@@ -90,6 +90,16 @@
 
 - [ ] 2.1 Add versioned universe-local policy and current-choice input through authenticated app ingress; test generation conflicts, isolation and legacy-pin preservation.
 
+  September11 release blocker: real bind -> enable -> foreground run tests now
+  reproduce both default and pinned native-manifest failures while the legacy
+  control passes (2failed/1passed, WindowsPython3.14,4.73s, no skips). Tests are
+  deliberately red, not xfailed. workflow-selection-correction.md records the
+  missing per-invocation model authority and single-provider receipt/storage
+  constraints. Independent scoped choices and ordinary main-provider controls
+  are required; repairing only interactive selection cannot complete this task.
+  Linux attempt could not start because Docker's Linux engine is unavailable;
+  no Linux result is claimed. No production authority code or user workflow edit.
+
   September10 partial: saved preferences/CAS and authenticated unpowered GET/POST
   implemented;352 Windows and352 actual Docker Linux checks pass, zero skips.
   See saved-preferences.md and docs/reviews/2026-09-10-model-preferences-proof.md.

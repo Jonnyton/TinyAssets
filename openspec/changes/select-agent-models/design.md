@@ -17,6 +17,14 @@ universal compatibility with arbitrary unknown executables.
 
 ## Decisions
 
+September 11 scope correction: main-agent choice is not the only execution
+scope. The owner explicitly requires independent agent/workflow/task choices.
+The candidate currently breaks ordinary workflows after manifest admission;
+workflow-selection-correction.md records the reproduced failure and the
+per-invocation authority/aggregate-budget design gate. Do not remove the legacy
+guard or change private pins to make a smoke test pass. This gate concerns
+platform implementation only, never the cloud universe's own project workflow.
+
 1. **Separate identity, policy and observation.** Keep connection/grant and
    content-addressed legacy provider definitions intact. Store a versioned
    owner/universe policy with generation, mode (automatic/explicit), selected

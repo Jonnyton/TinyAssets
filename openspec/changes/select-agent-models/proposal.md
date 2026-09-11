@@ -8,7 +8,8 @@ capability; a successful OpenRouter workflow call does not establish it.
 
 ## What Changes
 
-- One intent: owner-controlled, truthful model selection for the interactive agent.
+- One intent: owner-controlled, truthful provider/model selection for the main
+  agent and independently for user-selected agents, workflows and tasks.
 - Discover eligible models from authorized connections; prefer available
   subscriptions/local compute over OpenRouter unless the user chooses otherwise.
 - Rank suitable OpenRouter models with fresh evidence, not embedded release names;
@@ -26,6 +27,14 @@ create provider accounts or authorize hosted custody beyond existing rules.
 Two unpowered connection requests remain tracked in their existing concern.
 The shared HTTP tool loop is a prerequisite for calling an HTTP connection a
 full agent; this change must not enable misleading text-only fallbacks.
+
+September 11 owner clarification: every project pursued by the cloud universe
+belongs to that universe. Background self is merely one user-built workflow,
+not a platform feature or delivery milestone for this development task. Its
+messages supply platform bug evidence, not a project backlog to take over.
+The existing runtime must honor workflow choices independently of the main
+agent. See workflow-selection-correction.md for the newly reproduced release
+blocker and the authority/storage decisions required before its implementation.
 
 ## Capabilities
 
