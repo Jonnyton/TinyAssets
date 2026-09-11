@@ -7,7 +7,7 @@
 
 - [x] 2.1 Add bounded child-only redirect metadata and shared DNS/transport deadline plumbing without changing no-follow behavior; differential-test the legacy path.
 - [ ] 2.2 Implement approved redirect chains, per-hop authority/network rechecks, anonymous cross-origin behavior and sensitive-material declassification; prove all design refusal and budget cases.
-- [ ] 2.3 Verify the real broker/effect/code-node composition returns usable bounded text with no redirect-capability leaks, duplicate effects or private-workflow changes.
+- [x] 2.3 Verify the real broker/effect/code-node composition returns usable bounded text with no redirect-capability leaks, duplicate effects or private-workflow changes.
 
 ## 3. Delivery and acceptance
 
@@ -93,3 +93,36 @@ tests/test_pending_requests.py tests/test_http_connection_provisioning.py
 tests/test_full_channel_access.py tests/test_outbound_http_connection.py
 tests/test_outbound_ssrf_driver.py tests/test_workspace_authority.py
 --tb=short --show-capture=no`. No test process remains running from this check.
+
+## Chain and composition evidence — September11,2026 21:44UTC
+
+The working implementation now follows approved GET redirects through the
+existing pinned leaf. A trusted child-local callback compares current active
+grant/resource snapshots before DNS and immediately before sockets. One deadline
+includes DNS, transport and authority database waits. Auth is regenerated only
+for independently authorized same-origin targets, and remains stripped after
+crossing origin. Intermediate bodies consume the aggregate allowance.
+
+Windows `python -m pytest -q tests/test_http_redirect_chain.py
+tests/test_http_redirect_composition.py --tb=short --show-capture=no` passed52
+tests in30.29s. These include50 real local-socket cases and two real spawned
+broker/IPC/vault/effect/compiled-graph/code-node cases. The latter prove full
+body processing beyond4096characters, one effect/dispatch across two hops,
+safe rejection of a reflected signed token, declassified error audit/evidence,
+and child teardown. Only child network/TLS are synthetic loopback fixtures.
+No private workflow or production data is used. The generic GET effector has
+effect-chain evidence, not a separate durable external-write receipt; do not
+claim this test proves a nonexistent receipt path or binary fidelity.
+
+An earlier broader run had583passes/1failure in94.46s: the new fixture did not
+consume GET request bodies and could parse those bytes as another request,
+resetting the socket. The fixture now consumes declared bodies; the52-case
+rerun above passes. Full rerun remains required. Ruff, mirror/import and strict
+OpenSpec checks pass. Actual Linux and review/deployment/live acceptance remain.
+
+Task2.2 stays open for basic-safety disposition: the current capability scanner
+tracks whole Location/URL/path/query, query pairs, decoded forms and individual
+query values of at least16characters. That cutoff is NOT proof that shorter
+values cannot be capabilities. Independent review must resolve whether this
+meets the declared confidentiality contract or needs correction; do not quietly
+weaken that contract or call arbitrary encoding/partial reflection protected.
