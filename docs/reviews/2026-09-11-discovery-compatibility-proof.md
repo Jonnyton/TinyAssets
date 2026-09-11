@@ -1,6 +1,6 @@
 # Frozen discovery compatibility baseline
 
-September 11, 2026 UTC. Local Windows feature worktree; no runtime edit,
+Baseline at6f8e85f0, September 11, 2026 UTC. Local Windows feature worktree; no runtime edit,
 activation or deployment. The new tests prepare the reviewed shared-contract
 rewrite, not prove unfamiliar-source execution is already implemented.
 
@@ -22,7 +22,8 @@ unrepresentable prices, override maxima/invalidity, capability unknowns, minimum
 contexts, incomplete envelopes, exact benchmark joins, source/scale and age.
 Results are compared with both value and exception-class/message outcomes.
 
-These comparisons currently run against the still-unchanged production decoder.
-The new compiler must consume them later. Inference constraint and usage/capacity
+At that baseline these comparisons ran against the unchanged production decoder.
+The subsequent shared interpreter consumes them as documented in
+2026-09-11-shared-discovery-decoder-proof.md. Inference constraint and usage/capacity
 oracles still need to accompany that implementation; this file does not claim
 they have been frozen or that the four-locus neutrality gate passes.

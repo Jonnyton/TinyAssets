@@ -10,6 +10,7 @@ import pytest
 from tests import _discovery_legacy_oracle as legacy
 from tests.test_catalog_decoders import CONNECTION, NOW, row, score
 from tinyassets.providers import catalog_decoders as current
+from tinyassets.providers import discovery_catalogue as implementation
 
 
 def _outcome(function, payload, **kwargs):
@@ -90,7 +91,7 @@ def test_frozen_oracle_does_not_call_the_rewritten_decoder(monkeypatch):
     def forbidden(*args, **kwargs):
         raise AssertionError("production helper reached by the frozen oracle")
 
-    monkeypatch.setattr(current, "_pricing", forbidden)
-    monkeypatch.setattr(current, "_rows", forbidden)
-    monkeypatch.setattr(current, "_exact_scaled", forbidden)
+    monkeypatch.setattr(implementation.PriceFields, "decode", forbidden)
+    monkeypatch.setattr(implementation.Rows, "read", forbidden)
+    monkeypatch.setattr(implementation, "exact_scaled", forbidden)
     assert legacy.decode_openrouter_models({"data": [row()]}, connection=CONNECTION) == before

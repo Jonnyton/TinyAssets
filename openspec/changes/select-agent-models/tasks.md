@@ -9,7 +9,12 @@
   data replace a closed service profile. Pre-build ADAPT122s corrections are
   incorporated: configuration is not proof/extra approval, accounting stays
   dimensionally closed, legacy parsing preserved, capacity scope conservative.
-  No runtime extension or new permission yet; implementation review remains.
+  Catalogue/price/benchmark interpreter now built internally and consumed by
+  existing legacy decoding.522Windows/522actualLinux pass, zero skips; see
+  docs/reviews/2026-09-11-shared-discovery-decoder-proof.md. Full source-contract
+  publication, provenance, cost/capacity enforcement and unfamiliar-source
+  actual execution remain unbuilt. No public payload/permission extension;
+  independent exact-commit review pending.
 
 ## 2. Owner policy and execution
 
