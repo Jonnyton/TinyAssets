@@ -9,6 +9,7 @@ inference authority or proof of account-filtered catalogue semantics.
 from __future__ import annotations
 
 import json
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -68,7 +69,8 @@ def read_http_discovery_document(
     owner_user_id: str,
     universe_id: str,
     url: str,
-) -> dict[str, Any]:
+    json_mode: str = "legacy",
+) -> dict[str, Any] | list[Any]:
     """Make one granted GET; never retry, redirect or change connection state.
 
     `definition` comes from the verified provider store; registration is not
@@ -76,7 +78,13 @@ def read_http_discovery_document(
     must agree, both here and in the exact proxy resolver. The broker rechecks
     live authority, scope, endpoint restrictions and SSRF at dispatch. No secret
     resolver or header override is exposed to the caller.
+
+    New compiled contracts may request exact numbers and array-root documents.
+    The default retains the legacy object-root/float interpretation. This only
+    changes parsing after the same granted GET; remote metadata cannot choose it.
     """
+    if type(json_mode) is not str or json_mode not in {"legacy", "exact"}:
+        raise ValueError("invalid discovery JSON mode")
     if (
         not owner_user_id
         or not universe_id
@@ -147,9 +155,14 @@ def read_http_discovery_document(
             or len(body.encode("utf-8")) > _SSRF_MAX_BODY_BYTES
         ):
             raise ValueError("invalid response size")
-        parsed = json.loads(body, object_pairs_hook=_unique_object, parse_constant=_reject_constant)
-        if not isinstance(parsed, dict):
+        parsed = json.loads(
+            body, object_pairs_hook=_unique_object, parse_constant=_reject_constant,
+            **({"parse_float": Decimal} if json_mode == "exact" else {}),
+        )
+        if not isinstance(parsed, (dict, list) if json_mode == "exact" else dict):
             raise ValueError("invalid response shape")
-    except (ValueError, RecursionError):
-        raise ProviderProtocolError("discovery response is not a bounded JSON object") from None
+    except (ValueError, RecursionError, InvalidOperation):
+        message = ("discovery response is not a bounded JSON object" if json_mode == "legacy"
+                   else "discovery response is not a bounded JSON document")
+        raise ProviderProtocolError(message) from None
     return parsed

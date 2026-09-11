@@ -17,10 +17,13 @@
   actual execution remain unbuilt. No public payload/permission extension;
   independent exact-commit review pending.
 
-  Next integration must also provide exact numeric-money parsing/encoding and
-  array-root transport for declared new shapes where applicable. Current
-  discovery_http preserves legacy object/float decoding; do not silently alter
-  legacy benchmark interpretation or label the string-price subset complete.
+  Exact numeric-money parsing/encoding and array-root transport are now built
+  behind an internal explicit mode, retaining legacy object/float decoding.
+  Real scoped-broker -> compiled catalogue tests plus expanded group pass
+  599Windows/599actualLinux, zero skips; see
+  docs/reviews/2026-09-11-exact-discovery-numbers-proof.md. Exact-head review
+  pending. The source-contract publisher/consumer and enforced accounting/capacity
+  remain unbuilt; no live activation or complete source-support claim.
 
 ## 2. Owner policy and execution
 

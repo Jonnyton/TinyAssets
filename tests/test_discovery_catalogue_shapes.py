@@ -3,6 +3,7 @@
 from copy import deepcopy
 from dataclasses import FrozenInstanceError, replace
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 import pytest
 
@@ -60,7 +61,8 @@ def test_unfamiliar_layout_and_models_need_no_preset_or_brand_registration():
     benchmark = BenchmarkShape.compile(BENCHMARK)
     scores = benchmark.decode({"measured_at": NOW.isoformat(), "evaluations": [{
         "subject": "evaluation/7", "measurement": {
-            "source": "independent-lab/schema-v3", "agent_score": 14.25, "reason_score": "22.5",
+            "source": "independent-lab/schema-v3", "agent_score": Decimal("14.25"),
+            "reason_score": "22.5",
         },
     }]}, now=NOW, max_age=timedelta(days=1))
     wire = payload()

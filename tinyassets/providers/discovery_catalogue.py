@@ -47,6 +47,15 @@ def exact_scaled(value, scale, *, string_only):
         return None
 
 
+def declared_scaled(value, scale, encoding):
+    """Exact new-contract scalars; binary-float intermediates are never prices."""
+    if type(value) is str and encoding in {"string", "either"}:
+        return exact_scaled(value, scale, string_only=True)
+    if type(value) in (int, Decimal) and encoding in {"number", "either"}:
+        return exact_scaled(str(value), scale, string_only=True)
+    return None
+
+
 def _document(value):
     try:
         raw = json.dumps(value, allow_nan=False, ensure_ascii=True)
@@ -157,7 +166,7 @@ class Rows:
 
 @dataclass(frozen=True, slots=True)
 class PriceFields:
-    fields: tuple[tuple[str, str, int], ...]
+    fields: tuple[tuple[str, str, int, str], ...]
     required: tuple[str, ...]
     overrides: Pointer | None
     metadata: frozenset[str]
@@ -173,12 +182,14 @@ class PriceFields:
             raise ValueError("invalid discovery price fields")
         fields = []
         for name, field in raw.items():
-            _fields(field, {"component", "scale"})
+            _fields(field, {"component", "scale"}, {"encoding"})
+            encoding = field.get("encoding", "string")
             if (not identifier(name) or not identifier(field["component"])
                     or type(field["scale"]) is not int
-                    or field["scale"] not in {10**n for n in range(19)}):
+                    or field["scale"] not in {10**n for n in range(19)}
+                    or type(encoding) is not str or encoding not in {"string", "number", "either"}):
                 raise ValueError("invalid discovery price component or scale")
-            fields.append((name, field["component"], field["scale"]))
+            fields.append((name, field["component"], field["scale"], encoding))
         if len({item[1] for item in fields}) != len(fields):
             raise ValueError("duplicate discovery price component")
         required = _names(document["required"])
@@ -192,14 +203,15 @@ class PriceFields:
     def decode(self, raw, freshness):
         if not isinstance(raw, dict):
             return Pricing()
-        mapping = {name: (component, scale) for name, component, scale in self.fields}
+        mapping = {name: (component, scale, encoding)
+                   for name, component, scale, encoding in self.fields}
         amounts, unknown = {}, set()
 
         def collect(prices, *, override=False):
             for name, value in prices.items():
                 if name in mapping:
-                    component, scale = mapping[name]
-                    amount = exact_scaled(value, scale, string_only=True)
+                    component, scale, encoding = mapping[name]
+                    amount = declared_scaled(value, scale, encoding)
                     if amount is None:
                         unknown.add(component)
                     else:
@@ -313,6 +325,7 @@ class BenchmarkShape:
     agentic: Pointer
     general: Pointer
     scale: int
+    exact_numbers: bool = True
 
     @classmethod
     def compile(cls, document, *, legacy=False):
@@ -328,7 +341,7 @@ class BenchmarkShape:
             document["source"], Pointer.compile(document["source_field"]),
             Pointer.compile(document["model_id"]), Pointer.compile(document["timestamp"]),
             Pointer.compile(document["agentic"]), Pointer.compile(document["general"]),
-            document["scale"],
+            document["scale"], not legacy,
         )
 
     def decode(self, payload, *, now: datetime, max_age: timedelta):
@@ -345,6 +358,12 @@ class BenchmarkShape:
             except ValueError:
                 pass
         scores, duplicates = {}, set()
+
+        def scaled(value):
+            if self.exact_numbers:
+                return declared_scaled(value, self.scale, "either")
+            return exact_scaled(value, self.scale, string_only=False)
+
         for row in rows:
             key = self.model_id.read(row)
             if self.source_field.read(row) != self.source or not identifier(key):
@@ -353,7 +372,6 @@ class BenchmarkShape:
                 duplicates.add(key)
             scores[key] = Scores(
                 self.source, freshness,
-                exact_scaled(self.agentic.read(row), self.scale, string_only=False),
-                exact_scaled(self.general.read(row), self.scale, string_only=False),
+                scaled(self.agentic.read(row)), scaled(self.general.read(row)),
             )
         return {key: value for key, value in scores.items() if key not in duplicates}
