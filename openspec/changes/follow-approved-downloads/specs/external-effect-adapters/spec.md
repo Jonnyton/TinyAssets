@@ -49,13 +49,21 @@ represented as atomic revocation of bytes already sent.
 - **THEN** it stops before opening the next socket without borrowing another credential
 
 ### Requirement: Download capabilities stay inside the broker
-The broker SHALL reject credential-bearing targets before dispatch and keep
-Location values, signed capabilities, final URLs and response cookies out of
-caller results, evidence and errors. It SHALL preserve bounded raw Location
-multiplicity and check intermediate/final responses against accumulated auth
-and redirect capability material.
+The broker SHALL reject targets containing tracked credential material before
+dispatch, remove Location/Content-Location and cookie response headers, and never
+add the final URL to caller results. It SHALL preserve bounded raw Location
+multiplicity privately and reject intermediate/final body, reason or remaining
+headers containing accumulated tracked authentication and redirect material.
 
-#### Scenario: Destination echoes a credential or signed capability
+The implemented echo scanner tracks complete URLs, paths, queries and query
+pairs at any length; individual query values and path segments are tracked from
+16 characters. It checks raw, percent-decoded and form-decoded variants. Actual
+credential/authenticator values are tracked without that length cutoff. This is
+not a guarantee against arbitrary short bare capabilities, multiply encoded or
+otherwise transformed echoes. Evidence and errors SHALL NOT include rejected
+response bytes. Dial-time authority refusal may surface as a generic broker error.
+
+#### Scenario: Destination echoes tracked credential or signed capability
 - **WHEN** a redirect response or final body/reason exposes tracked sensitive material
 - **THEN** the broker returns only a safe refusal and no sensitive response data
 
