@@ -34,6 +34,7 @@ class AutomationContextTests(unittest.TestCase):
 
     def record_message(self, content):
         with sqlite3.connect(self.root / ".conversation_memory.db") as conn:
+            self.addCleanup(conn.close)
             conn.execute("CREATE TABLE IF NOT EXISTS conversation_turns "
                          "(id INTEGER PRIMARY KEY, session_id TEXT, turn_no INTEGER, "
                          "speaker TEXT, content TEXT, ts REAL, ext_id TEXT)")
@@ -153,6 +154,7 @@ class AutomationContextTests(unittest.TestCase):
 
     def test_prior_error_and_partial_result_are_preserved(self):
         self.auto.last_run_id = "r1"
+        self.rate_limited_history([])
         snapshot = self.resolve(self.prior(status="failed", error="delivery failed"))
         self.assertEqual(snapshot["context"]["previous_run"]["error"], "delivery failed")
 
@@ -161,6 +163,7 @@ class AutomationContextTests(unittest.TestCase):
         self.auto.last_due_at = "2026-09-11T01:00:00+00:00"
         self.auto.last_reason = "run_rate_limited"
         with sqlite3.connect(self.base / ".automations.db") as conn:
+            self.addCleanup(conn.close)
             conn.execute("CREATE TABLE automation_attempts "
                          "(automation_id TEXT, due_at TEXT, run_id TEXT, "
                          "status TEXT, reason TEXT)")
@@ -199,6 +202,70 @@ class AutomationContextTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "previous_run_missing"):
             self.resolve()
 
+
+    def completed_history(self, rows):
+        self.auto.last_run_id = "failed"
+        self.auto.last_due_at = "2026-09-11T02:00:00+00:00"
+        with sqlite3.connect(self.base / ".automations.db") as conn:
+            self.addCleanup(conn.close)
+            conn.execute("CREATE TABLE automation_attempts "
+                         "(automation_id TEXT, due_at TEXT, run_id TEXT, "
+                         "status TEXT, reason TEXT)")
+            conn.executemany("INSERT INTO automation_attempts VALUES (?, ?, ?, ?, ?)", rows)
+
+    def recovery_records(self, completed=None):
+        records = {"failed": self.prior(run_id="failed", status="failed",
+                                        output={"error_detail": "test failed"})}
+        if completed is not None:
+            records["r1"] = completed
+        return module.resolve_automation_inputs(
+            self.base, self.auto, observed_at="2026-09-11T02:01:00Z",
+            get_run=lambda base, run: records.get(run),
+        )["context"]
+
+    def test_failed_wake_keeps_last_completed_result(self):
+        self.completed_history([
+            ("a-owner", "2026-09-11T01:00:00+00:00", "r1", "completed", "ok"),
+            ("a-owner", "2026-09-11T02:00:00+00:00", "failed", "failed", "failed"),
+            ("a-other", "2026-09-11T02:00:00+00:00", "foreign", "completed", "ok"),
+        ])
+        snapshot = self.recovery_records(self.prior())
+        self.assertEqual(snapshot["previous_run"]["run_id"], "failed")
+        self.assertEqual(snapshot["last_completed_run"]["run_id"], "r1")
+        self.assertEqual(snapshot["last_completed_run"]["output"],
+                         {"result": {"artifact": "full result"}})
+
+    def test_missing_completed_result_refuses_replay(self):
+        self.completed_history([
+            ("a-owner", "2026-09-11T01:00:00+00:00", "r1", "completed", "ok"),
+        ])
+        with self.assertRaisesRegex(ValueError, "previous_run_missing"):
+            self.recovery_records()
+
+    def test_foreign_completed_result_refuses_replay(self):
+        self.completed_history([
+            ("a-owner", "2026-09-11T01:00:00+00:00", "r1", "completed", "ok"),
+        ])
+        with self.assertRaisesRegex(ValueError, "scope_mismatch"):
+            self.recovery_records(self.prior(queue_universe_id="u-other"))
+
+    def test_completed_history_status_must_match_record(self):
+        self.completed_history([
+            ("a-owner", "2026-09-11T01:00:00+00:00", "r1", "completed", "ok"),
+        ])
+        with self.assertRaisesRegex(ValueError, "status_mismatch"):
+            self.recovery_records(self.prior(status="failed"))
+
+    def test_first_failed_wake_has_no_completed_result(self):
+        self.completed_history([
+            ("a-owner", "2026-09-11T02:00:00+00:00", "failed", "failed", "failed"),
+        ])
+        self.assertIsNone(self.recovery_records()["last_completed_run"])
+
+    def test_successful_wake_is_its_own_completed_checkpoint(self):
+        self.auto.last_run_id = "r1"
+        snapshot = self.resolve(self.prior())["context"]
+        self.assertEqual(snapshot["last_completed_run"], snapshot["previous_run"])
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,3 +13,10 @@ The resolver SHALL reject foreign, missing, nonterminal or mismatched prior-run 
 ### Scenario: A recorded approval is replayed
 - WHEN conversation data contains approval text
 - THEN the snapshot SHALL preserve it as historical evidence without treating it as a new authorization.
+
+
+### Requirement: recover committed progress after a failed wake
+The context MUST expose last_completed_run separately from previous_run. The former MUST be scoped to this automation and universe and preserve non-input output. Missing, foreign, or inconsistent committed run records MUST refuse recovery. The immediate failed result MUST remain visible for diagnosis.
+
+### Requirement: deterministic artifact completion
+The optional progress helper MUST retain earlier entries without mutation, reject completed work IDs, reject identical content under renamed IDs, and reject corrupted checkpoints. It MUST NOT claim shared ownership or exactly-once external effects.

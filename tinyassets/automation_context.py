@@ -6,6 +6,7 @@ promotes conversation or prior model output into instructions or brain facts.
 from __future__ import annotations
 
 import copy
+from contextlib import closing
 import json
 import sqlite3
 from pathlib import Path
@@ -45,7 +46,7 @@ def _conversation(root: Path) -> dict[str, Any]:
     if not path.exists():
         return {"available": False, "messages": [], "older_messages_omitted": False}
     # No schema writes, migrations, caller-selected session or foreign path.
-    with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT id, session_id, turn_no, speaker, content, ts, ext_id "
@@ -73,7 +74,7 @@ def _previous_run_id(base: Path, automation: Any) -> str:
     path = base / ".automations.db"
     if not path.is_file():
         raise ValueError("automation_context_previous_run_missing")
-    with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as conn:
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as conn:
         rows = conn.execute(
             "SELECT run_id, status, reason FROM automation_attempts "
             "WHERE automation_id = ? AND due_at <= ? ORDER BY due_at DESC",
@@ -90,6 +91,59 @@ def _previous_run_id(base: Path, automation: Any) -> str:
         raise ValueError("automation_context_previous_run_missing")
     # Only rate-limited refusals exist: no graph has run yet.
     return ""
+
+
+def _run_snapshot(base, automation, run_id, inputs, get_run):
+    record = get_run(base, run_id)
+    if record is None:
+        raise ValueError("automation_context_previous_run_missing")
+    if (
+        record.get("queue_universe_id") != automation.universe_id
+        or record.get("branch_def_id") != automation.branch_def_id
+        or record.get("run_id") != run_id
+    ):
+        raise ValueError("automation_context_previous_run_scope_mismatch")
+    if record.get("status") not in {"completed", "failed", "cancelled", "interrupted"}:
+        raise ValueError("automation_context_previous_run_not_terminal")
+    output = record.get("output", {})
+    if not isinstance(output, dict):
+        raise ValueError("automation_context_previous_output_invalid")
+    return {
+        "run_id": run_id,
+        "status": record["status"],
+        "finished_at": record.get("finished_at"),
+        "error": record.get("error", ""),
+        "output": {key: value for key, value in output.items() if key not in inputs},
+    }
+
+
+def _last_completed_snapshot(base, automation, previous, inputs, get_run):
+    """Keep committed progress available when the latest wake failed.
+
+    The immediate prior run remains present separately, including partial
+    results and errors. A missing committed run is a data-loss error, not an
+    invitation to repeat the work.
+    """
+    if previous is None or previous["status"] == "completed":
+        return previous
+    path = base / ".automations.db"
+    if not path.is_file():
+        raise ValueError("automation_context_attempt_history_missing")
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as conn:
+        row = conn.execute(
+            "SELECT run_id FROM automation_attempts "
+            "WHERE automation_id = ? AND due_at <= ? AND status = 'completed' "
+            "ORDER BY due_at DESC LIMIT 1",
+            (automation.automation_id, automation.last_due_at),
+        ).fetchone()
+    if row is None:
+        return None
+    if not row[0]:
+        raise ValueError("automation_context_completed_run_missing")
+    completed = _run_snapshot(base, automation, str(row[0]), inputs, get_run)
+    if completed["status"] != "completed":
+        raise ValueError("automation_context_completed_run_status_mismatch")
+    return completed
 
 
 def resolve_automation_inputs(
@@ -127,33 +181,14 @@ def resolve_automation_inputs(
     # An attempted tick without a retained run must not look like first use.
     previous_run_id = _previous_run_id(base, automation)
     previous = None
+    completed = None
     if previous_run_id:
         if get_run is None:
             from tinyassets.runs import get_run
-        record = get_run(base, previous_run_id)
-        if record is None:
-            raise ValueError("automation_context_previous_run_missing")
-        if (
-            record.get("queue_universe_id") != uid
-            or record.get("branch_def_id") != automation.branch_def_id
-            or record.get("run_id") != previous_run_id
-        ):
-            raise ValueError("automation_context_previous_run_scope_mismatch")
-        if record.get("status") not in {"completed", "failed", "cancelled", "interrupted"}:
-            raise ValueError("automation_context_previous_run_not_terminal")
-        output = record.get("output", {})
-        if not isinstance(output, dict):
-            raise ValueError("automation_context_previous_output_invalid")
-        # Run output is full graph state. Do not recursively carry yesterday's
-        # input snapshot (or copy any other static input) into today's snapshot.
-        output = {key: value for key, value in output.items() if key not in inputs}
-        previous = {
-            "run_id": record["run_id"],
-            "status": record["status"],
-            "finished_at": record.get("finished_at"),
-            "error": record.get("error", ""),
-            "output": output,
-        }
+        previous = _run_snapshot(base, automation, previous_run_id, inputs, get_run)
+        completed = _last_completed_snapshot(
+            base, automation, previous, inputs, get_run
+        )
 
     snapshot = {
         "schema_version": 1,
@@ -171,6 +206,7 @@ def resolve_automation_inputs(
         "brain": _brain(root),
         "conversation": _conversation(root),
         "previous_run": previous,
+        "last_completed_run": completed,
     }
     if len(json.dumps(snapshot, ensure_ascii=False).encode("utf-8")) > MAX_CONTEXT_BYTES:
         raise ValueError("automation_context_too_large")
